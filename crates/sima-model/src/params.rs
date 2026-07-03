@@ -2,7 +2,7 @@
 
 use sima_core::{Dec, Enc, Result, hash_bytes};
 
-use crate::canon::{self, TAG_PARAMS};
+use crate::canonical::{self, TAG_PARAMS};
 
 /// Run parameters for evaluating a candidate: extent, step count, budgets —
 /// whatever the family's evaluation needs beyond the candidate itself.
@@ -30,7 +30,7 @@ impl Params {
 
     /// Reads and validates a canonical form written by [`Params::encode`].
     pub fn decode(dec: &mut Dec<'_>) -> Result<Params> {
-        canon::expect_tag(dec, TAG_PARAMS)?;
+        canonical::expect_tag(dec, TAG_PARAMS)?;
         Ok(Params {
             bytes: dec.bytes()?.to_vec(),
         })
@@ -42,9 +42,9 @@ impl Params {
     }
 }
 
-canon::standalone_codec!(Params);
+canonical::standalone_codec!(Params);
 
-canon::id_newtype! {
+canonical::id_newtype! {
     /// Content id of a [`Params`] blob: the digest of its standalone
     /// canonical bytes, doubling as its store object address.
     ParamsId
@@ -53,7 +53,7 @@ canon::id_newtype! {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::canon::TAG_SPEC;
+    use crate::canonical::TAG_SPEC;
     use crate::spec::{FormatId, Spec};
     use crate::testutil::{from_hex, to_hex};
     use sima_core::{Enc, Error, Result};

@@ -10,7 +10,7 @@
 
 use sima_core::{Dec, Enc, Result, hash_bytes};
 
-use crate::canon::{self, TAG_RUN_CONFIG};
+use crate::canonical::{self, TAG_RUN_CONFIG};
 use crate::params::Params;
 use crate::spec::FormatId;
 
@@ -23,7 +23,7 @@ impl GeneratorId {
     /// Validates `name` against the name rule and wraps it.
     pub fn new(name: impl Into<String>) -> Result<GeneratorId> {
         let name = name.into();
-        canon::validate_name(&name)?;
+        canonical::validate_name(&name)?;
         Ok(GeneratorId(name))
     }
 
@@ -79,7 +79,7 @@ impl RunConfig {
     /// Reads and validates a canonical form written by
     /// [`RunConfig::encode`].
     pub fn decode(dec: &mut Dec<'_>) -> Result<RunConfig> {
-        canon::expect_tag(dec, TAG_RUN_CONFIG)?;
+        canonical::expect_tag(dec, TAG_RUN_CONFIG)?;
         let root_seed = dec.u64()?;
         let format = FormatId::new(dec.str()?)?;
         let generator = GeneratorConfig {
@@ -101,9 +101,9 @@ impl RunConfig {
     }
 }
 
-canon::standalone_codec!(RunConfig);
+canonical::standalone_codec!(RunConfig);
 
-canon::id_newtype! {
+canonical::id_newtype! {
     /// Identity of a run: the digest of its canonicalized [`RunConfig`]
     /// bytes. Stable across resume, parallelism changes, and hardware.
     RunId
@@ -112,7 +112,7 @@ canon::id_newtype! {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::canon::TAG_SPEC;
+    use crate::canonical::TAG_SPEC;
     use crate::params::Params;
     use crate::spec::FormatId;
     use crate::testutil::{from_hex, to_hex};

@@ -9,7 +9,7 @@
 
 use sima_core::{Dec, Enc, Error, Hash, Result, hash_bytes};
 
-use crate::canon::{self, TAG_ENV};
+use crate::canonical::{self, TAG_ENV};
 
 /// Arm byte marking an [`EnvValue::Version`] payload.
 const ARM_VERSION: u8 = 0;
@@ -40,7 +40,7 @@ impl EnvComponent {
     /// rule — then wraps them.
     pub fn new(name: impl Into<String>, value: EnvValue) -> Result<EnvComponent> {
         let name = name.into();
-        canon::validate_name(&name)?;
+        canonical::validate_name(&name)?;
         if let EnvValue::Version(version) = &value
             && version.is_empty()
         {
@@ -108,7 +108,7 @@ impl Environment {
                 "environment must have at least one component".to_string(),
             ));
         }
-        canon::sort_by_unique_name(&mut components, EnvComponent::name)?;
+        canonical::sort_by_unique_name(&mut components, EnvComponent::name)?;
         Ok(Environment { components })
     }
 
@@ -131,7 +131,7 @@ impl Environment {
     /// accumulated without preallocation, and names must arrive strictly
     /// ascending.
     pub fn decode(dec: &mut Dec<'_>) -> Result<Environment> {
-        canon::expect_tag(dec, TAG_ENV)?;
+        canonical::expect_tag(dec, TAG_ENV)?;
         let count = dec.u64()?;
         if count == 0 {
             return Err(Error::Validation(
@@ -141,7 +141,7 @@ impl Environment {
         let mut components: Vec<EnvComponent> = Vec::new();
         for _ in 0..count {
             let component = EnvComponent::decode(dec)?;
-            canon::require_ascending_names(
+            canonical::require_ascending_names(
                 components.last().map(EnvComponent::name),
                 component.name(),
             )?;
@@ -157,9 +157,9 @@ impl Environment {
     }
 }
 
-canon::standalone_codec!(Environment);
+canonical::standalone_codec!(Environment);
 
-canon::id_newtype! {
+canonical::id_newtype! {
     /// Content id of an [`Environment`]: the digest of its standalone
     /// canonical bytes, carried in every task key.
     EnvId
@@ -168,7 +168,7 @@ canon::id_newtype! {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::canon::{TAG_ENV, TAG_SPEC};
+    use crate::canonical::{TAG_ENV, TAG_SPEC};
     use crate::testutil::{fill_hash, from_hex, to_hex};
     use sima_core::{Enc, Error, Hash, Result};
 

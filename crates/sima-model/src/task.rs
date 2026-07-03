@@ -3,7 +3,7 @@
 
 use sima_core::{Dec, Enc, Hash, Result, hash_bytes};
 
-use crate::canon::{self, TAG_TASK};
+use crate::canonical::{self, TAG_TASK};
 use crate::env::EnvId;
 use crate::params::ParamsId;
 use crate::spec::SpecId;
@@ -44,7 +44,7 @@ impl TaskIdentity {
 
     /// Reads a canonical form written by [`TaskIdentity::encode`].
     pub fn decode(dec: &mut Dec<'_>) -> Result<TaskIdentity> {
-        canon::expect_tag(dec, TAG_TASK)?;
+        canonical::expect_tag(dec, TAG_TASK)?;
         Ok(TaskIdentity {
             spec: SpecId::from_hash(dec.hash()?),
             params: ParamsId::from_hash(dec.hash()?),
@@ -61,9 +61,9 @@ impl TaskIdentity {
     }
 }
 
-canon::standalone_codec!(TaskIdentity);
+canonical::standalone_codec!(TaskIdentity);
 
-canon::id_newtype! {
+canonical::id_newtype! {
     /// Key of a task: the digest of its [`TaskIdentity`] bytes. Manifests
     /// sort by it, and the store indexes committed results under it.
     TaskKey
@@ -72,7 +72,7 @@ canon::id_newtype! {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::canon::TAG_SPEC;
+    use crate::canonical::TAG_SPEC;
     use crate::testutil::{fill_hash, from_hex, to_hex};
     use sima_core::{Enc, Error, Result};
 
