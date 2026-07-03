@@ -6,10 +6,24 @@ This document is living — structure and content evolve through discussion.
 
 Settled context: Rust, local-first. GPU execution via Vulkan compute (`ash`),
 shaders compiled to SPIR-V at build time. Content addressing with blake3.
-Candidates are genomes — data interpreted by fixed engines, pluggable through
-a rule-family boundary. CA is the substrate; the research object is
+Candidates are specs — opaque bytes plus a format id; families interpret them
+(CA families call theirs genomes). CA is the substrate; the research object is
 learned/evolved computation on it. Evaluation research and model-family
 research are standing tracks, deliberately out of the phase ladder.
+
+Layering (strictly downward dependencies, enforced by workspace crate edges):
+`sima-core` (L0: error, encode, prng, hash) → `sima-model` (L2: spec, task
+key, provenance, run config) → `sima-store` (L1: cas + catalog modules) →
+`sima-contracts` (L3: generator/executor traits + stubs) → `sima-scheduler`
+(L4: queue, leases, lifecycle state machine) → `sima-pipeline` (L5:
+orchestration, resume, re-evaluation) → `sima` (L6: CLI binary).
+
+Running model: one orchestrator per run — the `sima run` process itself; no
+daemon. Single-writer per run enforced by a stale-detectable lease file.
+Workers are stateless leaseholders (threads in P1, processes and remote
+workers later). Executors are pure compute; workers commit results through
+the catalog. The store is the only durable state; the orchestrator process is
+disposable at any instant.
 
 ## P1 — Infrastructure spine
 
@@ -37,31 +51,43 @@ Phase-level decisions:
 - Acceptance for the phase: (a) two runs of the same config produce identical
   manifests hash-for-hash; (b) a run killed at any crashpoint and resumed
   equals a run never interrupted; (c) a re-evaluation pass over a recorded
-  run touches no executor.
+  run touches no executor; (d) copying the store to another location and
+  resuming the config there yields a manifest identical to never having
+  moved — run portability with zero migration code.
 
-- [ ] M1.1 Crate skeleton: `Error`/`Result`, canonical encoding (`Enc`/`Dec`),
-      counter-based PRNG with pinned known-answer tests
-- [ ] M1.2 Content-addressed store: blake3 CAS, atomic writes (temp + fsync +
-      rename), idempotent puts, task index with write-ordering discipline
-      (result objects durable before the index entry referencing them)
-- [ ] M1.3 Task identity + provenance: task key (spec ‖ seed ‖ env),
-      environment-hash mechanism, provenance records, run manifest with
-      canonical ordering; run identity = hash of canonicalized config
-- [ ] M1.4 Contracts + stubs: executor contract and generator contract over
-      opaque specs; seeded stub generator; spec-programmed stub executor
-      (spec bytes select behavior: succeed / fail N times / panic / sleep) so
-      scheduler failure tests are deterministic; run-twice → identical-hashes
-      tests
-- [ ] M1.5 Scheduler: ephemeral queue, leases, heartbeat/timeout, retries
-      with idempotent commit, backpressure; thread-worker transport; failure
-      matrix driven by the programmable stub
-- [ ] M1.6 Config (TOML schema + canonicalization) + pipeline orchestration +
-      `sima run` CLI: progress reporting, graceful interrupt, resume,
-      re-evaluation pass; crash-injection harness (subprocess SIGKILL at
-      controlled crashpoints — mid-object-write, between object and index,
-      mid-lease, during finalization — resume, assert manifest identical to
-      uninterrupted reference); end-to-end tests for the three phase
-      acceptance criteria
+- [ ] M1.1 Crate skeleton (`sima-core`): `Error`/`Result`, canonical encoding
+      (`Enc`/`Dec`), counter-based PRNG with pinned known-answer tests;
+      workspace scaffolding
+- [ ] M1.2 CAS (`sima-store::cas`): blake3 objects, atomic writes (temp +
+      fsync + rename), idempotent puts
+- [ ] M1.3 Model + catalog (`sima-model`, `sima-store::catalog`): spec, task
+      key (spec ‖ seed ‖ env), environment-hash mechanism, provenance
+      records; task index with write-ordering discipline (result objects
+      durable before the index entry referencing them); run manifest with
+      canonical ordering; run identity = hash of canonicalized config;
+      run-closure enumeration (all objects a run references)
+- [ ] M1.4 Contracts + stubs (`sima-contracts`): executor and generator
+      contracts over opaque specs; task definition carries an optional
+      input-state object reference (segmented-execution enabler, unused by
+      the stub); seeded stub generator; spec-programmed stub executor (spec
+      bytes select behavior: succeed / fail N times / panic / sleep) so
+      scheduler failure tests are deterministic; run-twice →
+      identical-hashes tests
+- [ ] M1.5 Scheduler (`sima-scheduler`): ephemeral queue, leases,
+      heartbeat/timeout, retries with idempotent commit, backpressure;
+      task lifecycle state machine (defined → queued → leased → executing →
+      committed | failed → retried) with transitions recorded to an
+      append-only per-run journal in the store; thread-worker transport;
+      failure matrix driven by the programmable stub
+- [ ] M1.6 Config + pipeline + CLI (`sima-pipeline`, `sima`): TOML schema +
+      canonicalization; pipeline orchestration with static format-id →
+      implementation match; orchestrator lease file; typed progress events
+      rendered by the CLI; basic `sima status <run>` from the journal;
+      graceful interrupt, resume, re-evaluation pass; crash-injection
+      harness (subprocess SIGKILL at controlled crashpoints —
+      mid-object-write, between object and index, mid-lease, during
+      finalization — resume, assert manifest identical to uninterrupted
+      reference); end-to-end tests for the four phase acceptance criteria
 
 ## P2 — GPU executor + totalistic family
 
@@ -92,47 +118,60 @@ verification safe by construction.
 
 Expected to be re-split when reached; remote transport hides surprises.
 
-## P4 — Slingshot
+## P4 — Run control & observability
+
+The view layer over the lifecycle journal, positioned before slingshot: paid
+remote hardware is not operated blind. The journal and state machine already
+exist (P1); this phase builds the surfaces that read them.
+
+- [ ] M4.1 `sima status` / `sima inspect <task>`: run and task state, attempt
+      history, durations, failure summaries — local and remote runs alike
+- [ ] M4.2 Live follow: stream journal events from active workers (local and
+      SSH transports) into one aggregated view
+- [ ] M4.3 Run timeline and summary report: throughput, retry rates, worker
+      utilization per run
+
+## P5 — Slingshot
 
 One command sends an experiment to rented hardware and brings results home:
 provision, bootstrap, run, sync, tear down. Teardown must be guaranteed —
 leaked instances are leaked money.
 
-- [ ] M4.1 Provider abstraction: provision / destroy / list / price query;
+- [ ] M5.1 Provider abstraction: provision / destroy / list / price query;
       instance lifecycle owned by the run, teardown on success, failure, and
       interrupt
-- [ ] M4.2 Vast.ai backend
-- [ ] M4.3 Hetzner backend
-- [ ] M4.4 AWS backend
-- [ ] M4.5 On-worker stats reduction: kernel-side population/activity counts
+- [ ] M5.2 Vast.ai backend
+- [ ] M5.3 Hetzner backend
+- [ ] M5.4 AWS backend
+- [ ] M5.5 On-worker stats reduction: kernel-side population/activity counts
       so remote runs return stats always, snapshots only on a cheap predicate
       (bandwidth guard until the evaluation funnel exists)
-- [ ] M4.6 Budget guard: max price, max wall-clock, spend accounting per run
-- [ ] M4.7 Trust-tiered scheduling: redundant execution, spot-check
+- [ ] M5.6 Budget guard: max price, max wall-clock, spend accounting per run
+- [ ] M5.7 Trust-tiered scheduling: redundant execution, spot-check
       verification across trust classes
 
-## P5 — Evaluation funnel v1
+## P6 — Evaluation funnel v1
 
 Deliberately simple. The funnel machinery, with the cheapest deterministic
 metrics only; metric research lives in its own track.
 
-- [ ] M5.1 Periodic snapshot/stats recording through the executor contract
-- [ ] M5.2 Verdict classification: dead / frozen / exploding / cyclic,
+- [ ] M6.1 Periodic snapshot/stats recording through the executor contract
+- [ ] M6.2 Verdict classification: dead / frozen / exploding / cyclic,
       thresholds from config
-- [ ] M5.3 Staged cheapest-first funnel + re-evaluation from recorded runs
+- [ ] M6.3 Staged cheapest-first funnel + re-evaluation from recorded runs
       without re-execution
 
-## P6 — Neural CA
+## P7 — Neural CA
 
 The primary model family. Genomes are parameter vectors of arbitrary update
 functions: perception kernels and update weights both evolvable.
 
-- [ ] M6.1 Float/multi-channel grid state, strict-IEEE shader path, tolerance
+- [ ] M7.1 Float/multi-channel grid state, strict-IEEE shader path, tolerance
       policy for cross-substrate checks
-- [ ] M6.2 NCA family: genome (perception + update parameters), CPU reference
-- [ ] M6.3 GPU NCA kernel + cross-substrate tolerance tests
-- [ ] M6.4 ES-based search loop over NCA genomes
-- [ ] M6.5 Within-launch population batching for small grids
+- [ ] M7.2 NCA family: genome (perception + update parameters), CPU reference
+- [ ] M7.3 GPU NCA kernel + cross-substrate tolerance tests
+- [ ] M7.4 ES-based search loop over NCA genomes
+- [ ] M7.5 Within-launch population batching for small grids
 
 ## Research tracks (standing)
 
