@@ -10,6 +10,8 @@
 //! in higher crates.
 
 mod canon;
+mod params;
 mod spec;
 
+pub use params::{Params, ParamsId};
 pub use spec::{FormatId, Spec, SpecId};

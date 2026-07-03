@@ -13,7 +13,6 @@ use sima_core::{Dec, Error, Result};
 /// Domain tag opening a canonical [`crate::Spec`] encoding.
 pub(crate) const TAG_SPEC: &str = "sima.spec.v1";
 /// Domain tag opening a canonical [`crate::Params`] encoding.
-#[allow(dead_code)]
 pub(crate) const TAG_PARAMS: &str = "sima.params.v1";
 /// Domain tag opening a canonical [`crate::Environment`] encoding.
 #[allow(dead_code)]
