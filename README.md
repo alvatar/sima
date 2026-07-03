@@ -1,6 +1,6 @@
 # SIMA
 
-**Search In the Manifold of Automata**
+## *Search In the Manifold of Automata*
 
 Distributed infrastructure for generating candidate programs, executing them
 safely at scale, and evaluating them through a staged, cost-aware pipeline. SIMA
