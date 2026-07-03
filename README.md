@@ -112,62 +112,6 @@ execution and spot-checking trivial, in the tradition of BOINC.
 - **Pluggable generation and evaluation.** Generators and evaluators are decoupled
   from the execution and provenance layers.
 
-## Usage
-
-A run is defined by a configuration specifying the generator, execution limits,
-backends, and evaluation stages:
-
-```
-sima run config.yaml
-```
-
-Example configuration:
-
-```yaml
-generator:
-  type: model          # procedural | evolutionary | model
-  batch_size: 1024
-
-execution:
-  workers: 8
-  fuel_limit: 10G      # instruction budget; wall-clock is a backstop
-  time_limit: 5s
-  memory_limit: 512MB
-  isolation: strict
-  backends:
-    - type: local      # default; also the trusted verification tier
-    - type: vast
-      max_price: 0.20/h
-      trust: untrusted # early stages only; survivors re-verified
-    - type: aws
-      instance: c7g.xlarge
-      trust: trusted
-
-evaluation:
-  - filter: validity
-  - filter: liveness
-  - metric: novelty
-  - review: model      # runs only on survivors
-
-provenance:
-  store: ./runs
-```
-
-Surviving candidates and their lineage are written to the provenance store for
-inspection and re-evaluation.
-
-## Project layout
-
-```
-sima/
-  generate/     candidate generators
-  execute/      sandboxed execution and scheduling
-  backends/     pluggable local and remote execution backends
-  evaluate/     staged evaluation pipeline
-  provenance/   content-addressed store and lineage graph
-  cli/          command-line interface
-```
-
 ## References
 
 Systems and papers SIMA draws on, with notes on what each contributes.
@@ -258,10 +202,6 @@ Systems and papers SIMA draws on, with notes on what each contributes.
   reference rather than a foundation: Ray tasks are not content-addressed or
   deterministic by construction, which is precisely what SIMA's provenance
   layer requires.
-
-## Status
-
-Early development. Interfaces are subject to change.
 
 ## License
 
