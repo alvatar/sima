@@ -10,8 +10,10 @@
 //!
 //! Substream derivation: [`derive`] maps `(seed, tag)` to a new seed via
 //! `mix(seed ^ mix(tag))`. The construction is structurally distinct from
-//! [`next`] (xor of a mixed tag, no golden-ratio stepping), so derived seeds
-//! do not alias stream outputs.
+//! [`next`] (xor of a mixed tag, no golden-ratio stepping), so a derived
+//! seed colliding with a stream output is a chance event (~2^-64 per pair),
+//! never a systematic identity; the tests spot-check small tag and counter
+//! ranges.
 //!
 //! Why SplitMix64: its sequential form is already counter-shaped — state
 //! advances by a fixed golden-ratio increment and every output is a pure
@@ -168,7 +170,9 @@ mod tests {
         }
     }
 
-    /// Derived seeds do not appear among the root stream's outputs.
+    /// Spot check over small tag/counter ranges: derived seeds do not appear
+    /// among the root stream's outputs there. Collision in general is a
+    /// ~2^-64 chance event per pair, per the module docs.
     #[test]
     fn derived_seeds_do_not_alias_stream_outputs() {
         for root in [0u64, 1, 42] {
