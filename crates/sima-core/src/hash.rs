@@ -17,6 +17,17 @@ impl Hash {
     /// Digest length in bytes.
     pub const LEN: usize = 32;
 
+    /// Wraps raw digest bytes. Crate-internal for the canonical decoder; the
+    /// public ways to obtain a `Hash` are [`hash_bytes`] and [`Hash::from_hex`].
+    pub(crate) const fn from_bytes(bytes: [u8; Hash::LEN]) -> Self {
+        Hash(bytes)
+    }
+
+    /// Digest bytes, for the canonical encoder.
+    pub(crate) const fn as_bytes(&self) -> &[u8; Hash::LEN] {
+        &self.0
+    }
+
     /// Parses the canonical lowercase-hex form. Rejects any other length,
     /// uppercase digits, and non-hex characters with [`Error::Encoding`].
     pub fn from_hex(s: &str) -> Result<Hash> {
