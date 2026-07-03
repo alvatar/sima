@@ -188,15 +188,15 @@ mod tests {
         Environment::new(sample_components()?.to_vec())
     }
 
-    /// Hand-derived canonical bytes of `sample_env`, field by field in
-    /// encoding order per the `sima-core` encode format:
-    ///   str tag "sima.env.v1"  -> u64 len 11 LE ‖ UTF-8 bytes
+    /// Hand-derived canonical bytes of `sample_environment`, field by field
+    /// in encoding order per the `sima-core` encode format:
+    ///   str tag "sima.environment.v1" -> u64 len 19 LE ‖ UTF-8 bytes
     ///   u64 component count 2
     ///   component "engine": str name (len 6 LE ‖ UTF-8), arm byte 00
     ///     (Version), str payload "0.1.0" (len 5 LE ‖ UTF-8)
     ///   component "shader": str name (len 6 LE ‖ UTF-8), arm byte 01
     ///     (Digest), payload 32 raw digest bytes (0x22 repeated)
-    const PINNED_HEX: &str = "0b0000000000000073696d612e656e762e7631\
+    const PINNED_HEX: &str = "130000000000000073696d612e656e7669726f6e6d656e742e7631\
                               0200000000000000\
                               0600000000000000656e67696e65000500000000000000302e312e30\
                               0600000000000000736861646572012222222222222222222222222222222222222222222222222222222222222222";
@@ -204,7 +204,7 @@ mod tests {
     /// blake3 of the `PINNED_HEX` bytes, computed independently with Python
     /// blake3 (pip package `blake3`):
     /// `blake3.blake3(bytes.fromhex(PINNED_HEX)).hexdigest()`.
-    const PINNED_ID_HEX: &str = "65d1e7d99c1fd16782d8bf23d9d00f948095daa388134efa0c5a4cb7a11ba14f";
+    const PINNED_ID_HEX: &str = "5b971cab4036d5d79f8007e9ab773b8136ce69beb1869b9ace056b3d8372dba8";
 
     fn pinned() -> String {
         PINNED_HEX.split_whitespace().collect()
