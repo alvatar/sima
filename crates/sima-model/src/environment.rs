@@ -99,14 +99,18 @@ pub struct Environment {
     components: Vec<EnvironmentComponent>,
 }
 
+/// Rejection shared by the constructor and the decoder for an environment
+/// without components.
+fn empty_environment_error() -> Error {
+    Error::Validation("environment must have at least one component".to_string())
+}
+
 impl Environment {
     /// Sorts `components` by name and wraps them; rejects an empty list and
     /// duplicate names.
     pub fn new(mut components: Vec<EnvironmentComponent>) -> Result<Environment> {
         if components.is_empty() {
-            return Err(Error::Validation(
-                "environment must have at least one component".to_string(),
-            ));
+            return Err(empty_environment_error());
         }
         canonical::sort_by_unique_name(&mut components, EnvironmentComponent::name)?;
         Ok(Environment { components })
@@ -134,9 +138,7 @@ impl Environment {
         canonical::expect_tag(dec, TAG_ENVIRONMENT)?;
         let count = dec.u64()?;
         if count == 0 {
-            return Err(Error::Validation(
-                "environment must have at least one component".to_string(),
-            ));
+            return Err(empty_environment_error());
         }
         let mut components: Vec<EnvironmentComponent> = Vec::new();
         for _ in 0..count {
