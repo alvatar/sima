@@ -23,8 +23,11 @@ via within-launch batching (P7), never the design driver. Grid state model:
 extent × channels × dtype, double-buffered (totalistic: 1 channel u8; NCA: N
 channels f16/f32). Visualization is out of scope: snapshots in the store are
 consumed by external tools (the `../luz` renderer reads them as volumes).
-Evaluation research and model-family research are standing tracks,
-deliberately out of the phase ladder.
+CI is in place (`.github/workflows/ci.yml`: fmt + clippy + workspace tests on
+every push and PR); GPU-gated tests are skipped in hosted CI and run on the
+dev machine — self-hosted runner revisited in P3. Evaluation research and
+model-family research are standing tracks, deliberately out of the phase
+ladder.
 
 Layering (strictly downward dependencies, enforced by workspace crate edges;
 layer numbers follow the dependency order):
@@ -84,9 +87,7 @@ Phase-level decisions:
 
 - [ ] M1.1 Crate skeleton (`sima-core`): `Error`/`Result`, canonical encoding
       (`Enc`/`Dec`), counter-based PRNG with pinned known-answer tests;
-      workspace scaffolding; CI from day one (hosted: fmt + clippy + workspace
-      tests on every push; GPU-gated tests are skipped in hosted CI and run on
-      the dev machine — self-hosted runner revisited in P3)
+      workspace scaffolding
 - [ ] M1.2 Model (`sima-model`): spec, task key (spec ‖ seed ‖ env ‖
       input-state-ref, empty ref for stateless tasks — segments differing
       only in input state must have distinct keys), environment-hash
