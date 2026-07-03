@@ -1,15 +1,30 @@
 # TODO
 
-Roadmap. Phases are large project stages; milestones are PR-sized units of
-work, each with a fully elaborated `work/TODO-<topic>.md` while in flight.
-This document is living — structure and content evolve through discussion.
+Roadmap. Read `AGENTS.md` (project rules, settled invariants) and `README.md`
+(design document) before this file. Phases are large project stages;
+milestones are PR-sized units of work, each with a fully elaborated
+`work/TODO-<topic>.md` while in flight. `work/` is gitignored and
+machine-local: elaborations are written fresh from this document's decisions,
+which must therefore carry everything durable. This document is living —
+structure and content evolve through discussion.
 
-Settled context: Rust, local-first. GPU execution via Vulkan compute (`ash`),
-shaders compiled to SPIR-V at build time. Content addressing with blake3.
-Candidates are specs — opaque bytes plus a format id; families interpret them
-(CA families call theirs genomes). CA is the substrate; the research object is
-learned/evolved computation on it. Evaluation research and model-family
-research are standing tracks, deliberately out of the phase ladder.
+Settled context: Rust, local-first. Workspace under `crates/`, one crate per
+layer (below). GPU execution via Vulkan compute (`ash`), shaders compiled to
+SPIR-V at build time (shaderc). Content addressing with blake3. Concurrency
+via std threads and channels — no async runtime (revisit only if P3
+transports force it). All randomness in result-affecting paths comes from the
+project's counter-based SplitMix64 PRNG (`sima-core`), implemented identically
+on CPU and GPU; the `rand` crate is banned from result paths. Candidates are
+specs — opaque bytes plus a format id; families interpret them (CA families
+call theirs genomes). CA is the substrate; the research object is
+learned/evolved computation on it. Primary workload shape: huge grids, 3D
+included — a single simulation can saturate a GPU; small grids are supported
+via within-launch batching (P7), never the design driver. Grid state model:
+extent × channels × dtype, double-buffered (totalistic: 1 channel u8; NCA: N
+channels f16/f32). Visualization is out of scope: snapshots in the store are
+consumed by external tools (the `../luz` renderer reads them as volumes).
+Evaluation research and model-family research are standing tracks,
+deliberately out of the phase ladder.
 
 Layering (strictly downward dependencies, enforced by workspace crate edges;
 layer numbers follow the dependency order):
@@ -75,7 +90,9 @@ Phase-level decisions:
       only in input state must have distinct keys), environment-hash
       mechanism, provenance records, run identity = hash of canonicalized
       config; pure types + canonical encodings, no I/O
-- [ ] M1.3 Store (`sima-store`): cas module — blake3 objects, atomic writes
+- [ ] M1.3 Store (`sima-store`): disk layout `objects/<aa>/<hash>` (CAS,
+      two-char fan-out) + `tasks/<task-key>` (index) + `runs/<run-id>/`
+      (manifest, journal); cas module — blake3 objects, atomic writes
       (temp + fsync + rename), idempotent puts; catalog module — task index
       with write-ordering discipline (result objects durable before the index
       entry referencing them), run manifest with canonical ordering,
@@ -121,10 +138,16 @@ the GPU path and the family boundary while staying trivial to verify.
 
 - [ ] M2.1 ash compute bringup (`sima-gpu`): device selection, buffers,
       dispatch, build-time shaderc, SPIR-V hashes folded into the environment
-      hash
-- [ ] M2.2 Totalistic family (`sima-families`): genome, generator, mutation +
-      CPU reference engine with known-answer tests (mutation is dormant until
-      the first evolutionary loop in P7; built here for family completeness)
+      hash; device and driver recorded as provenance metadata but kept out of
+      the env hash for integer families (results are device-independent —
+      README, Determinism; float families revisit this in P7)
+- [ ] M2.2 Totalistic family (`sima-families`): outer-totalistic 3D rule —
+      Moore-26 neighborhood, u8 state (0 = dead, 1..states-1 = decay levels),
+      genome = birth mask ‖ survive mask (bitmasks over live-neighbor counts)
+      ‖ state count, toroidal wrap as the only boundary condition; genome
+      encode/validate, seeded generator, mutation + CPU reference engine with
+      known-answer tests (mutation is dormant until the first evolutionary
+      loop in P7; built here for family completeness)
 - [ ] M2.3 GPU totalistic kernel + CPU/GPU bit-equality cross-check matrix
       (extents, genomes, step counts)
 - [ ] M2.4 First real search: ≥1000 genomes on the local GPU through the full
