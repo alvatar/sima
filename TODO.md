@@ -70,9 +70,11 @@ Phase-level decisions:
 - [ ] M1.1 Crate skeleton (`sima-core`): `Error`/`Result`, canonical encoding
       (`Enc`/`Dec`), counter-based PRNG with pinned known-answer tests;
       workspace scaffolding
-- [ ] M1.2 Model (`sima-model`): spec, task key (spec ‖ seed ‖ env),
-      environment-hash mechanism, provenance records, run identity = hash of
-      canonicalized config; pure types + canonical encodings, no I/O
+- [ ] M1.2 Model (`sima-model`): spec, task key (spec ‖ seed ‖ env ‖
+      input-state-ref, empty ref for stateless tasks — segments differing
+      only in input state must have distinct keys), environment-hash
+      mechanism, provenance records, run identity = hash of canonicalized
+      config; pure types + canonical encodings, no I/O
 - [ ] M1.3 Store (`sima-store`): cas module — blake3 objects, atomic writes
       (temp + fsync + rename), idempotent puts; catalog module — task index
       with write-ordering discipline (result objects durable before the index
@@ -84,9 +86,15 @@ Phase-level decisions:
 - [ ] M1.4 Contracts + stubs (`sima-contracts`): executor and generator
       contracts over opaque specs; task definition carries an optional
       input-state object reference (segmented-execution enabler, unused by
-      the stub); seeded stub generator; spec-programmed stub executor (spec
-      bytes select behavior: succeed / fail N times / panic / sleep) so
-      scheduler failure tests are deterministic; run-twice →
+      the stub, part of the task key); the contract distinguishes identity
+      inputs (spec, seed, env, input-state — determine the key and the
+      committed artifacts) from execution context (attempt number, worker id
+      — visible to the executor, forbidden from influencing committed
+      artifacts); seeded stub generator; spec-programmed stub executor (spec
+      bytes select behavior: succeed / fail N times then succeed / panic /
+      sleep — the fail-N behavior reads the attempt number and is the
+      sanctioned exception, its eventual artifact still attempt-independent)
+      so scheduler failure tests are deterministic; run-twice →
       identical-hashes tests
 - [ ] M1.5 Scheduler (`sima-scheduler`): task-source interface (yields
       currently-runnable tasks from config + store state; static batch as the
@@ -122,7 +130,10 @@ the GPU path and the family boundary while staying trivial to verify.
 - [ ] M2.4 First real search: ≥1000 genomes on the local GPU through the full
       spine; per-candidate result stats recorded as metadata (final population
       count from the result snapshot — inspection aid, not a funnel);
-      throughput numbers recorded here
+      throughput numbers recorded here. Result snapshots are stored in full
+      (re-evaluation and portability require them), so extent × batch is
+      chosen to a stated disk budget; retention policy is deliberately
+      deferred to P6
 - [ ] M2.5 Segmented execution: a long simulation runs as a chain of tasks
       (state Sₙ + k steps → state Sₙ₊₁), checkpoint states as store objects,
       segment length from config; chain-frontier task source (successor keys
@@ -141,8 +152,9 @@ verification safe by construction.
 - [ ] M3.1 Multi-process worker transport (same scheduler contract)
 - [ ] M3.2 Multi-GPU on one host
 - [ ] M3.3 Remote worker over SSH: container image with Vulkan runtime, worker
-      bootstrap, result sync back to the local store (manually provisioned
-      machine)
+      bootstrap, bidirectional store sync (have/want negotiation — results
+      home, closures out; the same protocol M5.8's migrate later composes)
+      against a manually provisioned machine
 
 Expected to be re-split when reached; remote transport hides surprises.
 
@@ -154,8 +166,10 @@ exist (P1); this phase builds the surfaces that read them.
 
 - [ ] M4.1 `sima status` / `sima inspect <task>`: run and task state, attempt
       history, durations, failure summaries — local and remote runs alike
-- [ ] M4.2 Live follow: stream journal events from active workers (local and
-      SSH transports) into one aggregated view
+- [ ] M4.2 Live follow: workers emit events over their transport, the
+      orchestrator journals them; follow tails the journal into one
+      aggregated view (works from another terminal against a running
+      orchestrator, local or SSH)
 - [ ] M4.3 Run timeline and summary report: throughput, retry rates, worker
       utilization per run
 
@@ -189,7 +203,9 @@ leaked instances are leaked money.
 Deliberately simple. The funnel machinery, with the cheapest deterministic
 metrics only; metric research lives in its own track.
 
-- [ ] M6.1 Periodic snapshot/stats recording through the executor contract
+- [ ] M6.1 Periodic snapshot/stats recording: segment boundaries (M2.5) are
+      the natural sampling points; this milestone adds the recording policy,
+      not a new mechanism
 - [ ] M6.2 Verdict classification: dead / frozen / exploding / cyclic,
       thresholds from config
 - [ ] M6.3 Staged cheapest-first funnel + re-evaluation from recorded runs
@@ -214,7 +230,7 @@ Parallel to the phase ladder, each eventually feeding it:
 - **Model families beyond NCA** — Lenia-family continuous CAs, graph CAs,
   attention-based update rules; each lands as a rule family on unchanged infra
 - **Evaluation / interestingness** — novelty, diversity, complexity metrics;
-  the funnel machinery (P3) is the harness, the metrics are open research
+  the funnel machinery (P6) is the harness, the metrics are open research
 - **Gradient-based training** — backprop through CA steps changes the executor
   contract from "run" to "run + accumulate gradients"; NCA literature
   precedent exists

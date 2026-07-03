@@ -19,7 +19,7 @@
 ## Testing layer
 
 - Rust logic is tested in Rust tests, next to the type or function it covers.
-- Cross-module and end-to-end behavior is tested in integration tests under `tests/`.
+- Cross-crate and end-to-end behavior is tested in integration tests under the consuming crate's `tests/` directory (workspace: each crate owns its integration tests).
 
 ## TODOs
 
@@ -53,12 +53,12 @@
 
 Settled invariants:
 - Layering, strictly downward, enforced by workspace crate dependency edges: `sima-core` → `sima-model` → `sima-store` → `sima-contracts` → `sima-scheduler` → `sima-pipeline` → `sima` (CLI binary). No upward imports, ever; a lower crate never depends on a higher one.
-- The store is the only durable state. Queues, schedulers, and orchestrators are ephemeral and rebuilt from (config-derived tasks) minus (completed task keys). Resume, crash-recovery, and re-run are one code path.
+- The store is the only durable state. Queues, schedulers, and orchestrators are ephemeral; a task source derives the currently-runnable frontier from (config, store state) — static batches and segment chains are two implementations of that one interface. Resume, crash-recovery, and re-run are one code path: re-derive the frontier, continue.
 - One orchestrator per run — the `sima run` process itself, no daemon; single-writer enforced by a stale-detectable lease file. Workers are stateless leaseholders.
 - Executors are pure compute: they receive (spec, seed, env) and return artifacts + stats, never touching the store. Workers commit results through the catalog. The trust boundary lives on this seam.
 - Candidates are opaque at the infrastructure layer: a spec is (format id, opaque bytes), content-addressed. Families interpret specs; "genome" is family vocabulary.
 - Two serialization worlds: identity-bearing bytes (anything hashed) go through the canonical `Enc`/`Dec` encoding exclusively; human-readable artifacts are serde and never identity-bearing.
-- Anything claimed deterministic is proven by a test (run twice → identical hashes), never assumed. Manifests are canonicalized so run hashes are independent of worker completion order.
+- Anything claimed deterministic is proven by a test (same config run in two fresh stores → identical manifests), never assumed. Manifests are canonicalized so run hashes are independent of worker completion order; journals are observational and excluded from equality criteria.
 
 Principles:
 - Clean, pristine architecture: clear spine, truthful boundaries, no split brain.
