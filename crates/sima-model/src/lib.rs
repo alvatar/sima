@@ -16,6 +16,8 @@ mod run_config;
 mod spec;
 mod task;
 mod task_record;
+#[cfg(test)]
+mod testutil;
 
 pub use env::{EnvComponent, EnvId, EnvValue, Environment};
 pub use params::{Params, ParamsId};

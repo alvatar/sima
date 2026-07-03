@@ -73,11 +73,8 @@ canon::id_newtype! {
 mod tests {
     use super::*;
     use crate::canon::TAG_PARAMS;
+    use crate::testutil::{from_hex, to_hex};
     use sima_core::{Enc, Error, Result};
-
-    fn to_hex(bytes: &[u8]) -> String {
-        bytes.iter().map(|b| format!("{b:02x}")).collect()
-    }
 
     fn sample_spec() -> Result<Spec> {
         Ok(Spec {
@@ -102,10 +99,7 @@ mod tests {
 
     fn pinned_bytes() -> Vec<u8> {
         let hex: String = PINNED_HEX.split_whitespace().collect();
-        (0..hex.len())
-            .step_by(2)
-            .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).expect("pinned hex is valid"))
-            .collect()
+        from_hex(&hex)
     }
 
     #[test]
