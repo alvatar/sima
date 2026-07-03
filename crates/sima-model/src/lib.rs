@@ -9,7 +9,7 @@
 //! human-readable data (journals, manifest JSON, execution metadata) lives
 //! in higher crates.
 
-mod canon;
+mod canonical;
 mod env;
 mod params;
 mod run_config;

@@ -8,7 +8,7 @@
 
 use sima_core::{Dec, Enc, Hash, Result};
 
-use crate::canon::{self, TAG_TASK_RECORD};
+use crate::canonical::{self, TAG_TASK_RECORD};
 use crate::task::TaskIdentity;
 
 /// A named reference to a committed artifact object in the store. The name
@@ -24,7 +24,7 @@ impl ArtifactRef {
     /// reference.
     pub fn new(name: impl Into<String>, object: Hash) -> Result<ArtifactRef> {
         let name = name.into();
-        canon::validate_name(&name)?;
+        canonical::validate_name(&name)?;
         Ok(ArtifactRef { name, object })
     }
 
@@ -68,7 +68,7 @@ impl TaskRecord {
     /// Sorts `artifacts` by name and wraps them with the identity; rejects
     /// duplicate names. An empty artifact list is legal.
     pub fn new(identity: TaskIdentity, mut artifacts: Vec<ArtifactRef>) -> Result<TaskRecord> {
-        canon::sort_by_unique_name(&mut artifacts, ArtifactRef::name)?;
+        canonical::sort_by_unique_name(&mut artifacts, ArtifactRef::name)?;
         Ok(TaskRecord {
             identity,
             artifacts,
@@ -97,13 +97,13 @@ impl TaskRecord {
     /// accumulated without preallocation, and names must arrive strictly
     /// ascending.
     pub fn decode(dec: &mut Dec<'_>) -> Result<TaskRecord> {
-        canon::expect_tag(dec, TAG_TASK_RECORD)?;
+        canonical::expect_tag(dec, TAG_TASK_RECORD)?;
         let identity = TaskIdentity::decode(dec)?;
         let count = dec.u64()?;
         let mut artifacts: Vec<ArtifactRef> = Vec::new();
         for _ in 0..count {
             let artifact = ArtifactRef::decode(dec)?;
-            canon::require_ascending_names(
+            canonical::require_ascending_names(
                 artifacts.last().map(ArtifactRef::name),
                 artifact.name(),
             )?;
@@ -116,12 +116,12 @@ impl TaskRecord {
     }
 }
 
-canon::standalone_codec!(TaskRecord);
+canonical::standalone_codec!(TaskRecord);
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::canon::{TAG_SPEC, TAG_TASK_RECORD};
+    use crate::canonical::{TAG_SPEC, TAG_TASK_RECORD};
     use crate::env::EnvId;
     use crate::params::ParamsId;
     use crate::spec::SpecId;

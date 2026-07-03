@@ -3,7 +3,7 @@
 
 use sima_core::{Dec, Enc, Result, hash_bytes};
 
-use crate::canon::{self, TAG_SPEC};
+use crate::canonical::{self, TAG_SPEC};
 
 /// Name of the format a family registers to interpret specs — and the run
 /// params paired with them. Validated by the shared name rule: 1..=64
@@ -15,7 +15,7 @@ impl FormatId {
     /// Validates `name` against the name rule and wraps it.
     pub fn new(name: impl Into<String>) -> Result<FormatId> {
         let name = name.into();
-        canon::validate_name(&name)?;
+        canonical::validate_name(&name)?;
         Ok(FormatId(name))
     }
 
@@ -49,7 +49,7 @@ impl Spec {
 
     /// Reads and validates a canonical form written by [`Spec::encode`].
     pub fn decode(dec: &mut Dec<'_>) -> Result<Spec> {
-        canon::expect_tag(dec, TAG_SPEC)?;
+        canonical::expect_tag(dec, TAG_SPEC)?;
         let format = FormatId::new(dec.str()?)?;
         let bytes = dec.bytes()?.to_vec();
         Ok(Spec { format, bytes })
@@ -61,9 +61,9 @@ impl Spec {
     }
 }
 
-canon::standalone_codec!(Spec);
+canonical::standalone_codec!(Spec);
 
-canon::id_newtype! {
+canonical::id_newtype! {
     /// Content id of a [`Spec`]: the digest of its standalone canonical
     /// bytes, doubling as its store object address.
     SpecId
@@ -72,7 +72,7 @@ canon::id_newtype! {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::canon::TAG_PARAMS;
+    use crate::canonical::TAG_PARAMS;
     use crate::testutil::{from_hex, to_hex};
     use sima_core::{Enc, Error, Result};
 
@@ -175,7 +175,9 @@ mod tests {
     #[test]
     fn decode_rejects_an_invalid_format_name() {
         let mut enc = Enc::new();
-        enc.str(crate::canon::TAG_SPEC).str("Bad Name").bytes(&[]);
+        enc.str(crate::canonical::TAG_SPEC)
+            .str("Bad Name")
+            .bytes(&[]);
         assert!(matches!(
             Spec::from_bytes(&enc.finish()),
             Err(Error::Validation(_))
