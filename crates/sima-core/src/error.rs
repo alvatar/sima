@@ -18,12 +18,17 @@ pub enum Error {
     /// Canonical encoding or decoding failed: truncated input, bad framing,
     /// malformed hex. The payload describes what was expected and found.
     Encoding(String),
+    /// A value violates a model invariant: malformed name, duplicate or
+    /// unsorted components, empty environment. The payload names the
+    /// violated invariant.
+    Validation(String),
 }
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Error::Encoding(msg) => write!(f, "encoding error: {msg}"),
+            Error::Validation(msg) => write!(f, "validation error: {msg}"),
         }
     }
 }
@@ -47,5 +52,11 @@ mod tests {
     fn display_renders_variant_context() {
         let e = Error::Encoding("truncated at byte 3".to_string());
         assert_eq!(e.to_string(), "encoding error: truncated at byte 3");
+    }
+
+    #[test]
+    fn display_renders_validation_context() {
+        let e = Error::Validation("name must be 1..=64 bytes".to_string());
+        assert_eq!(e.to_string(), "validation error: name must be 1..=64 bytes");
     }
 }
