@@ -13,22 +13,43 @@ research are standing tracks, deliberately out of the phase ladder.
 
 ## P1 — Infrastructure spine
 
-The system with no CA in it: content-addressed store, provenance, scheduler,
-executor contract, pipeline, CLI. Executor #1 is a deterministic CPU stub that
-exists to prove determinism, resumability, crash-retry, and
+The system with no CA in it: content-addressed store, provenance, generator
+and executor contracts, scheduler, pipeline, CLI. Stub implementations of both
+contracts prove determinism, resumability, crash-retry, and
 re-evaluation-from-store end-to-end.
 
-- [ ] M1.1 Crate skeleton: `Error`/`Result`, canonical encoding, counter-based
-      PRNG with pinned known-answer tests
-- [ ] M1.2 Content-addressed store: blake3 CAS, atomic writes, object
-      round-trips
-- [ ] M1.3 Task keys, provenance records, run manifests
-- [ ] M1.4 Executor contract + deterministic CPU stub executor + determinism
-      tests (run twice → identical hashes)
-- [ ] M1.5 Scheduler: queue, leases, heartbeat/timeout, retries, backpressure;
-      thread-worker transport
-- [ ] M1.6 Pipeline orchestration + `sima run` CLI + end-to-end determinism,
-      resume, and re-evaluation-from-store tests
+Phase-level decisions:
+- The store is the only durable state. The work queue is ephemeral, rebuilt on
+  start as (tasks derived from config) minus (task keys with results in the
+  store). Resume, crash-recovery, and re-run are the same code path.
+- Two serialization worlds: identity-bearing bytes (anything hashed) go
+  through canonical encoding exclusively; human-readable artifacts (manifest
+  JSON) are serde and never identity-bearing.
+- Manifests are canonicalized (entries sorted by task key) on finalization, so
+  run output hashes are independent of worker completion order.
+- Acceptance for the phase: (a) two runs of the same config produce identical
+  manifests hash-for-hash; (b) a run interrupted and resumed equals a run
+  never interrupted; (c) a re-evaluation pass over a recorded run touches no
+  executor.
+
+- [ ] M1.1 Crate skeleton: `Error`/`Result`, canonical encoding (`Enc`/`Dec`),
+      counter-based PRNG with pinned known-answer tests
+- [ ] M1.2 Content-addressed store: blake3 CAS, atomic writes (temp + rename),
+      object round-trips, idempotent puts
+- [ ] M1.3 Task identity + provenance: task key (program ‖ seed ‖ env),
+      environment-hash mechanism, provenance records, run manifest with
+      canonical ordering; run identity = hash of canonicalized config
+- [ ] M1.4 Contracts + stubs: executor contract and generator contract;
+      seeded stub generator; genome-programmed stub executor (genome bytes
+      select behavior: succeed / fail N times / panic / sleep) so scheduler
+      failure tests are deterministic; run-twice → identical-hashes tests
+- [ ] M1.5 Scheduler: ephemeral queue, leases, heartbeat/timeout, retries
+      with idempotent commit, backpressure; thread-worker transport; failure
+      matrix driven by the programmable stub
+- [ ] M1.6 Config (TOML schema + canonicalization) + pipeline orchestration +
+      `sima run` CLI: progress reporting, clean interrupt, resume,
+      re-evaluation pass; end-to-end tests for the three phase acceptance
+      criteria
 
 ## P2 — GPU executor + totalistic family
 
