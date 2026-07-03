@@ -23,7 +23,6 @@ pub(crate) const TAG_TASK: &str = "sima.task.v1";
 pub(crate) const TAG_TASK_RECORD: &str = "sima.task-record.v1";
 /// Domain tag opening a canonical [`crate::RunConfig`] encoding — the
 /// run-id preimage.
-#[allow(dead_code)]
 pub(crate) const TAG_RUN_CONFIG: &str = "sima.run-config.v1";
 
 /// Reads the domain tag opening a canonical encoding and requires it to be
