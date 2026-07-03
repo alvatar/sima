@@ -2,10 +2,11 @@
 
 ## *Search In the Manifold of Automata*
 
-Distributed infrastructure for generating candidate programs, executing them
-safely at scale, and evaluating them through a staged, cost-aware pipeline. SIMA
-targets workloads where programs are produced in large volume — including by
-models — and must be run and assessed reliably, reproducibly, and at low cost.
+Distributed infrastructure for generating candidate automata, executing them
+deterministically at scale, and evaluating them through a staged, cost-aware
+pipeline. SIMA targets workloads where candidates are produced in large volume
+— including by models — and must be run and assessed reliably, reproducibly,
+and at low cost.
 
 SIMA is local-first. A run starts on a single machine and scales out, when
 needed, to pluggable remote execution backends — cheap spot marketplaces,
@@ -16,7 +17,8 @@ laptop, and treats everything beyond it as an elastic, heterogeneous extension.
 
 ## Overview
 
-SIMA proposes candidate programs, runs them under isolation, scores them through a
+SIMA proposes candidates as specs — opaque parameter data (genomes) interpreted
+by fixed simulation engines — runs them on GPU or CPU, scores them through a
 staged evaluation pipeline, and records each with complete provenance. The space
 of candidates is large and mostly low-value; the system exists to traverse it
 efficiently and surface the results worth attention while keeping the cost of
@@ -32,19 +34,22 @@ resolved without them.
 
 SIMA is a batch pipeline with four stages.
 
-**Generation.** Produces candidate programs as executable specifications.
-Generators are pluggable — procedural, evolutionary, or model-based — and run in
-discrete batches rather than as a persistent service. Model-based generators
-follow the AlphaEvolve findings: diff-based edits against a parent rather than
-whole-program regeneration, prompts assembled from high-scoring prior candidates
-and their evaluation feedback, and an ensemble mixing a cheap model for breadth
-with an expensive one for occasional high-quality jumps.
+**Generation.** Produces candidate specs — for CA families, genomes: parameter
+vectors of the update rule. Generators are pluggable — procedural,
+evolutionary, or model-based — and run in discrete batches rather than as a
+persistent service. Model-based generators follow the AlphaEvolve findings:
+edits against a high-scoring parent rather than regeneration from scratch,
+prompts assembled from prior candidates and their evaluation feedback, and an
+ensemble mixing a cheap model for breadth with an expensive one for occasional
+high-quality jumps.
 
-**Execution.** Runs untrusted, generated programs in isolated workers with
-enforced CPU, memory, and wall-clock limits. Work is scheduled across available
-cores — and across configured remote backends — with backpressure when
-generation outpaces execution; non-terminating or runaway programs are detected
-and terminated. Outputs are captured deterministically.
+**Execution.** Runs candidates on fixed simulation engines — GPU via Vulkan
+compute, with CPU reference implementations for verification. Candidates are
+data, not code: there is nothing to sandbox, and execution cost is bounded by
+construction (cells × steps). Work is scheduled across available devices — and
+across configured remote backends — with backpressure when generation outpaces
+execution; worker failures are contained by process isolation and converge
+through idempotent retry. Outputs are captured deterministically.
 
 **Evaluation.** Reduces a batch to the few candidates worth attention through a
 staged funnel, cheapest stage first: validity and liveness filters, deterministic
@@ -67,8 +72,9 @@ re-run, resumed, or re-evaluated without regeneration.
 
 ## Scaling model
 
-A task is identified by content: `(program hash, seed, environment hash) →
-result`. Because tasks are pure functions of their inputs, any backend that
+A task is identified by content: `(spec hash, seed, environment hash,
+optional input-state hash) → result`. Because tasks are pure functions of
+their inputs, any backend that
 returns a result for a given key is interchangeable with any other, and results
 are cacheable, retryable, and independently verifiable. This is the same model
 as Bazel's Remote Execution API, applied to program search instead of builds.
@@ -135,8 +141,9 @@ every substrate; no result-affecting path uses a platform RNG.
 
 - **Reproducibility.** All randomness is seeded and captured; a recorded
   specification reproduces its output exactly.
-- **Isolation.** Untrusted, generated programs run under strict resource and time
-  limits in isolated workers.
+- **Candidates as data.** Specs are interpreted by fixed engines; there is no
+  untrusted code path, and execution cost is a deterministic function of the
+  task itself.
 - **Local-first, elastic scale-out.** A run is fully functional on one machine;
   remote backends extend capacity without changing semantics.
 - **Backend-agnostic determinism.** A task's result is a function of its
@@ -214,11 +221,11 @@ Systems and papers SIMA draws on, with notes on what each contributes.
   WebAssembly*, PLDI 2017.
   [dl.acm.org/doi/10.1145/3062341.3062363](https://dl.acm.org/doi/10.1145/3062341.3062363);
   [wasi.dev](https://wasi.dev). A portable, sandboxed, deterministic execution
-  format with capability-based system access. Runtimes such as Wasmtime meter
-  execution in instructions ("fuel"), which gives SIMA both a
-  hardware-independent cost limit and a fitness metric that is comparable
-  across heterogeneous backends — wall-clock time on rented hardware is
-  neither.
+  format with instruction-metered runtimes ("fuel"). Retained as the reference
+  substrate for a possible future in which candidates are arbitrary evolved
+  programs rather than parameter data; the current genomes-as-data design gets
+  determinism, cost bounds, and safety from its fixed engines instead, and
+  needs no sandbox.
 
 ### Distributed execution
 
