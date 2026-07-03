@@ -69,9 +69,10 @@ pub(crate) fn validate_name(name: &str) -> Result<()> {
         match b {
             b'a'..=b'z' | b'0'..=b'9' | b'.' | b'_' | b'-' => {}
             _ => {
+                // The offending byte is reported as hex: a multibyte UTF-8
+                // character would garble under a per-byte char cast.
                 return Err(Error::Validation(format!(
-                    "name {name:?} contains byte {:?}; allowed bytes are [a-z0-9._-]",
-                    b as char
+                    "name {name:?} contains byte 0x{b:02x}; allowed bytes are [a-z0-9._-]"
                 )));
             }
         }
@@ -261,6 +262,16 @@ mod tests {
                 matches!(validate_name(name), Err(Error::Validation(_))),
                 "name {name:?} must be rejected with Error::Validation"
             );
+        }
+    }
+
+    #[test]
+    fn validate_name_reports_the_offending_byte_as_hex() {
+        // "é" is the two bytes 0xc3 0xa9; the first offending byte must be
+        // reported as hex — a per-byte char cast would garble it.
+        match validate_name("café") {
+            Err(Error::Validation(msg)) => assert!(msg.contains("0xc3"), "{msg}"),
+            other => panic!("expected a validation error, got {other:?}"),
         }
     }
 
