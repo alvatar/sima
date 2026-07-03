@@ -9,16 +9,16 @@
 
 use sima_core::{Dec, Enc, Error, Hash, Result, hash_bytes};
 
-use crate::canonical::{self, TAG_ENV};
+use crate::canonical::{self, TAG_ENVIRONMENT};
 
-/// Arm byte marking an [`EnvValue::Version`] payload.
+/// Arm byte marking an [`EnvironmentValue::Version`] payload.
 const ARM_VERSION: u8 = 0;
-/// Arm byte marking an [`EnvValue::Digest`] payload.
+/// Arm byte marking an [`EnvironmentValue::Digest`] payload.
 const ARM_DIGEST: u8 = 1;
 
 /// Value of an environment component.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum EnvValue {
+pub enum EnvironmentValue {
     /// Engine or executor identity as a versioned constant; non-empty.
     Version(String),
     /// Content hash of a build input the executor's results depend on
@@ -29,26 +29,26 @@ pub enum EnvValue {
 /// A named environment component. Fields are private so every constructed
 /// component satisfies the name rule and the non-empty-version rule.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EnvComponent {
+pub struct EnvironmentComponent {
     name: String,
-    value: EnvValue,
+    value: EnvironmentValue,
 }
 
-impl EnvComponent {
+impl EnvironmentComponent {
     /// Validates the name against the shared name rule — and, for
-    /// [`EnvValue::Version`], the version string against the non-empty
+    /// [`EnvironmentValue::Version`], the version string against the non-empty
     /// rule — then wraps them.
-    pub fn new(name: impl Into<String>, value: EnvValue) -> Result<EnvComponent> {
+    pub fn new(name: impl Into<String>, value: EnvironmentValue) -> Result<EnvironmentComponent> {
         let name = name.into();
         canonical::validate_name(&name)?;
-        if let EnvValue::Version(version) = &value
+        if let EnvironmentValue::Version(version) = &value
             && version.is_empty()
         {
             return Err(Error::Validation(format!(
                 "environment component {name:?} has an empty version string"
             )));
         }
-        Ok(EnvComponent { name, value })
+        Ok(EnvironmentComponent { name, value })
     }
 
     /// The component's name.
@@ -57,7 +57,7 @@ impl EnvComponent {
     }
 
     /// The component's value.
-    pub fn value(&self) -> &EnvValue {
+    pub fn value(&self) -> &EnvironmentValue {
         &self.value
     }
 
@@ -65,29 +65,29 @@ impl EnvComponent {
     fn encode(&self, enc: &mut Enc) {
         enc.str(&self.name);
         match &self.value {
-            EnvValue::Version(version) => {
+            EnvironmentValue::Version(version) => {
                 enc.u8(ARM_VERSION).str(version);
             }
-            EnvValue::Digest(digest) => {
+            EnvironmentValue::Digest(digest) => {
                 enc.u8(ARM_DIGEST).hash(digest);
             }
         }
     }
 
-    /// Reads a canonical form written by [`EnvComponent::encode`],
+    /// Reads a canonical form written by [`EnvironmentComponent::encode`],
     /// revalidating the constructor rules.
-    fn decode(dec: &mut Dec<'_>) -> Result<EnvComponent> {
+    fn decode(dec: &mut Dec<'_>) -> Result<EnvironmentComponent> {
         let name = dec.str()?.to_string();
         let value = match dec.u8()? {
-            ARM_VERSION => EnvValue::Version(dec.str()?.to_string()),
-            ARM_DIGEST => EnvValue::Digest(dec.hash()?),
+            ARM_VERSION => EnvironmentValue::Version(dec.str()?.to_string()),
+            ARM_DIGEST => EnvironmentValue::Digest(dec.hash()?),
             arm => {
                 return Err(Error::Encoding(format!(
                     "invalid environment value arm byte {arm}, expected {ARM_VERSION} or {ARM_DIGEST}"
                 )));
             }
         };
-        EnvComponent::new(name, value)
+        EnvironmentComponent::new(name, value)
     }
 }
 
@@ -96,31 +96,31 @@ impl EnvComponent {
 /// bytes regardless of construction order.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Environment {
-    components: Vec<EnvComponent>,
+    components: Vec<EnvironmentComponent>,
 }
 
 impl Environment {
     /// Sorts `components` by name and wraps them; rejects an empty list and
     /// duplicate names.
-    pub fn new(mut components: Vec<EnvComponent>) -> Result<Environment> {
+    pub fn new(mut components: Vec<EnvironmentComponent>) -> Result<Environment> {
         if components.is_empty() {
             return Err(Error::Validation(
                 "environment must have at least one component".to_string(),
             ));
         }
-        canonical::sort_by_unique_name(&mut components, EnvComponent::name)?;
+        canonical::sort_by_unique_name(&mut components, EnvironmentComponent::name)?;
         Ok(Environment { components })
     }
 
     /// The components, sorted by name.
-    pub fn components(&self) -> &[EnvComponent] {
+    pub fn components(&self) -> &[EnvironmentComponent] {
         &self.components
     }
 
     /// Appends the tagged canonical form: tag, u64 component count, then
     /// each component in name order.
     pub fn encode(&self, enc: &mut Enc) {
-        enc.str(TAG_ENV).u64(self.components.len() as u64);
+        enc.str(TAG_ENVIRONMENT).u64(self.components.len() as u64);
         for component in &self.components {
             component.encode(enc);
         }
@@ -131,18 +131,18 @@ impl Environment {
     /// accumulated without preallocation, and names must arrive strictly
     /// ascending.
     pub fn decode(dec: &mut Dec<'_>) -> Result<Environment> {
-        canonical::expect_tag(dec, TAG_ENV)?;
+        canonical::expect_tag(dec, TAG_ENVIRONMENT)?;
         let count = dec.u64()?;
         if count == 0 {
             return Err(Error::Validation(
                 "environment must have at least one component".to_string(),
             ));
         }
-        let mut components: Vec<EnvComponent> = Vec::new();
+        let mut components: Vec<EnvironmentComponent> = Vec::new();
         for _ in 0..count {
-            let component = EnvComponent::decode(dec)?;
+            let component = EnvironmentComponent::decode(dec)?;
             canonical::require_ascending_names(
-                components.last().map(EnvComponent::name),
+                components.last().map(EnvironmentComponent::name),
                 component.name(),
             )?;
             components.push(component);
@@ -152,8 +152,8 @@ impl Environment {
 
     /// The environment's content id: the blake3 digest of its standalone
     /// bytes.
-    pub fn id(&self) -> EnvId {
-        EnvId::from_hash(hash_bytes(&self.to_bytes()))
+    pub fn id(&self) -> EnvironmentId {
+        EnvironmentId::from_hash(hash_bytes(&self.to_bytes()))
     }
 }
 
@@ -162,13 +162,13 @@ canonical::standalone_codec!(Environment);
 canonical::id_newtype! {
     /// Content id of an [`Environment`]: the digest of its standalone
     /// canonical bytes, carried in every task key.
-    EnvId
+    EnvironmentId
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::canonical::{TAG_ENV, TAG_SPEC};
+    use crate::canonical::{TAG_ENVIRONMENT, TAG_SPEC};
     use crate::testutil::{fill_hash, from_hex, to_hex};
     use sima_core::{Enc, Error, Hash, Result};
 
@@ -177,14 +177,14 @@ mod tests {
     }
 
     /// The two components of the pinned environment, in sorted name order.
-    fn sample_components() -> Result<[EnvComponent; 2]> {
+    fn sample_components() -> Result<[EnvironmentComponent; 2]> {
         Ok([
-            EnvComponent::new("engine", EnvValue::Version("0.1.0".to_string()))?,
-            EnvComponent::new("shader", EnvValue::Digest(sample_digest()?))?,
+            EnvironmentComponent::new("engine", EnvironmentValue::Version("0.1.0".to_string()))?,
+            EnvironmentComponent::new("shader", EnvironmentValue::Digest(sample_digest()?))?,
         ])
     }
 
-    fn sample_env() -> Result<Environment> {
+    fn sample_environment() -> Result<Environment> {
         Environment::new(sample_components()?.to_vec())
     }
 
@@ -221,7 +221,7 @@ mod tests {
             sorted
                 .components()
                 .iter()
-                .map(EnvComponent::name)
+                .map(EnvironmentComponent::name)
                 .collect::<Vec<_>>(),
             ["engine", "shader"]
         );
@@ -230,8 +230,8 @@ mod tests {
 
     #[test]
     fn constructor_rejects_duplicate_names() -> Result<()> {
-        let a = EnvComponent::new("engine", EnvValue::Version("1".to_string()))?;
-        let b = EnvComponent::new("engine", EnvValue::Version("2".to_string()))?;
+        let a = EnvironmentComponent::new("engine", EnvironmentValue::Version("1".to_string()))?;
+        let b = EnvironmentComponent::new("engine", EnvironmentValue::Version("2".to_string()))?;
         assert!(matches!(
             Environment::new(vec![a, b]),
             Err(Error::Validation(_))
@@ -250,7 +250,7 @@ mod tests {
     #[test]
     fn component_rejects_an_invalid_name() {
         assert!(matches!(
-            EnvComponent::new("Engine", EnvValue::Version("1".to_string())),
+            EnvironmentComponent::new("Engine", EnvironmentValue::Version("1".to_string())),
             Err(Error::Validation(_))
         ));
     }
@@ -258,26 +258,29 @@ mod tests {
     #[test]
     fn component_rejects_an_empty_version() {
         assert!(matches!(
-            EnvComponent::new("engine", EnvValue::Version(String::new())),
+            EnvironmentComponent::new("engine", EnvironmentValue::Version(String::new())),
             Err(Error::Validation(_))
         ));
     }
 
     #[test]
     fn encoding_matches_the_hand_derived_layout() -> Result<()> {
-        assert_eq!(to_hex(&sample_env()?.to_bytes()), pinned());
+        assert_eq!(to_hex(&sample_environment()?.to_bytes()), pinned());
         Ok(())
     }
 
     #[test]
     fn id_matches_the_independently_computed_digest() -> Result<()> {
-        assert_eq!(sample_env()?.id(), EnvId::from_hex(PINNED_ID_HEX)?);
+        assert_eq!(
+            sample_environment()?.id(),
+            EnvironmentId::from_hex(PINNED_ID_HEX)?
+        );
         Ok(())
     }
 
     #[test]
     fn to_bytes_from_bytes_round_trips() -> Result<()> {
-        let env = sample_env()?;
+        let env = sample_environment()?;
         assert_eq!(Environment::from_bytes(&env.to_bytes())?, env);
         Ok(())
     }
@@ -320,7 +323,8 @@ mod tests {
     /// components in the order given.
     fn encode_components(names_and_versions: &[(&str, &str)]) -> Vec<u8> {
         let mut enc = Enc::new();
-        enc.str(TAG_ENV).u64(names_and_versions.len() as u64);
+        enc.str(TAG_ENVIRONMENT)
+            .u64(names_and_versions.len() as u64);
         for (name, version) in names_and_versions {
             enc.str(name).u8(0).str(version);
         }
@@ -357,7 +361,7 @@ mod tests {
     #[test]
     fn decode_rejects_an_unknown_arm_byte() {
         let mut enc = Enc::new();
-        enc.str(TAG_ENV).u64(1).str("engine").u8(2).str("1");
+        enc.str(TAG_ENVIRONMENT).u64(1).str("engine").u8(2).str("1");
         assert!(matches!(
             Environment::from_bytes(&enc.finish()),
             Err(Error::Encoding(_))
@@ -366,13 +370,13 @@ mod tests {
 
     #[test]
     fn version_and_digest_under_the_same_name_have_distinct_ids() -> Result<()> {
-        let version = Environment::new(vec![EnvComponent::new(
+        let version = Environment::new(vec![EnvironmentComponent::new(
             "engine",
-            EnvValue::Version("x".to_string()),
+            EnvironmentValue::Version("x".to_string()),
         )?])?;
-        let digest = Environment::new(vec![EnvComponent::new(
+        let digest = Environment::new(vec![EnvironmentComponent::new(
             "engine",
-            EnvValue::Digest(sample_digest()?),
+            EnvironmentValue::Digest(sample_digest()?),
         )?])?;
         assert_ne!(version.id(), digest.id());
         Ok(())

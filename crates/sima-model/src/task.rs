@@ -4,11 +4,11 @@
 use sima_core::{Dec, Enc, Hash, Result, hash_bytes};
 
 use crate::canonical::{self, TAG_TASK};
-use crate::env::EnvId;
+use crate::environment::EnvironmentId;
 use crate::params::ParamsId;
 use crate::spec::SpecId;
 
-/// The identity-bearing inputs of a task: spec ‖ params ‖ seed ‖ env ‖
+/// The identity-bearing inputs of a task: spec ‖ params ‖ seed ‖ environment ‖
 /// input-state-ref. Two tasks with equal identities are the same task —
 /// the store indexes results by the key derived from this preimage.
 /// Execution context (worker, attempt, timing) never enters; it is journal
@@ -22,7 +22,7 @@ pub struct TaskIdentity {
     /// The task's deterministic seed.
     pub seed: u64,
     /// The environment the results depend on.
-    pub env: EnvId,
+    pub environment: EnvironmentId,
     /// For segments: the digest of the opaque, family-serialized state
     /// object this task continues from; `None` for stateless tasks. The
     /// state object is store-addressed and never a model type, so the
@@ -32,13 +32,13 @@ pub struct TaskIdentity {
 
 impl TaskIdentity {
     /// Appends the tagged canonical form: tag, spec digest, params digest,
-    /// seed u64, env digest, optional input-state digest.
+    /// seed u64, environment digest, optional input-state digest.
     pub fn encode(&self, enc: &mut Enc) {
         enc.str(TAG_TASK)
             .hash(self.spec.as_hash())
             .hash(self.params.as_hash())
             .u64(self.seed)
-            .hash(self.env.as_hash())
+            .hash(self.environment.as_hash())
             .opt_hash(self.input_state.as_ref());
     }
 
@@ -49,7 +49,7 @@ impl TaskIdentity {
             spec: SpecId::from_hash(dec.hash()?),
             params: ParamsId::from_hash(dec.hash()?),
             seed: dec.u64()?,
-            env: EnvId::from_hash(dec.hash()?),
+            environment: EnvironmentId::from_hash(dec.hash()?),
             input_state: dec.opt_hash()?,
         })
     }
@@ -77,13 +77,13 @@ mod tests {
     use sima_core::{Enc, Error, Result};
 
     /// The stateless-arm sample: spec 32x11, params 32x22, seed
-    /// 0x0102030405060708, env 32x33, no input state.
+    /// 0x0102030405060708, environment 32x33, no input state.
     fn sample_identity() -> Result<TaskIdentity> {
         Ok(TaskIdentity {
             spec: SpecId::from_hash(fill_hash("11")?),
             params: ParamsId::from_hash(fill_hash("22")?),
             seed: 0x0102_0304_0506_0708,
-            env: EnvId::from_hash(fill_hash("33")?),
+            environment: EnvironmentId::from_hash(fill_hash("33")?),
             input_state: None,
         })
     }
@@ -102,7 +102,7 @@ mod tests {
     ///   spec digest    -> 32 raw bytes (0x11 repeated)
     ///   params digest  -> 32 raw bytes (0x22 repeated)
     ///   seed           -> u64 LE: 0807060504030201
-    ///   env digest     -> 32 raw bytes (0x33 repeated)
+    ///   environment digest     -> 32 raw bytes (0x33 repeated)
     ///   input state    -> Option<Hash> absent flag byte 00
     const PINNED_NONE_HEX: &str = "0c0000000000000073696d612e7461736b2e7631\
                                    1111111111111111111111111111111111111111111111111111111111111111\
@@ -224,7 +224,7 @@ mod tests {
                 ..base
             },
             TaskIdentity {
-                env: EnvId::from_hash(fill_hash("aa")?),
+                environment: EnvironmentId::from_hash(fill_hash("aa")?),
                 ..base
             },
             TaskIdentity {
