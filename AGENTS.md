@@ -2,7 +2,7 @@
 
 ## Communication (read first)
 
-- Never open a reply with "You are right", "You're absolutely right", or any affirmation of the user. Just answer.
+- Never open a reply with "You are right", "You're absolutely right", or any affirmation of the user. Just answer. Do not use the expression "load-bearing" either.
 - No sycophancy. Do not praise, flatter, or validate. State findings flat.
 - Never use the words "honest", "honestly", "honesty", "brutal", or "to be frank".  If something is a caveat or a risk, name the caveat or risk directly — do not frame it as an act of candor. NEVER USE THOSE WORDS.
 - Dry, direct, professional. Lead with the substance. The most important point goes first and in full, never buried as a "side note".
@@ -49,7 +49,16 @@
 ## Architecture
 
 - `README.md` is the design document; the near-term work list is `TODO.md`. Rust, local-first.
-- Architectural invariants are not yet frozen; they are decided in discussion and recorded here when settled.
+- Invariants below are settled in discussion before being recorded here; new ones are added the same way.
+
+Settled invariants:
+- Layering, strictly downward, enforced by workspace crate dependency edges: `sima-core` → `sima-model` → `sima-store` → `sima-contracts` → `sima-scheduler` → `sima-pipeline` → `sima` (CLI binary). No upward imports, ever; a lower crate never depends on a higher one.
+- The store is the only durable state. Queues, schedulers, and orchestrators are ephemeral and rebuilt from (config-derived tasks) minus (completed task keys). Resume, crash-recovery, and re-run are one code path.
+- One orchestrator per run — the `sima run` process itself, no daemon; single-writer enforced by a stale-detectable lease file. Workers are stateless leaseholders.
+- Executors are pure compute: they receive (spec, seed, env) and return artifacts + stats, never touching the store. Workers commit results through the catalog. The trust boundary lives on this seam.
+- Candidates are opaque at the infrastructure layer: a spec is (format id, opaque bytes), content-addressed. Families interpret specs; "genome" is family vocabulary.
+- Two serialization worlds: identity-bearing bytes (anything hashed) go through the canonical `Enc`/`Dec` encoding exclusively; human-readable artifacts are serde and never identity-bearing.
+- Anything claimed deterministic is proven by a test (run twice → identical hashes), never assumed. Manifests are canonicalized so run hashes are independent of worker completion order.
 
 Principles:
 - Clean, pristine architecture: clear spine, truthful boundaries, no split brain.
