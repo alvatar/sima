@@ -1,12 +1,28 @@
 //! Canonical-form conventions shared by every identity-bearing type:
-//! domain-tag constants, the domain-tag reader, the name validator, and the
-//! id-newtype macro.
+//! domain-tag constants, the domain-tag reader, the name validator, the
+//! sorted-sequence helpers, and the macros generating the uniform type
+//! surface (`standalone_codec`, `id_newtype`).
 //!
 //! Every canonical encoding opens with a str-framed domain tag from the
 //! table below. Tags make stored blobs self-describing, turn a hash routed
 //! to the wrong decoder into an immediate clean failure, and the `.v1`
 //! suffix anchors format versioning: a layout change mints a `.v2` tag; a
 //! published `.v1` layout is fixed forever.
+//!
+//! A value's standalone bytes are the domain tag followed by the type's
+//! fields, in the order its `encode` documents, each written per the
+//! `sima-core` encode format (integers little-endian, bytes/str framed by
+//! a u64 length prefix, digests as 32 raw bytes). A complete example — the
+//! spec with format `stub.v1` and candidate bytes `[0xAA, 0xBB]`:
+//!
+//! ```text
+//! 0c00000000000000 73696d612e737065632e7631  str domain tag "sima.spec.v1"
+//! 0700000000000000 737475622e7631            str format id "stub.v1"
+//! 0200000000000000 aabb                      candidate bytes
+//! ```
+//!
+//! A value's id is the blake3 digest of exactly these standalone bytes,
+//! which are also its store object bytes.
 
 use sima_core::{Dec, Error, Result};
 
