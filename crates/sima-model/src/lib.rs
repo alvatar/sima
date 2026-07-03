@@ -14,8 +14,10 @@ mod env;
 mod params;
 mod spec;
 mod task;
+mod task_record;
 
 pub use env::{EnvComponent, EnvId, EnvValue, Environment};
 pub use params::{Params, ParamsId};
 pub use spec::{FormatId, Spec, SpecId};
 pub use task::{TaskIdentity, TaskKey};
+pub use task_record::{ArtifactRef, TaskRecord};
