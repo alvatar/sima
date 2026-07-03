@@ -81,13 +81,12 @@ machines, another box on the LAN — are declared in the run configuration and
 differ in cost, reliability, and trust. The scheduler places work according to
 those parameters rather than treating the pool as uniform.
 
-**Determinism survives heterogeneity.** Portable workloads run on a
-deterministic sandboxed substrate (WebAssembly/WASI) so that the same task key
-yields bit-identical results on any backend. Execution cost is metered in
-instructions ("fuel") rather than wall-clock time, so fitness scores remain
-comparable between a laptop and a rented GPU box. Workloads that require native
-or accelerator execution relax this to statistical reproducibility on a pinned
-backend class, and the relaxation is recorded in provenance.
+**Determinism survives heterogeneity.** Candidates are genomes — data
+interpreted by fixed simulation engines — so determinism is a property of the
+engines, established once, per rule family (see Determinism below). Execution
+cost is a deterministic function of the task itself (cells × steps), so
+fitness and cost remain comparable between a laptop and a rented GPU box
+without metering instrumentation.
 
 **Trust is a scheduling dimension.** Cheap marketplace hardware is untrusted: a
 result may be wrong or fabricated. The evaluation funnel therefore doubles as a
@@ -95,6 +94,42 @@ trust funnel — early, cheap stages may run on untrusted backends, and
 survivors are re-verified on a trusted tier (local or reserved cloud) before
 they reach expensive model review. Content-addressed tasks make redundant
 execution and spot-checking trivial, in the tradition of BOINC.
+
+## Determinism
+
+Determinism is decided per rule family by the arithmetic of its engine, and it
+is a tested property, never an assumption: the same task run twice — or on two
+substrates — must produce identical content hashes, and CI enforces it.
+
+**Integer families are bit-exact everywhere.** A synchronous, double-buffered
+stencil over integer state makes each output cell a pure integer function of
+the previous grid. Scheduling order, workgroup shape, GPU model, vendor, and
+driver are all irrelevant to the result: the same genome and seed produce the
+identical grid on a CPU reference implementation, the local GPU, and any
+rented backend. Cross-substrate verification compares hashes for equality, so
+spot-checking an untrusted worker is exact.
+
+**Float families are reproducible per backend class.** Within a kernel, each
+cell's arithmetic executes in program order; the design avoids the actual
+hazards — cross-workgroup float atomics, unordered reductions, in-place
+updates — by construction, through double buffering. The remaining variable
+is the shader compiler: FMA contraction, reassociation, and fast-math
+relaxations differ across drivers and vendors. SIMA compiles with strict IEEE
+settings and folds the compiled shader and driver into the environment hash,
+so a task key pins the exact arithmetic: same GPU model and driver class
+reproduce results, and comparisons across classes use a recorded tolerance
+policy. If unconditional bit-exactness is ever required for a float family,
+fixed-point integer arithmetic restores it at some cost in dynamic range.
+
+**The engine design removes the usual GPU nondeterminism at the root.** The
+sources that plague general GPU compute — ray-traversal ordering, atomics-
+ordered accumulation, multi-kernel async races, library algorithm autotuning —
+do not appear in a double-buffered stencil engine interpreting genome data.
+They were designed out when candidates became data for a fixed engine rather
+than arbitrary GPU programs.
+
+All randomness is derived from a counter-based PRNG implemented identically on
+every substrate; no result-affecting path uses a platform RNG.
 
 ## Design principles
 
