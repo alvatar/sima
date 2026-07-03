@@ -168,6 +168,97 @@ sima/
   cli/          command-line interface
 ```
 
+## References
+
+Systems and papers SIMA draws on, with notes on what each contributes.
+
+### Program search
+
+- **AlphaEvolve** — Novikov et al., *AlphaEvolve: A coding agent for scientific
+  and algorithmic discovery*, 2025. [arXiv:2506.13131](https://arxiv.org/abs/2506.13131)
+  ([DeepMind blog](https://deepmind.google/blog/alphaevolve-a-gemini-powered-coding-agent-for-designing-advanced-algorithms/)).
+  The state of the art in LLM-driven program search. An asynchronous pipeline of
+  a controller, LLM samplers, and evaluator nodes iterates over an evolutionary
+  database of programs: parents and high-scoring "inspirations" are assembled
+  into prompts, a model ensemble (fast model for breadth, strong model for
+  quality) proposes diffs against marked code blocks, and candidates pass
+  through evaluation cascades of increasing cost. Found a 48-multiplication
+  algorithm for 4×4 complex matrix multiplication (first improvement over
+  Strassen's construction in that setting in 56 years) and optimized production
+  systems at Google. SIMA adopts its algorithm-layer ideas as pluggable
+  components; its substrate — a homogeneous trusted cluster — is what SIMA
+  replaces.
+
+- **FunSearch** — Romera-Paredes et al., *Mathematical discoveries from program
+  search with large language models*, Nature, 2024.
+  [nature.com/articles/s41586-023-06924-6](https://www.nature.com/articles/s41586-023-06924-6).
+  AlphaEvolve's predecessor and the proof of concept for the loop SIMA
+  industrializes: an LLM proposes program variants, a cheap deterministic
+  evaluator scores them, and an island-based evolutionary database selects what
+  to evolve next. Used millions of samples from a weak model where AlphaEvolve
+  uses thousands from strong ones — a useful reminder that the economics of the
+  loop, not just the model, determine what is reachable.
+
+- **MAP-Elites** — Mouret & Clune, *Illuminating search spaces by mapping
+  elites*, 2015. [arXiv:1504.04909](https://arxiv.org/abs/1504.04909).
+  Diversity-preserving search: instead of keeping the N best candidates, keep
+  the best candidate in each cell of a grid of behavioral features. The
+  standard defense against mode collapse in evolutionary search, and the basis
+  of AlphaEvolve's program database. Relevant to SIMA's novelty and diversity
+  scoring stage.
+
+- **OpenEvolve** — open-source AlphaEvolve reimplementation.
+  [github.com/codelion/openevolve](https://github.com/codelion/openevolve).
+  Reproduces the algorithm layer on a single machine. Illustrates the gap SIMA
+  targets: the search loop is replicable, the execution substrate is not.
+
+### Execution substrate
+
+- **Bazel Remote Execution API (REv2)** — protocol specification.
+  [github.com/bazelbuild/remote-apis](https://github.com/bazelbuild/remote-apis).
+  The direct model for SIMA's scaling layer. Defines remote execution as
+  content-addressed actions: inputs live in a content-addressable store (CAS),
+  an action is a hash of its inputs and command, results are cached by action
+  digest, and any conforming executor is interchangeable. Battle-tested by
+  Bazel, Buck2, and BuildStream against exactly SIMA's problem shape — large
+  volumes of small, hermetic, cacheable tasks fanned out to heterogeneous
+  workers.
+
+- **Nix** — Dolstra, *The Purely Functional Software Deployment Model*, PhD
+  thesis, 2006. [edolstra.github.io/pubs/phd-thesis.pdf](https://edolstra.github.io/pubs/phd-thesis.pdf).
+  Hermetic environments identified by the hash of everything that went into
+  them. The model for the `environment hash` component of SIMA's task key: two
+  backends agree on what "the environment" is because it is a content address,
+  not a description.
+
+- **WebAssembly / WASI** — Haas et al., *Bringing the Web up to Speed with
+  WebAssembly*, PLDI 2017.
+  [dl.acm.org/doi/10.1145/3062341.3062363](https://dl.acm.org/doi/10.1145/3062341.3062363);
+  [wasi.dev](https://wasi.dev). A portable, sandboxed, deterministic execution
+  format with capability-based system access. Runtimes such as Wasmtime meter
+  execution in instructions ("fuel"), which gives SIMA both a
+  hardware-independent cost limit and a fitness metric that is comparable
+  across heterogeneous backends — wall-clock time on rented hardware is
+  neither.
+
+### Distributed execution
+
+- **BOINC** — Anderson, *BOINC: A Platform for Volunteer Computing*, 2019.
+  [arXiv:1903.01699](https://arxiv.org/abs/1903.01699). Two decades of
+  high-throughput computing on hardware that is heterogeneous, unreliable, and
+  untrusted — the adversarial version of a spot marketplace. Its mechanisms
+  (redundant execution, quorum validation, spot-checking, adaptive replication
+  based on host reputation) are the playbook for SIMA's trust-tiered
+  scheduling.
+
+- **Ray** — Moritz et al., *Ray: A Distributed Framework for Emerging AI
+  Applications*, OSDI 2018. [arXiv:1712.05889](https://arxiv.org/abs/1712.05889).
+  Elastic task scheduling with a distributed object store, and the ergonomics
+  benchmark for "annex more machines without restructuring the program." A UX
+  reference rather than a foundation: Ray tasks are not content-addressed or
+  deterministic by construction, which is precisely what SIMA's provenance
+  layer requires.
+
 ## Status
 
 Early development. Interfaces are subject to change.
