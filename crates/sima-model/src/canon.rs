@@ -11,7 +11,6 @@
 use sima_core::{Dec, Error, Result};
 
 /// Domain tag opening a canonical [`crate::Spec`] encoding.
-#[allow(dead_code)]
 pub(crate) const TAG_SPEC: &str = "sima.spec.v1";
 /// Domain tag opening a canonical [`crate::Params`] encoding.
 #[allow(dead_code)]
@@ -33,7 +32,6 @@ pub(crate) const TAG_RUN_CONFIG: &str = "sima.run-config.v1";
 
 /// Reads the domain tag opening a canonical encoding and requires it to be
 /// `tag`, so a hash routed to the wrong decoder fails immediately.
-#[allow(dead_code)]
 pub(crate) fn expect_tag(dec: &mut Dec<'_>, tag: &str) -> Result<()> {
     let found = dec.str()?;
     if found == tag {
@@ -48,7 +46,6 @@ pub(crate) fn expect_tag(dec: &mut Dec<'_>, tag: &str) -> Result<()> {
 /// Validates a store-adjacent name — format ids, generator ids, environment
 /// component names, artifact names: 1..=64 bytes, every byte in
 /// `[a-z0-9._-]`. Lowercase-only keeps one spelling per identity.
-#[allow(dead_code)]
 pub(crate) fn validate_name(name: &str) -> Result<()> {
     let bytes = name.as_bytes();
     if bytes.is_empty() || bytes.len() > 64 {
@@ -71,13 +68,39 @@ pub(crate) fn validate_name(name: &str) -> Result<()> {
     Ok(())
 }
 
+/// Implements the standalone framing of the uniform type surface:
+/// `to_bytes` runs `encode` on a fresh encoder — the result is exactly the
+/// value's store object bytes; `from_bytes` runs `decode` and rejects
+/// trailing input.
+macro_rules! standalone_codec {
+    ($ty:ident) => {
+        impl $ty {
+            /// The standalone canonical bytes — exactly the value's store
+            /// object bytes.
+            pub fn to_bytes(&self) -> Vec<u8> {
+                let mut enc = ::sima_core::Enc::new();
+                self.encode(&mut enc);
+                enc.finish()
+            }
+
+            /// Parses standalone canonical bytes, rejecting trailing input.
+            pub fn from_bytes(bytes: &[u8]) -> ::sima_core::Result<Self> {
+                let mut dec = ::sima_core::Dec::new(bytes);
+                let value = Self::decode(&mut dec)?;
+                dec.finish()?;
+                Ok(value)
+            }
+        }
+    };
+}
+pub(crate) use standalone_codec;
+
 /// Defines an id newtype over [`sima_core::Hash`]: the blake3 digest of a
 /// value's standalone canonical bytes, wrapped in a role label that prevents
 /// cross-wiring between id kinds. `from_hash` is public because stores
 /// rebuild ids from digests decoded outside this crate; `Display` and
 /// `from_hex` carry the canonical lowercase-hex text form used in store
 /// paths and CLI arguments.
-#[allow(unused_macros)]
 macro_rules! id_newtype {
     ($(#[$attr:meta])* $name:ident) => {
         $(#[$attr])*
@@ -108,7 +131,6 @@ macro_rules! id_newtype {
         }
     };
 }
-#[allow(unused_imports)]
 pub(crate) use id_newtype;
 
 #[cfg(test)]
