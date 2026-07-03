@@ -84,11 +84,17 @@ Phase-level decisions:
 
 - [ ] M1.1 Crate skeleton (`sima-core`): `Error`/`Result`, canonical encoding
       (`Enc`/`Dec`), counter-based PRNG with pinned known-answer tests;
-      workspace scaffolding
+      workspace scaffolding; CI from day one (hosted: fmt + clippy + workspace
+      tests on every push; GPU-gated tests are skipped in hosted CI and run on
+      the dev machine — self-hosted runner revisited in P3)
 - [ ] M1.2 Model (`sima-model`): spec, task key (spec ‖ seed ‖ env ‖
       input-state-ref, empty ref for stateless tasks — segments differing
       only in input state must have distinct keys), environment-hash
-      mechanism, provenance records, run identity = hash of canonicalized
+      mechanism — content-derived components only (versioned constants for
+      engine/executor identity; compiled-shader hashes join in P2); anything
+      machine-derived is provenance metadata, never key material, or
+      acceptance (d) fails by construction. P1 stub env hash = stub version
+      constant. Provenance records, run identity = hash of canonicalized
       config; pure types + canonical encodings, no I/O
 - [ ] M1.3 Store (`sima-store`): disk layout `objects/<aa>/<hash>` (CAS,
       two-char fan-out) + `tasks/<task-key>` (index) + `runs/<run-id>/`
@@ -136,6 +142,11 @@ Phase-level decisions:
 First real executor. Outer-totalistic 3D CA as the simplest family: exercises
 the GPU path and the family boundary while staying trivial to verify.
 
+Phase acceptance: GPU results bit-identical to the CPU reference across the
+full M2.3 matrix; a ≥1000-genome search completes through the spine within
+its stated disk budget; a segment chain interrupted and resumed is
+bit-identical to an unsegmented run of equal length.
+
 - [ ] M2.1 ash compute bringup (`sima-gpu`): device selection, buffers,
       dispatch, build-time shaderc, SPIR-V hashes folded into the environment
       hash; device and driver recorded as provenance metadata but kept out of
@@ -172,6 +183,11 @@ workload. The scheduler contract from M1.5 gains transports. Content-addressed
 idempotent tasks make at-least-once delivery, retry, dedup, and spot-check
 verification safe by construction.
 
+Phase acceptance: the same config run (i) locally single-worker and (ii)
+spread across processes, multiple GPUs, and one SSH remote yields identical
+manifests — determinism is transport-invariant; killing a remote worker
+mid-lease converges through retry with no manifest difference.
+
 - [ ] M3.1 Multi-process worker transport (same scheduler contract)
 - [ ] M3.2 Multi-GPU on one host
 - [ ] M3.3 Remote worker over SSH: container image with Vulkan runtime, worker
@@ -186,6 +202,11 @@ Expected to be re-split when reached; remote transport hides surprises.
 The view layer over the lifecycle journal, positioned before slingshot: paid
 remote hardware is not operated blind. The journal and state machine already
 exist (P1); this phase builds the surfaces that read them.
+
+Phase acceptance: a live multi-worker run is observable end-to-end (status,
+inspect, follow, timeline) from another terminal; observation is read-only
+over journal and store and never perturbs the run — proven by manifest
+equality between an observed and an unobserved run.
 
 - [ ] M4.1 `sima status` / `sima inspect <task>`: run and task state, attempt
       history, durations, failure summaries — local and remote runs alike
@@ -210,10 +231,13 @@ leaked instances are leaked money.
 - [ ] M5.4 AWS backend
 - [ ] M5.5 On-worker stats reduction: kernel-side population/activity counts
       so remote runs return stats always, snapshots only on a cheap predicate
-      (bandwidth guard until the evaluation funnel exists)
+      (placed here as the bandwidth guard; P6's funnel metrics consume the
+      same reduction — the mechanism is shared)
 - [ ] M5.6 Budget guard: max price, max wall-clock, spend accounting per run
-- [ ] M5.7 Trust-tiered scheduling: redundant execution, spot-check
-      verification across trust classes
+- [ ] M5.7 Trust-tiered scheduling: redundant execution, quorum validation,
+      spot-check sampling, host reputation — the BOINC playbook; the largest
+      mechanism in this phase, expected to split into several PRs at
+      elaboration
 - [ ] M5.8 End-to-end slingshot consolidation (phase acceptance): start a
       search locally; interrupt it mid-simulation (inside a segment chain);
       `sima migrate` to a freshly provisioned instance — sync closure, resume
@@ -221,14 +245,23 @@ leaked instances are leaked money.
       Assert the final manifest and segment states are identical to an
       uninterrupted local reference run
 
+Expected to be re-split when reached; provider APIs and trust mechanisms hide
+surprises.
+
 ## P6 — Evaluation funnel v1
 
 Deliberately simple. The funnel machinery, with the cheapest deterministic
 metrics only; metric research lives in its own track.
 
+Phase acceptance: verdicts are pure functions of recorded data — re-running
+the funnel over a recorded run reproduces identical verdicts, and changing
+thresholds re-classifies without any re-execution.
+
 - [ ] M6.1 Periodic snapshot/stats recording: segment boundaries (M2.5) are
       the natural sampling points; this milestone adds the recording policy,
-      not a new mechanism
+      not a new mechanism. Absorbs the snapshot retention policy deferred
+      from M2.4: what is kept, for how long, and what re-evaluation minimally
+      requires
 - [ ] M6.2 Verdict classification: dead / frozen / exploding / cyclic,
       thresholds from config
 - [ ] M6.3 Staged cheapest-first funnel + re-evaluation from recorded runs
@@ -239,8 +272,17 @@ metrics only; metric research lives in its own track.
 The primary model family. Genomes are parameter vectors of arbitrary update
 functions: perception kernels and update weights both evolvable.
 
+Phase acceptance: on one pinned backend class, NCA runs are bit-identical
+run-to-run; across two distinct backend classes, results agree within the
+recorded tolerance policy; a seeded ES run reproduces its fitness trajectory
+exactly. The tolerance policy (M7.1) is a written deliverable — comparison
+metric, bound, and its provenance record format — not an aspiration; it is
+the hardest determinism question in the project and "done" is defined by
+tests against it.
+
 - [ ] M7.1 Float/multi-channel grid state, strict-IEEE shader path, tolerance
-      policy for cross-substrate checks
+      policy for cross-substrate checks (the policy document + tests are the
+      deliverable — see phase acceptance)
 - [ ] M7.2 NCA family: genome (perception + update parameters), CPU reference
 - [ ] M7.3 GPU NCA kernel + cross-substrate tolerance tests
 - [ ] M7.4 ES-based search loop over NCA genomes
