@@ -19,9 +19,19 @@ specs — opaque bytes plus a format id; families interpret them (CA families
 call theirs genomes). CA is the substrate; the research object is
 learned/evolved computation on it. Primary workload shape: huge grids, 3D
 included — a single simulation can saturate a GPU; small grids are supported
-via within-launch batching (P7), never the design driver. Grid state model:
-extent × channels × dtype, double-buffered (totalistic: 1 channel u8; NCA: N
-channels f16/f32). Visualization is out of scope: snapshots in the store are
+via within-launch batching (P7), never the design driver. Families divide by
+executor kind — the compute shape their engine has:
+- Stencil/convolution kind: double-buffered grid state (extent × channels ×
+  dtype); each output cell is a function of a neighborhood of the input grid.
+  Covers totalistic (integer, 1×u8 — P2) and reaction-diffusion,
+  Lenia/Flow-Lenia, Neural CA (float, N channels — P7).
+- Agent-field kind: state is an agent population (position, heading) plus a
+  field grid; agents sense the field, move, deposit onto it, and the field
+  diffuses and decays. Covers Physarum (P8).
+At the infra layer both are opaque content-addressed state; the family owns
+serialization and the compute shape. Required families across the ladder:
+totalistic, reaction-diffusion, Lenia/Flow-Lenia, Neural CA, Physarum.
+Visualization is out of scope: snapshots in the store are
 consumed by external tools (the `../luz` renderer reads them as volumes).
 CI is in place (`.github/workflows/ci.yml`: fmt + clippy + workspace tests on
 every push and PR); GPU-gated tests are skipped in hosted CI and run on the
@@ -141,7 +151,10 @@ Phase-level decisions:
 ## P2 — GPU executor + totalistic family
 
 First real executor. Outer-totalistic 3D CA as the simplest family: exercises
-the GPU path and the family boundary while staying trivial to verify.
+the GPU path and the family boundary while staying trivial to verify. It
+establishes the stencil/convolution executor kind in its integer, bit-exact-
+everywhere form; the float variant of this kind arrives in P7 and the second
+kind (agent-field) in P8.
 
 Phase acceptance: GPU results bit-identical to the CPU reference across the
 full M2.3 matrix; a ≥1000-genome search completes through the spine within
@@ -268,33 +281,95 @@ thresholds re-classifies without any re-execution.
 - [ ] M6.3 Staged cheapest-first funnel + re-evaluation from recorded runs
       without re-execution
 
-## P7 — Neural CA
+## P7 — Continuous CA families
 
-The primary model family. Genomes are parameter vectors of arbitrary update
-functions: perception kernels and update weights both evolvable.
+Float, multi-channel grid families on the stencil/convolution executor kind.
+First the float-determinism foundation, then families in ascending complexity:
+reaction-diffusion, Lenia/Flow-Lenia, Neural CA. Neural CA is one family here,
+not the phase's headline — the trainable, self-repairing family, distinct from
+the emergent-dynamics families beside it.
 
-Phase acceptance: on one pinned backend class, NCA runs are bit-identical
-run-to-run; across two distinct backend classes, results agree within the
-recorded tolerance policy; a seeded ES run reproduces its fitness trajectory
-exactly. The tolerance policy (M7.1) is a written deliverable — comparison
-metric, bound, and its provenance record format — not an aspiration; it is
-the hardest determinism question in the project and "done" is defined by
-tests against it.
+Phase acceptance: on one pinned backend class, every family here is
+bit-identical run-to-run; across two distinct backend classes, results agree
+within the recorded tolerance policy; a seeded search run reproduces its
+fitness trajectory exactly. The tolerance policy (M7.1) is a written
+deliverable — comparison metric, bound, and its provenance record format —
+not an aspiration; it is the hardest determinism question in the project and
+"done" is defined by tests against it.
 
 - [ ] M7.1 Float/multi-channel grid state, strict-IEEE shader path, tolerance
       policy for cross-substrate checks (the policy document + tests are the
-      deliverable — see phase acceptance)
-- [ ] M7.2 NCA family: genome (perception + update parameters), CPU reference
-- [ ] M7.3 GPU NCA kernel + cross-substrate tolerance tests
-- [ ] M7.4 ES-based search loop over NCA genomes
-- [ ] M7.5 Within-launch population batching for small grids
+      deliverable — see phase acceptance). Shared foundation for every family
+      below
+- [ ] M7.2 Reaction-diffusion (Gray-Scott): 2-channel float, small-stencil
+      Laplacian + local reaction — the simplest float family and the first
+      consumer of the tolerance policy, proving the float path before the
+      harder families. Genome = feed / kill / diffusion rates; seeded
+      generator, mutation, CPU reference + GPU kernel + cross-substrate
+      tolerance tests
+- [ ] M7.3 Lenia / Flow-Lenia: large-radius convolution kernel + growth
+      function; Flow-Lenia adds mass-conserving advection (semi-Lagrangian
+      transport — the mass-redistribution scatter needs an order-independent
+      scheme or it is nondeterministic even on one device) and spatially
+      localized parameters (genome becomes a per-region field, not one global
+      vector). CPU reference + GPU kernel + tolerance tests
+- [ ] M7.4 Neural CA: genome = perception + update parameters, both evolvable;
+      the trainable, self-repairing family (regrows when disturbed, two
+      trained textures graftable). CPU reference + GPU kernel + tolerance
+      tests
+- [ ] M7.5 Search loop over continuous genomes (ES; gradient-based training is
+      a standing research track — it changes the executor contract from "run"
+      to "run + accumulate gradients")
+- [ ] M7.6 Within-launch population batching for small grids
+
+## P8 — Physarum (agent-field family)
+
+The second executor kind: a stigmergic multi-agent model (Jones's slime-mould
+transport networks). State is an agent population plus a trail field; the step
+is sense → move → deposit → diffuse/decay, not a cell-local grid update.
+Everything below this phase on the ladder — store, scheduler, distribution,
+slingshot, funnel — is unchanged; the phase adds an executor kind in the
+families layer and nothing beneath it. It is the proof that the infra is
+family-agnostic.
+
+Determinism approach (integer tier, bit-exact everywhere like totalistic — to
+confirm at M8.2): fixed-point agent state (position, heading) and nearest-cell
+sensing keep motion exact on any hardware; deposits accumulate as fixed-point
+integers via order-independent atomic add (integer addition is associative and
+exact, so scatter ordering cannot change the sum); the field diffuse/decay is
+an integer stencil. This keeps Physarum out of the P7 float-tolerance
+machinery. The alternative — float agent state — moves it into that tier; the
+tradeoff (dynamic range and motion smoothness vs bit-exactness) is the open
+decision resolved in M8.2.
+
+Phase acceptance: CPU/GPU bit-equality across an agent-count × field-extent ×
+step-count matrix; a segmented agent-field run (compound state checkpoint)
+resumed equals an unsegmented run of equal length, bit-exact.
+
+- [ ] M8.1 Agent-field executor kind (`sima-families`): compound state (agent
+      buffer ‖ field grid) serialized as one opaque snapshot object;
+      segmentation composes — the checkpoint is the compound state, the
+      task-key input-state-ref mechanism is unchanged
+- [ ] M8.2 Physarum family: fixed-point agent state, nearest-cell sensing,
+      order-independent integer deposit, field diffuse/decay stencil; genome =
+      sensor geometry (angles, distance), turn rate, deposit amount,
+      decay/diffusion rates; seeded generator, mutation, CPU reference with
+      known-answer tests; the fixed-point-vs-float determinism decision is
+      resolved here
+- [ ] M8.3 GPU kernels (agent update + field update) + CPU/GPU bit-equality
+      matrix
+- [ ] M8.4 First Physarum search through the full spine (funnel, slingshot,
+      distribution unchanged); network-structure interestingness metrics feed
+      the P6 funnel via the standing evaluation track
 
 ## Research tracks (standing)
 
 Parallel to the phase ladder, each eventually feeding it:
 
-- **Model families beyond NCA** — Lenia-family continuous CAs, graph CAs,
-  attention-based update rules; each lands as a rule family on unchanged infra
+- **Further model families** — graph CAs, attention-based update rules,
+  program-shaped candidates; each lands as a rule family on unchanged infra.
+  The ladder's own family phases (reaction-diffusion, Lenia/Flow-Lenia, Neural
+  CA in P7; Physarum in P8) are the first proof of that promise
 - **Evaluation / interestingness** — novelty, diversity, complexity metrics;
   the funnel machinery (P6) is the harness, the metrics are open research
 - **Gradient-based training** — backprop through CA steps changes the executor
