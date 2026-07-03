@@ -102,6 +102,11 @@ the GPU path and the family boundary while staying trivial to verify.
       (extents, genomes, step counts)
 - [ ] M2.4 First real search: ≥1000 genomes on the local GPU through the full
       spine; throughput and survivor numbers recorded here
+- [ ] M2.5 Segmented execution: a long simulation runs as a chain of tasks
+      (state Sₙ + k steps → state Sₙ₊₁), checkpoint states as store objects,
+      segment length from config; determinism test: N steps + resume N ≡ 2N
+      steps, bit-exact. This is what makes pausing and migrating a specific
+      in-progress simulation possible, not just a whole job
 
 ## P3 — Distribution
 
@@ -149,6 +154,12 @@ leaked instances are leaked money.
 - [ ] M5.6 Budget guard: max price, max wall-clock, spend accounting per run
 - [ ] M5.7 Trust-tiered scheduling: redundant execution, spot-check
       verification across trust classes
+- [ ] M5.8 End-to-end slingshot consolidation (phase acceptance): start a
+      search locally; interrupt it mid-simulation (inside a segment chain);
+      `sima migrate` to a freshly provisioned instance — sync closure, resume
+      remotely, follow events live; sync results home; teardown verified.
+      Assert the final manifest and segment states are identical to an
+      uninterrupted local reference run
 
 ## P6 — Evaluation funnel v1
 
