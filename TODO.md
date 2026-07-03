@@ -11,12 +11,16 @@ Candidates are specs — opaque bytes plus a format id; families interpret them
 learned/evolved computation on it. Evaluation research and model-family
 research are standing tracks, deliberately out of the phase ladder.
 
-Layering (strictly downward dependencies, enforced by workspace crate edges):
-`sima-core` (L0: error, encode, prng, hash) → `sima-model` (L2: spec, task
-key, provenance, run config) → `sima-store` (L1: cas + catalog modules) →
-`sima-contracts` (L3: generator/executor traits + stubs) → `sima-scheduler`
-(L4: queue, leases, lifecycle state machine) → `sima-pipeline` (L5:
-orchestration, resume, re-evaluation) → `sima` (L6: CLI binary).
+Layering (strictly downward dependencies, enforced by workspace crate edges;
+layer numbers follow the dependency order):
+`sima-core` (L0: error, encode, prng, hash) → `sima-model` (L1: spec, task
+key, provenance, run config) → `sima-store` (L2: cas, catalog, journal
+modules) → `sima-contracts` (L3: generator/executor traits + stubs) →
+`sima-scheduler` (L4: task sources, leases, lifecycle state machine) →
+`sima-pipeline` (L5: orchestration, resume, re-evaluation) → `sima` (L6: CLI
+binary). Implementation crates at L3: `sima-gpu` (ash wrapper, depends on
+core) and `sima-families` (rule families: CPU references + GPU kernels;
+depends on contracts + gpu), arriving in P2.
 
 Running model: one orchestrator per run — the `sima run` process itself; no
 daemon. Single-writer per run enforced by a stale-detectable lease file.
@@ -33,9 +37,13 @@ contracts prove determinism, resumability, crash-retry, and
 re-evaluation-from-store end-to-end.
 
 Phase-level decisions:
-- The store is the only durable state. The work queue is ephemeral, rebuilt on
-  start as (tasks derived from config) minus (task keys with results in the
-  store). Resume, crash-recovery, and re-run are the same code path.
+- The store is the only durable state. The queue is ephemeral and derived: a
+  task source yields the currently-runnable tasks given (config, store state).
+  A static batch (config-enumerated tasks minus completed) is the degenerate
+  case; segmented chains (P2), whose successor keys depend on produced state
+  hashes, are the general one — the scheduler is built against the general
+  interface from the start. Resume, crash-recovery, and re-run are the same
+  code path: re-derive the frontier, continue.
 - Interrupt robustness is a first-class property, not an edge case: death at
   any point, graceful or violent, converges on resume. This is what makes
   preemptible (cheapest) hardware safe to use, and it is proven by
@@ -47,25 +55,32 @@ Phase-level decisions:
   through canonical encoding exclusively; human-readable artifacts (manifest
   JSON) are serde and never identity-bearing.
 - Manifests are canonicalized (entries sorted by task key) on finalization, so
-  run output hashes are independent of worker completion order.
-- Acceptance for the phase: (a) two runs of the same config produce identical
-  manifests hash-for-hash; (b) a run killed at any crashpoint and resumed
-  equals a run never interrupted; (c) a re-evaluation pass over a recorded
-  run touches no executor; (d) copying the store to another location and
-  resuming the config there yields a manifest identical to never having
+  run output hashes are independent of worker completion order. Journals
+  (attempt histories, timings) are observational, legitimately differ between
+  runs, and are excluded from every equality-based acceptance criterion —
+  equality always compares manifests.
+- Acceptance for the phase: (a) the same config run in two fresh, separate
+  stores produces identical manifests hash-for-hash — execution determinism,
+  not merely storage stability; (b) a run killed at any crashpoint and
+  resumed equals a run never interrupted; (c) a re-evaluation pass over a
+  recorded run touches no executor; (d) copying the store to another location
+  and resuming the config there yields a manifest identical to never having
   moved — run portability with zero migration code.
 
 - [ ] M1.1 Crate skeleton (`sima-core`): `Error`/`Result`, canonical encoding
       (`Enc`/`Dec`), counter-based PRNG with pinned known-answer tests;
       workspace scaffolding
-- [ ] M1.2 CAS (`sima-store::cas`): blake3 objects, atomic writes (temp +
-      fsync + rename), idempotent puts
-- [ ] M1.3 Model + catalog (`sima-model`, `sima-store::catalog`): spec, task
-      key (spec ‖ seed ‖ env), environment-hash mechanism, provenance
-      records; task index with write-ordering discipline (result objects
-      durable before the index entry referencing them); run manifest with
-      canonical ordering; run identity = hash of canonicalized config;
-      run-closure enumeration (all objects a run references)
+- [ ] M1.2 Model (`sima-model`): spec, task key (spec ‖ seed ‖ env),
+      environment-hash mechanism, provenance records, run identity = hash of
+      canonicalized config; pure types + canonical encodings, no I/O
+- [ ] M1.3 Store (`sima-store`): cas module — blake3 objects, atomic writes
+      (temp + fsync + rename), idempotent puts; catalog module — task index
+      with write-ordering discipline (result objects durable before the index
+      entry referencing them), run manifest with canonical ordering,
+      run-closure enumeration (all objects a run references); journal module
+      — append-only per-run journal beside the manifest, line-framed
+      crash-safe appends (a torn final line is detected and ignored on read),
+      non-identity-bearing
 - [ ] M1.4 Contracts + stubs (`sima-contracts`): executor and generator
       contracts over opaque specs; task definition carries an optional
       input-state object reference (segmented-execution enabler, unused by
@@ -73,12 +88,14 @@ Phase-level decisions:
       bytes select behavior: succeed / fail N times / panic / sleep) so
       scheduler failure tests are deterministic; run-twice →
       identical-hashes tests
-- [ ] M1.5 Scheduler (`sima-scheduler`): ephemeral queue, leases,
-      heartbeat/timeout, retries with idempotent commit, backpressure;
-      task lifecycle state machine (defined → queued → leased → executing →
-      committed | failed → retried) with transitions recorded to an
-      append-only per-run journal in the store; thread-worker transport;
-      failure matrix driven by the programmable stub
+- [ ] M1.5 Scheduler (`sima-scheduler`): task-source interface (yields
+      currently-runnable tasks from config + store state; static batch as the
+      P1 implementation, chain-frontier arrives with P2 segmentation), leases,
+      heartbeat/timeout, retries with idempotent commit, backpressure; task
+      lifecycle state machine (defined → queued → leased → executing →
+      committed | failed → retried) with transitions written through the
+      store's journal module; thread-worker transport; failure matrix driven
+      by the programmable stub
 - [ ] M1.6 Config + pipeline + CLI (`sima-pipeline`, `sima`): TOML schema +
       canonicalization; pipeline orchestration with static format-id →
       implementation match; orchestrator lease file; typed progress events
@@ -94,19 +111,25 @@ Phase-level decisions:
 First real executor. Outer-totalistic 3D CA as the simplest family: exercises
 the GPU path and the family boundary while staying trivial to verify.
 
-- [ ] M2.1 ash compute bringup: device selection, buffers, dispatch,
-      build-time shaderc, SPIR-V hashes folded into the environment hash
-- [ ] M2.2 Totalistic family: genome, generator, mutation + CPU reference
-      engine with known-answer tests
+- [ ] M2.1 ash compute bringup (`sima-gpu`): device selection, buffers,
+      dispatch, build-time shaderc, SPIR-V hashes folded into the environment
+      hash
+- [ ] M2.2 Totalistic family (`sima-families`): genome, generator, mutation +
+      CPU reference engine with known-answer tests (mutation is dormant until
+      the first evolutionary loop in P7; built here for family completeness)
 - [ ] M2.3 GPU totalistic kernel + CPU/GPU bit-equality cross-check matrix
       (extents, genomes, step counts)
 - [ ] M2.4 First real search: ≥1000 genomes on the local GPU through the full
-      spine; throughput and survivor numbers recorded here
+      spine; per-candidate result stats recorded as metadata (final population
+      count from the result snapshot — inspection aid, not a funnel);
+      throughput numbers recorded here
 - [ ] M2.5 Segmented execution: a long simulation runs as a chain of tasks
       (state Sₙ + k steps → state Sₙ₊₁), checkpoint states as store objects,
-      segment length from config; determinism test: N steps + resume N ≡ 2N
-      steps, bit-exact. This is what makes pausing and migrating a specific
-      in-progress simulation possible, not just a whole job
+      segment length from config; chain-frontier task source (successor keys
+      derived from produced state hashes) plugging into M1.5's interface;
+      determinism test: N steps + resume N ≡ 2N steps, bit-exact. This is
+      what makes pausing and migrating a specific in-progress simulation
+      possible, not just a whole job
 
 ## P3 — Distribution
 
