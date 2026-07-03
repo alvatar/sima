@@ -18,7 +18,6 @@ pub(crate) const TAG_PARAMS: &str = "sima.params.v1";
 pub(crate) const TAG_ENV: &str = "sima.env.v1";
 /// Domain tag opening a canonical [`crate::TaskIdentity`] encoding — the
 /// task-key preimage.
-#[allow(dead_code)]
 pub(crate) const TAG_TASK: &str = "sima.task.v1";
 /// Domain tag opening a canonical [`crate::TaskRecord`] encoding.
 #[allow(dead_code)]
