@@ -18,11 +18,6 @@ pub struct Params {
 }
 
 impl Params {
-    /// Wraps a parameter blob.
-    pub fn new(bytes: Vec<u8>) -> Params {
-        Params { bytes }
-    }
-
     /// Appends the tagged canonical form: tag, parameter bytes.
     pub fn encode(&self, enc: &mut Enc) {
         enc.str(TAG_PARAMS).bytes(&self.bytes);
@@ -82,20 +77,31 @@ mod tests {
     #[test]
     fn encoding_matches_the_hand_derived_layouts() {
         assert_eq!(
-            to_hex(&Params::new(Vec::new()).to_bytes()),
+            to_hex(&Params { bytes: Vec::new() }.to_bytes()),
             PINNED_EMPTY_HEX
         );
-        assert_eq!(to_hex(&Params::new(vec![1, 2, 3]).to_bytes()), PINNED_HEX);
+        assert_eq!(
+            to_hex(
+                &Params {
+                    bytes: vec![1, 2, 3]
+                }
+                .to_bytes()
+            ),
+            PINNED_HEX
+        );
     }
 
     #[test]
     fn ids_match_the_independently_computed_digests() -> Result<()> {
         assert_eq!(
-            Params::new(Vec::new()).id(),
+            Params { bytes: Vec::new() }.id(),
             ParamsId::from_hex(PINNED_EMPTY_ID_HEX)?
         );
         assert_eq!(
-            Params::new(vec![1, 2, 3]).id(),
+            Params {
+                bytes: vec![1, 2, 3]
+            }
+            .id(),
             ParamsId::from_hex(PINNED_ID_HEX)?
         );
         Ok(())
@@ -103,7 +109,12 @@ mod tests {
 
     #[test]
     fn to_bytes_from_bytes_round_trips() -> Result<()> {
-        for params in [Params::new(Vec::new()), Params::new(vec![1, 2, 3])] {
+        for params in [
+            Params { bytes: Vec::new() },
+            Params {
+                bytes: vec![1, 2, 3],
+            },
+        ] {
             assert_eq!(Params::from_bytes(&params.to_bytes())?, params);
         }
         Ok(())
@@ -144,7 +155,7 @@ mod tests {
         // Domain tags keep the identity worlds disjoint: the same raw blob
         // committed as params and as a spec candidate never shares an id.
         let raw = vec![0xAA, 0xBB];
-        let params = Params::new(raw.clone());
+        let params = Params { bytes: raw.clone() };
         let spec = Spec {
             format: FormatId::new("stub.v1")?,
             bytes: raw,
