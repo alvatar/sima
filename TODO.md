@@ -22,34 +22,46 @@ Phase-level decisions:
 - The store is the only durable state. The work queue is ephemeral, rebuilt on
   start as (tasks derived from config) minus (task keys with results in the
   store). Resume, crash-recovery, and re-run are the same code path.
+- Interrupt robustness is a first-class property, not an edge case: death at
+  any point, graceful or violent, converges on resume. This is what makes
+  preemptible (cheapest) hardware safe to use, and it is proven by
+  crash-injection tests, not asserted.
+- Candidates are opaque at the infrastructure layer: a spec is (format id,
+  opaque bytes), content-addressed. "Genome" is family-level vocabulary;
+  contracts and store speak in specs.
 - Two serialization worlds: identity-bearing bytes (anything hashed) go
   through canonical encoding exclusively; human-readable artifacts (manifest
   JSON) are serde and never identity-bearing.
 - Manifests are canonicalized (entries sorted by task key) on finalization, so
   run output hashes are independent of worker completion order.
 - Acceptance for the phase: (a) two runs of the same config produce identical
-  manifests hash-for-hash; (b) a run interrupted and resumed equals a run
-  never interrupted; (c) a re-evaluation pass over a recorded run touches no
-  executor.
+  manifests hash-for-hash; (b) a run killed at any crashpoint and resumed
+  equals a run never interrupted; (c) a re-evaluation pass over a recorded
+  run touches no executor.
 
 - [ ] M1.1 Crate skeleton: `Error`/`Result`, canonical encoding (`Enc`/`Dec`),
       counter-based PRNG with pinned known-answer tests
-- [ ] M1.2 Content-addressed store: blake3 CAS, atomic writes (temp + rename),
-      object round-trips, idempotent puts
-- [ ] M1.3 Task identity + provenance: task key (program ‖ seed ‖ env),
+- [ ] M1.2 Content-addressed store: blake3 CAS, atomic writes (temp + fsync +
+      rename), idempotent puts, task index with write-ordering discipline
+      (result objects durable before the index entry referencing them)
+- [ ] M1.3 Task identity + provenance: task key (spec ‖ seed ‖ env),
       environment-hash mechanism, provenance records, run manifest with
       canonical ordering; run identity = hash of canonicalized config
-- [ ] M1.4 Contracts + stubs: executor contract and generator contract;
-      seeded stub generator; genome-programmed stub executor (genome bytes
-      select behavior: succeed / fail N times / panic / sleep) so scheduler
-      failure tests are deterministic; run-twice → identical-hashes tests
+- [ ] M1.4 Contracts + stubs: executor contract and generator contract over
+      opaque specs; seeded stub generator; spec-programmed stub executor
+      (spec bytes select behavior: succeed / fail N times / panic / sleep) so
+      scheduler failure tests are deterministic; run-twice → identical-hashes
+      tests
 - [ ] M1.5 Scheduler: ephemeral queue, leases, heartbeat/timeout, retries
       with idempotent commit, backpressure; thread-worker transport; failure
       matrix driven by the programmable stub
 - [ ] M1.6 Config (TOML schema + canonicalization) + pipeline orchestration +
-      `sima run` CLI: progress reporting, clean interrupt, resume,
-      re-evaluation pass; end-to-end tests for the three phase acceptance
-      criteria
+      `sima run` CLI: progress reporting, graceful interrupt, resume,
+      re-evaluation pass; crash-injection harness (subprocess SIGKILL at
+      controlled crashpoints — mid-object-write, between object and index,
+      mid-lease, during finalization — resume, assert manifest identical to
+      uninterrupted reference); end-to-end tests for the three phase
+      acceptance criteria
 
 ## P2 — GPU executor + totalistic family
 
