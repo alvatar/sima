@@ -1,0 +1,10 @@
+[package]
+name = "sima-model"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+sima-core = { path = "../sima-core" }
+
+[lints]
+workspace = true
