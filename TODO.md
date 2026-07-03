@@ -102,7 +102,7 @@ Phase-level decisions:
 - [x] M1.1 Crate skeleton (`sima-core`): `Error`/`Result`, canonical encoding
       (`Enc`/`Dec`), counter-based PRNG with pinned known-answer tests;
       workspace scaffolding
-- [ ] M1.2 Model (`sima-model`): spec, params, task key (spec ‖ params ‖
+- [x] M1.2 Model (`sima-model`): spec, params, task key (spec ‖ params ‖
       seed ‖ env ‖ input-state-ref, empty ref for stateless tasks — segments
       differing only in input state must have distinct keys), environment-hash
       mechanism — content-derived components only (versioned constants for

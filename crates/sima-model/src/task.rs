@@ -73,25 +73,8 @@ canon::id_newtype! {
 mod tests {
     use super::*;
     use crate::canon::TAG_SPEC;
-    use crate::env::EnvId;
-    use crate::params::ParamsId;
-    use crate::spec::SpecId;
-    use sima_core::{Enc, Error, Hash, Result};
-
-    fn to_hex(bytes: &[u8]) -> String {
-        bytes.iter().map(|b| format!("{b:02x}")).collect()
-    }
-
-    fn from_hex(hex: &str) -> Vec<u8> {
-        (0..hex.len())
-            .step_by(2)
-            .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).expect("pinned hex is valid"))
-            .collect()
-    }
-
-    fn fill_hash(fill: &str) -> Result<Hash> {
-        Hash::from_hex(&fill.repeat(32))
-    }
+    use crate::testutil::{fill_hash, from_hex, to_hex};
+    use sima_core::{Enc, Error, Result};
 
     /// The stateless-arm sample: spec 32x11, params 32x22, seed
     /// 0x0102030405060708, env 32x33, no input state.
