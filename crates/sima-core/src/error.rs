@@ -10,8 +10,10 @@ use std::fmt;
 ///
 /// This enum is the single place failure classes accrue: later milestones
 /// add variants here (store I/O, corruption, lease conflicts, ...) instead
-/// of defining crate-local error types.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// of defining crate-local error types. Only `Debug` is derived: variants
+/// carrying non-comparable payloads such as `io::Error` are coming, so
+/// nothing may rely on `Error` being cloneable or comparable.
+#[derive(Debug)]
 pub enum Error {
     /// Canonical encoding or decoding failed: truncated input, bad framing,
     /// malformed hex. The payload describes what was expected and found.
