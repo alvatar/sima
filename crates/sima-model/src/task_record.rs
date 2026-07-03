@@ -122,7 +122,7 @@ canonical::standalone_codec!(TaskRecord);
 mod tests {
     use super::*;
     use crate::canonical::{TAG_SPEC, TAG_TASK_RECORD};
-    use crate::env::EnvId;
+    use crate::environment::EnvironmentId;
     use crate::params::ParamsId;
     use crate::spec::SpecId;
     use crate::task::TaskIdentity;
@@ -135,7 +135,7 @@ mod tests {
             spec: SpecId::from_hash(fill_hash("11")?),
             params: ParamsId::from_hash(fill_hash("22")?),
             seed: 0x0102_0304_0506_0708,
-            env: EnvId::from_hash(fill_hash("33")?),
+            environment: EnvironmentId::from_hash(fill_hash("33")?),
             input_state: None,
         })
     }
@@ -152,7 +152,7 @@ mod tests {
     ///   str tag "sima.task-record.v1" -> u64 len 19 LE ‖ UTF-8 bytes
     ///   embedded identity encoding, its own tag included: str tag
     ///     "sima.task.v1", spec digest 32x11, params digest 32x22, seed
-    ///     u64 LE 0807060504030201, env digest 32x33, absent flag byte 00
+    ///     u64 LE 0807060504030201, environment digest 32x33, absent flag byte 00
     ///   u64 artifact count 1
     ///   ref: str name "state-final" (len 11 LE ‖ UTF-8), 32 raw digest
     ///     bytes (0x55 repeated)

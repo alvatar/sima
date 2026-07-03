@@ -15,7 +15,7 @@ pub(crate) const TAG_SPEC: &str = "sima.spec.v1";
 /// Domain tag opening a canonical [`crate::Params`] encoding.
 pub(crate) const TAG_PARAMS: &str = "sima.params.v1";
 /// Domain tag opening a canonical [`crate::Environment`] encoding.
-pub(crate) const TAG_ENV: &str = "sima.env.v1";
+pub(crate) const TAG_ENVIRONMENT: &str = "sima.env.v1";
 /// Domain tag opening a canonical [`crate::TaskIdentity`] encoding — the
 /// task-key preimage.
 pub(crate) const TAG_TASK: &str = "sima.task.v1";
@@ -162,7 +162,7 @@ mod tests {
     const TAGS: [&str; 6] = [
         TAG_SPEC,
         TAG_PARAMS,
-        TAG_ENV,
+        TAG_ENVIRONMENT,
         TAG_TASK,
         TAG_TASK_RECORD,
         TAG_RUN_CONFIG,

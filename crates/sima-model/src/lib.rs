@@ -10,7 +10,7 @@
 //! in higher crates.
 
 mod canonical;
-mod env;
+mod environment;
 mod params;
 mod run_config;
 mod spec;
@@ -19,7 +19,7 @@ mod task_record;
 #[cfg(test)]
 mod testutil;
 
-pub use env::{EnvComponent, EnvId, EnvValue, Environment};
+pub use environment::{Environment, EnvironmentComponent, EnvironmentId, EnvironmentValue};
 pub use params::{Params, ParamsId};
 pub use run_config::{GeneratorConfig, GeneratorId, RunConfig, RunId};
 pub use spec::{FormatId, Spec, SpecId};
