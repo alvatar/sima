@@ -19,8 +19,7 @@
 ## Testing layer
 
 - Rust logic is tested in Rust tests, next to the type or function it covers.
-- Cross-module and end-to-end behavior (pipeline runs, store round-trips, sandbox enforcement) is tested in integration tests under `tests/`.
-- Determinism is a tested property, never an assumption: anything claimed reproducible gets a test that executes it twice (or on two configurations) and asserts identical content hashes.
+- Cross-module and end-to-end behavior is tested in integration tests under `tests/`.
 
 ## TODOs
 
@@ -49,17 +48,8 @@
 
 ## Architecture
 
-Project & stack:
-- SIMA is distributed infrastructure for program search: generate candidate programs, execute them sandboxed, evaluate them through a staged cost-aware funnel, record everything with content-addressed provenance. `README.md` is the design document; the near-term work list is `TODO.md`.
-- Rust, local-first. A run is fully functional on one machine and scales out to pluggable remote execution backends.
-
-Ownership invariants (frozen):
-- A task's result is a pure function of its content-addressed inputs: `(program hash, seed, environment hash) → result`. Any backend that returns a result for a key is interchangeable with any other; results are cacheable, retryable, and independently verifiable.
-- Stages communicate through the store, never directly. A batch can be re-run, resumed, or re-evaluated without regeneration.
-- Generated programs are untrusted and execute only inside the sandbox, under enforced resource limits. No generated code ever runs on the host directly.
-- All randomness is seeded and captured; a recorded specification reproduces its output exactly. Workloads that cannot be bit-deterministic relax to statistical reproducibility on a pinned backend class, and the relaxation is recorded in provenance.
-- Trust is a scheduling dimension: untrusted backends are confined to stages whose results are cheap to verify; survivors are re-verified on a trusted tier.
-- Generators and evaluators are pluggable and decoupled from the execution and provenance layers.
+- `README.md` is the design document; the near-term work list is `TODO.md`. Rust, local-first.
+- Architectural invariants are not yet frozen; they are decided in discussion and recorded here when settled.
 
 Principles:
 - Clean, pristine architecture: clear spine, truthful boundaries, no split brain.
