@@ -10,8 +10,10 @@
 //! in higher crates.
 
 mod canon;
+mod env;
 mod params;
 mod spec;
 
+pub use env::{EnvComponent, EnvId, EnvValue, Environment};
 pub use params::{Params, ParamsId};
 pub use spec::{FormatId, Spec, SpecId};

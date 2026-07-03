@@ -15,7 +15,6 @@ pub(crate) const TAG_SPEC: &str = "sima.spec.v1";
 /// Domain tag opening a canonical [`crate::Params`] encoding.
 pub(crate) const TAG_PARAMS: &str = "sima.params.v1";
 /// Domain tag opening a canonical [`crate::Environment`] encoding.
-#[allow(dead_code)]
 pub(crate) const TAG_ENV: &str = "sima.env.v1";
 /// Domain tag opening a canonical [`crate::TaskIdentity`] encoding — the
 /// task-key preimage.
@@ -65,6 +64,32 @@ pub(crate) fn validate_name(name: &str) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Sorts `items` by name and rejects duplicate names, so a canonicalized
+/// sequence has exactly one byte spelling per value.
+pub(crate) fn sort_by_unique_name<T>(items: &mut [T], name_of: fn(&T) -> &str) -> Result<()> {
+    items.sort_by(|a, b| name_of(a).cmp(name_of(b)));
+    for pair in items.windows(2) {
+        if name_of(&pair[0]) == name_of(&pair[1]) {
+            return Err(Error::Validation(format!(
+                "duplicate name {:?} in a uniquely-named sequence",
+                name_of(&pair[0])
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Requires strictly ascending names while decoding a canonicalized
+/// sequence, rejecting out-of-order and duplicate names.
+pub(crate) fn require_ascending_names(prev: Option<&str>, next: &str) -> Result<()> {
+    match prev {
+        Some(p) if p >= next => Err(Error::Validation(format!(
+            "names out of canonical order: {p:?} then {next:?}"
+        ))),
+        _ => Ok(()),
+    }
 }
 
 /// Implements the standalone framing of the uniform type surface:
