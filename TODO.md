@@ -95,7 +95,7 @@ Phase-level decisions:
   and resuming the config there yields a manifest identical to never having
   moved — run portability with zero migration code.
 
-- [ ] M1.1 Crate skeleton (`sima-core`): `Error`/`Result`, canonical encoding
+- [x] M1.1 Crate skeleton (`sima-core`): `Error`/`Result`, canonical encoding
       (`Enc`/`Dec`), counter-based PRNG with pinned known-answer tests;
       workspace scaffolding
 - [ ] M1.2 Model (`sima-model`): spec, task key (spec ‖ seed ‖ env ‖
