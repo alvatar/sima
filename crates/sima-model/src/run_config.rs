@@ -126,7 +126,9 @@ mod tests {
                 id: GeneratorId::new("gen.v1")?,
                 params: vec![0xDE, 0xAD],
             },
-            params: Params::new(vec![1, 2, 3]),
+            params: Params {
+                bytes: vec![1, 2, 3],
+            },
         })
     }
 
@@ -193,7 +195,7 @@ mod tests {
                 id: GeneratorId::new("gen.v1")?,
                 params: Vec::new(),
             },
-            params: Params::new(Vec::new()),
+            params: Params { bytes: Vec::new() },
             ..sample_config()?
         };
         for config in [full, empty_blobs] {
@@ -287,7 +289,7 @@ mod tests {
                 ..base.clone()
             },
             RunConfig {
-                params: Params::new(vec![9]),
+                params: Params { bytes: vec![9] },
                 ..base.clone()
             },
         ];
