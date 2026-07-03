@@ -7,6 +7,10 @@
 use std::fmt;
 
 /// Error type shared by all sima crates.
+///
+/// This enum is the single place failure classes accrue: later milestones
+/// add variants here (store I/O, corruption, lease conflicts, ...) instead
+/// of defining crate-local error types.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Error {
     /// Canonical encoding or decoding failed: truncated input, bad framing,

@@ -12,6 +12,22 @@
 //! `mix(seed ^ mix(tag))`. The construction is structurally distinct from
 //! [`next`] (xor of a mixed tag, no golden-ratio stepping), so derived seeds
 //! do not alias stream outputs.
+//!
+//! Why SplitMix64: its sequential form is already counter-shaped — state
+//! advances by a fixed golden-ratio increment and every output is a pure
+//! finalizer of that state — so random access by counter equals the
+//! published sequential generator exactly, with no warm-up and no state to
+//! carry between draws. The whole generator is two multiplies and three
+//! xor-shifts over `u64`, small enough to port to a GPU kernel line by line
+//! and to check against the literature's known-answer values.
+//!
+//! Why implemented here instead of a crate: result-affecting randomness
+//! must stay bit-identical across substrates and releases forever. A
+//! dependency's internals can change under semver and silently shift
+//! streams; this file pins the exact arithmetic the GPU port must
+//! reproduce, and the known-answer tests below (values from the published
+//! algorithm, never from this code) prove it. The battle-testing lives in
+//! the published algorithm, not in a wrapper crate.
 
 /// Golden-ratio increment from the published SplitMix64 algorithm.
 const GOLDEN: u64 = 0x9E37_79B9_7F4A_7C15;
