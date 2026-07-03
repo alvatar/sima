@@ -10,3 +10,6 @@
 //! in higher crates.
 
 mod canon;
+mod spec;
+
+pub use spec::{FormatId, Spec, SpecId};
