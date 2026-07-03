@@ -72,8 +72,11 @@ re-run, resumed, or re-evaluated without regeneration.
 
 ## Scaling model
 
-A task is identified by content: `(spec hash, seed, environment hash,
-optional input-state hash) → result`. Because tasks are pure functions of
+A task is identified by content: `(spec hash, params hash, seed, environment
+hash, optional input-state hash) → result`. The spec is the candidate; params
+are the run parameters it is evaluated under (extent, steps, budgets), kept
+separate so the same candidate is addressable across evaluation stages.
+Because tasks are pure functions of
 their inputs, any backend that
 returns a result for a given key is interchangeable with any other, and results
 are cacheable, retryable, and independently verifiable. This is the same model

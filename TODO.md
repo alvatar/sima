@@ -16,7 +16,9 @@ transports force it). All randomness in result-affecting paths comes from the
 project's counter-based SplitMix64 PRNG (`sima-core`), implemented identically
 on CPU and GPU; the `rand` crate is banned from result paths. Candidates are
 specs — opaque bytes plus a format id; families interpret them (CA families
-call theirs genomes). CA is the substrate; the research object is
+call theirs genomes). Run parameters (extent, steps, budgets) are a separate
+opaque params blob: generators produce specs, config produces params, and the
+spec's format id governs the interpretation of both. CA is the substrate; the research object is
 learned/evolved computation on it. Primary workload shape: huge grids, 3D
 included — a single simulation can saturate a GPU; small grids are supported
 via within-launch batching (P7), never the design driver. Families divide by
@@ -78,7 +80,9 @@ Phase-level decisions:
   crash-injection tests, not asserted.
 - Candidates are opaque at the infrastructure layer: a spec is (format id,
   opaque bytes), content-addressed. "Genome" is family-level vocabulary;
-  contracts and store speak in specs.
+  contracts and store speak in specs. Run parameters travel as a second
+  opaque content-addressed blob (params), produced by config; a task
+  evaluates the pair (spec, params).
 - Two serialization worlds: identity-bearing bytes (anything hashed) go
   through canonical encoding exclusively; human-readable artifacts (manifest
   JSON) are serde and never identity-bearing.
@@ -98,9 +102,9 @@ Phase-level decisions:
 - [x] M1.1 Crate skeleton (`sima-core`): `Error`/`Result`, canonical encoding
       (`Enc`/`Dec`), counter-based PRNG with pinned known-answer tests;
       workspace scaffolding
-- [ ] M1.2 Model (`sima-model`): spec, task key (spec ‖ seed ‖ env ‖
-      input-state-ref, empty ref for stateless tasks — segments differing
-      only in input state must have distinct keys), environment-hash
+- [ ] M1.2 Model (`sima-model`): spec, params, task key (spec ‖ params ‖
+      seed ‖ env ‖ input-state-ref, empty ref for stateless tasks — segments
+      differing only in input state must have distinct keys), environment-hash
       mechanism — content-derived components only (versioned constants for
       engine/executor identity; compiled-shader hashes join in P2); anything
       machine-derived is provenance metadata, never key material, or
@@ -118,10 +122,11 @@ Phase-level decisions:
       crash-safe appends (a torn final line is detected and ignored on read),
       non-identity-bearing
 - [ ] M1.4 Contracts + stubs (`sima-contracts`): executor and generator
-      contracts over opaque specs; task definition carries an optional
-      input-state object reference (segmented-execution enabler, unused by
-      the stub, part of the task key); the contract distinguishes identity
-      inputs (spec, seed, env, input-state — determine the key and the
+      contracts over opaque specs and params; task definition carries an
+      optional input-state object reference (segmented-execution enabler,
+      unused by the stub, part of the task key); the contract distinguishes
+      identity inputs (spec, params, seed, env, input-state — determine the
+      key and the
       committed artifacts) from execution context (attempt number, worker id
       — visible to the executor, forbidden from influencing committed
       artifacts); seeded stub generator; spec-programmed stub executor (spec
