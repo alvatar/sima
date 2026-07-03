@@ -266,6 +266,18 @@ mod tests {
     }
 
     #[test]
+    fn decode_rejects_an_invalid_artifact_name() -> Result<()> {
+        // Decode revalidates the constructor rules: an artifact name
+        // violating the name rule is rejected even in well-framed bytes.
+        let buf = encode_record(&["State Final"])?;
+        assert!(matches!(
+            TaskRecord::from_bytes(&buf),
+            Err(Error::Validation(_))
+        ));
+        Ok(())
+    }
+
+    #[test]
     fn decode_rejects_out_of_order_artifact_names() -> Result<()> {
         let buf = encode_record(&["state-final", "snapshot.0"])?;
         assert!(matches!(

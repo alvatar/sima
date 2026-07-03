@@ -332,6 +332,17 @@ mod tests {
     }
 
     #[test]
+    fn decode_rejects_an_invalid_component_name() {
+        // Decode revalidates the constructor rules: a component name
+        // violating the name rule is rejected even in well-framed bytes.
+        let buf = encode_components(&[("Engine", "1")]);
+        assert!(matches!(
+            Environment::from_bytes(&buf),
+            Err(Error::Validation(_))
+        ));
+    }
+
+    #[test]
     fn decode_rejects_out_of_order_components() {
         let buf = encode_components(&[("shader", "1"), ("engine", "1")]);
         assert!(matches!(

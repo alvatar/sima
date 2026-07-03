@@ -234,6 +234,32 @@ mod tests {
     }
 
     #[test]
+    fn decode_rejects_an_invalid_format_name() {
+        // Decode revalidates the name rules: a format id violating the
+        // name rule is rejected even in well-framed bytes.
+        let mut enc = Enc::new();
+        enc.str(TAG_RUN_CONFIG).u64(42).str("Stub");
+        assert!(matches!(
+            RunConfig::from_bytes(&enc.finish()),
+            Err(Error::Validation(_))
+        ));
+    }
+
+    #[test]
+    fn decode_rejects_an_invalid_generator_name() {
+        // The same revalidation for the generator id, past a valid format.
+        let mut enc = Enc::new();
+        enc.str(TAG_RUN_CONFIG)
+            .u64(42)
+            .str("stub.v1")
+            .str("Bad Gen");
+        assert!(matches!(
+            RunConfig::from_bytes(&enc.finish()),
+            Err(Error::Validation(_))
+        ));
+    }
+
+    #[test]
     fn varying_any_single_field_changes_the_run_id() -> Result<()> {
         let base = sample_config()?;
         let variants = [
