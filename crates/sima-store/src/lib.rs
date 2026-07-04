@@ -21,6 +21,7 @@
 
 mod atomic;
 mod cas;
+mod catalog;
 mod layout;
 mod store;
 #[cfg(test)]

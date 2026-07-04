@@ -14,6 +14,7 @@
 use std::path::{Path, PathBuf};
 
 use sima_core::Hash;
+use sima_model::TaskKey;
 
 /// The `objects/` CAS directory.
 pub(crate) fn objects_dir(root: &Path) -> PathBuf {
@@ -40,4 +41,9 @@ pub(crate) fn runs_dir(root: &Path) -> PathBuf {
 pub(crate) fn object_path(root: &Path, hash: &Hash) -> PathBuf {
     let hex = hash.to_string();
     objects_dir(root).join(&hex[..2]).join(hex)
+}
+
+/// A task's index-entry path: `tasks/<task-key-hex>`.
+pub(crate) fn task_path(root: &Path, key: &TaskKey) -> PathBuf {
+    tasks_dir(root).join(key.to_string())
 }

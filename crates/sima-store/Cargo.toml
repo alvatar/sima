@@ -5,6 +5,7 @@ edition.workspace = true
 
 [dependencies]
 sima-core = { path = "../sima-core" }
+sima-model = { path = "../sima-model" }
 
 [dev-dependencies]
 tempfile.workspace = true
