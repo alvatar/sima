@@ -7,8 +7,7 @@ invariants. This document describes the implemented system.
 
 ## Layering
 
-Strictly downward dependencies, enforced by workspace crate edges. A lower
-crate never depends on a higher one.
+Strictly downward dependencies, enforced by workspace crate edges.
 
 | Layer | Crate            | Responsibility                                                        |
 |-------|------------------|-----------------------------------------------------------------------|
@@ -46,9 +45,9 @@ so resume, crash-recovery, and re-run are one code path.
 - `Hash` / `hash_bytes`: 32-byte blake3 digest, lowercase-hex `Display` and
   `from_hex`.
 - PRNG: counter-based SplitMix64 — `next(seed, counter)`, `derive(seed,
-  tag)`, `unit_f64`, and a sequential `Stream`. Pinned known-answer tests;
-  the same function will be implemented on GPU, and the `rand` crate is
-  banned from result-affecting paths.
+  tag)`, `unit_f64`, and a sequential `Stream`. Pinned known-answer tests
+  keep it byte-stable; it is specified for identical implementation on CPU
+  and GPU, and the `rand` crate is banned from result-affecting paths.
 
 ## `sima-model` (L1)
 
