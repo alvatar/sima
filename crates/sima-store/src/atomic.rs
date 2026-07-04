@@ -1,16 +1,25 @@
 //! Atomic-write mechanics shared by objects, index entries, and manifests.
 //!
-//! Every durable file is placed the same way: full content to a unique
-//! `tmp/<pid>-<seq>` file, fsync, rename into place, fsync of the
-//! destination's parent directory. Directories are created through
-//! [`create_dir_durable`], which fsyncs the parent so the new entry
-//! itself survives a crash. A reader — including a process resuming
-//! after SIGKILL — therefore observes a complete file or none. Leftover
-//! `tmp/` files after a crash are inert; sweeping them is retention
-//! work, deferred to P6.
+//! Every durable file starts as full content in a unique `tmp/<pid>-<seq>`
+//! file, fsynced, then enters its destination in one of two placement
+//! modes, each followed by an fsync of the destination's parent directory:
+//!
+//! - [`write_atomic`] renames into place — last-write-wins, for
+//!   content-addressed objects, where one path means one content and
+//!   racing writers carry identical bytes by construction.
+//! - [`place_atomic`] hard-links into place — no-replace, for index
+//!   entries and manifests, where an existing destination decides the
+//!   outcome: byte-equal content is an idempotent no-op, different
+//!   content fails loudly with `Corruption`.
+//!
+//! Directories are created through [`create_dir_durable`], which fsyncs
+//! the parent so the new entry itself survives a crash. A reader —
+//! including a process resuming after SIGKILL — therefore observes a
+//! complete file or none. Leftover `tmp/` files after a crash are inert;
+//! sweeping them is retention work, deferred to P6.
 
 use std::fs::{self, File};
-use std::io::Write;
+use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -40,6 +49,35 @@ pub(crate) fn write_atomic(root: &Path, dest: &Path, bytes: &[u8]) -> Result<()>
     sync_parent_dir(dest)
 }
 
+/// Writes `bytes` to `dest` atomically with no-replace semantics: the
+/// fsynced `tmp/` file is hard-linked into place, which fails when `dest`
+/// already exists. On collision the existing content decides — byte-equal
+/// is `Ok` (an idempotent re-placement), different content is
+/// [`Error::Corruption`] and the existing file stays intact. Racing
+/// writers therefore converge on identical bytes or fail loudly.
+pub(crate) fn place_atomic(root: &Path, dest: &Path, bytes: &[u8]) -> Result<()> {
+    let tmp = write_tmp(root, bytes)?;
+    match fs::hard_link(&tmp, dest) {
+        Ok(()) => {
+            fs::remove_file(&tmp).map_err(|e| io_error(&tmp, e))?;
+            sync_parent_dir(dest)
+        }
+        Err(e) if e.kind() == ErrorKind::AlreadyExists => {
+            fs::remove_file(&tmp).map_err(|e| io_error(&tmp, e))?;
+            let existing = fs::read(dest).map_err(|e| io_error(dest, e))?;
+            if existing == bytes {
+                Ok(())
+            } else {
+                Err(Error::Corruption(format!(
+                    "refusing to replace {} with different content",
+                    dest.display()
+                )))
+            }
+        }
+        Err(e) => Err(io_error(dest, e)),
+    }
+}
+
 /// Creates `dir` (and any missing ancestors) and fsyncs its parent, so
 /// the new directory entry itself survives a crash — a file fsynced
 /// inside a directory whose entry was never synced can vanish with the
@@ -63,9 +101,9 @@ fn write_tmp(root: &Path, bytes: &[u8]) -> Result<PathBuf> {
     Ok(tmp)
 }
 
-/// Fsyncs the directory containing `path`, making a rename or directory
-/// creation under it durable. Every destination lies inside the store
-/// skeleton, so a parent always exists.
+/// Fsyncs the directory containing `path`, making a rename, link, or
+/// directory creation under it durable. Every destination lies inside
+/// the store skeleton, so a parent always exists.
 #[cfg(unix)]
 fn sync_parent_dir(path: &Path) -> Result<()> {
     let Some(parent) = path.parent() else {
@@ -85,10 +123,62 @@ fn sync_parent_dir(_path: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{create_dir_durable, write_atomic};
+    use super::{create_dir_durable, place_atomic, write_atomic};
     use crate::testutil::temp_store;
-    use sima_core::Result;
+    use sima_core::{Error, Result};
     use std::fs;
+
+    #[test]
+    fn place_atomic_places_exact_content_on_a_fresh_destination() -> Result<()> {
+        let (dir, store) = temp_store();
+        let dest = dir.path().join("tasks").join("entry");
+        place_atomic(store.root(), &dest, b"placed bytes\n")?;
+        assert_eq!(
+            fs::read(&dest).expect("read destination"),
+            b"placed bytes\n"
+        );
+        let leftovers = fs::read_dir(dir.path().join("tmp"))
+            .expect("read tmp dir")
+            .count();
+        assert_eq!(leftovers, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn place_atomic_over_equal_bytes_is_a_no_op() -> Result<()> {
+        let (dir, store) = temp_store();
+        let dest = dir.path().join("tasks").join("entry");
+        place_atomic(store.root(), &dest, b"same bytes")?;
+        place_atomic(store.root(), &dest, b"same bytes")?;
+        assert_eq!(fs::read(&dest).expect("read destination"), b"same bytes");
+        let leftovers = fs::read_dir(dir.path().join("tmp"))
+            .expect("read tmp dir")
+            .count();
+        assert_eq!(leftovers, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn place_atomic_over_different_bytes_is_corruption() -> Result<()> {
+        let (dir, store) = temp_store();
+        let dest = dir.path().join("tasks").join("entry");
+        place_atomic(store.root(), &dest, b"original bytes")?;
+        // No-replace: the loser of a conflicting race fails loudly and
+        // the placed content stays intact.
+        assert!(matches!(
+            place_atomic(store.root(), &dest, b"conflicting bytes"),
+            Err(Error::Corruption(_))
+        ));
+        assert_eq!(
+            fs::read(&dest).expect("read destination"),
+            b"original bytes"
+        );
+        let leftovers = fs::read_dir(dir.path().join("tmp"))
+            .expect("read tmp dir")
+            .count();
+        assert_eq!(leftovers, 0);
+        Ok(())
+    }
 
     #[test]
     fn create_dir_durable_creates_and_accepts_an_existing_dir() -> Result<()> {

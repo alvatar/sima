@@ -48,8 +48,10 @@ impl Store {
             };
         }
         self.put(&bytes)?;
+        // No-replace placement closes the race the entry pre-check leaves
+        // open: a conflicting writer landing in between fails loudly.
         let entry = format!("{record_hash}\n");
-        atomic::write_atomic(
+        atomic::place_atomic(
             self.root(),
             &layout::task_path(self.root(), &key),
             entry.as_bytes(),
@@ -145,13 +147,15 @@ impl Store {
         }
         let bytes = manifest::to_json_bytes(&Manifest { run: *run, entries });
         let path = layout::manifest_path(self.root(), run);
+        // The pre-read gives the conflict its run-level message; the
+        // no-replace placement closes the remaining race window.
         match fs::read(&path) {
             Ok(existing) if existing == bytes => Ok(()),
             Ok(_) => Err(Error::Corruption(format!(
                 "run {run} is already finalized with a different manifest"
             ))),
             Err(e) if e.kind() == ErrorKind::NotFound => {
-                atomic::write_atomic(self.root(), &path, &bytes)
+                atomic::place_atomic(self.root(), &path, &bytes)
             }
             Err(e) => Err(io_error(&path, e)),
         }
