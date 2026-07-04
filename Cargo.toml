@@ -1,6 +1,11 @@
 [workspace]
 resolver = "3"
-members = ["crates/sima", "crates/sima-core", "crates/sima-model"]
+members = [
+    "crates/sima",
+    "crates/sima-core",
+    "crates/sima-model",
+    "crates/sima-store",
+]
 
 [workspace.package]
 version = "0.1.0"
@@ -8,6 +13,7 @@ edition = "2024"
 
 [workspace.dependencies]
 blake3 = "1"
+tempfile = "3"
 
 [workspace.lints.clippy]
 dbg_macro = "deny"
