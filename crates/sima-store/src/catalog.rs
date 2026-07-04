@@ -6,6 +6,7 @@
 //! are verified durable, then the record object is written, then the
 //! index entry — so an index entry proves everything beneath it exists.
 
+use std::collections::BTreeSet;
 use std::fs;
 use std::io::ErrorKind;
 use std::str;
@@ -71,18 +72,34 @@ impl Store {
             }
             other => other?,
         };
-        let record = TaskRecord::from_bytes(&bytes).map_err(|e| {
-            Error::Corruption(format!(
-                "record object {record_hash} for task {key} does not decode: {e}"
-            ))
-        })?;
-        if record.identity.key() != *key {
-            return Err(Error::Corruption(format!(
-                "record under task {key} answers for task {}",
-                record.identity.key()
+        decode_record(&bytes, &record_hash, key).map(Some)
+    }
+
+    /// Enumerates the closed object set of a finalized run: the config
+    /// object (equal to the run id), every record object, and per record
+    /// its spec, params, environment, input state, and artifacts.
+    /// Deduplicated and sorted, so the result is deterministic — the
+    /// have/want basis of store sync and the unit of run portability.
+    /// Record objects load through verified reads; leaf objects are
+    /// existence-checked, and a hole is [`Error::MissingObject`].
+    pub fn run_closure(&self, run: &RunId) -> Result<Vec<Hash>> {
+        let Some(manifest) = self.manifest(run)? else {
+            return Err(Error::Validation(format!(
+                "cannot enumerate the closure of run {run}: the run is not finalized"
             )));
+        };
+        let mut objects = BTreeSet::from([*run.as_hash()]);
+        for entry in &manifest.entries {
+            objects.insert(entry.record);
+            let record = decode_record(&self.get(&entry.record)?, &entry.record, &entry.task)?;
+            for leaf in referenced_objects(&record) {
+                if !self.has(&leaf)? {
+                    return Err(Error::MissingObject(leaf));
+                }
+                objects.insert(leaf);
+            }
         }
-        Ok(Some(record))
+        Ok(objects.into_iter().collect())
     }
 
     /// Registers a run: puts the config's canonical bytes — the object
@@ -168,6 +185,24 @@ impl Store {
         let hash = Hash::from_hex(hex).map_err(|_| malformed())?;
         Ok(Some(hash))
     }
+}
+
+/// Decodes verified record-object bytes and requires the embedded
+/// identity to answer for `key`; either failure means the store contradicts
+/// itself, so both are [`Error::Corruption`].
+fn decode_record(bytes: &[u8], record_hash: &Hash, key: &TaskKey) -> Result<TaskRecord> {
+    let record = TaskRecord::from_bytes(bytes).map_err(|e| {
+        Error::Corruption(format!(
+            "record object {record_hash} for task {key} does not decode: {e}"
+        ))
+    })?;
+    if record.identity.key() != *key {
+        return Err(Error::Corruption(format!(
+            "record under task {key} answers for task {}",
+            record.identity.key()
+        )));
+    }
+    Ok(record)
 }
 
 /// Every object a record references: the identity components (spec,
@@ -574,6 +609,83 @@ mod tests {
             .join("manifest.json");
         fs::write(&path, b"{ definitely not a manifest").expect("corrupt manifest");
         assert!(matches!(store.manifest(&run), Err(Error::Corruption(_))));
+        Ok(())
+    }
+
+    use crate::testutil::{sample_environment, sample_params, sample_spec};
+
+    #[test]
+    fn closure_equals_the_hand_assembled_object_set() -> Result<()> {
+        let (_dir, store) = temp_store();
+        let (run, keys) = committed_run(&store)?;
+        store.finalize_run(&run, &keys)?;
+        // The closure, assembled by hand: the config object (= run id),
+        // both record objects, the shared spec/params/environment (once
+        // each), and both artifacts. Sorted, deduplicated.
+        let mut expected = vec![
+            *run.as_hash(),
+            *sample_spec().id().as_hash(),
+            *sample_params().id().as_hash(),
+            *sample_environment().id().as_hash(),
+        ];
+        for seed in [1u64, 2] {
+            let record = record_with_stored_artifact(&store, sample_identity(seed));
+            expected.push(hash_bytes(&record.to_bytes()));
+            expected.push(hash_bytes(&seed.to_le_bytes()));
+        }
+        expected.sort();
+        expected.dedup();
+        assert_eq!(store.run_closure(&run)?, expected);
+        Ok(())
+    }
+
+    #[test]
+    fn closure_includes_the_input_state_object() -> Result<()> {
+        let (_dir, store) = temp_store();
+        store_identity_components(&store);
+        let input_state = store.put(b"state snapshot")?;
+        let identity = TaskIdentity {
+            input_state: Some(input_state),
+            ..sample_identity(3)
+        };
+        let record = record_with_stored_artifact(&store, identity);
+        store.commit_record(&record)?;
+        let run = store.create_run(&sample_run_config(44))?;
+        store.finalize_run(&run, &[identity.key()])?;
+        assert!(store.run_closure(&run)?.contains(&input_state));
+        Ok(())
+    }
+
+    #[test]
+    fn closure_of_an_unfinalized_run_is_validation() -> Result<()> {
+        let (_dir, store) = temp_store();
+        let (run, _keys) = committed_run(&store)?;
+        assert!(matches!(store.run_closure(&run), Err(Error::Validation(_))));
+        Ok(())
+    }
+
+    #[test]
+    fn closure_over_a_deleted_artifact_is_missing_object_naming_it() -> Result<()> {
+        let (dir, store) = temp_store();
+        let (run, keys) = committed_run(&store)?;
+        store.finalize_run(&run, &keys)?;
+        let artifact = hash_bytes(&1u64.to_le_bytes());
+        let hex = artifact.to_string();
+        fs::remove_file(dir.path().join("objects").join(&hex[..2]).join(&hex))
+            .expect("delete artifact object");
+        match store.run_closure(&run) {
+            Err(Error::MissingObject(h)) => assert_eq!(h, artifact),
+            other => panic!("expected MissingObject, got {other:?}"),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn closure_order_is_deterministic_across_calls() -> Result<()> {
+        let (_dir, store) = temp_store();
+        let (run, keys) = committed_run(&store)?;
+        store.finalize_run(&run, &keys)?;
+        assert_eq!(store.run_closure(&run)?, store.run_closure(&run)?);
         Ok(())
     }
 
