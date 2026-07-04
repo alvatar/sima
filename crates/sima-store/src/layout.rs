@@ -26,6 +26,11 @@ pub(crate) fn tmp_dir(root: &Path) -> PathBuf {
     root.join("tmp")
 }
 
+/// An in-flight write's path: `tmp/<pid>-<seq>`.
+pub(crate) fn tmp_file(root: &Path, pid: u32, seq: u64) -> PathBuf {
+    tmp_dir(root).join(format!("{pid}-{seq}"))
+}
+
 /// The `tasks/` index directory.
 pub(crate) fn tasks_dir(root: &Path) -> PathBuf {
     root.join("tasks")

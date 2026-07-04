@@ -96,10 +96,12 @@ One `Store` type over a root directory:
   read is verified. Model ids are CAS addresses: specs, params,
   environments, records, configs, state snapshots, and artifacts all land
   here as objects.
-- **Atomic writes**: every durable file is written to `tmp/`, fsynced,
-  renamed into place, and the parent directory fsynced. POSIX rename
+- **Atomic writes**: every durable file is written to `tmp/<pid>-<seq>`,
+  fsynced, renamed into place, and the parent directory fsynced (the
+  directory fsync is unix-only; the project targets linux). POSIX rename
   atomicity means a reader — including a process resuming after SIGKILL —
-  observes a complete file or none.
+  observes a complete file or none. Leftover `tmp/` files after a crash
+  are inert; sweeping them is retention work (P6).
 - **Write ordering**: committing a task result verifies every object the
   record references (artifacts and identity components) is already durable,
   then writes the record object, then the index entry. Recommitting an
@@ -115,10 +117,11 @@ One `Store` type over a root directory:
   stores. A store therefore contains the definition of every run it holds.
 - **Journal**: the observational history of a run — append-only,
   line-framed, schema owned by the layers that emit events (scheduler and
-  above). Appends are single-write, newline-terminated, fsynced; on read, a
-  torn final line (bytes past the last newline) is ignored. Journals
-  legitimately differ between identical runs and are excluded from every
-  equality criterion.
+  above). A payload is one nonempty line free of embedded line breaks;
+  appends are single-write, newline-terminated, fsynced. On read, a torn
+  final line (bytes past the last newline) is ignored; invalid UTF-8
+  inside the intact region is corruption. Journals legitimately differ
+  between identical runs and are excluded from every equality criterion.
 - **Closure**: manifest → config object + records → specs, params,
   environments, input states, artifacts; sorted and deduplicated. The unit
   of run portability and of store sync.

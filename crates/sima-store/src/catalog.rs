@@ -34,7 +34,8 @@ impl Store {
             }
         }
         let key = record.identity.key();
-        let record_hash = hash_bytes(&record.to_bytes());
+        let bytes = record.to_bytes();
+        let record_hash = hash_bytes(&bytes);
         // An existing entry decides the outcome before anything is
         // written: equal hash → the commit already happened.
         if let Some(existing) = self.index_entry(&key)? {
@@ -46,7 +47,7 @@ impl Store {
                 )))
             };
         }
-        self.put(&record.to_bytes())?;
+        self.put(&bytes)?;
         let entry = format!("{record_hash}\n");
         atomic::write_atomic(
             self.root(),

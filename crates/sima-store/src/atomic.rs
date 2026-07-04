@@ -32,11 +32,11 @@ pub(crate) fn io_error(path: &Path, source: std::io::Error) -> Error {
 /// directory. Concurrent writers to one destination race benignly when
 /// their content is identical: rename is last-write-wins.
 pub(crate) fn write_atomic(root: &Path, dest: &Path, bytes: &[u8]) -> Result<()> {
-    let tmp = layout::tmp_dir(root).join(format!(
-        "{}-{}",
+    let tmp = layout::tmp_file(
+        root,
         std::process::id(),
-        SEQ.fetch_add(1, Ordering::Relaxed)
-    ));
+        SEQ.fetch_add(1, Ordering::Relaxed),
+    );
     let mut file = File::create(&tmp).map_err(|e| io_error(&tmp, e))?;
     file.write_all(bytes).map_err(|e| io_error(&tmp, e))?;
     file.sync_all().map_err(|e| io_error(&tmp, e))?;
