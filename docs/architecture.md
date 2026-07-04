@@ -97,11 +97,17 @@ One `Store` type over a root directory:
   environments, records, configs, state snapshots, and artifacts all land
   here as objects.
 - **Atomic writes**: every durable file is written to `tmp/<pid>-<seq>`,
-  fsynced, renamed into place, and the parent directory fsynced (the
-  directory fsync is unix-only; the project targets linux). POSIX rename
-  atomicity means a reader — including a process resuming after SIGKILL —
-  observes a complete file or none. Leftover `tmp/` files after a crash
-  are inert; sweeping them is retention work (P6).
+  fsynced, then enters its destination — objects by rename (last-write-wins
+  over identical content), index entries and manifests by no-replace
+  hard-link, where an existing destination decides: byte-equal is an
+  idempotent no-op, different content is `Corruption` — and the parent
+  directory is fsynced. Directories are likewise created with their
+  parent fsynced, so a new directory entry survives a crash together with
+  the files inside it. The directory fsync is unix-only; the project
+  targets linux. POSIX rename/link atomicity means a reader — including a
+  process resuming after SIGKILL — observes a complete file or none.
+  Leftover `tmp/` files after a crash are inert; sweeping them is
+  retention work (P6).
 - **Write ordering**: committing a task result verifies every object the
   record references (artifacts and identity components) is already durable,
   then writes the record object, then the index entry. Recommitting an
@@ -126,9 +132,11 @@ One `Store` type over a root directory:
   environments, input states, artifacts; sorted and deduplicated. The unit
   of run portability and of store sync.
 - **Concurrency**: store methods take `&self` and are safe under
-  concurrent writers through rename atomicity and idempotence. A run's
-  journal has a single writer (the orchestrator). Single-writer-per-run is
-  enforced by the orchestrator lease file (arrives M1.6).
+  concurrent writers: identical content converges through rename and
+  link atomicity, and no-replace placement makes a conflicting racer on
+  an index entry or manifest fail loudly. A run's journal has a single
+  writer (the orchestrator). Single-writer-per-run is enforced by the
+  orchestrator lease file (arrives M1.6).
 
 ## Determinism proof obligations
 

@@ -12,12 +12,14 @@
 //! <root>/runs/<run-id-hex>/journal
 //! ```
 //!
-//! Every durable file is placed by an atomic write — full content to
-//! `tmp/`, fsync, rename, parent-directory fsync — so a reader, including
-//! a process resuming after SIGKILL, observes a complete file or none.
-//! Store methods take `&self` and are safe under concurrent use: writers
-//! racing on one path either converge on identical bytes or fail with
-//! `Corruption`.
+//! Every durable file is placed atomically — full content to `tmp/`,
+//! fsync, then rename (objects) or no-replace hard-link (index entries,
+//! manifests) into place, parent-directory fsync — and every directory is
+//! created with its parent fsynced, so a reader, including a process
+//! resuming after SIGKILL, observes a complete file or none. Store
+//! methods take `&self` and are safe under concurrent use: writers racing
+//! on one path converge on identical bytes, and no-replace placement
+//! makes a conflicting racer fail with `Corruption`.
 
 mod atomic;
 mod cas;
