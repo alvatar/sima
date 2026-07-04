@@ -1,6 +1,5 @@
 //! The [`Store`] handle and its open path.
 
-use std::fs;
 use std::path::{Path, PathBuf};
 
 use sima_core::Result;
@@ -20,9 +19,9 @@ pub struct Store {
 
 impl Store {
     /// Creates or opens the store at `root`, building the directory
-    /// skeleton (`objects/`, `tmp/`, `tasks/`, `runs/`) where absent. A
-    /// fresh root and an existing store open identically — resume is a
-    /// reopen.
+    /// skeleton (`objects/`, `tmp/`, `tasks/`, `runs/`) durably where
+    /// absent. A fresh root and an existing store open identically —
+    /// resume is a reopen.
     pub fn open(root: impl Into<PathBuf>) -> Result<Store> {
         let root = root.into();
         for dir in [
@@ -31,7 +30,7 @@ impl Store {
             layout::tasks_dir(&root),
             layout::runs_dir(&root),
         ] {
-            fs::create_dir_all(&dir).map_err(|e| atomic::io_error(&dir, e))?;
+            atomic::create_dir_durable(&dir)?;
         }
         Ok(Store { root })
     }

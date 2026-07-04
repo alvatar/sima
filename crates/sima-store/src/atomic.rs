@@ -2,14 +2,16 @@
 //!
 //! Every durable file is placed the same way: full content to a unique
 //! `tmp/<pid>-<seq>` file, fsync, rename into place, fsync of the
-//! destination's parent directory. Rename atomicity means a reader —
-//! including a process resuming after SIGKILL — observes a complete file
-//! or none. Leftover `tmp/` files after a crash are inert; sweeping them
-//! is retention work, deferred to P6.
+//! destination's parent directory. Directories are created through
+//! [`create_dir_durable`], which fsyncs the parent so the new entry
+//! itself survives a crash. A reader — including a process resuming
+//! after SIGKILL — therefore observes a complete file or none. Leftover
+//! `tmp/` files after a crash are inert; sweeping them is retention
+//! work, deferred to P6.
 
 use std::fs::{self, File};
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use sima_core::{Error, Result};
@@ -29,9 +31,27 @@ pub(crate) fn io_error(path: &Path, source: std::io::Error) -> Error {
 }
 
 /// Writes `bytes` to `dest` atomically through the store's `tmp/`
-/// directory. Concurrent writers to one destination race benignly when
-/// their content is identical: rename is last-write-wins.
+/// directory, replacing any existing file. Concurrent writers to one
+/// destination race benignly when their content is identical: rename is
+/// last-write-wins.
 pub(crate) fn write_atomic(root: &Path, dest: &Path, bytes: &[u8]) -> Result<()> {
+    let tmp = write_tmp(root, bytes)?;
+    fs::rename(&tmp, dest).map_err(|e| io_error(dest, e))?;
+    sync_parent_dir(dest)
+}
+
+/// Creates `dir` (and any missing ancestors) and fsyncs its parent, so
+/// the new directory entry itself survives a crash — a file fsynced
+/// inside a directory whose entry was never synced can vanish with the
+/// directory. Idempotent over an existing directory.
+pub(crate) fn create_dir_durable(dir: &Path) -> Result<()> {
+    fs::create_dir_all(dir).map_err(|e| io_error(dir, e))?;
+    sync_parent_dir(dir)
+}
+
+/// Writes `bytes` to a fresh `tmp/<pid>-<seq>` file and fsyncs it,
+/// returning the path ready to enter its destination.
+fn write_tmp(root: &Path, bytes: &[u8]) -> Result<PathBuf> {
     let tmp = layout::tmp_file(
         root,
         std::process::id(),
@@ -40,14 +60,12 @@ pub(crate) fn write_atomic(root: &Path, dest: &Path, bytes: &[u8]) -> Result<()>
     let mut file = File::create(&tmp).map_err(|e| io_error(&tmp, e))?;
     file.write_all(bytes).map_err(|e| io_error(&tmp, e))?;
     file.sync_all().map_err(|e| io_error(&tmp, e))?;
-    drop(file);
-    fs::rename(&tmp, dest).map_err(|e| io_error(dest, e))?;
-    sync_parent_dir(dest)
+    Ok(tmp)
 }
 
-/// Fsyncs the directory containing `path`, making its rename durable.
-/// Every atomic-write destination lies inside the store skeleton, so a
-/// parent directory always exists.
+/// Fsyncs the directory containing `path`, making a rename or directory
+/// creation under it durable. Every destination lies inside the store
+/// skeleton, so a parent always exists.
 #[cfg(unix)]
 fn sync_parent_dir(path: &Path) -> Result<()> {
     let Some(parent) = path.parent() else {
@@ -57,9 +75,9 @@ fn sync_parent_dir(path: &Path) -> Result<()> {
     dir.sync_all().map_err(|e| io_error(parent, e))
 }
 
-/// Directory fsync is unavailable off unix; the rename itself still makes
-/// the write atomic, and durability of the directory entry is best-effort.
-/// The project targets linux.
+/// Directory fsync is unavailable off unix; renames and links still land
+/// atomically, and durability of the directory entry is best-effort. The
+/// project targets linux.
 #[cfg(not(unix))]
 fn sync_parent_dir(_path: &Path) -> Result<()> {
     Ok(())
@@ -67,10 +85,21 @@ fn sync_parent_dir(_path: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::write_atomic;
+    use super::{create_dir_durable, write_atomic};
     use crate::testutil::temp_store;
     use sima_core::Result;
     use std::fs;
+
+    #[test]
+    fn create_dir_durable_creates_and_accepts_an_existing_dir() -> Result<()> {
+        let (dir, _store) = temp_store();
+        let created = dir.path().join("objects").join("aa");
+        create_dir_durable(&created)?;
+        assert!(created.is_dir());
+        // Idempotent: creating an existing directory succeeds.
+        create_dir_durable(&created)?;
+        Ok(())
+    }
 
     #[test]
     fn write_atomic_places_exact_content_and_leaves_tmp_empty() -> Result<()> {

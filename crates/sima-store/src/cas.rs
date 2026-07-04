@@ -25,9 +25,9 @@ impl Store {
             return Ok(hash);
         }
         let path = layout::object_path(self.root(), &hash);
-        // The fan-out subdirectory is created on first use.
+        // The fan-out subdirectory is created durably on first use.
         if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).map_err(|e| io_error(parent, e))?;
+            atomic::create_dir_durable(parent)?;
         }
         atomic::write_atomic(self.root(), &path, bytes)?;
         Ok(hash)

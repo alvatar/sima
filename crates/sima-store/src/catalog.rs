@@ -109,8 +109,7 @@ impl Store {
     /// existing run directory is a reopen, the resume path.
     pub fn create_run(&self, config: &RunConfig) -> Result<RunId> {
         let run = RunId::from_hash(self.put(&config.to_bytes())?);
-        let dir = layout::run_dir(self.root(), &run);
-        fs::create_dir_all(&dir).map_err(|e| io_error(&dir, e))?;
+        atomic::create_dir_durable(&layout::run_dir(self.root(), &run))?;
         Ok(run)
     }
 
