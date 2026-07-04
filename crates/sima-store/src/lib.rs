@@ -23,8 +23,10 @@ mod atomic;
 mod cas;
 mod catalog;
 mod layout;
+mod manifest;
 mod store;
 #[cfg(test)]
 mod testutil;
 
+pub use manifest::{Manifest, ManifestEntry};
 pub use store::Store;

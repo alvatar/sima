@@ -3,8 +3,8 @@
 use tempfile::TempDir;
 
 use sima_model::{
-    ArtifactRef, Environment, EnvironmentComponent, EnvironmentValue, FormatId, Params, Spec,
-    TaskIdentity, TaskRecord,
+    ArtifactRef, Environment, EnvironmentComponent, EnvironmentValue, FormatId, GeneratorConfig,
+    GeneratorId, Params, RunConfig, Spec, TaskIdentity, TaskRecord,
 };
 
 use crate::Store;
@@ -38,6 +38,19 @@ pub(crate) fn sample_environment() -> Environment {
         EnvironmentComponent::new("engine", EnvironmentValue::Version("cpu-1.0.0".to_string()))
             .expect("environment component");
     Environment::new(vec![component]).expect("environment")
+}
+
+/// The run-config fixture shared by run tests, varying by root seed.
+pub(crate) fn sample_run_config(root_seed: u64) -> RunConfig {
+    RunConfig {
+        root_seed,
+        format: FormatId::new("stub.v1").expect("format id"),
+        generator: GeneratorConfig {
+            id: GeneratorId::new("gen.v1").expect("generator id"),
+            params: vec![0xDE, 0xAD],
+        },
+        params: sample_params(),
+    }
 }
 
 /// A stateless task identity over the sample components, varying by seed.

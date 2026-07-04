@@ -14,7 +14,7 @@
 use std::path::{Path, PathBuf};
 
 use sima_core::Hash;
-use sima_model::TaskKey;
+use sima_model::{RunId, TaskKey};
 
 /// The `objects/` CAS directory.
 pub(crate) fn objects_dir(root: &Path) -> PathBuf {
@@ -46,4 +46,14 @@ pub(crate) fn object_path(root: &Path, hash: &Hash) -> PathBuf {
 /// A task's index-entry path: `tasks/<task-key-hex>`.
 pub(crate) fn task_path(root: &Path, key: &TaskKey) -> PathBuf {
     tasks_dir(root).join(key.to_string())
+}
+
+/// A run's directory: `runs/<run-id-hex>/`.
+pub(crate) fn run_dir(root: &Path, run: &RunId) -> PathBuf {
+    runs_dir(root).join(run.to_string())
+}
+
+/// A run's manifest path: `runs/<run-id-hex>/manifest.json`.
+pub(crate) fn manifest_path(root: &Path, run: &RunId) -> PathBuf {
+    run_dir(root, run).join("manifest.json")
 }

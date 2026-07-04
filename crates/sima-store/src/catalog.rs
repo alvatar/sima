@@ -11,10 +11,11 @@ use std::io::ErrorKind;
 use std::str;
 
 use sima_core::{Error, Hash, Result, hash_bytes};
-use sima_model::{TaskKey, TaskRecord};
+use sima_model::{RunConfig, RunId, TaskKey, TaskRecord};
 
 use crate::atomic::{self, io_error};
 use crate::layout;
+use crate::manifest::{self, Manifest, ManifestEntry};
 use crate::store::Store;
 
 impl Store {
@@ -82,6 +83,73 @@ impl Store {
             )));
         }
         Ok(Some(record))
+    }
+
+    /// Registers a run: puts the config's canonical bytes — the object
+    /// address equals the run id by construction, both being blake3 of
+    /// the same bytes — and creates `runs/<run-id>/`. Idempotent: an
+    /// existing run directory is a reopen, the resume path.
+    pub fn create_run(&self, config: &RunConfig) -> Result<RunId> {
+        let run = RunId::from_hash(self.put(&config.to_bytes())?);
+        let dir = layout::run_dir(self.root(), &run);
+        fs::create_dir_all(&dir).map_err(|e| io_error(&dir, e))?;
+        Ok(run)
+    }
+
+    /// Finalizes a run over exactly `keys`: every key must be committed
+    /// ([`Error::Validation`] naming the first that is not), and the
+    /// manifest is written atomically with entries sorted by task key, so
+    /// its bytes are independent of the order workers completed in.
+    /// Idempotent: re-finalizing with the same keys leaves the byte-equal
+    /// file in place — the resume-through-finalization path; different
+    /// keys are [`Error::Corruption`].
+    pub fn finalize_run(&self, run: &RunId, keys: &[TaskKey]) -> Result<()> {
+        if !layout::run_dir(self.root(), run).is_dir() {
+            return Err(Error::Validation(format!(
+                "cannot finalize run {run}: the run was never created"
+            )));
+        }
+        let mut sorted = keys.to_vec();
+        sorted.sort();
+        if let Some(dup) = sorted.windows(2).find(|pair| pair[0] == pair[1]) {
+            return Err(Error::Validation(format!(
+                "duplicate task key {} in finalization",
+                dup[0]
+            )));
+        }
+        let mut entries = Vec::with_capacity(sorted.len());
+        for key in &sorted {
+            let Some(record) = self.index_entry(key)? else {
+                return Err(Error::Validation(format!(
+                    "cannot finalize run {run}: task {key} is not committed"
+                )));
+            };
+            entries.push(ManifestEntry { task: *key, record });
+        }
+        let bytes = manifest::to_json_bytes(&Manifest { run: *run, entries });
+        let path = layout::manifest_path(self.root(), run);
+        match fs::read(&path) {
+            Ok(existing) if existing == bytes => Ok(()),
+            Ok(_) => Err(Error::Corruption(format!(
+                "run {run} is already finalized with a different manifest"
+            ))),
+            Err(e) if e.kind() == ErrorKind::NotFound => {
+                atomic::write_atomic(self.root(), &path, &bytes)
+            }
+            Err(e) => Err(io_error(&path, e)),
+        }
+    }
+
+    /// Reads a run's manifest: `None` while the run is unfinalized; a
+    /// file that fails parsing or validation is [`Error::Corruption`].
+    pub fn manifest(&self, run: &RunId) -> Result<Option<Manifest>> {
+        let path = layout::manifest_path(self.root(), run);
+        let bytes = match fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(e) if e.kind() == ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(io_error(&path, e)),
+        };
+        manifest::from_json_bytes(&bytes, run).map(Some)
     }
 
     /// Reads the index entry for `key`: the record hash it names, `None`
@@ -305,6 +373,207 @@ mod tests {
             store.record(&sample_identity(2).key()),
             Err(Error::Corruption(_))
         ));
+        Ok(())
+    }
+
+    use crate::testutil::sample_run_config;
+    use sima_model::RunId;
+
+    /// The manifest `finalize_run` must produce for `sample_run_config(42)`
+    /// over the seed-1 and seed-2 sample tasks, hand-written. Every digest
+    /// is derived independently with Python blake3 (pip package `blake3`)
+    /// over the hand-assembled canonical bytes of the fixture objects:
+    /// run id = blake3(config bytes) — the value pinned in `sima-model`'s
+    /// run-config tests; task keys = blake3(identity bytes); records =
+    /// blake3(record bytes). Key 42.. sorts before key 7a.., so the seed-1
+    /// entry comes first regardless of finalization order.
+    const PINNED_MANIFEST: &str = r#"{
+  "run": "0aaaca9861f35e442cf23ec57b1c0d8258d0912d74e8ccd175d959731e5ca65f",
+  "entries": [
+    {
+      "task": "420b9fda1a25806fa8be45d75081d6b26f6f7bbe2925d17d44c4c0aada6f2836",
+      "record": "73ef3f6ef715958ffbce539fd45dc98ed8fff55e6c988c0d987fd1a7e8ea52d0"
+    },
+    {
+      "task": "7a119187fbc5bc53c8deaa9a8ab5d524cdf97ec99fd110bbc61a98923d1c493e",
+      "record": "b412b3e8bf02226de2ab75a8764463d47825c71246716d53749ecfa1fdeb0ee4"
+    }
+  ]
+}
+"#;
+
+    /// Commits the seed-1 and seed-2 sample tasks and creates the sample
+    /// run, returning the run id and the two task keys.
+    fn committed_run(store: &crate::Store) -> Result<(RunId, Vec<sima_model::TaskKey>)> {
+        store_identity_components(store);
+        let mut keys = Vec::new();
+        for seed in [1, 2] {
+            let record = record_with_stored_artifact(store, sample_identity(seed));
+            store.commit_record(&record)?;
+            keys.push(record.identity.key());
+        }
+        let run = store.create_run(&sample_run_config(42))?;
+        Ok((run, keys))
+    }
+
+    #[test]
+    fn create_run_stores_the_config_at_the_run_id_address() -> Result<()> {
+        let (dir, store) = temp_store();
+        let config = sample_run_config(42);
+        let run = store.create_run(&config)?;
+        // RunId = config object address by construction: both are blake3
+        // of the same canonical bytes.
+        assert_eq!(run, config.id());
+        assert_eq!(store.get(run.as_hash())?, config.to_bytes());
+        assert!(dir.path().join("runs").join(run.to_string()).is_dir());
+        Ok(())
+    }
+
+    #[test]
+    fn create_run_twice_is_a_reopen() -> Result<()> {
+        let (_dir, store) = temp_store();
+        let config = sample_run_config(42);
+        assert_eq!(store.create_run(&config)?, store.create_run(&config)?);
+        Ok(())
+    }
+
+    #[test]
+    fn finalize_writes_the_pinned_manifest_regardless_of_key_order() -> Result<()> {
+        // Two fresh stores, permuted key order: byte-identical manifests,
+        // both equal to the hand-written pin.
+        for order in [[0, 1], [1, 0]] {
+            let (dir, store) = temp_store();
+            let (run, keys) = committed_run(&store)?;
+            store.finalize_run(&run, &[keys[order[0]], keys[order[1]]])?;
+            let path = dir
+                .path()
+                .join("runs")
+                .join(run.to_string())
+                .join("manifest.json");
+            let written = fs::read_to_string(path).expect("read manifest");
+            assert_eq!(written, PINNED_MANIFEST);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn finalize_before_create_run_is_validation() -> Result<()> {
+        let (_dir, store) = temp_store();
+        let run = sample_run_config(42).id();
+        assert!(matches!(
+            store.finalize_run(&run, &[]),
+            Err(Error::Validation(_))
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn finalize_with_an_uncommitted_key_is_validation_naming_it() -> Result<()> {
+        let (_dir, store) = temp_store();
+        let (run, mut keys) = committed_run(&store)?;
+        let uncommitted = sample_identity(3).key();
+        keys.push(uncommitted);
+        match store.finalize_run(&run, &keys) {
+            Err(Error::Validation(msg)) => {
+                assert!(msg.contains(&uncommitted.to_string()), "{msg}")
+            }
+            other => panic!("expected Validation, got {other:?}"),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn finalize_with_duplicate_keys_is_validation() -> Result<()> {
+        let (_dir, store) = temp_store();
+        let (run, keys) = committed_run(&store)?;
+        assert!(matches!(
+            store.finalize_run(&run, &[keys[0], keys[1], keys[0]]),
+            Err(Error::Validation(_))
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn refinalize_with_the_same_keys_is_a_no_op() -> Result<()> {
+        let (dir, store) = temp_store();
+        let (run, keys) = committed_run(&store)?;
+        store.finalize_run(&run, &keys)?;
+        let path = dir
+            .path()
+            .join("runs")
+            .join(run.to_string())
+            .join("manifest.json");
+        let before = fs::read(&path).expect("read manifest");
+        // Resume through finalization: the shuffled recall converges on
+        // the same bytes and leaves the file untouched.
+        store.finalize_run(&run, &[keys[1], keys[0]])?;
+        assert_eq!(fs::read(&path).expect("read manifest"), before);
+        Ok(())
+    }
+
+    #[test]
+    fn refinalize_with_different_keys_is_corruption() -> Result<()> {
+        let (_dir, store) = temp_store();
+        let (run, keys) = committed_run(&store)?;
+        store.finalize_run(&run, &keys)?;
+        assert!(matches!(
+            store.finalize_run(&run, &keys[..1]),
+            Err(Error::Corruption(_))
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn manifest_round_trips_typed_data() -> Result<()> {
+        let (_dir, store) = temp_store();
+        let (run, keys) = committed_run(&store)?;
+        store.finalize_run(&run, &keys)?;
+        let manifest = store.manifest(&run)?.expect("finalized manifest");
+        assert_eq!(manifest.run, run);
+        let tasks: Vec<_> = manifest.entries.iter().map(|e| e.task).collect();
+        let mut sorted = keys.clone();
+        sorted.sort();
+        assert_eq!(tasks, sorted);
+        Ok(())
+    }
+
+    #[test]
+    fn manifest_of_an_unfinalized_run_is_none() -> Result<()> {
+        let (_dir, store) = temp_store();
+        let (run, _keys) = committed_run(&store)?;
+        assert!(store.manifest(&run)?.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn a_manifest_copied_into_another_run_directory_is_corruption() -> Result<()> {
+        let (dir, store) = temp_store();
+        let (run, keys) = committed_run(&store)?;
+        store.finalize_run(&run, &keys)?;
+        let other = store.create_run(&sample_run_config(43))?;
+        let manifest_of = |run: &RunId| {
+            dir.path()
+                .join("runs")
+                .join(run.to_string())
+                .join("manifest.json")
+        };
+        fs::copy(manifest_of(&run), manifest_of(&other)).expect("copy manifest");
+        assert!(matches!(store.manifest(&other), Err(Error::Corruption(_))));
+        Ok(())
+    }
+
+    #[test]
+    fn a_hand_corrupted_manifest_file_is_corruption() -> Result<()> {
+        let (dir, store) = temp_store();
+        let (run, keys) = committed_run(&store)?;
+        store.finalize_run(&run, &keys)?;
+        let path = dir
+            .path()
+            .join("runs")
+            .join(run.to_string())
+            .join("manifest.json");
+        fs::write(&path, b"{ definitely not a manifest").expect("corrupt manifest");
+        assert!(matches!(store.manifest(&run), Err(Error::Corruption(_))));
         Ok(())
     }
 
