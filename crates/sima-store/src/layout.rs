@@ -57,3 +57,8 @@ pub(crate) fn run_dir(root: &Path, run: &RunId) -> PathBuf {
 pub(crate) fn manifest_path(root: &Path, run: &RunId) -> PathBuf {
     run_dir(root, run).join("manifest.json")
 }
+
+/// A run's journal path: `runs/<run-id-hex>/journal`.
+pub(crate) fn journal_path(root: &Path, run: &RunId) -> PathBuf {
+    run_dir(root, run).join("journal")
+}
