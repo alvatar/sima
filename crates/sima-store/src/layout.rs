@@ -13,6 +13,8 @@
 
 use std::path::{Path, PathBuf};
 
+use sima_core::Hash;
+
 /// The `objects/` CAS directory.
 pub(crate) fn objects_dir(root: &Path) -> PathBuf {
     root.join("objects")
@@ -31,4 +33,11 @@ pub(crate) fn tasks_dir(root: &Path) -> PathBuf {
 /// The `runs/` directory.
 pub(crate) fn runs_dir(root: &Path) -> PathBuf {
     root.join("runs")
+}
+
+/// An object's CAS path: `objects/<aa>/<64-hex>`, fanned out by the first
+/// two hex characters of its address.
+pub(crate) fn object_path(root: &Path, hash: &Hash) -> PathBuf {
+    let hex = hash.to_string();
+    objects_dir(root).join(&hex[..2]).join(hex)
 }

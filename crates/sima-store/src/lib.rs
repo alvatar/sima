@@ -19,9 +19,11 @@
 //! racing on one path either converge on identical bytes or fail with
 //! `Corruption`.
 
-#[cfg_attr(not(test), allow(dead_code))]
 mod atomic;
+mod cas;
 mod layout;
 mod store;
+#[cfg(test)]
+mod testutil;
 
 pub use store::Store;

@@ -68,14 +68,13 @@ fn sync_parent_dir(_path: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::write_atomic;
-    use crate::Store;
+    use crate::testutil::temp_store;
     use sima_core::Result;
     use std::fs;
 
     #[test]
     fn write_atomic_places_exact_content_and_leaves_tmp_empty() -> Result<()> {
-        let dir = tempfile::tempdir().expect("create temp dir");
-        let store = Store::open(dir.path())?;
+        let (dir, store) = temp_store();
         let dest = dir.path().join("tasks").join("entry");
         write_atomic(store.root(), &dest, b"payload bytes\n")?;
         assert_eq!(
@@ -92,8 +91,7 @@ mod tests {
 
     #[test]
     fn concurrent_identical_writes_to_one_destination_both_succeed() -> Result<()> {
-        let dir = tempfile::tempdir().expect("create temp dir");
-        let store = Store::open(dir.path())?;
+        let (dir, store) = temp_store();
         let dest = dir.path().join("tasks").join("entry");
         // Racing writers of identical content converge: rename is
         // last-write-wins over the same bytes.
