@@ -111,7 +111,7 @@ Phase-level decisions:
       acceptance (d) fails by construction. P1 stub env hash = stub version
       constant. Provenance records, run identity = hash of canonicalized
       config; pure types + canonical encodings, no I/O
-- [ ] M1.3 Store (`sima-store`): disk layout `objects/<aa>/<hash>` (CAS,
+- [x] M1.3 Store (`sima-store`): disk layout `objects/<aa>/<hash>` (CAS,
       two-char fan-out) + `tasks/<task-key>` (index) + `runs/<run-id>/`
       (manifest, journal); cas module — blake3 objects, atomic writes
       (temp + fsync + rename), idempotent puts; catalog module — task index
