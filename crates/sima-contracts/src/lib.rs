@@ -27,4 +27,4 @@ mod stub;
 
 pub use executor::{Artifact, ExecutionContext, Executor, Outcome, Stats, TaskInput, WorkerId};
 pub use generator::Generator;
-pub use stub::{StubBehavior, StubProgram};
+pub use stub::{StubBehavior, StubGenerator, StubGeneratorConfig, StubProgram};

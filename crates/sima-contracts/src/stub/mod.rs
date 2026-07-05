@@ -5,6 +5,8 @@
 //! behaviors, a generator produces a run's specs from a seeded config, and an
 //! executor evaluates one by reading its program.
 
+mod generator;
 mod program;
 
+pub use generator::{StubGenerator, StubGeneratorConfig};
 pub use program::{StubBehavior, StubProgram};
