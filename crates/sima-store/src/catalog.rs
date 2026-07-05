@@ -50,12 +50,12 @@ impl Store {
         self.put(&bytes)?;
         // The index-entry pre-check above can go stale: another writer may
         // commit this key in the gap between that read and this write.
-        // place_atomic is the authority that closes the gap — the hard link
+        // write_exclusive is the authority that closes the gap — the hard link
         // fails if the entry now exists, and it then compares bytes, so a
         // conflicting record surfaces as Corruption instead of overwriting the
         // first result.
         let entry = format!("{record_hash}\n");
-        atomic::place_atomic(
+        atomic::write_exclusive(
             self.root(),
             &layout::task_path(self.root(), &key),
             entry.as_bytes(),
@@ -158,9 +158,9 @@ impl Store {
         let bytes = manifest::to_json_bytes(&Manifest { run: *run, entries });
         let path = layout::manifest_path(self.root(), run);
         // The race window is between this read returning NotFound and the
-        // place_atomic below: two finalizers can both see no manifest and both
+        // write_exclusive below: two finalizers can both see no manifest and both
         // proceed. This read is not the guard — it only lets the common case
-        // carry a message that names the run. The guard is place_atomic's hard
+        // carry a message that names the run. The guard is write_exclusive's hard
         // link, which fails when the manifest already exists: the loser then
         // reads the existing manifest and compares — equal is an idempotent Ok,
         // different is Corruption.
@@ -170,7 +170,7 @@ impl Store {
                 "run {run} is already finalized with a different manifest"
             ))),
             Err(e) if e.kind() == ErrorKind::NotFound => {
-                atomic::place_atomic(self.root(), &path, &bytes)
+                atomic::write_exclusive(self.root(), &path, &bytes)
             }
             Err(e) => Err(io_error(&path, e)),
         }

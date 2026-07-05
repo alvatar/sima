@@ -8,7 +8,7 @@
 //!   serves content-addressed objects: one path means one content, so a
 //!   racing writer carries identical bytes and the last writer wins
 //!   harmlessly.
-//! - [`place_atomic`] enters through a hard link that fails when the
+//! - [`write_exclusive`] enters through a hard link that fails when the
 //!   destination already exists. It serves index entries and manifests,
 //!   where two different results must never silently overwrite each other:
 //!   a collision compares bytes, and byte-equal content is an idempotent
@@ -65,7 +65,7 @@ pub(crate) fn write_atomic(root: &Path, dest: &Path, bytes: &[u8]) -> Result<()>
 /// identical bytes or fail loudly. The trailing `remove_file` drops the temp
 /// name once the content is linked into place; it is cleanup, not part of
 /// the atomicity.
-pub(crate) fn place_atomic(root: &Path, dest: &Path, bytes: &[u8]) -> Result<()> {
+pub(crate) fn write_exclusive(root: &Path, dest: &Path, bytes: &[u8]) -> Result<()> {
     let tmp = write_tmp(root, bytes)?;
     match fs::hard_link(&tmp, dest) {
         Ok(()) => {
@@ -124,16 +124,16 @@ fn sync_parent_dir(path: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{create_dir_durable, place_atomic, write_atomic};
+    use super::{create_dir_durable, write_atomic, write_exclusive};
     use crate::testutil::temp_store;
     use sima_core::{Error, Result};
     use std::fs;
 
     #[test]
-    fn place_atomic_places_exact_content_on_a_fresh_destination() -> Result<()> {
+    fn write_exclusive_places_exact_content_on_a_fresh_destination() -> Result<()> {
         let (dir, store) = temp_store();
         let dest = dir.path().join("tasks").join("entry");
-        place_atomic(store.root(), &dest, b"placed bytes\n")?;
+        write_exclusive(store.root(), &dest, b"placed bytes\n")?;
         assert_eq!(
             fs::read(&dest).expect("read destination"),
             b"placed bytes\n"
@@ -146,11 +146,11 @@ mod tests {
     }
 
     #[test]
-    fn place_atomic_over_equal_bytes_is_a_no_op() -> Result<()> {
+    fn write_exclusive_over_equal_bytes_is_a_no_op() -> Result<()> {
         let (dir, store) = temp_store();
         let dest = dir.path().join("tasks").join("entry");
-        place_atomic(store.root(), &dest, b"same bytes")?;
-        place_atomic(store.root(), &dest, b"same bytes")?;
+        write_exclusive(store.root(), &dest, b"same bytes")?;
+        write_exclusive(store.root(), &dest, b"same bytes")?;
         assert_eq!(fs::read(&dest).expect("read destination"), b"same bytes");
         let leftovers = fs::read_dir(dir.path().join("tmp"))
             .expect("read tmp dir")
@@ -160,14 +160,14 @@ mod tests {
     }
 
     #[test]
-    fn place_atomic_over_different_bytes_is_corruption() -> Result<()> {
+    fn write_exclusive_over_different_bytes_is_corruption() -> Result<()> {
         let (dir, store) = temp_store();
         let dest = dir.path().join("tasks").join("entry");
-        place_atomic(store.root(), &dest, b"original bytes")?;
+        write_exclusive(store.root(), &dest, b"original bytes")?;
         // The loser of a conflicting race fails loudly, and the placed
         // content stays intact.
         assert!(matches!(
-            place_atomic(store.root(), &dest, b"conflicting bytes"),
+            write_exclusive(store.root(), &dest, b"conflicting bytes"),
             Err(Error::Corruption(_))
         ));
         assert_eq!(
@@ -236,7 +236,7 @@ mod tests {
     }
 
     #[test]
-    fn concurrent_identical_place_atomic_all_succeed() -> Result<()> {
+    fn concurrent_identical_write_exclusive_all_succeed() -> Result<()> {
         let (dir, store) = temp_store();
         let dest = dir.path().join("tasks").join("entry");
         let store = &store;
@@ -245,7 +245,9 @@ mod tests {
         // the identical bytes back and returns an idempotent Ok.
         std::thread::scope(|scope| {
             let handles: Vec<_> = (0..8)
-                .map(|_| scope.spawn(move || place_atomic(store.root(), dest, b"identical entry")))
+                .map(|_| {
+                    scope.spawn(move || write_exclusive(store.root(), dest, b"identical entry"))
+                })
                 .collect();
             for handle in handles {
                 handle.join().expect("place thread panicked")?;
@@ -264,7 +266,7 @@ mod tests {
     }
 
     #[test]
-    fn concurrent_conflicting_place_atomic_has_exactly_one_winner() -> Result<()> {
+    fn concurrent_conflicting_write_exclusive_has_exactly_one_winner() -> Result<()> {
         let (dir, store) = temp_store();
         let dest = dir.path().join("tasks").join("entry");
         let store = &store;
@@ -275,7 +277,7 @@ mod tests {
             let handles: Vec<_> = (0..8)
                 .map(|i| {
                     scope.spawn(move || {
-                        place_atomic(store.root(), dest, format!("payload {i}").as_bytes())
+                        write_exclusive(store.root(), dest, format!("payload {i}").as_bytes())
                     })
                 })
                 .collect();
