@@ -8,6 +8,7 @@
 - Dry, direct, professional. Lead with the substance. The most important point goes first and in full, never buried as a "side note".
 - Never narrate your own tone or stance. No meta-commentary about how you are speaking — no "I'll say this flatly", "not defending it", "to be clear", "naming this directly", "stating plainly", or any phrase that describes the manner of your reply instead of just delivering it. Say the thing; do not announce how you are saying it.
 - Define things by what they are, not by what they are not. A negative ("this is not X", "rather than Y") bloats without adding clarity; state the positive fact. Applies to prose, code comments, and docs.
+- Do not invent ad-hoc hyphenated terms as shorthand ("line-framed", "no-replace"); use plain, established wording and spell the mechanism out. Applies to prose, code comments, and docs.
 
 ## General engineering rules
 
@@ -76,3 +77,4 @@ Principles:
 - Comments should not have historical references to the previous versions of the code. They should be explain what the code does now, exclusively.
 - Add doc comments for functions / important APIs, in all languages and parts of the project
 - Use the project `Error` / `Result<T>` types for fallible project code; do not introduce ad-hoc string error returns
+- Accessors returning a value by identity drop the `get_` prefix and read as nouns (`record(&key)`, `manifest(&run)`), per the Rust API guideline C-GETTER. `get_` is reserved for nothing here.
