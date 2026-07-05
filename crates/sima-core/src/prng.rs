@@ -8,7 +8,7 @@
 //! `seed`, which is what pins this module against the literature's
 //! known-answer values.
 //!
-//! Substream derivation: [`derive`] maps `(seed, tag)` to a new seed via
+//! Substream derivation: [`derive`](fn@derive) maps `(seed, tag)` to a new seed via
 //! `mix(seed ^ mix(tag))`. The construction is structurally distinct from
 //! [`next`] (xor of a mixed tag, no golden-ratio stepping), so a derived
 //! seed colliding with a stream output is a chance event (~2^-64 per pair),

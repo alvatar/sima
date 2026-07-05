@@ -1,6 +1,6 @@
 //! Content identity: a newtype over the 32-byte blake3 digest.
 //!
-//! Everything identity-bearing in sima is addressed by a [`Hash`]; raw
+//! Everything identity-bearing in sima is addressed by a [`Hash`](struct@Hash); raw
 //! `[u8; 32]` digests never cross public API boundaries. The canonical text
 //! form is lowercase hex ([`fmt::Display`]), and [`Hash::from_hex`] accepts
 //! exactly that form back — one spelling per identity.
