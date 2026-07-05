@@ -121,13 +121,13 @@ Phase-level decisions:
       — append-only per-run journal beside the manifest, one event per line,
       newline-terminated crash-safe appends (a torn final line is detected
       and ignored on read), non-identity-bearing
-- [ ] M1.4 Contracts + stubs (`sima-contracts`): executor and generator
-      contracts over opaque specs and params; task definition carries an
-      optional input-state object reference (segmented-execution enabler,
-      unused by the stub, part of the task key); the contract distinguishes
-      identity inputs (spec, params, seed, env, input-state — determine the
-      key and the
-      committed artifacts) from execution context (attempt number, worker id
+- [x] M1.4 Contracts + stubs (`sima-contracts`): executor and generator
+      contracts over opaque specs and params; the executor receives the full
+      identity, including the input-state reference already carried by the
+      task key (segmented-execution enabler, unused by the stub); the
+      contract distinguishes identity inputs (spec, params, seed, env,
+      input-state — determine the key and the committed artifacts) from
+      execution context (attempt number, worker id
       — visible to the executor, forbidden from influencing committed
       artifacts); seeded stub generator; spec-programmed stub executor (spec
       bytes select behavior: succeed / fail N times then succeed / panic /

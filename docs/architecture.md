@@ -30,7 +30,7 @@ Strictly downward dependencies, enforced by workspace crate edges.
 | L0    | `sima-core`      | error type, canonical encoding, content hash, PRNG                    |
 | L1    | `sima-model`     | identity vocabulary: spec, params, environment, task key, record, run config |
 | L2    | `sima-store`     | durable state: CAS, task index, run manifests, journals               |
-| L3    | `sima-contracts` | generator/executor traits (arrives M1.4)                              |
+| L3    | `sima-contracts` | generator/executor contracts over opaque specs and params; stub generator and executor |
 | L4    | `sima-scheduler` | task sources, leases, lifecycle state machine (arrives M1.5)          |
 | L5    | `sima-pipeline`  | orchestration, resume, re-evaluation (arrives M1.6)                   |
 | L6    | `sima`           | CLI binary                                                            |
@@ -215,6 +215,49 @@ content converges through rename and link atomicity, and a conflicting racer
 on an index entry or manifest fails loudly instead of overwriting. A run's
 journal has a single writer, the orchestrator; single-writer-per-run is
 enforced by the orchestrator lease file (arrives M1.6).
+
+## `sima-contracts` (L3)
+
+The two seams the search substrate runs candidates through, plus deterministic
+stub implementations of both. A `Generator` produces a run's candidate specs
+from `(root_seed, params, format)`, deterministically. An `Executor`
+interprets one format: it receives one candidate and returns what that
+evaluation produced. Both are pure compute over `sima-model` values; the crate
+depends on `sima-model` and `sima-core` only and never touches the store, so
+the trust boundary — executors never reach durable state — is visible in the
+crate graph. The worker (M1.5) is what carries executor output into the store.
+
+The distinction the contract encodes in the type system is the split between
+identity inputs and execution context. A `TaskInput` carries the identity
+inputs — spec, params, seed, environment, and the loaded input-state bytes —
+which determine the task key and the committed artifacts. An
+`ExecutionContext` carries the attempt number and worker id, which the executor
+may read but which never influence a committed artifact. The input-state slot
+mirrors the key's `input_state`: the key holds the state object's digest, the
+executor receives the bytes; it is the segmented-execution enabler (M2.5),
+present in the identity surface here and unused by the stub except as identity.
+
+An execution yields an `Outcome`: `Completed { artifacts, stats }` or
+`Failed { reason }`. A failed candidate is a domain outcome the family owns —
+retryable at the scheduler's discretion — so it is an ordinary `Ok(Failed)`,
+distinct from `Err`, which is reserved for an infrastructure fault such as a
+spec whose bytes are not a valid program. This keeps candidate failure out of
+the shared `sima-core::Error` enum. An `Artifact` is produced bytes — a name
+and a blob the worker stores in the CAS and references from the `TaskRecord`
+through a model `ArtifactRef` — and must be a pure function of the identity
+inputs. `Stats` is opaque observational bytes destined for the journal; it may
+reflect the execution context and never enters a record.
+
+The stub generator and stub executor supply this contract without a GPU or a
+store: a spec carries a stub program selecting one behavior — succeed, fail
+until a threshold attempt then succeed, panic, or sleep — so the scheduler
+(M1.5) has a deterministic, programmable substrate for its failure matrix. The
+stub's committed artifact is the digest of the identity inputs alone, so it
+reproduces across attempts and workers; the attempt number folds only into the
+stats and into the gate that decides whether the behavior fails this attempt or
+completes. That gate is the one sanctioned read of the attempt number, and the
+artifact the behavior eventually commits does not depend on which attempt
+reached it.
 
 ## Determinism proof obligations
 
