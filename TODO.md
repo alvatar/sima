@@ -118,9 +118,9 @@ Phase-level decisions:
       with write-ordering discipline (result objects durable before the index
       entry referencing them), run manifest with canonical ordering,
       run-closure enumeration (all objects a run references); journal module
-      — append-only per-run journal beside the manifest, line-framed
-      crash-safe appends (a torn final line is detected and ignored on read),
-      non-identity-bearing
+      — append-only per-run journal beside the manifest, one event per line,
+      newline-terminated crash-safe appends (a torn final line is detected
+      and ignored on read), non-identity-bearing
 - [ ] M1.4 Contracts + stubs (`sima-contracts`): executor and generator
       contracts over opaque specs and params; task definition carries an
       optional input-state object reference (segmented-execution enabler,

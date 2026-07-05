@@ -164,8 +164,8 @@ mod tests {
         let (dir, store) = temp_store();
         let dest = dir.path().join("tasks").join("entry");
         place_atomic(store.root(), &dest, b"original bytes")?;
-        // No-replace: the loser of a conflicting race fails loudly and
-        // the placed content stays intact.
+        // The loser of a conflicting race fails loudly, and the placed
+        // content stays intact.
         assert!(matches!(
             place_atomic(store.root(), &dest, b"conflicting bytes"),
             Err(Error::Corruption(_))
@@ -252,7 +252,10 @@ mod tests {
             }
             Ok::<(), Error>(())
         })?;
-        assert_eq!(fs::read(dest).expect("read destination"), b"identical entry");
+        assert_eq!(
+            fs::read(dest).expect("read destination"),
+            b"identical entry"
+        );
         let leftovers = fs::read_dir(dir.path().join("tmp"))
             .expect("read tmp dir")
             .count();
@@ -290,7 +293,9 @@ mod tests {
         assert_eq!(conflicts, 7);
         // The surviving file is exactly one of the offered payloads, intact.
         let survivor = fs::read(dest).expect("read destination");
-        let offered: Vec<Vec<u8>> = (0..8).map(|i| format!("payload {i}").into_bytes()).collect();
+        let offered: Vec<Vec<u8>> = (0..8)
+            .map(|i| format!("payload {i}").into_bytes())
+            .collect();
         assert!(offered.contains(&survivor));
         let leftovers = fs::read_dir(dir.path().join("tmp"))
             .expect("read tmp dir")
