@@ -64,7 +64,8 @@ impl Executor for StubExecutor {
     }
 }
 
-/// The successful outcome: the identity artifact plus attempt-bearing stats.
+/// The successful outcome: the identity artifact plus the stats carrying the
+/// attempt number.
 fn completed(input: &TaskInput<'_>, ctx: &ExecutionContext) -> Outcome {
     Outcome::Completed {
         artifacts: vec![result_artifact(input)],
@@ -185,7 +186,10 @@ mod tests {
         for (attempt, worker) in [(0u32, 0u64), (1, 1), (5, 99)] {
             let outcome = exec.execute(&input, &ctx(attempt, worker))?;
             match outcome {
-                Outcome::Completed { artifacts: a, stats } => {
+                Outcome::Completed {
+                    artifacts: a,
+                    stats,
+                } => {
                     artifacts.push(a);
                     stats_by_attempt.push(stats);
                 }

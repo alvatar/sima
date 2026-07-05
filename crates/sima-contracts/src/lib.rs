@@ -14,10 +14,11 @@
 //! determines the task key and the committed artifacts, and an execution
 //! context — attempt number and worker id — which it may read but which
 //! never influences a committed artifact. Stats is the one output that may
-//! reflect execution context; it is observational and journal-bound.
+//! reflect execution context; it is observational and destined for the
+//! journal.
 //!
 //! The stub module supplies a seeded generator and a spec-programmed
-//! executor (succeed, fail-then-succeed, panic, sleep) so the scheduler
+//! executor (succeed, fail then succeed, panic, sleep) so the scheduler
 //! (M1.5) has a deterministic, programmable substrate to build against
 //! without a GPU or real model families.
 

@@ -117,11 +117,18 @@ mod tests {
                 "0000000000000000",
             ),
             (StubBehavior::Panic, "02", "0000000000000000"),
-            (StubBehavior::Sleep(0), "030000000000000000", "0000000000000000"),
+            (
+                StubBehavior::Sleep(0),
+                "030000000000000000",
+                "0000000000000000",
+            ),
         ];
         for (behavior, behavior_hex, nonce_hex) in cases {
             let program = StubProgram { behavior, nonce: 0 };
-            assert_eq!(to_hex(&program.to_bytes()), format!("{behavior_hex}{nonce_hex}"));
+            assert_eq!(
+                to_hex(&program.to_bytes()),
+                format!("{behavior_hex}{nonce_hex}")
+            );
         }
     }
 
@@ -163,7 +170,10 @@ mod tests {
         .to_bytes();
         for cut in 0..full.len() {
             assert!(
-                matches!(StubProgram::from_bytes(&full[..cut]), Err(Error::Encoding(_))),
+                matches!(
+                    StubProgram::from_bytes(&full[..cut]),
+                    Err(Error::Encoding(_))
+                ),
                 "prefix of {cut} bytes must be rejected"
             );
         }

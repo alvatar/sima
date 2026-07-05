@@ -70,7 +70,10 @@ pub struct Stats {
 pub enum Outcome {
     /// The candidate evaluated successfully: committed artifacts plus
     /// observational stats.
-    Completed { artifacts: Vec<Artifact>, stats: Stats },
+    Completed {
+        artifacts: Vec<Artifact>,
+        stats: Stats,
+    },
     /// The candidate evaluation failed. Retryable at the scheduler's
     /// discretion; the reason is observational.
     Failed { reason: String },

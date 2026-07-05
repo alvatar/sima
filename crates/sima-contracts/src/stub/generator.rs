@@ -3,7 +3,7 @@
 //! [`StubGeneratorConfig`] is the generator's params blob — a list of the
 //! behaviors to program into the run's candidates. [`StubGenerator`] reads it,
 //! stamps each candidate with a nonce derived from the run seed so the specs
-//! stay distinct and seed-dependent, and returns one [`Spec`] per behavior.
+//! stay distinct and depend on the seed, and returns one [`Spec`] per behavior.
 
 use sima_core::{Dec, Enc, Result, prng};
 use sima_model::{FormatId, GeneratorId, Spec};
@@ -84,8 +84,8 @@ impl Generator for StubGenerator {
         let mut specs = Vec::with_capacity(config.behaviors.len());
         for (i, behavior) in config.behaviors.iter().enumerate() {
             // Per-candidate nonce from the project PRNG (the `rand` crate is
-            // barred from result-affecting paths): distinct candidates and a
-            // seed-dependent generator.
+            // barred from result-affecting paths): distinct candidates, and
+            // specs that change with the seed.
             let program = StubProgram {
                 behavior: *behavior,
                 nonce: prng::derive(root_seed, i as u64),
@@ -210,7 +210,11 @@ mod tests {
     fn empty_config_yields_no_specs() -> Result<()> {
         let generator = StubGenerator::new()?;
         let format = FormatId::new("stub.v1")?;
-        assert!(generator.generate(1, &config(Vec::new()), &format)?.is_empty());
+        assert!(
+            generator
+                .generate(1, &config(Vec::new()), &format)?
+                .is_empty()
+        );
         Ok(())
     }
 
