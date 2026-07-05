@@ -3,8 +3,8 @@
 sima is a substrate for deterministic, reproducible execution of GPU
 programs and search over them. A program is opaque compute: the substrate
 runs it, records the result under a content address, and never interprets
-what it computes. The current specialization is cellular-automata-like
-programs, and the same model extends to neural networks. `README.md` records
+what it computes. The current specialization is neural networks and
+cellular-automata-like programs. `README.md` records
 the motivation and design; `TODO.md` the roadmap; `AGENTS.md` the project
 rules and settled invariants. This document describes the implemented
 system.
