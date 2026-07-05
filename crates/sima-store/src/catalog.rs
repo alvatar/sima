@@ -160,10 +160,10 @@ impl Store {
         // The race window is between this read returning NotFound and the
         // place_atomic below: two finalizers can both see no manifest and both
         // proceed. This read is not the guard — it only lets the common case
-        // carry a run-scoped message. The guard is place_atomic's hard link,
-        // which fails when the manifest already exists: the loser then reads the
-        // existing manifest and compares — equal is an idempotent Ok, different
-        // is Corruption.
+        // carry a message that names the run. The guard is place_atomic's hard
+        // link, which fails when the manifest already exists: the loser then
+        // reads the existing manifest and compares — equal is an idempotent Ok,
+        // different is Corruption.
         match fs::read(&path) {
             Ok(existing) if existing == bytes => Ok(()),
             Ok(_) => Err(Error::Corruption(format!(

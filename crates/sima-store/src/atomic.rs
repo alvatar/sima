@@ -30,7 +30,7 @@ use sima_core::{Error, Result};
 use crate::layout;
 
 // Durable directory fsync (below) has no portable equivalent off unix.
-// Refuse the build there rather than silently downgrade crash-durability.
+// Refuse the build there rather than silently downgrade crash safety.
 #[cfg(not(unix))]
 compile_error!("sima-store supports unix targets only: durable directory fsync is unix-specific");
 

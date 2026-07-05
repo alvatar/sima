@@ -68,7 +68,8 @@ The foundation every crate shares:
 ## `sima-model` (L1)
 
 Pure data, no I/O; depends on `sima-core` only. Every encoding opens with a
-str-framed domain tag, fixed forever (a layout change mints a `.v2`):
+length-prefixed string domain tag, fixed forever (a layout change mints a
+`.v2`):
 
 | Tag                   | Type           | Id            |
 |-----------------------|----------------|---------------|
@@ -156,8 +157,8 @@ survives a crash together with the files inside it. POSIX rename and link
 atomicity means a reader — including a process resuming after SIGKILL —
 observes a complete file or none. Directory fsync is specific to unix, so
 the crate builds on unix targets only; the build is refused elsewhere rather
-than silently dropping crash-durability. Leftover `tmp/` files after a crash
-are inert; sweeping them is retention work (P6).
+than silently dropping durability across a crash. Leftover `tmp/` files after
+a crash are inert; sweeping them is retention work (P6).
 
 ### Write ordering
 
