@@ -2,11 +2,13 @@
 
 ## *Search In the Manifold of Automata*
 
-Distributed infrastructure for generating candidate automata, executing them
+Distributed infrastructure for generating candidate programs, executing them
 deterministically at scale, and evaluating them through a staged, cost-aware
-pipeline. SIMA targets workloads where candidates are produced in large volume
-— including by models — and must be run and assessed reliably, reproducibly,
-and at low cost.
+pipeline. A candidate is a GPU program treated as opaque compute — currently
+cellular-automata-like models (including neural cellular automata) and neural
+networks, with the infrastructure agnostic to what a candidate computes. SIMA
+targets workloads where candidates are produced in large volume — including by
+models — and must be run and assessed reliably, reproducibly, and at low cost.
 
 A SIMA run starts on a single machine and scales out, when
 needed, to pluggable remote execution backends — cheap spot marketplaces,
@@ -17,8 +19,9 @@ laptop, and treats everything beyond it as an elastic, heterogeneous extension.
 
 ## Overview
 
-SIMA proposes candidates as specs — opaque parameter data (genomes) interpreted
-by fixed simulation engines — runs them on GPU or CPU, scores them through a
+SIMA proposes candidates as specs — opaque parameter data interpreted by fixed
+engines (a cellular-automaton genome, a network's weights) — runs them on GPU or
+CPU, scores them through a
 staged evaluation pipeline, and records each with complete provenance. The space
 of candidates is large and mostly low-value; the system exists to traverse it
 efficiently and surface the results worth attention while keeping the cost of
@@ -43,10 +46,10 @@ prompts assembled from prior candidates and their evaluation feedback, and an
 ensemble mixing a cheap model for breadth with an expensive one for occasional
 high-quality jumps.
 
-**Execution.** Runs candidates on fixed simulation engines — GPU via Vulkan
-compute, with CPU reference implementations for verification. Candidates are
-data, not code: there is nothing to sandbox, and execution cost is bounded by
-construction (cells × steps). Work is scheduled across available devices — and
+**Execution.** Runs candidates on fixed engines — GPU via Vulkan compute, with
+CPU reference implementations for verification. Candidates are data, not code:
+there is nothing to sandbox, and execution cost is bounded by construction (for
+a cellular automaton, cells × steps). Work is scheduled across available devices — and
 across configured remote backends — with backpressure when generation outpaces
 execution; worker failures are contained by process isolation and converge
 through idempotent retry. Outputs are captured deterministically.
@@ -90,10 +93,10 @@ machines, another box on the LAN — are declared in the run configuration and
 differ in cost, reliability, and trust. The scheduler places work according to
 those parameters rather than treating the pool as uniform.
 
-**Determinism survives heterogeneity.** Candidates are genomes — data
-interpreted by fixed simulation engines — so determinism is a property of the
-engines, established once, per rule family (see Determinism below). Execution
-cost is a deterministic function of the task itself (cells × steps), so
+**Determinism survives heterogeneity.** Candidates are specs — data interpreted
+by fixed engines — so determinism is a property of the engines, established once,
+per family (see Determinism below). Execution cost is a deterministic function of
+the task itself (for a cellular automaton, cells × steps), so
 fitness and cost remain comparable between a laptop and a rented GPU box
 without metering instrumentation.
 
