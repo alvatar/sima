@@ -1,11 +1,11 @@
-//! The run journal: append-only observational history, line-framed.
+//! The run journal: append-only observational history, one event per line.
 //!
-//! The store owns the framing and its crash tolerance only: one line per
-//! event, newline-terminated, fsynced per append; on read, bytes past the
-//! last newline are a torn final write, detected and ignored. The line
-//! schema belongs to the emitting layers — scheduler lifecycle events and
-//! status above. Journals legitimately differ between identical runs and
-//! are excluded from every equality criterion.
+//! The store owns the framing and its crash tolerance only: one event per
+//! line, newline-terminated, fsynced per append; on read, bytes past the
+//! last newline are a torn final write, detected and ignored. The meaning
+//! of each line belongs to the emitting layers — scheduler lifecycle events
+//! and status above. Journals legitimately differ between identical runs
+//! and are excluded from every equality criterion.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{ErrorKind, Write};

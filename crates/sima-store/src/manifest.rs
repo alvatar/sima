@@ -4,8 +4,8 @@
 //! compares, so its bytes are canonicalized: pretty-printed 2-space JSON,
 //! trailing newline, entries strictly ascending by task key. Serde runs
 //! on a private hex-string mirror; conversion to the typed form is where
-//! validation lives. The manifest is human-readable index data — the
-//! serde world — and never identity-bearing.
+//! validation lives. The manifest is human-readable index data,
+//! serialized with serde, and is never identity-bearing.
 
 use serde::{Deserialize, Serialize};
 use sima_core::{Error, Hash, Result};

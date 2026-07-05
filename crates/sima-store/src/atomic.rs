@@ -1,16 +1,18 @@
 //! Atomic-write mechanics shared by objects, index entries, and manifests.
 //!
 //! Every durable file starts as full content in a unique `tmp/<pid>-<seq>`
-//! file, fsynced, then enters its destination in one of two placement
-//! modes, each followed by an fsync of the destination's parent directory:
+//! file, fsynced, then enters its destination in one of two ways, each
+//! followed by an fsync of the destination's parent directory:
 //!
-//! - [`write_atomic`] renames into place — last-write-wins, for
-//!   content-addressed objects, where one path means one content and
-//!   racing writers carry identical bytes by construction.
-//! - [`place_atomic`] hard-links into place — no-replace, for index
-//!   entries and manifests, where an existing destination decides the
-//!   outcome: byte-equal content is an idempotent no-op, different
-//!   content fails loudly with `Corruption`.
+//! - [`write_atomic`] renames into place, replacing any existing file. It
+//!   serves content-addressed objects: one path means one content, so a
+//!   racing writer carries identical bytes and the last writer wins
+//!   harmlessly.
+//! - [`place_atomic`] enters through a hard link that fails when the
+//!   destination already exists. It serves index entries and manifests,
+//!   where two different results must never silently overwrite each other:
+//!   a collision compares bytes, and byte-equal content is an idempotent
+//!   `Ok` while different content fails loudly with `Corruption`.
 //!
 //! Directories are created through [`create_dir_durable`], which fsyncs
 //! the parent so the new entry itself survives a crash. A reader —
@@ -40,21 +42,24 @@ pub(crate) fn io_error(path: &Path, source: std::io::Error) -> Error {
 }
 
 /// Writes `bytes` to `dest` atomically through the store's `tmp/`
-/// directory, replacing any existing file. Concurrent writers to one
-/// destination race benignly when their content is identical: rename is
-/// last-write-wins.
+/// directory, replacing any existing file. This serves content-addressed
+/// objects, where one path means one content: concurrent writers carry
+/// identical bytes, so the last writer wins harmlessly.
 pub(crate) fn write_atomic(root: &Path, dest: &Path, bytes: &[u8]) -> Result<()> {
     let tmp = write_tmp(root, bytes)?;
     fs::rename(&tmp, dest).map_err(|e| io_error(dest, e))?;
     sync_parent_dir(dest)
 }
 
-/// Writes `bytes` to `dest` atomically with no-replace semantics: the
-/// fsynced `tmp/` file is hard-linked into place, which fails when `dest`
-/// already exists. On collision the existing content decides — byte-equal
-/// is `Ok` (an idempotent re-placement), different content is
-/// [`Error::Corruption`] and the existing file stays intact. Racing
-/// writers therefore converge on identical bytes or fail loudly.
+/// Writes `bytes` to `dest` for index entries and manifests, where two
+/// different results must never silently overwrite each other. The fsynced
+/// `tmp/` file enters through a hard link that fails when `dest` already
+/// exists; on collision the existing content decides — byte-equal is `Ok`
+/// (an idempotent re-placement), different content is [`Error::Corruption`]
+/// and the existing file stays intact. Racing writers therefore converge on
+/// identical bytes or fail loudly. The trailing `remove_file` drops the temp
+/// name once the content is linked into place; it is cleanup, not part of
+/// the atomicity.
 pub(crate) fn place_atomic(root: &Path, dest: &Path, bytes: &[u8]) -> Result<()> {
     let tmp = write_tmp(root, bytes)?;
     match fs::hard_link(&tmp, dest) {
@@ -212,8 +217,8 @@ mod tests {
     fn concurrent_identical_writes_to_one_destination_both_succeed() -> Result<()> {
         let (dir, store) = temp_store();
         let dest = dir.path().join("tasks").join("entry");
-        // Racing writers of identical content converge: rename is
-        // last-write-wins over the same bytes.
+        // Racing writers of identical content converge: rename replaces
+        // over the same bytes, so the last writer wins.
         std::thread::scope(|scope| {
             let handles: Vec<_> = (0..8)
                 .map(|_| scope.spawn(|| write_atomic(store.root(), &dest, b"identical content")))

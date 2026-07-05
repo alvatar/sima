@@ -17,8 +17,8 @@ use crate::store::Store;
 impl Store {
     /// Stores `bytes` under their blake3 address and returns it.
     /// Idempotent: an existing object is left in place, unrewritten.
-    /// Concurrent puts of the same bytes race benignly — rename is
-    /// last-write-wins over identical content.
+    /// Concurrent puts of the same bytes race benignly — rename replaces
+    /// over identical content, so the last writer wins harmlessly.
     pub fn put(&self, bytes: &[u8]) -> Result<Hash> {
         let hash = hash_bytes(bytes);
         if self.has(&hash)? {

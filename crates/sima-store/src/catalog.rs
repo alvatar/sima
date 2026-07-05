@@ -48,8 +48,12 @@ impl Store {
             };
         }
         self.put(&bytes)?;
-        // No-replace placement closes the race the entry pre-check leaves
-        // open: a conflicting writer landing in between fails loudly.
+        // The index-entry pre-check above can go stale: another writer may
+        // commit this key in the gap between that read and this write.
+        // place_atomic is the authority that closes the gap — the hard link
+        // fails if the entry now exists, and it then compares bytes, so a
+        // conflicting record surfaces as Corruption instead of overwriting the
+        // first result.
         let entry = format!("{record_hash}\n");
         atomic::place_atomic(
             self.root(),
@@ -115,6 +119,12 @@ impl Store {
         Ok(run)
     }
 
+    /// Finalizing seals which tasks a run comprises. Before it a run is
+    /// *open*: its task set is whatever has accrued in the index. Finalizing
+    /// writes the manifest — the fixed, sorted `(task, record)` list — which
+    /// marks the run answered and is what acceptance and [`Self::run_closure`]
+    /// read from. After finalization the set does not change.
+    ///
     /// Finalizes a run over exactly `keys`: every key must be committed
     /// ([`Error::Validation`] naming the first that is not), and the
     /// manifest is written atomically with entries sorted by task key, so
@@ -147,8 +157,13 @@ impl Store {
         }
         let bytes = manifest::to_json_bytes(&Manifest { run: *run, entries });
         let path = layout::manifest_path(self.root(), run);
-        // The pre-read gives the conflict its run-level message; the
-        // no-replace placement closes the remaining race window.
+        // The race window is between this read returning NotFound and the
+        // place_atomic below: two finalizers can both see no manifest and both
+        // proceed. This read is not the guard — it only lets the common case
+        // carry a run-scoped message. The guard is place_atomic's hard link,
+        // which fails when the manifest already exists: the loser then reads the
+        // existing manifest and compares — equal is an idempotent Ok, different
+        // is Corruption.
         match fs::read(&path) {
             Ok(existing) if existing == bytes => Ok(()),
             Ok(_) => Err(Error::Corruption(format!(

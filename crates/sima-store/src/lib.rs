@@ -13,13 +13,13 @@
 //! ```
 //!
 //! Every durable file is placed atomically — full content to `tmp/`,
-//! fsync, then rename (objects) or no-replace hard-link (index entries,
-//! manifests) into place, parent-directory fsync — and every directory is
-//! created with its parent fsynced, so a reader, including a process
-//! resuming after SIGKILL, observes a complete file or none. Store
-//! methods take `&self` and are safe under concurrent use: writers racing
-//! on one path converge on identical bytes, and no-replace placement
-//! makes a conflicting racer fail with `Corruption`.
+//! fsync, then into place with a parent-directory fsync: objects enter by
+//! rename, index entries and manifests by a hard link that fails when the
+//! destination already exists. Every directory is created with its parent
+//! fsynced, so a reader, including a process resuming after SIGKILL,
+//! observes a complete file or none. Store methods take `&self` and are
+//! safe under concurrent use: writers racing on one path converge on
+//! identical bytes, and a conflicting racer fails with `Corruption`.
 
 mod atomic;
 mod cas;
