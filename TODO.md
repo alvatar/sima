@@ -8,7 +8,7 @@ machine-local: elaborations are written fresh from this document's decisions,
 which must therefore carry everything durable. This document is living —
 structure and content evolve through discussion.
 
-Settled context: Rust, local-first. Workspace under `crates/`, one crate per
+Settled context: Rust; local execution first, distributed by design. Workspace under `crates/`, one crate per
 layer (below). GPU execution via Vulkan compute (`ash`), shaders compiled to
 SPIR-V at build time (shaderc). Content addressing with blake3. Concurrency
 via std threads and channels — no async runtime (revisit only if P3

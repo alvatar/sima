@@ -49,7 +49,7 @@
 
 ## Architecture
 
-- `README.md` is the design document; the near-term work list is `TODO.md`. Rust, local-first.
+- `README.md` is the design document; the near-term work list is `TODO.md`. Rust; local execution first, distributed by design.
 - Invariants below are settled in discussion before being recorded here; new ones are added the same way.
 
 Settled invariants:

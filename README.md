@@ -8,7 +8,7 @@ pipeline. SIMA targets workloads where candidates are produced in large volume
 — including by models — and must be run and assessed reliably, reproducibly,
 and at low cost.
 
-SIMA is local-first. A run starts on a single machine and scales out, when
+A SIMA run starts on a single machine and scales out, when
 needed, to pluggable remote execution backends — cheap spot marketplaces,
 reliable cloud instances, or anything in between — without changing the
 workload or losing determinism. Systems in this space (FunSearch, AlphaEvolve)
@@ -147,7 +147,7 @@ every substrate; no result-affecting path uses a platform RNG.
 - **Candidates as data.** Specs are interpreted by fixed engines; there is no
   untrusted code path, and execution cost is a deterministic function of the
   task itself.
-- **Local-first, elastic scale-out.** A run is fully functional on one machine;
+- **Elastic scale-out.** A run is fully functional on one machine;
   remote backends extend capacity without changing semantics.
 - **Backend-agnostic determinism.** A task's result is a function of its
   content-addressed inputs, not of where it ran.
