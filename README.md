@@ -2,11 +2,13 @@
 
 ## *Search In the Manifold of Automata*
 
-Distributed infrastructure for generating candidate automata, executing them
+Distributed infrastructure for generating candidate programs, executing them
 deterministically at scale, and evaluating them through a staged, cost-aware
-pipeline. SIMA targets workloads where candidates are produced in large volume
-— including by models — and must be run and assessed reliably, reproducibly,
-and at low cost.
+pipeline. A candidate is a GPU program treated as opaque compute — currently
+neural networks and cellular-automata-like models (including neural cellular
+automata), with the infrastructure agnostic to what a candidate computes. SIMA
+targets workloads where candidates are produced in large volume — including by
+models — and must be run and assessed reliably, reproducibly, and at low cost.
 
 A SIMA run starts on a single machine and scales out, when
 needed, to pluggable remote execution backends — cheap spot marketplaces,
@@ -17,8 +19,9 @@ laptop, and treats everything beyond it as an elastic, heterogeneous extension.
 
 ## Overview
 
-SIMA proposes candidates as specs — opaque parameter data (genomes) interpreted
-by fixed simulation engines — runs them on GPU or CPU, scores them through a
+SIMA proposes candidates as specs — opaque parameter data interpreted by fixed
+engines (a network's weights, a cellular-automaton genome) — runs them on GPU or
+CPU, scores them through a
 staged evaluation pipeline, and records each with complete provenance. The space
 of candidates is large and mostly low-value; the system exists to traverse it
 efficiently and surface the results worth attention while keeping the cost of
@@ -43,10 +46,10 @@ prompts assembled from prior candidates and their evaluation feedback, and an
 ensemble mixing a cheap model for breadth with an expensive one for occasional
 high-quality jumps.
 
-**Execution.** Runs candidates on fixed simulation engines — GPU via Vulkan
-compute, with CPU reference implementations for verification. Candidates are
-data, not code: there is nothing to sandbox, and execution cost is bounded by
-construction (cells × steps). Work is scheduled across available devices — and
+**Execution.** Runs candidates on fixed engines — GPU via Vulkan compute, with
+CPU reference implementations for verification. Candidates are data, not code:
+there is nothing to sandbox, and execution cost is bounded by construction (for
+a cellular automaton, cells × steps). Work is scheduled across available devices — and
 across configured remote backends — with backpressure when generation outpaces
 execution; worker failures are contained by process isolation and converge
 through idempotent retry. Outputs are captured deterministically.
@@ -90,10 +93,10 @@ machines, another box on the LAN — are declared in the run configuration and
 differ in cost, reliability, and trust. The scheduler places work according to
 those parameters rather than treating the pool as uniform.
 
-**Determinism survives heterogeneity.** Candidates are genomes — data
-interpreted by fixed simulation engines — so determinism is a property of the
-engines, established once, per rule family (see Determinism below). Execution
-cost is a deterministic function of the task itself (cells × steps), so
+**Determinism survives heterogeneity.** Candidates are specs — data interpreted
+by fixed engines — so determinism is a property of the engines, established once,
+per family (see Determinism below). Execution cost is a deterministic function of
+the task itself (for a cellular automaton, cells × steps), so
 fitness and cost remain comparable between a laptop and a rented GPU box
 without metering instrumentation.
 
@@ -106,9 +109,10 @@ execution and spot-checking trivial, in the tradition of BOINC.
 
 ## Determinism
 
-Determinism is decided per rule family by the arithmetic of its engine, and it
-is a tested property, never an assumption: the same task run twice — or on two
-substrates — must produce identical content hashes, and CI enforces it.
+Determinism is decided per family by the arithmetic of its engine, and it is a
+tested property, never an assumption: the same task run twice — or on two
+substrates — must produce identical content hashes, or agree within a recorded
+tolerance, and CI enforces it.
 
 **Integer families are bit-exact everywhere.** A synchronous, double-buffered
 stencil over integer state makes each output cell a pure integer function of
@@ -118,24 +122,28 @@ identical grid on a CPU reference implementation, the local GPU, and any
 rented backend. Cross-substrate verification compares hashes for equality, so
 spot-checking an untrusted worker is exact.
 
-**Float families are reproducible per backend class.** Within a kernel, each
-cell's arithmetic executes in program order; the design avoids the actual
-hazards — cross-workgroup float atomics, unordered reductions, in-place
-updates — by construction, through double buffering. The remaining variable
-is the shader compiler: FMA contraction, reassociation, and fast-math
-relaxations differ across drivers and vendors. SIMA compiles with strict IEEE
-settings and folds the compiled shader and driver into the environment hash,
-so a task key pins the exact arithmetic: same GPU model and driver class
-reproduce results, and comparisons across classes use a recorded tolerance
-policy. If unconditional bit-exactness is ever required for a float family,
-fixed-point integer arithmetic restores it at some cost in dynamic range.
+**Float families — continuous automata and neural networks — are reproducible
+per backend class.** The variables are the compiler and the kernel: FMA
+contraction, reassociation, fast-math relaxations, and the order of any
+reduction differ across drivers, vendors, and library versions. SIMA compiles
+with strict IEEE settings, holds reductions to a fixed order, and folds the
+compiled kernel and driver into the environment hash, so a task key pins the
+exact arithmetic: the same GPU model and driver class reproduce results
+bit-for-bit, and comparisons across classes use a recorded tolerance policy.
+Where an engine can remove a hazard structurally it does — a double-buffered
+stencil has no cross-cell reduction to order — but a neural engine's matmuls
+and convolutions do, so there determinism is deliberate: deterministic kernels
+and a fixed reduction order rather than a gift of the substrate. If
+unconditional bit-exactness is ever required, fixed-point integer arithmetic
+restores it at some cost in dynamic range.
 
-**The engine design removes the usual GPU nondeterminism at the root.** The
-sources that plague general GPU compute — ray-traversal ordering, atomics-
-ordered accumulation, multi-kernel async races, library algorithm autotuning —
-do not appear in a double-buffered stencil engine interpreting genome data.
-They were designed out when candidates became data for a fixed engine rather
-than arbitrary GPU programs.
+**Nondeterminism is controlled at the engine, not assumed away.** The sources
+that plague general GPU compute — atomics-ordered accumulation, multi-kernel
+async races, library autotuning, unordered reductions — are designed out of the
+stencil engines and pinned down in the neural ones. A candidate is data for a
+fixed engine, never arbitrary code, so the only surface where nondeterminism
+can enter is the engine itself — established and tested once per family, not per
+candidate.
 
 All randomness is derived from a counter-based PRNG implemented identically on
 every substrate; no result-affecting path uses a platform RNG.
