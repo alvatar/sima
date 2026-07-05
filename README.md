@@ -5,8 +5,8 @@
 Distributed infrastructure for generating candidate programs, executing them
 deterministically at scale, and evaluating them through a staged, cost-aware
 pipeline. A candidate is a GPU program treated as opaque compute — currently
-cellular-automata-like models (including neural cellular automata) and neural
-networks, with the infrastructure agnostic to what a candidate computes. SIMA
+neural networks and cellular-automata-like models (including neural cellular
+automata), with the infrastructure agnostic to what a candidate computes. SIMA
 targets workloads where candidates are produced in large volume — including by
 models — and must be run and assessed reliably, reproducibly, and at low cost.
 
@@ -20,7 +20,7 @@ laptop, and treats everything beyond it as an elastic, heterogeneous extension.
 ## Overview
 
 SIMA proposes candidates as specs — opaque parameter data interpreted by fixed
-engines (a cellular-automaton genome, a network's weights) — runs them on GPU or
+engines (a network's weights, a cellular-automaton genome) — runs them on GPU or
 CPU, scores them through a
 staged evaluation pipeline, and records each with complete provenance. The space
 of candidates is large and mostly low-value; the system exists to traverse it
