@@ -23,7 +23,7 @@ fn run_digest(attempt: u32, worker: WorkerId) -> Result<Hash> {
     let generator = StubGenerator::new()?;
     let executor = StubExecutor::new()?;
     let format = FormatId::new("stub.v1")?;
-    let root_seed = 0xABCD_1234_5678_9AB_u64;
+    let root_seed = 0x0ABC_D123_4567_89AB_u64;
     let params = Params {
         bytes: vec![7, 7, 7],
     };

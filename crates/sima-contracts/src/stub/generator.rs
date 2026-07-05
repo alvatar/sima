@@ -13,7 +13,8 @@ use crate::generator::Generator;
 
 /// The stub generator's params: the behaviors to program into a run's
 /// candidates, in order. Its canonical form carries no domain tag — it lives
-/// inside a params blob (§6). One candidate is produced per behavior.
+/// inside a params blob, which frames it. One candidate is produced per
+/// behavior.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StubGeneratorConfig {
     /// The behavior to program into each candidate, in production order.

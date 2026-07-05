@@ -24,7 +24,7 @@ pub trait Generator {
 }
 
 /// `Generator` is dyn-compatible: it carries no auto-trait supertraits, and
-/// use sites add `Send`/`Sync` where they store it as a trait object (D7).
+/// use sites add `Send`/`Sync` where they store it as a trait object.
 const _: fn() = || {
     fn _object_safe(_: &dyn Generator) {}
 };

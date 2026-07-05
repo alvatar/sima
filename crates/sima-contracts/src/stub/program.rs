@@ -3,7 +3,7 @@
 //!
 //! A [`StubProgram`] is what the stub generator writes into each spec and the
 //! stub executor reads back. Its canonical form carries no domain tag: the
-//! `Spec` that holds it already frames the outer object (§6), so this is the
+//! `Spec` that holds it already frames the outer object, so this is the
 //! inner payload only. Encoding goes through [`Enc`]/[`Dec`], and `from_bytes`
 //! rejects trailing input so every program has exactly one byte image.
 

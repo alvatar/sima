@@ -19,6 +19,7 @@ pub struct WorkerId(pub u64);
 /// its evaluation settings, the seed, the environment, and — for a segment —
 /// the loaded bytes of the state object this task continues from. Every field
 /// here determines the task key and the committed artifacts.
+#[derive(Debug)]
 pub struct TaskInput<'a> {
     /// The candidate under evaluation (resolved bytes, not just its id).
     pub spec: &'a Spec,
@@ -38,6 +39,7 @@ pub struct TaskInput<'a> {
 /// committed artifact. It may legitimately flow into [`Stats`], gate retryable
 /// failure (the sanctioned `attempt` read), or drive logging — never into an
 /// [`Artifact`].
+#[derive(Debug, Clone, Copy)]
 pub struct ExecutionContext {
     /// Zero-based attempt number: 0 is the first try.
     pub attempt: u32,
@@ -94,7 +96,7 @@ pub trait Executor {
 }
 
 /// `Executor` is dyn-compatible: it carries no auto-trait supertraits, and
-/// use sites add `Send`/`Sync` where they store it as a trait object (D7).
+/// use sites add `Send`/`Sync` where they store it as a trait object.
 const _: fn() = || {
     fn _object_safe(_: &dyn Executor) {}
 };
