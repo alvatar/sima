@@ -152,6 +152,24 @@ one of two modes, chosen by purpose:
   each other, so a collision compares bytes — equal is idempotent, different
   is `Corruption`.
 
+The two modes differ only in how they treat a destination that already
+holds content:
+
+| Mode | duplicate, identical bytes | duplicate, different bytes |
+|------|----------------------------|----------------------------|
+| rename — objects | overwrites and succeeds (which copy lands is unobservable) | overwrites and succeeds (cannot arise for objects) |
+| exclusive link — index entries, manifests | succeeds, an idempotent re-write | `Corruption` |
+
+The split follows from what can conflict. A content-addressed object cannot:
+its path is the hash of its bytes, so racing writers carry identical content
+by construction, and an unconditional rename is both correct and cheap —
+which writer's copy lands is unobservable, and different bytes never reach
+that path. An index entry or a manifest can be handed conflicting content —
+two different results claiming one task key, two manifests for one run — so
+there the write compares against what already exists: an identical re-write
+is idempotent (the path taken on retry and resume), and a differing one is
+reported as `Corruption` instead of silently overwriting.
+
 Directories are created with their parent fsynced, so a new directory entry
 survives a crash together with the files inside it. POSIX rename and link
 atomicity means a reader — including a process resuming after SIGKILL —
