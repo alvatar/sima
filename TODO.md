@@ -186,7 +186,12 @@ bit-identical to an unsegmented run of equal length.
       throughput numbers recorded here. Result snapshots are stored in full
       (re-evaluation and portability require them), so extent × batch is
       chosen to a stated disk budget; retention policy is deliberately
-      deferred to P6
+      deferred to P6. Revisit CAS cost here, where disk volume and write
+      throughput first bite: measure the cost of re-hashing every object on
+      read and decide whether large artifacts get a bulk read that skips
+      verification while identity objects stay verified; measure the
+      per-object fsync write cost and weigh batching many objects behind one
+      group-commit fsync
 - [ ] M2.5 Segmented execution: a long simulation runs as a chain of tasks
       (state Sₙ + k steps → state Sₙ₊₁), checkpoint states as store objects,
       segment length from config; chain-frontier task source (successor keys
@@ -285,6 +290,10 @@ thresholds re-classifies without any re-execution.
       thresholds from config
 - [ ] M6.3 Staged cheapest-first funnel + re-evaluation from recorded runs
       without re-execution
+- [ ] M6.4 Object packing for scale, beside retention (M6.1) as the other
+      store-scaling lever: millions of small objects press on inode and
+      directory limits; a pack format — many objects in one file with an
+      index — is the answer
 
 ## P7 — Continuous CA families
 
