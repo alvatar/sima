@@ -376,6 +376,53 @@ resumed equals an unsegmented run of equal length, bit-exact.
       distribution unchanged); network-structure interestingness metrics feed
       the P6 funnel via the standing evaluation track
 
+## P9 — Out-of-tree executors (extensibility without forking)
+
+Through P8 every executor and generator is an in-tree trait implementation
+selected by a compile-time format-id match (M1.6). This phase opens the
+contract as a public extension surface: a custom executor — and generator, by
+the same mechanism — is added against a stable API and registered at runtime,
+with no sima source edit and no fork. The pure-compute trust boundary
+(executors never touch the store; workers commit through the catalog) is what
+makes loading foreign code safe; here it is enforced by isolation, not only by
+convention. The contract must be proven by several real in-tree families first,
+which is why the phase sits after the family phases rather than beside M1.4.
+
+Mechanism is deliberately open, chosen at elaboration and informed by the P2 /
+P7 / P8 families built against the same contract: dynamic library loading, a
+subprocess/IPC protocol, WASM, or a manifest plus external binary each trade
+isolation, performance, and packaging differently.
+
+Phase acceptance: a custom executor built entirely against the published API,
+in a separate repository with no sima source edit, runs through the full spine
+(search, commit, re-evaluation, distribution) with results byte-reproducible
+and portable exactly as an in-tree family's; its identity folds into the
+environment hash, so two machines that load the same custom executor agree and
+one that loads a different build is distinguished — determinism and store
+portability (P1 acceptance (d)) hold across the boundary.
+
+- [ ] P9.1 Stable contract API: freeze the executor/generator traits and their
+      wire types (spec, params, artifact, stats, task input, execution context)
+      as a versioned public surface decoupled from internal crate churn;
+      document the compatibility guarantee.
+- [ ] P9.2 Runtime registration: an out-of-tree executor announces its format
+      id and is selected without editing sima's dispatch — the static
+      format-id match (M1.6) becomes a registry. Registration and loading
+      mechanism decided here.
+- [ ] P9.3 Isolation and trust: run out-of-tree executors process-isolated so
+      the pure-compute boundary is OS-enforced (foreign code cannot reach the
+      store); their results feed the trust-tiered validation (P5.7).
+- [ ] P9.4 Identity and packaging: fold a custom executor's identity (version,
+      build/content hash) into the environment hash so runs stay reproducible
+      and portable; define how a custom family is packaged, versioned, and
+      pinned.
+- [ ] P9.5 Reference out-of-tree executor: a worked example family in a
+      separate repository, built only against the published API and exercised
+      through the full spine — the phase's proof that no fork is required.
+
+Expected to be re-split when reached; the registration and isolation mechanism
+hides surprises.
+
 ## Research tracks (standing)
 
 Parallel to the phase ladder, each eventually feeding it:
