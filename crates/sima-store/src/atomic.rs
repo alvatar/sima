@@ -29,6 +29,11 @@ use sima_core::{Error, Result};
 
 use crate::layout;
 
+// Durable directory fsync (below) has no portable equivalent off unix.
+// Refuse the build there rather than silently downgrade crash-durability.
+#[cfg(not(unix))]
+compile_error!("sima-store supports unix targets only: durable directory fsync is unix-specific");
+
 /// Process-global sequence keeping concurrent in-flight writes on
 /// distinct `tmp/` paths.
 static SEQ: AtomicU64 = AtomicU64::new(0);
@@ -109,21 +114,12 @@ fn write_tmp(root: &Path, bytes: &[u8]) -> Result<PathBuf> {
 /// Fsyncs the directory containing `path`, making a rename, link, or
 /// directory creation under it durable. Every destination lies inside
 /// the store skeleton, so a parent always exists.
-#[cfg(unix)]
 fn sync_parent_dir(path: &Path) -> Result<()> {
     let Some(parent) = path.parent() else {
         return Ok(());
     };
     let dir = File::open(parent).map_err(|e| io_error(parent, e))?;
     dir.sync_all().map_err(|e| io_error(parent, e))
-}
-
-/// Directory fsync is unavailable off unix; renames and links still land
-/// atomically, and durability of the directory entry is best-effort. The
-/// project targets linux.
-#[cfg(not(unix))]
-fn sync_parent_dir(_path: &Path) -> Result<()> {
-    Ok(())
 }
 
 #[cfg(test)]
