@@ -238,4 +238,68 @@ mod tests {
         assert_eq!(leftovers, 0);
         Ok(())
     }
+
+    #[test]
+    fn concurrent_identical_place_atomic_all_succeed() -> Result<()> {
+        let (dir, store) = temp_store();
+        let dest = dir.path().join("tasks").join("entry");
+        let store = &store;
+        let dest = &dest;
+        // The first thread's hard link creates the entry; every other reads
+        // the identical bytes back and returns an idempotent Ok.
+        std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..8)
+                .map(|_| scope.spawn(move || place_atomic(store.root(), dest, b"identical entry")))
+                .collect();
+            for handle in handles {
+                handle.join().expect("place thread panicked")?;
+            }
+            Ok::<(), Error>(())
+        })?;
+        assert_eq!(fs::read(dest).expect("read destination"), b"identical entry");
+        let leftovers = fs::read_dir(dir.path().join("tmp"))
+            .expect("read tmp dir")
+            .count();
+        assert_eq!(leftovers, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn concurrent_conflicting_place_atomic_has_exactly_one_winner() -> Result<()> {
+        let (dir, store) = temp_store();
+        let dest = dir.path().join("tasks").join("entry");
+        let store = &store;
+        let dest = &dest;
+        // Each thread offers distinct content: exactly one hard link lands,
+        // and every other fails loudly instead of overwriting it.
+        let outcomes: Vec<Result<()>> = std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..8)
+                .map(|i| {
+                    scope.spawn(move || {
+                        place_atomic(store.root(), dest, format!("payload {i}").as_bytes())
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|handle| handle.join().expect("place thread panicked"))
+                .collect()
+        });
+        let wins = outcomes.iter().filter(|outcome| outcome.is_ok()).count();
+        assert_eq!(wins, 1);
+        let conflicts = outcomes
+            .iter()
+            .filter(|outcome| matches!(outcome, Err(Error::Corruption(_))))
+            .count();
+        assert_eq!(conflicts, 7);
+        // The surviving file is exactly one of the offered payloads, intact.
+        let survivor = fs::read(dest).expect("read destination");
+        let offered: Vec<Vec<u8>> = (0..8).map(|i| format!("payload {i}").into_bytes()).collect();
+        assert!(offered.contains(&survivor));
+        let leftovers = fs::read_dir(dir.path().join("tmp"))
+            .expect("read tmp dir")
+            .count();
+        assert_eq!(leftovers, 0);
+        Ok(())
+    }
 }

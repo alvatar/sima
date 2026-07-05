@@ -511,7 +511,7 @@ mod tests {
     }
 
     #[test]
-    fn finalize_before_create_run_is_validation() -> Result<()> {
+    fn finalize_before_create_run_is_validation_error() -> Result<()> {
         let (_dir, store) = temp_store();
         let run = sample_run_config(42).id();
         assert!(matches!(
@@ -522,7 +522,7 @@ mod tests {
     }
 
     #[test]
-    fn finalize_with_an_uncommitted_key_is_validation_naming_it() -> Result<()> {
+    fn finalize_with_an_uncommitted_key_is_validation_error_naming_it() -> Result<()> {
         let (_dir, store) = temp_store();
         let (run, mut keys) = committed_run(&store)?;
         let uncommitted = sample_identity(3).key();
@@ -537,7 +537,7 @@ mod tests {
     }
 
     #[test]
-    fn finalize_with_duplicate_keys_is_validation() -> Result<()> {
+    fn finalize_with_duplicate_keys_is_validation_error() -> Result<()> {
         let (_dir, store) = temp_store();
         let (run, keys) = committed_run(&store)?;
         assert!(matches!(
@@ -676,7 +676,7 @@ mod tests {
     }
 
     #[test]
-    fn closure_of_an_unfinalized_run_is_validation() -> Result<()> {
+    fn closure_of_an_unfinalized_run_is_validation_error() -> Result<()> {
         let (_dir, store) = temp_store();
         let (run, _keys) = committed_run(&store)?;
         assert!(matches!(store.run_closure(&run), Err(Error::Validation(_))));

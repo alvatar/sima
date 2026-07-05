@@ -130,7 +130,7 @@ mod tests {
     }
 
     #[test]
-    fn framing_violations_are_validation() -> Result<()> {
+    fn framing_violations_are_validation_errors() -> Result<()> {
         let (_dir, store) = temp_store();
         let run = created_run(&store)?;
         let mut writer = store.journal_writer(&run)?;
@@ -197,7 +197,7 @@ mod tests {
     }
 
     #[test]
-    fn journal_writer_before_create_run_is_validation() -> Result<()> {
+    fn journal_writer_before_create_run_is_validation_error() -> Result<()> {
         let (_dir, store) = temp_store();
         let run = sample_run_config(42).id();
         assert!(matches!(
