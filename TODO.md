@@ -8,7 +8,7 @@ machine-local: elaborations are written fresh from this document's decisions,
 which must therefore carry everything durable. This document is living —
 structure and content evolve through discussion.
 
-Settled context: Rust, local-first. Workspace under `crates/`, one crate per
+Settled context: Rust; local execution first, distributed by design. Workspace under `crates/`, one crate per
 layer (below). GPU execution via Vulkan compute (`ash`), shaders compiled to
 SPIR-V at build time (shaderc). Content addressing with blake3. Concurrency
 via std threads and channels — no async runtime (revisit only if P3
@@ -111,16 +111,16 @@ Phase-level decisions:
       acceptance (d) fails by construction. P1 stub env hash = stub version
       constant. Provenance records, run identity = hash of canonicalized
       config; pure types + canonical encodings, no I/O
-- [ ] M1.3 Store (`sima-store`): disk layout `objects/<aa>/<hash>` (CAS,
+- [x] M1.3 Store (`sima-store`): disk layout `objects/<aa>/<hash>` (CAS,
       two-char fan-out) + `tasks/<task-key>` (index) + `runs/<run-id>/`
       (manifest, journal); cas module — blake3 objects, atomic writes
       (temp + fsync + rename), idempotent puts; catalog module — task index
       with write-ordering discipline (result objects durable before the index
       entry referencing them), run manifest with canonical ordering,
       run-closure enumeration (all objects a run references); journal module
-      — append-only per-run journal beside the manifest, line-framed
-      crash-safe appends (a torn final line is detected and ignored on read),
-      non-identity-bearing
+      — append-only per-run journal beside the manifest, one event per line,
+      newline-terminated crash-safe appends (a torn final line is detected
+      and ignored on read), non-identity-bearing
 - [ ] M1.4 Contracts + stubs (`sima-contracts`): executor and generator
       contracts over opaque specs and params; task definition carries an
       optional input-state object reference (segmented-execution enabler,
@@ -186,7 +186,12 @@ bit-identical to an unsegmented run of equal length.
       throughput numbers recorded here. Result snapshots are stored in full
       (re-evaluation and portability require them), so extent × batch is
       chosen to a stated disk budget; retention policy is deliberately
-      deferred to P6
+      deferred to P6. Revisit CAS cost here, where disk volume and write
+      throughput first bite: measure the cost of re-hashing every object on
+      read and decide whether large artifacts get a bulk read that skips
+      verification while identity objects stay verified; measure the
+      per-object fsync write cost and weigh batching many objects behind one
+      group-commit fsync
 - [ ] M2.5 Segmented execution: a long simulation runs as a chain of tasks
       (state Sₙ + k steps → state Sₙ₊₁), checkpoint states as store objects,
       segment length from config; chain-frontier task source (successor keys
@@ -285,6 +290,10 @@ thresholds re-classifies without any re-execution.
       thresholds from config
 - [ ] M6.3 Staged cheapest-first funnel + re-evaluation from recorded runs
       without re-execution
+- [ ] M6.4 Object packing for scale, beside retention (M6.1) as the other
+      store-scaling lever: millions of small objects press on inode and
+      directory limits; a pack format — many objects in one file with an
+      index — is the answer
 
 ## P7 — Continuous CA families
 

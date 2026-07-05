@@ -3,7 +3,7 @@
 //! sorted-sequence helpers, and the macros generating the uniform type
 //! surface (`standalone_codec`, `id_newtype`).
 //!
-//! Every canonical encoding opens with a str-framed domain tag from the
+//! Every canonical encoding opens with a length-prefixed string domain tag from the
 //! table below. Tags make stored blobs self-describing, turn a hash routed
 //! to the wrong decoder into an immediate clean failure, and the `.v1`
 //! suffix anchors format versioning: a layout change mints a `.v2` tag; a

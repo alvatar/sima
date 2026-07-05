@@ -1,0 +1,16 @@
+[package]
+name = "sima-store"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+sima-core = { path = "../sima-core" }
+sima-model = { path = "../sima-model" }
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

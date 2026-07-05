@@ -3,7 +3,7 @@
 //! `sima-model` defines the identity-bearing vocabulary — spec, params,
 //! environment, task identity and key, task result record, run config and
 //! run id — as pure data with canonical [`sima_core::Enc`]/[`sima_core::Dec`]
-//! encodings. Every canonical encoding is a str-framed domain tag
+//! encodings. Every canonical encoding is a length-prefixed string domain tag
 //! (`sima.<name>.v1`) followed by the type's fields in the order its
 //! `encode` method documents, and a value's id is the blake3 hash of its
 //! standalone bytes, so the id doubles as the content-addressed object
