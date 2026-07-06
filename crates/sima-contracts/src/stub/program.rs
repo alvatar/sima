@@ -16,8 +16,9 @@ use sima_core::{Dec, Enc, Error, Result};
 pub enum StubBehavior {
     /// Evaluate successfully on every attempt.
     Succeed,
-    /// Fail while the attempt number is below `n`, then succeed.
-    FailThenSucceed(u64),
+    /// A flaky candidate: fail while the attempt number is below `n`, then
+    /// succeed. The deterministic model of a transient failure.
+    Flaky(u64),
     /// Panic, so workers can prove panic isolation (M1.5).
     Panic,
     /// Sleep for the given milliseconds, then succeed.
@@ -32,7 +33,7 @@ impl StubBehavior {
             StubBehavior::Succeed => {
                 enc.u8(0);
             }
-            StubBehavior::FailThenSucceed(n) => {
+            StubBehavior::Flaky(n) => {
                 enc.u8(1).u64(*n);
             }
             StubBehavior::Panic => {
@@ -49,7 +50,7 @@ impl StubBehavior {
     pub fn decode(dec: &mut Dec<'_>) -> Result<StubBehavior> {
         match dec.u8()? {
             0 => Ok(StubBehavior::Succeed),
-            1 => Ok(StubBehavior::FailThenSucceed(dec.u64()?)),
+            1 => Ok(StubBehavior::Flaky(dec.u64()?)),
             2 => Ok(StubBehavior::Panic),
             3 => Ok(StubBehavior::Sleep(dec.u64()?)),
             tag => Err(Error::Encoding(format!("unknown stub behavior tag {tag}"))),
@@ -112,7 +113,7 @@ mod tests {
         let cases = [
             (StubBehavior::Succeed, "00", "0000000000000000"),
             (
-                StubBehavior::FailThenSucceed(3),
+                StubBehavior::Flaky(3),
                 "010300000000000000",
                 "0000000000000000",
             ),
@@ -136,7 +137,7 @@ mod tests {
     fn program_round_trips_every_behavior() -> Result<()> {
         let behaviors = [
             StubBehavior::Succeed,
-            StubBehavior::FailThenSucceed(3),
+            StubBehavior::Flaky(3),
             StubBehavior::Panic,
             StubBehavior::Sleep(7),
         ];
@@ -164,7 +165,7 @@ mod tests {
     #[test]
     fn from_bytes_rejects_truncation() {
         let full = StubProgram {
-            behavior: StubBehavior::FailThenSucceed(3),
+            behavior: StubBehavior::Flaky(3),
             nonce: 0,
         }
         .to_bytes();

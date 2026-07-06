@@ -28,13 +28,13 @@ fn run_digest(attempt: u32, worker: WorkerId) -> Result<Hash> {
         bytes: vec![7, 7, 7],
     };
     let environment = EnvironmentId::from_hash(hash_bytes(b"determinism-env"));
-    // FailThenSucceed(0) completes on attempt 0, so every candidate reaches
+    // Flaky(0) completes on attempt 0, so every candidate reaches
     // Completed at any attempt.
     let config = StubGeneratorConfig {
         behaviors: vec![
             StubBehavior::Succeed,
             StubBehavior::Succeed,
-            StubBehavior::FailThenSucceed(0),
+            StubBehavior::Flaky(0),
             StubBehavior::Succeed,
         ],
     };

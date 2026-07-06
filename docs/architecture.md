@@ -249,8 +249,9 @@ inputs. `Stats` is opaque observational bytes destined for the journal; it may
 reflect the execution context and never enters a record.
 
 The stub generator and stub executor supply this contract without a GPU or a
-store: a spec carries a stub program selecting one behavior — succeed, fail
-until a threshold attempt then succeed, panic, or sleep — so the scheduler
+store: a spec carries a stub program selecting one behavior — succeed, flaky
+(fail a bounded number of attempts, then succeed), panic, or sleep — so the
+scheduler
 (M1.5) has a deterministic, programmable substrate for its failure matrix. The
 stub's committed artifact is the digest of the identity inputs alone, so it
 reproduces across attempts and workers; the attempt number folds only into the

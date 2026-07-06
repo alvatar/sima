@@ -6,7 +6,7 @@
 //! committed [`Artifact`] is the digest of the identity inputs alone — a pure
 //! function of [`TaskInput`] — so it never varies with the execution context.
 //! The attempt number folds only into [`Stats`], the observational output, and
-//! into the `FailThenSucceed` retry gate. This split is the boundary the whole
+//! into the `Flaky` retry gate. This split is the boundary the whole
 //! contract exists to enforce.
 
 use std::time::Duration;
@@ -44,7 +44,7 @@ impl Executor for StubExecutor {
             .map_err(|e| Error::Validation(format!("stub spec is not a valid program: {e}")))?;
         match program.behavior {
             StubBehavior::Succeed => Ok(completed(input, ctx)),
-            StubBehavior::FailThenSucceed(n) => {
+            StubBehavior::Flaky(n) => {
                 // The one place the stub reads `ctx.attempt` to affect control
                 // flow; the eventual artifact stays attempt-independent.
                 if (ctx.attempt as u64) < n {
@@ -203,9 +203,9 @@ mod tests {
     }
 
     #[test]
-    fn fail_then_succeed_fails_before_the_count() -> Result<()> {
+    fn flaky_fails_before_the_count() -> Result<()> {
         let exec = StubExecutor::new()?;
-        let spec = spec_for(StubBehavior::FailThenSucceed(3), 0)?;
+        let spec = spec_for(StubBehavior::Flaky(3), 0)?;
         let params = params();
         let input = TaskInput {
             spec: &spec,
@@ -224,9 +224,9 @@ mod tests {
     }
 
     #[test]
-    fn fail_then_succeed_completes_at_and_after_the_count() -> Result<()> {
+    fn flaky_completes_at_and_after_the_count() -> Result<()> {
         let exec = StubExecutor::new()?;
-        let spec = spec_for(StubBehavior::FailThenSucceed(3), 0)?;
+        let spec = spec_for(StubBehavior::Flaky(3), 0)?;
         let params = params();
         let input = TaskInput {
             spec: &spec,

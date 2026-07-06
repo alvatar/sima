@@ -124,7 +124,7 @@ mod tests {
             Vec::new(),
             vec![StubBehavior::Succeed],
             vec![
-                StubBehavior::FailThenSucceed(2),
+                StubBehavior::Flaky(2),
                 StubBehavior::Sleep(5),
                 StubBehavior::Panic,
             ],
