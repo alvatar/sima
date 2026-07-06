@@ -262,9 +262,11 @@ fn panic_reason(payload: Box<dyn Any + Send>) -> String {
 
 /// Renders opaque stats bytes as a lowercase-hex journal field.
 fn to_hex(bytes: &[u8]) -> String {
+    use std::fmt::Write;
     let mut out = String::with_capacity(bytes.len() * 2);
     for byte in bytes {
-        out.push_str(&format!("{byte:02x}"));
+        // Writing to a String is infallible.
+        let _ = write!(out, "{byte:02x}");
     }
     out
 }
