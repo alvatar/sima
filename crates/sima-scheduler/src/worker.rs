@@ -14,7 +14,7 @@ use std::time::Instant;
 
 use sima_contracts::{Artifact, ExecutionContext, Executor, Outcome, TaskInput, WorkerId};
 use sima_core::{Hash, Result};
-use sima_model::{ArtifactRef, TaskIdentity, TaskRecord};
+use sima_model::{ArtifactRef, RunConfig, TaskIdentity, TaskKey, TaskRecord};
 use sima_store::Store;
 
 use crate::config::ExecutionConfig;
@@ -24,21 +24,23 @@ use crate::journal_sink::emit;
 use crate::lease::Lease;
 use crate::task_source::RunnableTask;
 
+/// The run-wide context one worker borrows for its whole life: the shared
+/// coordination, the store it commits through, the run config and executor it
+/// evaluates against, the execution settings, and its own journal sender.
+pub(crate) struct WorkerContext<'a> {
+    pub(crate) coord: &'a Coord,
+    pub(crate) store: &'a Store,
+    pub(crate) config: &'a RunConfig,
+    pub(crate) executor: &'a (dyn Executor + Sync),
+    pub(crate) exec: &'a ExecutionConfig,
+    pub(crate) events: Sender<LifecycleEvent>,
+}
+
 /// Runs the worker: lease a task, evaluate it, resolve the outcome, repeat
 /// until the run winds down.
-pub(crate) fn worker_loop(
-    worker: WorkerId,
-    coord: &Coord,
-    store: &Store,
-    config: &sima_model::RunConfig,
-    executor: &(dyn Executor + Sync),
-    exec: &ExecutionConfig,
-    events: &Sender<LifecycleEvent>,
-) {
-    while let Some(pending) = next_task(coord, worker, exec) {
-        process(
-            pending, worker, coord, store, config, executor, exec, events,
-        );
+pub(crate) fn worker_loop(worker: WorkerId, ctx: WorkerContext<'_>) {
+    while let Some(pending) = next_task(ctx.coord, worker, ctx.exec) {
+        process(&ctx, worker, pending);
     }
 }
 
@@ -76,23 +78,13 @@ fn next_task(coord: &Coord, worker: WorkerId, exec: &ExecutionConfig) -> Option<
 
 /// Evaluates one leased task and resolves its outcome: commit, retry, reject,
 /// or record an infrastructure fault.
-#[allow(clippy::too_many_arguments)]
-fn process(
-    pending: Pending,
-    worker: WorkerId,
-    coord: &Coord,
-    store: &Store,
-    config: &sima_model::RunConfig,
-    executor: &(dyn Executor + Sync),
-    exec: &ExecutionConfig,
-    events: &Sender<LifecycleEvent>,
-) {
+fn process(ctx: &WorkerContext<'_>, worker: WorkerId, pending: Pending) {
     let RunnableTask { spec, identity } = pending.task;
     let attempt = pending.attempt;
     let key = identity.key();
     let task = key.to_string();
     emit(
-        events,
+        &ctx.events,
         LifecycleEvent::Leased {
             task: task.clone(),
             worker: worker.0,
@@ -100,10 +92,10 @@ fn process(
         },
     );
 
-    let ctx = ExecutionContext { attempt, worker };
+    let exec_ctx = ExecutionContext { attempt, worker };
     let input = TaskInput {
         spec: &spec,
-        params: &config.params,
+        params: &ctx.config.params,
         seed: identity.seed,
         environment: identity.environment,
         input_state: None,
@@ -113,31 +105,31 @@ fn process(
     // definitive rejection. A panic anywhere else is a scheduler bug and
     // propagates as one.
     let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        executor.execute(&input, &ctx)
+        ctx.executor.execute(&input, &exec_ctx)
     }));
     // `input` (and its borrow of `spec`) is unused past this point, so the
     // retry path below is free to move `spec` back into a re-enqueued task.
 
     match caught {
         Ok(Ok(Outcome::Completed { artifacts, stats })) => {
-            match commit(store, identity, artifacts) {
+            match commit(ctx.store, identity, artifacts) {
                 Ok(record) => {
                     emit(
-                        events,
+                        &ctx.events,
                         LifecycleEvent::Committed {
                             task,
                             record: record.to_string(),
                             stats_hex: to_hex(&stats.bytes),
                         },
                     );
-                    resolve(coord, key);
+                    resolve(ctx.coord, key);
                 }
-                Err(e) => fault(coord, key, e),
+                Err(e) => fault(ctx.coord, key, e),
             }
         }
         Ok(Ok(Outcome::Failed { reason, stats })) => {
             emit(
-                events,
+                &ctx.events,
                 LifecycleEvent::Failed {
                     task: task.clone(),
                     attempt,
@@ -145,10 +137,10 @@ fn process(
                     stats_hex: to_hex(&stats.bytes),
                 },
             );
-            if attempt + 1 < exec.max_attempts {
-                if requeue(coord, key, RunnableTask { spec, identity }, attempt + 1) {
+            if attempt + 1 < ctx.exec.max_attempts {
+                if requeue(ctx.coord, key, RunnableTask { spec, identity }, attempt + 1) {
                     emit(
-                        events,
+                        &ctx.events,
                         LifecycleEvent::Retried {
                             task,
                             next_attempt: attempt + 1,
@@ -157,12 +149,12 @@ fn process(
                 }
             } else {
                 // Retries exhausted: the transient failure is now definitive.
-                terminate(coord, key, reason);
+                terminate(ctx.coord, key, reason);
             }
         }
         Ok(Ok(Outcome::Rejected { reason, stats })) => {
             emit(
-                events,
+                &ctx.events,
                 LifecycleEvent::Rejected {
                     task,
                     attempt,
@@ -170,16 +162,16 @@ fn process(
                     stats_hex: to_hex(&stats.bytes),
                 },
             );
-            terminate(coord, key, reason);
+            terminate(ctx.coord, key, reason);
         }
         // An infrastructure fault from the executor (e.g. a structurally
         // invalid spec) fails the whole run, distinct from a candidate that
         // merely evaluated badly.
-        Ok(Err(e)) => fault(coord, key, e),
+        Ok(Err(e)) => fault(ctx.coord, key, e),
         Err(payload) => {
             let reason = panic_reason(payload);
             emit(
-                events,
+                &ctx.events,
                 LifecycleEvent::Rejected {
                     task,
                     attempt,
@@ -187,7 +179,7 @@ fn process(
                     stats_hex: String::new(),
                 },
             );
-            terminate(coord, key, reason);
+            terminate(ctx.coord, key, reason);
         }
     }
 }
@@ -207,7 +199,7 @@ fn commit(store: &Store, identity: TaskIdentity, artifacts: Vec<Artifact>) -> Re
 }
 
 /// Clears a resolved lease and counts its task no longer in flight.
-fn resolve(coord: &Coord, key: sima_model::TaskKey) {
+fn resolve(coord: &Coord, key: TaskKey) {
     let mut state = coord.lock();
     state.leases.remove(&key);
     state.in_flight -= 1;
@@ -217,7 +209,7 @@ fn resolve(coord: &Coord, key: sima_model::TaskKey) {
 /// Clears the lease and, while the run is still healthy, re-enqueues the task
 /// at the next attempt. Returns whether it was re-enqueued: a run already
 /// winding down abandons the task rather than queueing work no worker will take.
-fn requeue(coord: &Coord, key: sima_model::TaskKey, task: RunnableTask, next_attempt: u32) -> bool {
+fn requeue(coord: &Coord, key: TaskKey, task: RunnableTask, next_attempt: u32) -> bool {
     let mut state = coord.lock();
     state.leases.remove(&key);
     state.in_flight -= 1;
@@ -234,7 +226,7 @@ fn requeue(coord: &Coord, key: sima_model::TaskKey, task: RunnableTask, next_att
 
 /// Records a definitive candidate failure: the first such failure decides the
 /// run's outcome; later ones only clear their own lease.
-fn terminate(coord: &Coord, key: sima_model::TaskKey, reason: String) {
+fn terminate(coord: &Coord, key: TaskKey, reason: String) {
     let mut state = coord.lock();
     state.leases.remove(&key);
     state.in_flight -= 1;
@@ -246,7 +238,7 @@ fn terminate(coord: &Coord, key: sima_model::TaskKey, reason: String) {
 
 /// Records an infrastructure fault: the first fault becomes the run's returned
 /// error; later ones only clear their own lease.
-fn fault(coord: &Coord, key: sima_model::TaskKey, err: sima_core::Error) {
+fn fault(coord: &Coord, key: TaskKey, err: sima_core::Error) {
     let mut state = coord.lock();
     state.leases.remove(&key);
     state.in_flight -= 1;

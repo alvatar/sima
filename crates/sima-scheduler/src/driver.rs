@@ -25,7 +25,7 @@ use crate::lease::Lease;
 use crate::static_batch::StaticBatch;
 use crate::task_source::{RunnableTask, TaskSource};
 use crate::watchdog::watchdog_loop;
-use crate::worker::worker_loop;
+use crate::worker::{WorkerContext, worker_loop};
 
 /// The result of a run.
 pub enum RunOutcome {
@@ -153,18 +153,15 @@ pub fn run(
     let coord = &coord;
     let drive_result = thread::scope(|scope| -> Result<DriveOutcome> {
         for w in 0..exec.workers {
-            let events = events.clone();
-            scope.spawn(move || {
-                worker_loop(
-                    WorkerId(w as u64),
-                    coord,
-                    store,
-                    config,
-                    executor,
-                    exec,
-                    &events,
-                );
-            });
+            let ctx = WorkerContext {
+                coord,
+                store,
+                config,
+                executor,
+                exec,
+                events: events.clone(),
+            };
+            scope.spawn(move || worker_loop(WorkerId(w as u64), ctx));
         }
         {
             let events = events.clone();
