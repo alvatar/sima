@@ -5,6 +5,7 @@ members = [
     "crates/sima-contracts",
     "crates/sima-core",
     "crates/sima-model",
+    "crates/sima-scheduler",
     "crates/sima-store",
 ]
 

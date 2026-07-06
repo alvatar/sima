@@ -244,6 +244,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "sima-scheduler"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sima-contracts",
+ "sima-core",
+ "sima-model",
+ "sima-store",
+ "tempfile",
+]
+
+[[package]]
 name = "sima-store"
 version = "0.1.0"
 dependencies = [
