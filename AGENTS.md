@@ -15,12 +15,19 @@
 - No hacks, no speculative architecture, no demo-shaped dead ends
 - work/ is never committed
 - Do a commit for every meaningful block of work, and push it. Small, meaningful commits that are easy to bisect later.
-- No Co-Authored-By trailers or any other AI-authorship markers in commits.
+- No AI attribution anywhere: no "Generated with Claude Code" footers, no `Co-Authored-By: Claude` lines, no session links — not in commits, PR bodies, PR comments, issues, or docs.
 
 ## Testing layer
 
 - Rust logic is tested in Rust tests, next to the type or function it covers.
 - Cross-crate and end-to-end behavior is tested in integration tests under the consuming crate's `tests/` directory (workspace: each crate owns its integration tests).
+
+## Test-code structure
+
+- Rust tests live in the same file as the code they cover, in a `#[cfg(test)] mod tests` at the end of the file.
+- A separate test file is justified only for integration tests spanning multiple files/modules.
+- Test-only failure-injection state is consolidated into a single `#[cfg(test)]` seams struct per type, never scattered across the type's fields.
+- Test-only accessors are `#[cfg(test)]`-gated and may sit beside the state they expose.
 
 ## TODOs
 
@@ -67,6 +74,14 @@ Principles:
 - No bootstrapping garbage in the active path; isolate platform-specific code cleanly.
 - Maintain a clear, data-driven flow of information.
 - Every milestone serves the real search substrate, optimizing for correctness and architecture, not demos.
+
+## Documentation structure
+
+Applies to `docs/` and long-form comments:
+- Enumerations are written as bullet lists or subsections, never buried inside prose paragraphs.
+- Long paragraphs are broken at idea boundaries.
+- Bold is used for genuinely key short phrases that aid scanning.
+- Equations use proper math notation (GitHub-flavored LaTeX in markdown: `$...$` inline, `$$...$$` display), not ASCII character equations.
 
 ## Code quality
 
