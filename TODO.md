@@ -136,16 +136,19 @@ Phase-level decisions:
       so scheduler failure tests are deterministic; run-twice →
       identical-hashes tests
 - [ ] M1.5 Scheduler (`sima-scheduler`): task-source interface (yields
-      currently-runnable tasks from config + store state; static batch as the
-      P1 implementation, chain-frontier arrives with P2 segmentation), leases,
-      heartbeat/timeout, retries with idempotent commit, backpressure; task
-      lifecycle state machine (defined → queued → leased → executing →
-      committed | failed → retried) with transitions written through the
-      store's journal module; thread-worker transport; failure matrix driven
-      by the programmable stub; when the lifecycle journals a failed attempt,
-      decide whether `Outcome::Failed` should carry executor stats — M1.4
-      deferred this, leaving `Failed` holding only a reason, and this is its
-      first consumer
+      currently-runnable tasks from config + store state; the flat batch is
+      the P1 implementation, the ordered chain of tasks arrives with P2
+      segmentation), leases, heartbeat/timeout, retries with idempotent
+      commit, backpressure; task lifecycle state machine (defined → queued →
+      leased → executing → committed | failed → retried) emitted as typed
+      lifecycle events — structured data, not formatted strings — with the
+      store's journal as the one sink they serialize into now (the same events
+      feed the distributed trace facade when it arrives, M3.4); thread-worker
+      transport; failure matrix driven by the programmable stub. Resolved
+      (was deferred at M1.4): `Outcome::Failed` carries executor stats
+      symmetric with `Completed`, i.e. `Failed { reason, stats }`, so a failed
+      attempt journals what it produced; `Stats` stays opaque and is empty when
+      a failure has nothing to report, so an empty failure costs nothing
 - [ ] M1.6 Config + pipeline + CLI (`sima-pipeline`, `sima`): TOML schema +
       canonicalization; pipeline orchestration with static format-id →
       implementation match; orchestrator lease file; typed progress events
@@ -203,8 +206,9 @@ bit-identical to an unsegmented run of equal length.
       group-commit fsync
 - [ ] M2.5 Segmented execution: a long simulation runs as a chain of tasks
       (state Sₙ + k steps → state Sₙ₊₁), checkpoint states as store objects,
-      segment length from config; chain-frontier task source (successor keys
-      derived from produced state hashes) plugging into M1.5's interface;
+      segment length from config; a task source that yields the next
+      uncommitted task in each chain (successor keys derived from produced
+      state hashes), plugging into M1.5's interface;
       determinism test: N steps + resume N ≡ 2N steps, bit-exact. This is
       what makes pausing and migrating a specific in-progress simulation
       possible, not just a whole job
@@ -227,6 +231,15 @@ mid-lease converges through retry with no manifest difference.
       bootstrap, bidirectional store sync (have/want negotiation — results
       home, closures out; the same protocol M5.8's migrate later composes)
       against a manually provisioned machine
+- [ ] M3.4 Distributed trace facade: a low-level structured-event interface
+      usable from every crate at every layer, placed at or near `sima-core`
+      so the strict downward layering holds and any layer can emit without an
+      upward edge. It carries the typed lifecycle events M1.5 defines plus
+      cross-process span and causality context. The durable per-run journal
+      stays one sink; a live-aggregation collector is the second. This is the
+      deferred half of the M1.5 logging split: the concept is separated at
+      M1.5 (typed events vs. journal sink), and the cross-crate facade lands
+      here, where distribution is the real second consumer that justifies it
 
 Expected to be re-split when reached; remote transport hides surprises.
 
@@ -265,10 +278,10 @@ leaked instances are leaked money.
 - [ ] M5.5 On-worker stats reduction: kernel-side population/activity counts
       so remote runs return stats always, snapshots only on a cheap predicate
       (placed here as the bandwidth guard; P6's funnel metrics consume the
-      same reduction — the mechanism is shared). "Stats always" forces the
-      failed-evaluation case: if the M1.5 decision gave `Outcome::Failed`
-      stats, the reduction covers failures too, so a failed evaluation returns
-      its cheap counts over the wire like a success. This is also the first
+      same reduction — the mechanism is shared). "Stats always" covers the
+      failed-evaluation case: M1.5 gave `Outcome::Failed` stats symmetric with
+      `Completed`, so the reduction covers failures too and a failed evaluation
+      returns its cheap counts over the wire like a success. This is also the first
       real producer of stats, so it forces the `Stats` type decision M1.4
       deferred: M1.4 ships `Stats` as opaque bytes, and here it should likely
       become structured named scalars (population, activity, ...) the P6 funnel
