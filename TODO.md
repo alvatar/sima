@@ -135,7 +135,7 @@ Phase-level decisions:
       sanctioned exception, its eventual artifact still attempt-independent)
       so scheduler failure tests are deterministic; run-twice →
       identical-hashes tests
-- [ ] M1.5 Scheduler (`sima-scheduler`): task-source interface (yields
+- [x] M1.5 Scheduler (`sima-scheduler`): task-source interface (yields
       currently-runnable tasks from config + store state; the flat batch is
       the P1 implementation, the ordered chain of tasks arrives with P2
       segmentation), leases, heartbeat/timeout, retries with idempotent
