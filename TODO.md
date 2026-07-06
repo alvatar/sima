@@ -259,7 +259,10 @@ leaked instances are leaked money.
 - [ ] M5.5 On-worker stats reduction: kernel-side population/activity counts
       so remote runs return stats always, snapshots only on a cheap predicate
       (placed here as the bandwidth guard; P6's funnel metrics consume the
-      same reduction — the mechanism is shared)
+      same reduction — the mechanism is shared). "Stats always" forces the
+      failed-evaluation case: if the M1.5 decision gave `Outcome::Failed`
+      stats, the reduction covers failures too, so a failed evaluation returns
+      its cheap counts over the wire like a success
 - [ ] M5.6 Budget guard: max price, max wall-clock, spend accounting per run
 - [ ] M5.7 Trust-tiered scheduling: redundant execution, quorum validation,
       spot-check sampling, host reputation — the BOINC playbook; the largest
