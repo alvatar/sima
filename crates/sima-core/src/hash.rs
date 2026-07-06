@@ -23,8 +23,8 @@ impl Hash {
         Hash(bytes)
     }
 
-    /// Digest bytes, for the canonical encoder.
-    pub(crate) const fn as_bytes(&self) -> &[u8; Hash::LEN] {
+    /// The raw digest bytes.
+    pub const fn as_bytes(&self) -> &[u8; Hash::LEN] {
         &self.0
     }
 

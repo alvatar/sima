@@ -73,15 +73,12 @@ fn completed(input: &TaskInput<'_>, ctx: &ExecutionContext) -> Outcome {
     }
 }
 
-/// The one committed artifact, named `result`, carrying the identity digest's
-/// 32 raw bytes (written through the canonical encoder, the public route to a
-/// digest's bytes).
+/// The one committed artifact, named `result`, carrying the 32 raw bytes of
+/// the identity digest.
 fn result_artifact(input: &TaskInput<'_>) -> Artifact {
-    let mut enc = Enc::new();
-    enc.hash(&identity_digest(input));
     Artifact {
         name: "result".to_string(),
-        bytes: enc.finish(),
+        bytes: identity_digest(input).as_bytes().to_vec(),
     }
 }
 
