@@ -149,8 +149,8 @@ Phase-level decisions:
       lease with a deadline and journals a `TaskOverran` event when an attempt
       runs past it (in-process execution cannot be preempted, so an overrun is
       detected and reported, never killed — real preemption is M3.1); failure
-      matrix driven by the programmable stub; a struct-injected
-      `ExecutionConfig` (worker count, timeouts, retry cap — operational,
+      matrix driven by the programmable stub; an `ExecutionConfig` injected as
+      a struct (worker count, timeouts, retry cap — operational,
       never hashed), whose file form is the execution section of M1.6's
       `sima.toml`.
       Failure model (resolved at elaboration): an execution yields one of
