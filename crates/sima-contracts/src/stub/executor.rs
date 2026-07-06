@@ -68,14 +68,14 @@ impl Executor for StubExecutor {
 /// attempt number.
 fn completed(input: &TaskInput<'_>, ctx: &ExecutionContext) -> Outcome {
     Outcome::Completed {
-        artifacts: vec![result_artifact(input)],
+        artifacts: vec![identity_artifact(input)],
         stats: stats(ctx),
     }
 }
 
-/// The one committed artifact, named `result`, carrying the 32 raw bytes of
-/// the identity digest.
-fn result_artifact(input: &TaskInput<'_>) -> Artifact {
+/// The one committed artifact, carrying the 32 raw bytes of the identity
+/// digest under the name `result`.
+fn identity_artifact(input: &TaskInput<'_>) -> Artifact {
     Artifact {
         name: "result".to_string(),
         bytes: identity_digest(input).as_bytes().to_vec(),
