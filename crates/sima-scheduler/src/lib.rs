@@ -15,11 +15,17 @@
 //! excluded from every equality criterion.
 
 mod config;
+mod driver;
 mod event;
+mod journal_sink;
+mod lease;
 mod static_batch;
 mod task_source;
+mod watchdog;
+mod worker;
 
 pub use config::ExecutionConfig;
+pub use driver::{RunOutcome, run};
 pub use event::LifecycleEvent;
 pub use static_batch::StaticBatch;
 pub use task_source::{RunnableTask, TaskSource};
