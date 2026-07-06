@@ -1,8 +1,8 @@
 //! [`StaticBatch`]: the task source that drives a generator once.
 
+use sima_contracts::Generator;
 use sima_core::{Result, prng};
 use sima_model::{Environment, RunConfig, TaskIdentity, TaskKey};
-use sima_contracts::Generator;
 use sima_store::Store;
 
 use crate::task_source::{RunnableTask, TaskSource};
@@ -32,11 +32,8 @@ impl StaticBatch {
         environment: &Environment,
         store: &Store,
     ) -> Result<StaticBatch> {
-        let specs = generator.generate(
-            config.root_seed,
-            &config.generator.params,
-            &config.format,
-        )?;
+        let specs =
+            generator.generate(config.root_seed, &config.generator.params, &config.format)?;
         let params = config.params.id();
         let environment_id = environment.id();
         let mut all_keys = Vec::with_capacity(specs.len());
@@ -85,8 +82,8 @@ impl TaskSource for StaticBatch {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sima_model::{GeneratorConfig, Params};
     use sima_contracts::{StubBehavior, StubGenerator, StubGeneratorConfig};
+    use sima_model::{GeneratorConfig, Params};
 
     /// A run config whose generator programs the given behaviors.
     fn config(behaviors: Vec<StubBehavior>) -> Result<RunConfig> {
@@ -97,7 +94,9 @@ mod tests {
                 id: sima_model::GeneratorId::new("stub.v1")?,
                 params: StubGeneratorConfig { behaviors }.to_bytes(),
             },
-            params: Params { bytes: vec![1, 2, 3] },
+            params: Params {
+                bytes: vec![1, 2, 3],
+            },
         })
     }
 

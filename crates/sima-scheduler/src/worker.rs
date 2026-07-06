@@ -12,11 +12,9 @@ use std::any::Any;
 use std::sync::mpsc::Sender;
 use std::time::Instant;
 
+use sima_contracts::{Artifact, ExecutionContext, Executor, Outcome, TaskInput, WorkerId};
 use sima_core::{Hash, Result};
 use sima_model::{ArtifactRef, TaskIdentity, TaskRecord};
-use sima_contracts::{
-    Artifact, ExecutionContext, Executor, Outcome, TaskInput, WorkerId,
-};
 use sima_store::Store;
 
 use crate::config::ExecutionConfig;
@@ -38,7 +36,9 @@ pub(crate) fn worker_loop(
     events: &Sender<LifecycleEvent>,
 ) {
     while let Some(pending) = next_task(coord, worker, exec) {
-        process(pending, worker, coord, store, config, executor, exec, events);
+        process(
+            pending, worker, coord, store, config, executor, exec, events,
+        );
     }
 }
 
@@ -112,8 +112,9 @@ fn process(
     // raised inside the candidate's execution, so the worker classifies it as a
     // definitive rejection. A panic anywhere else is a scheduler bug and
     // propagates as one.
-    let caught =
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| executor.execute(&input, &ctx)));
+    let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        executor.execute(&input, &ctx)
+    }));
     // `input` (and its borrow of `spec`) is unused past this point, so the
     // retry path below is free to move `spec` back into a re-enqueued task.
 

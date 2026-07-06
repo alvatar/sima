@@ -13,9 +13,9 @@ use std::sync::mpsc::Sender;
 use std::sync::{Condvar, Mutex, MutexGuard};
 use std::thread;
 
+use sima_contracts::{Executor, Generator, WorkerId};
 use sima_core::{Error, Result};
 use sima_model::{Environment, RunConfig, RunId, TaskKey};
-use sima_contracts::{Executor, Generator, WorkerId};
 use sima_store::Store;
 
 use crate::config::ExecutionConfig;
@@ -96,7 +96,9 @@ impl Coord {
     /// worker's `catch_unwind`, which holds no lock, so the lock is not
     /// poisoned in practice.
     pub(crate) fn lock(&self) -> MutexGuard<'_, Shared> {
-        self.state.lock().unwrap_or_else(|poison| poison.into_inner())
+        self.state
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
     }
 }
 
@@ -153,7 +155,15 @@ pub fn run(
         for w in 0..exec.workers {
             let events = events.clone();
             scope.spawn(move || {
-                worker_loop(WorkerId(w as u64), coord, store, config, executor, exec, &events);
+                worker_loop(
+                    WorkerId(w as u64),
+                    coord,
+                    store,
+                    config,
+                    executor,
+                    exec,
+                    &events,
+                );
             });
         }
         {
