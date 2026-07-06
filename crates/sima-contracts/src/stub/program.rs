@@ -19,7 +19,7 @@ pub enum StubBehavior {
     /// A flaky candidate: fail while the attempt number is below `n`, then
     /// succeed. The deterministic model of a transient failure.
     Flaky(u64),
-    /// Panic, so workers can prove panic isolation (M1.5).
+    /// Panic, so workers can prove panic isolation.
     Panic,
     /// Sleep for the given milliseconds, then succeed.
     Sleep(u64),

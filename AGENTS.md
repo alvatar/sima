@@ -15,6 +15,7 @@
 - No hacks, no speculative architecture, no demo-shaped dead ends
 - work/ is never committed
 - Do a commit for every meaningful block of work, and push it. Small, meaningful commits that are easy to bisect later.
+- Docs and comments are timeless: they state the current state and its rationale. Never record decision dates, timestamps, milestone numbers, or narrations of how something came to be — anywhere in the repo (docs, code comments, test comments, artifact pages). History lives in git. The roadmap file (`TODO.md`) is the one exemption, since tracking progression is its function.
 - No AI attribution anywhere: no "Generated with Claude Code" footers, no `Co-Authored-By: Claude` lines, no session links — not in commits, PR bodies, PR comments, issues, or docs.
 
 ## Testing layer

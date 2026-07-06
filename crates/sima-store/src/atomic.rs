@@ -18,7 +18,7 @@
 //! the parent so the new entry itself survives a crash. A reader —
 //! including a process resuming after SIGKILL — therefore observes a
 //! complete file or none. Leftover `tmp/` files after a crash are inert;
-//! sweeping them is retention work, deferred to P6.
+//! sweeping them is retention work.
 
 use std::fs::{self, File};
 use std::io::{ErrorKind, Write};

@@ -268,7 +268,7 @@ mod tests {
 
     #[test]
     fn task_keys_sort_deterministically_in_digest_byte_order() -> Result<()> {
-        // The manifest order M1.3 uses: sorting keys must agree with the
+        // The manifest sorts entries by task key: that sort must agree with the
         // lexicographic order of their digest bytes — equivalently their
         // lowercase-hex forms, which fixed-width hex preserves.
         let mut keys: Vec<TaskKey> = [

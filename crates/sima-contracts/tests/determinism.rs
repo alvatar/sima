@@ -2,7 +2,7 @@
 //! executing them yields a byte-identical committed result twice over, and
 //! that result does not depend on the execution context (attempt, worker).
 //!
-//! This proves the M1.4 acceptance clause ("run-twice → identical hashes") at
+//! This proves the acceptance clause ("run-twice → identical hashes") at
 //! the contract seam, without a store: it compares committed records only —
 //! the equality criterion the phases use — and never the observational stats.
 
@@ -17,7 +17,7 @@ use sima_model::{ArtifactRef, EnvironmentId, FormatId, Params, TaskIdentity, Tas
 /// records into one digest, executing every task at `(attempt, worker)`.
 ///
 /// The per-task `seed` here derives from the root seed as a stand-in for the
-/// scheduler's real derivation (M1.5); the point is only that it is fixed
+/// scheduler's real derivation; the point is only that it is fixed
 /// across runs, so any run-to-run difference would come from the contracts.
 fn run_digest(attempt: u32, worker: WorkerId) -> Result<Hash> {
     let generator = StubGenerator::new()?;

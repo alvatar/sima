@@ -52,8 +52,8 @@ pub struct ExecutionContext {
 /// [`TaskInput`] identity — never of [`ExecutionContext`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Artifact {
-    /// Artifact name; validated when the worker builds the `ArtifactRef`
-    /// (M1.5). Must satisfy the name rule (1..=64 bytes of `[a-z0-9._-]`).
+    /// Artifact name; validated when the worker builds the `ArtifactRef`.
+    /// Must satisfy the name rule (1..=64 bytes of `[a-z0-9._-]`).
     pub name: String,
     /// The produced bytes.
     pub bytes: Vec<u8>,
@@ -86,7 +86,7 @@ pub enum Outcome {
 /// spec's genotype expresses into) and stats, or a failure outcome. Never
 /// touches the store.
 pub trait Executor {
-    /// The format id this executor interprets. The pipeline (M1.6) dispatches
+    /// The format id this executor interprets. The pipeline dispatches
     /// a run to the executor whose format matches the run config's format.
     fn format(&self) -> &FormatId;
 

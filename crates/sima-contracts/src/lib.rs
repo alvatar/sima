@@ -19,7 +19,7 @@
 //!
 //! The stub module supplies a seeded generator and a spec-programmed
 //! executor (succeed, flaky, panic, sleep) so the scheduler
-//! (M1.5) has a deterministic, programmable substrate to build against
+//! has a deterministic, programmable substrate to build against
 //! without a GPU or real model families.
 
 mod executor;

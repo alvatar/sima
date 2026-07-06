@@ -211,7 +211,7 @@ mod tests {
     fn two_writers_appending_alternately_produce_a_readable_journal() -> Result<()> {
         let (_dir, store) = temp_store();
         let run = created_run(&store)?;
-        // Single-writer-per-run arrives with the M1.6 lease; the framing
+        // The orchestrator lease enforces a single writer per run; the framing
         // must hold regardless of who writes.
         let mut a = store.journal_writer(&run)?;
         let mut b = store.journal_writer(&run)?;

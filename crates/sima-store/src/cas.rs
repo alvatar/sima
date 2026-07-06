@@ -2,8 +2,8 @@
 //!
 //! Every identity-bearing byte string — specs, params, environments,
 //! records, configs, state snapshots, artifacts — lands here as an object
-//! addressed by its blake3 digest. Deletion is retention work, deferred
-//! to P6; the CAS surface is exactly these three methods.
+//! addressed by its blake3 digest. Deletion is retention work; the CAS
+//! surface is exactly these three methods.
 
 use std::fs;
 use std::io::ErrorKind;

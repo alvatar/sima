@@ -34,7 +34,7 @@ impl GeneratorId {
 }
 
 /// The generator's own settings: which generator, and the opaque parameter
-/// blob its implementation (M1.4+) defines the encoding of. Scoped under
+/// blob its implementation defines the encoding of. Scoped under
 /// the generator and distinct from the run-level [`Params`] that feeds
 /// every task's params slot.
 #[derive(Debug, Clone, PartialEq, Eq)]

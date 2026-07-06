@@ -12,7 +12,7 @@ use sima_model::{FormatId, GeneratorId, Spec};
 /// `(root_seed, params, format)` → the same specs, in the same order.
 pub trait Generator {
     /// The generator id this implementation registers under. The pipeline
-    /// (M1.6) dispatches a run to the generator whose id matches the run
+    /// dispatches a run to the generator whose id matches the run
     /// config's `generator.id`.
     fn id(&self) -> &GeneratorId;
 

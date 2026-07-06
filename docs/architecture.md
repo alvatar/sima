@@ -31,8 +31,8 @@ Strictly downward dependencies, enforced by workspace crate edges.
 | L1    | `sima-model`     | identity vocabulary: spec, params, environment, task key, record, run config |
 | L2    | `sima-store`     | durable state: CAS, task index, run manifests, journals               |
 | L3    | `sima-contracts` | generator/executor contracts over opaque specs and params; stub generator and executor |
-| L4    | `sima-scheduler` | task sources, leases, lifecycle state machine (arrives M1.5)          |
-| L5    | `sima-pipeline`  | orchestration, resume, re-evaluation (arrives M1.6)                   |
+| L4    | `sima-scheduler` | task sources, leases, lifecycle state machine (planned)              |
+| L5    | `sima-pipeline`  | orchestration, resume, re-evaluation (planned)                       |
 | L6    | `sima`           | CLI binary                                                            |
 
 The store is the only durable state. Queues, schedulers, and orchestrators
@@ -176,7 +176,7 @@ atomicity means a reader — including a process resuming after SIGKILL —
 observes a complete file or none. Directory fsync is specific to unix, so
 the crate builds on unix targets only; the build is refused elsewhere rather
 than silently dropping durability across a crash. Leftover `tmp/` files after
-a crash are inert; sweeping them is retention work (P6).
+a crash are inert; sweeping them is retention work.
 
 ### Write ordering
 
@@ -213,8 +213,8 @@ every equality criterion.
 Store methods take `&self` and are safe under concurrent writers: identical
 content converges through rename and link atomicity, and a conflicting racer
 on an index entry or manifest fails loudly instead of overwriting. A run's
-journal has a single writer, the orchestrator; single-writer-per-run is
-enforced by the orchestrator lease file (arrives M1.6).
+journal has a single writer, the orchestrator; single-writer-per-run will be
+enforced by the orchestrator lease file.
 
 ## `sima-contracts` (L3)
 
@@ -225,7 +225,7 @@ interprets one format: it receives one candidate and returns what that
 evaluation produced. Both are pure compute over `sima-model` values; the crate
 depends on `sima-model` and `sima-core` only and never touches the store, so
 the trust boundary — executors never reach durable state — is visible in the
-crate graph. The worker (M1.5) is what carries executor output into the store.
+crate graph. The worker is what carries executor output into the store.
 
 The distinction the contract encodes in the type system is the split between
 identity inputs and execution context. A `TaskInput` carries the identity
@@ -234,8 +234,8 @@ which determine the task key and the committed artifacts. An
 `ExecutionContext` carries the attempt number and worker id, which the executor
 may read but which never influence a committed artifact. The input-state slot
 mirrors the key's `input_state`: the key holds the state object's digest, the
-executor receives the bytes; it is the segmented-execution enabler (M2.5),
-present in the identity surface here and unused by the stub except as identity.
+executor receives the bytes; it enables segmented execution, present in the
+identity surface here and unused by the stub except as identity.
 
 An execution yields an `Outcome`: `Completed { artifacts, stats }` or
 `Failed { reason }`. A failed candidate is a domain outcome the family owns —
@@ -251,8 +251,7 @@ reflect the execution context and never enters a record.
 The stub generator and stub executor supply this contract without a GPU or a
 store: a spec carries a stub program selecting one behavior — succeed, flaky
 (fail a bounded number of attempts, then succeed), panic, or sleep — so the
-scheduler
-(M1.5) has a deterministic, programmable substrate for its failure matrix. The
+scheduler has a deterministic, programmable substrate for its failure matrix. The
 stub's committed artifact is the digest of the identity inputs alone, so it
 reproduces across attempts and workers; the attempt number folds only into the
 stats and into the gate that decides whether the behavior fails this attempt or
@@ -265,5 +264,5 @@ reached it.
 Anything claimed deterministic is proven by test: same config in two fresh
 stores → byte-identical manifests; a run killed at any crashpoint and
 resumed → manifest identical to an uninterrupted run (crash-injection
-harness, M1.6); re-evaluation touches no executor; a copied store resumes
+harness); re-evaluation touches no executor; a copied store resumes
 with an identical manifest.

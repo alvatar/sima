@@ -22,7 +22,7 @@ pub enum EnvironmentValue {
     /// Engine or executor identity as a versioned constant; non-empty.
     Version(String),
     /// Content hash of a build input the executor's results depend on
-    /// (compiled SPIR-V joins here in P2).
+    /// (a compiled shader's SPIR-V, for example).
     Digest(Hash),
 }
 
