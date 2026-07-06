@@ -262,7 +262,12 @@ leaked instances are leaked money.
       same reduction — the mechanism is shared). "Stats always" forces the
       failed-evaluation case: if the M1.5 decision gave `Outcome::Failed`
       stats, the reduction covers failures too, so a failed evaluation returns
-      its cheap counts over the wire like a success
+      its cheap counts over the wire like a success. This is also the first
+      real producer of stats, so it forces the `Stats` type decision M1.4
+      deferred: M1.4 ships `Stats` as opaque bytes, and here it should likely
+      become structured named scalars (population, activity, ...) the P6 funnel
+      can threshold family-agnostically, plus an optional opaque family blob
+      for anything richer — decide the shape here, consumed at M6.2
 - [ ] M5.6 Budget guard: max price, max wall-clock, spend accounting per run
 - [ ] M5.7 Trust-tiered scheduling: redundant execution, quorum validation,
       spot-check sampling, host reputation — the BOINC playbook; the largest
@@ -293,7 +298,10 @@ thresholds re-classifies without any re-execution.
       from M2.4: what is kept, for how long, and what re-evaluation minimally
       requires
 - [ ] M6.2 Verdict classification: dead / frozen / exploding / cyclic,
-      thresholds from config
+      thresholds from config. Classification reads named numeric metrics
+      generically, so it requires the structured `Stats` decided at M5.5 rather
+      than the opaque bytes M1.4 shipped — opaque stats would force a per-family
+      decoder here and defeat the funnel's family-agnostic design
 - [ ] M6.3 Staged cheapest-first funnel + re-evaluation from recorded runs
       without re-execution
 - [ ] M6.4 Object packing for scale, beside retention (M6.1) as the other
