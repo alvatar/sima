@@ -74,10 +74,10 @@ fn completed(input: &TaskInput<'_>, ctx: &ExecutionContext) -> Outcome {
 }
 
 /// The one committed artifact, carrying the 32 raw bytes of the identity
-/// digest under the name `result`.
+/// digest under the name `output`.
 fn identity_artifact(input: &TaskInput<'_>) -> Artifact {
     Artifact {
-        name: "result".to_string(),
+        name: "output".to_string(),
         bytes: identity_digest(input).as_bytes().to_vec(),
     }
 }
@@ -161,7 +161,7 @@ mod tests {
         };
         let outcome = exec.execute(&input, &ctx(0, 0))?;
         let artifact = artifact(&outcome);
-        assert_eq!(artifact.name, "result");
+        assert_eq!(artifact.name, "output");
         assert_eq!(artifact.bytes.len(), Hash::LEN);
         Ok(())
     }
