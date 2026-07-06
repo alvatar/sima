@@ -1,0 +1,205 @@
+//! Task-lifecycle acceptance: retry, definitive failure, rejection, panic
+//! isolation, resume, and overrun detection.
+
+mod common;
+
+use common::{
+    committed_count, config, exec, failed_count, journal_events, leased_count, overran_count,
+    rejected_count, retried_count, run_id, run_into, task_keys, temp_store,
+};
+use sima_contracts::StubBehavior;
+use sima_core::Result;
+use sima_scheduler::{LifecycleEvent, RunOutcome};
+
+/// A flaky candidate fails, is retried, and finally commits; the committed
+/// record is deterministic, so the same config into a second fresh store
+/// produces the identical manifest regardless of how many attempts it took.
+#[test]
+fn flaky_task_retries_then_commits() -> Result<()> {
+    let cfg = config(1, vec![StubBehavior::Flaky(2)]);
+    let exec = exec(1, 3, 1_000);
+    let key = task_keys(&cfg)[0];
+
+    let (_dir, store) = temp_store();
+    assert!(matches!(
+        run_into(&store, &cfg, &exec)?,
+        RunOutcome::Finalized { .. }
+    ));
+
+    let run = run_id(&cfg);
+    let events = journal_events(&store, &run);
+    // Two failed attempts, each re-enqueued, then one commit; never rejected.
+    assert_eq!(failed_count(&events, &key), 2);
+    assert_eq!(retried_count(&events, &key), 2);
+    assert_eq!(committed_count(&events, &key), 1);
+    assert_eq!(rejected_count(&events, &key), 0);
+
+    let manifest = store.manifest(&run)?.expect("finalized manifest");
+    assert_eq!(manifest.entries.len(), 1);
+
+    // Attempt-independence: a second fresh run commits the identical record.
+    let (_other, other) = temp_store();
+    run_into(&other, &cfg, &exec)?;
+    assert_eq!(manifest, other.manifest(&run)?.expect("second manifest"));
+    Ok(())
+}
+
+/// A flaky candidate that never recovers exhausts its retries and fails the
+/// run definitively: no manifest is written, yet a sibling that committed
+/// stays committed, so the store is resumable.
+#[test]
+fn exhausted_retries_fail_the_run_and_leave_the_store_resumable() -> Result<()> {
+    let cfg = config(2, vec![StubBehavior::Succeed, StubBehavior::Flaky(5)]);
+    let keys = task_keys(&cfg);
+    let (succeed_key, flaky_key) = (keys[0], keys[1]);
+
+    let (_dir, store) = temp_store();
+    match run_into(&store, &cfg, &exec(1, 3, 1_000))? {
+        RunOutcome::Failed { task, .. } => assert_eq!(task, flaky_key),
+        other => panic!("expected Failed, got {}", outcome_name(&other)),
+    }
+
+    let run = run_id(&cfg);
+    // No manifest: the run did not finalize.
+    assert!(store.manifest(&run)?.is_none());
+    // The sibling that committed remains committed — resumable progress.
+    assert!(store.record(&succeed_key)?.is_some());
+    Ok(())
+}
+
+/// A rejected candidate terminates the run immediately, with no retry.
+#[test]
+fn a_rejected_candidate_terminates_without_retry() -> Result<()> {
+    let cfg = config(3, vec![StubBehavior::Reject]);
+    let key = task_keys(&cfg)[0];
+
+    let (_dir, store) = temp_store();
+    match run_into(&store, &cfg, &exec(1, 3, 1_000))? {
+        RunOutcome::Failed { task, .. } => assert_eq!(task, key),
+        other => panic!("expected Failed, got {}", outcome_name(&other)),
+    }
+
+    let run = run_id(&cfg);
+    let events = journal_events(&store, &run);
+    // Exactly one rejection, at the first attempt, and never retried or failed.
+    assert_eq!(rejected_count(&events, &key), 1);
+    assert_eq!(retried_count(&events, &key), 0);
+    assert_eq!(failed_count(&events, &key), 0);
+    assert!(store.manifest(&run)?.is_none());
+    Ok(())
+}
+
+/// A panic inside the program is caught, classified as a rejection, and
+/// isolated: the run returns `Ok(Failed)` rather than unwinding, and a sibling
+/// that committed is unaffected.
+#[test]
+fn a_panic_is_isolated_and_classified_as_a_rejection() -> Result<()> {
+    let cfg = config(4, vec![StubBehavior::Succeed, StubBehavior::Panic]);
+    let keys = task_keys(&cfg);
+    let (succeed_key, panic_key) = (keys[0], keys[1]);
+
+    let (_dir, store) = temp_store();
+    // The call returns instead of unwinding — that return is the isolation.
+    match run_into(&store, &cfg, &exec(1, 3, 1_000))? {
+        RunOutcome::Failed { task, .. } => assert_eq!(task, panic_key),
+        other => panic!("expected Failed, got {}", outcome_name(&other)),
+    }
+
+    let run = run_id(&cfg);
+    let events = journal_events(&store, &run);
+    assert_eq!(rejected_count(&events, &panic_key), 1);
+    // The rejection reason preserves the panic payload.
+    let reason = events
+        .iter()
+        .find_map(|e| match e {
+            LifecycleEvent::Rejected { task, reason, .. } if *task == panic_key.to_string() => {
+                Some(reason.clone())
+            }
+            _ => None,
+        })
+        .expect("a rejected event for the panic task");
+    assert!(reason.starts_with("panic:"), "{reason}");
+    // The sibling that committed is unaffected.
+    assert!(store.record(&succeed_key)?.is_some());
+    Ok(())
+}
+
+/// Resume re-runs only the unfinished work. A batch where task Y never recovers
+/// fails with task X committed. Re-running the same config with Y fixed — which
+/// changes Y's spec, and so Y's key, the intended "re-run the fixed candidate"
+/// path — finalizes, and X, already committed under its unchanged key, is
+/// skipped by the frontier and never re-executed.
+#[test]
+fn resume_reruns_only_the_unfinished_work() -> Result<()> {
+    let failing = config(5, vec![StubBehavior::Succeed, StubBehavior::Flaky(5)]);
+    let fixed = config(5, vec![StubBehavior::Succeed, StubBehavior::Succeed]);
+
+    // X is candidate 0 in both, so its key is stable; fixing Y changes its
+    // spec and thus its key.
+    let x_key = task_keys(&failing)[0];
+    assert_eq!(x_key, task_keys(&fixed)[0], "X's key must be stable");
+    assert_ne!(
+        task_keys(&failing)[1],
+        task_keys(&fixed)[1],
+        "fixing Y changes its key"
+    );
+    let fixed_y_key = task_keys(&fixed)[1];
+
+    let (_dir, store) = temp_store();
+    // First run fails; X commits.
+    assert!(matches!(
+        run_into(&store, &failing, &exec(1, 3, 1_000))?,
+        RunOutcome::Failed { .. }
+    ));
+    assert!(store.record(&x_key)?.is_some());
+
+    // Re-run the fixed config into the same store: it finalizes.
+    assert!(matches!(
+        run_into(&store, &fixed, &exec(1, 3, 1_000))?,
+        RunOutcome::Finalized { .. }
+    ));
+
+    let fixed_run = run_id(&fixed);
+    let events = journal_events(&store, &fixed_run);
+    // X was already committed, so the fixed run never leases it; only the
+    // fixed Y runs.
+    assert_eq!(leased_count(&events, &x_key), 0);
+    assert_eq!(committed_count(&events, &fixed_y_key), 1);
+    // The manifest covers both tasks: X carried over, fixed Y freshly committed.
+    let manifest = store.manifest(&fixed_run)?.expect("fixed run finalized");
+    let tasks: Vec<_> = manifest.entries.iter().map(|e| e.task).collect();
+    assert!(tasks.contains(&x_key));
+    assert!(tasks.contains(&fixed_y_key));
+    Ok(())
+}
+
+/// A task that outruns its soft deadline is reported, not preempted: the
+/// watchdog emits `TaskOverran`, and the task still completes and the run
+/// finalizes.
+#[test]
+fn an_overrun_is_detected_without_preemption() -> Result<()> {
+    // Sleep well past a short deadline so the watchdog is sure to catch it.
+    let cfg = config(6, vec![StubBehavior::Sleep(40)]);
+    let key = task_keys(&cfg)[0];
+
+    let (_dir, store) = temp_store();
+    assert!(matches!(
+        run_into(&store, &cfg, &exec(1, 1, 5))?,
+        RunOutcome::Finalized { .. }
+    ));
+
+    let run = run_id(&cfg);
+    let events = journal_events(&store, &run);
+    // Detected at least once, and the task still committed (no preemption).
+    assert!(overran_count(&events, &key) >= 1);
+    assert_eq!(committed_count(&events, &key), 1);
+    Ok(())
+}
+
+/// Names an outcome for a panic message without moving it.
+fn outcome_name(outcome: &RunOutcome) -> &'static str {
+    match outcome {
+        RunOutcome::Finalized { .. } => "Finalized",
+        RunOutcome::Failed { .. } => "Failed",
+    }
+}
