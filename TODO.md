@@ -157,8 +157,8 @@ Phase-level decisions:
       three outcomes — `Completed { artifacts, stats }`, `Failed { reason,
       stats }` (transient, retried up to the cap), or `Rejected { reason,
       stats }` (definitive: the candidate cannot produce a result, never
-      retried). A panic escaping the wrapped `execute()` call is a
-      program-internal panic → `Rejected`; a panic anywhere else in the
+      retried). A panic escaping the wrapped `execute()` call was raised inside
+      the program execution → `Rejected`; a panic anywhere else in the
       scheduler is a SIMA fault → `Err`. The store models only success (a
       `TaskRecord` records artifacts), so a definitive failure is journal-only:
       it terminates the run, writes no manifest, and leaves the store clean and
