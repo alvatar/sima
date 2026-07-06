@@ -245,8 +245,10 @@ fn drive(
             return match stop {
                 Stop::Failed(failure) => Ok(DriveOutcome::Fail(failure)),
                 Stop::Fault(fault) => Err(fault),
-                // Quiescent with no pending failure: finalize.
-                Stop::Finished | Stop::Running => Ok(DriveOutcome::Finalize),
+                // Quiescent with the run already wound down: finalize.
+                Stop::Finished => Ok(DriveOutcome::Finalize),
+                // This arm is guarded by the `!Running` check above.
+                Stop::Running => unreachable!("the terminal branch excludes Running"),
             };
         }
         drop(state);
