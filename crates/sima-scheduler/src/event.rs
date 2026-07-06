@@ -72,6 +72,13 @@ impl LifecycleEvent {
         serde_json::to_string(self)
             .map_err(|e| Error::Encoding(format!("lifecycle event does not serialize: {e}")))
     }
+
+    /// Parses a journal line written by [`to_line`](Self::to_line) back into an
+    /// event. A line that does not parse is [`Error::Encoding`].
+    pub fn from_line(line: &str) -> Result<LifecycleEvent> {
+        serde_json::from_str(line)
+            .map_err(|e| Error::Encoding(format!("lifecycle event does not parse: {e}")))
+    }
 }
 
 #[cfg(test)]
@@ -115,8 +122,7 @@ mod tests {
             stats_hex: "00000000".to_string(),
         };
         let line = event.to_line()?;
-        let back: LifecycleEvent = serde_json::from_str(&line).expect("parse event");
-        assert_eq!(back, event);
+        assert_eq!(LifecycleEvent::from_line(&line)?, event);
         Ok(())
     }
 }
