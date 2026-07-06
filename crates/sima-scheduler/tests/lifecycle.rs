@@ -5,10 +5,13 @@ mod common;
 
 use common::{
     committed_count, config, exec, failed_count, journal_events, leased_count, overran_count,
-    rejected_count, retried_count, run_id, run_into, task_keys, temp_store,
+    rejected_count, retried_count, run_id, run_into, run_with, task_keys, temp_store,
 };
-use sima_contracts::StubBehavior;
-use sima_core::Result;
+use sima_contracts::{
+    ExecutionContext, Executor, Outcome, StubBehavior, StubExecutor, StubProgram, TaskInput,
+};
+use sima_core::{Error, Result};
+use sima_model::FormatId;
 use sima_scheduler::{LifecycleEvent, RunOutcome};
 
 /// A flaky candidate fails, is retried, and finally commits; the committed
@@ -193,6 +196,83 @@ fn an_overrun_is_detected_without_preemption() -> Result<()> {
     // Detected at least once, and the task still committed (no preemption).
     assert!(overran_count(&events, &key) >= 1);
     assert_eq!(committed_count(&events, &key), 1);
+    Ok(())
+}
+
+/// An executor that raises an infrastructure fault. It delegates a `Succeed`
+/// program to the stub — so siblings still commit — and returns `Err` for any
+/// other behavior, modelling a store fault or a structurally invalid spec the
+/// stub generator cannot produce on its own.
+struct FaultyExecutor {
+    inner: StubExecutor,
+    format: FormatId,
+}
+
+impl FaultyExecutor {
+    fn new() -> FaultyExecutor {
+        FaultyExecutor {
+            inner: StubExecutor::new().expect("stub executor"),
+            format: FormatId::new("stub.v1").expect("format id"),
+        }
+    }
+}
+
+impl Executor for FaultyExecutor {
+    fn format(&self) -> &FormatId {
+        &self.format
+    }
+
+    fn execute(&self, input: &TaskInput<'_>, ctx: &ExecutionContext) -> Result<Outcome> {
+        let program = StubProgram::from_bytes(&input.spec.bytes)?;
+        if matches!(program.behavior, StubBehavior::Succeed) {
+            self.inner.execute(input, ctx)
+        } else {
+            Err(Error::Validation(
+                "injected infrastructure fault".to_string(),
+            ))
+        }
+    }
+}
+
+/// An infrastructure fault from the executor fails the whole run with `Err`,
+/// distinct from a candidate that merely evaluated badly, and writes no
+/// manifest.
+#[test]
+fn an_executor_fault_fails_the_run_with_an_error() -> Result<()> {
+    let cfg = config(7, vec![StubBehavior::Reject]);
+    let (_dir, store) = temp_store();
+    match run_with(&store, &cfg, &exec(1, 3, 1_000), &FaultyExecutor::new()) {
+        Err(Error::Validation(_)) => {}
+        Err(other) => panic!("expected a validation fault, got {other}"),
+        Ok(_) => panic!("expected an infrastructure fault, got a run outcome"),
+    }
+    // No manifest: the faulted run did not finalize.
+    assert!(store.manifest(&run_id(&cfg))?.is_none());
+    Ok(())
+}
+
+/// A fault leaves the store clean and resumable: a sibling that committed
+/// before the fault survives, and no manifest is written.
+#[test]
+fn a_fault_preserves_already_committed_siblings() -> Result<()> {
+    let cfg = config(8, vec![StubBehavior::Succeed, StubBehavior::Reject]);
+    let keys = task_keys(&cfg);
+    let (succeed_key, fault_key) = (keys[0], keys[1]);
+
+    let (_dir, store) = temp_store();
+    // One worker in FIFO order commits the Succeed sibling before reaching the
+    // faulting candidate.
+    match run_with(&store, &cfg, &exec(1, 3, 1_000), &FaultyExecutor::new()) {
+        Err(Error::Validation(_)) => {}
+        Err(other) => panic!("expected a validation fault, got {other}"),
+        Ok(_) => panic!("expected an infrastructure fault, got a run outcome"),
+    }
+
+    assert!(store.manifest(&run_id(&cfg))?.is_none());
+    // The sibling committed before the fault remains committed.
+    assert!(store.record(&succeed_key)?.is_some());
+    // The faulting candidate never committed.
+    assert!(store.record(&fault_key)?.is_none());
     Ok(())
 }
 

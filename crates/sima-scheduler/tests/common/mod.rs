@@ -7,7 +7,7 @@
 
 use std::time::Duration;
 
-use sima_contracts::{StubBehavior, StubExecutor, StubGenerator, StubGeneratorConfig};
+use sima_contracts::{Executor, StubBehavior, StubExecutor, StubGenerator, StubGeneratorConfig};
 use sima_core::Result;
 use sima_model::{
     Environment, EnvironmentComponent, EnvironmentValue, FormatId, GeneratorConfig, GeneratorId,
@@ -56,9 +56,19 @@ pub fn temp_store() -> (tempfile::TempDir, Store) {
 
 /// Runs `cfg` into `store` with the stub generator and executor.
 pub fn run_into(store: &Store, cfg: &RunConfig, exec: &ExecutionConfig) -> Result<RunOutcome> {
+    run_with(store, cfg, exec, &StubExecutor::new()?)
+}
+
+/// Runs `cfg` into `store` with the stub generator and a caller-supplied
+/// executor, so a test can inject faulting behavior the stub does not model.
+pub fn run_with(
+    store: &Store,
+    cfg: &RunConfig,
+    exec: &ExecutionConfig,
+    executor: &(dyn Executor + Sync),
+) -> Result<RunOutcome> {
     let generator = StubGenerator::new()?;
-    let executor = StubExecutor::new()?;
-    run(store, cfg, &environment(), &generator, &executor, exec)
+    run(store, cfg, &environment(), &generator, executor, exec)
 }
 
 /// The run id of `cfg` — the address of its config object, and the directory
