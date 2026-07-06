@@ -154,7 +154,13 @@ Phase-level decisions:
       harness (subprocess SIGKILL at controlled crashpoints —
       mid-object-write, between object and index, mid-lease, during
       finalization — resume, assert manifest identical to uninterrupted
-      reference); end-to-end tests for the four phase acceptance criteria
+      reference); end-to-end tests for the four phase acceptance criteria.
+      Building the dispatch is where to decide whether a `Family` abstraction
+      groups the format-bound implementations (codec + executor, and in P2 the
+      CPU reference + GPU kernel + mutation) as one registration unit, keeping
+      generators a separate plug: one format has one executor but many
+      generators (`RunConfig` carries `format` and `generator.id` as distinct
+      fields), so a bundle must not pair executor and generator 1:1
 
 ## P2 — GPU executor + totalistic family
 
@@ -422,7 +428,10 @@ portability (P1 acceptance (d)) hold across the boundary.
 - [ ] P9.2 Runtime registration: an out-of-tree executor announces its format
       id and is selected without editing sima's dispatch — the static
       format-id match (M1.6) becomes a registry. Registration and loading
-      mechanism decided here.
+      mechanism decided here. The registration unit follows the `Family`-bundle
+      decision from M1.6: a third party registers the format-bound bundle
+      (codec + executor + reference + kernel) as one object, with generators a
+      separate plug targeting the format — do not fuse executor and generator.
 - [ ] P9.3 Isolation and trust: run out-of-tree executors process-isolated so
       the pure-compute boundary is OS-enforced (foreign code cannot reach the
       store); their results feed the trust-tiered validation (P5.7).
