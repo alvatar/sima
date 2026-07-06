@@ -1,9 +1,10 @@
 //! Content identity: a newtype over the 32-byte blake3 digest.
 //!
-//! Everything identity-bearing in sima is addressed by a [`Hash`](struct@Hash); raw
-//! `[u8; 32]` digests never cross public API boundaries. The canonical text
-//! form is lowercase hex ([`fmt::Display`]), and [`Hash::from_hex`] accepts
-//! exactly that form back — one spelling per identity.
+//! Everything identity-bearing in sima is addressed by a [`Hash`](struct@Hash).
+//! The canonical text form is lowercase hex ([`fmt::Display`]), and
+//! [`Hash::from_hex`] accepts exactly that form back — one spelling per
+//! identity. [`Hash::as_bytes`] exposes the raw digest for content that is
+//! itself stored under it.
 
 use std::fmt;
 
@@ -23,8 +24,8 @@ impl Hash {
         Hash(bytes)
     }
 
-    /// Digest bytes, for the canonical encoder.
-    pub(crate) const fn as_bytes(&self) -> &[u8; Hash::LEN] {
+    /// The raw digest bytes.
+    pub const fn as_bytes(&self) -> &[u8; Hash::LEN] {
         &self.0
     }
 

@@ -121,13 +121,13 @@ Phase-level decisions:
       — append-only per-run journal beside the manifest, one event per line,
       newline-terminated crash-safe appends (a torn final line is detected
       and ignored on read), non-identity-bearing
-- [ ] M1.4 Contracts + stubs (`sima-contracts`): executor and generator
-      contracts over opaque specs and params; task definition carries an
-      optional input-state object reference (segmented-execution enabler,
-      unused by the stub, part of the task key); the contract distinguishes
-      identity inputs (spec, params, seed, env, input-state — determine the
-      key and the
-      committed artifacts) from execution context (attempt number, worker id
+- [x] M1.4 Contracts + stubs (`sima-contracts`): executor and generator
+      contracts over opaque specs and params; the executor receives the full
+      identity, including the input-state reference already carried by the
+      task key (segmented-execution enabler, unused by the stub); the
+      contract distinguishes identity inputs (spec, params, seed, env,
+      input-state — determine the key and the committed artifacts) from
+      execution context (attempt number, worker id
       — visible to the executor, forbidden from influencing committed
       artifacts); seeded stub generator; spec-programmed stub executor (spec
       bytes select behavior: succeed / fail N times then succeed / panic /
@@ -142,7 +142,10 @@ Phase-level decisions:
       lifecycle state machine (defined → queued → leased → executing →
       committed | failed → retried) with transitions written through the
       store's journal module; thread-worker transport; failure matrix driven
-      by the programmable stub
+      by the programmable stub; when the lifecycle journals a failed attempt,
+      decide whether `Outcome::Failed` should carry executor stats — M1.4
+      deferred this, leaving `Failed` holding only a reason, and this is its
+      first consumer
 - [ ] M1.6 Config + pipeline + CLI (`sima-pipeline`, `sima`): TOML schema +
       canonicalization; pipeline orchestration with static format-id →
       implementation match; orchestrator lease file; typed progress events
@@ -151,7 +154,13 @@ Phase-level decisions:
       harness (subprocess SIGKILL at controlled crashpoints —
       mid-object-write, between object and index, mid-lease, during
       finalization — resume, assert manifest identical to uninterrupted
-      reference); end-to-end tests for the four phase acceptance criteria
+      reference); end-to-end tests for the four phase acceptance criteria.
+      Building the dispatch is where to decide whether a `Family` abstraction
+      groups the format-bound implementations (codec + executor, and in P2 the
+      CPU reference + GPU kernel + mutation) as one registration unit, keeping
+      generators a separate plug: one format has one executor but many
+      generators (`RunConfig` carries `format` and `generator.id` as distinct
+      fields), so a bundle must not pair executor and generator 1:1
 
 ## P2 — GPU executor + totalistic family
 
@@ -256,7 +265,15 @@ leaked instances are leaked money.
 - [ ] M5.5 On-worker stats reduction: kernel-side population/activity counts
       so remote runs return stats always, snapshots only on a cheap predicate
       (placed here as the bandwidth guard; P6's funnel metrics consume the
-      same reduction — the mechanism is shared)
+      same reduction — the mechanism is shared). "Stats always" forces the
+      failed-evaluation case: if the M1.5 decision gave `Outcome::Failed`
+      stats, the reduction covers failures too, so a failed evaluation returns
+      its cheap counts over the wire like a success. This is also the first
+      real producer of stats, so it forces the `Stats` type decision M1.4
+      deferred: M1.4 ships `Stats` as opaque bytes, and here it should likely
+      become structured named scalars (population, activity, ...) the P6 funnel
+      can threshold family-agnostically, plus an optional opaque family blob
+      for anything richer — decide the shape here, consumed at M6.2
 - [ ] M5.6 Budget guard: max price, max wall-clock, spend accounting per run
 - [ ] M5.7 Trust-tiered scheduling: redundant execution, quorum validation,
       spot-check sampling, host reputation — the BOINC playbook; the largest
@@ -287,7 +304,10 @@ thresholds re-classifies without any re-execution.
       from M2.4: what is kept, for how long, and what re-evaluation minimally
       requires
 - [ ] M6.2 Verdict classification: dead / frozen / exploding / cyclic,
-      thresholds from config
+      thresholds from config. Classification reads named numeric metrics
+      generically, so it requires the structured `Stats` decided at M5.5 rather
+      than the opaque bytes M1.4 shipped — opaque stats would force a per-family
+      decoder here and defeat the funnel's family-agnostic design
 - [ ] M6.3 Staged cheapest-first funnel + re-evaluation from recorded runs
       without re-execution
 - [ ] M6.4 Object packing for scale, beside retention (M6.1) as the other
@@ -408,7 +428,10 @@ portability (P1 acceptance (d)) hold across the boundary.
 - [ ] P9.2 Runtime registration: an out-of-tree executor announces its format
       id and is selected without editing sima's dispatch — the static
       format-id match (M1.6) becomes a registry. Registration and loading
-      mechanism decided here.
+      mechanism decided here. The registration unit follows the `Family`-bundle
+      decision from M1.6: a third party registers the format-bound bundle
+      (codec + executor + reference + kernel) as one object, with generators a
+      separate plug targeting the format — do not fuse executor and generator.
 - [ ] P9.3 Isolation and trust: run out-of-tree executors process-isolated so
       the pure-compute boundary is OS-enforced (foreign code cannot reach the
       store); their results feed the trust-tiered validation (P5.7).

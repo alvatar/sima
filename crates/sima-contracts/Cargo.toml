@@ -1,0 +1,11 @@
+[package]
+name = "sima-contracts"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+sima-core = { path = "../sima-core" }
+sima-model = { path = "../sima-model" }
+
+[lints]
+workspace = true
