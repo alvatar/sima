@@ -16,7 +16,8 @@ pub trait Generator {
     /// config's `generator.id`.
     fn id(&self) -> &GeneratorId;
 
-    /// Produce the run's candidate specs. `root_seed` is the run's root seed;
+    /// Produce the run's candidate specs (the candidate genotypes, sampled
+    /// from the seed). `root_seed` is the run's root seed;
     /// `params` is the generator's own settings blob (opaque, from
     /// `RunConfig.generator.params`); `format` is stamped into every produced
     /// spec. Deterministic in all three.

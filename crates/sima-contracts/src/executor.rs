@@ -82,8 +82,9 @@ pub enum Outcome {
 }
 
 /// Pure compute over one candidate. Receives identity inputs and execution
-/// context as disjoint groups; returns produced artifacts and stats, or a
-/// failure outcome. Never touches the store.
+/// context as disjoint groups; returns produced artifacts (the phenotype the
+/// spec's genotype expresses into) and stats, or a failure outcome. Never
+/// touches the store.
 pub trait Executor {
     /// The format id this executor interprets. The pipeline (M1.6) dispatches
     /// a run to the executor whose format matches the run config's format.
