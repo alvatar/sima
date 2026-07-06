@@ -142,7 +142,10 @@ Phase-level decisions:
       lifecycle state machine (defined → queued → leased → executing →
       committed | failed → retried) with transitions written through the
       store's journal module; thread-worker transport; failure matrix driven
-      by the programmable stub
+      by the programmable stub; when the lifecycle journals a failed attempt,
+      decide whether `Outcome::Failed` should carry executor stats — M1.4
+      deferred this, leaving `Failed` holding only a reason, and this is its
+      first consumer
 - [ ] M1.6 Config + pipeline + CLI (`sima-pipeline`, `sima`): TOML schema +
       canonicalization; pipeline orchestration with static format-id →
       implementation match; orchestrator lease file; typed progress events
