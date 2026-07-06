@@ -144,13 +144,35 @@ Phase-level decisions:
       lifecycle events — structured data, not formatted strings — with the
       store's journal as the one sink they serialize into now (the same events
       feed the distributed trace facade when it arrives, M3.4); thread-worker
-      transport; failure matrix driven by the programmable stub. Resolved
-      (was deferred at M1.4): `Outcome::Failed` carries executor stats
-      symmetric with `Completed`, i.e. `Failed { reason, stats }`, so a failed
-      attempt journals what it produced; `Stats` stays opaque and is empty when
-      a failure has nothing to report, so an empty failure costs nothing
-- [ ] M1.6 Config + pipeline + CLI (`sima-pipeline`, `sima`): TOML schema +
-      canonicalization; pipeline orchestration with static format-id →
+      transport (interim: replaced outright by the M3.1 subprocess worker; the
+      two worker models never coexist — see M3.1); a watchdog that stamps each
+      lease with a deadline and journals a `TaskOverran` event when an attempt
+      runs past it (in-process execution cannot be preempted, so an overrun is
+      detected and reported, never killed — real preemption is M3.1); failure
+      matrix driven by the programmable stub; a struct-injected
+      `ExecutionConfig` (worker count, timeouts, retry cap — operational,
+      never hashed), whose file form is the execution section of M1.6's
+      `sima.toml`.
+      Failure model (resolved at elaboration): an execution yields one of
+      three outcomes — `Completed { artifacts, stats }`, `Failed { reason,
+      stats }` (transient, retried up to the cap), or `Rejected { reason,
+      stats }` (definitive: the candidate cannot produce a result, never
+      retried). A panic escaping the wrapped `execute()` call is a
+      program-internal panic → `Rejected`; a panic anywhere else in the
+      scheduler is a SIMA fault → `Err`. The store models only success (a
+      `TaskRecord` records artifacts), so a definitive failure is journal-only:
+      it terminates the run, writes no manifest, and leaves the store clean and
+      resumable (committed successes remain, no failure marker), so fixing the
+      cause and re-running the same config re-executes only the unfinished
+      work. This is the final design, not a placeholder — correct code never
+      fails definitively. (The `Failed`-carries-stats half was the
+      M1.4-deferred decision; `Stats` stays opaque and empty-costs-nothing.)
+- [ ] M1.6 Config + pipeline + CLI (`sima-pipeline`, `sima`): one `sima.toml`
+      with two sections — an identity section (root_seed, format, generator,
+      params) canonicalized into the `RunConfig` bytes and thus `RunId`, and an
+      execution section (worker count, timeouts, retry cap — the file form of
+      M1.5's `ExecutionConfig`, operational and never hashed); pipeline
+      orchestration with static format-id →
       implementation match; orchestrator lease file; typed progress events
       rendered by the CLI; basic `sima status <run>` from the journal;
       graceful interrupt, resume, re-evaluation pass; crash-injection
@@ -225,7 +247,11 @@ spread across processes, multiple GPUs, and one SSH remote yields identical
 manifests — determinism is transport-invariant; killing a remote worker
 mid-lease converges through retry with no manifest difference.
 
-- [ ] M3.1 Multi-process worker transport (same scheduler contract)
+- [ ] M3.1 Multi-process worker transport (same scheduler contract): replaces
+      the M1.5 in-process thread worker outright — the two worker models never
+      coexist, since mixing them would mean inconsistent execution guarantees —
+      and brings real timeout preemption (kill the subprocess) that the
+      in-process watchdog can only detect, not enforce
 - [ ] M3.2 Multi-GPU on one host
 - [ ] M3.3 Remote worker over SSH: container image with Vulkan runtime, worker
       bootstrap, bidirectional store sync (have/want negotiation — results
