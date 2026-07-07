@@ -93,13 +93,27 @@ fn process(ctx: &WorkerContext<'_>, worker: WorkerId, pending: Pending) {
         },
     );
 
+    // Resolve the input-state object the identity references: the key carries
+    // its digest, the executor receives its bytes. A load failure is an
+    // infrastructure fault.
+    let input_state = match identity.input_state {
+        Some(hash) => match ctx.store.get(&hash) {
+            Ok(bytes) => Some(bytes),
+            Err(e) => {
+                task_fault(ctx, task, attempt, key, e);
+                return;
+            }
+        },
+        None => None,
+    };
+
     let exec_ctx = ExecutionContext { attempt, worker };
     let input = TaskInput {
         spec: &spec,
         params: &ctx.config.params,
         seed: identity.seed,
         environment: identity.environment,
-        input_state: None,
+        input_state: input_state.as_deref(),
     };
     // The panic handler wraps only the executor call: a panic escaping it was
     // raised inside the candidate's execution, so the worker classifies it as a
@@ -292,9 +306,13 @@ fn to_hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use std::collections::{HashMap, VecDeque};
+    use std::sync::mpsc;
     use std::sync::{Condvar, Mutex};
+    use std::time::Duration;
 
+    use sima_contracts::{StubBehavior, StubExecutor, StubProgram};
     use sima_core::hash_bytes;
+    use sima_model::{EnvironmentId, FormatId, GeneratorConfig, GeneratorId, Params, Spec, SpecId};
 
     use super::*;
     use crate::driver::{Failure, Shared};
@@ -336,5 +354,155 @@ mod tests {
             Stop::Fault(e) => assert_eq!(e.to_string(), "store corruption: first fault"),
             _ => panic!("expected a fault stop state"),
         }
+    }
+
+    /// The outcome of running `process` once against a stub `Succeed` candidate
+    /// whose identity references an input-state object.
+    struct ProcessRun {
+        _dir: tempfile::TempDir,
+        store: Store,
+        identity: TaskIdentity,
+        coord: Coord,
+        events: Vec<LifecycleEvent>,
+        /// The artifact bytes the stub executor produces for this identity when
+        /// it receives `state`'s bytes directly.
+        expected_artifact: Vec<u8>,
+    }
+
+    /// Builds a task whose identity references `state` and runs `process` once.
+    /// The state object is stored only when `store_state` is set, so a caller
+    /// can exercise both the resolved-state and missing-state paths. Every other
+    /// identity component is stored, so a successful commit's only open question
+    /// is the input state.
+    fn run_process(state: &[u8], store_state: bool) -> Result<ProcessRun> {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let store = Store::open(dir.path()).expect("open store");
+
+        // Each identity component is stored as its own object so the commit's
+        // durability check passes; the object address is the component id.
+        let params = Params {
+            bytes: vec![1, 2, 3],
+        };
+        store.put(&params.to_bytes())?;
+        let environment = EnvironmentId::from_hash(store.put(b"unit-test environment")?);
+        let spec = Spec {
+            format: FormatId::new("stub.v1")?,
+            bytes: StubProgram {
+                behavior: StubBehavior::Succeed,
+                nonce: 7,
+            }
+            .to_bytes(),
+        };
+        let spec_id = SpecId::from_hash(store.put(&spec.to_bytes())?);
+        if store_state {
+            store.put(state)?;
+        }
+        let identity = TaskIdentity {
+            spec: spec_id,
+            params: params.id(),
+            seed: 5,
+            environment,
+            input_state: Some(hash_bytes(state)),
+        };
+
+        let config = RunConfig {
+            root_seed: 0,
+            format: FormatId::new("stub.v1")?,
+            generator: GeneratorConfig {
+                id: GeneratorId::new("stub.v1")?,
+                params: Vec::new(),
+            },
+            params,
+        };
+        let executor = StubExecutor::new()?;
+        let exec = ExecutionConfig::new(1, 1, Duration::from_secs(1))?;
+
+        // The stub artifact this identity commits when the state bytes reach the
+        // executor: computed by calling the executor directly with the bytes.
+        let expected_artifact = match executor.execute(
+            &TaskInput {
+                spec: &spec,
+                params: &config.params,
+                seed: identity.seed,
+                environment,
+                input_state: Some(state),
+            },
+            &ExecutionContext {
+                attempt: 0,
+                worker: WorkerId(0),
+            },
+        )? {
+            Outcome::Completed { artifacts, .. } => {
+                artifacts.into_iter().next().expect("one artifact").bytes
+            }
+            _ => panic!("a stub Succeed candidate completes"),
+        };
+
+        let coord = Coord {
+            state: Mutex::new(Shared {
+                queue: VecDeque::new(),
+                leases: HashMap::new(),
+                in_flight: 1,
+                stop: Stop::Running,
+            }),
+            idle: Condvar::new(),
+        };
+        let (tx, rx) = mpsc::channel();
+        {
+            let ctx = WorkerContext {
+                coord: &coord,
+                store: &store,
+                config: &config,
+                executor: &executor,
+                exec: &exec,
+                events: tx,
+            };
+            let pending = Pending {
+                task: RunnableTask {
+                    spec: spec.clone(),
+                    identity,
+                },
+                attempt: 0,
+            };
+            process(&ctx, WorkerId(0), pending);
+        }
+        let events = rx.into_iter().collect();
+        Ok(ProcessRun {
+            _dir: dir,
+            store,
+            identity,
+            coord,
+            events,
+            expected_artifact,
+        })
+    }
+
+    #[test]
+    fn the_worker_resolves_input_state_and_commits_the_state_dependent_artifact() -> Result<()> {
+        let run = run_process(b"input state blob", true)?;
+        let record = run
+            .store
+            .record(&run.identity.key())?
+            .expect("the task committed a record");
+        assert_eq!(record.artifacts().len(), 1);
+        let object = record.artifacts()[0].object();
+        // The committed artifact is the digest that folds in the state bytes,
+        // not the state-less digest a hardcoded `None` would have produced.
+        assert_eq!(run.store.get(object)?, run.expected_artifact);
+        Ok(())
+    }
+
+    #[test]
+    fn a_missing_input_state_object_is_a_fault() -> Result<()> {
+        let run = run_process(b"never stored", false)?;
+        assert!(run.store.record(&run.identity.key())?.is_none());
+        assert!(matches!(run.coord.lock().stop, Stop::Fault(_)));
+        assert!(
+            run.events
+                .iter()
+                .any(|e| matches!(e, LifecycleEvent::Faulted { .. })),
+            "the load failure emits a Faulted event"
+        );
+        Ok(())
     }
 }
