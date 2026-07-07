@@ -224,11 +224,11 @@ fn an_unbounded_timeout_finalizes_without_overrun_reports() -> Result<()> {
 }
 
 /// Each task's `Queued` event is journaled before its first `Leased` event —
-/// the per-task order the event vocabulary promises. enqueue emits `Queued`
-/// before it publishes the task to the queue, so no woken worker can journal a
-/// `Leased` ahead of the driver's `Queued`. The run repeats ten times to give
-/// the pre-fix race (publish before emit) room to fire; post-fix the ordering
-/// is structural.
+/// the per-task order the event vocabulary promises. The guarantee is
+/// structural: enqueue emits `Queued` before it publishes the task to the
+/// queue, so no woken worker can journal a `Leased` ahead of the driver's
+/// `Queued`. The run repeats ten times so that an ordering violation, were one
+/// possible, would have room to surface across many worker interleavings.
 #[test]
 fn queued_is_journaled_before_the_first_lease() -> Result<()> {
     let cfg = config(13, vec![StubBehavior::Succeed; 16]);
@@ -264,8 +264,7 @@ fn queued_is_journaled_before_the_first_lease() -> Result<()> {
 /// run for a full scan interval. With a one-hour timeout (a fifteen-minute scan
 /// interval), the run must still return promptly once the work completes: the
 /// prompt return is structural, and the test finishing within the suite's
-/// normal runtime is the guard. A missed condvar wakeup cannot be forced
-/// deterministically, so this replaces the red step.
+/// normal runtime is the guard.
 #[test]
 fn a_long_timeout_does_not_delay_the_run() -> Result<()> {
     let cfg = config(12, vec![StubBehavior::Succeed, StubBehavior::Succeed]);
