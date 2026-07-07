@@ -15,6 +15,7 @@
 //! excluded from every equality criterion.
 
 mod config;
+mod coord;
 mod driver;
 mod event;
 mod journal_sink;

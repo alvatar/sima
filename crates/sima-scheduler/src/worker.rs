@@ -2,16 +2,16 @@
 //! outcome, and commits or retries.
 //!
 //! This is the interim in-process transport: a fixed pool of threads pulling
-//! from the shared queue. It is deliberately narrow — lease, execute, classify,
-//! commit, retry — so a subprocess-based worker can replace the execution
-//! transport (the `execute` call and its panic classification) while the lease,
-//! retry, and commit logic around it stays in place. The executor trust
-//! boundary lives here: the worker holds the only store handle, so a result
-//! reaches durable state only by passing through this commit path.
+//! from the shared queue. It is deliberately narrow — evaluate, classify,
+//! commit — with the lease and settlement bookkeeping on [`Coord`], so a
+//! subprocess-based worker can replace the execution transport (the `execute`
+//! call and its panic classification) while the coordination around it stays
+//! in place. The executor trust boundary lives here: the worker holds the only
+//! store handle, so a result reaches durable state only by passing through
+//! this commit path.
 
 use std::any::Any;
 use std::sync::mpsc::Sender;
-use std::time::Instant;
 
 use sima_contracts::{Artifact, ExecutionContext, Executor, Outcome, TaskInput, WorkerId};
 use sima_core::{Error, Hash, Result, to_hex};
@@ -19,10 +19,9 @@ use sima_model::{ArtifactRef, RunConfig, TaskIdentity, TaskKey, TaskRecord};
 use sima_store::Store;
 
 use crate::config::ExecutionConfig;
-use crate::driver::{Coord, Failure, Pending, Shared, Stop};
+use crate::coord::{Coord, Pending};
 use crate::event::LifecycleEvent;
 use crate::journal_sink::emit;
-use crate::lease::Lease;
 use crate::task_source::RunnableTask;
 
 /// The run-wide context one worker borrows for its whole life: the shared
@@ -40,7 +39,7 @@ pub(crate) struct WorkerContext<'a> {
 /// Runs the worker: lease a task, evaluate it, resolve the outcome, repeat
 /// until the run winds down.
 pub(crate) fn worker_loop(worker: WorkerId, ctx: WorkerContext<'_>) {
-    while let Some(pending) = next_task(ctx.coord, worker) {
+    while let Some(pending) = ctx.coord.next_task(worker) {
         // A panic escaping process() outside the executor's own catch_unwind —
         // the commit path, a store read, the settle code — would leak the
         // task's lease, and drive() would then block forever on
@@ -91,8 +90,7 @@ impl Drop for PanicGuard<'_> {
             // quiescence; the fault's content is unobservable because
             // thread::scope re-raises the worker's panic at join, so this is
             // purely a liveness release.
-            fault(
-                self.coord,
+            self.coord.fault(
                 self.key,
                 Error::Validation(format!(
                     "worker panicked while processing task {}",
@@ -100,39 +98,6 @@ impl Drop for PanicGuard<'_> {
                 )),
             );
         }
-    }
-}
-
-/// Leases the next ready task, inserting its lease and counting it in flight;
-/// returns `None` once the run is winding down and this worker should exit.
-fn next_task(coord: &Coord, worker: WorkerId) -> Option<Pending> {
-    let mut state = coord.lock();
-    loop {
-        if !matches!(state.stop, Stop::Running) {
-            // Winding down: pull no more work. Wake peers and the driver so
-            // they observe the state and drain.
-            coord.idle.notify_all();
-            return None;
-        }
-        if let Some(pending) = state.queue.pop_front() {
-            let key = pending.key;
-            // The lease records when the attempt started; the watchdog derives
-            // expiry from its age, so there is no deadline arithmetic that
-            // could overflow.
-            state.leases.insert(
-                key,
-                Lease {
-                    worker,
-                    attempt: pending.attempt,
-                    leased_at: Instant::now(),
-                },
-            );
-            return Some(pending);
-        }
-        // The queue is empty: this worker may be the one making the pool
-        // quiescent, so wake the driver before parking for new work.
-        coord.idle.notify_all();
-        state = coord.idle.wait(state).unwrap_or_else(|p| p.into_inner());
     }
 }
 
@@ -196,7 +161,7 @@ fn process(ctx: &WorkerContext<'_>, worker: WorkerId, pending: Pending) {
                             stats_hex: to_hex(&stats.bytes),
                         },
                     );
-                    resolve(ctx.coord, key);
+                    ctx.coord.resolve(key);
                 }
                 Err(e) => task_fault(ctx, task, attempt, key, e),
             }
@@ -212,7 +177,10 @@ fn process(ctx: &WorkerContext<'_>, worker: WorkerId, pending: Pending) {
                 },
             );
             if attempt + 1 < ctx.exec.max_attempts {
-                if requeue(ctx.coord, key, RunnableTask { spec, identity }, attempt + 1) {
+                if ctx
+                    .coord
+                    .requeue(key, RunnableTask { spec, identity }, attempt + 1)
+                {
                     emit(
                         &ctx.events,
                         LifecycleEvent::Retried {
@@ -223,7 +191,7 @@ fn process(ctx: &WorkerContext<'_>, worker: WorkerId, pending: Pending) {
                 }
             } else {
                 // Retries exhausted: the transient failure is now definitive.
-                terminate(ctx.coord, key, reason);
+                ctx.coord.terminate(key, reason);
             }
         }
         Ok(Ok(Outcome::Rejected { reason, stats })) => {
@@ -236,7 +204,7 @@ fn process(ctx: &WorkerContext<'_>, worker: WorkerId, pending: Pending) {
                     stats_hex: to_hex(&stats.bytes),
                 },
             );
-            terminate(ctx.coord, key, reason);
+            ctx.coord.terminate(key, reason);
         }
         // An infrastructure fault from the executor (e.g. a structurally
         // invalid spec) fails the whole run, distinct from a candidate that
@@ -253,7 +221,7 @@ fn process(ctx: &WorkerContext<'_>, worker: WorkerId, pending: Pending) {
                     stats_hex: String::new(),
                 },
             );
-            terminate(ctx.coord, key, reason);
+            ctx.coord.terminate(key, reason);
         }
     }
 }
@@ -272,53 +240,6 @@ fn commit(store: &Store, identity: TaskIdentity, artifacts: Vec<Artifact>) -> Re
     store.commit_record(&record)
 }
 
-/// Releases `key`'s lease, applies the outcome-specific update to the shared
-/// state, and wakes the pool. Every settle path — resolve, requeue, terminate,
-/// fault — shares this lock, lease removal, and notification; the four wrappers
-/// carry only their own middle step.
-fn settle<R>(coord: &Coord, key: TaskKey, apply: impl FnOnce(&mut Shared) -> R) -> R {
-    let mut state = coord.lock();
-    state.leases.remove(&key);
-    let result = apply(&mut state);
-    coord.idle.notify_all();
-    result
-}
-
-/// Clears a resolved lease, which removes its task from the in-flight set.
-fn resolve(coord: &Coord, key: TaskKey) {
-    settle(coord, key, |_state| {});
-}
-
-/// Clears the lease and, while the run is still healthy, re-enqueues the task
-/// at the next attempt. Returns whether it was re-enqueued: a run already
-/// winding down abandons the task rather than queueing work no worker will take.
-fn requeue(coord: &Coord, key: TaskKey, task: RunnableTask, next_attempt: u32) -> bool {
-    settle(coord, key, |state| {
-        let running = matches!(state.stop, Stop::Running);
-        if running {
-            // The key is already in hand as a parameter — the requeued attempt
-            // reuses it rather than recomputing it under the lock.
-            state.queue.push_back(Pending {
-                key,
-                task,
-                attempt: next_attempt,
-            });
-        }
-        running
-    })
-}
-
-/// Records a definitive candidate failure: it decides the run's outcome only
-/// from the healthy state, so it never downgrades an infrastructure fault; the
-/// first candidate failure among candidate failures wins.
-fn terminate(coord: &Coord, key: TaskKey, reason: String) {
-    settle(coord, key, |state| {
-        if matches!(state.stop, Stop::Running) {
-            state.stop = Stop::Failed(Failure { task: key, reason });
-        }
-    });
-}
-
 /// Emits the task's `Faulted` event and records the infrastructure fault, so
 /// the run surfaces the error. One classification site for every fault: the
 /// executor-error path, the commit-error path, and the input-state load path.
@@ -331,18 +252,7 @@ fn task_fault(ctx: &WorkerContext<'_>, task: String, attempt: u32, key: TaskKey,
             error: err.to_string(),
         },
     );
-    fault(ctx.coord, key, err);
-}
-
-/// Records an infrastructure fault: it outranks a definitive candidate failure,
-/// because the result path itself broke and the run must surface the error. The
-/// first fault wins; a later candidate failure never displaces it.
-fn fault(coord: &Coord, key: TaskKey, err: Error) {
-    settle(coord, key, |state| {
-        if !matches!(state.stop, Stop::Fault(_)) {
-            state.stop = Stop::Fault(err);
-        }
-    });
+    ctx.coord.fault(key, err);
 }
 
 /// Renders a caught panic payload as a rejection reason, recovering the common
@@ -359,61 +269,20 @@ fn panic_reason(payload: Box<dyn Any + Send>) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::{HashMap, VecDeque};
     use std::sync::mpsc;
-    use std::sync::{Condvar, Mutex};
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     use sima_contracts::{StubBehavior, StubExecutor, StubProgram};
     use sima_core::hash_bytes;
     use sima_model::{EnvironmentId, FormatId, GeneratorConfig, GeneratorId, Params, Spec, SpecId};
 
     use super::*;
-    use crate::driver::{Failure, Shared};
-
-    /// A coordinator in a given stop state, with an empty queue and lease table.
-    fn coord_with(stop: Stop) -> Coord {
-        Coord {
-            state: Mutex::new(Shared {
-                queue: VecDeque::new(),
-                leases: HashMap::new(),
-                stop,
-            }),
-            idle: Condvar::new(),
-        }
-    }
+    use crate::coord::Stop;
+    use crate::lease::Lease;
 
     /// A throwaway task key.
     fn a_key() -> TaskKey {
-        TaskKey::from_hash(hash_bytes(b"fault-upgrade task"))
-    }
-
-    #[test]
-    fn a_fault_upgrades_a_definitive_candidate_failure() {
-        let coord = coord_with(Stop::Failed(Failure {
-            task: a_key(),
-            reason: "candidate rejected".to_string(),
-        }));
-        fault(
-            &coord,
-            a_key(),
-            Error::Corruption("store broke".to_string()),
-        );
-        assert!(matches!(coord.lock().stop, Stop::Fault(_)));
-    }
-
-    #[test]
-    fn the_first_fault_is_kept_over_a_later_one() {
-        let coord = coord_with(Stop::Fault(Error::Corruption("first fault".to_string())));
-        fault(
-            &coord,
-            a_key(),
-            Error::Validation("second fault".to_string()),
-        );
-        match &coord.lock().stop {
-            Stop::Fault(e) => assert_eq!(e.to_string(), "store corruption: first fault"),
-            _ => panic!("expected a fault stop state"),
-        }
+        TaskKey::from_hash(hash_bytes(b"panic-guard task"))
     }
 
     /// A lease held by `worker`, leased now.
@@ -427,7 +296,7 @@ mod tests {
 
     #[test]
     fn a_panicking_worker_releases_its_lease_as_a_fault() {
-        let coord = coord_with(Stop::Running);
+        let coord = Coord::new();
         let key = a_key();
         coord.lock().leases.insert(key, a_lease(0));
         // A panic escaping the guarded region unwinds through the guard's Drop.
@@ -445,7 +314,7 @@ mod tests {
 
     #[test]
     fn a_disarmed_guard_leaves_the_run_running() {
-        let coord = coord_with(Stop::Running);
+        let coord = Coord::new();
         let key = a_key();
         coord.lock().leases.insert(key, a_lease(0));
         {
@@ -541,14 +410,7 @@ mod tests {
             _ => panic!("a stub Succeed candidate completes"),
         };
 
-        let coord = Coord {
-            state: Mutex::new(Shared {
-                queue: VecDeque::new(),
-                leases: HashMap::new(),
-                stop: Stop::Running,
-            }),
-            idle: Condvar::new(),
-        };
+        let coord = Coord::new();
         let (tx, rx) = mpsc::channel();
         {
             let ctx = WorkerContext {

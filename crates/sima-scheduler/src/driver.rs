@@ -8,20 +8,18 @@
 //! returns `Err`. The two mirror the executor's own `Ok(Outcome)`/`Err` split
 //! one level up.
 
-use std::collections::{HashMap, VecDeque};
 use std::sync::mpsc::Sender;
-use std::sync::{Condvar, Mutex, MutexGuard};
 use std::thread;
 
 use sima_contracts::{Executor, Generator, WorkerId};
-use sima_core::{Error, Result};
+use sima_core::Result;
 use sima_model::{Environment, RunConfig, RunId, TaskKey};
 use sima_store::Store;
 
 use crate::config::ExecutionConfig;
+use crate::coord::{Coord, Failure, Pending, Stop};
 use crate::event::LifecycleEvent;
 use crate::journal_sink::{JournalSink, emit};
-use crate::lease::Lease;
 use crate::static_batch::StaticBatch;
 use crate::task_source::{RunnableTask, TaskSource};
 use crate::watchdog::watchdog_loop;
@@ -43,66 +41,6 @@ pub enum RunOutcome {
         /// Why it failed.
         reason: String,
     },
-}
-
-/// A task waiting in the ready queue: the runnable task and the attempt it is
-/// queued for.
-pub(crate) struct Pending {
-    pub(crate) task: RunnableTask,
-    /// The task key, equal to `task.identity.key()`, computed once where the
-    /// `Pending` is built so no lifecycle step recomputes it under the lock.
-    pub(crate) key: TaskKey,
-    pub(crate) attempt: u32,
-}
-
-/// A definitive candidate failure: the task that could not produce a result,
-/// and why.
-pub(crate) struct Failure {
-    pub(crate) task: TaskKey,
-    pub(crate) reason: String,
-}
-
-/// Why the run is winding down. `Running` is the steady state; every other
-/// variant is terminal and makes each worker stop pulling new work.
-pub(crate) enum Stop {
-    /// Work is proceeding.
-    Running,
-    /// A definitive candidate failure; the run returns [`RunOutcome::Failed`].
-    Failed(Failure),
-    /// An infrastructure fault; the run returns `Err`.
-    Fault(Error),
-    /// The driver saw the work through and asked the pool to exit.
-    Finished,
-}
-
-/// The mutable state every scheduler thread shares.
-pub(crate) struct Shared {
-    /// FIFO of tasks ready to lease.
-    pub(crate) queue: VecDeque<Pending>,
-    /// The in-memory lease table, keyed by task. Its size is the count of
-    /// tasks in flight: every lease insertion and removal pairs with the task
-    /// being leased or resolved under this lock.
-    pub(crate) leases: HashMap<TaskKey, Lease>,
-    /// The run's wind-down state.
-    pub(crate) stop: Stop,
-}
-
-/// The shared state plus the condition every thread waits on.
-pub(crate) struct Coord {
-    pub(crate) state: Mutex<Shared>,
-    pub(crate) idle: Condvar,
-}
-
-impl Coord {
-    /// Locks the shared state, recovering a poisoned lock. Poisoning would mean
-    /// a thread panicked holding the lock; the scheduler panics only inside the
-    /// worker's `catch_unwind`, which holds no lock, so the lock is not
-    /// poisoned in practice.
-    pub(crate) fn lock(&self) -> MutexGuard<'_, Shared> {
-        self.state
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner())
-    }
 }
 
 /// Runs a search to completion.
@@ -141,14 +79,7 @@ pub fn run(
         },
     );
 
-    let coord = Coord {
-        state: Mutex::new(Shared {
-            queue: VecDeque::new(),
-            leases: HashMap::new(),
-            stop: Stop::Running,
-        }),
-        idle: Condvar::new(),
-    };
+    let coord = Coord::new();
 
     // The pool runs inside a scope so workers borrow `&store` and the executor
     // without `Arc`; the driver drives polling on this thread.
@@ -335,6 +266,8 @@ fn enqueue(coord: &Coord, events: &Sender<LifecycleEvent>, tasks: Vec<RunnableTa
 mod tests {
     use std::sync::mpsc;
 
+    use sima_core::Error;
+
     use super::*;
 
     /// A task source whose poll always faults, standing in for a fallible
@@ -351,24 +284,11 @@ mod tests {
         }
     }
 
-    /// A fresh coordinator in the steady `Running` state, for driving a source
-    /// with no worker pool attached.
-    fn idle_coord() -> Coord {
-        Coord {
-            state: Mutex::new(Shared {
-                queue: VecDeque::new(),
-                leases: HashMap::new(),
-                stop: Stop::Running,
-            }),
-            idle: Condvar::new(),
-        }
-    }
-
     #[test]
     fn a_poll_error_winds_the_run_down_instead_of_hanging() {
-        let coord = idle_coord();
+        let coord = Coord::new();
         let (events, _rx) = mpsc::channel();
-        // With no live workers, the seed poll faults on the first call.
+        // With no live workers, the first poll faults immediately.
         let result = drive(&coord, &mut FailingSource, &events);
         assert!(matches!(result, Err(Error::Validation(_))));
         // The terminal state is what a real pool observes to drain: a poll

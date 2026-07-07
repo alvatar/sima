@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 
 use sima_model::TaskKey;
 
-use crate::driver::{Coord, Stop};
+use crate::coord::{Coord, Stop};
 use crate::event::LifecycleEvent;
 use crate::journal_sink::emit;
 
