@@ -1,0 +1,18 @@
+[package]
+name = "sima-pipeline"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+sima-core = { path = "../sima-core" }
+sima-model = { path = "../sima-model" }
+sima-contracts = { path = "../sima-contracts" }
+sima-scheduler = { path = "../sima-scheduler" }
+serde.workspace = true
+toml.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true
