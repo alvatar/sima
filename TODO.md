@@ -167,7 +167,7 @@ Phase-level decisions:
       work. This is the final design, not a placeholder — correct code never
       fails definitively. (The `Failed`-carries-stats half was the
       M1.4-deferred decision; `Stats` stays opaque and empty-costs-nothing.)
-- [ ] M1.6 Config + pipeline + CLI (`sima-pipeline`, `sima`): one `sima.toml`
+- [x] M1.6 Config + pipeline + CLI (`sima-pipeline`, `sima`): one `sima.toml`
       with two sections — an identity section (root_seed, format, generator,
       params) canonicalized into the `RunConfig` bytes and thus `RunId`, and an
       execution section (worker count, timeouts, retry cap — the file form of
@@ -180,12 +180,12 @@ Phase-level decisions:
       mid-object-write, between object and index, mid-lease, during
       finalization — resume, assert manifest identical to uninterrupted
       reference); end-to-end tests for the four phase acceptance criteria.
-      Building the dispatch is where to decide whether a `Family` abstraction
-      groups the format-bound implementations (codec + executor, and in P2 the
-      CPU reference + GPU kernel + mutation) as one registration unit, keeping
-      generators a separate plug: one format has one executor but many
-      generators (`RunConfig` carries `format` and `generator.id` as distinct
-      fields), so a bundle must not pair executor and generator 1:1
+      Resolved while building the dispatch: a `Family` groups what a format
+      id binds — the executor, the environment entering task identity, and
+      the translation of the family-owned config sections into canonical
+      bytes; generators stay a separate plug with their own dispatch and
+      their own config translation, so the bundle never pairs executor and
+      generator 1:1
 
 ## P2 — GPU executor + totalistic family
 
