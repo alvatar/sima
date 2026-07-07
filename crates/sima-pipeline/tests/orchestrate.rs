@@ -2,50 +2,14 @@
 //! journal answers status, re-evaluation touches no executor, and the
 //! orchestrator lock admits one driver at a time.
 
-use std::path::{Path, PathBuf};
+mod common;
+
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use common::{journal_events, loaded};
 use sima_core::{Error, Result};
-use sima_pipeline::{
-    LifecycleEvent, LoadedConfig, RunControl, RunOutcome, RunState, load, orchestrate, status,
-};
+use sima_pipeline::{LifecycleEvent, RunControl, RunOutcome, RunState, orchestrate, status};
 use sima_store::Store;
-
-/// Writes a `sima.toml` into `dir` whose store lives beside it, and loads
-/// it. `behaviors` is the TOML list literal's inner content.
-fn loaded(dir: &Path, behaviors: &str, workers: u32) -> Result<LoadedConfig> {
-    let text = format!(
-        r#"
-        [run]
-        root_seed = 7
-        format = "stub.v1"
-
-        [run.generator]
-        id = "stub.v1"
-        behaviors = [{behaviors}]
-
-        [execution]
-        store = "./store"
-        workers = {workers}
-        max_attempts = 3
-        attempt_timeout_ms = 5000
-    "#
-    );
-    let path: PathBuf = dir.join("sima.toml");
-    std::fs::write(&path, text).expect("write config");
-    load(&path)
-}
-
-/// The typed journal of `config`'s run in its store.
-fn journal_events(config: &LoadedConfig) -> Vec<LifecycleEvent> {
-    let store = Store::open(&config.store).expect("open store");
-    store
-        .journal(&config.run.id())
-        .expect("read journal")
-        .iter()
-        .map(|line| LifecycleEvent::from_line(line).expect("parse journal line"))
-        .collect()
-}
 
 #[test]
 fn a_config_orchestrates_to_finalized_and_status_reports_it() -> Result<()> {

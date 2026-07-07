@@ -19,5 +19,10 @@ signal-hook.workspace = true
 sima-model = { path = "../sima-model" }
 tempfile.workspace = true
 
+# The crash harness runs only with the injection points compiled in.
+[[test]]
+name = "crash"
+required-features = ["crash-injection"]
+
 [lints]
 workspace = true
