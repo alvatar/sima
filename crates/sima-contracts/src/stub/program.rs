@@ -23,6 +23,10 @@ pub enum StubBehavior {
     Panic,
     /// Sleep for the given milliseconds, then succeed.
     Sleep(u64),
+    /// Reject definitively: the candidate cannot produce a result, so the
+    /// scheduler terminates the run without retrying. The deterministic model
+    /// of a candidate the executor cleanly judges non-viable.
+    Reject,
 }
 
 impl StubBehavior {
@@ -42,6 +46,9 @@ impl StubBehavior {
             StubBehavior::Sleep(millis) => {
                 enc.u8(3).u64(*millis);
             }
+            StubBehavior::Reject => {
+                enc.u8(4);
+            }
         }
     }
 
@@ -53,6 +60,7 @@ impl StubBehavior {
             1 => Ok(StubBehavior::Flaky(dec.u64()?)),
             2 => Ok(StubBehavior::Panic),
             3 => Ok(StubBehavior::Sleep(dec.u64()?)),
+            4 => Ok(StubBehavior::Reject),
             tag => Err(Error::Encoding(format!("unknown stub behavior tag {tag}"))),
         }
     }
@@ -101,11 +109,9 @@ impl StubProgram {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use sima_core::to_hex;
 
-    fn to_hex(bytes: &[u8]) -> String {
-        bytes.iter().map(|b| format!("{b:02x}")).collect()
-    }
+    use super::*;
 
     #[test]
     fn program_encoding_matches_pinned_hex() {
@@ -123,6 +129,7 @@ mod tests {
                 "030000000000000000",
                 "0000000000000000",
             ),
+            (StubBehavior::Reject, "04", "0000000000000000"),
         ];
         for (behavior, behavior_hex, nonce_hex) in cases {
             let program = StubProgram { behavior, nonce: 0 };
@@ -140,6 +147,7 @@ mod tests {
             StubBehavior::Flaky(3),
             StubBehavior::Panic,
             StubBehavior::Sleep(7),
+            StubBehavior::Reject,
         ];
         for behavior in behaviors {
             for nonce in [0u64, 1, 0x0102_0304_0506_0708] {

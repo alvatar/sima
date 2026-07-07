@@ -82,6 +82,15 @@ impl Store {
         decode_record(&bytes, &record_hash, key).map(Some)
     }
 
+    /// Reports whether a committed record answers `key`, without reading it:
+    /// the index entry's existence is the answer, matching the write ordering
+    /// (the entry is written last). A malformed entry is not distinguished
+    /// here; it surfaces when a reader (finalize, [`Self::record`]) reads it.
+    pub fn has_record(&self, key: &TaskKey) -> Result<bool> {
+        let path = layout::task_path(self.root(), key);
+        path.try_exists().map_err(|e| io_error(&path, e))
+    }
+
     /// Enumerates the closed object set of a finalized run: the config
     /// object (equal to the run id), every record object, and per record
     /// its spec, params, environment, input state, and artifacts.
@@ -381,6 +390,18 @@ mod tests {
     fn record_of_an_unknown_key_is_none() -> Result<()> {
         let (_dir, store) = temp_store();
         assert!(store.record(&sample_identity(9).key())?.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn has_record_is_false_before_commit_and_true_after() -> Result<()> {
+        let (_dir, store) = temp_store();
+        store_identity_components(&store);
+        let record = record_with_stored_artifact(&store, sample_identity(1));
+        let key = record.identity.key();
+        assert!(!store.has_record(&key)?);
+        store.commit_record(&record)?;
+        assert!(store.has_record(&key)?);
         Ok(())
     }
 

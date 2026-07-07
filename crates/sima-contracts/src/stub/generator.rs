@@ -103,11 +103,7 @@ impl Generator for StubGenerator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sima_core::Error;
-
-    fn to_hex(bytes: &[u8]) -> String {
-        bytes.iter().map(|b| format!("{b:02x}")).collect()
-    }
+    use sima_core::{Error, to_hex};
 
     fn config(behaviors: Vec<StubBehavior>) -> Vec<u8> {
         StubGeneratorConfig { behaviors }.to_bytes()

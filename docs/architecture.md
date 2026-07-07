@@ -31,7 +31,7 @@ Strictly downward dependencies, enforced by workspace crate edges.
 | L1    | `sima-model`     | identity vocabulary: spec, params, environment, task key, record, run config |
 | L2    | `sima-store`     | durable state: CAS, task index, run manifests, journals               |
 | L3    | `sima-contracts` | generator/executor contracts over opaque specs and params; stub generator and executor |
-| L4    | `sima-scheduler` | task sources, leases, lifecycle state machine (planned)              |
+| L4    | `sima-scheduler` | task sources, worker pool, leases, retry, run driver                 |
 | L5    | `sima-pipeline`  | orchestration, resume, re-evaluation (planned)                       |
 | L6    | `sima`           | CLI binary                                                            |
 
@@ -237,12 +237,15 @@ mirrors the key's `input_state`: the key holds the state object's digest, the
 executor receives the bytes; it enables segmented execution, present in the
 identity surface here and unused by the stub except as identity.
 
-An execution yields an `Outcome`: `Completed { artifacts, stats }` or
-`Failed { reason }`. A failed candidate is a domain outcome the family owns —
-retryable at the scheduler's discretion — so it is an ordinary `Ok(Failed)`,
-distinct from `Err`, which is reserved for an infrastructure fault such as a
-spec whose bytes are not a valid program. This keeps candidate failure out of
-the shared `sima-core::Error` enum. An `Artifact` is produced bytes — a name
+An execution yields an `Outcome` with three arms: `Completed { artifacts,
+stats }` commits; `Failed { reason, stats }` is a transient failure the
+scheduler may retry; `Rejected { reason, stats }` is a definitive failure the
+scheduler never retries, for a candidate the executor cleanly judges unable to
+produce a result. All three are domain outcomes the family owns, so they are
+ordinary `Ok` values, distinct from `Err`, which is reserved for an
+infrastructure fault such as a spec whose bytes are not a valid program. This
+keeps candidate failure out of the shared `sima-core::Error` enum. An
+`Artifact` is produced bytes — a name
 and a blob the worker stores in the CAS and references from the `TaskRecord`
 through a model `ArtifactRef` — and must be a pure function of the identity
 inputs. `Stats` is opaque observational bytes destined for the journal; it may
@@ -250,14 +253,120 @@ reflect the execution context and never enters a record.
 
 The stub generator and stub executor supply this contract without a GPU or a
 store: a spec carries a stub program selecting one behavior — succeed, flaky
-(fail a bounded number of attempts, then succeed), panic, or sleep — so the
-scheduler has a deterministic, programmable substrate for its failure matrix. The
+(fail a bounded number of attempts, then succeed), reject definitively, panic,
+or sleep — so the scheduler has a deterministic, programmable substrate for its
+failure matrix. The
 stub's committed artifact is the digest of the identity inputs alone, so it
 reproduces across attempts and workers; the attempt number folds only into the
 stats and into the gate that decides whether the behavior fails this attempt or
 completes. That gate is the one sanctioned read of the attempt number, and the
 artifact the behavior eventually commits does not depend on which attempt
 reached it.
+
+## `sima-scheduler` (L4)
+
+Runs a search from `(RunConfig, store state)`. It is the layer that bridges
+pure executor output into durable store state, so the executor trust boundary
+lives on its worker seam: the executor returns values, and only the worker
+writes to the store. It depends on both `sima-contracts` (to run generators and
+executors) and `sima-store` (to commit results); `sima-contracts` itself stays
+free of the store, so the boundary holds in the crate graph.
+
+### Task source
+
+A task source derives the currently-runnable frontier from `(config, store
+state)`. The static-batch source runs a resolved generator once, stores each
+spec object, builds each task identity — spec, params, the per-task seed
+`derive(root_seed, i)`, environment, no input state — and separates the keys
+the store already answers from those still to run, so a resume runs only the
+unfinished work. The frontier is a pure function of `(config, environment)`.
+One interface covers this and, later, a segment chain that derives successors
+as predecessors commit; the driver polls it in a loop, which is the seam a
+dynamic source reuses.
+
+### Worker pool and the outcome classifier
+
+A fixed pool of worker threads, created once inside a scope so they borrow the
+store and executor without `Arc`, pulls tasks from a shared FIFO queue. A
+worker leases a task, builds its `TaskInput` and `ExecutionContext`, and runs
+the executor inside a panic handler wrapping only that call. It then classifies
+the outcome, the one place an outcome is turned into an action:
+
+- `Completed` → commit through the store's single commit path (store each
+  artifact, then the record), and emit `Committed`.
+- `Failed` → retry: re-enqueue at the next attempt until the attempt cap, after
+  which the transient failure becomes definitive.
+- `Rejected`, or a `Failed` whose retries are exhausted, or a panic escaping
+  `execute` → a definitive failure that terminates the run. A panic is caught
+  and classified as a rejection with the payload as its reason; a panic
+  anywhere else is a scheduler bug and propagates. `Err` from the executor is
+  an infrastructure fault and fails the run with an error.
+
+Nothing from the execution context reaches a committed record: the worker
+carries only identity into the `TaskRecord`, and the attempt and worker travel
+solely to the journal.
+
+### Definitive failure, clean and resumable
+
+The store models success only — a record records artifacts. A definitive
+failure is recorded in the journal and terminates the run: no manifest is
+written, every committed success remains, and nothing is left that blocks a
+re-run. Fixing the cause and re-running the same config re-executes only the
+unfinished work. If the fix changes an identity input, the task keys change and
+the re-run is a fresh recompute — correct by the determinism model. The run
+returns `Finalized` once every task committed and the manifest is written, or
+`Failed { task, reason }` on a definitive failure; the two mirror the
+executor's own `Ok(Outcome)`/`Err` split one level up.
+
+An infrastructure fault — an executor error, a commit failure, a state-load
+failure — outranks a definitive candidate failure: the result path itself
+broke, so the run surfaces the error and emits a `Faulted` event for the task
+rather than reporting a clean `Failed`. A journal fault, by contrast, yields to
+a domain `Failed` outcome: the journal is observational, so a definitive
+candidate failure is returned intact even when the journal degraded, and the
+journal fault resurfaces on the next run that finalizes over the same store.
+
+### Leases and the watchdog
+
+Leases live in memory — `task → (worker, attempt, leased_at)` — since durable
+progress is the committed records; a process death drops all leases and resume
+re-derives the frontier. The timeout is a soft target: a watchdog thread scans
+the lease table and emits one `LeaseExpired` event per lease whose age exceeds
+`attempt_timeout`, reporting only. Comparing the lease's age against the timeout
+is a duration comparison that cannot overflow, so a timeout larger than any
+attempt (for example `Duration::MAX`) simply disables expiry reporting. A
+memory-safe runtime has no safe forced thread termination, so forced preemption
+requires process isolation and is not yet built; the in-process worker delivers
+lease-expiry detection, not termination.
+
+### Journal events
+
+The scheduler owns the journal's meaning. A typed `LifecycleEvent` serializes
+to one JSON line, with ids and stats rendered as hex. The vocabulary:
+
+- **run started** — the run began, over every task key of the run, those
+  already committed and those still to run.
+- **queued** — a task entered the ready queue.
+- **leased** — a worker leased a task for one attempt.
+- **committed** — a task's result was committed, referencing its record.
+- **failed** — an attempt failed transiently and may be retried.
+- **retried** — a failed task was re-enqueued for another attempt.
+- **rejected** — a task failed definitively and will not be retried.
+- **faulted** — an infrastructure fault (an executor error, a commit failure,
+  or an input-state load failure) hit a task's attempt; the run terminates
+  with an error.
+- **lease expired** — a lease's age ran past the attempt timeout; detection
+  only, no preemption.
+- **run finalized** — every task committed and the manifest was written.
+- **run failed** — a definitive candidate failure terminated the run; no
+  manifest was written.
+
+A single journal-writer thread owns the `JournalWriter` and drains an `mpsc`
+channel the workers, watchdog, and driver send to, which is the single-writer
+seam the append contract requires. Event arrival order across threads varies
+between runs; the journal is observational and excluded from every equality
+criterion, so the manifest — sorted by task key at finalize — is byte-identical
+across runs regardless.
 
 ## Determinism proof obligations
 

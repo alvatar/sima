@@ -62,11 +62,20 @@ fn hex_val(c: u8) -> Result<u8> {
 
 impl fmt::Display for Hash {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for byte in &self.0 {
-            write!(f, "{byte:02x}")?;
-        }
-        Ok(())
+        f.write_str(&to_hex(&self.0))
     }
+}
+
+/// Renders bytes as lowercase hex — the canonical text form for digests and
+/// for observational byte fields in journals.
+pub fn to_hex(bytes: &[u8]) -> String {
+    use std::fmt::Write;
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        // Writing to a String is infallible.
+        let _ = write!(out, "{byte:02x}");
+    }
+    out
 }
 
 /// Hashes `data` with blake3.

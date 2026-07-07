@@ -9,4 +9,4 @@ pub mod prng;
 
 pub use encode::{Dec, Enc};
 pub use error::{Error, Result};
-pub use hash::{Hash, hash_bytes};
+pub use hash::{Hash, hash_bytes, to_hex};

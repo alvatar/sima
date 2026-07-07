@@ -76,9 +76,15 @@ pub enum Outcome {
         artifacts: Vec<Artifact>,
         stats: Stats,
     },
-    /// The candidate evaluation failed. Retryable at the scheduler's
-    /// discretion; the reason is observational.
-    Failed { reason: String },
+    /// A transient failure: the attempt failed for a reason that may not
+    /// recur. Retryable at the scheduler's discretion. `stats` is
+    /// observational. The reason is observational as well: journal and
+    /// reporting material, never identity-bearing.
+    Failed { reason: String, stats: Stats },
+    /// A definitive failure: the candidate cannot produce a result, so it is
+    /// never retried. `stats` is observational. The reason is observational as
+    /// well: journal and reporting material, never identity-bearing.
+    Rejected { reason: String, stats: Stats },
 }
 
 /// Pure compute over one candidate. Receives identity inputs and execution
@@ -90,9 +96,10 @@ pub trait Executor {
     /// a run to the executor whose format matches the run config's format.
     fn format(&self) -> &FormatId;
 
-    /// Evaluate one candidate. `Err` signals an infrastructure fault (e.g. a
-    /// structurally invalid spec); a failed-but-well-formed evaluation is
-    /// `Ok(Outcome::Failed { .. })`.
+    /// Evaluate one candidate. `Ok` carries the domain result — see
+    /// [`Outcome`] for the three arms and their retry semantics. `Err` is
+    /// reserved for an infrastructure fault — a structurally invalid spec, a
+    /// store fault — never a candidate that merely evaluated badly.
     fn execute(&self, input: &TaskInput<'_>, ctx: &ExecutionContext) -> Result<Outcome>;
 }
 

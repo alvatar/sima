@@ -210,10 +210,7 @@ impl<'a> Dec<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn to_hex(bytes: &[u8]) -> String {
-        bytes.iter().map(|b| format!("{b:02x}")).collect()
-    }
+    use crate::hash::to_hex;
 
     fn sample_hash(fill: &str) -> Result<Hash> {
         Hash::from_hex(&fill.repeat(Hash::LEN))

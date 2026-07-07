@@ -2,7 +2,8 @@
 //! behavior.
 //!
 //! [`StubExecutor`] decodes the [`StubProgram`] a spec carries and acts on it:
-//! succeed, fail while below a threshold attempt, panic, or sleep. The one
+//! succeed, fail while below a threshold attempt, reject definitively, panic,
+//! or sleep. The one
 //! committed [`Artifact`] is the digest of the identity inputs alone — a pure
 //! function of [`TaskInput`] — so it never varies with the execution context.
 //! The attempt number folds only into [`Stats`], the observational output, and
@@ -50,6 +51,7 @@ impl Executor for StubExecutor {
                 if (ctx.attempt as u64) < n {
                     Ok(Outcome::Failed {
                         reason: format!("programmed failure: attempt {} of {}", ctx.attempt, n),
+                        stats: stats(ctx),
                     })
                 } else {
                     Ok(completed(input, ctx))
@@ -60,6 +62,10 @@ impl Executor for StubExecutor {
                 std::thread::sleep(Duration::from_millis(millis));
                 Ok(completed(input, ctx))
             }
+            StubBehavior::Reject => Ok(Outcome::Rejected {
+                reason: "programmed rejection".to_string(),
+                stats: stats(ctx),
+            }),
         }
     }
 }
@@ -143,7 +149,10 @@ mod tests {
                 assert_eq!(artifacts.len(), 1, "stub emits exactly one artifact");
                 &artifacts[0]
             }
-            Outcome::Failed { reason } => panic!("expected Completed, got Failed: {reason}"),
+            Outcome::Failed { reason, .. } => panic!("expected Completed, got Failed: {reason}"),
+            Outcome::Rejected { reason, .. } => {
+                panic!("expected Completed, got Rejected: {reason}")
+            }
         }
     }
 
@@ -190,7 +199,12 @@ mod tests {
                     artifacts.push(a);
                     stats_by_attempt.push(stats);
                 }
-                Outcome::Failed { reason } => panic!("expected Completed, got {reason}"),
+                Outcome::Failed { reason, .. } => {
+                    panic!("expected Completed, got Failed: {reason}")
+                }
+                Outcome::Rejected { reason, .. } => {
+                    panic!("expected Completed, got Rejected: {reason}")
+                }
             }
         }
         // Artifacts identical across every (attempt, worker) pairing.
@@ -277,6 +291,55 @@ mod tests {
             exec.execute(&input, &ctx(0, 0))?,
             Outcome::Completed { .. }
         ));
+        Ok(())
+    }
+
+    #[test]
+    fn reject_returns_a_rejected_outcome_with_stats() -> Result<()> {
+        let exec = StubExecutor::new()?;
+        let spec = spec_for(StubBehavior::Reject, 0)?;
+        let params = params();
+        let input = TaskInput {
+            spec: &spec,
+            params: &params,
+            seed: 5,
+            environment: env(),
+            input_state: None,
+        };
+        match exec.execute(&input, &ctx(2, 0))? {
+            Outcome::Rejected { reason, stats } => {
+                assert_eq!(reason, "programmed rejection");
+                // The stub folds the attempt into the observational stats.
+                assert!(!stats.bytes.is_empty());
+            }
+            other => panic!("expected Rejected, got {other:?}"),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn flaky_failure_carries_observational_stats() -> Result<()> {
+        let exec = StubExecutor::new()?;
+        let spec = spec_for(StubBehavior::Flaky(2), 0)?;
+        let params = params();
+        let input = TaskInput {
+            spec: &spec,
+            params: &params,
+            seed: 5,
+            environment: env(),
+            input_state: None,
+        };
+        // A transient failure still reports stats, and they carry the attempt,
+        // so successive attempts differ.
+        let (first, second) = match (
+            exec.execute(&input, &ctx(0, 0))?,
+            exec.execute(&input, &ctx(1, 0))?,
+        ) {
+            (Outcome::Failed { stats: a, .. }, Outcome::Failed { stats: b, .. }) => (a, b),
+            other => panic!("expected two Failed outcomes, got {other:?}"),
+        };
+        assert!(!first.bytes.is_empty());
+        assert_ne!(first, second);
         Ok(())
     }
 
