@@ -3,10 +3,11 @@
 //!
 //! This is the interim in-process transport: a fixed pool of threads pulling
 //! from the shared queue. It is deliberately narrow — lease, execute, classify,
-//! commit, retry — so the subprocess worker can replace the transport without
-//! touching the driver's lease, retry, commit, or finalize logic. The executor
-//! trust boundary lives here: the worker holds the only store handle, so a
-//! result reaches durable state only by passing through this commit path.
+//! commit, retry — so a subprocess-based worker can replace the execution
+//! transport (the `execute` call and its panic classification) while the lease,
+//! retry, and commit logic around it stays in place. The executor trust
+//! boundary lives here: the worker holds the only store handle, so a result
+//! reaches durable state only by passing through this commit path.
 
 use std::any::Any;
 use std::sync::mpsc::Sender;

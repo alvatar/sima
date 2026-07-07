@@ -217,13 +217,14 @@ enum DriveOutcome {
     Fail(Failure),
 }
 
-/// Feeds the queue and waits for the pool. Seeds the queue from the first poll,
-/// then repeatedly waits for quiescence and re-polls — the seam a dynamic task
-/// source reuses — until a poll yields nothing more (finalize) or a definitive
-/// failure or fault ends the run.
+/// Feeds the queue and waits for the pool: seeds the queue from the first poll,
+/// then polls again each time the pool goes quiescent — a source that derives
+/// new tasks from committed results hands them out at those points — until a
+/// poll yields nothing more (finalize) or a definitive failure or fault ends
+/// the run.
 fn drive(
     coord: &Coord,
-    source: &mut StaticBatch,
+    source: &mut dyn TaskSource,
     events: &Sender<LifecycleEvent>,
 ) -> Result<DriveOutcome> {
     enqueue(coord, events, source.poll()?);
