@@ -164,10 +164,10 @@ pub fn faulted_count(events: &[LifecycleEvent], task: &TaskKey) -> usize {
     })
 }
 
-/// How many `TaskOverran` events name `task`.
-pub fn overran_count(events: &[LifecycleEvent], task: &TaskKey) -> usize {
+/// How many `LeaseExpired` events name `task`.
+pub fn lease_expired_count(events: &[LifecycleEvent], task: &TaskKey) -> usize {
     count_events(events, task, |e| match e {
-        LifecycleEvent::TaskOverran { task, .. } => Some(task.as_str()),
+        LifecycleEvent::LeaseExpired { task, .. } => Some(task.as_str()),
         _ => None,
     })
 }

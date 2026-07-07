@@ -1,5 +1,5 @@
 //! Task-lifecycle acceptance: retry, definitive failure, rejection, panic
-//! isolation, resume, and overrun detection.
+//! isolation, resume, and lease-expiry detection.
 
 mod common;
 
@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use common::{
     committed_count, config, exec, exec_with_timeout, failed_count, faulted_count, journal_events,
-    leased_count, overran_count, rejected_count, retried_count, run_id, run_into, run_with,
+    lease_expired_count, leased_count, rejected_count, retried_count, run_id, run_into, run_with,
     task_keys, temp_store,
 };
 use sima_contracts::{
@@ -180,12 +180,12 @@ fn resume_reruns_only_the_unfinished_work() -> Result<()> {
     Ok(())
 }
 
-/// A task that outruns its soft deadline is reported, not preempted: the
-/// watchdog emits `TaskOverran`, and the task still completes and the run
+/// A task whose lease outlives the attempt timeout is reported, not preempted:
+/// the watchdog emits `LeaseExpired`, and the task still completes and the run
 /// finalizes.
 #[test]
-fn an_overrun_is_detected_without_preemption() -> Result<()> {
-    // Sleep well past a short deadline so the watchdog is sure to catch it.
+fn a_slow_task_is_reported_expired_without_preemption() -> Result<()> {
+    // Sleep well past a short timeout so the watchdog is sure to catch it.
     let cfg = config(6, vec![StubBehavior::Sleep(40)]);
     let key = task_keys(&cfg)[0];
 
@@ -198,16 +198,16 @@ fn an_overrun_is_detected_without_preemption() -> Result<()> {
     let run = run_id(&cfg);
     let events = journal_events(&store, &run);
     // Detected at least once, and the task still committed (no preemption).
-    assert!(overran_count(&events, &key) >= 1);
+    assert!(lease_expired_count(&events, &key) >= 1);
     assert_eq!(committed_count(&events, &key), 1);
     Ok(())
 }
 
-/// An unbounded attempt timeout (`Duration::MAX`) disables overrun reporting
-/// without breaking the run: the lease's age never exceeds it, and no deadline
-/// arithmetic overflows. The task completes and the run finalizes.
+/// An unbounded attempt timeout (`Duration::MAX`) disables lease-expiry
+/// reporting without breaking the run: the lease's age never exceeds it, and no
+/// deadline arithmetic overflows. The task completes and the run finalizes.
 #[test]
-fn an_unbounded_timeout_finalizes_without_overrun_reports() -> Result<()> {
+fn an_unbounded_timeout_finalizes_without_expiry_reports() -> Result<()> {
     let cfg = config(9, vec![StubBehavior::Sleep(10)]);
     let key = task_keys(&cfg)[0];
 
@@ -219,7 +219,7 @@ fn an_unbounded_timeout_finalizes_without_overrun_reports() -> Result<()> {
 
     let run = run_id(&cfg);
     let events = journal_events(&store, &run);
-    assert_eq!(overran_count(&events, &key), 0);
+    assert_eq!(lease_expired_count(&events, &key), 0);
     Ok(())
 }
 

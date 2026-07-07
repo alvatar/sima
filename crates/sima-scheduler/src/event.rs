@@ -5,7 +5,7 @@
 //! lowercase hex strings and stats render as hex, and the event stream is
 //! excluded from every equality criterion. The events a task emits trace its
 //! lifecycle: queued, leased, then committed, or failed and retried, or
-//! rejected, or faulted on an infrastructure error; an overrun and the
+//! rejected, or faulted on an infrastructure error; a lease expiry and the
 //! run-level start/finalize/fail frame the whole.
 
 use serde::{Deserialize, Serialize};
@@ -57,8 +57,8 @@ pub enum LifecycleEvent {
         attempt: u32,
         error: String,
     },
-    /// A lease outran its soft deadline; detection only, no preemption.
-    TaskOverran {
+    /// A lease outlived `attempt_timeout`; detection only, no preemption.
+    LeaseExpired {
         task: String,
         worker: u64,
         elapsed_ms: u64,

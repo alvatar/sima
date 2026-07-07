@@ -331,13 +331,13 @@ journal fault resurfaces on the next run that finalizes over the same store.
 Leases live in memory — `task → (worker, attempt, leased_at)` — since durable
 progress is the committed records; a process death drops all leases and resume
 re-derives the frontier. The timeout is a soft target: a watchdog thread scans
-the lease table and emits one `TaskOverran` event per lease whose age exceeds
+the lease table and emits one `LeaseExpired` event per lease whose age exceeds
 `attempt_timeout`, reporting only. Comparing the lease's age against the timeout
 is a duration comparison that cannot overflow, so a timeout larger than any
-attempt (for example `Duration::MAX`) simply disables overrun reporting. A
+attempt (for example `Duration::MAX`) simply disables expiry reporting. A
 memory-safe runtime has no safe forced thread termination, so forced preemption
 requires process isolation and is not yet built; the in-process worker delivers
-overrun detection, not termination.
+lease-expiry detection, not termination.
 
 ### Journal events
 
@@ -355,7 +355,7 @@ to one JSON line, with ids and stats rendered as hex. The vocabulary:
 - **faulted** — an infrastructure fault (an executor error, a commit failure,
   or an input-state load failure) hit a task's attempt; the run terminates
   with an error.
-- **task overran** — a lease's age ran past the attempt timeout; detection
+- **lease expired** — a lease's age ran past the attempt timeout; detection
   only, no preemption.
 - **run finalized** — every task committed and the manifest was written.
 - **run failed** — a definitive candidate failure terminated the run; no

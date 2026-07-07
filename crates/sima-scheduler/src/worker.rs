@@ -117,7 +117,7 @@ fn next_task(coord: &Coord, worker: WorkerId) -> Option<Pending> {
         if let Some(pending) = state.queue.pop_front() {
             let key = pending.key;
             // The lease records when the attempt started; the watchdog derives
-            // the overrun from its age, so there is no deadline arithmetic that
+            // expiry from its age, so there is no deadline arithmetic that
             // could overflow.
             state.leases.insert(
                 key,
