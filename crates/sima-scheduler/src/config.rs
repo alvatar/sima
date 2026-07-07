@@ -17,7 +17,9 @@ pub struct ExecutionConfig {
     pub max_attempts: u32,
     /// Soft per-attempt deadline the watchdog uses for overrun detection. In
     /// process, execution cannot be preempted, so this drives reporting, not
-    /// termination.
+    /// termination. A value larger than any attempt could take (for example
+    /// [`Duration::MAX`]) disables overrun reporting: no lease's age ever
+    /// exceeds it.
     pub attempt_timeout: Duration,
 }
 

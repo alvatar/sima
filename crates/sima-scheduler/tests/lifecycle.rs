@@ -3,9 +3,12 @@
 
 mod common;
 
+use std::time::Duration;
+
 use common::{
-    committed_count, config, exec, failed_count, faulted_count, journal_events, leased_count,
-    overran_count, rejected_count, retried_count, run_id, run_into, run_with, task_keys, temp_store,
+    committed_count, config, exec, exec_with_timeout, failed_count, faulted_count, journal_events,
+    leased_count, overran_count, rejected_count, retried_count, run_id, run_into, run_with,
+    task_keys, temp_store,
 };
 use sima_contracts::{
     ExecutionContext, Executor, Outcome, StubBehavior, StubExecutor, StubProgram, TaskInput,
@@ -197,6 +200,26 @@ fn an_overrun_is_detected_without_preemption() -> Result<()> {
     // Detected at least once, and the task still committed (no preemption).
     assert!(overran_count(&events, &key) >= 1);
     assert_eq!(committed_count(&events, &key), 1);
+    Ok(())
+}
+
+/// An unbounded attempt timeout (`Duration::MAX`) disables overrun reporting
+/// without breaking the run: the lease's age never exceeds it, and no deadline
+/// arithmetic overflows. The task completes and the run finalizes.
+#[test]
+fn an_unbounded_timeout_finalizes_without_overrun_reports() -> Result<()> {
+    let cfg = config(9, vec![StubBehavior::Sleep(10)]);
+    let key = task_keys(&cfg)[0];
+
+    let (_dir, store) = temp_store();
+    assert!(matches!(
+        run_into(&store, &cfg, &exec_with_timeout(1, 1, Duration::MAX))?,
+        RunOutcome::Finalized { .. }
+    ));
+
+    let run = run_id(&cfg);
+    let events = journal_events(&store, &run);
+    assert_eq!(overran_count(&events, &key), 0);
     Ok(())
 }
 

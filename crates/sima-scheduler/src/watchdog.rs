@@ -33,8 +33,8 @@ pub(crate) fn watchdog_loop(coord: &Coord, timeout: Duration, events: &Sender<Li
             let now = Instant::now();
             // Detection only: read the lease table, never mutate it.
             for (key, lease) in &state.leases {
-                if lease.deadline <= now && reported.insert((*key, lease.attempt)) {
-                    let elapsed = now.duration_since(lease.deadline) + timeout;
+                let elapsed = now.duration_since(lease.leased_at);
+                if elapsed > timeout && reported.insert((*key, lease.attempt)) {
                     overruns.push((*key, lease.worker.0, elapsed));
                 }
             }

@@ -42,8 +42,17 @@ pub fn config(root_seed: u64, behaviors: Vec<StubBehavior>) -> RunConfig {
 
 /// A validated execution config.
 pub fn exec(workers: usize, max_attempts: u32, timeout_ms: u64) -> ExecutionConfig {
-    ExecutionConfig::new(workers, max_attempts, Duration::from_millis(timeout_ms))
-        .expect("execution config")
+    exec_with_timeout(workers, max_attempts, Duration::from_millis(timeout_ms))
+}
+
+/// A validated execution config with an explicit attempt timeout, for tests
+/// that need a duration outside the millisecond range such as `Duration::MAX`.
+pub fn exec_with_timeout(
+    workers: usize,
+    max_attempts: u32,
+    timeout: Duration,
+) -> ExecutionConfig {
+    ExecutionConfig::new(workers, max_attempts, timeout).expect("execution config")
 }
 
 /// A fresh store under a temporary directory; the directory is returned so it

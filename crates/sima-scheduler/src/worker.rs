@@ -40,14 +40,14 @@ pub(crate) struct WorkerContext<'a> {
 /// Runs the worker: lease a task, evaluate it, resolve the outcome, repeat
 /// until the run winds down.
 pub(crate) fn worker_loop(worker: WorkerId, ctx: WorkerContext<'_>) {
-    while let Some(pending) = next_task(ctx.coord, worker, ctx.exec) {
+    while let Some(pending) = next_task(ctx.coord, worker) {
         process(&ctx, worker, pending);
     }
 }
 
 /// Leases the next ready task, inserting its lease and counting it in flight;
 /// returns `None` once the run is winding down and this worker should exit.
-fn next_task(coord: &Coord, worker: WorkerId, exec: &ExecutionConfig) -> Option<Pending> {
+fn next_task(coord: &Coord, worker: WorkerId) -> Option<Pending> {
     let mut state = coord.lock();
     loop {
         if !matches!(state.stop, Stop::Running) {
@@ -58,13 +58,15 @@ fn next_task(coord: &Coord, worker: WorkerId, exec: &ExecutionConfig) -> Option<
         }
         if let Some(pending) = state.queue.pop_front() {
             let key = pending.task.identity.key();
-            let deadline = Instant::now() + exec.attempt_timeout;
+            // The lease records when the attempt started; the watchdog derives
+            // the overrun from its age, so there is no deadline arithmetic that
+            // could overflow.
             state.leases.insert(
                 key,
                 Lease {
                     worker,
                     attempt: pending.attempt,
-                    deadline,
+                    leased_at: Instant::now(),
                 },
             );
             state.in_flight += 1;
