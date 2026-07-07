@@ -264,9 +264,12 @@ fn enqueue(coord: &Coord, events: &Sender<LifecycleEvent>, tasks: Vec<RunnableTa
 
 #[cfg(test)]
 mod tests {
+    use std::collections::VecDeque;
     use std::sync::mpsc;
 
-    use sima_core::Error;
+    use sima_contracts::{StubBehavior, StubProgram};
+    use sima_core::{Error, hash_bytes};
+    use sima_model::{EnvironmentId, FormatId, Params, Spec, TaskIdentity};
 
     use super::*;
 
@@ -284,6 +287,51 @@ mod tests {
         }
     }
 
+    /// A task source that hands out scripted batches, one per poll, and yields
+    /// nothing once the script is exhausted.
+    #[derive(Default)]
+    struct ScriptedSource {
+        polls: VecDeque<Vec<RunnableTask>>,
+    }
+
+    impl TaskSource for ScriptedSource {
+        fn poll(&mut self) -> Result<Vec<RunnableTask>> {
+            Ok(self.polls.pop_front().unwrap_or_default())
+        }
+
+        fn all_keys(&self) -> &[TaskKey] {
+            &[]
+        }
+    }
+
+    /// A runnable task over a stub `Succeed` program, distinguished by `nonce`.
+    fn runnable(nonce: u64) -> RunnableTask {
+        let spec = Spec {
+            format: FormatId::new("stub.v1").expect("format id"),
+            bytes: StubProgram {
+                behavior: StubBehavior::Succeed,
+                nonce,
+            }
+            .to_bytes(),
+        };
+        let identity = TaskIdentity {
+            spec: spec.id(),
+            params: Params {
+                bytes: vec![1, 2, 3],
+            }
+            .id(),
+            seed: nonce,
+            environment: EnvironmentId::from_hash(hash_bytes(b"unit-test environment")),
+            input_state: None,
+        };
+        RunnableTask { spec, identity }
+    }
+
+    /// A throwaway task key.
+    fn a_key() -> TaskKey {
+        TaskKey::from_hash(hash_bytes(b"preset terminal task"))
+    }
+
     #[test]
     fn a_poll_error_winds_the_run_down_instead_of_hanging() {
         let coord = Coord::new();
@@ -294,5 +342,86 @@ mod tests {
         // The terminal state is what a real pool observes to drain: a poll
         // error that left `Running` in place would park the workers forever.
         assert!(!matches!(coord.lock().stop, Stop::Running));
+    }
+
+    #[test]
+    fn an_empty_source_finalizes_immediately() {
+        let coord = Coord::new();
+        let (events, _rx) = mpsc::channel();
+        // The first iteration is trivially quiescent, so the empty poll is the
+        // whole run: one poll, then finalize.
+        let result = drive(&coord, &mut ScriptedSource::default(), &events);
+        assert!(matches!(result, Ok(DriveOutcome::Finalize)));
+        assert!(matches!(coord.lock().stop, Stop::Finished));
+    }
+
+    #[test]
+    fn a_preset_failure_is_reported_and_the_pool_asked_to_exit() {
+        let coord = Coord::new();
+        coord.lock().stop = Stop::Failed(Failure {
+            task: a_key(),
+            reason: "candidate rejected".to_string(),
+        });
+        let (events, _rx) = mpsc::channel();
+        let result = drive(&coord, &mut ScriptedSource::default(), &events);
+        match result {
+            Ok(DriveOutcome::Fail(failure)) => {
+                assert_eq!(failure.task, a_key());
+                assert_eq!(failure.reason, "candidate rejected");
+            }
+            _ => panic!("expected the preset failure to be reported"),
+        }
+        // Finished is left in the state's place: the pool's exit signal.
+        assert!(matches!(coord.lock().stop, Stop::Finished));
+    }
+
+    #[test]
+    fn a_preset_fault_is_returned_as_the_run_error() {
+        let coord = Coord::new();
+        coord.lock().stop = Stop::Fault(Error::Corruption("store broke".to_string()));
+        let (events, _rx) = mpsc::channel();
+        let result = drive(&coord, &mut ScriptedSource::default(), &events);
+        match result {
+            Err(e) => assert_eq!(e.to_string(), "store corruption: store broke"),
+            Ok(_) => panic!("expected the preset fault to be returned"),
+        }
+        assert!(matches!(coord.lock().stop, Stop::Finished));
+    }
+
+    #[test]
+    fn enqueue_journals_each_task_and_publishes_it() {
+        let coord = Coord::new();
+        let (events, rx) = mpsc::channel();
+        let tasks = vec![runnable(1), runnable(2)];
+        let keys: Vec<TaskKey> = tasks.iter().map(|t| t.identity.key()).collect();
+        enqueue(&coord, &events, tasks);
+        drop(events);
+        // Exactly one Queued event per task, in queue order.
+        let queued: Vec<LifecycleEvent> = rx.into_iter().collect();
+        assert_eq!(queued.len(), 2);
+        for (event, key) in queued.iter().zip(&keys) {
+            assert!(
+                matches!(event, LifecycleEvent::Queued { task } if *task == key.to_string()),
+                "expected a Queued event for {key}"
+            );
+        }
+        // Both tasks sit in the queue at attempt 0 with their key precomputed.
+        let state = coord.lock();
+        assert_eq!(state.queue.len(), 2);
+        for (pending, key) in state.queue.iter().zip(&keys) {
+            assert_eq!(pending.key, *key);
+            assert_eq!(pending.key, pending.task.identity.key());
+            assert_eq!(pending.attempt, 0);
+        }
+    }
+
+    #[test]
+    fn enqueue_with_nothing_is_a_no_op() {
+        let coord = Coord::new();
+        let (events, rx) = mpsc::channel();
+        enqueue(&coord, &events, Vec::new());
+        drop(events);
+        assert_eq!(rx.into_iter().count(), 0);
+        assert!(coord.lock().queue.is_empty());
     }
 }
