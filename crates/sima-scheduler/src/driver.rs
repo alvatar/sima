@@ -227,7 +227,9 @@ fn drive(
     source: &mut dyn TaskSource,
     events: &Sender<LifecycleEvent>,
 ) -> Result<DriveOutcome> {
-    enqueue(coord, events, source.poll()?);
+    if let Some(tasks) = poll_source(coord, source) {
+        enqueue(coord, events, tasks);
+    }
     loop {
         let mut state = coord.lock();
         // Wait for the pool to go quiescent: nothing in flight and, while the
@@ -253,15 +255,36 @@ fn drive(
             };
         }
         drop(state);
-        // Healthy and quiescent: re-poll. Nothing more means the run is done.
-        let more = source.poll()?;
-        if more.is_empty() {
-            let mut state = coord.lock();
-            state.stop = Stop::Finished;
-            coord.idle.notify_all();
-            return Ok(DriveOutcome::Finalize);
+        // Healthy and quiescent: re-poll. A poll fault set the terminal state,
+        // so the next iteration's wait drains in-flight work and the terminal
+        // branch returns the fault; nothing more means the run is done.
+        match poll_source(coord, source) {
+            None => continue,
+            Some(more) if more.is_empty() => {
+                let mut state = coord.lock();
+                state.stop = Stop::Finished;
+                coord.idle.notify_all();
+                return Ok(DriveOutcome::Finalize);
+            }
+            Some(more) => enqueue(coord, events, more),
         }
-        enqueue(coord, events, more);
+    }
+}
+
+/// Polls the source. A poll error becomes the run's terminal fault so the pool
+/// winds down and the driver reports it; `None` signals that routing, `Some`
+/// carries the polled tasks.
+fn poll_source(coord: &Coord, source: &mut dyn TaskSource) -> Option<Vec<RunnableTask>> {
+    match source.poll() {
+        Ok(tasks) => Some(tasks),
+        Err(e) => {
+            let mut state = coord.lock();
+            if matches!(state.stop, Stop::Running) {
+                state.stop = Stop::Fault(e);
+            }
+            coord.idle.notify_all();
+            None
+        }
     }
 }
 
@@ -287,5 +310,52 @@ fn enqueue(coord: &Coord, events: &Sender<LifecycleEvent>, tasks: Vec<RunnableTa
                 task: key.to_string(),
             },
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::mpsc;
+
+    use super::*;
+
+    /// A task source whose poll always faults, standing in for a fallible
+    /// dynamic source. Its key set is empty: it never yields runnable work.
+    struct FailingSource;
+
+    impl TaskSource for FailingSource {
+        fn poll(&mut self) -> Result<Vec<RunnableTask>> {
+            Err(Error::Validation("source poll failed".to_string()))
+        }
+
+        fn all_keys(&self) -> &[TaskKey] {
+            &[]
+        }
+    }
+
+    /// A fresh coordinator in the steady `Running` state, for driving a source
+    /// with no worker pool attached.
+    fn idle_coord() -> Coord {
+        Coord {
+            state: Mutex::new(Shared {
+                queue: VecDeque::new(),
+                leases: HashMap::new(),
+                in_flight: 0,
+                stop: Stop::Running,
+            }),
+            idle: Condvar::new(),
+        }
+    }
+
+    #[test]
+    fn a_poll_error_winds_the_run_down_instead_of_hanging() {
+        let coord = idle_coord();
+        let (events, _rx) = mpsc::channel();
+        // With no live workers, the seed poll faults on the first call.
+        let result = drive(&coord, &mut FailingSource, &events);
+        assert!(matches!(result, Err(Error::Validation(_))));
+        // The terminal state is what a real pool observes to drain: a poll
+        // error that left `Running` in place would park the workers forever.
+        assert!(!matches!(coord.lock().stop, Stop::Running));
     }
 }
