@@ -63,7 +63,7 @@ fn exhausted_retries_fail_the_run_and_leave_the_store_resumable() -> Result<()> 
     let (_dir, store) = temp_store();
     match run_into(&store, &cfg, &exec(1, 3, 1_000))? {
         RunOutcome::Failed { task, .. } => assert_eq!(task, flaky_key),
-        other => panic!("expected Failed, got {}", outcome_name(&other)),
+        other => panic!("expected Failed, got {other:?}"),
     }
 
     let run = run_id(&cfg);
@@ -83,7 +83,7 @@ fn a_rejected_candidate_terminates_without_retry() -> Result<()> {
     let (_dir, store) = temp_store();
     match run_into(&store, &cfg, &exec(1, 3, 1_000))? {
         RunOutcome::Failed { task, .. } => assert_eq!(task, key),
-        other => panic!("expected Failed, got {}", outcome_name(&other)),
+        other => panic!("expected Failed, got {other:?}"),
     }
 
     let run = run_id(&cfg);
@@ -109,7 +109,7 @@ fn a_panic_is_isolated_and_classified_as_a_rejection() -> Result<()> {
     // The call returns instead of unwinding — that return is the isolation.
     match run_into(&store, &cfg, &exec(1, 3, 1_000))? {
         RunOutcome::Failed { task, .. } => assert_eq!(task, panic_key),
-        other => panic!("expected Failed, got {}", outcome_name(&other)),
+        other => panic!("expected Failed, got {other:?}"),
     }
 
     let run = run_id(&cfg);
@@ -380,7 +380,7 @@ fn a_journal_fault_yields_to_a_domain_failed_outcome() -> Result<()> {
     let (_dir, store) = store_with_a_dead_journal(&cfg)?;
     match run_into(&store, &cfg, &exec(1, 3, 1_000)) {
         Ok(RunOutcome::Failed { .. }) => {}
-        Ok(other) => panic!("expected Failed, got {}", outcome_name(&other)),
+        Ok(other) => panic!("expected Failed, got {other:?}"),
         Err(e) => panic!("expected Ok(Failed), got Err: {e}"),
     }
     Ok(())
@@ -401,12 +401,4 @@ fn a_finalized_run_surfaces_the_journal_fault() -> Result<()> {
     // The finalize completed before the journal fault surfaced.
     assert!(store.manifest(&run_id(&cfg))?.is_some());
     Ok(())
-}
-
-/// Names an outcome for a panic message without moving it.
-fn outcome_name(outcome: &RunOutcome) -> &'static str {
-    match outcome {
-        RunOutcome::Finalized { .. } => "Finalized",
-        RunOutcome::Failed { .. } => "Failed",
-    }
 }

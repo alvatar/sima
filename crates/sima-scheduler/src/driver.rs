@@ -28,6 +28,7 @@ use crate::watchdog::watchdog_loop;
 use crate::worker::{WorkerContext, worker_loop};
 
 /// The result of a run.
+#[derive(Debug)]
 pub enum RunOutcome {
     /// Every task committed; the manifest is written.
     Finalized {
