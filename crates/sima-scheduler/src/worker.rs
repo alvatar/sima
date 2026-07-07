@@ -149,6 +149,11 @@ fn process(ctx: &WorkerContext<'_>, worker: WorkerId, pending: Pending) {
     // `input` (and its borrow of `spec`) is unused past this point, so the
     // retry path below is free to move `spec` back into a re-enqueued task.
 
+    // `caught` is `Result<Result<Outcome, Error>, Box<dyn Any + Send>>`. The
+    // outer layer comes from `catch_unwind` and is `Err` exactly when the
+    // executor panicked; the inner layer is `execute`'s own result, whose
+    // `Err` is an infrastructure fault. The three `Ok(Ok(..))` arms are the
+    // normal outcomes; only the last arm is the panic path.
     match caught {
         Ok(Ok(Outcome::Completed { artifacts, stats })) => {
             match commit(ctx.store, identity, artifacts) {

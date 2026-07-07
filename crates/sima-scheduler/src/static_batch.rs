@@ -11,7 +11,10 @@ use crate::task_source::{RunnableTask, TaskSource};
 /// materializes the frontier: it generates the run's specs, stores each spec
 /// object, derives every task identity, and separates the tasks the store
 /// already answers from those still to run. The frontier is a pure function of
-/// `(config, environment)`, so it is identical across fresh stores.
+/// `(config, environment)`, so it is identical across fresh stores. Resume is
+/// this same construction — every start re-derives the full task set from
+/// `(config, environment)` and skips the keys the store already answers, with
+/// no checkpoint and no separate resume mode.
 pub struct StaticBatch {
     /// The tasks not yet committed, handed out on the first poll.
     runnable: Vec<RunnableTask>,
