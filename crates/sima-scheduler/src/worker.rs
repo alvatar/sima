@@ -336,14 +336,22 @@ mod tests {
             task: a_key(),
             reason: "candidate rejected".to_string(),
         }));
-        fault(&coord, a_key(), Error::Corruption("store broke".to_string()));
+        fault(
+            &coord,
+            a_key(),
+            Error::Corruption("store broke".to_string()),
+        );
         assert!(matches!(coord.lock().stop, Stop::Fault(_)));
     }
 
     #[test]
     fn the_first_fault_is_kept_over_a_later_one() {
         let coord = coord_with(Stop::Fault(Error::Corruption("first fault".to_string())));
-        fault(&coord, a_key(), Error::Validation("second fault".to_string()));
+        fault(
+            &coord,
+            a_key(),
+            Error::Validation("second fault".to_string()),
+        );
         match &coord.lock().stop {
             Stop::Fault(e) => assert_eq!(e.to_string(), "store corruption: first fault"),
             _ => panic!("expected a fault stop state"),

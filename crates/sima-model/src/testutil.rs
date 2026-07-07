@@ -1,8 +1,8 @@
 //! Helpers shared by the crate's test modules: hex text for comparing
 //! pinned byte layouts, and fill-pattern digests for synthetic ids.
 
-use sima_core::{Hash, Result};
 pub(crate) use sima_core::to_hex;
+use sima_core::{Hash, Result};
 
 /// Parses a pinned lowercase-hex layout back into bytes.
 pub(crate) fn from_hex(hex: &str) -> Vec<u8> {

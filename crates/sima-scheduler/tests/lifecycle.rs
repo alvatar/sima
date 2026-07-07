@@ -250,7 +250,10 @@ fn queued_is_journaled_before_the_first_lease() -> Result<()> {
                 .iter()
                 .position(|e| matches!(e, LifecycleEvent::Leased { task: t, .. } if *t == task))
                 .expect("a Leased event for each task");
-            assert!(queued < leased, "Queued must precede Leased for task {task}");
+            assert!(
+                queued < leased,
+                "Queued must precede Leased for task {task}"
+            );
         }
     }
     Ok(())
@@ -268,7 +271,11 @@ fn a_long_timeout_does_not_delay_the_run() -> Result<()> {
     let cfg = config(12, vec![StubBehavior::Succeed, StubBehavior::Succeed]);
     let (_dir, store) = temp_store();
     assert!(matches!(
-        run_into(&store, &cfg, &exec_with_timeout(2, 1, Duration::from_secs(3600)))?,
+        run_into(
+            &store,
+            &cfg,
+            &exec_with_timeout(2, 1, Duration::from_secs(3600))
+        )?,
         RunOutcome::Finalized { .. }
     ));
     Ok(())

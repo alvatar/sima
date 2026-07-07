@@ -199,7 +199,9 @@ mod tests {
                     artifacts.push(a);
                     stats_by_attempt.push(stats);
                 }
-                Outcome::Failed { reason, .. } => panic!("expected Completed, got Failed: {reason}"),
+                Outcome::Failed { reason, .. } => {
+                    panic!("expected Completed, got Failed: {reason}")
+                }
                 Outcome::Rejected { reason, .. } => {
                     panic!("expected Completed, got Rejected: {reason}")
                 }
