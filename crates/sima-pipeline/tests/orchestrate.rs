@@ -25,7 +25,7 @@ fn a_config_orchestrates_to_finalized_and_status_reports_it() -> Result<()> {
     let run = config.run.id();
     assert!(store.manifest(&run)?.is_some(), "the manifest exists");
 
-    let report = status(&store, &run)?;
+    let report = status(&config)?;
     assert_eq!(report.state, RunState::Finalized);
     assert_eq!(report.tasks, 3);
     assert_eq!(report.committed, 3);
@@ -80,7 +80,7 @@ fn a_rejected_candidate_fails_the_run_and_status_carries_the_reason() -> Result<
     let store = Store::open(&config.store)?;
     let run = config.run.id();
     assert!(store.manifest(&run)?.is_none(), "no manifest on failure");
-    match status(&store, &run)?.state {
+    match status(&config)?.state {
         RunState::Failed {
             reason: reported, ..
         } => assert_eq!(reported, reason),
@@ -129,7 +129,7 @@ fn an_interrupt_through_the_pipeline_stays_resumable() -> Result<()> {
     let store = Store::open(&config.store)?;
     let run = config.run.id();
     assert!(store.manifest(&run)?.is_none());
-    assert_eq!(status(&store, &run)?.state, RunState::Interrupted);
+    assert_eq!(status(&config)?.state, RunState::Interrupted);
 
     // The lock released with the interrupted call; the following
     // orchestration completes the abandoned work.
@@ -138,7 +138,7 @@ fn an_interrupt_through_the_pipeline_stays_resumable() -> Result<()> {
         RunOutcome::Finalized { .. }
     ));
     assert!(store.manifest(&run)?.is_some());
-    assert_eq!(status(&store, &run)?.state, RunState::Finalized);
+    assert_eq!(status(&config)?.state, RunState::Finalized);
     Ok(())
 }
 
@@ -146,10 +146,22 @@ fn an_interrupt_through_the_pipeline_stays_resumable() -> Result<()> {
 fn status_on_a_never_started_run_is_validation() -> Result<()> {
     let dir = tempfile::tempdir().expect("temp dir");
     let config = loaded(dir.path(), r#""succeed""#, 1)?;
-    let store = Store::open(&config.store)?;
-    assert!(matches!(
-        status(&store, &config.run.id()),
-        Err(Error::Validation(_))
-    ));
+    // The store exists — created here — but the run was never driven.
+    Store::open(&config.store)?;
+    assert!(matches!(status(&config), Err(Error::Validation(_))));
+    Ok(())
+}
+
+#[test]
+fn status_on_a_missing_store_is_validation_and_creates_nothing() -> Result<()> {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config = loaded(dir.path(), r#""succeed""#, 1)?;
+    assert!(matches!(status(&config), Err(Error::Validation(_))));
+    // A status query is read-only: it must not leave a store behind.
+    assert!(
+        !config.store.exists(),
+        "status created {}",
+        config.store.display()
+    );
     Ok(())
 }

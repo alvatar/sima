@@ -5,6 +5,8 @@ use sima_model::RunId;
 use sima_scheduler::LifecycleEvent;
 use sima_store::Store;
 
+use crate::config::LoadedConfig;
+
 /// A run's observable state, computed from its journal alone.
 #[derive(Debug)]
 pub struct RunStatus {
@@ -48,10 +50,26 @@ pub enum RunState {
     Interrupted,
 }
 
-/// Computes `run`'s status from its journal in `store`. A run never
-/// started in this store is [`Error::Validation`]; a journal line that
-/// fails to parse is [`Error::Corruption`].
-pub fn status(store: &Store, run: &RunId) -> Result<RunStatus> {
+/// Computes the status of the run a loaded config describes, from its
+/// journal alone — the read-only counterpart of
+/// [`orchestrate`](crate::orchestrate). A store root that does not exist
+/// is [`Error::Validation`] before anything touches the disk (opening a
+/// store creates its skeleton, and a query must not); a run never started
+/// in the store is [`Error::Validation`]; a journal line that fails to
+/// parse is [`Error::Corruption`].
+pub fn status(config: &LoadedConfig) -> Result<RunStatus> {
+    if !config.store.is_dir() {
+        return Err(Error::Validation(format!(
+            "store {} does not exist: no run was ever driven there",
+            config.store.display()
+        )));
+    }
+    let store = Store::open(&config.store)?;
+    from_journal(&store, &config.run.id())
+}
+
+/// Reads `run`'s journal in `store` and folds it into a [`RunStatus`].
+fn from_journal(store: &Store, run: &RunId) -> Result<RunStatus> {
     let lines = store.journal(run)?;
     if lines.is_empty() {
         return Err(Error::Validation(format!(

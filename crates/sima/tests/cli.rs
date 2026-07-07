@@ -113,6 +113,19 @@ fn status_before_any_run_exits_1_and_after_reports_the_counts() {
 }
 
 #[test]
+fn status_on_a_missing_store_exits_1_and_creates_nothing() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config = write_config(dir.path(), r#""succeed""#);
+    let output = sima(&["status", config.to_str().expect("utf-8 path")]);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    // A status query is read-only: no store may appear on disk.
+    assert!(
+        !dir.path().join("store").exists(),
+        "sima status created the store"
+    );
+}
+
+#[test]
 fn a_malformed_config_exits_1() {
     let dir = tempfile::tempdir().expect("temp dir");
     let path = dir.path().join("broken.toml");

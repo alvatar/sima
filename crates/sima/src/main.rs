@@ -18,7 +18,6 @@ use std::sync::atomic::AtomicBool;
 
 use sima_core::{Error, Result};
 use sima_pipeline::{RunControl, RunOutcome, RunStatus, load, orchestrate, status};
-use sima_store::Store;
 
 /// Exit code for a definitive candidate failure.
 const EXIT_FAILED: u8 = 2;
@@ -92,8 +91,7 @@ fn status_command(config: &Path) -> ExitCode {
 /// Loads the config and computes the run's status from its journal.
 fn read_status(config: &Path) -> Result<RunStatus> {
     let loaded = load(config)?;
-    let store = Store::open(&loaded.store)?;
-    status(&store, &loaded.run.id())
+    status(&loaded)
 }
 
 /// Prints `error` to stderr and yields the generic error exit code.
