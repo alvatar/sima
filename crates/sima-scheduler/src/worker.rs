@@ -589,8 +589,8 @@ mod tests {
             .expect("the task committed a record");
         assert_eq!(record.artifacts().len(), 1);
         let object = record.artifacts()[0].object();
-        // The committed artifact is the digest that folds in the state bytes,
-        // not the state-less digest a hardcoded `None` would have produced.
+        // The committed artifact is the digest that folds in the input-state
+        // bytes the worker resolved and passed to the executor.
         assert_eq!(run.store.get(object)?, run.expected_artifact);
         Ok(())
     }
