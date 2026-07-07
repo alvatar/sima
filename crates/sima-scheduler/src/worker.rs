@@ -41,7 +41,65 @@ pub(crate) struct WorkerContext<'a> {
 /// until the run winds down.
 pub(crate) fn worker_loop(worker: WorkerId, ctx: WorkerContext<'_>) {
     while let Some(pending) = next_task(ctx.coord, worker) {
+        // A panic escaping process() outside the executor's own catch_unwind —
+        // the commit path, a store read, the settle code — would leak the
+        // task's lease, and drive() would then block forever on
+        // leases.is_empty() inside thread::scope, which never reaches its join
+        // phase, so the panic would be swallowed and the process would hang.
+        // The guard releases the lease as a fault during unwind so the pool
+        // winds down; thread::scope still re-raises the panic at join, so the
+        // fault content is never observed and the panic surfaces as the bug it
+        // is. Executor panics are unaffected: process()'s inner handler catches
+        // them and settles the lease, so the guard is disarmed before it drops.
+        let guard = PanicGuard::arm(ctx.coord, pending.key);
         process(&ctx, worker, pending);
+        guard.disarm();
+    }
+}
+
+/// A liveness guard over one leased task. While armed, its `Drop` releases the
+/// lease as a fault, so a panic escaping `process` outside the executor's
+/// `catch_unwind` cannot strand the lease and hang the driver. A normal
+/// `process` return disarms it, since the lease is already settled by then.
+struct PanicGuard<'a> {
+    coord: &'a Coord,
+    key: TaskKey,
+    armed: bool,
+}
+
+impl<'a> PanicGuard<'a> {
+    /// Arms the guard over `key`'s lease on `coord`.
+    fn arm(coord: &'a Coord, key: TaskKey) -> PanicGuard<'a> {
+        PanicGuard {
+            coord,
+            key,
+            armed: true,
+        }
+    }
+
+    /// Disarms the guard: `process` returned normally and has already settled
+    /// the lease, so nothing is owed.
+    fn disarm(mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for PanicGuard<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            // Reached only during unwind. Release the lease so drive() observes
+            // quiescence; the fault's content is unobservable because
+            // thread::scope re-raises the worker's panic at join, so this is
+            // purely a liveness release.
+            fault(
+                self.coord,
+                self.key,
+                Error::Validation(format!(
+                    "worker panicked while processing task {}",
+                    self.key
+                )),
+            );
+        }
     }
 }
 
@@ -356,6 +414,49 @@ mod tests {
             Stop::Fault(e) => assert_eq!(e.to_string(), "store corruption: first fault"),
             _ => panic!("expected a fault stop state"),
         }
+    }
+
+    /// A lease held by `worker`, leased now.
+    fn a_lease(worker: u64) -> Lease {
+        Lease {
+            worker: WorkerId(worker),
+            attempt: 0,
+            leased_at: Instant::now(),
+        }
+    }
+
+    #[test]
+    fn a_panicking_worker_releases_its_lease_as_a_fault() {
+        let coord = coord_with(Stop::Running);
+        let key = a_key();
+        coord.lock().leases.insert(key, a_lease(0));
+        // A panic escaping the guarded region unwinds through the guard's Drop.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = PanicGuard::arm(&coord, key);
+            panic!("worker body panicked");
+        }));
+        assert!(result.is_err());
+        let state = coord.lock();
+        // The lease is released and the run winds down, so drive() can observe
+        // quiescence instead of blocking forever.
+        assert!(!state.leases.contains_key(&key));
+        assert!(matches!(state.stop, Stop::Fault(_)));
+    }
+
+    #[test]
+    fn a_disarmed_guard_leaves_the_run_running() {
+        let coord = coord_with(Stop::Running);
+        let key = a_key();
+        coord.lock().leases.insert(key, a_lease(0));
+        {
+            let guard = PanicGuard::arm(&coord, key);
+            guard.disarm();
+        }
+        let state = coord.lock();
+        // Disarm settles nothing itself — the normal process() path does — so
+        // the state is untouched: no fault, and the lease still stands.
+        assert!(matches!(state.stop, Stop::Running));
+        assert!(state.leases.contains_key(&key));
     }
 
     /// The outcome of running `process` once against a stub `Succeed` candidate
