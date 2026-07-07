@@ -26,35 +26,36 @@ pub(crate) fn watchdog_loop(coord: &Coord, timeout: Duration, events: &Sender<Li
     // Leases already reported, keyed by (task, attempt) so a later attempt of
     // the same task can overrun and report afresh.
     let mut reported: HashSet<(TaskKey, u32)> = HashSet::new();
+    // The scan, the exit check, and the wait share one continuous guard: every
+    // notify_all site takes this mutex first, so a terminal wakeup landing
+    // between the check and the wait cannot be lost.
+    let mut state = coord.lock();
     loop {
-        let mut overruns = Vec::new();
-        let done = {
-            let state = coord.lock();
-            let now = Instant::now();
-            // Detection only: read the lease table, never mutate it.
-            for (key, lease) in &state.leases {
-                let elapsed = now.duration_since(lease.leased_at);
-                if elapsed > timeout && reported.insert((*key, lease.attempt)) {
-                    overruns.push((*key, lease.worker.0, elapsed));
-                }
+        let now = Instant::now();
+        // Detection only: read the lease table, never mutate it. Emitting under
+        // the lock is safe here — the channel is unbounded so the send never
+        // blocks, and overruns are rare.
+        for (key, lease) in &state.leases {
+            let elapsed = now.duration_since(lease.leased_at);
+            if elapsed > timeout && reported.insert((*key, lease.attempt)) {
+                emit(
+                    events,
+                    LifecycleEvent::TaskOverran {
+                        task: key.to_string(),
+                        worker: lease.worker.0,
+                        elapsed_ms: elapsed.as_millis() as u64,
+                    },
+                );
             }
-            !matches!(state.stop, Stop::Running) && state.in_flight == 0
-        };
-        for (key, worker, elapsed) in overruns {
-            emit(
-                events,
-                LifecycleEvent::TaskOverran {
-                    task: key.to_string(),
-                    worker,
-                    elapsed_ms: elapsed.as_millis() as u64,
-                },
-            );
         }
-        if done {
+        if !matches!(state.stop, Stop::Running) && state.in_flight == 0 {
             return;
         }
-        // Sleep for the interval, waking early if the state changes.
-        let state = coord.lock();
-        let _ = coord.idle.wait_timeout(state, interval);
+        // Sleep for the interval, waking early on any state change.
+        state = coord
+            .idle
+            .wait_timeout(state, interval)
+            .unwrap_or_else(|p| p.into_inner())
+            .0;
     }
 }

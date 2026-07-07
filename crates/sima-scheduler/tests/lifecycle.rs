@@ -223,6 +223,24 @@ fn an_unbounded_timeout_finalizes_without_overrun_reports() -> Result<()> {
     Ok(())
 }
 
+/// The watchdog checks its exit condition and waits under one continuous lock,
+/// so a terminal wakeup cannot slip through an unlocked window and strand the
+/// run for a full scan interval. With a one-hour timeout (a fifteen-minute scan
+/// interval), the run must still return promptly once the work completes: the
+/// prompt return is structural, and the test finishing within the suite's
+/// normal runtime is the guard. A missed condvar wakeup cannot be forced
+/// deterministically, so this replaces the red step.
+#[test]
+fn a_long_timeout_does_not_delay_the_run() -> Result<()> {
+    let cfg = config(12, vec![StubBehavior::Succeed, StubBehavior::Succeed]);
+    let (_dir, store) = temp_store();
+    assert!(matches!(
+        run_into(&store, &cfg, &exec_with_timeout(2, 1, Duration::from_secs(3600)))?,
+        RunOutcome::Finalized { .. }
+    ));
+    Ok(())
+}
+
 /// An executor that raises an infrastructure fault. It delegates a `Succeed`
 /// program to the stub — so siblings still commit — and returns `Err` for any
 /// other behavior, modelling a store fault or a structurally invalid spec the
