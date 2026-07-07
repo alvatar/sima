@@ -79,10 +79,10 @@ pub(crate) enum Stop {
 pub(crate) struct Shared {
     /// FIFO of tasks ready to lease.
     pub(crate) queue: VecDeque<Pending>,
-    /// The in-memory lease table, keyed by task.
+    /// The in-memory lease table, keyed by task. Its size is the count of
+    /// tasks in flight: every lease insertion and removal pairs with the task
+    /// being leased or resolved under this lock.
     pub(crate) leases: HashMap<TaskKey, Lease>,
-    /// Tasks leased and not yet resolved.
-    pub(crate) in_flight: usize,
     /// The run's wind-down state.
     pub(crate) stop: Stop,
 }
@@ -145,7 +145,6 @@ pub fn run(
         state: Mutex::new(Shared {
             queue: VecDeque::new(),
             leases: HashMap::new(),
-            in_flight: 0,
             stop: Stop::Running,
         }),
         idle: Condvar::new(),
@@ -240,10 +239,10 @@ fn drive(
     }
     loop {
         let mut state = coord.lock();
-        // Wait for the pool to go quiescent: nothing in flight and, while the
-        // run is healthy, nothing queued. A terminal state only waits for the
-        // in-flight work to drain; queued tasks are then abandoned.
-        while !(state.in_flight == 0
+        // Wait for the pool to go quiescent: no lease outstanding and, while
+        // the run is healthy, nothing queued. A terminal state only waits for
+        // the in-flight work to drain; queued tasks are then abandoned.
+        while !(state.leases.is_empty()
             && (!matches!(state.stop, Stop::Running) || state.queue.is_empty()))
         {
             state = coord.idle.wait(state).unwrap_or_else(|p| p.into_inner());
@@ -352,7 +351,6 @@ mod tests {
             state: Mutex::new(Shared {
                 queue: VecDeque::new(),
                 leases: HashMap::new(),
-                in_flight: 0,
                 stop: Stop::Running,
             }),
             idle: Condvar::new(),

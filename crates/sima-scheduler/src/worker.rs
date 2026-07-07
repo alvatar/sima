@@ -69,7 +69,6 @@ fn next_task(coord: &Coord, worker: WorkerId) -> Option<Pending> {
                     leased_at: Instant::now(),
                 },
             );
-            state.in_flight += 1;
             return Some(pending);
         }
         // The queue is empty: this worker may be the one making the pool
@@ -215,11 +214,10 @@ fn commit(store: &Store, identity: TaskIdentity, artifacts: Vec<Artifact>) -> Re
     store.commit_record(&record)
 }
 
-/// Clears a resolved lease and counts its task no longer in flight.
+/// Clears a resolved lease, which removes its task from the in-flight set.
 fn resolve(coord: &Coord, key: TaskKey) {
     let mut state = coord.lock();
     state.leases.remove(&key);
-    state.in_flight -= 1;
     coord.idle.notify_all();
 }
 
@@ -229,7 +227,6 @@ fn resolve(coord: &Coord, key: TaskKey) {
 fn requeue(coord: &Coord, key: TaskKey, task: RunnableTask, next_attempt: u32) -> bool {
     let mut state = coord.lock();
     state.leases.remove(&key);
-    state.in_flight -= 1;
     let running = matches!(state.stop, Stop::Running);
     if running {
         // The key is already in hand as a parameter — the requeued attempt
@@ -250,7 +247,6 @@ fn requeue(coord: &Coord, key: TaskKey, task: RunnableTask, next_attempt: u32) -
 fn terminate(coord: &Coord, key: TaskKey, reason: String) {
     let mut state = coord.lock();
     state.leases.remove(&key);
-    state.in_flight -= 1;
     if matches!(state.stop, Stop::Running) {
         state.stop = Stop::Failed(Failure { task: key, reason });
     }
@@ -278,7 +274,6 @@ fn task_fault(ctx: &WorkerContext<'_>, task: String, attempt: u32, key: TaskKey,
 fn fault(coord: &Coord, key: TaskKey, err: Error) {
     let mut state = coord.lock();
     state.leases.remove(&key);
-    state.in_flight -= 1;
     if !matches!(state.stop, Stop::Fault(_)) {
         state.stop = Stop::Fault(err);
     }
@@ -322,14 +317,12 @@ mod tests {
     use super::*;
     use crate::driver::{Failure, Shared};
 
-    /// A coordinator in a given stop state, with one lease in flight so a
-    /// single settle balances the in-flight count.
+    /// A coordinator in a given stop state, with an empty queue and lease table.
     fn coord_with(stop: Stop) -> Coord {
         Coord {
             state: Mutex::new(Shared {
                 queue: VecDeque::new(),
                 leases: HashMap::new(),
-                in_flight: 1,
                 stop,
             }),
             idle: Condvar::new(),
@@ -447,7 +440,6 @@ mod tests {
             state: Mutex::new(Shared {
                 queue: VecDeque::new(),
                 leases: HashMap::new(),
-                in_flight: 1,
                 stop: Stop::Running,
             }),
             idle: Condvar::new(),

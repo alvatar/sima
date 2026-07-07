@@ -48,7 +48,7 @@ pub(crate) fn watchdog_loop(coord: &Coord, timeout: Duration, events: &Sender<Li
                 );
             }
         }
-        if !matches!(state.stop, Stop::Running) && state.in_flight == 0 {
+        if !matches!(state.stop, Stop::Running) && state.leases.is_empty() {
             return;
         }
         // Sleep for the interval, waking early on any state change.
