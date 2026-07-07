@@ -1,53 +1,27 @@
 //! CLI acceptance: `sima run` and `sima status` end to end, spawning the
 //! built binary against configs written into temp directories.
 
+mod common;
+
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+use common::{manifest_of, sima_command};
 use sima_pipeline::load;
-use sima_store::{Manifest, Store};
 
 /// Writes a `sima.toml` under `dir` whose store lives beside it.
 fn write_config(dir: &Path, behaviors: &str) -> PathBuf {
-    let text = format!(
-        r#"
-        [run]
-        root_seed = 11
-        format = "stub.v1"
-
-        [run.generator]
-        id = "stub.v1"
-        behaviors = [{behaviors}]
-
-        [execution]
-        store = "./store"
-        workers = 2
-        max_attempts = 3
-    "#
-    );
-    let path = dir.join("sima.toml");
-    std::fs::write(&path, text).expect("write config");
-    path
+    common::write_config(dir, "sima.toml", behaviors, "./store")
 }
 
 /// Runs the sima binary with `args`, capturing output.
 fn sima(args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_sima"))
-        .args(args)
-        .output()
-        .expect("spawn sima")
+    sima_command().args(args).output().expect("spawn sima")
 }
 
 /// The stdout of `output`, as UTF-8.
 fn stdout(output: &Output) -> String {
     String::from_utf8(output.stdout.clone()).expect("stdout is UTF-8")
-}
-
-/// The manifest of the run `config_path` describes, from its store.
-fn manifest_of(config_path: &Path) -> Option<Manifest> {
-    let config = load(config_path).expect("load config");
-    let store = Store::open(&config.store).expect("open store");
-    store.manifest(&config.run.id()).expect("read manifest")
 }
 
 #[test]

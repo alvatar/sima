@@ -8,12 +8,15 @@
 //! and compares the manifest against an uninterrupted reference run's.
 //! The kernel-released orchestrator lock is asserted along the way.
 
+mod common;
+
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitStatus, Stdio};
+use std::process::{ExitStatus, Stdio};
 
+use common::{manifest_of, sima_command};
 use sima_pipeline::load;
-use sima_store::{Manifest, Store};
+use sima_store::Store;
 
 /// Enough tasks that mid-run hit counts land while work is still ahead:
 /// commits and leases number six, object writes a multiple of that.
@@ -21,48 +24,22 @@ const BEHAVIORS: &str = r#""succeed", "succeed", "succeed", "sleep:20", "sleep:2
 
 /// Writes a `sima.toml` named `name` under `dir`, its store at `store`.
 fn write_config(dir: &Path, name: &str, store: &str) -> PathBuf {
-    let text = format!(
-        r#"
-        [run]
-        root_seed = 23
-        format = "stub.v1"
-
-        [run.generator]
-        id = "stub.v1"
-        behaviors = [{BEHAVIORS}]
-
-        [execution]
-        store = "{store}"
-        workers = 2
-        max_attempts = 3
-    "#
-    );
-    let path = dir.join(name);
-    std::fs::write(&path, text).expect("write config");
-    path
+    common::write_config(dir, name, BEHAVIORS, store)
 }
 
 /// Runs `sima run <config>`, armed with `crashpoint` when given, and
 /// returns the exit status. Output is discarded — the store carries the
 /// assertions.
 fn sima_run(config: &Path, crashpoint: Option<&str>) -> ExitStatus {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_sima"));
+    let mut command = sima_command();
     command
         .args(["run", config.to_str().expect("utf-8 path")])
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .env_remove("SIMA_CRASHPOINT");
+        .stderr(Stdio::null());
     if let Some(arming) = crashpoint {
         command.env("SIMA_CRASHPOINT", arming);
     }
     command.status().expect("spawn sima")
-}
-
-/// The manifest of the run `config_path` describes, from its store.
-fn manifest_of(config_path: &Path) -> Option<Manifest> {
-    let config = load(config_path).expect("load config");
-    let store = Store::open(&config.store).expect("open store");
-    store.manifest(&config.run.id()).expect("read manifest")
 }
 
 /// Harness soundness: the SIGKILL assertion is falsifiable. An unarmed
