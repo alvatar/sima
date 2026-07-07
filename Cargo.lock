@@ -284,6 +284,7 @@ dependencies = [
  "sima-core",
  "sima-model",
  "sima-scheduler",
+ "sima-store",
  "tempfile",
  "toml",
 ]
