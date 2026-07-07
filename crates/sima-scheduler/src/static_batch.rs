@@ -53,7 +53,9 @@ impl StaticBatch {
             };
             let key = identity.key();
             all_keys.push(key);
-            if store.record(&key)?.is_none() {
+            // An existence check, not a read: resuming a mostly-complete run
+            // must not decode every committed record to answer a boolean.
+            if !store.has_record(&key)? {
                 runnable.push(RunnableTask { spec, identity });
             }
         }
