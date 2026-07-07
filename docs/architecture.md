@@ -318,6 +318,14 @@ returns `Finalized` once every task committed and the manifest is written, or
 `Failed { task, reason }` on a definitive failure; the two mirror the
 executor's own `Ok(Outcome)`/`Err` split one level up.
 
+An infrastructure fault — an executor error, a commit failure, a state-load
+failure — outranks a definitive candidate failure: the result path itself
+broke, so the run surfaces the error and emits a `Faulted` event for the task
+rather than reporting a clean `Failed`. A journal fault, by contrast, yields to
+a domain `Failed` outcome: the journal is observational, so a definitive
+candidate failure is returned intact even when the journal degraded, and the
+journal fault resurfaces on the next run that finalizes over the same store.
+
 ### Leases and the watchdog
 
 Leases live in memory — `task → (worker, attempt, deadline)` — since durable
@@ -330,15 +338,30 @@ built; the in-process worker delivers overrun detection, not termination.
 
 ### Journal events
 
-The scheduler owns the journal's meaning. A typed `LifecycleEvent` — run
-started, queued, leased, committed, failed, retried, rejected, task overran,
-run finalized, run failed — serializes to one JSON line; ids and stats render
-as hex. A single journal-writer thread owns the `JournalWriter` and drains an
-`mpsc` channel the workers, watchdog, and driver send to, which is the
-single-writer seam the append contract requires. Event arrival order across
-threads varies between runs; the journal is observational and excluded from
-every equality criterion, so the manifest — sorted by task key at finalize —
-is byte-identical across runs regardless.
+The scheduler owns the journal's meaning. A typed `LifecycleEvent` serializes
+to one JSON line, with ids and stats rendered as hex. The vocabulary:
+
+- **run started** — the run began, over its runnable-or-committed key set.
+- **queued** — a task entered the ready queue.
+- **leased** — a worker leased a task for one attempt.
+- **committed** — a task's result was committed, referencing its record.
+- **failed** — an attempt failed transiently and may be retried.
+- **retried** — a failed task was re-enqueued for another attempt.
+- **rejected** — a task failed definitively and will not be retried.
+- **faulted** — an infrastructure fault (an executor error or a commit
+  failure) hit a task's attempt; the run terminates with an error.
+- **task overran** — a lease outran its soft deadline; detection only, no
+  preemption.
+- **run finalized** — every task committed and the manifest was written.
+- **run failed** — a definitive candidate failure terminated the run; no
+  manifest was written.
+
+A single journal-writer thread owns the `JournalWriter` and drains an `mpsc`
+channel the workers, watchdog, and driver send to, which is the single-writer
+seam the append contract requires. Event arrival order across threads varies
+between runs; the journal is observational and excluded from every equality
+criterion, so the manifest — sorted by task key at finalize — is byte-identical
+across runs regardless.
 
 ## Determinism proof obligations
 
