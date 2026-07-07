@@ -5,7 +5,8 @@
 //! lowercase hex strings and stats render as hex, and the event stream is
 //! excluded from every equality criterion. The events a task emits trace its
 //! lifecycle: queued, leased, then committed, or failed and retried, or
-//! rejected; an overrun and the run-level start/finalize/fail frame the whole.
+//! rejected, or faulted on an infrastructure error; an overrun and the
+//! run-level start/finalize/fail frame the whole.
 
 use serde::{Deserialize, Serialize};
 use sima_core::{Error, Result};
@@ -46,6 +47,13 @@ pub enum LifecycleEvent {
         attempt: u32,
         reason: String,
         stats_hex: String,
+    },
+    /// An infrastructure fault hit this task's attempt: an executor error or a
+    /// commit failure. The run terminates with an error.
+    Faulted {
+        task: String,
+        attempt: u32,
+        error: String,
     },
     /// A lease outran its soft deadline; detection only, no preemption.
     TaskOverran {

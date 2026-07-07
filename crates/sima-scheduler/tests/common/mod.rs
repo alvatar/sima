@@ -98,56 +98,71 @@ pub fn journal_events(store: &Store, run: &RunId) -> Vec<LifecycleEvent> {
         .collect()
 }
 
-/// How many `Leased` events name `task`.
-pub fn leased_count(events: &[LifecycleEvent], task: &TaskKey) -> usize {
+/// Counts the events whose task field, extracted by `task_of`, names `task`.
+pub fn count_events(
+    events: &[LifecycleEvent],
+    task: &TaskKey,
+    task_of: impl Fn(&LifecycleEvent) -> Option<&str>,
+) -> usize {
     let task = task.to_string();
     events
         .iter()
-        .filter(|e| matches!(e, LifecycleEvent::Leased { task: t, .. } if *t == task))
+        .filter(|e| task_of(e) == Some(task.as_str()))
         .count()
+}
+
+/// How many `Leased` events name `task`.
+pub fn leased_count(events: &[LifecycleEvent], task: &TaskKey) -> usize {
+    count_events(events, task, |e| match e {
+        LifecycleEvent::Leased { task, .. } => Some(task.as_str()),
+        _ => None,
+    })
 }
 
 /// How many `Failed` events name `task`.
 pub fn failed_count(events: &[LifecycleEvent], task: &TaskKey) -> usize {
-    let task = task.to_string();
-    events
-        .iter()
-        .filter(|e| matches!(e, LifecycleEvent::Failed { task: t, .. } if *t == task))
-        .count()
+    count_events(events, task, |e| match e {
+        LifecycleEvent::Failed { task, .. } => Some(task.as_str()),
+        _ => None,
+    })
 }
 
 /// How many `Retried` events name `task`.
 pub fn retried_count(events: &[LifecycleEvent], task: &TaskKey) -> usize {
-    let task = task.to_string();
-    events
-        .iter()
-        .filter(|e| matches!(e, LifecycleEvent::Retried { task: t, .. } if *t == task))
-        .count()
+    count_events(events, task, |e| match e {
+        LifecycleEvent::Retried { task, .. } => Some(task.as_str()),
+        _ => None,
+    })
 }
 
 /// How many `Rejected` events name `task`.
 pub fn rejected_count(events: &[LifecycleEvent], task: &TaskKey) -> usize {
-    let task = task.to_string();
-    events
-        .iter()
-        .filter(|e| matches!(e, LifecycleEvent::Rejected { task: t, .. } if *t == task))
-        .count()
+    count_events(events, task, |e| match e {
+        LifecycleEvent::Rejected { task, .. } => Some(task.as_str()),
+        _ => None,
+    })
 }
 
 /// How many `Committed` events name `task`.
 pub fn committed_count(events: &[LifecycleEvent], task: &TaskKey) -> usize {
-    let task = task.to_string();
-    events
-        .iter()
-        .filter(|e| matches!(e, LifecycleEvent::Committed { task: t, .. } if *t == task))
-        .count()
+    count_events(events, task, |e| match e {
+        LifecycleEvent::Committed { task, .. } => Some(task.as_str()),
+        _ => None,
+    })
+}
+
+/// How many `Faulted` events name `task`.
+pub fn faulted_count(events: &[LifecycleEvent], task: &TaskKey) -> usize {
+    count_events(events, task, |e| match e {
+        LifecycleEvent::Faulted { task, .. } => Some(task.as_str()),
+        _ => None,
+    })
 }
 
 /// How many `TaskOverran` events name `task`.
 pub fn overran_count(events: &[LifecycleEvent], task: &TaskKey) -> usize {
-    let task = task.to_string();
-    events
-        .iter()
-        .filter(|e| matches!(e, LifecycleEvent::TaskOverran { task: t, .. } if *t == task))
-        .count()
+    count_events(events, task, |e| match e {
+        LifecycleEvent::TaskOverran { task, .. } => Some(task.as_str()),
+        _ => None,
+    })
 }

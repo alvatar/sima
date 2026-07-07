@@ -14,7 +14,7 @@ use std::sync::mpsc::Sender;
 use std::time::Instant;
 
 use sima_contracts::{Artifact, ExecutionContext, Executor, Outcome, TaskInput, WorkerId};
-use sima_core::{Hash, Result};
+use sima_core::{Error, Hash, Result};
 use sima_model::{ArtifactRef, RunConfig, TaskIdentity, TaskKey, TaskRecord};
 use sima_store::Store;
 
@@ -125,7 +125,7 @@ fn process(ctx: &WorkerContext<'_>, worker: WorkerId, pending: Pending) {
                     );
                     resolve(ctx.coord, key);
                 }
-                Err(e) => fault(ctx.coord, key, e),
+                Err(e) => task_fault(ctx, task, attempt, key, e),
             }
         }
         Ok(Ok(Outcome::Failed { reason, stats })) => {
@@ -168,7 +168,7 @@ fn process(ctx: &WorkerContext<'_>, worker: WorkerId, pending: Pending) {
         // An infrastructure fault from the executor (e.g. a structurally
         // invalid spec) fails the whole run, distinct from a candidate that
         // merely evaluated badly.
-        Ok(Err(e)) => fault(ctx.coord, key, e),
+        Ok(Err(e)) => task_fault(ctx, task, attempt, key, e),
         Err(payload) => {
             let reason = panic_reason(payload);
             emit(
@@ -225,8 +225,9 @@ fn requeue(coord: &Coord, key: TaskKey, task: RunnableTask, next_attempt: u32) -
     running
 }
 
-/// Records a definitive candidate failure: the first such failure decides the
-/// run's outcome; later ones only clear their own lease.
+/// Records a definitive candidate failure: it decides the run's outcome only
+/// from the healthy state, so it never downgrades an infrastructure fault; the
+/// first candidate failure among candidate failures wins.
 fn terminate(coord: &Coord, key: TaskKey, reason: String) {
     let mut state = coord.lock();
     state.leases.remove(&key);
@@ -237,13 +238,29 @@ fn terminate(coord: &Coord, key: TaskKey, reason: String) {
     coord.idle.notify_all();
 }
 
-/// Records an infrastructure fault: the first fault becomes the run's returned
-/// error; later ones only clear their own lease.
-fn fault(coord: &Coord, key: TaskKey, err: sima_core::Error) {
+/// Emits the task's `Faulted` event and records the infrastructure fault, so
+/// the run surfaces the error. One classification site for every fault: the
+/// executor-error path, the commit-error path, and the input-state load path.
+fn task_fault(ctx: &WorkerContext<'_>, task: String, attempt: u32, key: TaskKey, err: Error) {
+    emit(
+        &ctx.events,
+        LifecycleEvent::Faulted {
+            task,
+            attempt,
+            error: err.to_string(),
+        },
+    );
+    fault(ctx.coord, key, err);
+}
+
+/// Records an infrastructure fault: it outranks a definitive candidate failure,
+/// because the result path itself broke and the run must surface the error. The
+/// first fault wins; a later candidate failure never displaces it.
+fn fault(coord: &Coord, key: TaskKey, err: Error) {
     let mut state = coord.lock();
     state.leases.remove(&key);
     state.in_flight -= 1;
-    if matches!(state.stop, Stop::Running) {
+    if !matches!(state.stop, Stop::Fault(_)) {
         state.stop = Stop::Fault(err);
     }
     coord.idle.notify_all();
@@ -270,4 +287,54 @@ fn to_hex(bytes: &[u8]) -> String {
         let _ = write!(out, "{byte:02x}");
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::{HashMap, VecDeque};
+    use std::sync::{Condvar, Mutex};
+
+    use sima_core::hash_bytes;
+
+    use super::*;
+    use crate::driver::{Failure, Shared};
+
+    /// A coordinator in a given stop state, with one lease in flight so a
+    /// single settle balances the in-flight count.
+    fn coord_with(stop: Stop) -> Coord {
+        Coord {
+            state: Mutex::new(Shared {
+                queue: VecDeque::new(),
+                leases: HashMap::new(),
+                in_flight: 1,
+                stop,
+            }),
+            idle: Condvar::new(),
+        }
+    }
+
+    /// A throwaway task key.
+    fn a_key() -> TaskKey {
+        TaskKey::from_hash(hash_bytes(b"fault-upgrade task"))
+    }
+
+    #[test]
+    fn a_fault_upgrades_a_definitive_candidate_failure() {
+        let coord = coord_with(Stop::Failed(Failure {
+            task: a_key(),
+            reason: "candidate rejected".to_string(),
+        }));
+        fault(&coord, a_key(), Error::Corruption("store broke".to_string()));
+        assert!(matches!(coord.lock().stop, Stop::Fault(_)));
+    }
+
+    #[test]
+    fn the_first_fault_is_kept_over_a_later_one() {
+        let coord = coord_with(Stop::Fault(Error::Corruption("first fault".to_string())));
+        fault(&coord, a_key(), Error::Validation("second fault".to_string()));
+        match &coord.lock().stop {
+            Stop::Fault(e) => assert_eq!(e.to_string(), "store corruption: first fault"),
+            _ => panic!("expected a fault stop state"),
+        }
+    }
 }

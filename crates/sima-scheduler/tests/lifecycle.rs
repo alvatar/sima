@@ -4,8 +4,8 @@
 mod common;
 
 use common::{
-    committed_count, config, exec, failed_count, journal_events, leased_count, overran_count,
-    rejected_count, retried_count, run_id, run_into, run_with, task_keys, temp_store,
+    committed_count, config, exec, failed_count, faulted_count, journal_events, leased_count,
+    overran_count, rejected_count, retried_count, run_id, run_into, run_with, task_keys, temp_store,
 };
 use sima_contracts::{
     ExecutionContext, Executor, Outcome, StubBehavior, StubExecutor, StubProgram, TaskInput,
@@ -240,6 +240,7 @@ impl Executor for FaultyExecutor {
 #[test]
 fn an_executor_fault_fails_the_run_with_an_error() -> Result<()> {
     let cfg = config(7, vec![StubBehavior::Reject]);
+    let key = task_keys(&cfg)[0];
     let (_dir, store) = temp_store();
     match run_with(&store, &cfg, &exec(1, 3, 1_000), &FaultyExecutor::new()) {
         Err(Error::Validation(_)) => {}
@@ -248,6 +249,9 @@ fn an_executor_fault_fails_the_run_with_an_error() -> Result<()> {
     }
     // No manifest: the faulted run did not finalize.
     assert!(store.manifest(&run_id(&cfg))?.is_none());
+    // The fault is journaled once, so it is not hidden behind the run error.
+    let events = journal_events(&store, &run_id(&cfg));
+    assert_eq!(faulted_count(&events, &key), 1);
     Ok(())
 }
 
