@@ -3,6 +3,11 @@ name = "sima-store"
 version.workspace = true
 edition.workspace = true
 
+[features]
+# Forwards sima-core's crash-injection so the points planted in the write
+# paths here can be armed by a test harness.
+crash-injection = ["sima-core/crash-injection"]
+
 [dependencies]
 sima-core = { path = "../sima-core" }
 sima-model = { path = "../sima-model" }

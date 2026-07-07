@@ -106,7 +106,17 @@ fn write_tmp(root: &Path, bytes: &[u8]) -> Result<PathBuf> {
         SEQ.fetch_add(1, Ordering::Relaxed),
     );
     let mut file = File::create(&tmp).map_err(|e| io_error(&tmp, e))?;
-    file.write_all(bytes).map_err(|e| io_error(&tmp, e))?;
+    // The payload is written in two parts around the crashpoint, so an
+    // armed death lands after bytes have reached the temp file but before
+    // the write completes: it leaves a torn temp file — inert by layout —
+    // and never a torn final file, since nothing has entered the
+    // destination yet.
+    let split = bytes.len().min(1);
+    file.write_all(&bytes[..split])
+        .map_err(|e| io_error(&tmp, e))?;
+    sima_core::crashpoint("object.mid-write");
+    file.write_all(&bytes[split..])
+        .map_err(|e| io_error(&tmp, e))?;
     file.sync_all().map_err(|e| io_error(&tmp, e))?;
     Ok(tmp)
 }

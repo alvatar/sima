@@ -3,6 +3,11 @@ name = "sima-scheduler"
 version.workspace = true
 edition.workspace = true
 
+[features]
+# Forwards sima-core's crash-injection so the point planted in the worker
+# can be armed by a test harness.
+crash-injection = ["sima-core/crash-injection"]
+
 [dependencies]
 sima-core = { path = "../sima-core" }
 sima-model = { path = "../sima-model" }

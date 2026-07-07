@@ -116,6 +116,10 @@ fn process(ctx: &WorkerContext<'_>, worker: WorkerId, pending: Pending) {
             attempt,
         },
     );
+    // A death here strands nothing: the lease is in-memory only, and the
+    // kernel releases the orchestrator lock with the process, so a resumed
+    // run re-derives the task in its frontier.
+    sima_core::crashpoint("lease.held");
 
     // Resolve the input-state object the identity references: the key carries
     // its digest, the executor receives its bytes. A load failure is an
