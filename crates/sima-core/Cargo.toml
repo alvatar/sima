@@ -3,8 +3,14 @@ name = "sima-core"
 version.workspace = true
 edition.workspace = true
 
+[features]
+# Arms crashpoint(): the process SIGKILLs itself at env-armed points.
+# Test-harness only; without it the calls compile to nothing.
+crash-injection = ["dep:libc"]
+
 [dependencies]
 blake3.workspace = true
+libc = { workspace = true, optional = true }
 
 [lints]
 workspace = true
