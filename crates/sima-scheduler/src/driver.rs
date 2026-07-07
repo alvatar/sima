@@ -57,7 +57,6 @@ pub(crate) struct Pending {
 
 /// A definitive candidate failure: the task that could not produce a result,
 /// and why.
-#[derive(Clone)]
 pub(crate) struct Failure {
     pub(crate) task: TaskKey,
     pub(crate) reason: String,
