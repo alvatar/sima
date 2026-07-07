@@ -57,7 +57,7 @@ fn next_task(coord: &Coord, worker: WorkerId) -> Option<Pending> {
             return None;
         }
         if let Some(pending) = state.queue.pop_front() {
-            let key = pending.task.identity.key();
+            let key = pending.key;
             // The lease records when the attempt started; the watchdog derives
             // the overrun from its age, so there is no deadline arithmetic that
             // could overflow.
@@ -82,9 +82,9 @@ fn next_task(coord: &Coord, worker: WorkerId) -> Option<Pending> {
 /// Evaluates one leased task and resolves its outcome: commit, retry, reject,
 /// or record an infrastructure fault.
 fn process(ctx: &WorkerContext<'_>, worker: WorkerId, pending: Pending) {
-    let RunnableTask { spec, identity } = pending.task;
+    let key = pending.key;
     let attempt = pending.attempt;
-    let key = identity.key();
+    let RunnableTask { spec, identity } = pending.task;
     let task = key.to_string();
     emit(
         &ctx.events,
@@ -232,7 +232,10 @@ fn requeue(coord: &Coord, key: TaskKey, task: RunnableTask, next_attempt: u32) -
     state.in_flight -= 1;
     let running = matches!(state.stop, Stop::Running);
     if running {
+        // The key is already in hand as a parameter — the requeued attempt
+        // reuses it rather than recomputing it under the lock.
         state.queue.push_back(Pending {
+            key,
             task,
             attempt: next_attempt,
         });
@@ -460,6 +463,7 @@ mod tests {
                 events: tx,
             };
             let pending = Pending {
+                key: identity.key(),
                 task: RunnableTask {
                     spec: spec.clone(),
                     identity,

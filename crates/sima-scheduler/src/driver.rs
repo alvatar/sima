@@ -48,6 +48,9 @@ pub enum RunOutcome {
 /// queued for.
 pub(crate) struct Pending {
     pub(crate) task: RunnableTask,
+    /// The task key, equal to `task.identity.key()`, computed once where the
+    /// `Pending` is built so no lifecycle step recomputes it under the lock.
+    pub(crate) key: TaskKey,
     pub(crate) attempt: u32,
 }
 
@@ -301,19 +304,24 @@ fn enqueue(coord: &Coord, events: &Sender<LifecycleEvent>, tasks: Vec<RunnableTa
     if tasks.is_empty() {
         return;
     }
-    let keys: Vec<TaskKey> = tasks.iter().map(|task| task.identity.key()).collect();
-    for key in &keys {
+    let pending: Vec<Pending> = tasks
+        .into_iter()
+        .map(|task| Pending {
+            key: task.identity.key(),
+            task,
+            attempt: 0,
+        })
+        .collect();
+    for p in &pending {
         emit(
             events,
             LifecycleEvent::Queued {
-                task: key.to_string(),
+                task: p.key.to_string(),
             },
         );
     }
     let mut state = coord.lock();
-    for task in tasks {
-        state.queue.push_back(Pending { task, attempt: 0 });
-    }
+    state.queue.extend(pending);
     coord.idle.notify_all();
 }
 
