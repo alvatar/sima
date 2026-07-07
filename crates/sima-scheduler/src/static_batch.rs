@@ -2,7 +2,7 @@
 
 use sima_contracts::Generator;
 use sima_core::{Result, prng};
-use sima_model::{Environment, RunConfig, TaskIdentity, TaskKey};
+use sima_model::{Environment, RunConfig, SpecId, TaskIdentity, TaskKey};
 use sima_store::Store;
 
 use crate::task_source::{RunnableTask, TaskSource};
@@ -40,10 +40,11 @@ impl StaticBatch {
         let mut runnable = Vec::new();
         for (i, spec) in specs.into_iter().enumerate() {
             // The spec object is durable before any task referencing it can
-            // commit, and its address is the identity's spec id.
-            store.put(&spec.to_bytes())?;
+            // commit; its address is the spec id (both are the blake3 of the
+            // spec's canonical bytes).
+            let spec_id = SpecId::from_hash(store.put(&spec.to_bytes())?);
             let identity = TaskIdentity {
-                spec: spec.id(),
+                spec: spec_id,
                 params,
                 // The per-task seed is a deterministic substream of the run
                 // seed, keyed by the candidate's index in the generator output.
