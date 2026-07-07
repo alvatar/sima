@@ -35,10 +35,18 @@ pub(crate) struct Failure {
 }
 
 /// Why the run is winding down. `Running` is the steady state; every other
-/// variant is terminal and makes each worker stop pulling new work.
+/// variant is terminal and makes each worker stop pulling new work. The
+/// variants form a precedence lattice — `Running < Interrupted < Failed <
+/// Fault` — and each setter only upgrades: an interrupt never displaces a
+/// failure, a failure never displaces a fault, and among faults the first
+/// wins. `Finished` sits outside the lattice as the drained sentinel the
+/// driver installs when it takes the terminal state.
 pub(crate) enum Stop {
     /// Work is proceeding.
     Running,
+    /// The caller requested a graceful wind-down; the run returns
+    /// [`RunOutcome::Interrupted`](crate::RunOutcome::Interrupted).
+    Interrupted,
     /// A definitive candidate failure; the run returns
     /// [`RunOutcome::Failed`](crate::RunOutcome::Failed).
     Failed(Failure),
@@ -161,15 +169,28 @@ impl Coord {
         })
     }
 
-    /// Records a definitive candidate failure: it decides the run's outcome
-    /// only from the healthy state, so it never downgrades an infrastructure
-    /// fault; the first candidate failure among candidate failures wins.
+    /// Records a definitive candidate failure. It upgrades the healthy and
+    /// interrupted states — a candidate that failed definitively during an
+    /// interrupt wind-down still decides the run — and never downgrades an
+    /// infrastructure fault; the first candidate failure among candidate
+    /// failures wins.
     pub(crate) fn terminate(&self, key: TaskKey, reason: String) {
         self.settle(key, |state| {
-            if matches!(state.stop, Stop::Running) {
+            if matches!(state.stop, Stop::Running | Stop::Interrupted) {
                 state.stop = Stop::Failed(Failure { task: key, reason });
             }
         });
+    }
+
+    /// Requests a graceful wind-down: it upgrades `Running` to `Interrupted`
+    /// and nothing else, since every other state already outranks an
+    /// interrupt on the stop lattice.
+    pub(crate) fn interrupt(&self) {
+        let mut state = self.lock();
+        if matches!(state.stop, Stop::Running) {
+            state.stop = Stop::Interrupted;
+        }
+        self.idle.notify_all();
     }
 
     /// Records an infrastructure fault: it outranks a definitive candidate
@@ -221,5 +242,43 @@ mod tests {
             Stop::Fault(e) => assert_eq!(e.to_string(), "store corruption: first fault"),
             _ => panic!("expected a fault stop state"),
         }
+    }
+
+    #[test]
+    fn an_interrupt_upgrades_a_running_coordinator() {
+        let coord = Coord::new();
+        coord.interrupt();
+        assert!(matches!(coord.lock().stop, Stop::Interrupted));
+    }
+
+    #[test]
+    fn an_interrupt_never_displaces_a_definitive_failure() {
+        let coord = coord_with(Stop::Failed(Failure {
+            task: a_key(),
+            reason: "candidate rejected".to_string(),
+        }));
+        coord.interrupt();
+        assert!(matches!(coord.lock().stop, Stop::Failed(_)));
+    }
+
+    #[test]
+    fn an_interrupt_never_displaces_a_fault() {
+        let coord = coord_with(Stop::Fault(Error::Corruption("store broke".to_string())));
+        coord.interrupt();
+        assert!(matches!(coord.lock().stop, Stop::Fault(_)));
+    }
+
+    #[test]
+    fn a_definitive_failure_upgrades_an_interrupt() {
+        let coord = coord_with(Stop::Interrupted);
+        coord.terminate(a_key(), "candidate rejected".to_string());
+        assert!(matches!(coord.lock().stop, Stop::Failed(_)));
+    }
+
+    #[test]
+    fn a_fault_upgrades_an_interrupt() {
+        let coord = coord_with(Stop::Interrupted);
+        coord.fault(a_key(), Error::Corruption("store broke".to_string()));
+        assert!(matches!(coord.lock().stop, Stop::Fault(_)));
     }
 }

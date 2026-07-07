@@ -71,6 +71,9 @@ pub enum LifecycleEvent {
         task: String,
         reason: String,
     },
+    /// The caller interrupted the run: in-flight attempts drained and
+    /// committed, and no manifest was written, so the store is resumable.
+    RunInterrupted { run: String },
 }
 
 impl LifecycleEvent {
@@ -134,5 +137,89 @@ mod tests {
         let line = event.to_line()?;
         assert_eq!(LifecycleEvent::from_line(&line)?, event);
         Ok(())
+    }
+
+    /// One instance of every variant, for exhaustiveness over the vocabulary.
+    fn every_variant() -> Vec<LifecycleEvent> {
+        let task = "ab".repeat(32);
+        let run = "cd".repeat(32);
+        vec![
+            LifecycleEvent::RunStarted {
+                run: run.clone(),
+                tasks: 3,
+            },
+            LifecycleEvent::Queued { task: task.clone() },
+            LifecycleEvent::Leased {
+                task: task.clone(),
+                worker: 1,
+                attempt: 0,
+            },
+            LifecycleEvent::Committed {
+                task: task.clone(),
+                record: "ef".repeat(32),
+                stats_hex: "0011".to_string(),
+            },
+            LifecycleEvent::Failed {
+                task: task.clone(),
+                attempt: 0,
+                reason: "flaky".to_string(),
+                stats_hex: String::new(),
+            },
+            LifecycleEvent::Retried {
+                task: task.clone(),
+                next_attempt: 1,
+            },
+            LifecycleEvent::Rejected {
+                task: task.clone(),
+                attempt: 1,
+                reason: "rejected".to_string(),
+                stats_hex: String::new(),
+            },
+            LifecycleEvent::Faulted {
+                task: task.clone(),
+                attempt: 1,
+                error: "io error".to_string(),
+            },
+            LifecycleEvent::LeaseExpired {
+                task: task.clone(),
+                worker: 1,
+                elapsed_ms: 100,
+            },
+            LifecycleEvent::RunFinalized {
+                run: run.clone(),
+                committed: 3,
+            },
+            LifecycleEvent::RunFailed {
+                run: run.clone(),
+                task,
+                reason: "rejected".to_string(),
+            },
+            LifecycleEvent::RunInterrupted { run },
+        ]
+    }
+
+    #[test]
+    fn every_variant_round_trips_through_from_line() -> Result<()> {
+        for event in every_variant() {
+            let line = event.to_line()?;
+            assert_eq!(LifecycleEvent::from_line(&line)?, event, "{line}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn from_line_rejects_lines_that_are_not_events() {
+        for line in [
+            "",
+            "not json",
+            "{}",
+            "{\"event\":\"no_such_event\"}",
+            "{\"event\":\"queued\"}",
+        ] {
+            assert!(
+                matches!(LifecycleEvent::from_line(line), Err(Error::Encoding(_))),
+                "{line:?} must be rejected"
+            );
+        }
     }
 }

@@ -12,7 +12,9 @@ use sima_model::{
     Environment, EnvironmentComponent, EnvironmentValue, FormatId, GeneratorConfig, GeneratorId,
     Params, RunConfig, RunId, TaskKey,
 };
-use sima_scheduler::{ExecutionConfig, LifecycleEvent, RunOutcome, StaticBatch, TaskSource, run};
+use sima_scheduler::{
+    ExecutionConfig, LifecycleEvent, RunControl, RunOutcome, StaticBatch, TaskSource, run,
+};
 use sima_store::Store;
 
 /// A one-component stub environment, standing in for real execution identity.
@@ -72,7 +74,36 @@ pub fn run_with(
     executor: &(dyn Executor + Sync),
 ) -> Result<RunOutcome> {
     let generator = StubGenerator::new()?;
-    run(store, cfg, &environment(), &generator, executor, exec)
+    run(
+        store,
+        cfg,
+        &environment(),
+        &generator,
+        executor,
+        exec,
+        &RunControl::detached(),
+    )
+}
+
+/// Runs `cfg` into `store` under a caller-supplied [`RunControl`], with the
+/// stub generator and executor, so a test can observe events or interrupt
+/// the run.
+pub fn run_controlled(
+    store: &Store,
+    cfg: &RunConfig,
+    exec: &ExecutionConfig,
+    control: &RunControl,
+) -> Result<RunOutcome> {
+    let generator = StubGenerator::new()?;
+    run(
+        store,
+        cfg,
+        &environment(),
+        &generator,
+        &StubExecutor::new()?,
+        exec,
+        control,
+    )
 }
 
 /// The run id of `cfg` — the address of its config object, and the directory

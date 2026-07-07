@@ -6,10 +6,15 @@
 //! success. A definitive candidate failure terminates the run without writing a
 //! manifest, leaving the store clean and resumable; an infrastructure fault
 //! returns `Err`. The two mirror the executor's own `Ok(Outcome)`/`Err` split
-//! one level up.
+//! one level up. A caller's interrupt winds the run down the same way a
+//! failure does — in-flight attempts drain and commit, queued tasks are
+//! abandoned, no manifest — but reports [`RunOutcome::Interrupted`], the
+//! resumable outcome.
 
+use std::sync::atomic::Ordering;
 use std::sync::mpsc::Sender;
 use std::thread;
+use std::time::Duration;
 
 use sima_contracts::{Executor, Generator, WorkerId};
 use sima_core::Result;
@@ -17,7 +22,8 @@ use sima_model::{Environment, RunConfig, RunId, TaskKey};
 use sima_store::Store;
 
 use crate::config::ExecutionConfig;
-use crate::coord::{Coord, Failure, Pending, Stop};
+use crate::control::RunControl;
+use crate::coord::{Coord, Failure, Pending, Shared, Stop};
 use crate::event::LifecycleEvent;
 use crate::journal_sink::{JournalSink, emit};
 use crate::static_batch::StaticBatch;
@@ -41,6 +47,13 @@ pub enum RunOutcome {
         /// Why it failed.
         reason: String,
     },
+    /// The caller interrupted the run: in-flight attempts drained and
+    /// committed, queued tasks were abandoned, and no manifest was written,
+    /// so the store is resumable.
+    Interrupted {
+        /// The interrupted run.
+        run: RunId,
+    },
 }
 
 /// Runs a search to completion.
@@ -50,8 +63,11 @@ pub enum RunOutcome {
 /// worker threads, committing successes through `store` and retrying transient
 /// failures up to the cap. Returns [`RunOutcome::Finalized`] once every task is
 /// committed and the manifest is written, or [`RunOutcome::Failed`] when a task
-/// fails definitively — in which case no manifest is written and the store
-/// stays resumable. `Err` signals an infrastructure fault.
+/// fails definitively, or [`RunOutcome::Interrupted`] when `control`'s
+/// interrupt flag winds the run down — in the latter two cases no manifest is
+/// written and the store stays resumable. `Err` signals an infrastructure
+/// fault. `control` also carries the caller's event observer, invoked with
+/// each lifecycle event in journal order.
 pub fn run(
     store: &Store,
     config: &RunConfig,
@@ -59,6 +75,7 @@ pub fn run(
     generator: &dyn Generator,
     executor: &(dyn Executor + Sync),
     exec: &ExecutionConfig,
+    control: &RunControl,
 ) -> Result<RunOutcome> {
     // Register the run; its id is the config object's address.
     let run = store.create_run(config)?;
@@ -69,77 +86,93 @@ pub fn run(
     store.put(&environment.to_bytes())?;
 
     let mut source = StaticBatch::new(generator, config, environment, store)?;
-    let sink = JournalSink::spawn(store.journal_writer(&run)?);
-    let events = sink.sender();
-    emit(
-        &events,
-        LifecycleEvent::RunStarted {
-            run: run.to_string(),
-            tasks: source.all_keys().len(),
-        },
-    );
-
+    let writer = store.journal_writer(&run)?;
     let coord = Coord::new();
-
-    // The pool runs inside a scope so workers borrow `&store` and the executor
-    // without `Arc`; the driver drives polling on this thread.
     let coord = &coord;
-    let drive_result = thread::scope(|scope| -> Result<DriveOutcome> {
-        for w in 0..exec.workers {
-            let ctx = WorkerContext {
-                coord,
-                store,
-                config,
-                executor,
-                exec,
-                events: events.clone(),
-            };
-            scope.spawn(move || worker_loop(WorkerId(w as u64), ctx));
-        }
-        {
-            let events = events.clone();
-            scope.spawn(move || watchdog_loop(coord, exec.attempt_timeout, &events));
-        }
-        drive(coord, &mut source, &events)
+
+    // Two nested scopes: the outer one holds the journal sink — a scoped
+    // thread, so it can call the caller's borrowed observer — and the inner
+    // one holds the pool, so workers borrow `&store` and the executor without
+    // `Arc` and a worker panic re-raises at the pool's join, before any
+    // finalize. The driver drives polling on this thread.
+    let (outcome, journal) = thread::scope(|scope| {
+        let sink = JournalSink::spawn(scope, writer, control.observer);
+        let events = sink.sender();
+        emit(
+            &events,
+            LifecycleEvent::RunStarted {
+                run: run.to_string(),
+                tasks: source.all_keys().len(),
+            },
+        );
+
+        let drive_result = thread::scope(|pool| -> Result<DriveOutcome> {
+            for w in 0..exec.workers {
+                let ctx = WorkerContext {
+                    coord,
+                    store,
+                    config,
+                    executor,
+                    exec,
+                    events: events.clone(),
+                };
+                pool.spawn(move || worker_loop(WorkerId(w as u64), ctx));
+            }
+            {
+                let events = events.clone();
+                pool.spawn(move || watchdog_loop(coord, exec.attempt_timeout, &events));
+            }
+            drive(coord, &mut source, &events, control)
+        });
+
+        // Whatever the pool returned, decide the outcome, then always flush
+        // and join the journal.
+        let outcome = match drive_result {
+            Ok(DriveOutcome::Finalize) => store.finalize_run(&run, source.all_keys()).map(|()| {
+                emit(
+                    &events,
+                    LifecycleEvent::RunFinalized {
+                        run: run.to_string(),
+                        committed: source.all_keys().len(),
+                    },
+                );
+                RunOutcome::Finalized { run }
+            }),
+            Ok(DriveOutcome::Fail(failure)) => {
+                emit(
+                    &events,
+                    LifecycleEvent::RunFailed {
+                        run: run.to_string(),
+                        task: failure.task.to_string(),
+                        reason: failure.reason.clone(),
+                    },
+                );
+                Ok(RunOutcome::Failed {
+                    task: failure.task,
+                    reason: failure.reason,
+                })
+            }
+            Ok(DriveOutcome::Interrupt) => {
+                emit(
+                    &events,
+                    LifecycleEvent::RunInterrupted {
+                        run: run.to_string(),
+                    },
+                );
+                Ok(RunOutcome::Interrupted { run })
+            }
+            Err(fault) => Err(fault),
+        };
+
+        drop(events);
+        (outcome, sink.shutdown())
     });
 
-    // Whatever the pool returned, decide the outcome, then always flush and
-    // join the journal.
-    let outcome = match drive_result {
-        Ok(DriveOutcome::Finalize) => store.finalize_run(&run, source.all_keys()).map(|()| {
-            emit(
-                &events,
-                LifecycleEvent::RunFinalized {
-                    run: run.to_string(),
-                    committed: source.all_keys().len(),
-                },
-            );
-            RunOutcome::Finalized { run }
-        }),
-        Ok(DriveOutcome::Fail(failure)) => {
-            emit(
-                &events,
-                LifecycleEvent::RunFailed {
-                    run: run.to_string(),
-                    task: failure.task.to_string(),
-                    reason: failure.reason.clone(),
-                },
-            );
-            Ok(RunOutcome::Failed {
-                task: failure.task,
-                reason: failure.reason,
-            })
-        }
-        Err(fault) => Err(fault),
-    };
-
-    drop(events);
-    let journal = sink.shutdown();
-    // The domain outcome wins: a definitive candidate failure is returned even
-    // when the journal degraded, because the journal is observational and the
-    // same fault resurfaces on the next run that finalizes over this store.
-    // Only a Finalized outcome yields to the journal fault — there it is the
-    // sole signal anything went wrong.
+    // The domain outcome wins: a definitive candidate failure or an interrupt
+    // is returned even when the journal degraded, because the journal is
+    // observational and the same fault resurfaces on the next run that
+    // finalizes over this store. Only a Finalized outcome yields to the
+    // journal fault — there it is the sole signal anything went wrong.
     let outcome = outcome?;
     if matches!(outcome, RunOutcome::Finalized { .. }) {
         journal?;
@@ -153,31 +186,54 @@ enum DriveOutcome {
     Finalize,
     /// A task failed definitively; report it.
     Fail(Failure),
+    /// The caller's interrupt wound the run down; report it.
+    Interrupt,
+}
+
+/// How long the driver parks between wakeups: an upper bound on how long a
+/// set interrupt flag goes unobserved, since the pool's own notifications
+/// also wake the driver.
+const INTERRUPT_POLL: Duration = Duration::from_millis(50);
+
+/// Whether the pool is quiescent: no lease outstanding and, while the run is
+/// healthy, nothing queued. A terminal state only waits for the in-flight
+/// work to drain, and queued tasks are then abandoned.
+fn quiescent(state: &Shared) -> bool {
+    state.leases.is_empty() && (!matches!(state.stop, Stop::Running) || state.queue.is_empty())
 }
 
 /// Feeds the queue and waits for the pool: each time the pool goes quiescent
 /// it polls the source — the first loop iteration is trivially quiescent, so
 /// the first poll happens immediately, and a source that derives new tasks
 /// from committed results hands them out at exactly those points — until a
-/// poll yields nothing more (finalize) or a definitive failure or fault ends
-/// the run.
+/// poll yields nothing more (finalize) or an interrupt, a definitive failure,
+/// or a fault ends the run. Every wakeup — a pool notification or the bounded
+/// wait elapsing — re-checks `control`'s interrupt flag, so an interrupt is
+/// observed within [`INTERRUPT_POLL`] and upgrades a healthy run to
+/// `Interrupted`; the wind-down then rides the ordinary drain path.
 fn drive(
     coord: &Coord,
     source: &mut dyn TaskSource,
     events: &Sender<LifecycleEvent>,
+    control: &RunControl,
 ) -> Result<DriveOutcome> {
     loop {
-        // Wait for quiescence and take the terminal reason, if any, in one
-        // block-scoped lock region. Quiescent means no lease outstanding and,
-        // while the run is healthy, nothing queued; a terminal state only
-        // waits for the in-flight work to drain, and queued tasks are then
-        // abandoned.
+        if control.interrupt.load(Ordering::Relaxed) {
+            coord.interrupt();
+        }
+        // Observe quiescence and take the terminal reason, if any, in one
+        // block-scoped lock region; without quiescence, park for one bounded
+        // wait and loop around to re-check the interrupt flag.
         let stop = {
             let mut state = coord.lock();
-            while !(state.leases.is_empty()
-                && (!matches!(state.stop, Stop::Running) || state.queue.is_empty()))
-            {
-                state = coord.idle.wait(state).unwrap_or_else(|p| p.into_inner());
+            if !quiescent(&state) {
+                drop(
+                    coord
+                        .idle
+                        .wait_timeout(state, INTERRUPT_POLL)
+                        .unwrap_or_else(|p| p.into_inner()),
+                );
+                continue;
             }
             if matches!(state.stop, Stop::Running) {
                 None
@@ -194,6 +250,7 @@ fn drive(
             return match stop {
                 Stop::Failed(failure) => Ok(DriveOutcome::Fail(failure)),
                 Stop::Fault(fault) => Err(fault),
+                Stop::Interrupted => Ok(DriveOutcome::Interrupt),
                 // Quiescent with the run already wound down: finalize.
                 Stop::Finished => Ok(DriveOutcome::Finalize),
                 // This arm is guarded by the `Running` check above.
@@ -337,7 +394,7 @@ mod tests {
         let coord = Coord::new();
         let (events, _rx) = mpsc::channel();
         // With no live workers, the first poll faults immediately.
-        let result = drive(&coord, &mut FailingSource, &events);
+        let result = drive(&coord, &mut FailingSource, &events, &RunControl::detached());
         assert!(matches!(result, Err(Error::Validation(_))));
         // The terminal state is what a real pool observes to drain: a poll
         // error that left `Running` in place would park the workers forever.
@@ -350,7 +407,12 @@ mod tests {
         let (events, _rx) = mpsc::channel();
         // The first iteration is trivially quiescent, so the empty poll is the
         // whole run: one poll, then finalize.
-        let result = drive(&coord, &mut ScriptedSource::default(), &events);
+        let result = drive(
+            &coord,
+            &mut ScriptedSource::default(),
+            &events,
+            &RunControl::detached(),
+        );
         assert!(matches!(result, Ok(DriveOutcome::Finalize)));
         assert!(matches!(coord.lock().stop, Stop::Finished));
     }
@@ -363,7 +425,12 @@ mod tests {
             reason: "candidate rejected".to_string(),
         });
         let (events, _rx) = mpsc::channel();
-        let result = drive(&coord, &mut ScriptedSource::default(), &events);
+        let result = drive(
+            &coord,
+            &mut ScriptedSource::default(),
+            &events,
+            &RunControl::detached(),
+        );
         match result {
             Ok(DriveOutcome::Fail(failure)) => {
                 assert_eq!(failure.task, a_key());
@@ -380,7 +447,12 @@ mod tests {
         let coord = Coord::new();
         coord.lock().stop = Stop::Fault(Error::Corruption("store broke".to_string()));
         let (events, _rx) = mpsc::channel();
-        let result = drive(&coord, &mut ScriptedSource::default(), &events);
+        let result = drive(
+            &coord,
+            &mut ScriptedSource::default(),
+            &events,
+            &RunControl::detached(),
+        );
         match result {
             Err(e) => assert_eq!(e.to_string(), "store corruption: store broke"),
             Ok(_) => panic!("expected the preset fault to be returned"),
