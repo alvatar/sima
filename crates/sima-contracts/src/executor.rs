@@ -78,10 +78,12 @@ pub enum Outcome {
     },
     /// A transient failure: the attempt failed for a reason that may not
     /// recur. Retryable at the scheduler's discretion. `stats` is
-    /// observational.
+    /// observational. The reason is observational as well: journal and
+    /// reporting material, never identity-bearing.
     Failed { reason: String, stats: Stats },
     /// A definitive failure: the candidate cannot produce a result, so it is
-    /// never retried. `stats` is observational.
+    /// never retried. `stats` is observational. The reason is observational as
+    /// well: journal and reporting material, never identity-bearing.
     Rejected { reason: String, stats: Stats },
 }
 
