@@ -224,49 +224,56 @@ enum DriveOutcome {
     Fail(Failure),
 }
 
-/// Feeds the queue and waits for the pool: seeds the queue from the first poll,
-/// then polls again each time the pool goes quiescent — a source that derives
-/// new tasks from committed results hands them out at those points — until a
-/// poll yields nothing more (finalize) or a definitive failure or fault ends
-/// the run.
+/// Feeds the queue and waits for the pool: each time the pool goes quiescent —
+/// the first loop iteration is trivially quiescent, so the first poll happens
+/// immediately — it polls the source, whose new tasks a source deriving work
+/// from committed results hands out at exactly those points, until a poll
+/// yields nothing more (finalize) or a definitive failure or fault ends the
+/// run.
 fn drive(
     coord: &Coord,
     source: &mut dyn TaskSource,
     events: &Sender<LifecycleEvent>,
 ) -> Result<DriveOutcome> {
-    if let Some(tasks) = poll_source(coord, source) {
-        enqueue(coord, events, tasks);
-    }
     loop {
-        let mut state = coord.lock();
-        // Wait for the pool to go quiescent: no lease outstanding and, while
-        // the run is healthy, nothing queued. A terminal state only waits for
-        // the in-flight work to drain; queued tasks are then abandoned.
-        while !(state.leases.is_empty()
-            && (!matches!(state.stop, Stop::Running) || state.queue.is_empty()))
-        {
-            state = coord.idle.wait(state).unwrap_or_else(|p| p.into_inner());
-        }
-        if !matches!(state.stop, Stop::Running) {
-            // Terminal: take the reason, ask the pool to exit, and report.
-            let stop = std::mem::replace(&mut state.stop, Stop::Finished);
-            coord.idle.notify_all();
-            drop(state);
+        // Wait for quiescence and take the terminal reason, if any, in one
+        // block-scoped lock region. Quiescent means no lease outstanding and,
+        // while the run is healthy, nothing queued; a terminal state only
+        // waits for the in-flight work to drain, and queued tasks are then
+        // abandoned.
+        let stop = {
+            let mut state = coord.lock();
+            while !(state.leases.is_empty()
+                && (!matches!(state.stop, Stop::Running) || state.queue.is_empty()))
+            {
+                state = coord.idle.wait(state).unwrap_or_else(|p| p.into_inner());
+            }
+            if matches!(state.stop, Stop::Running) {
+                None
+            } else {
+                // Take the terminal reason by value: the Error/Failure payload
+                // moves out to be returned, and the Finished left in its place
+                // is the signal that makes every worker's next_task exit.
+                let stop = std::mem::replace(&mut state.stop, Stop::Finished);
+                coord.idle.notify_all();
+                Some(stop)
+            }
+        };
+        if let Some(stop) = stop {
             return match stop {
                 Stop::Failed(failure) => Ok(DriveOutcome::Fail(failure)),
                 Stop::Fault(fault) => Err(fault),
                 // Quiescent with the run already wound down: finalize.
                 Stop::Finished => Ok(DriveOutcome::Finalize),
-                // This arm is guarded by the `!Running` check above.
+                // This arm is guarded by the `Running` check above.
                 Stop::Running => unreachable!("the terminal branch excludes Running"),
             };
         }
-        drop(state);
-        // Healthy and quiescent: re-poll. A poll fault set the terminal state,
-        // so the next iteration's wait drains in-flight work and the terminal
-        // branch returns the fault; nothing more means the run is done.
+        // Healthy and quiescent: poll. A poll fault set the terminal state;
+        // the next iteration's wait drains in-flight work and the terminal
+        // branch returns it. Nothing more means the run is done.
         match poll_source(coord, source) {
-            None => continue,
+            None => {}
             Some(more) if more.is_empty() => {
                 let mut state = coord.lock();
                 state.stop = Stop::Finished;
