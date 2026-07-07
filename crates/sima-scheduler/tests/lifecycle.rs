@@ -11,8 +11,9 @@ use sima_contracts::{
     ExecutionContext, Executor, Outcome, StubBehavior, StubExecutor, StubProgram, TaskInput,
 };
 use sima_core::{Error, Result};
-use sima_model::FormatId;
+use sima_model::{FormatId, RunConfig};
 use sima_scheduler::{LifecycleEvent, RunOutcome};
+use sima_store::Store;
 
 /// A flaky candidate fails, is retried, and finally commits; the committed
 /// record is deterministic, so the same config into a second fresh store
@@ -277,6 +278,54 @@ fn a_fault_preserves_already_committed_siblings() -> Result<()> {
     assert!(store.record(&succeed_key)?.is_some());
     // The faulting candidate never committed.
     assert!(store.record(&fault_key)?.is_none());
+    Ok(())
+}
+
+/// A fresh store whose journal for `cfg` is a symlink to `/dev/full`: the
+/// writer opens it, but every append fails with `ENOSPC`, so the journal sink
+/// holds an error from the first event. The run directory is created first so
+/// `run()`'s own `create_run` is a reopen.
+fn store_with_a_dead_journal(cfg: &RunConfig) -> Result<(tempfile::TempDir, Store)> {
+    let (dir, store) = temp_store();
+    store.create_run(cfg)?;
+    let journal = dir
+        .path()
+        .join("runs")
+        .join(run_id(cfg).to_string())
+        .join("journal");
+    std::os::unix::fs::symlink("/dev/full", &journal).expect("symlink journal to /dev/full");
+    Ok((dir, store))
+}
+
+/// A definitive candidate failure is returned even when the journal degraded:
+/// the domain outcome is the truth, and the journal fault resurfaces on the
+/// next run that finalizes over the store.
+#[test]
+fn a_journal_fault_yields_to_a_domain_failed_outcome() -> Result<()> {
+    let cfg = config(10, vec![StubBehavior::Reject]);
+    let (_dir, store) = store_with_a_dead_journal(&cfg)?;
+    match run_into(&store, &cfg, &exec(1, 3, 1_000)) {
+        Ok(RunOutcome::Failed { .. }) => {}
+        Ok(other) => panic!("expected Failed, got {}", outcome_name(&other)),
+        Err(e) => panic!("expected Ok(Failed), got Err: {e}"),
+    }
+    Ok(())
+}
+
+/// A Finalized outcome, by contrast, yields to the journal fault: with the run
+/// otherwise successful the journal error is the sole signal, and the manifest
+/// is already written before it surfaces.
+#[test]
+fn a_finalized_run_surfaces_the_journal_fault() -> Result<()> {
+    let cfg = config(11, vec![StubBehavior::Succeed]);
+    let (_dir, store) = store_with_a_dead_journal(&cfg)?;
+    match run_into(&store, &cfg, &exec(1, 3, 1_000)) {
+        Err(Error::Io { .. }) => {}
+        Err(other) => panic!("expected an io fault, got {other}"),
+        Ok(_) => panic!("expected the journal fault to surface"),
+    }
+    // The finalize completed before the journal fault surfaced.
+    assert!(store.manifest(&run_id(&cfg))?.is_some());
     Ok(())
 }
 

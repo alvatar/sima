@@ -202,10 +202,15 @@ pub fn run(
 
     drop(events);
     let journal = sink.shutdown();
-    // The run's own outcome wins; a journal fault surfaces only when the run
-    // otherwise succeeded.
+    // The domain outcome wins: a definitive candidate failure is returned even
+    // when the journal degraded, because the journal is observational and the
+    // same fault resurfaces on the next run that finalizes over this store.
+    // Only a Finalized outcome yields to the journal fault — there it is the
+    // sole signal anything went wrong.
     let outcome = outcome?;
-    journal?;
+    if matches!(outcome, RunOutcome::Finalized { .. }) {
+        journal?;
+    }
     Ok(outcome)
 }
 
