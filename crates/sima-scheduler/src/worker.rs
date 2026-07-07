@@ -19,7 +19,7 @@ use sima_model::{ArtifactRef, RunConfig, TaskIdentity, TaskKey, TaskRecord};
 use sima_store::Store;
 
 use crate::config::ExecutionConfig;
-use crate::driver::{Coord, Failure, Pending, Stop};
+use crate::driver::{Coord, Failure, Pending, Shared, Stop};
 use crate::event::LifecycleEvent;
 use crate::journal_sink::emit;
 use crate::lease::Lease;
@@ -214,43 +214,51 @@ fn commit(store: &Store, identity: TaskIdentity, artifacts: Vec<Artifact>) -> Re
     store.commit_record(&record)
 }
 
-/// Clears a resolved lease, which removes its task from the in-flight set.
-fn resolve(coord: &Coord, key: TaskKey) {
+/// Releases `key`'s lease, applies the outcome-specific update to the shared
+/// state, and wakes the pool. Every settle path — resolve, requeue, terminate,
+/// fault — shares this lock, lease removal, and notification; the four wrappers
+/// carry only their own middle step.
+fn settle<R>(coord: &Coord, key: TaskKey, apply: impl FnOnce(&mut Shared) -> R) -> R {
     let mut state = coord.lock();
     state.leases.remove(&key);
+    let result = apply(&mut state);
     coord.idle.notify_all();
+    result
+}
+
+/// Clears a resolved lease, which removes its task from the in-flight set.
+fn resolve(coord: &Coord, key: TaskKey) {
+    settle(coord, key, |_state| {});
 }
 
 /// Clears the lease and, while the run is still healthy, re-enqueues the task
 /// at the next attempt. Returns whether it was re-enqueued: a run already
 /// winding down abandons the task rather than queueing work no worker will take.
 fn requeue(coord: &Coord, key: TaskKey, task: RunnableTask, next_attempt: u32) -> bool {
-    let mut state = coord.lock();
-    state.leases.remove(&key);
-    let running = matches!(state.stop, Stop::Running);
-    if running {
-        // The key is already in hand as a parameter — the requeued attempt
-        // reuses it rather than recomputing it under the lock.
-        state.queue.push_back(Pending {
-            key,
-            task,
-            attempt: next_attempt,
-        });
-    }
-    coord.idle.notify_all();
-    running
+    settle(coord, key, |state| {
+        let running = matches!(state.stop, Stop::Running);
+        if running {
+            // The key is already in hand as a parameter — the requeued attempt
+            // reuses it rather than recomputing it under the lock.
+            state.queue.push_back(Pending {
+                key,
+                task,
+                attempt: next_attempt,
+            });
+        }
+        running
+    })
 }
 
 /// Records a definitive candidate failure: it decides the run's outcome only
 /// from the healthy state, so it never downgrades an infrastructure fault; the
 /// first candidate failure among candidate failures wins.
 fn terminate(coord: &Coord, key: TaskKey, reason: String) {
-    let mut state = coord.lock();
-    state.leases.remove(&key);
-    if matches!(state.stop, Stop::Running) {
-        state.stop = Stop::Failed(Failure { task: key, reason });
-    }
-    coord.idle.notify_all();
+    settle(coord, key, |state| {
+        if matches!(state.stop, Stop::Running) {
+            state.stop = Stop::Failed(Failure { task: key, reason });
+        }
+    });
 }
 
 /// Emits the task's `Faulted` event and records the infrastructure fault, so
@@ -272,12 +280,11 @@ fn task_fault(ctx: &WorkerContext<'_>, task: String, attempt: u32, key: TaskKey,
 /// because the result path itself broke and the run must surface the error. The
 /// first fault wins; a later candidate failure never displaces it.
 fn fault(coord: &Coord, key: TaskKey, err: Error) {
-    let mut state = coord.lock();
-    state.leases.remove(&key);
-    if !matches!(state.stop, Stop::Fault(_)) {
-        state.stop = Stop::Fault(err);
-    }
-    coord.idle.notify_all();
+    settle(coord, key, |state| {
+        if !matches!(state.stop, Stop::Fault(_)) {
+            state.stop = Stop::Fault(err);
+        }
+    });
 }
 
 /// Renders a caught panic payload as a rejection reason, recovering the common
