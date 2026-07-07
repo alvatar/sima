@@ -109,11 +109,9 @@ impl StubProgram {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use sima_core::to_hex;
 
-    fn to_hex(bytes: &[u8]) -> String {
-        bytes.iter().map(|b| format!("{b:02x}")).collect()
-    }
+    use super::*;
 
     #[test]
     fn program_encoding_matches_pinned_hex() {
