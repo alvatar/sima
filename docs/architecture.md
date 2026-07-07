@@ -328,30 +328,35 @@ journal fault resurfaces on the next run that finalizes over the same store.
 
 ### Leases and the watchdog
 
-Leases live in memory — `task → (worker, attempt, deadline)` — since durable
+Leases live in memory — `task → (worker, attempt, leased_at)` — since durable
 progress is the committed records; a process death drops all leases and resume
-re-derives the frontier. The deadline is a soft target: a watchdog thread scans
-the lease table and emits one `TaskOverran` event per lease that outruns its
-deadline, reporting only. A memory-safe runtime has no safe forced thread
-termination, so forced preemption requires process isolation and is not yet
-built; the in-process worker delivers overrun detection, not termination.
+re-derives the frontier. The timeout is a soft target: a watchdog thread scans
+the lease table and emits one `TaskOverran` event per lease whose age exceeds
+`attempt_timeout`, reporting only. Comparing the lease's age against the timeout
+is a duration comparison that cannot overflow, so a timeout larger than any
+attempt (for example `Duration::MAX`) simply disables overrun reporting. A
+memory-safe runtime has no safe forced thread termination, so forced preemption
+requires process isolation and is not yet built; the in-process worker delivers
+overrun detection, not termination.
 
 ### Journal events
 
 The scheduler owns the journal's meaning. A typed `LifecycleEvent` serializes
 to one JSON line, with ids and stats rendered as hex. The vocabulary:
 
-- **run started** — the run began, over its runnable-or-committed key set.
+- **run started** — the run began, over every task key of the run, those
+  already committed and those still to run.
 - **queued** — a task entered the ready queue.
 - **leased** — a worker leased a task for one attempt.
 - **committed** — a task's result was committed, referencing its record.
 - **failed** — an attempt failed transiently and may be retried.
 - **retried** — a failed task was re-enqueued for another attempt.
 - **rejected** — a task failed definitively and will not be retried.
-- **faulted** — an infrastructure fault (an executor error or a commit
-  failure) hit a task's attempt; the run terminates with an error.
-- **task overran** — a lease outran its soft deadline; detection only, no
-  preemption.
+- **faulted** — an infrastructure fault (an executor error, a commit failure,
+  or an input-state load failure) hit a task's attempt; the run terminates
+  with an error.
+- **task overran** — a lease's age ran past the attempt timeout; detection
+  only, no preemption.
 - **run finalized** — every task committed and the manifest was written.
 - **run failed** — a definitive candidate failure terminated the run; no
   manifest was written.

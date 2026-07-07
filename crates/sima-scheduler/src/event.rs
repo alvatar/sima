@@ -16,7 +16,8 @@ use sima_core::{Error, Result};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum LifecycleEvent {
-    /// The run began, over `tasks` runnable-or-committed keys.
+    /// The run began, over `tasks` keys: every task key of the run, those
+    /// already committed and those still to run.
     RunStarted { run: String, tasks: usize },
     /// A task entered the ready queue.
     Queued { task: String },
@@ -48,8 +49,9 @@ pub enum LifecycleEvent {
         reason: String,
         stats_hex: String,
     },
-    /// An infrastructure fault hit this task's attempt: an executor error or a
-    /// commit failure. The run terminates with an error.
+    /// An infrastructure fault hit this task's attempt: an executor error, a
+    /// commit failure, or an input-state load failure. The run terminates with
+    /// an error.
     Faulted {
         task: String,
         attempt: u32,
