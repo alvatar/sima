@@ -199,7 +199,10 @@ mod tests {
                     artifacts.push(a);
                     stats_by_attempt.push(stats);
                 }
-                other => panic!("expected Completed, got {other:?}"),
+                Outcome::Failed { reason, .. } => panic!("expected Completed, got Failed: {reason}"),
+                Outcome::Rejected { reason, .. } => {
+                    panic!("expected Completed, got Rejected: {reason}")
+                }
             }
         }
         // Artifacts identical across every (attempt, worker) pairing.
