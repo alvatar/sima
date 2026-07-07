@@ -32,8 +32,8 @@ Strictly downward dependencies, enforced by workspace crate edges.
 | L2    | `sima-store`     | durable state: CAS, task index, run manifests, journals               |
 | L3    | `sima-contracts` | generator/executor contracts over opaque specs and params; stub generator and executor |
 | L4    | `sima-scheduler` | task sources, worker pool, leases, retry, run driver                 |
-| L5    | `sima-pipeline`  | orchestration, resume, re-evaluation (planned)                       |
-| L6    | `sima`           | CLI binary                                                            |
+| L5    | `sima-pipeline`  | config loading, family dispatch, orchestration, run status            |
+| L6    | `sima`           | CLI: run, status                                                      |
 
 The store is the only durable state. Queues, schedulers, and orchestrators
 are ephemeral: the runnable frontier is derived from (config, store state),
@@ -106,6 +106,7 @@ One `Store` type over a root directory:
 <root>/tasks/<task-key>          index entry: record-hash hex + newline
 <root>/runs/<run-id>/manifest.json
 <root>/runs/<run-id>/journal
+<root>/runs/<run-id>/orchestrator.lock
 ```
 
 ### Components
@@ -213,8 +214,13 @@ every equality criterion.
 Store methods take `&self` and are safe under concurrent writers: identical
 content converges through rename and link atomicity, and a conflicting racer
 on an index entry or manifest fails loudly instead of overwriting. A run's
-journal has a single writer, the orchestrator; single-writer-per-run will be
-enforced by the orchestrator lease file.
+journal has a single writer, the orchestrator; one orchestrator per run is
+enforced by `Store::acquire_run_lock`, the OS file lock on the run's
+`orchestrator.lock` file. The kernel releases that lock the instant its
+holder exits, however it exits, so no staleness protocol exists. The file's
+content (pid, hostname) is diagnostic only — it names the holder in the
+validation error a second acquirer receives — and is never consulted for
+liveness.
 
 ## `sima-contracts` (L3)
 
@@ -326,6 +332,25 @@ a domain `Failed` outcome: the journal is observational, so a definitive
 candidate failure is returned intact even when the journal degraded, and the
 journal fault resurfaces on the next run that finalizes over the same store.
 
+### Run control: observer and interrupt
+
+The driver takes a `RunControl` — the caller's handles into a running
+search:
+
+- **observer** — invoked with each typed event on the journal-sink thread,
+  immediately after the event's line is appended: typed events, journal
+  order, one calling thread. Progress rendering consumes this seam.
+- **interrupt** — a level-triggered flag the driver polls within a bounded
+  wait. Once set, the run winds down gracefully: no more tasks are handed
+  out, in-flight attempts finish and commit, queued tasks are abandoned,
+  and the run returns `Interrupted` with no manifest written — the store
+  stays resumable and the next orchestration continues the abandoned work.
+
+The wind-down states form a precedence lattice — running < interrupted <
+failed < fault — and each setter only upgrades: a definitive failure or an
+infrastructure fault landing during an interrupt wind-down still decides
+the run, and among faults the first wins.
+
 ### Leases and the watchdog
 
 Leases live in memory — `task → (worker, attempt, leased_at)` — since durable
@@ -360,6 +385,9 @@ to one JSON line, with ids and stats rendered as hex. The vocabulary:
 - **run finalized** — every task committed and the manifest was written.
 - **run failed** — a definitive candidate failure terminated the run; no
   manifest was written.
+- **run interrupted** — the caller interrupted the run: in-flight attempts
+  drained and committed, no manifest was written, and the store is
+  resumable.
 
 A single journal-writer thread owns the `JournalWriter` and drains an `mpsc`
 channel the workers, watchdog, and driver send to, which is the single-writer
@@ -368,6 +396,79 @@ between runs; the journal is observational and excluded from every equality
 criterion, so the manifest — sorted by task key at finalize — is byte-identical
 across runs regardless.
 
+## `sima-pipeline` (L5)
+
+The layer a person's configuration enters: it loads `sima.toml`, translates
+it through the family and generator the config names, and drives the
+scheduler over the configured store.
+
+### Identity and execution in the file
+
+The config file carries the same split the model enforces:
+
+- **`[run]`** — the identity section, canonicalized into `RunConfig`, so
+  its fields define the `RunId`: the root seed, the format, the generator
+  (its id plus the generator-owned keys), and the family-owned run params.
+- **`[execution]`** — the operational section: the store path (resolved
+  relative to the config file's directory), worker count, attempt cap, and
+  an optional attempt timeout whose absence disables lease-expiry
+  reporting. Never hashed — a run resumed with different execution
+  settings keeps its id.
+
+The structural keys are strict: an unknown key at any level is a validation
+error naming it.
+
+### Family dispatch and the translation seam
+
+A `Family` groups what a format id binds: the executor that evaluates the
+format's specs, the environment that enters task identity, and the
+translation of the family-owned `[run.params]` section into the opaque
+canonical params bytes. Generators dispatch separately — one format has one
+executor but many generators — and each generator owns the translation of
+its own `[run.generator]` keys. Both dispatches are static matches; unknown
+ids are validation errors. The pipeline routes each config section to the
+dispatched-to code and never interprets its content: the `toml` dependency
+stops at this layer, and canonical bytes are produced only by the codecs
+the model and contracts own.
+
+### Orchestration
+
+`orchestrate` opens the store (creating it where missing), takes the run's
+orchestrator lock, dispatches the family and the generator, and calls the
+scheduler; the lock is held for the whole call and releases on return.
+Resume and re-evaluation are this same call — the frontier re-derives from
+store state, so an interrupted or failed run continues where it stopped,
+and a finalized one re-finalizes idempotently without touching an executor.
+
+### Run status
+
+`status` computes a run's observable state from its journal alone. The
+counters — tasks, committed, retried, rejected, faulted, lease expiries —
+sum across every resume segment, and the last run-level event decides the
+state. A journal ending mid-run reads as in progress: a dead orchestrator
+is indistinguishable from a live one by the journal alone.
+
+## `sima` (L6)
+
+The CLI holds no orchestration logic — parsing, rendering, signal
+registration, and exit codes only:
+
+- **`sima run <config.toml>`** — drives the configured run, printing one
+  plain line per meaningful event from the observer seam. SIGINT sets the
+  interrupt flag for a graceful wind-down; a second SIGINT falls through
+  to default death, which is exactly the crash the recovery guarantees
+  cover.
+- **`sima status <config.toml>`** — prints the status block. The config
+  file is the one argument: its execution section names the store and its
+  identity section derives the run id.
+
+Exit codes:
+
+- **0** — the run finalized (or `status` answered);
+- **2** — a definitive candidate failure;
+- **130** — interrupted, store resumable;
+- **1** — everything else: infrastructure fault, config error, usage error.
+
 ## Determinism proof obligations
 
 Anything claimed deterministic is proven by test: same config in two fresh
@@ -375,3 +476,9 @@ stores → byte-identical manifests; a run killed at any crashpoint and
 resumed → manifest identical to an uninterrupted run (crash-injection
 harness); re-evaluation touches no executor; a copied store resumes
 with an identical manifest.
+
+The crash harness rides the crashpoint facility: with the `crash-injection`
+cargo feature compiled in, the `SIMA_CRASHPOINT` environment variable arms
+one named point (`name`, or `name:k` for the k-th hit) and the process
+SIGKILLs itself on reaching it; without the feature the planted calls
+compile to nothing.
