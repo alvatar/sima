@@ -8,7 +8,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use common::{journal_events, loaded};
 use sima_core::{Error, Result};
-use sima_pipeline::{LifecycleEvent, RunControl, RunOutcome, RunState, orchestrate, status};
+use sima_model::{FormatId, GeneratorConfig, GeneratorId, Params, RunConfig};
+use sima_pipeline::{
+    LifecycleEvent, LoadedConfig, RunControl, RunOutcome, RunState, orchestrate, status,
+};
+use sima_scheduler::ExecutionConfig;
 use sima_store::Store;
 
 #[test]
@@ -139,6 +143,39 @@ fn an_interrupt_through_the_pipeline_stays_resumable() -> Result<()> {
     ));
     assert!(store.manifest(&run)?.is_some());
     assert_eq!(status(&config)?.state, RunState::Finalized);
+    Ok(())
+}
+
+#[test]
+fn an_undispatchable_config_orchestrates_to_validation_without_touching_the_store() -> Result<()> {
+    // load() already rejects unknown ids through translation, so the
+    // config is built directly: the reorder is defense in depth, pinned
+    // where it is observable.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config = LoadedConfig {
+        run: RunConfig {
+            root_seed: 1,
+            format: FormatId::new("no-such-family.v1")?,
+            generator: GeneratorConfig {
+                id: GeneratorId::new("stub.v1")?,
+                params: Vec::new(),
+            },
+            params: Params { bytes: Vec::new() },
+        },
+        execution: ExecutionConfig::new(1, 1, std::time::Duration::MAX)?,
+        store: dir.path().join("store"),
+    };
+    assert!(matches!(
+        orchestrate(&config, &RunControl::detached()),
+        Err(Error::Validation(_))
+    ));
+    // Dispatch precedes every store mutation: no store, no run directory,
+    // no lock file may appear for a run that can never execute.
+    assert!(
+        !config.store.exists(),
+        "orchestrate created {}",
+        config.store.display()
+    );
     Ok(())
 }
 

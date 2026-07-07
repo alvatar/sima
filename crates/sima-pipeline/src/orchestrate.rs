@@ -15,11 +15,14 @@ use crate::family;
 /// without touching an executor. The lock is held for the whole call and
 /// releases on return.
 pub fn orchestrate(config: &LoadedConfig, control: &RunControl) -> Result<RunOutcome> {
+    // Dispatch precedes every store mutation: a config naming an unknown
+    // format or generator must not leave a store, a run directory, or a
+    // lock file behind for a run that can never execute.
+    let family = family::family_for(&config.run.format)?;
+    let generator = family::generator_for(&config.run.generator.id)?;
     let store = Store::open(&config.store)?;
     let run = config.run.id();
     let _lock = store.acquire_run_lock(&run)?;
-    let family = family::family_for(&config.run.format)?;
-    let generator = family::generator_for(&config.run.generator.id)?;
     sima_scheduler::run(
         &store,
         &config.run,
