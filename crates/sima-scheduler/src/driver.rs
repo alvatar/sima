@@ -155,12 +155,12 @@ enum DriveOutcome {
     Fail(Failure),
 }
 
-/// Feeds the queue and waits for the pool: each time the pool goes quiescent —
-/// the first loop iteration is trivially quiescent, so the first poll happens
-/// immediately — it polls the source, whose new tasks a source deriving work
-/// from committed results hands out at exactly those points, until a poll
-/// yields nothing more (finalize) or a definitive failure or fault ends the
-/// run.
+/// Feeds the queue and waits for the pool: each time the pool goes quiescent
+/// it polls the source — the first loop iteration is trivially quiescent, so
+/// the first poll happens immediately, and a source that derives new tasks
+/// from committed results hands them out at exactly those points — until a
+/// poll yields nothing more (finalize) or a definitive failure or fault ends
+/// the run.
 fn drive(
     coord: &Coord,
     source: &mut dyn TaskSource,
