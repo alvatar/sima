@@ -96,12 +96,10 @@ pub trait Executor {
     /// a run to the executor whose format matches the run config's format.
     fn format(&self) -> &FormatId;
 
-    /// Evaluate one candidate. `Ok` carries the domain result: an
-    /// [`Outcome::Completed`] with artifacts, an [`Outcome::Failed`] that the
-    /// scheduler may retry, or an [`Outcome::Rejected`] the scheduler treats
-    /// as definitive. `Err` is reserved for an infrastructure fault — a
-    /// structurally invalid spec, a store fault — never a candidate that
-    /// merely evaluated badly.
+    /// Evaluate one candidate. `Ok` carries the domain result — see
+    /// [`Outcome`] for the three arms and their retry semantics. `Err` is
+    /// reserved for an infrastructure fault — a structurally invalid spec, a
+    /// store fault — never a candidate that merely evaluated badly.
     fn execute(&self, input: &TaskInput<'_>, ctx: &ExecutionContext) -> Result<Outcome>;
 }
 
