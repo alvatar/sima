@@ -1,0 +1,141 @@
+//! [`RunLock`]: the per-run orchestrator lock.
+//!
+//! One orchestrator drives a run at a time. The lock is the OS's advisory
+//! file lock on the run's `orchestrator.lock` file, so the kernel releases
+//! it the instant the holder exits — cleanly, by SIGKILL, or by power loss
+//! on the machine's next boot — and no staleness protocol exists. The
+//! file's content (pid and hostname) is diagnostic only: it names the
+//! holder in error messages and is never consulted for liveness.
+
+use std::fs::{File, OpenOptions, TryLockError};
+use std::io::{Read, Write};
+
+use sima_core::{Error, Result};
+use sima_model::RunId;
+
+use crate::atomic::{self, io_error};
+use crate::layout;
+use crate::store::Store;
+
+/// Exclusive right to drive a run: holds the OS lock on the run's
+/// `orchestrator.lock` file. The kernel releases it when the holder
+/// exits, however it exits. Unlocks on drop.
+pub struct RunLock {
+    /// The locked file; dropping it closes the descriptor, which releases
+    /// the OS lock.
+    _file: File,
+}
+
+impl Store {
+    /// Takes the run's orchestrator lock, creating the run directory if
+    /// missing. A lock already held is [`Error::Validation`] naming the
+    /// holder recorded in the file (pid, hostname).
+    pub fn acquire_run_lock(&self, run: &RunId) -> Result<RunLock> {
+        atomic::create_dir_durable(&layout::run_dir(self.root(), run))?;
+        let path = layout::lock_path(self.root(), run);
+        let mut file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&path)
+            .map_err(|e| io_error(&path, e))?;
+        match file.try_lock() {
+            Ok(()) => {
+                // Locked. Record the holder for diagnostics: a hostname from
+                // the environment is enough for a string nothing consults for
+                // liveness. Any previous holder's content is overwritten.
+                let hostname = std::env::var("HOSTNAME").unwrap_or_else(|_| "unknown".to_string());
+                let holder = format!("{} {hostname}\n", std::process::id());
+                file.set_len(0).map_err(|e| io_error(&path, e))?;
+                file.write_all(holder.as_bytes())
+                    .map_err(|e| io_error(&path, e))?;
+                Ok(RunLock { _file: file })
+            }
+            Err(TryLockError::WouldBlock) => {
+                // Contended: read the holder the lock owner recorded, purely
+                // to name it in the error. A failed read leaves it blank.
+                let mut holder = String::new();
+                let _ = file.read_to_string(&mut holder);
+                let holder = holder.trim();
+                let holder = if holder.is_empty() { "unknown" } else { holder };
+                Err(Error::Validation(format!(
+                    "run {run} is already locked by another orchestrator: {holder}"
+                )))
+            }
+            Err(TryLockError::Error(e)) => Err(io_error(&path, e)),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use sima_core::hash_bytes;
+
+    use super::*;
+
+    /// A fresh store and a run id to lock; the run's directory does not
+    /// exist yet, so acquisition also covers its creation.
+    fn store_and_run() -> (tempfile::TempDir, Store, RunId) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let store = Store::open(dir.path()).expect("open store");
+        let run = RunId::from_hash(hash_bytes(b"a run to lock"));
+        (dir, store, run)
+    }
+
+    #[test]
+    fn acquire_records_the_holder_in_the_lock_file() -> Result<()> {
+        let (dir, store, run) = store_and_run();
+        let _lock = store.acquire_run_lock(&run)?;
+        let content = fs::read_to_string(
+            dir.path()
+                .join("runs")
+                .join(run.to_string())
+                .join("orchestrator.lock"),
+        )
+        .expect("read lock file");
+        // The content is diagnostic: this process's pid, then a hostname.
+        let pid = std::process::id().to_string();
+        assert_eq!(content.split_whitespace().next(), Some(pid.as_str()));
+        Ok(())
+    }
+
+    #[test]
+    fn a_held_lock_is_validation_naming_the_holder() -> Result<()> {
+        let (_dir, store, run) = store_and_run();
+        let _lock = store.acquire_run_lock(&run)?;
+        match store.acquire_run_lock(&run) {
+            Err(Error::Validation(msg)) => {
+                let pid = std::process::id().to_string();
+                assert!(msg.contains(&pid), "the error names the holder: {msg}");
+            }
+            Err(other) => panic!("expected Validation, got {other}"),
+            Ok(_) => panic!("a held lock must not be acquired again"),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn dropping_the_lock_releases_it() -> Result<()> {
+        let (_dir, store, run) = store_and_run();
+        drop(store.acquire_run_lock(&run)?);
+        // Released on drop: the second acquisition succeeds.
+        store.acquire_run_lock(&run)?;
+        Ok(())
+    }
+
+    #[test]
+    fn a_leftover_lock_file_without_a_holder_acquires_fine() -> Result<()> {
+        let (dir, store, run) = store_and_run();
+        // A plain file left by a dead holder: the OS released its lock
+        // with the process, so the content is stale and irrelevant.
+        let run_dir = dir.path().join("runs").join(run.to_string());
+        fs::create_dir_all(&run_dir).expect("create run dir");
+        fs::write(run_dir.join("orchestrator.lock"), b"999999 elsewhere\n")
+            .expect("pre-create lock file");
+        let _lock = store.acquire_run_lock(&run)?;
+        Ok(())
+    }
+}

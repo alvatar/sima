@@ -9,6 +9,7 @@
 //! <root>/tasks/<task-key-hex>      index entry: record-hash hex + newline
 //! <root>/runs/<run-id-hex>/manifest.json
 //! <root>/runs/<run-id-hex>/journal
+//! <root>/runs/<run-id-hex>/orchestrator.lock
 //! ```
 
 use std::path::{Path, PathBuf};
@@ -66,4 +67,9 @@ pub(crate) fn manifest_path(root: &Path, run: &RunId) -> PathBuf {
 /// A run's journal path: `runs/<run-id-hex>/journal`.
 pub(crate) fn journal_path(root: &Path, run: &RunId) -> PathBuf {
     run_dir(root, run).join("journal")
+}
+
+/// A run's orchestrator-lock path: `runs/<run-id-hex>/orchestrator.lock`.
+pub(crate) fn lock_path(root: &Path, run: &RunId) -> PathBuf {
+    run_dir(root, run).join("orchestrator.lock")
 }
