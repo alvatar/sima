@@ -223,6 +223,39 @@ fn an_unbounded_timeout_finalizes_without_overrun_reports() -> Result<()> {
     Ok(())
 }
 
+/// Each task's `Queued` event is journaled before its first `Leased` event —
+/// the per-task order the event vocabulary promises. enqueue emits `Queued`
+/// before it publishes the task to the queue, so no woken worker can journal a
+/// `Leased` ahead of the driver's `Queued`. The run repeats ten times to give
+/// the pre-fix race (publish before emit) room to fire; post-fix the ordering
+/// is structural.
+#[test]
+fn queued_is_journaled_before_the_first_lease() -> Result<()> {
+    let cfg = config(13, vec![StubBehavior::Succeed; 16]);
+    let keys = task_keys(&cfg);
+    for _ in 0..10 {
+        let (_dir, store) = temp_store();
+        assert!(matches!(
+            run_into(&store, &cfg, &exec(8, 1, 1_000))?,
+            RunOutcome::Finalized { .. }
+        ));
+        let events = journal_events(&store, &run_id(&cfg));
+        for key in &keys {
+            let task = key.to_string();
+            let queued = events
+                .iter()
+                .position(|e| matches!(e, LifecycleEvent::Queued { task: t } if *t == task))
+                .expect("a Queued event for each task");
+            let leased = events
+                .iter()
+                .position(|e| matches!(e, LifecycleEvent::Leased { task: t, .. } if *t == task))
+                .expect("a Leased event for each task");
+            assert!(queued < leased, "Queued must precede Leased for task {task}");
+        }
+    }
+    Ok(())
+}
+
 /// The watchdog checks its exit condition and waits under one continuous lock,
 /// so a terminal wakeup cannot slip through an unlocked window and strand the
 /// run for a full scan interval. With a one-hour timeout (a fifteen-minute scan

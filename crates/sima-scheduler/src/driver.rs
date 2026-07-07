@@ -293,22 +293,16 @@ fn poll_source(coord: &Coord, source: &mut dyn TaskSource) -> Option<Vec<Runnabl
     }
 }
 
-/// Enqueues ready tasks at attempt 0 and wakes the workers. Keys are rendered
-/// for the `Queued` events after the lock is released.
+/// Enqueues ready tasks at attempt 0 and wakes the workers. The `Queued` events
+/// are journaled before the tasks become visible, so each task's events appear
+/// in lifecycle order: a worker cannot lease a task before it is pushed, which
+/// happens after the emits.
 fn enqueue(coord: &Coord, events: &Sender<LifecycleEvent>, tasks: Vec<RunnableTask>) {
     if tasks.is_empty() {
         return;
     }
-    let mut keys = Vec::with_capacity(tasks.len());
-    {
-        let mut state = coord.lock();
-        for task in tasks {
-            keys.push(task.identity.key());
-            state.queue.push_back(Pending { task, attempt: 0 });
-        }
-        coord.idle.notify_all();
-    }
-    for key in keys {
+    let keys: Vec<TaskKey> = tasks.iter().map(|task| task.identity.key()).collect();
+    for key in &keys {
         emit(
             events,
             LifecycleEvent::Queued {
@@ -316,6 +310,11 @@ fn enqueue(coord: &Coord, events: &Sender<LifecycleEvent>, tasks: Vec<RunnableTa
             },
         );
     }
+    let mut state = coord.lock();
+    for task in tasks {
+        state.queue.push_back(Pending { task, attempt: 0 });
+    }
+    coord.idle.notify_all();
 }
 
 #[cfg(test)]
