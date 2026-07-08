@@ -90,7 +90,7 @@ Applies to `docs/` and long-form comments:
 ## Code quality
 
 - Prefer minimal clean module boundaries over giant files
-- Module layout rule: use a directory module only when it represents a real semantic namespace; if a module has no submodules, prefer a single `name.rs` file. `mod.rs` may contain module docs, submodule declarations, and small curated re-exports that define the namespace surface. Do not put substantive implementation logic in `mod.rs`; that code should go into its own file/module.
+- Module layout rule: use a directory module only when it represents a real semantic namespace; if a module has no submodules, prefer a single `name.rs` file. `mod.rs` may contain module docs, submodule declarations, and small curated re-exports that define the namespace surface. Do not put substantive implementation logic in `mod.rs`; that code should go into its own file/module. Exception: integration-test helpers live in `tests/common/mod.rs` and may hold the helper logic directly, because Cargo compiles every top-level file under a crate's `tests/` directory as its own test crate, so shared code must sit in a subdirectory.
 - Naming rule: if a module primarily exists to hold one major type, the file name should match the type name clearly (e.g. `RenderState` -> `render_state.rs`)
 - Add inline comments for key operations / tricky logic
 - Comments should not have historical references to the previous versions of the code. They should be explain what the code does now, exclusively.
