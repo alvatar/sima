@@ -31,6 +31,8 @@ pub enum KeyAction {
     Quit,
     /// Leave at once without draining.
     ForceQuit,
+    /// Open the help overlay listing the key bindings.
+    Help,
 }
 
 /// A message folded into the UI state: a lifecycle event from the run, a key
@@ -110,6 +112,8 @@ pub struct TuiState {
     exit_on_finish: bool,
     /// Leave the loop now.
     exit: bool,
+    /// Whether the help overlay is open, drawn over the frame.
+    help_open: bool,
     /// The most recent rendered event lines, oldest first.
     log: VecDeque<String>,
 }
@@ -149,6 +153,8 @@ pub struct ViewModel {
     pub lease_expired: usize,
     /// The recent event lines, oldest first.
     pub log: Vec<String>,
+    /// Whether the help overlay is drawn over the frame.
+    pub help: bool,
 }
 
 impl TuiState {
@@ -166,6 +172,7 @@ impl TuiState {
             stop_pending: false,
             exit_on_finish: false,
             exit: false,
+            help_open: false,
             log: VecDeque::new(),
         }
     }
@@ -194,7 +201,15 @@ impl TuiState {
     }
 
     /// Folds a key action into the session's activity and pending requests.
+    ///
+    /// The help overlay is modal: while it is open the next key press closes
+    /// it and does nothing else, so a bound key read behind the overlay neither
+    /// starts, stops, nor leaves.
     fn fold_key(&mut self, action: KeyAction) {
+        if self.help_open {
+            self.help_open = false;
+            return;
+        }
         match action {
             KeyAction::Start => {
                 // A run starts from idle or after a terminal state; while one
@@ -232,6 +247,7 @@ impl TuiState {
                 }
                 self.exit = true;
             }
+            KeyAction::Help => self.help_open = true,
         }
     }
 
@@ -260,6 +276,14 @@ impl TuiState {
     /// interrupt flag when this returns true.
     pub fn take_stop(&mut self) -> bool {
         std::mem::take(&mut self.stop_pending)
+    }
+
+    /// Closes the help overlay if it is open, reporting whether it did. The
+    /// runtime calls this for a key with no binding: while the overlay is open
+    /// any key press dismisses it, and a bound key already dismisses it through
+    /// the key fold.
+    pub fn dismiss_help_if_open(&mut self) -> bool {
+        std::mem::take(&mut self.help_open)
     }
 
     /// Whether the loop should leave.
@@ -307,6 +331,7 @@ impl TuiState {
             faulted: self.status.faulted,
             lease_expired: self.status.lease_expired,
             log: self.log.iter().cloned().collect(),
+            help: self.help_open,
         }
     }
 }
@@ -495,6 +520,57 @@ mod tests {
         state.handle(Msg::Finished(interrupted()));
         assert!(state.should_exit(), "the return arms the exit");
         assert_eq!(state.exit_code(), 130);
+    }
+
+    #[test]
+    fn help_opens_and_a_key_closes_it_without_acting_then_reopens() {
+        let mut state = idle(1);
+        assert!(!state.view().help, "help starts closed");
+
+        state.handle(Msg::Key(KeyAction::Help));
+        assert!(state.view().help, "'?' opens the help overlay");
+
+        // A bound key while the overlay is open closes it and does nothing.
+        state.handle(Msg::Key(KeyAction::Start));
+        assert!(!state.view().help, "a key press closes the overlay");
+        assert!(!state.take_start(), "the dismissing key starts no run");
+        assert_eq!(state.view().state, "idle");
+
+        state.handle(Msg::Key(KeyAction::Help));
+        assert!(state.view().help, "'?' reopens the overlay");
+    }
+
+    #[test]
+    fn a_key_read_behind_help_neither_stops_nor_quits() {
+        let mut state = idle(1);
+        state.handle(Msg::Key(KeyAction::Start));
+        let _ = state.take_start();
+        state.handle(Msg::Key(KeyAction::Help));
+        assert!(state.view().help);
+
+        // Quit behind the overlay closes it, requesting neither a stop nor exit.
+        state.handle(Msg::Key(KeyAction::Quit));
+        assert!(!state.view().help, "the press closed the overlay");
+        assert!(!state.take_stop(), "quit behind help requests no stop");
+        assert!(!state.should_exit(), "quit behind help does not leave");
+        assert_eq!(state.view().state, "running");
+    }
+
+    #[test]
+    fn an_unbound_key_dismisses_an_open_overlay_only() {
+        let mut state = idle(1);
+        assert!(
+            !state.dismiss_help_if_open(),
+            "nothing to dismiss when closed"
+        );
+
+        state.handle(Msg::Key(KeyAction::Help));
+        assert!(
+            state.dismiss_help_if_open(),
+            "the open overlay is dismissed"
+        );
+        assert!(!state.view().help, "the overlay is now closed");
+        assert!(!state.dismiss_help_if_open(), "a second dismiss is a no-op");
     }
 
     #[test]

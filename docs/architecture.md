@@ -491,7 +491,8 @@ frontend over the observer seam:
 - **`sima tui <config.toml>`** — drives the same run inside a full-screen
   terminal UI: an idle screen lists the configured workers, a keypress
   starts the run, and the worker rows and counters update live from the
-  observer stream, with keys to wind the run down gracefully or leave.
+  observer stream, with keys to wind the run down gracefully or leave and
+  a `?` overlay listing every binding.
   It requires a terminal; with stdout not a TTY it exits 1. `ratatui`
   and its `crossterm` backend are the terminal-UI dependencies, and they
   enter the workspace at this layer alone.

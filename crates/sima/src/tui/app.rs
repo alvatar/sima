@@ -78,10 +78,11 @@ pub fn tui_command(config: &Path) -> ExitCode {
 
 /// Maps a key event to its action, or `None` for an unbound key. The
 /// keybindings follow mprocs: `s` starts, `x` stops, `q` quits, `Q` force
-/// quits, and Ctrl-C stops. The plain letters require no modifier, so a
-/// chord like Ctrl-S or Alt-x is not one of them; `Q` carries the shift its
-/// capital implies, and Ctrl-C arrives as a key in raw mode rather than a
-/// signal, so it is handled here rather than through a SIGINT flag.
+/// quits, `?` opens help, and Ctrl-C stops. The plain letters require no
+/// modifier, so a chord like Ctrl-S or Alt-x is not one of them; `Q` carries
+/// the shift its capital implies, `?` arrives with shift on many layouts so it
+/// matches under any modifier, and Ctrl-C arrives as a key in raw mode rather
+/// than a signal, so it is handled here rather than through a SIGINT flag.
 fn key_action(key: KeyEvent) -> Option<KeyAction> {
     match key.code {
         // Ctrl-C reads as a key in raw mode; treat it as a graceful stop.
@@ -92,6 +93,7 @@ fn key_action(key: KeyEvent) -> Option<KeyAction> {
         KeyCode::Char('x') if key.modifiers.is_empty() => Some(KeyAction::Stop),
         KeyCode::Char('q') if key.modifiers.is_empty() => Some(KeyAction::Quit),
         KeyCode::Char('Q') => Some(KeyAction::ForceQuit),
+        KeyCode::Char('?') => Some(KeyAction::Help),
         _ => None,
     }
 }
@@ -148,15 +150,20 @@ fn run_session(config: LoadedConfig, status: RunStatus) -> io::Result<u8> {
             dirty = false;
         }
 
-        // A key press that maps to an action folds in; releases, repeats, and
-        // unbound keys are ignored. `read` runs only after `poll` reports one.
+        // A key press folds in; releases and repeats are ignored. `read` runs
+        // only after `poll` reports an event. A bound key folds its action —
+        // which, behind the help overlay, the state consumes to close it. An
+        // unbound key is ignored, except that it too closes an open overlay.
         if event::poll(Duration::from_millis(TICK_MS))?
             && let Event::Key(key) = event::read()?
             && key.kind == KeyEventKind::Press
-            && let Some(action) = key_action(key)
         {
-            state.handle(Msg::Key(action));
-            dirty = true;
+            if let Some(action) = key_action(key) {
+                state.handle(Msg::Key(action));
+                dirty = true;
+            } else if state.dismiss_help_if_open() {
+                dirty = true;
+            }
         }
         // Drain everything the run thread has sent since the last tick.
         while let Ok(msg) = rx.try_recv() {
@@ -296,6 +303,16 @@ mod tests {
         assert_eq!(
             key_action(press(KeyCode::Char('c'), KeyModifiers::CONTROL)),
             Some(KeyAction::Stop)
+        );
+        // `?` opens help under any modifier, since it arrives with shift on
+        // many layouts.
+        assert_eq!(
+            key_action(press(KeyCode::Char('?'), KeyModifiers::NONE)),
+            Some(KeyAction::Help)
+        );
+        assert_eq!(
+            key_action(press(KeyCode::Char('?'), KeyModifiers::SHIFT)),
+            Some(KeyAction::Help)
         );
     }
 

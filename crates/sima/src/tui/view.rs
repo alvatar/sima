@@ -1,10 +1,11 @@
 //! The ratatui rendering of a [`ViewModel`]: header, worker panel, counters,
-//! event log, and the key bar. Layout only — every value shown is already
-//! resolved on the model, so this file holds no run logic.
+//! and event log, with a help overlay drawn over them on request. Layout only
+//! — every value shown is already resolved on the model, so this file holds no
+//! run logic.
 
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Direction, Layout};
-use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph};
 
 use super::state::ViewModel;
 use crate::render::short;
@@ -20,7 +21,6 @@ pub fn draw(frame: &mut Frame, vm: &ViewModel) {
             Constraint::Length(workers_height),
             Constraint::Length(3),
             Constraint::Min(3),
-            Constraint::Length(1),
         ])
         .split(frame.area());
 
@@ -69,8 +69,41 @@ pub fn draw(frame: &mut Frame, vm: &ViewModel) {
         chunks[3],
     );
 
-    frame.render_widget(
-        Paragraph::new("s start   x stop   q quit   Q force quit"),
-        chunks[4],
-    );
+    if vm.help {
+        draw_help(frame);
+    }
+}
+
+/// The key bindings the help overlay lists, one per line.
+const HELP_LINES: &str = "\
+s   start\n\
+x   stop (also Ctrl-C)\n\
+q   quit\n\
+Q   force quit\n\
+?   help";
+
+/// Draws the help overlay: a bordered block listing every key binding,
+/// centered over the frame on a cleared background so the screen beneath does
+/// not show through.
+fn draw_help(frame: &mut Frame) {
+    // Five binding lines plus the block's two border rows; wide enough for the
+    // longest line, bounded by the frame so a small terminal still fits it.
+    let area = centered(frame.area(), 24, 7);
+    let overlay =
+        Paragraph::new(HELP_LINES).block(Block::default().borders(Borders::ALL).title("help"));
+    frame.render_widget(Clear, area);
+    frame.render_widget(overlay, area);
+}
+
+/// A `width`×`height` rectangle centered within `area`, clamped to it so the
+/// overlay never overflows a small frame.
+fn centered(area: Rect, width: u16, height: u16) -> Rect {
+    let width = width.min(area.width);
+    let height = height.min(area.height);
+    Rect {
+        x: area.x + (area.width - width) / 2,
+        y: area.y + (area.height - height) / 2,
+        width,
+        height,
+    }
 }
