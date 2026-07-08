@@ -15,7 +15,7 @@ via std threads and channels — no async runtime (revisit only if P3
 transports force it). All randomness in result-affecting paths comes from the
 project's counter-based SplitMix64 PRNG (`sima-core`), implemented identically
 on CPU and GPU; the `rand` crate is banned from result paths. Candidates are
-specs — opaque bytes plus a format id; families interpret them (CA families
+specs — opaque bytes plus a format id; domains interpret them (CA families
 call theirs genomes). Run parameters (extent, steps, budgets) are a separate
 opaque params blob: generators produce specs, config produces params, and the
 spec's format id governs the interpretation of both. CA is the substrate; the research object is
@@ -30,7 +30,7 @@ executor kind — the compute shape their engine has:
 - Agent-field kind: state is an agent population (position, heading) plus a
   field grid; agents sense the field, move, deposit onto it, and the field
   diffuses and decays. Covers Physarum (P8).
-At the infra layer both are opaque content-addressed state; the family owns
+At the infra layer both are opaque content-addressed state; the domain owns
 serialization and the compute shape. Required families across the ladder:
 totalistic, reaction-diffusion, Lenia/Flow-Lenia, Neural CA, Physarum.
 Visualization is out of scope: snapshots in the store are
@@ -79,7 +79,7 @@ Phase-level decisions:
   preemptible (cheapest) hardware safe to use, and it is proven by
   crash-injection tests, not asserted.
 - Candidates are opaque at the infrastructure layer: a spec is (format id,
-  opaque bytes), content-addressed. "Genome" is family-level vocabulary;
+  opaque bytes), content-addressed. "Genome" is domain-level vocabulary;
   contracts and store speak in specs. Run parameters travel as a second
   opaque content-addressed blob (params), produced by config; a task
   evaluates the pair (spec, params).
@@ -180,9 +180,9 @@ Phase-level decisions:
       mid-object-write, between object and index, mid-lease, during
       finalization — resume, assert manifest identical to uninterrupted
       reference); end-to-end tests for the four phase acceptance criteria.
-      Resolved while building the dispatch: a `Family` groups what a format
+      Resolved while building the dispatch: a `Domain` groups what a format
       id binds — the executor, the environment entering task identity, and
-      the translation of the family-owned config sections into canonical
+      the translation of the domain-owned config sections into canonical
       bytes; generators stay a separate plug with their own dispatch and
       their own config translation, so the bundle never pairs executor and
       generator 1:1
