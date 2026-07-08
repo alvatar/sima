@@ -36,10 +36,10 @@ pub(crate) struct Failure {
 
 /// Why the run is winding down. `Running` is the steady state; every other
 /// variant is terminal and makes each worker stop pulling new work. The
-/// variants form a precedence lattice — `Running < Interrupted < Failed <
+/// variants form a precedence order — `Running < Interrupted < Failed <
 /// Fault` — and each setter only upgrades: an interrupt never displaces a
 /// failure, a failure never displaces a fault, and among faults the first
-/// wins. `Finished` sits outside the lattice as the drained sentinel the
+/// wins. `Finished` sits outside the order as the drained sentinel the
 /// driver installs when it takes the terminal state.
 pub(crate) enum Stop {
     /// Work is proceeding.
@@ -184,7 +184,7 @@ impl Coordinator {
 
     /// Requests a graceful wind-down: it upgrades `Running` to `Interrupted`
     /// and nothing else, since every other state already outranks an
-    /// interrupt on the stop lattice.
+    /// interrupt in the precedence order.
     pub(crate) fn interrupt(&self) {
         let mut state = self.lock();
         if matches!(state.stop, Stop::Running) {

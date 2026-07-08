@@ -346,7 +346,7 @@ search:
   and the run returns `Interrupted` with no manifest written — the store
   stays resumable and the next orchestration continues the abandoned work.
 
-The wind-down states form a precedence lattice — running < interrupted <
+The wind-down states form a precedence order — running < interrupted <
 failed < fault — and each setter only upgrades: a definitive failure or an
 infrastructure fault landing during an interrupt wind-down still decides
 the run, and among faults the first wins.
