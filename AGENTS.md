@@ -9,6 +9,9 @@
 - Never narrate your own tone or stance. No meta-commentary about how you are speaking — no "I'll say this flatly", "not defending it", "to be clear", "naming this directly", "stating plainly", or any phrase that describes the manner of your reply instead of just delivering it. Say the thing; do not announce how you are saying it.
 - Define things by what they are, not by what they are not. A negative ("this is not X", "rather than Y") bloats without adding clarity; state the positive fact. Applies to prose, code comments, and docs.
 - Do not invent ad-hoc hyphenated terms as shorthand ("line-framed", "no-replace"); use plain, established wording and spell the mechanism out. Applies to prose, code comments, and docs.
+- Professional register in everything written — PRs, docs, comments, reports. No jokes, metaphors, or playful phrasing ("the exit exam", "sails past").
+- Write for a senior engineer, not a domain expert: explain domain-specific concepts (cryptography, scheduling theory) at that level, and skip explanations of general engineering.
+- Reading takes time. Include only what changes the reader's understanding or decision; cut everything else. PR descriptions cover what changed and why, in the conventional shape of a PR; they leave out ancillary material such as the tests performed or the process followed.
 
 ## General engineering rules
 
