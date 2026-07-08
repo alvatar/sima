@@ -307,4 +307,14 @@ mod tests {
             None
         );
     }
+
+    #[test]
+    fn a_caught_panic_renders_its_cause_as_a_fault() {
+        // A panic carries its message as either a &str or a String; both
+        // reach the fault so the run thread's cause is not lost.
+        let from_str: Box<dyn Any + Send> = Box::new("boom");
+        assert!(panic_fault(from_str).to_string().contains("boom"));
+        let from_string: Box<dyn Any + Send> = Box::new("kaboom".to_string());
+        assert!(panic_fault(from_string).to_string().contains("kaboom"));
+    }
 }
