@@ -133,6 +133,7 @@ mod tests {
             faulted: 0,
             lease_expired: 0,
             state: RunState::InProgress,
+            occupancy: std::collections::BTreeMap::new(),
         };
         let block = status_block(&status);
         for field in [
