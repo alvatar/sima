@@ -55,9 +55,10 @@ struct Armed {
     k: u64,
 }
 
-/// Parses `name` or `name:k` into an [`Armed`]. A malformed or zero
-/// suffix falls back to k = 1: arming is a test-harness act, and dying on
-/// the first hit is the least surprising reading of a bad spec.
+/// Parses the value of the `SIMA_CRASHPOINT` environment variable —
+/// `name` or `name:k` — into an [`Armed`]. A malformed or zero suffix
+/// falls back to k = 1: arming is a test-harness act, and dying on the
+/// first hit is the least surprising reading of a bad spec.
 #[cfg(feature = "crash-injection")]
 fn parse(spec: &str) -> Armed {
     let (name, suffix) = match spec.split_once(':') {
