@@ -204,7 +204,10 @@ fn spawn_run(config: Arc<LoadedConfig>, tx: SyncSender<Msg>, interrupt: Arc<Atom
         // so the UI loop always receives a return: an unwinding orchestrate
         // thread would otherwise never send `Finished` and leave the session
         // hung. The panic hook is inert off the UI thread, so it does not touch
-        // the terminal from here.
+        // the terminal from here. Catching is this caller's own boundary
+        // decision, made because a hung session inside a raw-mode alternate
+        // screen is worse than a lost backtrace; `sima run` makes the opposite
+        // choice and dies with the panic.
         let outcome = std::panic::catch_unwind(AssertUnwindSafe(|| {
             let control = RunControl {
                 observer: &observer,
