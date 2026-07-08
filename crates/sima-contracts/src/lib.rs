@@ -1,5 +1,5 @@
 //! Contract layer: the two seams the search substrate runs candidates
-//! through, plus deterministic stub implementations of both.
+//! through.
 //!
 //! A generator produces a run's candidate specs; an executor evaluates one
 //! candidate and returns produced artifacts plus observational stats, or a
@@ -17,15 +17,12 @@
 //! reflect execution context; it is observational and destined for the
 //! journal.
 //!
-//! The stub module supplies a seeded generator and a spec-programmed
-//! executor (succeed, flaky, panic, sleep) so the scheduler
-//! has a deterministic, programmable substrate to build against
-//! without a GPU or real model families.
+//! The concrete implementations that satisfy these traits live in
+//! `sima-domains`, one per format; this crate holds the traits and their
+//! shared vocabulary alone.
 
 mod executor;
 mod generator;
-mod stub;
 
 pub use executor::{Artifact, ExecutionContext, Executor, Outcome, Stats, TaskInput, WorkerId};
 pub use generator::Generator;
-pub use stub::{StubBehavior, StubExecutor, StubGenerator, StubGeneratorConfig, StubProgram};

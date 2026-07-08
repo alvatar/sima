@@ -4,6 +4,7 @@ members = [
     "crates/sima",
     "crates/sima-contracts",
     "crates/sima-core",
+    "crates/sima-domains",
     "crates/sima-model",
     "crates/sima-pipeline",
     "crates/sima-scheduler",

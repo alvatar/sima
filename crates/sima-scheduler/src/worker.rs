@@ -281,8 +281,8 @@ mod tests {
     use std::sync::mpsc;
     use std::time::{Duration, Instant};
 
-    use sima_contracts::{StubBehavior, StubExecutor, StubProgram};
     use sima_core::hash_bytes;
+    use sima_domains::{StubBehavior, StubExecutor, StubProgram};
     use sima_model::{EnvironmentId, FormatId, GeneratorConfig, GeneratorId, Params, Spec, SpecId};
 
     use super::*;

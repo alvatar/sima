@@ -12,7 +12,7 @@
 //! # remaining keys are generator-specific; stub.v1 takes:
 //! behaviors = ["succeed", "flaky:2", "sleep:50", "reject", "panic"]
 //!
-//! [run.params]              # family-specific; stub.v1 takes:
+//! [run.params]              # domain-specific; stub.v1 takes:
 //! hex = ""                  # optional hex string, default empty
 //!
 //! [execution]               # operational — never hashed
@@ -27,7 +27,7 @@
 //! resumed with different parallelism or from a different store path keeps
 //! its id. The structural keys are strict: an unknown key anywhere is
 //! rejected. The `[run.generator]` table (minus `id`) and the `[run.params]`
-//! table pass opaquely to the generator and family translations, which own
+//! table pass opaquely to the generator and domain translations, which own
 //! and validate their keys.
 
 use std::fs;
@@ -36,10 +36,9 @@ use std::time::Duration;
 
 use serde::Deserialize;
 use sima_core::{Error, Result};
+use sima_domains::{generator_params_for, params_for};
 use sima_model::{FormatId, GeneratorConfig, GeneratorId, RunConfig};
 use sima_scheduler::ExecutionConfig;
-
-use crate::family;
 
 /// A `sima.toml`, loaded and translated: the identity-bearing
 /// [`RunConfig`], the operational [`ExecutionConfig`], and the store path
@@ -72,7 +71,7 @@ struct RunSection {
     root_seed: i64,
     format: String,
     generator: GeneratorSection,
-    /// Family-owned; absent means an empty table, and the family decides
+    /// Domain-owned; absent means an empty table, and the domain decides
     /// the defaults.
     #[serde(default)]
     params: toml::Table,
@@ -119,9 +118,9 @@ pub fn load(path: &Path) -> Result<LoadedConfig> {
     let format = FormatId::new(file.run.format)?;
     let generator_id = GeneratorId::new(file.run.generator.id)?;
     // Identity flows through the dispatched-to code: the generator and the
-    // family turn their tables into the canonical bytes the model hashes.
-    let generator_params = family::generator_params_for(&generator_id, &file.run.generator.rest)?;
-    let params = family::params_for(&format, &file.run.params)?;
+    // domain turn their tables into the canonical bytes the model hashes.
+    let generator_params = generator_params_for(&generator_id, &file.run.generator.rest)?;
+    let params = params_for(&format, &file.run.params)?;
     let run = RunConfig {
         root_seed,
         format,
@@ -157,7 +156,7 @@ pub fn load(path: &Path) -> Result<LoadedConfig> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sima_contracts::{StubBehavior, StubGeneratorConfig};
+    use sima_domains::{StubBehavior, StubGeneratorConfig};
     use sima_model::RunId;
 
     /// Writes `text` as a config file named `name` under `dir`.

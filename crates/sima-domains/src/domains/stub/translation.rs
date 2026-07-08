@@ -1,7 +1,7 @@
-//! The stub family and generator translations.
+//! The stub domain's config translations, and the binding of its format id.
 //!
-//! Both translate human-facing TOML into the opaque canonical bytes the
-//! model carries, through the stub's own codecs — the pipeline never
+//! Both translations turn human-facing TOML into the opaque canonical bytes
+//! the model carries, through the stub's own codecs — the crate never
 //! hand-rolls an identity-bearing encoding:
 //!
 //! - the generator section's `behaviors` list — words like `"succeed"` and
@@ -9,19 +9,19 @@
 //! - the params section's optional `hex` string becomes the raw run-params
 //!   bytes, since stub params carry no meaning of their own.
 
-use sima_contracts::{StubBehavior, StubExecutor, StubGeneratorConfig};
 use sima_core::{Error, Result};
 use sima_model::{Environment, EnvironmentComponent, EnvironmentValue, FormatId, Params};
 
-use crate::family::Family;
+use super::{StubBehavior, StubExecutor, StubGeneratorConfig};
+use crate::domain::Domain;
 
 /// The stub format id, doubling as the stub generator id.
 pub(crate) const ID: &str = "stub.v1";
 
-/// The stub family: the stub executor and a one-component environment
+/// The stub domain: the stub executor and a one-component environment
 /// carrying its version.
-pub(crate) fn family() -> Result<Family> {
-    Ok(Family {
+pub(crate) fn domain() -> Result<Domain> {
+    Ok(Domain {
         format: FormatId::new(ID)?,
         executor: Box::new(StubExecutor::new()?),
         environment: Environment::new(vec![EnvironmentComponent::new(
@@ -275,11 +275,11 @@ mod tests {
     }
 
     #[test]
-    fn the_family_binds_the_stub_pieces() -> Result<()> {
-        let family = family()?;
-        assert_eq!(family.format.as_str(), ID);
-        assert_eq!(family.executor.format().as_str(), ID);
-        let components = family.environment.components();
+    fn the_domain_binds_the_stub_pieces() -> Result<()> {
+        let domain = domain()?;
+        assert_eq!(domain.format.as_str(), ID);
+        assert_eq!(domain.executor.format().as_str(), ID);
+        let components = domain.environment.components();
         assert_eq!(components.len(), 1);
         assert_eq!(components[0].name(), "stub.executor");
         assert_eq!(

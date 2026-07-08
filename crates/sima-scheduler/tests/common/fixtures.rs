@@ -6,8 +6,9 @@
 
 use std::time::Duration;
 
-use sima_contracts::{Executor, StubBehavior, StubExecutor, StubGenerator, StubGeneratorConfig};
+use sima_contracts::Executor;
 use sima_core::Result;
+use sima_domains::{StubBehavior, StubExecutor, StubGenerator, StubGeneratorConfig};
 use sima_model::{
     Environment, EnvironmentComponent, EnvironmentValue, FormatId, GeneratorConfig, GeneratorId,
     Params, RunConfig, RunId, TaskKey,

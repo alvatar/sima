@@ -340,8 +340,8 @@ mod tests {
     use std::collections::VecDeque;
     use std::sync::mpsc;
 
-    use sima_contracts::{StubBehavior, StubProgram};
     use sima_core::{Error, hash_bytes};
+    use sima_domains::{StubBehavior, StubProgram};
     use sima_model::{EnvironmentId, FormatId, Params, Spec, TaskIdentity};
 
     use super::*;

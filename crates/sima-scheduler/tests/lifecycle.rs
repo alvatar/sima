@@ -10,10 +10,9 @@ use common::{
     lease_expired_count, leased_count, rejected_count, retried_count, run_id, run_into, run_with,
     task_keys, temp_store,
 };
-use sima_contracts::{
-    ExecutionContext, Executor, Outcome, StubBehavior, StubExecutor, StubProgram, TaskInput,
-};
+use sima_contracts::{ExecutionContext, Executor, Outcome, TaskInput};
 use sima_core::{Error, Result};
+use sima_domains::{StubBehavior, StubExecutor, StubProgram};
 use sima_model::{FormatId, RunConfig};
 use sima_scheduler::{LifecycleEvent, RunOutcome};
 use sima_store::Store;

@@ -9,7 +9,7 @@ use sima_core::{Dec, Enc, Result, prng};
 use sima_model::{FormatId, GeneratorId, Spec};
 
 use super::program::{StubBehavior, StubProgram};
-use crate::generator::Generator;
+use sima_contracts::Generator;
 
 /// The stub generator's params: the behaviors to program into a run's
 /// candidates, in order. Its canonical form carries no domain tag — it lives

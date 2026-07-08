@@ -16,7 +16,11 @@ sima-contracts = { path = "../sima-contracts" }
 serde.workspace = true
 serde_json.workspace = true
 
+# The scheduler's shipped library never depends on sima-domains; its tests
+# use the stub domain as a deterministic substrate through this dev-dependency,
+# a downward, test-only edge invisible in the production artifact.
 [dev-dependencies]
+sima-domains = { path = "../sima-domains" }
 tempfile.workspace = true
 
 [lints]

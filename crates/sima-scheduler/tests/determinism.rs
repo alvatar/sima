@@ -5,8 +5,8 @@
 mod common;
 
 use common::{config, exec, run_id, run_into, temp_store};
-use sima_contracts::StubBehavior;
 use sima_core::Result;
+use sima_domains::StubBehavior;
 use sima_scheduler::RunOutcome;
 
 /// The phase-acceptance proof: one config, two fresh stores, identical manifest.

@@ -1,16 +1,14 @@
-//! End-to-end determinism of the contract layer: generating a run's specs and
+//! End-to-end determinism of the stub domain: generating a run's specs and
 //! executing them yields a byte-identical committed result twice over, and
 //! that result does not depend on the execution context (attempt, worker).
 //!
 //! This proves the acceptance clause ("run-twice → identical hashes") at
-//! the contract seam, without a store: it compares committed records only —
+//! the domain seam, without a store: it compares committed records only —
 //! the equality criterion the phases use — and never the observational stats.
 
-use sima_contracts::{
-    ExecutionContext, Executor, Generator, Outcome, StubBehavior, StubExecutor, StubGenerator,
-    StubGeneratorConfig, TaskInput, WorkerId,
-};
+use sima_contracts::{ExecutionContext, Executor, Generator, Outcome, TaskInput, WorkerId};
 use sima_core::{Hash, Result, hash_bytes, prng};
+use sima_domains::{StubBehavior, StubExecutor, StubGenerator, StubGeneratorConfig};
 use sima_model::{ArtifactRef, EnvironmentId, FormatId, Params, TaskIdentity, TaskRecord};
 
 /// Runs generate → execute → record for a fixed config and folds the committed
@@ -18,7 +16,7 @@ use sima_model::{ArtifactRef, EnvironmentId, FormatId, Params, TaskIdentity, Tas
 ///
 /// The per-task `seed` here derives from the root seed as a stand-in for the
 /// scheduler's real derivation; the point is only that it is fixed
-/// across runs, so any run-to-run difference would come from the contracts.
+/// across runs, so any run-to-run difference would come from the domain.
 fn run_digest(attempt: u32, worker: WorkerId) -> Result<Hash> {
     let generator = StubGenerator::new()?;
     let executor = StubExecutor::new()?;

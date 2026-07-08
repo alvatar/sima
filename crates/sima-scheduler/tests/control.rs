@@ -8,8 +8,8 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use common::{config, exec, journal_events, run_controlled, run_id, run_into, temp_store};
-use sima_contracts::StubBehavior;
 use sima_core::Result;
+use sima_domains::StubBehavior;
 use sima_scheduler::{LifecycleEvent, RunControl, RunOutcome};
 
 /// The observer receives every event, typed, in exactly the order the

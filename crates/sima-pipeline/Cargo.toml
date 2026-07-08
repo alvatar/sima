@@ -6,7 +6,7 @@ edition.workspace = true
 [dependencies]
 sima-core = { path = "../sima-core" }
 sima-model = { path = "../sima-model" }
-sima-contracts = { path = "../sima-contracts" }
+sima-domains = { path = "../sima-domains" }
 sima-scheduler = { path = "../sima-scheduler" }
 sima-store = { path = "../sima-store" }
 serde.workspace = true

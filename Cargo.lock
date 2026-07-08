@@ -295,6 +295,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "sima-domains"
+version = "0.1.0"
+dependencies = [
+ "sima-contracts",
+ "sima-core",
+ "sima-model",
+ "toml",
+]
+
+[[package]]
 name = "sima-model"
 version = "0.1.0"
 dependencies = [
@@ -306,8 +316,8 @@ name = "sima-pipeline"
 version = "0.1.0"
 dependencies = [
  "serde",
- "sima-contracts",
  "sima-core",
+ "sima-domains",
  "sima-model",
  "sima-scheduler",
  "sima-store",
@@ -323,6 +333,7 @@ dependencies = [
  "serde_json",
  "sima-contracts",
  "sima-core",
+ "sima-domains",
  "sima-model",
  "sima-store",
  "tempfile",
