@@ -51,25 +51,19 @@ const CHANNEL_BOUND: usize = 1024;
 /// stdout is not a TTY — piped or redirected — there is nothing to drive, so
 /// the command refuses rather than corrupt a non-terminal stream.
 pub fn tui_command(config: &Path) -> ExitCode {
-    if !std::io::stdout().is_terminal() {
+    if !io::stdout().is_terminal() {
         eprintln!("sima tui requires a terminal");
         return ExitCode::from(crate::EXIT_ERROR);
     }
     let loaded = match load(config) {
         Ok(loaded) => loaded,
-        Err(e) => {
-            eprintln!("sima: {e}");
-            return ExitCode::from(crate::EXIT_ERROR);
-        }
+        Err(e) => return crate::report(e),
     };
     // Seed before entering the terminal so a store fault surfaces on the
     // normal screen, exactly as `sima status` would report it.
     let status = match seed_status(&loaded) {
         Ok(status) => status,
-        Err(e) => {
-            eprintln!("sima: {e}");
-            return ExitCode::from(crate::EXIT_ERROR);
-        }
+        Err(e) => return crate::report(e),
     };
     match run_session(loaded, status) {
         Ok(code) => ExitCode::from(code),

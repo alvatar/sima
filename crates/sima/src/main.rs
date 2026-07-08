@@ -113,7 +113,7 @@ fn read_status(config: &Path) -> Result<RunStatus> {
 }
 
 /// Prints `error` to stderr and yields the generic error exit code.
-fn report(error: Error) -> ExitCode {
+pub(crate) fn report(error: Error) -> ExitCode {
     eprintln!("sima: {error}");
     ExitCode::from(EXIT_ERROR)
 }
