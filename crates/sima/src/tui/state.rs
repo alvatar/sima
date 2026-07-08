@@ -77,20 +77,7 @@ enum SessionOutcome {
 }
 
 impl SessionOutcome {
-    /// The exit code this outcome maps to, matching `sima run`: success for a
-    /// clean or finalized session, the failure code for a definitive failure,
-    /// the interrupt code for a wound-down or force-quit run, and the generic
-    /// error code for a fault.
-    fn exit_code(self) -> u8 {
-        match self {
-            SessionOutcome::Clean | SessionOutcome::Finalized => 0,
-            SessionOutcome::Failed => crate::EXIT_FAILED,
-            SessionOutcome::Interrupted => crate::EXIT_INTERRUPTED,
-            SessionOutcome::Faulted => crate::EXIT_ERROR,
-        }
-    }
-
-    /// The outcome a returned run result carries.
+    /// The outcome a returned run result carries, for the header label.
     fn of(result: &Result<RunOutcome>) -> SessionOutcome {
         match result {
             Ok(RunOutcome::Finalized { .. }) => SessionOutcome::Finalized,
@@ -110,8 +97,11 @@ pub struct TuiState {
     workers: usize,
     /// What the session is doing.
     activity: Activity,
-    /// The session outcome deciding the exit code.
+    /// The session outcome, for the header's terminal-state label.
     outcome: SessionOutcome,
+    /// The exit code the session leaves with; 0 until a run — or a force
+    /// quit mid-run — decides otherwise.
+    exit_code: u8,
     /// A start is pending: the runtime should spawn the orchestrate thread.
     start_pending: bool,
     /// A stop is pending: the runtime should set the interrupt flag.
@@ -171,6 +161,7 @@ impl TuiState {
             workers,
             activity: Activity::Idle,
             outcome: SessionOutcome::Clean,
+            exit_code: 0,
             start_pending: false,
             stop_pending: false,
             exit_on_finish: false,
@@ -237,6 +228,7 @@ impl TuiState {
                 // as an interrupt; the process exit releases its lock.
                 if matches!(self.activity, Activity::Running | Activity::WindingDown) {
                     self.outcome = SessionOutcome::Interrupted;
+                    self.exit_code = crate::EXIT_INTERRUPTED;
                 }
                 self.exit = true;
             }
@@ -244,10 +236,15 @@ impl TuiState {
     }
 
     /// Folds the run thread's return: the session moves to its terminal
-    /// state, records the outcome, and leaves if an exit was armed.
+    /// state, records the outcome and the exit code it maps to — through the
+    /// mapping `sima run` shares — and leaves if an exit was armed.
     fn fold_finished(&mut self, result: &Result<RunOutcome>) {
         self.activity = Activity::Ended;
         self.outcome = SessionOutcome::of(result);
+        self.exit_code = match result {
+            Ok(outcome) => crate::outcome_exit_code(outcome),
+            Err(_) => crate::EXIT_ERROR,
+        };
         if self.exit_on_finish {
             self.exit = true;
         }
@@ -272,7 +269,7 @@ impl TuiState {
 
     /// The session's exit code.
     pub fn exit_code(&self) -> u8 {
-        self.outcome.exit_code()
+        self.exit_code
     }
 
     /// The header state label for the current activity.

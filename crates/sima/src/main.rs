@@ -68,9 +68,7 @@ fn resolve_config(arg: &str) -> PathBuf {
 /// to the exit code.
 fn run_command(config: &Path) -> ExitCode {
     match drive(config) {
-        Ok(RunOutcome::Finalized { .. }) => ExitCode::SUCCESS,
-        Ok(RunOutcome::Failed { .. }) => ExitCode::from(EXIT_FAILED),
-        Ok(RunOutcome::Interrupted { .. }) => ExitCode::from(EXIT_INTERRUPTED),
+        Ok(outcome) => ExitCode::from(outcome_exit_code(&outcome)),
         Err(e) => report(e),
     }
 }
@@ -124,4 +122,39 @@ fn report(error: Error) -> ExitCode {
 /// the handler, surfaced before the run starts.
 fn register_error(e: std::io::Error) -> Error {
     Error::Validation(format!("cannot register the SIGINT handler: {e}"))
+}
+
+/// The exit code a finished run maps to — the mapping `run` and `tui` share:
+/// success when finalized, the failure code for a definitive candidate
+/// failure, and the interrupt code for a wound-down run.
+pub(crate) fn outcome_exit_code(outcome: &RunOutcome) -> u8 {
+    match outcome {
+        RunOutcome::Finalized { .. } => 0,
+        RunOutcome::Failed { .. } => EXIT_FAILED,
+        RunOutcome::Interrupted { .. } => EXIT_INTERRUPTED,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sima_core::hash_bytes;
+    use sima_model::{RunId, TaskKey};
+
+    #[test]
+    fn each_outcome_maps_to_its_exit_code() {
+        let run = RunId::from_hash(hash_bytes(b"exit code run"));
+        assert_eq!(outcome_exit_code(&RunOutcome::Finalized { run }), 0);
+        assert_eq!(
+            outcome_exit_code(&RunOutcome::Failed {
+                task: TaskKey::from_hash(hash_bytes(b"a task")),
+                reason: "rejected".to_string(),
+            }),
+            EXIT_FAILED
+        );
+        assert_eq!(
+            outcome_exit_code(&RunOutcome::Interrupted { run }),
+            EXIT_INTERRUPTED
+        );
+    }
 }
