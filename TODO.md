@@ -15,7 +15,7 @@ via std threads and channels — no async runtime (revisit only if P3
 transports force it). All randomness in result-affecting paths comes from the
 project's counter-based SplitMix64 PRNG (`sima-core`), implemented identically
 on CPU and GPU; the `rand` crate is banned from result paths. Candidates are
-specs — opaque bytes plus a format id; families interpret them (CA families
+specs — opaque bytes plus a format id; domains interpret them (CA families
 call theirs genomes). Run parameters (extent, steps, budgets) are a separate
 opaque params blob: generators produce specs, config produces params, and the
 spec's format id governs the interpretation of both. CA is the substrate; the research object is
@@ -30,7 +30,7 @@ executor kind — the compute shape their engine has:
 - Agent-field kind: state is an agent population (position, heading) plus a
   field grid; agents sense the field, move, deposit onto it, and the field
   diffuses and decays. Covers Physarum (P8).
-At the infra layer both are opaque content-addressed state; the family owns
+At the infra layer both are opaque content-addressed state; the domain owns
 serialization and the compute shape. Required families across the ladder:
 totalistic, reaction-diffusion, Lenia/Flow-Lenia, Neural CA, Physarum.
 Visualization is out of scope: snapshots in the store are
@@ -49,7 +49,7 @@ modules) → `sima-contracts` (L3: generator/executor traits + stubs) →
 `sima-scheduler` (L4: task sources, leases, lifecycle state machine) →
 `sima-pipeline` (L5: orchestration, resume, re-evaluation) → `sima` (L6: CLI
 binary). Implementation crates at L3: `sima-gpu` (ash wrapper, depends on
-core) and `sima-families` (rule families: CPU references + GPU kernels;
+core) and `sima-domains` (rule families: CPU references + GPU kernels;
 depends on contracts + gpu), arriving in P2.
 
 Running model: one orchestrator per run — the `sima run` process itself; no
@@ -79,7 +79,7 @@ Phase-level decisions:
   preemptible (cheapest) hardware safe to use, and it is proven by
   crash-injection tests, not asserted.
 - Candidates are opaque at the infrastructure layer: a spec is (format id,
-  opaque bytes), content-addressed. "Genome" is family-level vocabulary;
+  opaque bytes), content-addressed. "Genome" is domain-level vocabulary;
   contracts and store speak in specs. Run parameters travel as a second
   opaque content-addressed blob (params), produced by config; a task
   evaluates the pair (spec, params).
@@ -167,7 +167,7 @@ Phase-level decisions:
       work. This is the final design, not a placeholder — correct code never
       fails definitively. (The `Failed`-carries-stats half was the
       M1.4-deferred decision; `Stats` stays opaque and empty-costs-nothing.)
-- [ ] M1.6 Config + pipeline + CLI (`sima-pipeline`, `sima`): one `sima.toml`
+- [x] M1.6 Config + pipeline + CLI (`sima-pipeline`, `sima`): one `sima.toml`
       with two sections — an identity section (root_seed, format, generator,
       params) canonicalized into the `RunConfig` bytes and thus `RunId`, and an
       execution section (worker count, timeouts, retry cap — the file form of
@@ -180,12 +180,12 @@ Phase-level decisions:
       mid-object-write, between object and index, mid-lease, during
       finalization — resume, assert manifest identical to uninterrupted
       reference); end-to-end tests for the four phase acceptance criteria.
-      Building the dispatch is where to decide whether a `Family` abstraction
-      groups the format-bound implementations (codec + executor, and in P2 the
-      CPU reference + GPU kernel + mutation) as one registration unit, keeping
-      generators a separate plug: one format has one executor but many
-      generators (`RunConfig` carries `format` and `generator.id` as distinct
-      fields), so a bundle must not pair executor and generator 1:1
+      Resolved while building the dispatch: a `Domain` groups what a format
+      id binds — the executor, the environment entering task identity, and
+      the translation of the domain-owned config sections into canonical
+      bytes; generators stay a separate plug with their own dispatch and
+      their own config translation, so the bundle never pairs executor and
+      generator 1:1
 
 ## P2 — GPU executor + totalistic family
 

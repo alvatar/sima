@@ -88,7 +88,7 @@ impl TaskSource for StaticBatch {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sima_contracts::{StubBehavior, StubGenerator, StubGeneratorConfig};
+    use sima_domains::{StubBehavior, StubGenerator, StubGeneratorConfig};
     use sima_model::{GeneratorConfig, Params};
 
     /// A run config whose generator programs the given behaviors.

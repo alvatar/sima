@@ -23,7 +23,7 @@ pub struct TaskIdentity {
     pub seed: u64,
     /// The environment the results depend on.
     pub environment: EnvironmentId,
-    /// For segments: the digest of the opaque, family-serialized state
+    /// For segments: the digest of the opaque, domain-serialized state
     /// object this task continues from; `None` for stateless tasks. The
     /// state object is store-addressed and never a model type, so the
     /// reference is a plain digest.

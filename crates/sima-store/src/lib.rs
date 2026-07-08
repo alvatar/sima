@@ -10,6 +10,7 @@
 //! <root>/tasks/<task-key-hex>      index entry: record-hash hex + newline
 //! <root>/runs/<run-id-hex>/manifest.json
 //! <root>/runs/<run-id-hex>/journal
+//! <root>/runs/<run-id-hex>/orchestrator.lock
 //! ```
 //!
 //! Every durable file is placed atomically — full content to `tmp/`,
@@ -26,11 +27,13 @@ mod cas;
 mod catalog;
 mod journal;
 mod layout;
+mod lock;
 mod manifest;
 mod store;
 #[cfg(test)]
 mod testutil;
 
 pub use journal::JournalWriter;
+pub use lock::RunLock;
 pub use manifest::{Manifest, ManifestEntry};
 pub use store::Store;

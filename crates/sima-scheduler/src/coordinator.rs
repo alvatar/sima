@@ -1,10 +1,10 @@
-//! [`Coord`]: the shared run coordination.
+//! [`Coordinator`]: the shared run coordination.
 //!
-//! One `Coord` per run holds everything the scheduler threads share — the
+//! One `Coordinator` per run holds everything the scheduler threads share — the
 //! ready queue, the lease table, and the wind-down state — behind a single
 //! mutex, plus the condition variable every thread waits on. Its methods are
-//! the only mutations: leasing the next task and the settlement family that
-//! releases a lease and applies the outcome atomically.
+//! the only mutations: leasing the next task and the settlement methods that
+//! release a lease and apply the outcome atomically.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Condvar, Mutex, MutexGuard};
@@ -35,10 +35,18 @@ pub(crate) struct Failure {
 }
 
 /// Why the run is winding down. `Running` is the steady state; every other
-/// variant is terminal and makes each worker stop pulling new work.
-pub(crate) enum Stop {
+/// variant is terminal and makes each worker stop pulling new work. The
+/// variants form a precedence order — `Running < Interrupted < Failed <
+/// Fault` — and each setter only upgrades: an interrupt never displaces a
+/// failure, a failure never displaces a fault, and among faults the first
+/// wins. `Finished` sits outside the order as the drained sentinel the
+/// driver installs when it takes the terminal state.
+pub(crate) enum RunState {
     /// Work is proceeding.
     Running,
+    /// The caller requested a graceful wind-down; the run returns
+    /// [`RunOutcome::Interrupted`](crate::RunOutcome::Interrupted).
+    Interrupted,
     /// A definitive candidate failure; the run returns
     /// [`RunOutcome::Failed`](crate::RunOutcome::Failed).
     Failed(Failure),
@@ -57,26 +65,26 @@ pub(crate) struct Shared {
     /// being leased or resolved under this lock.
     pub(crate) leases: HashMap<TaskKey, Lease>,
     /// The run's wind-down state.
-    pub(crate) stop: Stop,
+    pub(crate) state: RunState,
 }
 
 /// The shared state plus the condition every thread waits on.
-pub(crate) struct Coord {
+pub(crate) struct Coordinator {
     pub(crate) state: Mutex<Shared>,
-    pub(crate) idle: Condvar,
+    pub(crate) state_changed: Condvar,
 }
 
-impl Coord {
+impl Coordinator {
     /// A fresh coordinator in the steady `Running` state: empty queue, no
     /// leases.
-    pub(crate) fn new() -> Coord {
-        Coord {
+    pub(crate) fn new() -> Coordinator {
+        Coordinator {
             state: Mutex::new(Shared {
                 queue: VecDeque::new(),
                 leases: HashMap::new(),
-                stop: Stop::Running,
+                state: RunState::Running,
             }),
-            idle: Condvar::new(),
+            state_changed: Condvar::new(),
         }
     }
 
@@ -94,20 +102,20 @@ impl Coord {
     /// flight; returns `None` once the run is winding down and the calling
     /// worker should exit.
     pub(crate) fn next_task(&self, worker: WorkerId) -> Option<Pending> {
-        let mut state = self.lock();
+        let mut shared = self.lock();
         loop {
-            if !matches!(state.stop, Stop::Running) {
+            if !matches!(shared.state, RunState::Running) {
                 // Winding down: pull no more work. Wake peers and the driver so
                 // they observe the state and drain.
-                self.idle.notify_all();
+                self.state_changed.notify_all();
                 return None;
             }
-            if let Some(pending) = state.queue.pop_front() {
+            if let Some(pending) = shared.queue.pop_front() {
                 let key = pending.key;
                 // The lease records when the attempt started; the watchdog
                 // derives expiry from its age, so there is no deadline
                 // arithmetic that could overflow.
-                state.leases.insert(
+                shared.leases.insert(
                     key,
                     Lease {
                         worker,
@@ -119,8 +127,11 @@ impl Coord {
             }
             // The queue is empty: this worker may be the one making the pool
             // quiescent, so wake the driver before parking for new work.
-            self.idle.notify_all();
-            state = self.idle.wait(state).unwrap_or_else(|p| p.into_inner());
+            self.state_changed.notify_all();
+            shared = self
+                .state_changed
+                .wait(shared)
+                .unwrap_or_else(|p| p.into_inner());
         }
     }
 
@@ -129,16 +140,16 @@ impl Coord {
     /// terminate, fault — shares this lock, lease removal, and notification;
     /// the four wrappers carry only their own middle step.
     fn settle<R>(&self, key: TaskKey, apply: impl FnOnce(&mut Shared) -> R) -> R {
-        let mut state = self.lock();
-        state.leases.remove(&key);
-        let result = apply(&mut state);
-        self.idle.notify_all();
+        let mut shared = self.lock();
+        shared.leases.remove(&key);
+        let result = apply(&mut shared);
+        self.state_changed.notify_all();
         result
     }
 
     /// Clears a resolved lease, which removes its task from the in-flight set.
     pub(crate) fn resolve(&self, key: TaskKey) {
-        self.settle(key, |_state| {});
+        self.settle(key, |_shared| {});
     }
 
     /// Clears the lease and, while the run is still healthy, re-enqueues the
@@ -146,12 +157,12 @@ impl Coord {
     /// already winding down abandons the task rather than queueing work no
     /// worker will take.
     pub(crate) fn requeue(&self, key: TaskKey, task: RunnableTask, next_attempt: u32) -> bool {
-        self.settle(key, |state| {
-            let running = matches!(state.stop, Stop::Running);
+        self.settle(key, |shared| {
+            let running = matches!(shared.state, RunState::Running);
             if running {
                 // The key is already in hand as a parameter — the requeued
                 // attempt reuses it rather than recomputing it under the lock.
-                state.queue.push_back(Pending {
+                shared.queue.push_back(Pending {
                     key,
                     task,
                     attempt: next_attempt,
@@ -161,15 +172,28 @@ impl Coord {
         })
     }
 
-    /// Records a definitive candidate failure: it decides the run's outcome
-    /// only from the healthy state, so it never downgrades an infrastructure
-    /// fault; the first candidate failure among candidate failures wins.
+    /// Records a definitive candidate failure. It upgrades the healthy and
+    /// interrupted states — a candidate that failed definitively during an
+    /// interrupt wind-down still decides the run — and never downgrades an
+    /// infrastructure fault; the first candidate failure among candidate
+    /// failures wins.
     pub(crate) fn terminate(&self, key: TaskKey, reason: String) {
-        self.settle(key, |state| {
-            if matches!(state.stop, Stop::Running) {
-                state.stop = Stop::Failed(Failure { task: key, reason });
+        self.settle(key, |shared| {
+            if matches!(shared.state, RunState::Running | RunState::Interrupted) {
+                shared.state = RunState::Failed(Failure { task: key, reason });
             }
         });
+    }
+
+    /// Requests a graceful wind-down: it upgrades `Running` to `Interrupted`
+    /// and nothing else, since every other state already outranks an
+    /// interrupt in the precedence order.
+    pub(crate) fn interrupt(&self) {
+        let mut shared = self.lock();
+        if matches!(shared.state, RunState::Running) {
+            shared.state = RunState::Interrupted;
+        }
+        self.state_changed.notify_all();
     }
 
     /// Records an infrastructure fault: it outranks a definitive candidate
@@ -177,9 +201,9 @@ impl Coord {
     /// the error. The first fault wins; a later candidate failure never
     /// displaces it.
     pub(crate) fn fault(&self, key: TaskKey, err: Error) {
-        self.settle(key, |state| {
-            if !matches!(state.stop, Stop::Fault(_)) {
-                state.stop = Stop::Fault(err);
+        self.settle(key, |shared| {
+            if !matches!(shared.state, RunState::Fault(_)) {
+                shared.state = RunState::Fault(err);
             }
         });
     }
@@ -191,11 +215,11 @@ mod tests {
 
     use super::*;
 
-    /// A coordinator in a given stop state, with an empty queue and lease table.
-    fn coord_with(stop: Stop) -> Coord {
-        let coord = Coord::new();
-        coord.lock().stop = stop;
-        coord
+    /// A coordinator in a given run state, with an empty queue and lease table.
+    fn coordinator_with(state: RunState) -> Coordinator {
+        let coordinator = Coordinator::new();
+        coordinator.lock().state = state;
+        coordinator
     }
 
     /// A throwaway task key.
@@ -205,21 +229,63 @@ mod tests {
 
     #[test]
     fn a_fault_upgrades_a_definitive_candidate_failure() {
-        let coord = coord_with(Stop::Failed(Failure {
+        let coordinator = coordinator_with(RunState::Failed(Failure {
             task: a_key(),
             reason: "candidate rejected".to_string(),
         }));
-        coord.fault(a_key(), Error::Corruption("store broke".to_string()));
-        assert!(matches!(coord.lock().stop, Stop::Fault(_)));
+        coordinator.fault(a_key(), Error::Corruption("store broke".to_string()));
+        assert!(matches!(coordinator.lock().state, RunState::Fault(_)));
     }
 
     #[test]
     fn the_first_fault_is_kept_over_a_later_one() {
-        let coord = coord_with(Stop::Fault(Error::Corruption("first fault".to_string())));
-        coord.fault(a_key(), Error::Validation("second fault".to_string()));
-        match &coord.lock().stop {
-            Stop::Fault(e) => assert_eq!(e.to_string(), "store corruption: first fault"),
-            _ => panic!("expected a fault stop state"),
+        let coordinator = coordinator_with(RunState::Fault(Error::Corruption(
+            "first fault".to_string(),
+        )));
+        coordinator.fault(a_key(), Error::Validation("second fault".to_string()));
+        match &coordinator.lock().state {
+            RunState::Fault(e) => assert_eq!(e.to_string(), "store corruption: first fault"),
+            _ => panic!("expected a fault run state"),
         }
+    }
+
+    #[test]
+    fn an_interrupt_upgrades_a_running_coordinator() {
+        let coordinator = Coordinator::new();
+        coordinator.interrupt();
+        assert!(matches!(coordinator.lock().state, RunState::Interrupted));
+    }
+
+    #[test]
+    fn an_interrupt_never_displaces_a_definitive_failure() {
+        let coordinator = coordinator_with(RunState::Failed(Failure {
+            task: a_key(),
+            reason: "candidate rejected".to_string(),
+        }));
+        coordinator.interrupt();
+        assert!(matches!(coordinator.lock().state, RunState::Failed(_)));
+    }
+
+    #[test]
+    fn an_interrupt_never_displaces_a_fault() {
+        let coordinator = coordinator_with(RunState::Fault(Error::Corruption(
+            "store broke".to_string(),
+        )));
+        coordinator.interrupt();
+        assert!(matches!(coordinator.lock().state, RunState::Fault(_)));
+    }
+
+    #[test]
+    fn a_definitive_failure_upgrades_an_interrupt() {
+        let coordinator = coordinator_with(RunState::Interrupted);
+        coordinator.terminate(a_key(), "candidate rejected".to_string());
+        assert!(matches!(coordinator.lock().state, RunState::Failed(_)));
+    }
+
+    #[test]
+    fn a_fault_upgrades_an_interrupt() {
+        let coordinator = coordinator_with(RunState::Interrupted);
+        coordinator.fault(a_key(), Error::Corruption("store broke".to_string()));
+        assert!(matches!(coordinator.lock().state, RunState::Fault(_)));
     }
 }

@@ -5,7 +5,7 @@ use sima_core::{Dec, Enc, Result, hash_bytes};
 use crate::canonical::{self, TAG_PARAMS};
 
 /// Run parameters for evaluating a candidate: extent, step count, budgets —
-/// whatever the family's evaluation needs beyond the candidate itself.
+/// whatever the domain's evaluation needs beyond the candidate itself.
 /// Opaque to the infrastructure and interpreted under the paired spec's
 /// format id; params carries no format id of its own. Config is the
 /// producer: generators produce specs (the search axis), config produces
@@ -67,7 +67,7 @@ mod tests {
     /// Python blake3 (pip package `blake3`):
     /// `blake3.blake3(bytes.fromhex(PINNED_EMPTY_HEX)).hexdigest()`.
     /// Pinned on its own because the empty-params id recurs wherever a
-    /// family needs no run parameters.
+    /// domain needs no run parameters.
     const PINNED_EMPTY_ID_HEX: &str =
         "f4dceb2cab41bf105e41382f26f55d3d053b6141d75509bbd16b3d24913e11c6";
 

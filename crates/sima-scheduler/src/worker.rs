@@ -3,7 +3,7 @@
 //!
 //! This is the interim in-process transport: a fixed pool of threads pulling
 //! from the shared queue. It is deliberately narrow — evaluate, classify,
-//! commit — with the lease and settlement bookkeeping on [`Coord`], so a
+//! commit — with the lease and settlement bookkeeping on [`Coordinator`], so a
 //! subprocess-based worker can replace the execution transport (the `execute`
 //! call and its panic classification) while the coordination around it stays
 //! in place. The executor trust boundary lives here: the worker holds the only
@@ -19,7 +19,7 @@ use sima_model::{ArtifactRef, RunConfig, TaskIdentity, TaskKey, TaskRecord};
 use sima_store::Store;
 
 use crate::config::ExecutionConfig;
-use crate::coord::{Coord, Pending};
+use crate::coordinator::{Coordinator, Pending};
 use crate::event::LifecycleEvent;
 use crate::journal_sink::emit;
 use crate::task_source::RunnableTask;
@@ -28,7 +28,7 @@ use crate::task_source::RunnableTask;
 /// coordination, the store it commits through, the run config and executor it
 /// evaluates against, the execution settings, and its own journal sender.
 pub(crate) struct WorkerContext<'a> {
-    pub(crate) coord: &'a Coord,
+    pub(crate) coordinator: &'a Coordinator,
     pub(crate) store: &'a Store,
     pub(crate) config: &'a RunConfig,
     pub(crate) executor: &'a (dyn Executor + Sync),
@@ -39,7 +39,7 @@ pub(crate) struct WorkerContext<'a> {
 /// Runs the worker: lease a task, evaluate it, resolve the outcome, repeat
 /// until the run winds down.
 pub(crate) fn worker_loop(worker: WorkerId, ctx: WorkerContext<'_>) {
-    while let Some(pending) = ctx.coord.next_task(worker) {
+    while let Some(pending) = ctx.coordinator.next_task(worker) {
         // A panic escaping process() outside the executor's own catch_unwind —
         // the commit path, a store read, the settle code — would leak the
         // task's lease, and drive() would then block forever on
@@ -50,7 +50,7 @@ pub(crate) fn worker_loop(worker: WorkerId, ctx: WorkerContext<'_>) {
         // fault content is never observed and the panic surfaces as the bug it
         // is. Executor panics are unaffected: process()'s inner handler catches
         // them and settles the lease, so the guard is disarmed before it drops.
-        let guard = PanicGuard::arm(ctx.coord, pending.key);
+        let guard = PanicGuard::arm(ctx.coordinator, pending.key);
         process(&ctx, worker, pending);
         guard.disarm();
     }
@@ -61,16 +61,16 @@ pub(crate) fn worker_loop(worker: WorkerId, ctx: WorkerContext<'_>) {
 /// `catch_unwind` cannot strand the lease and hang the driver. A normal
 /// `process` return disarms it, since the lease is already settled by then.
 struct PanicGuard<'a> {
-    coord: &'a Coord,
+    coordinator: &'a Coordinator,
     key: TaskKey,
     armed: bool,
 }
 
 impl<'a> PanicGuard<'a> {
-    /// Arms the guard over `key`'s lease on `coord`.
-    fn arm(coord: &'a Coord, key: TaskKey) -> PanicGuard<'a> {
+    /// Arms the guard over `key`'s lease on `coordinator`.
+    fn arm(coordinator: &'a Coordinator, key: TaskKey) -> PanicGuard<'a> {
         PanicGuard {
-            coord,
+            coordinator,
             key,
             armed: true,
         }
@@ -90,7 +90,7 @@ impl Drop for PanicGuard<'_> {
             // quiescence; the fault's content is unobservable because
             // thread::scope re-raises the worker's panic at join, so this is
             // purely a liveness release.
-            self.coord.fault(
+            self.coordinator.fault(
                 self.key,
                 Error::Validation(format!(
                     "worker panicked while processing task {}",
@@ -116,6 +116,10 @@ fn process(ctx: &WorkerContext<'_>, worker: WorkerId, pending: Pending) {
             attempt,
         },
     );
+    // A death here strands nothing: the lease is in-memory only, and the
+    // kernel releases the orchestrator lock with the process, so a resumed
+    // run re-derives the task in its frontier.
+    sima_core::crashpoint("lease.held");
 
     // Resolve the input-state object the identity references: the key carries
     // its digest, the executor receives its bytes. A load failure is an
@@ -166,7 +170,7 @@ fn process(ctx: &WorkerContext<'_>, worker: WorkerId, pending: Pending) {
                             stats_hex: to_hex(&stats.bytes),
                         },
                     );
-                    ctx.coord.resolve(key);
+                    ctx.coordinator.resolve(key);
                 }
                 Err(e) => task_fault(ctx, task, attempt, key, e),
             }
@@ -183,7 +187,7 @@ fn process(ctx: &WorkerContext<'_>, worker: WorkerId, pending: Pending) {
             );
             if attempt + 1 < ctx.exec.max_attempts {
                 if ctx
-                    .coord
+                    .coordinator
                     .requeue(key, RunnableTask { spec, identity }, attempt + 1)
                 {
                     emit(
@@ -196,7 +200,7 @@ fn process(ctx: &WorkerContext<'_>, worker: WorkerId, pending: Pending) {
                 }
             } else {
                 // Retries exhausted: the transient failure is now definitive.
-                ctx.coord.terminate(key, reason);
+                ctx.coordinator.terminate(key, reason);
             }
         }
         Ok(Ok(Outcome::Rejected { reason, stats })) => {
@@ -209,7 +213,7 @@ fn process(ctx: &WorkerContext<'_>, worker: WorkerId, pending: Pending) {
                     stats_hex: to_hex(&stats.bytes),
                 },
             );
-            ctx.coord.terminate(key, reason);
+            ctx.coordinator.terminate(key, reason);
         }
         // An infrastructure fault from the executor (e.g. a structurally
         // invalid spec) fails the whole run, distinct from a candidate that
@@ -226,7 +230,7 @@ fn process(ctx: &WorkerContext<'_>, worker: WorkerId, pending: Pending) {
                     stats_hex: String::new(),
                 },
             );
-            ctx.coord.terminate(key, reason);
+            ctx.coordinator.terminate(key, reason);
         }
     }
 }
@@ -257,7 +261,7 @@ fn task_fault(ctx: &WorkerContext<'_>, task: String, attempt: u32, key: TaskKey,
             error: err.to_string(),
         },
     );
-    ctx.coord.fault(key, err);
+    ctx.coordinator.fault(key, err);
 }
 
 /// Renders a caught panic payload as a rejection reason, recovering the common
@@ -277,12 +281,12 @@ mod tests {
     use std::sync::mpsc;
     use std::time::{Duration, Instant};
 
-    use sima_contracts::{StubBehavior, StubExecutor, StubProgram};
     use sima_core::hash_bytes;
+    use sima_domains::{StubBehavior, StubExecutor, StubProgram};
     use sima_model::{EnvironmentId, FormatId, GeneratorConfig, GeneratorId, Params, Spec, SpecId};
 
     use super::*;
-    use crate::coord::Stop;
+    use crate::coordinator::RunState;
     use crate::lease::Lease;
 
     /// A throwaway task key.
@@ -301,36 +305,36 @@ mod tests {
 
     #[test]
     fn a_panicking_worker_releases_its_lease_as_a_fault() {
-        let coord = Coord::new();
+        let coordinator = Coordinator::new();
         let key = a_key();
-        coord.lock().leases.insert(key, a_lease(0));
+        coordinator.lock().leases.insert(key, a_lease(0));
         // A panic escaping the guarded region unwinds through the guard's Drop.
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _guard = PanicGuard::arm(&coord, key);
+            let _guard = PanicGuard::arm(&coordinator, key);
             panic!("worker body panicked");
         }));
         assert!(result.is_err());
-        let state = coord.lock();
+        let shared = coordinator.lock();
         // The lease is released and the run winds down, so drive() can observe
         // quiescence instead of blocking forever.
-        assert!(!state.leases.contains_key(&key));
-        assert!(matches!(state.stop, Stop::Fault(_)));
+        assert!(!shared.leases.contains_key(&key));
+        assert!(matches!(shared.state, RunState::Fault(_)));
     }
 
     #[test]
     fn a_disarmed_guard_leaves_the_run_running() {
-        let coord = Coord::new();
+        let coordinator = Coordinator::new();
         let key = a_key();
-        coord.lock().leases.insert(key, a_lease(0));
+        coordinator.lock().leases.insert(key, a_lease(0));
         {
-            let guard = PanicGuard::arm(&coord, key);
+            let guard = PanicGuard::arm(&coordinator, key);
             guard.disarm();
         }
-        let state = coord.lock();
+        let shared = coordinator.lock();
         // Disarm settles nothing itself — the normal process() path does — so
         // the state is untouched: no fault, and the lease still stands.
-        assert!(matches!(state.stop, Stop::Running));
-        assert!(state.leases.contains_key(&key));
+        assert!(matches!(shared.state, RunState::Running));
+        assert!(shared.leases.contains_key(&key));
     }
 
     /// The outcome of running `process` once against a stub `Succeed` candidate
@@ -339,7 +343,7 @@ mod tests {
         _dir: tempfile::TempDir,
         store: Store,
         identity: TaskIdentity,
-        coord: Coord,
+        coordinator: Coordinator,
         events: Vec<LifecycleEvent>,
         /// The artifact bytes the stub executor produces for this identity when
         /// it receives `state`'s bytes directly.
@@ -415,11 +419,11 @@ mod tests {
             _ => panic!("a stub Succeed candidate completes"),
         };
 
-        let coord = Coord::new();
+        let coordinator = Coordinator::new();
         let (tx, rx) = mpsc::channel();
         {
             let ctx = WorkerContext {
-                coord: &coord,
+                coordinator: &coordinator,
                 store: &store,
                 config: &config,
                 executor: &executor,
@@ -441,7 +445,7 @@ mod tests {
             _dir: dir,
             store,
             identity,
-            coord,
+            coordinator,
             events,
             expected_artifact,
         })
@@ -466,7 +470,7 @@ mod tests {
     fn a_missing_input_state_object_is_a_fault() -> Result<()> {
         let run = run_process(b"never stored", false)?;
         assert!(run.store.record(&run.identity.key())?.is_none());
-        assert!(matches!(run.coord.lock().stop, Stop::Fault(_)));
+        assert!(matches!(run.coordinator.lock().state, RunState::Fault(_)));
         assert!(
             run.events
                 .iter()

@@ -3,6 +3,11 @@ name = "sima-scheduler"
 version.workspace = true
 edition.workspace = true
 
+[features]
+# Forwards sima-core's crash-injection so the point planted in the worker
+# can be armed by a test harness.
+crash-injection = ["sima-core/crash-injection"]
+
 [dependencies]
 sima-core = { path = "../sima-core" }
 sima-model = { path = "../sima-model" }
@@ -11,7 +16,11 @@ sima-contracts = { path = "../sima-contracts" }
 serde.workspace = true
 serde_json.workspace = true
 
+# The scheduler's shipped library never depends on sima-domains; its tests
+# use the stub domain as a deterministic substrate through this dev-dependency,
+# a downward, test-only edge invisible in the production artifact.
 [dev-dependencies]
+sima-domains = { path = "../sima-domains" }
 tempfile.workspace = true
 
 [lints]

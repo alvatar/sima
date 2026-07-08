@@ -9,6 +9,9 @@
 - Never narrate your own tone or stance. No meta-commentary about how you are speaking — no "I'll say this flatly", "not defending it", "to be clear", "naming this directly", "stating plainly", or any phrase that describes the manner of your reply instead of just delivering it. Say the thing; do not announce how you are saying it.
 - Define things by what they are, not by what they are not. A negative ("this is not X", "rather than Y") bloats without adding clarity; state the positive fact. Applies to prose, code comments, and docs.
 - Do not invent ad-hoc hyphenated terms as shorthand ("line-framed", "no-replace"); use plain, established wording and spell the mechanism out. Applies to prose, code comments, and docs.
+- Professional register in everything written — PRs, docs, comments, reports. No jokes, metaphors, or playful phrasing ("the exit exam", "sails past").
+- Write for a senior engineer, not a domain expert: explain domain-specific concepts (cryptography, scheduling theory) at that level, and skip explanations of general engineering.
+- Reading takes time. Include only what changes the reader's understanding or decision; cut everything else. PR descriptions cover what changed and why, in the conventional shape of a PR; they leave out ancillary material such as the tests performed or the process followed.
 
 ## General engineering rules
 
@@ -61,11 +64,11 @@
 - Invariants below are settled in discussion before being recorded here; new ones are added the same way.
 
 Settled invariants:
-- Layering, strictly downward, enforced by workspace crate dependency edges: `sima-core` → `sima-model` → `sima-store` → `sima-contracts` → `sima-scheduler` → `sima-pipeline` → `sima` (CLI binary). No upward imports, ever; a lower crate never depends on a higher one.
+- Layering, strictly downward, enforced by workspace crate dependency edges: `sima-core` → `sima-model` → `sima-store` → `sima-contracts` → `sima-domains` → `sima-scheduler` → `sima-pipeline` → `sima` (CLI binary). No upward imports, ever; a lower crate never depends on a higher one. `sima-domains` is imported by the pipeline; the scheduler's `[dependencies]` never include it, though its tests may take it as a dev-dependency for the reference stub domain.
 - The store is the only durable state. Queues, schedulers, and orchestrators are ephemeral; a task source derives the currently-runnable frontier from (config, store state) — static batches and segment chains are two implementations of that one interface. Resume, crash-recovery, and re-run are one code path: re-derive the frontier, continue.
-- One orchestrator per run — the `sima run` process itself, no daemon; single-writer enforced by a stale-detectable lease file. Workers are stateless leaseholders.
+- One orchestrator per run — the `sima run` process itself, no daemon; single-writer enforced by an OS file lock the kernel releases when the holder exits, so no staleness protocol exists; the lock file's content (pid, hostname) is diagnostic only. Workers are stateless leaseholders.
 - Executors are pure compute: they receive (spec, params, seed, env) and return artifacts + stats, never touching the store. Workers commit results through the catalog. The trust boundary lives on this seam.
-- Candidates are opaque at the infrastructure layer: a spec is (format id, opaque bytes), content-addressed. Families interpret specs; "genome" is family vocabulary. Run parameters are a second opaque content-addressed blob (params): generators produce specs, config produces params, and the spec's format id governs the interpretation of both — so one candidate stays addressable across evaluation stages and the generator contract never carries evaluation policy.
+- Candidates are opaque at the infrastructure layer: a spec is (format id, opaque bytes), content-addressed. Domains interpret specs; "genome" is domain vocabulary. Run parameters are a second opaque content-addressed blob (params): generators produce specs, config produces params, and the spec's format id governs the interpretation of both — so one candidate stays addressable across evaluation stages and the generator contract never carries evaluation policy.
 - Two serialization worlds: identity-bearing bytes (anything hashed) go through the canonical `Enc`/`Dec` encoding exclusively; human-readable artifacts are serde and never identity-bearing.
 - Anything claimed deterministic is proven by a test (same config run in two fresh stores → identical manifests), never assumed. Manifests are canonicalized so run hashes are independent of worker completion order; journals are observational and excluded from equality criteria.
 
@@ -87,7 +90,7 @@ Applies to `docs/` and long-form comments:
 ## Code quality
 
 - Prefer minimal clean module boundaries over giant files
-- Module layout rule: use a directory module only when it represents a real semantic namespace; if a module has no submodules, prefer a single `name.rs` file. `mod.rs` may contain module docs, submodule declarations, and small curated re-exports that define the namespace surface. Do not put substantive implementation logic in `mod.rs`; that code should go into its own file/module.
+- Module layout rule: use a directory module only when it represents a real semantic namespace; if a module has no submodules, prefer a single `name.rs` file. `mod.rs` may contain module docs, submodule declarations, and small curated re-exports that define the namespace surface. Do not put substantive implementation logic in `mod.rs`; that code should go into its own file/module. Exception: integration-test helpers live in `tests/common/mod.rs` and may hold the helper logic directly, because Cargo compiles every top-level file under a crate's `tests/` directory as its own test crate, so shared code must sit in a subdirectory.
 - Naming rule: if a module primarily exists to hold one major type, the file name should match the type name clearly (e.g. `RenderState` -> `render_state.rs`)
 - Add inline comments for key operations / tricky logic
 - Comments should not have historical references to the previous versions of the code. They should be explain what the code does now, exclusively.

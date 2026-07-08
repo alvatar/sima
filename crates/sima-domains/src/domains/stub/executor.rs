@@ -16,7 +16,7 @@ use sima_core::{Enc, Error, Hash, Result, hash_bytes};
 use sima_model::FormatId;
 
 use super::program::{StubBehavior, StubProgram};
-use crate::executor::{Artifact, ExecutionContext, Executor, Outcome, Stats, TaskInput};
+use sima_contracts::{Artifact, ExecutionContext, Executor, Outcome, Stats, TaskInput};
 
 /// Evaluates a candidate carrying a [`StubProgram`], under format `stub.v1`.
 #[derive(Debug, Clone)]
@@ -115,7 +115,7 @@ fn stats(ctx: &ExecutionContext) -> Stats {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::executor::WorkerId;
+    use sima_contracts::WorkerId;
     use sima_model::{EnvironmentId, Params, Spec};
 
     fn spec_for(behavior: StubBehavior, nonce: u64) -> Result<Spec> {

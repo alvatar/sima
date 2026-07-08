@@ -15,7 +15,8 @@
 //! excluded from every equality criterion.
 
 mod config;
-mod coord;
+mod control;
+mod coordinator;
 mod driver;
 mod event;
 mod journal_sink;
@@ -26,6 +27,7 @@ mod watchdog;
 mod worker;
 
 pub use config::ExecutionConfig;
+pub use control::RunControl;
 pub use driver::{RunOutcome, run};
 pub use event::LifecycleEvent;
 pub use static_batch::StaticBatch;

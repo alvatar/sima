@@ -9,7 +9,7 @@ use sima_core::{Dec, Enc, Result, prng};
 use sima_model::{FormatId, GeneratorId, Spec};
 
 use super::program::{StubBehavior, StubProgram};
-use crate::generator::Generator;
+use sima_contracts::Generator;
 
 /// The stub generator's params: the behaviors to program into a run's
 /// candidates, in order. Its canonical form carries no domain tag — it lives
@@ -184,7 +184,7 @@ mod tests {
     #[test]
     fn generate_stamps_the_requested_format() -> Result<()> {
         let generator = StubGenerator::new()?;
-        let format = FormatId::new("family-a.v1")?;
+        let format = FormatId::new("domain-a.v1")?;
         let params = config(vec![StubBehavior::Succeed, StubBehavior::Sleep(0)]);
         for spec in generator.generate(1, &params, &format)? {
             assert_eq!(spec.format, format);

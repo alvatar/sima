@@ -5,7 +5,7 @@ use sima_core::{Dec, Enc, Result, hash_bytes};
 
 use crate::canonical::{self, TAG_SPEC};
 
-/// Name of the format a family registers to interpret specs — and the run
+/// Name of the format a domain registers to interpret specs — and the run
 /// params paired with them. Validated by the shared name rule: 1..=64
 /// bytes in `[a-z0-9._-]`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -25,9 +25,9 @@ impl FormatId {
     }
 }
 
-/// A candidate: opaque bytes interpreted by the family registered under
+/// A candidate: opaque bytes interpreted by the domain registered under
 /// `format`. The bytes carry the candidate exclusively — the genome,
-/// program, or whatever the family evolves; run parameters travel in the
+/// program, or whatever the domain evolves; run parameters travel in the
 /// separate [`crate::Params`] blob, whose interpretation this spec's format
 /// id also governs.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -202,11 +202,11 @@ mod tests {
     #[test]
     fn same_candidate_bytes_under_two_formats_have_distinct_ids() -> Result<()> {
         let a = Spec {
-            format: FormatId::new("family-a.v1")?,
+            format: FormatId::new("domain-a.v1")?,
             bytes: vec![0xAA, 0xBB],
         };
         let b = Spec {
-            format: FormatId::new("family-b.v1")?,
+            format: FormatId::new("domain-b.v1")?,
             bytes: vec![0xAA, 0xBB],
         };
         assert_ne!(a.id(), b.id());

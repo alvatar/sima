@@ -3,8 +3,26 @@ name = "sima"
 version.workspace = true
 edition.workspace = true
 
+[features]
+# Forwards crash-injection to the layers that plant points, so the crash
+# harness can arm them in this binary.
+crash-injection = ["sima-store/crash-injection", "sima-scheduler/crash-injection"]
+
 [dependencies]
 sima-core = { path = "../sima-core" }
+sima-pipeline = { path = "../sima-pipeline" }
+sima-scheduler = { path = "../sima-scheduler" }
+sima-store = { path = "../sima-store" }
+signal-hook.workspace = true
+
+[dev-dependencies]
+sima-model = { path = "../sima-model" }
+tempfile.workspace = true
+
+# The crash harness runs only with the injection points compiled in.
+[[test]]
+name = "crash"
+required-features = ["crash-injection"]
 
 [lints]
 workspace = true

@@ -48,6 +48,9 @@ impl Store {
             };
         }
         self.put(&bytes)?;
+        // A death here leaves the record object durable but unindexed —
+        // unreferenced content a resumed run rewrites identically.
+        sima_core::crashpoint("commit.after-object");
         // The index-entry pre-check above can go stale: another writer may
         // commit this key in the gap between that read and this write.
         // write_exclusive is the authority that closes the gap — the hard link
@@ -165,6 +168,10 @@ impl Store {
             entries.push(ManifestEntry { task: *key, record });
         }
         let bytes = manifest::to_json_bytes(&Manifest { run: *run, entries });
+        // A death here — every task committed, manifest assembled but not
+        // yet written — leaves the run unfinalized; a resumed run re-derives
+        // an empty frontier and finalizes to the identical bytes.
+        sima_core::crashpoint("finalize.pre-write");
         let path = layout::manifest_path(self.root(), run);
         // The race window is between this read returning NotFound and the
         // write_exclusive below: two finalizers can both see no manifest and both

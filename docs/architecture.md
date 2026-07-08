@@ -30,10 +30,11 @@ Strictly downward dependencies, enforced by workspace crate edges.
 | L0    | `sima-core`      | error type, canonical encoding, content hash, PRNG                    |
 | L1    | `sima-model`     | identity vocabulary: spec, params, environment, task key, record, run config |
 | L2    | `sima-store`     | durable state: CAS, task index, run manifests, journals               |
-| L3    | `sima-contracts` | generator/executor contracts over opaque specs and params; stub generator and executor |
-| L4    | `sima-scheduler` | task sources, worker pool, leases, retry, run driver                 |
-| L5    | `sima-pipeline`  | orchestration, resume, re-evaluation (planned)                       |
-| L6    | `sima`           | CLI binary                                                            |
+| L3    | `sima-contracts` | generator/executor contracts over opaque specs and params            |
+| L4    | `sima-domains`   | per-format executors, generators, codecs, environments, id dispatch, and config translation; the reference stub domain |
+| L5    | `sima-scheduler` | task sources, worker pool, leases, retry, run driver                 |
+| L6    | `sima-pipeline`  | config loading, orchestration, run status                            |
+| L7    | `sima`           | CLI: run, status                                                      |
 
 The store is the only durable state. Queues, schedulers, and orchestrators
 are ephemeral: the runnable frontier is derived from (config, store state),
@@ -106,6 +107,7 @@ One `Store` type over a root directory:
 <root>/tasks/<task-key>          index entry: record-hash hex + newline
 <root>/runs/<run-id>/manifest.json
 <root>/runs/<run-id>/journal
+<root>/runs/<run-id>/orchestrator.lock
 ```
 
 ### Components
@@ -213,14 +215,19 @@ every equality criterion.
 Store methods take `&self` and are safe under concurrent writers: identical
 content converges through rename and link atomicity, and a conflicting racer
 on an index entry or manifest fails loudly instead of overwriting. A run's
-journal has a single writer, the orchestrator; single-writer-per-run will be
-enforced by the orchestrator lease file.
+journal has a single writer, the orchestrator; one orchestrator per run is
+enforced by `Store::acquire_run_lock`, the OS file lock on the run's
+`orchestrator.lock` file. The kernel releases that lock the instant its
+holder exits, however it exits, so no staleness protocol exists. The file's
+content (pid, hostname) is diagnostic only — it names the holder in the
+validation error a second acquirer receives — and is never consulted for
+liveness.
 
 ## `sima-contracts` (L3)
 
-The two seams the search substrate runs candidates through, plus deterministic
-stub implementations of both. A `Generator` produces a run's candidate specs
-from `(root_seed, params, format)`, deterministically. An `Executor`
+The two seams the search substrate runs candidates through. A `Generator`
+produces a run's candidate specs from `(root_seed, params, format)`,
+deterministically. An `Executor`
 interprets one format: it receives one candidate and returns what that
 evaluation produced. Both are pure compute over `sima-model` values; the crate
 depends on `sima-model` and `sima-core` only and never touches the store, so
@@ -235,14 +242,15 @@ which determine the task key and the committed artifacts. An
 may read but which never influence a committed artifact. The input-state slot
 mirrors the key's `input_state`: the key holds the state object's digest, the
 executor receives the bytes; it enables segmented execution, present in the
-identity surface here and unused by the stub except as identity.
+identity surface here and, for an executor that does not segment, carried
+only as identity.
 
 An execution yields an `Outcome` with three arms: `Completed { artifacts,
 stats }` commits; `Failed { reason, stats }` is a transient failure the
 scheduler may retry; `Rejected { reason, stats }` is a definitive failure the
 scheduler never retries, for a candidate the executor cleanly judges unable to
-produce a result. All three are domain outcomes the family owns, so they are
-ordinary `Ok` values, distinct from `Err`, which is reserved for an
+produce a result. All three are candidate outcomes the domain owns, so they
+are ordinary `Ok` values, distinct from `Err`, which is reserved for an
 infrastructure fault such as a spec whose bytes are not a valid program. This
 keeps candidate failure out of the shared `sima-core::Error` enum. An
 `Artifact` is produced bytes — a name
@@ -251,19 +259,47 @@ through a model `ArtifactRef` — and must be a pure function of the identity
 inputs. `Stats` is opaque observational bytes destined for the journal; it may
 reflect the execution context and never enters a record.
 
-The stub generator and stub executor supply this contract without a GPU or a
-store: a spec carries a stub program selecting one behavior — succeed, flaky
-(fail a bounded number of attempts, then succeed), reject definitively, panic,
-or sleep — so the scheduler has a deterministic, programmable substrate for its
-failure matrix. The
-stub's committed artifact is the digest of the identity inputs alone, so it
-reproduces across attempts and workers; the attempt number folds only into the
-stats and into the gate that decides whether the behavior fails this attempt or
-completes. That gate is the one sanctioned read of the attempt number, and the
-artifact the behavior eventually commits does not depend on which attempt
-reached it.
+## `sima-domains` (L4)
 
-## `sima-scheduler` (L4)
+The executable substance behind each format id. A `Domain` groups what a
+format id binds: the executor that evaluates the format's specs, the
+environment that enters task identity, and the translation of the
+domain-owned `[run.params]` section into the opaque canonical params bytes.
+Generators dispatch separately — one format has one executor but many
+generators — and each generator owns the translation of its own
+`[run.generator]` keys. Both dispatches are static matches keyed on the id; an
+unknown id is a validation error. Each domain's pieces — executor, generator,
+codecs, environment, and translation — live in its own module under
+`domains/`. The crate depends on `sima-contracts` for the traits and on `toml`
+for the translation, and owns the canonical codecs its specs and params hash
+through.
+
+### The translation seam
+
+Human-facing TOML becomes the model's opaque canonical bytes only here,
+through each domain's own codecs — an identity-bearing encoding is never
+hand-rolled at the config layer. The pipeline parses the file structurally and
+hands each opaque section (`[run.params]`, the `[run.generator]` keys) to the
+domain and generator the ids name; the domain returns the canonical bytes.
+`toml` is a dependency of both layers: the pipeline reads the file, a domain
+reads its own sections.
+
+### The stub domain
+
+The stub domain supplies the contracts without a GPU or a store, so the
+scheduler has a deterministic, programmable substrate for its failure matrix:
+a spec carries a stub program selecting one behavior — succeed, flaky (fail a
+bounded number of attempts, then succeed), reject definitively, panic, or
+sleep. The stub's committed artifact is the digest of the identity inputs
+alone, so it reproduces across attempts and workers; the attempt number folds
+only into the stats and into the gate that decides whether the behavior fails
+this attempt or completes. That gate is the one sanctioned read of the attempt
+number, and the artifact the behavior eventually commits does not depend on
+which attempt reached it. The pipeline reaches this domain through the id
+dispatch and the scheduler tests through a dev-dependency; the shipped
+scheduler library never depends on `sima-domains`.
+
+## `sima-scheduler` (L5)
 
 Runs a search from `(RunConfig, store state)`. It is the layer that bridges
 pure executor output into durable store state, so the executor trust boundary
@@ -326,6 +362,25 @@ a domain `Failed` outcome: the journal is observational, so a definitive
 candidate failure is returned intact even when the journal degraded, and the
 journal fault resurfaces on the next run that finalizes over the same store.
 
+### Run control: observer and interrupt
+
+The driver takes a `RunControl` — the caller's handles into a running
+search:
+
+- **observer** — invoked with each typed event on the journal-sink thread,
+  immediately after the event's line is appended: typed events, journal
+  order, one calling thread. Progress rendering consumes this seam.
+- **interrupt** — a level-triggered flag the driver polls within a bounded
+  wait. Once set, the run winds down gracefully: no more tasks are handed
+  out, in-flight attempts finish and commit, queued tasks are abandoned,
+  and the run returns `Interrupted` with no manifest written — the store
+  stays resumable and the next orchestration continues the abandoned work.
+
+The wind-down states form a precedence order — running < interrupted <
+failed < fault — and each setter only upgrades: a definitive failure or an
+infrastructure fault landing during an interrupt wind-down still decides
+the run, and among faults the first wins.
+
 ### Leases and the watchdog
 
 Leases live in memory — `task → (worker, attempt, leased_at)` — since durable
@@ -360,6 +415,9 @@ to one JSON line, with ids and stats rendered as hex. The vocabulary:
 - **run finalized** — every task committed and the manifest was written.
 - **run failed** — a definitive candidate failure terminated the run; no
   manifest was written.
+- **run interrupted** — the caller interrupted the run: in-flight attempts
+  drained and committed, no manifest was written, and the store is
+  resumable.
 
 A single journal-writer thread owns the `JournalWriter` and drains an `mpsc`
 channel the workers, watchdog, and driver send to, which is the single-writer
@@ -368,6 +426,75 @@ between runs; the journal is observational and excluded from every equality
 criterion, so the manifest — sorted by task key at finalize — is byte-identical
 across runs regardless.
 
+## `sima-pipeline` (L6)
+
+The layer a person's configuration enters: it loads `sima.toml`, translates
+it through the domain and generator the config names, and drives the
+scheduler over the configured store.
+
+### Identity and execution in the file
+
+The config file carries the same split the model enforces:
+
+- **`[run]`** — the identity section, canonicalized into `RunConfig`, so
+  its fields define the `RunId`: the root seed, the format, the generator
+  (its id plus the generator-owned keys), and the domain-owned run params.
+- **`[execution]`** — the operational section: the store path (resolved
+  relative to the config file's directory), worker count, attempt cap, and
+  an optional attempt timeout whose absence disables lease-expiry
+  reporting. Never hashed — a run resumed with different execution
+  settings keeps its id.
+
+The structural keys are strict: an unknown key at any level is a validation
+error naming it.
+
+### Config routing
+
+The pipeline parses the file's structure and routes each config section to
+the code that owns it, never interpreting the content itself: the format and
+generator ids dispatch through `sima-domains` (see L4), and the opaque
+`[run.params]` and `[run.generator]` tables pass to the domain and generator
+translations that turn them into canonical bytes. Identity-bearing bytes are
+produced only by those codecs, never hand-rolled here.
+
+### Orchestration
+
+`orchestrate` opens the store (creating it where missing), takes the run's
+orchestrator lock, dispatches the domain and the generator, and calls the
+scheduler; the lock is held for the whole call and releases on return.
+Resume and re-evaluation are this same call — the frontier re-derives from
+store state, so an interrupted or failed run continues where it stopped,
+and a finalized one re-finalizes idempotently without touching an executor.
+
+### Run status
+
+`status` computes a run's observable state from its journal alone. The
+counters — tasks, committed, retried, rejected, faulted, lease expiries —
+sum across every resume segment, and the last run-level event decides the
+state. A journal ending mid-run reads as in progress: a dead orchestrator
+is indistinguishable from a live one by the journal alone.
+
+## `sima` (L7)
+
+The CLI holds no orchestration logic — parsing, rendering, signal
+registration, and exit codes only:
+
+- **`sima run <config.toml>`** — drives the configured run, printing one
+  plain line per meaningful event from the observer seam. SIGINT sets the
+  interrupt flag for a graceful wind-down; a second SIGINT falls through
+  to default death, which is exactly the crash the recovery guarantees
+  cover.
+- **`sima status <config.toml>`** — prints the status block. The config
+  file is the one argument: its execution section names the store and its
+  identity section derives the run id.
+
+Exit codes:
+
+- **0** — the run finalized (or `status` answered);
+- **2** — a definitive candidate failure;
+- **130** — interrupted, store resumable;
+- **1** — everything else: infrastructure fault, config error, usage error.
+
 ## Determinism proof obligations
 
 Anything claimed deterministic is proven by test: same config in two fresh
@@ -375,3 +502,9 @@ stores → byte-identical manifests; a run killed at any crashpoint and
 resumed → manifest identical to an uninterrupted run (crash-injection
 harness); re-evaluation touches no executor; a copied store resumes
 with an identical manifest.
+
+The crash harness rides the crashpoint facility: with the `crash-injection`
+cargo feature compiled in, the `SIMA_CRASHPOINT` environment variable arms
+one named point (`name`, or `name:k` for the k-th hit) and the process
+SIGKILLs itself on reaching it; without the feature the planted calls
+compile to nothing.
