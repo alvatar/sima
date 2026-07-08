@@ -1,5 +1,5 @@
 //! The tui runtime: the subcommand entry, the terminal guard and panic hook,
-//! the key mapping, and the event loop that folds observations into the
+//! the key mapping, and the event loop that applies observations to the
 //! display and drives the run on a background thread.
 
 use std::any::Any;
@@ -37,7 +37,7 @@ thread_local! {
 }
 
 /// How long the loop waits for a key before ticking, in milliseconds. Short
-/// enough that a redraw after a folded event feels immediate.
+/// enough that a redraw after an applied event feels immediate.
 const TICK_MS: u64 = 50;
 
 /// The channel bound between the run thread and the UI loop. Generous enough
@@ -98,8 +98,9 @@ fn key_action(key: KeyEvent) -> Option<KeyAction> {
     }
 }
 
-/// Seeds the display from any existing journal for `config`'s run, folding it
-/// through the shared accumulator so a resumed run shows its prior progress.
+/// Seeds the display from any existing journal for `config`'s run, replaying
+/// it through the same `apply` method `sima status` uses so a resumed run
+/// shows its prior progress.
 /// A store that does not exist yet, or a run never driven, seeds a zeroed
 /// status; a corrupt journal or an I/O fault is a real problem `sima status`
 /// reports, so it surfaces here rather than hiding behind a blank screen.
@@ -119,7 +120,7 @@ fn seed_status(config: &LoadedConfig) -> sima_core::Result<RunStatus> {
 }
 
 /// Runs one terminal session over `config`, returning its exit code. Sets up
-/// the terminal, folds keys and run events into the state, drives the run on a
+/// the terminal, applies keys and run events to the state, drives the run on a
 /// background thread, and tears the terminal down on return.
 fn run_session(config: LoadedConfig, status: RunStatus) -> io::Result<u8> {
     let workers = config.execution.workers;
@@ -150,10 +151,11 @@ fn run_session(config: LoadedConfig, status: RunStatus) -> io::Result<u8> {
             dirty = false;
         }
 
-        // A key press folds in; releases and repeats are ignored. `read` runs
-        // only after `poll` reports an event. A bound key folds its action —
-        // which, behind the help overlay, the state consumes to close it. An
-        // unbound key is ignored, except that it too closes an open overlay.
+        // A key press is handled; releases and repeats are ignored. `read`
+        // runs only after `poll` reports an event. A bound key applies its
+        // action — which, behind the help overlay, the state consumes to close
+        // it. An unbound key is ignored, except that it too closes an open
+        // overlay.
         if event::poll(Duration::from_millis(TICK_MS))?
             && let Event::Key(key) = event::read()?
             && key.kind == KeyEventKind::Press

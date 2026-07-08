@@ -1,12 +1,13 @@
-//! The tui state machine: a [`Msg`] folds into [`TuiState`], which projects a
+//! The tui state machine: [`TuiState`] handles a [`Msg`] and projects a
 //! [`ViewModel`] the view draws.
 //!
-//! `TuiState` owns a [`RunStatus`] and delegates every lifecycle event to its
-//! fold, so the run's counters and worker occupancy come from the one
-//! accumulator `sima status` also uses. Only UI concerns fold here: which run
-//! the session is driving, whether a start or stop is pending for the runtime
-//! to act on, whether an exit is armed, and the session outcome that decides
-//! the exit code. No terminal types, no channels, no I/O.
+//! `TuiState` owns a [`RunStatus`] and applies every lifecycle event to it,
+//! so `sima status` and the tui update the same `RunStatus` type through the
+//! same `apply` method and derive identical state from the same events. Only
+//! UI concerns live here: which run the session is driving, whether a start or
+//! stop is pending for the runtime to act on, whether an exit is armed, and
+//! the session outcome that decides the exit code. No terminal types, no
+//! channels, no I/O.
 
 use std::collections::VecDeque;
 
@@ -35,7 +36,7 @@ pub enum KeyAction {
     Help,
 }
 
-/// A message folded into the UI state: a lifecycle event from the run, a key
+/// A message handled by the UI state: a lifecycle event from the run, a key
 /// press, or the run thread's terminal result.
 #[derive(Debug)]
 pub enum Msg {
@@ -90,10 +91,10 @@ impl SessionOutcome {
     }
 }
 
-/// The UI state: the folded run status plus the session's own concerns.
+/// The UI state: the run status plus the session's own concerns.
 pub struct TuiState {
-    /// The run's observable state, folded from the observer stream through
-    /// the shared accumulator.
+    /// The run's observable state, built from the observer stream through the
+    /// same `apply` method `sima status` uses.
     status: RunStatus,
     /// The configured worker count, for one panel row per worker.
     workers: usize,
@@ -160,7 +161,7 @@ pub struct ViewModel {
 impl TuiState {
     /// An idle session over `status` with `workers` configured workers. The
     /// status seeds the display — zeroed for a fresh store, or replayed from
-    /// an existing journal — and the live stream folds into it from here.
+    /// an existing journal — and the live stream applies to it from here.
     pub fn new(status: RunStatus, workers: usize) -> TuiState {
         TuiState {
             status,
@@ -177,20 +178,20 @@ impl TuiState {
         }
     }
 
-    /// Folds one message into the state.
+    /// Handles one message.
     pub fn handle(&mut self, msg: Msg) {
         match msg {
-            Msg::Event(event) => self.fold_event(event),
-            Msg::Key(action) => self.fold_key(action),
-            Msg::Finished(result) => self.fold_finished(&result),
+            Msg::Event(event) => self.on_event(event),
+            Msg::Key(action) => self.on_key(action),
+            Msg::Finished(result) => self.on_finished(&result),
         }
     }
 
-    /// Folds one lifecycle event into the status and appends its line to the
+    /// Applies one lifecycle event to the status and appends its line to the
     /// log, sharing the wording of `sima run` through [`describe`]. The
-    /// commit count is read after the fold so a commit line shows the count
-    /// that includes it.
-    fn fold_event(&mut self, event: LifecycleEvent) {
+    /// commit count is read after the event is applied so a commit line shows
+    /// the count that includes it.
+    fn on_event(&mut self, event: LifecycleEvent) {
         self.status.apply(&event);
         if let Some(line) = describe(&event, self.status.committed, self.status.tasks) {
             if self.log.len() == LOG_CAPACITY {
@@ -200,12 +201,12 @@ impl TuiState {
         }
     }
 
-    /// Folds a key action into the session's activity and pending requests.
+    /// Applies a key action to the session's activity and pending requests.
     ///
     /// The help overlay is modal: while it is open the next key press closes
     /// it and does nothing else, so a bound key read behind the overlay neither
     /// starts, stops, nor leaves.
-    fn fold_key(&mut self, action: KeyAction) {
+    fn on_key(&mut self, action: KeyAction) {
         if self.help_open {
             self.help_open = false;
             return;
@@ -251,10 +252,10 @@ impl TuiState {
         }
     }
 
-    /// Folds the run thread's return: the session moves to its terminal
+    /// Handles the run thread's return: the session moves to its terminal
     /// state, records the outcome and the exit code it maps to — through the
     /// mapping `sima run` shares — and leaves if an exit was armed.
-    fn fold_finished(&mut self, result: &Result<RunOutcome>) {
+    fn on_finished(&mut self, result: &Result<RunOutcome>) {
         self.activity = Activity::Ended;
         self.outcome = SessionOutcome::of(result);
         self.exit_code = match result {
@@ -280,8 +281,8 @@ impl TuiState {
 
     /// Closes the help overlay if it is open, reporting whether it did. The
     /// runtime calls this for a key with no binding: while the overlay is open
-    /// any key press dismisses it, and a bound key already dismisses it through
-    /// the key fold.
+    /// any key press dismisses it, and a bound key already dismisses it in
+    /// [`on_key`](TuiState::on_key).
     pub fn dismiss_help_if_open(&mut self) -> bool {
         std::mem::take(&mut self.help_open)
     }

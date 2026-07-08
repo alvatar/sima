@@ -1,4 +1,4 @@
-//! [`RunStatus`]: a run's observable state, folded from its lifecycle events.
+//! [`RunStatus`]: a run's observable state, built from its lifecycle events.
 
 use std::collections::BTreeMap;
 
@@ -9,10 +9,11 @@ use sima_store::Store;
 
 use crate::config::LoadedConfig;
 
-/// A run's observable state, folded from its lifecycle events. The same
-/// accumulator serves both feeds: `status` replays a stored journal through
-/// [`apply`](RunStatus::apply), and the tui folds the live observer stream
-/// through it while a run proceeds.
+/// A run's observable state, built from its lifecycle events. `sima status`
+/// and the tui update the same `RunStatus` type through the same
+/// [`apply`](RunStatus::apply) method, so both derive identical state from the
+/// same events: `status` replays a stored journal, and the tui applies each
+/// observer event as it arrives while a run proceeds.
 #[derive(Debug, PartialEq, Eq)]
 pub struct RunStatus {
     /// The run the status describes.
@@ -40,7 +41,7 @@ pub struct RunStatus {
     pub occupancy: BTreeMap<u64, Occupancy>,
 }
 
-/// A worker's current lease, folded from the journal: the leased task's id
+/// A worker's current lease, taken from the journal: the leased task's id
 /// as journaled, and the attempt the worker is running.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Occupancy {
@@ -71,8 +72,8 @@ pub enum RunState {
 }
 
 impl RunStatus {
-    /// A zeroed status for `run`: no events folded, `InProgress`, no leases
-    /// held. Folding a journal or a live event stream through
+    /// A zeroed status for `run`: no events applied, `InProgress`, no leases
+    /// held. Applying a journal or a live event stream through
     /// [`apply`](RunStatus::apply) drives it to the run's observable state.
     pub fn new(run: RunId) -> RunStatus {
         RunStatus {
@@ -88,7 +89,7 @@ impl RunStatus {
         }
     }
 
-    /// Folds one lifecycle event into the status — the total function over
+    /// Applies one lifecycle event to the status — the total function over
     /// the event vocabulary that `status`'s journal replay and the tui's
     /// live stream both use. Counters sum across resume segments; the
     /// run-level events overwrite the state so the last one decides; and
@@ -189,10 +190,10 @@ pub fn status(config: &LoadedConfig) -> Result<RunStatus> {
     from_journal(&store, &config.run.id())
 }
 
-/// Reads `run`'s journal in `store` and folds it into a [`RunStatus`] by
-/// replaying every line through [`RunStatus::apply`] — the same fold the
-/// tui runs over the live event stream, so a resumed run and a first run
-/// derive their state one way.
+/// Reads `run`'s journal in `store` and builds a [`RunStatus`] by replaying
+/// every line through [`RunStatus::apply`] — the same method the tui runs
+/// over the live event stream, so a resumed run and a first run derive their
+/// state one way.
 fn from_journal(store: &Store, run: &RunId) -> Result<RunStatus> {
     let lines = store.journal(run)?;
     if lines.is_empty() {
@@ -216,7 +217,7 @@ mod tests {
     use sima_model::{FormatId, GeneratorConfig, GeneratorId, Params, RunConfig};
 
     fn run_id() -> RunId {
-        RunId::from_hash(hash_bytes(b"fold test run"))
+        RunId::from_hash(hash_bytes(b"status test run"))
     }
 
     fn started(tasks: usize) -> LifecycleEvent {
@@ -380,7 +381,7 @@ mod tests {
     }
 
     /// A minimal run config whose id addresses the parity test's run.
-    fn fold_test_config() -> Result<RunConfig> {
+    fn parity_test_config() -> Result<RunConfig> {
         Ok(RunConfig {
             root_seed: 1,
             format: FormatId::new("stub.v1")?,
@@ -396,7 +397,7 @@ mod tests {
     fn from_journal_equals_a_replay_through_apply() -> Result<()> {
         let dir = tempfile::tempdir().expect("temp dir");
         let store = Store::open(dir.path())?;
-        let config = fold_test_config()?;
+        let config = parity_test_config()?;
         let run = config.id();
         store.create_run(&config)?;
 
