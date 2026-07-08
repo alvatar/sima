@@ -467,6 +467,37 @@ mod tests {
     }
 
     #[test]
+    fn force_quit_while_idle_leaves_clean() {
+        let mut state = idle(1);
+        state.handle(Msg::Key(KeyAction::ForceQuit));
+        assert!(state.should_exit());
+        assert_eq!(
+            state.exit_code(),
+            0,
+            "a force quit with no run in flight is clean"
+        );
+    }
+
+    #[test]
+    fn quit_while_winding_down_arms_the_exit_without_a_second_stop() {
+        let mut state = idle(1);
+        state.handle(Msg::Key(KeyAction::Start));
+        let _ = state.take_start();
+        state.handle(Msg::Key(KeyAction::Stop));
+        assert!(state.take_stop(), "the graceful stop is requested once");
+        state.handle(Msg::Key(KeyAction::Quit));
+        assert!(
+            !state.take_stop(),
+            "quit while winding down does not request a second stop"
+        );
+        assert!(!state.should_exit(), "it waits for the run to return");
+
+        state.handle(Msg::Finished(interrupted()));
+        assert!(state.should_exit(), "the return arms the exit");
+        assert_eq!(state.exit_code(), 130);
+    }
+
+    #[test]
     fn the_exit_code_follows_the_last_terminal_outcome() {
         let mut failed = idle(1);
         failed.handle(Msg::Key(KeyAction::Start));
