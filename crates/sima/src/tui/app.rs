@@ -29,10 +29,11 @@ use super::state::{KeyAction, Msg, TuiState};
 use super::view;
 
 thread_local! {
-    /// Set on the orchestrate thread so the panic hook knows a panic there is
-    /// caught and reported as a fault by [`spawn_run`], and must not touch the
-    /// terminal the UI thread owns.
-    static ON_RUN_THREAD: Cell<bool> = const { Cell::new(false) };
+    /// Set on the UI thread that owns the terminal, so the panic hook restores
+    /// the terminal only for a panic there. Every other thread — the scheduler
+    /// worker threads that run executors, the orchestrate thread — leaves the
+    /// marker unset, so the hook does nothing on their panics.
+    static ON_UI_THREAD: Cell<bool> = const { Cell::new(false) };
 }
 
 /// How long the loop waits for a key before ticking, in milliseconds. Short
@@ -127,6 +128,10 @@ fn run_session(config: LoadedConfig, status: RunStatus) -> io::Result<u8> {
     let mut state = TuiState::new(status, workers);
     let config = Arc::new(config);
 
+    // Mark this as the UI thread that owns the terminal, so the panic hook
+    // restores it only for a panic here and stays inert on worker and
+    // orchestrate threads.
+    ON_UI_THREAD.with(|flag| flag.set(true));
     install_panic_hook();
     let mut guard = TerminalGuard::enter()?;
 
@@ -185,15 +190,16 @@ fn run_session(config: LoadedConfig, status: RunStatus) -> io::Result<u8> {
 /// and its return arrives as [`Msg::Finished`].
 fn spawn_run(config: Arc<LoadedConfig>, tx: SyncSender<Msg>, interrupt: Arc<AtomicBool>) {
     thread::spawn(move || {
-        ON_RUN_THREAD.with(|flag| flag.set(true));
         let events = tx.clone();
         let observer = move |event: &LifecycleEvent| {
             let _ = events.send(Msg::Event(event.clone()));
         };
         // `orchestrate` can unwind rather than return `Err` — the scheduler
         // re-raises a worker or journal-sink panic at its scope join. Catch it
-        // so the UI loop always receives a return: an unwinding run thread
-        // would otherwise never send `Finished` and leave the session hung.
+        // so the UI loop always receives a return: an unwinding orchestrate
+        // thread would otherwise never send `Finished` and leave the session
+        // hung. The panic hook is inert off the UI thread, so it does not touch
+        // the terminal from here.
         let outcome = std::panic::catch_unwind(AssertUnwindSafe(|| {
             let control = RunControl {
                 observer: &observer,
@@ -206,8 +212,8 @@ fn spawn_run(config: Arc<LoadedConfig>, tx: SyncSender<Msg>, interrupt: Arc<Atom
     });
 }
 
-/// Renders a caught panic payload as an error, so a run-thread panic reaches
-/// the UI loop as a fault outcome.
+/// Renders a caught panic payload as an error, so an orchestrate-thread panic
+/// reaches the UI loop as a fault outcome.
 fn panic_fault(payload: Box<dyn Any + Send>) -> Error {
     let text = payload
         .downcast_ref::<&str>()
@@ -218,14 +224,17 @@ fn panic_fault(payload: Box<dyn Any + Send>) -> Error {
 }
 
 /// Restores the terminal on a UI-thread panic before the default hook prints,
-/// so a panic never leaves the shell in raw mode on the alternate screen. A
-/// panic on the run thread is left to [`spawn_run`], which catches it and
-/// reports it as a fault, so the hook neither touches the terminal — the UI
-/// thread owns it — nor prints from there.
+/// so a panic never leaves the shell in raw mode on the alternate screen. The
+/// hook is inert on every other thread: a worker-thread executor panic is
+/// caught around the executor call and surfaces as a rejection or fault line,
+/// and a scheduler-bug panic re-raises at the scope join into the orchestrate
+/// thread, where [`spawn_run`] catches it as `Finished(Err)`. Restoring the
+/// terminal from one of those threads — while the UI loop keeps drawing —
+/// would corrupt the live session, so only the UI thread's panic acts here.
 fn install_panic_hook() {
     let default = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        if ON_RUN_THREAD.with(Cell::get) {
+        if !ON_UI_THREAD.with(Cell::get) {
             return;
         }
         let _ = disable_raw_mode();
