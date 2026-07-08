@@ -193,6 +193,18 @@ enum DriveOutcome {
 /// How long the driver parks between wakeups: an upper bound on how long a
 /// set interrupt flag goes unobserved, since the pool's own notifications
 /// also wake the driver.
+///
+/// Only the driver thread takes this bounded wait; workers park on plain
+/// condvar waits with no timeout. At 50 ms the cost is about 20 uncontended
+/// lock acquisitions per second per run process — one per wakeup, to
+/// re-check quiescence and the interrupt flag under the shared lock. The
+/// poll is what carries a signal into the condvar: a signal handler may not
+/// call `notify_all` (that function is not async-signal-safe), and the
+/// alternative — a waker-registration protocol across the CLI/scheduler
+/// boundary — is disproportionate for a flag this cheap to poll. The
+/// constant can be raised (for example to 250 ms) if the wakeup churn ever
+/// matters, trading interrupt latency up to that bound for fewer
+/// acquisitions.
 const INTERRUPT_POLL: Duration = Duration::from_millis(50);
 
 /// Whether the pool is quiescent: no lease outstanding and, while the run is
