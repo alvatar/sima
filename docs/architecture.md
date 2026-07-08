@@ -30,10 +30,11 @@ Strictly downward dependencies, enforced by workspace crate edges.
 | L0    | `sima-core`      | error type, canonical encoding, content hash, PRNG                    |
 | L1    | `sima-model`     | identity vocabulary: spec, params, environment, task key, record, run config |
 | L2    | `sima-store`     | durable state: CAS, task index, run manifests, journals               |
-| L3    | `sima-contracts` | generator/executor contracts over opaque specs and params; stub generator and executor |
-| L4    | `sima-scheduler` | task sources, worker pool, leases, retry, run driver                 |
-| L5    | `sima-pipeline`  | config loading, family dispatch, orchestration, run status            |
-| L6    | `sima`           | CLI: run, status                                                      |
+| L3    | `sima-contracts` | generator/executor contracts over opaque specs and params            |
+| L4    | `sima-domains`   | per-format executors, generators, codecs, environments, id dispatch, and config translation; the reference stub domain |
+| L5    | `sima-scheduler` | task sources, worker pool, leases, retry, run driver                 |
+| L6    | `sima-pipeline`  | config loading, orchestration, run status                            |
+| L7    | `sima`           | CLI: run, status                                                      |
 
 The store is the only durable state. Queues, schedulers, and orchestrators
 are ephemeral: the runnable frontier is derived from (config, store state),
@@ -224,9 +225,9 @@ liveness.
 
 ## `sima-contracts` (L3)
 
-The two seams the search substrate runs candidates through, plus deterministic
-stub implementations of both. A `Generator` produces a run's candidate specs
-from `(root_seed, params, format)`, deterministically. An `Executor`
+The two seams the search substrate runs candidates through. A `Generator`
+produces a run's candidate specs from `(root_seed, params, format)`,
+deterministically. An `Executor`
 interprets one format: it receives one candidate and returns what that
 evaluation produced. Both are pure compute over `sima-model` values; the crate
 depends on `sima-model` and `sima-core` only and never touches the store, so
@@ -241,14 +242,15 @@ which determine the task key and the committed artifacts. An
 may read but which never influence a committed artifact. The input-state slot
 mirrors the key's `input_state`: the key holds the state object's digest, the
 executor receives the bytes; it enables segmented execution, present in the
-identity surface here and unused by the stub except as identity.
+identity surface here and, for an executor that does not segment, carried
+only as identity.
 
 An execution yields an `Outcome` with three arms: `Completed { artifacts,
 stats }` commits; `Failed { reason, stats }` is a transient failure the
 scheduler may retry; `Rejected { reason, stats }` is a definitive failure the
 scheduler never retries, for a candidate the executor cleanly judges unable to
-produce a result. All three are domain outcomes the family owns, so they are
-ordinary `Ok` values, distinct from `Err`, which is reserved for an
+produce a result. All three are candidate outcomes the domain owns, so they
+are ordinary `Ok` values, distinct from `Err`, which is reserved for an
 infrastructure fault such as a spec whose bytes are not a valid program. This
 keeps candidate failure out of the shared `sima-core::Error` enum. An
 `Artifact` is produced bytes — a name
@@ -257,19 +259,47 @@ through a model `ArtifactRef` — and must be a pure function of the identity
 inputs. `Stats` is opaque observational bytes destined for the journal; it may
 reflect the execution context and never enters a record.
 
-The stub generator and stub executor supply this contract without a GPU or a
-store: a spec carries a stub program selecting one behavior — succeed, flaky
-(fail a bounded number of attempts, then succeed), reject definitively, panic,
-or sleep — so the scheduler has a deterministic, programmable substrate for its
-failure matrix. The
-stub's committed artifact is the digest of the identity inputs alone, so it
-reproduces across attempts and workers; the attempt number folds only into the
-stats and into the gate that decides whether the behavior fails this attempt or
-completes. That gate is the one sanctioned read of the attempt number, and the
-artifact the behavior eventually commits does not depend on which attempt
-reached it.
+## `sima-domains` (L4)
 
-## `sima-scheduler` (L4)
+The executable substance behind each format id. A `Domain` groups what a
+format id binds: the executor that evaluates the format's specs, the
+environment that enters task identity, and the translation of the
+domain-owned `[run.params]` section into the opaque canonical params bytes.
+Generators dispatch separately — one format has one executor but many
+generators — and each generator owns the translation of its own
+`[run.generator]` keys. Both dispatches are static matches keyed on the id; an
+unknown id is a validation error. Each domain's pieces — executor, generator,
+codecs, environment, and translation — live in its own module under
+`domains/`. The crate depends on `sima-contracts` for the traits and on `toml`
+for the translation, and owns the canonical codecs its specs and params hash
+through.
+
+### The translation seam
+
+Human-facing TOML becomes the model's opaque canonical bytes only here,
+through each domain's own codecs — an identity-bearing encoding is never
+hand-rolled at the config layer. The pipeline parses the file structurally and
+hands each opaque section (`[run.params]`, the `[run.generator]` keys) to the
+domain and generator the ids name; the domain returns the canonical bytes.
+`toml` is a dependency of both layers: the pipeline reads the file, a domain
+reads its own sections.
+
+### The stub domain
+
+The stub domain supplies the contracts without a GPU or a store, so the
+scheduler has a deterministic, programmable substrate for its failure matrix:
+a spec carries a stub program selecting one behavior — succeed, flaky (fail a
+bounded number of attempts, then succeed), reject definitively, panic, or
+sleep. The stub's committed artifact is the digest of the identity inputs
+alone, so it reproduces across attempts and workers; the attempt number folds
+only into the stats and into the gate that decides whether the behavior fails
+this attempt or completes. That gate is the one sanctioned read of the attempt
+number, and the artifact the behavior eventually commits does not depend on
+which attempt reached it. The pipeline reaches this domain through the id
+dispatch and the scheduler tests through a dev-dependency; the shipped
+scheduler library never depends on `sima-domains`.
+
+## `sima-scheduler` (L5)
 
 Runs a search from `(RunConfig, store state)`. It is the layer that bridges
 pure executor output into durable store state, so the executor trust boundary
@@ -396,10 +426,10 @@ between runs; the journal is observational and excluded from every equality
 criterion, so the manifest — sorted by task key at finalize — is byte-identical
 across runs regardless.
 
-## `sima-pipeline` (L5)
+## `sima-pipeline` (L6)
 
 The layer a person's configuration enters: it loads `sima.toml`, translates
-it through the family and generator the config names, and drives the
+it through the domain and generator the config names, and drives the
 scheduler over the configured store.
 
 ### Identity and execution in the file
@@ -408,7 +438,7 @@ The config file carries the same split the model enforces:
 
 - **`[run]`** — the identity section, canonicalized into `RunConfig`, so
   its fields define the `RunId`: the root seed, the format, the generator
-  (its id plus the generator-owned keys), and the family-owned run params.
+  (its id plus the generator-owned keys), and the domain-owned run params.
 - **`[execution]`** — the operational section: the store path (resolved
   relative to the config file's directory), worker count, attempt cap, and
   an optional attempt timeout whose absence disables lease-expiry
@@ -418,23 +448,19 @@ The config file carries the same split the model enforces:
 The structural keys are strict: an unknown key at any level is a validation
 error naming it.
 
-### Family dispatch and the translation seam
+### Config routing
 
-A `Family` groups what a format id binds: the executor that evaluates the
-format's specs, the environment that enters task identity, and the
-translation of the family-owned `[run.params]` section into the opaque
-canonical params bytes. Generators dispatch separately — one format has one
-executor but many generators — and each generator owns the translation of
-its own `[run.generator]` keys. Both dispatches are static matches; unknown
-ids are validation errors. The pipeline routes each config section to the
-dispatched-to code and never interprets its content: the `toml` dependency
-stops at this layer, and canonical bytes are produced only by the codecs
-the model and contracts own.
+The pipeline parses the file's structure and routes each config section to
+the code that owns it, never interpreting the content itself: the format and
+generator ids dispatch through `sima-domains` (see L4), and the opaque
+`[run.params]` and `[run.generator]` tables pass to the domain and generator
+translations that turn them into canonical bytes. Identity-bearing bytes are
+produced only by those codecs, never hand-rolled here.
 
 ### Orchestration
 
 `orchestrate` opens the store (creating it where missing), takes the run's
-orchestrator lock, dispatches the family and the generator, and calls the
+orchestrator lock, dispatches the domain and the generator, and calls the
 scheduler; the lock is held for the whole call and releases on return.
 Resume and re-evaluation are this same call — the frontier re-derives from
 store state, so an interrupted or failed run continues where it stopped,
@@ -448,7 +474,7 @@ sum across every resume segment, and the last run-level event decides the
 state. A journal ending mid-run reads as in progress: a dead orchestrator
 is indistinguishable from a live one by the journal alone.
 
-## `sima` (L6)
+## `sima` (L7)
 
 The CLI holds no orchestration logic — parsing, rendering, signal
 registration, and exit codes only:
