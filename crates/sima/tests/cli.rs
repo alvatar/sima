@@ -100,6 +100,19 @@ fn status_on_a_missing_store_exits_1_and_creates_nothing() {
 }
 
 #[test]
+fn an_extensionless_config_argument_resolves_to_the_toml_file() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    write_config(dir.path(), r#""succeed""#);
+    let bare = dir.path().join("sima");
+    let path = bare.to_str().expect("utf-8 path");
+
+    let run = sima(&["run", path]);
+    assert_eq!(run.status.code(), Some(0), "{run:?}");
+    let status = sima(&["status", path]);
+    assert_eq!(status.status.code(), Some(0), "{status:?}");
+}
+
+#[test]
 fn a_malformed_config_exits_1() {
     let dir = tempfile::tempdir().expect("temp dir");
     let path = dir.path().join("broken.toml");

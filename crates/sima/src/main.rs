@@ -11,7 +11,7 @@
 
 mod render;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -31,16 +31,33 @@ const EXIT_ERROR: u8 = 1;
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.iter().map(String::as_str).collect::<Vec<_>>()[..] {
-        ["run", config] => run_command(Path::new(config)),
-        ["status", config] => status_command(Path::new(config)),
+        ["run", config] => run_command(&resolve_config(config)),
+        ["status", config] => status_command(&resolve_config(config)),
         _ => {
             eprint!(
-                "usage: sima run <config.toml>     drive the configured run\n\
-                 \x20      sima status <config.toml>  report the run's state\n"
+                "usage: sima run <config>     drive the configured run\n\
+                 \x20      sima status <config>  report the run's state\n\
+                 \x20      <config> is a sima.toml path; the .toml extension may be omitted\n"
             );
             ExitCode::from(EXIT_ERROR)
         }
     }
+}
+
+/// Resolves the config argument to a path: the argument as given when it
+/// names a file, otherwise the argument with `.toml` appended when that
+/// names one — so `sima run demo` finds `demo.toml`. When neither exists,
+/// the argument passes through unchanged and loading reports the error
+/// against what the user typed.
+fn resolve_config(arg: &str) -> PathBuf {
+    let path = PathBuf::from(arg);
+    if !path.is_file() {
+        let with_toml = PathBuf::from(format!("{arg}.toml"));
+        if with_toml.is_file() {
+            return with_toml;
+        }
+    }
+    path
 }
 
 /// `sima run <config.toml>`: loads, prints the run id, orchestrates with
