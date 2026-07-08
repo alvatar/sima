@@ -78,7 +78,9 @@ pub fn tui_command(config: &Path) -> ExitCode {
 
 /// Maps a key event to its action, or `None` for an unbound key. The
 /// keybindings follow mprocs: `s` starts, `x` stops, `q` quits, `Q` force
-/// quits, and Ctrl-C stops — in raw mode Ctrl-C arrives as a key, not a
+/// quits, and Ctrl-C stops. The plain letters require no modifier, so a
+/// chord like Ctrl-S or Alt-x is not one of them; `Q` carries the shift its
+/// capital implies, and Ctrl-C arrives as a key in raw mode rather than a
 /// signal, so it is handled here rather than through a SIGINT flag.
 fn key_action(key: KeyEvent) -> Option<KeyAction> {
     match key.code {
@@ -86,9 +88,9 @@ fn key_action(key: KeyEvent) -> Option<KeyAction> {
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             Some(KeyAction::Stop)
         }
-        KeyCode::Char('s') => Some(KeyAction::Start),
-        KeyCode::Char('x') => Some(KeyAction::Stop),
-        KeyCode::Char('q') => Some(KeyAction::Quit),
+        KeyCode::Char('s') if key.modifiers.is_empty() => Some(KeyAction::Start),
+        KeyCode::Char('x') if key.modifiers.is_empty() => Some(KeyAction::Stop),
+        KeyCode::Char('q') if key.modifiers.is_empty() => Some(KeyAction::Quit),
         KeyCode::Char('Q') => Some(KeyAction::ForceQuit),
         _ => None,
     }
@@ -307,6 +309,24 @@ mod tests {
         // A bare 'c' without control is not the interrupt.
         assert_eq!(
             key_action(press(KeyCode::Char('c'), KeyModifiers::NONE)),
+            None
+        );
+    }
+
+    #[test]
+    fn a_modifier_on_an_action_letter_maps_to_nothing() {
+        // The plain-letter actions require no modifier, so a chord over them
+        // is not the action.
+        assert_eq!(
+            key_action(press(KeyCode::Char('s'), KeyModifiers::CONTROL)),
+            None
+        );
+        assert_eq!(
+            key_action(press(KeyCode::Char('q'), KeyModifiers::CONTROL)),
+            None
+        );
+        assert_eq!(
+            key_action(press(KeyCode::Char('x'), KeyModifiers::ALT)),
             None
         );
     }
