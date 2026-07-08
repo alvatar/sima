@@ -155,7 +155,7 @@ fn an_undispatchable_config_orchestrates_to_validation_without_touching_the_stor
     let config = LoadedConfig {
         run: RunConfig {
             root_seed: 1,
-            format: FormatId::new("no-such-family.v1")?,
+            format: FormatId::new("no-such-domain.v1")?,
             generator: GeneratorConfig {
                 id: GeneratorId::new("stub.v1")?,
                 params: Vec::new(),

@@ -184,7 +184,7 @@ mod tests {
     #[test]
     fn generate_stamps_the_requested_format() -> Result<()> {
         let generator = StubGenerator::new()?;
-        let format = FormatId::new("family-a.v1")?;
+        let format = FormatId::new("domain-a.v1")?;
         let params = config(vec![StubBehavior::Succeed, StubBehavior::Sleep(0)]);
         for spec in generator.generate(1, &params, &format)? {
             assert_eq!(spec.format, format);

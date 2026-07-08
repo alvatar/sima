@@ -202,11 +202,11 @@ mod tests {
     #[test]
     fn same_candidate_bytes_under_two_formats_have_distinct_ids() -> Result<()> {
         let a = Spec {
-            format: FormatId::new("family-a.v1")?,
+            format: FormatId::new("domain-a.v1")?,
             bytes: vec![0xAA, 0xBB],
         };
         let b = Spec {
-            format: FormatId::new("family-b.v1")?,
+            format: FormatId::new("domain-b.v1")?,
             bytes: vec![0xAA, 0xBB],
         };
         assert_ne!(a.id(), b.id());

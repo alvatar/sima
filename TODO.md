@@ -49,7 +49,7 @@ modules) → `sima-contracts` (L3: generator/executor traits + stubs) →
 `sima-scheduler` (L4: task sources, leases, lifecycle state machine) →
 `sima-pipeline` (L5: orchestration, resume, re-evaluation) → `sima` (L6: CLI
 binary). Implementation crates at L3: `sima-gpu` (ash wrapper, depends on
-core) and `sima-families` (rule families: CPU references + GPU kernels;
+core) and `sima-domains` (rule families: CPU references + GPU kernels;
 depends on contracts + gpu), arriving in P2.
 
 Running model: one orchestrator per run — the `sima run` process itself; no

@@ -3,8 +3,8 @@
 //! One `Coordinator` per run holds everything the scheduler threads share — the
 //! ready queue, the lease table, and the wind-down state — behind a single
 //! mutex, plus the condition variable every thread waits on. Its methods are
-//! the only mutations: leasing the next task and the settlement family that
-//! releases a lease and applies the outcome atomically.
+//! the only mutations: leasing the next task and the settlement methods that
+//! release a lease and apply the outcome atomically.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Condvar, Mutex, MutexGuard};

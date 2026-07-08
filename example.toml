@@ -1,4 +1,4 @@
-# A runnable sample over the stub family: six tasks sleeping five to ten
+# A runnable sample over the stub domain: six tasks sleeping five to ten
 # seconds, two workers, so a full run takes about half a minute.
 #
 #   sima run example          # drive the run; Ctrl-C interrupts gracefully
