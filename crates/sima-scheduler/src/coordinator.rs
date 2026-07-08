@@ -1,6 +1,6 @@
-//! [`Coord`]: the shared run coordination.
+//! [`Coordinator`]: the shared run coordination.
 //!
-//! One `Coord` per run holds everything the scheduler threads share — the
+//! One `Coordinator` per run holds everything the scheduler threads share — the
 //! ready queue, the lease table, and the wind-down state — behind a single
 //! mutex, plus the condition variable every thread waits on. Its methods are
 //! the only mutations: leasing the next task and the settlement family that
@@ -69,16 +69,16 @@ pub(crate) struct Shared {
 }
 
 /// The shared state plus the condition every thread waits on.
-pub(crate) struct Coord {
+pub(crate) struct Coordinator {
     pub(crate) state: Mutex<Shared>,
     pub(crate) idle: Condvar,
 }
 
-impl Coord {
+impl Coordinator {
     /// A fresh coordinator in the steady `Running` state: empty queue, no
     /// leases.
-    pub(crate) fn new() -> Coord {
-        Coord {
+    pub(crate) fn new() -> Coordinator {
+        Coordinator {
             state: Mutex::new(Shared {
                 queue: VecDeque::new(),
                 leases: HashMap::new(),
@@ -213,10 +213,10 @@ mod tests {
     use super::*;
 
     /// A coordinator in a given stop state, with an empty queue and lease table.
-    fn coord_with(stop: Stop) -> Coord {
-        let coord = Coord::new();
-        coord.lock().stop = stop;
-        coord
+    fn coordinator_with(stop: Stop) -> Coordinator {
+        let coordinator = Coordinator::new();
+        coordinator.lock().stop = stop;
+        coordinator
     }
 
     /// A throwaway task key.
@@ -226,19 +226,19 @@ mod tests {
 
     #[test]
     fn a_fault_upgrades_a_definitive_candidate_failure() {
-        let coord = coord_with(Stop::Failed(Failure {
+        let coordinator = coordinator_with(Stop::Failed(Failure {
             task: a_key(),
             reason: "candidate rejected".to_string(),
         }));
-        coord.fault(a_key(), Error::Corruption("store broke".to_string()));
-        assert!(matches!(coord.lock().stop, Stop::Fault(_)));
+        coordinator.fault(a_key(), Error::Corruption("store broke".to_string()));
+        assert!(matches!(coordinator.lock().stop, Stop::Fault(_)));
     }
 
     #[test]
     fn the_first_fault_is_kept_over_a_later_one() {
-        let coord = coord_with(Stop::Fault(Error::Corruption("first fault".to_string())));
-        coord.fault(a_key(), Error::Validation("second fault".to_string()));
-        match &coord.lock().stop {
+        let coordinator = coordinator_with(Stop::Fault(Error::Corruption("first fault".to_string())));
+        coordinator.fault(a_key(), Error::Validation("second fault".to_string()));
+        match &coordinator.lock().stop {
             Stop::Fault(e) => assert_eq!(e.to_string(), "store corruption: first fault"),
             _ => panic!("expected a fault stop state"),
         }
@@ -246,39 +246,39 @@ mod tests {
 
     #[test]
     fn an_interrupt_upgrades_a_running_coordinator() {
-        let coord = Coord::new();
-        coord.interrupt();
-        assert!(matches!(coord.lock().stop, Stop::Interrupted));
+        let coordinator = Coordinator::new();
+        coordinator.interrupt();
+        assert!(matches!(coordinator.lock().stop, Stop::Interrupted));
     }
 
     #[test]
     fn an_interrupt_never_displaces_a_definitive_failure() {
-        let coord = coord_with(Stop::Failed(Failure {
+        let coordinator = coordinator_with(Stop::Failed(Failure {
             task: a_key(),
             reason: "candidate rejected".to_string(),
         }));
-        coord.interrupt();
-        assert!(matches!(coord.lock().stop, Stop::Failed(_)));
+        coordinator.interrupt();
+        assert!(matches!(coordinator.lock().stop, Stop::Failed(_)));
     }
 
     #[test]
     fn an_interrupt_never_displaces_a_fault() {
-        let coord = coord_with(Stop::Fault(Error::Corruption("store broke".to_string())));
-        coord.interrupt();
-        assert!(matches!(coord.lock().stop, Stop::Fault(_)));
+        let coordinator = coordinator_with(Stop::Fault(Error::Corruption("store broke".to_string())));
+        coordinator.interrupt();
+        assert!(matches!(coordinator.lock().stop, Stop::Fault(_)));
     }
 
     #[test]
     fn a_definitive_failure_upgrades_an_interrupt() {
-        let coord = coord_with(Stop::Interrupted);
-        coord.terminate(a_key(), "candidate rejected".to_string());
-        assert!(matches!(coord.lock().stop, Stop::Failed(_)));
+        let coordinator = coordinator_with(Stop::Interrupted);
+        coordinator.terminate(a_key(), "candidate rejected".to_string());
+        assert!(matches!(coordinator.lock().stop, Stop::Failed(_)));
     }
 
     #[test]
     fn a_fault_upgrades_an_interrupt() {
-        let coord = coord_with(Stop::Interrupted);
-        coord.fault(a_key(), Error::Corruption("store broke".to_string()));
-        assert!(matches!(coord.lock().stop, Stop::Fault(_)));
+        let coordinator = coordinator_with(Stop::Interrupted);
+        coordinator.fault(a_key(), Error::Corruption("store broke".to_string()));
+        assert!(matches!(coordinator.lock().stop, Stop::Fault(_)));
     }
 }

@@ -16,7 +16,7 @@
 
 mod config;
 mod control;
-mod coord;
+mod coordinator;
 mod driver;
 mod event;
 mod journal_sink;
