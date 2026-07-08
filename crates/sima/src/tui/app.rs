@@ -106,7 +106,14 @@ fn key_action(key: KeyEvent) -> Option<KeyAction> {
 /// reports, so it surfaces here rather than hiding behind a blank screen.
 fn seed_status(config: &LoadedConfig) -> sima_core::Result<RunStatus> {
     match sima_pipeline::status(config) {
-        Ok(status) => Ok(status),
+        Ok(mut status) => {
+            // The counters and last state are worth seeding, but a journal
+            // ending mid-run leaves leases no live worker holds; a fresh
+            // session starts with every worker idle and repopulates occupancy
+            // from live `Leased` events.
+            status.occupancy.clear();
+            Ok(status)
+        }
         Err(Error::Validation(_)) => Ok(RunStatus::new(config.run.id())),
         Err(other) => Err(other),
     }
@@ -127,11 +134,18 @@ fn run_session(config: LoadedConfig, status: RunStatus) -> io::Result<u8> {
     // The interrupt flag of the run currently in flight, shared with the run
     // thread; a fresh run gets a fresh flag.
     let mut interrupt: Option<Arc<AtomicBool>> = None;
+    // The display is push-driven: redraw only after a message changed the
+    // state, never on the bare keyboard tick. The first frame is the initial
+    // screen.
+    let mut dirty = true;
 
     loop {
-        guard
-            .terminal
-            .draw(|frame| view::draw(frame, &state.view()))?;
+        if dirty {
+            guard
+                .terminal
+                .draw(|frame| view::draw(frame, &state.view()))?;
+            dirty = false;
+        }
 
         // A key press that maps to an action folds in; releases, repeats, and
         // unbound keys are ignored. `read` runs only after `poll` reports one.
@@ -141,10 +155,12 @@ fn run_session(config: LoadedConfig, status: RunStatus) -> io::Result<u8> {
             && let Some(action) = key_action(key)
         {
             state.handle(Msg::Key(action));
+            dirty = true;
         }
         // Drain everything the run thread has sent since the last tick.
         while let Ok(msg) = rx.try_recv() {
             state.handle(msg);
+            dirty = true;
         }
 
         if state.take_start() {
