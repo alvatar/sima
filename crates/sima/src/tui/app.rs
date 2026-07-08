@@ -207,7 +207,11 @@ fn spawn_run(config: Arc<LoadedConfig>, tx: SyncSender<Msg>, interrupt: Arc<Atom
         // the terminal from here. Catching is this caller's own boundary
         // decision, made because a hung session inside a raw-mode alternate
         // screen is worse than a lost backtrace; `sima run` makes the opposite
-        // choice and dies with the panic.
+        // choice and dies with the panic. `catch_unwind` intercepts only
+        // unwinding panics: under `panic = "abort"` this catch is unreachable
+        // and the session dies with the process — a crash the store's
+        // recovery guarantee covers, so nothing here depends on unwinding
+        // for correctness.
         let outcome = std::panic::catch_unwind(AssertUnwindSafe(|| {
             let control = RunControl {
                 observer: &observer,

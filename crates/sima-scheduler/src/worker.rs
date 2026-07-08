@@ -150,7 +150,10 @@ fn process(ctx: &WorkerContext<'_>, worker: WorkerId, pending: Pending) {
     // The panic handler wraps only the executor call: a panic escaping it was
     // raised inside the candidate's execution, so the worker classifies it as a
     // definitive rejection. A panic anywhere else is a scheduler bug and
-    // propagates as one.
+    // propagates as one. `catch_unwind` intercepts only unwinding panics:
+    // under `panic = "abort"` this handler is unreachable and an executor
+    // panic kills the process instead — a crash the store's recovery
+    // guarantee covers, so no correctness contract depends on unwinding.
     let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         ctx.executor.execute(&input, &exec_ctx)
     }));
