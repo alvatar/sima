@@ -10,7 +10,7 @@ use sima_pipeline::{LifecycleEvent, RunState, RunStatus};
 const SHORT: usize = 12;
 
 /// The leading `SHORT` characters of a journaled id.
-fn short(id: &str) -> &str {
+pub fn short(id: &str) -> &str {
     &id[..id.len().min(SHORT)]
 }
 

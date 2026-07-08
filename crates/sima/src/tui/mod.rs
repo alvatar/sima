@@ -8,9 +8,7 @@
 //! module only drives a terminal and folds observations into a display.
 
 mod app;
-// The runtime consumes the state machine in a following step; until it does,
-// the module is reached only from its own tests.
-#[allow(dead_code)]
 mod state;
+mod view;
 
 pub use app::tui_command;
