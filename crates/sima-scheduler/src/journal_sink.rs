@@ -54,7 +54,12 @@ impl<'scope> JournalSink<'scope> {
         match self.handle.join() {
             Ok(result) => result,
             // A panic in the writer thread is a bug, not a domain outcome:
-            // resume unwinding so it surfaces rather than being swallowed.
+            // resume unwinding so it surfaces rather than being swallowed. This
+            // preserves the meaning of the Err vocabulary: every Err a caller
+            // receives is an expected, describable fault it can act on, while a
+            // bug arrives as an abnormal death, so a supervising caller can
+            // distinguish retry-after-fixing-the-environment from
+            // the-code-is-wrong.
             Err(payload) => std::panic::resume_unwind(payload),
         }
     }

@@ -48,7 +48,11 @@ pub(crate) fn worker_loop(worker: WorkerId, ctx: WorkerContext<'_>) {
         // The guard releases the lease as a fault during unwind so the pool
         // winds down; thread::scope still re-raises the panic at join, so the
         // fault content is never observed and the panic surfaces as the bug it
-        // is. Executor panics are unaffected: process()'s inner handler catches
+        // is. Re-raising preserves the meaning of the Err vocabulary: every Err
+        // a caller receives is an expected, describable fault it can act on,
+        // while a bug arrives as an abnormal death, so a supervising caller can
+        // distinguish retry-after-fixing-the-environment from the-code-is-wrong.
+        // Executor panics are unaffected: process()'s inner handler catches
         // them and settles the lease, so the guard is disarmed before it drops.
         let guard = PanicGuard::arm(ctx.coordinator, pending.key);
         process(&ctx, worker, pending);
@@ -146,7 +150,10 @@ fn process(ctx: &WorkerContext<'_>, worker: WorkerId, pending: Pending) {
     // The panic handler wraps only the executor call: a panic escaping it was
     // raised inside the candidate's execution, so the worker classifies it as a
     // definitive rejection. A panic anywhere else is a scheduler bug and
-    // propagates as one.
+    // propagates as one. `catch_unwind` intercepts only unwinding panics:
+    // under `panic = "abort"` this handler is unreachable and an executor
+    // panic kills the process instead — a crash the store's recovery
+    // guarantee covers, so no correctness contract depends on unwinding.
     let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         ctx.executor.execute(&input, &exec_ctx)
     }));

@@ -1,0 +1,369 @@
+//! The tui runtime: the subcommand entry, the terminal guard and panic hook,
+//! the key mapping, and the event loop that applies observations to the
+//! display and drives the run on a background thread.
+
+use std::any::Any;
+use std::cell::Cell;
+use std::io::{self, IsTerminal, Stdout};
+use std::panic::AssertUnwindSafe;
+use std::path::Path;
+use std::process::ExitCode;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, SyncSender};
+use std::thread;
+use std::time::Duration;
+
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::execute;
+use crossterm::terminal::{
+    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+};
+use ratatui::Terminal;
+use ratatui::backend::CrosstermBackend;
+
+use sima_core::Error;
+use sima_pipeline::{LifecycleEvent, LoadedConfig, RunControl, RunStatus, load, orchestrate};
+
+use super::state::{KeyAction, Msg, TuiState};
+use super::view;
+
+thread_local! {
+    /// Set on the UI thread that owns the terminal, so the panic hook restores
+    /// the terminal only for a panic there. Every other thread — the scheduler
+    /// worker threads that run executors, the orchestrate thread — leaves the
+    /// marker unset, so the hook does nothing on their panics.
+    static ON_UI_THREAD: Cell<bool> = const { Cell::new(false) };
+}
+
+/// How long the loop waits for a key before ticking, in milliseconds. Short
+/// enough that a redraw after an applied event feels immediate.
+const TICK_MS: u64 = 50;
+
+/// The channel bound between the run thread and the UI loop. Generous enough
+/// that the observer never blocks in practice; the loop drains it fully each
+/// tick.
+const CHANNEL_BOUND: usize = 1024;
+
+/// `sima tui <config>`: opens the terminal frontend over the configured run.
+///
+/// A full-screen UI needs a terminal to draw into and read keys from; when
+/// stdout is not a TTY — piped or redirected — there is nothing to drive, so
+/// the command refuses rather than corrupt a non-terminal stream.
+pub fn tui_command(config: &Path) -> ExitCode {
+    if !io::stdout().is_terminal() {
+        eprintln!("sima tui requires a terminal");
+        return ExitCode::from(crate::EXIT_ERROR);
+    }
+    let loaded = match load(config) {
+        Ok(loaded) => loaded,
+        Err(e) => return crate::report(e),
+    };
+    // Seed before entering the terminal so a store fault surfaces on the
+    // normal screen, exactly as `sima status` would report it.
+    let status = match seed_status(&loaded) {
+        Ok(status) => status,
+        Err(e) => return crate::report(e),
+    };
+    match run_session(loaded, status) {
+        Ok(code) => ExitCode::from(code),
+        Err(e) => {
+            // The guard has restored the terminal by now, so the message
+            // lands on a clean screen.
+            eprintln!("sima tui: {e}");
+            ExitCode::from(crate::EXIT_ERROR)
+        }
+    }
+}
+
+/// Maps a key event to its action, or `None` for an unbound key. The
+/// keybindings follow mprocs: `s` starts, `x` stops, `q` quits, `Q` force
+/// quits, `?` opens help, and Ctrl-C stops. The plain letters require no
+/// modifier, so a chord like Ctrl-S or Alt-x is not one of them; `Q` carries
+/// the shift its capital implies, `?` arrives with shift on many layouts so it
+/// matches under any modifier, and Ctrl-C arrives as a key in raw mode rather
+/// than a signal, so it is handled here rather than through a SIGINT flag.
+fn key_action(key: KeyEvent) -> Option<KeyAction> {
+    match key.code {
+        // Ctrl-C reads as a key in raw mode; treat it as a graceful stop.
+        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            Some(KeyAction::Stop)
+        }
+        KeyCode::Char('s') if key.modifiers.is_empty() => Some(KeyAction::Start),
+        KeyCode::Char('x') if key.modifiers.is_empty() => Some(KeyAction::Stop),
+        KeyCode::Char('q') if key.modifiers.is_empty() => Some(KeyAction::Quit),
+        KeyCode::Char('Q') => Some(KeyAction::ForceQuit),
+        KeyCode::Char('?') => Some(KeyAction::Help),
+        _ => None,
+    }
+}
+
+/// Seeds the display from any existing journal for `config`'s run, replaying
+/// it through the same `apply` method `sima status` uses so a resumed run
+/// shows its prior progress.
+/// A store that does not exist yet, or a run never driven, seeds a zeroed
+/// status; a corrupt journal or an I/O fault is a real problem `sima status`
+/// reports, so it surfaces here rather than hiding behind a blank screen.
+fn seed_status(config: &LoadedConfig) -> sima_core::Result<RunStatus> {
+    match sima_pipeline::status(config) {
+        Ok(mut status) => {
+            // The counters and last state are worth seeding, but a journal
+            // ending mid-run leaves leases no live worker holds; a fresh
+            // session starts with every worker idle and repopulates occupancy
+            // from live `Leased` events.
+            status.occupancy.clear();
+            Ok(status)
+        }
+        Err(Error::Validation(_)) => Ok(RunStatus::new(config.run.id())),
+        Err(other) => Err(other),
+    }
+}
+
+/// Runs one terminal session over `config`, returning its exit code. Sets up
+/// the terminal, applies keys and run events to the state, drives the run on a
+/// background thread, and tears the terminal down on return.
+fn run_session(config: LoadedConfig, status: RunStatus) -> io::Result<u8> {
+    let workers = config.execution.workers;
+    let mut state = TuiState::new(status, workers);
+    let config = Arc::new(config);
+
+    // Mark this as the UI thread that owns the terminal, so the panic hook
+    // restores it only for a panic here and stays inert on worker and
+    // orchestrate threads.
+    ON_UI_THREAD.with(|flag| flag.set(true));
+    install_panic_hook();
+    let mut guard = TerminalGuard::enter()?;
+
+    let (tx, rx) = mpsc::sync_channel::<Msg>(CHANNEL_BOUND);
+    // The interrupt flag of the run currently in flight, shared with the run
+    // thread; a fresh run gets a fresh flag.
+    let mut interrupt: Option<Arc<AtomicBool>> = None;
+    // The display is push-driven: redraw only after a message changed the
+    // state, never on the bare keyboard tick. The first frame is the initial
+    // screen.
+    let mut dirty = true;
+
+    loop {
+        if dirty {
+            guard
+                .terminal
+                .draw(|frame| view::draw(frame, &state.view()))?;
+            dirty = false;
+        }
+
+        // A key press is handled; releases and repeats are ignored. `read`
+        // runs only after `poll` reports an event. A bound key applies its
+        // action — which, behind the help overlay, the state consumes to close
+        // it. An unbound key is ignored, except that it too closes an open
+        // overlay.
+        if event::poll(Duration::from_millis(TICK_MS))?
+            && let Event::Key(key) = event::read()?
+            && key.kind == KeyEventKind::Press
+        {
+            if let Some(action) = key_action(key) {
+                state.handle(Msg::Key(action));
+                dirty = true;
+            } else if state.dismiss_help_if_open() {
+                dirty = true;
+            }
+        }
+        // Drain everything the run thread has sent since the last tick.
+        while let Ok(msg) = rx.try_recv() {
+            state.handle(msg);
+            dirty = true;
+        }
+
+        if state.take_start() {
+            let flag = Arc::new(AtomicBool::new(false));
+            interrupt = Some(Arc::clone(&flag));
+            spawn_run(Arc::clone(&config), tx.clone(), flag);
+        }
+        if state.take_stop()
+            && let Some(flag) = &interrupt
+        {
+            flag.store(true, Ordering::Relaxed);
+        }
+        if state.should_exit() {
+            break;
+        }
+    }
+    Ok(state.exit_code())
+}
+
+/// Spawns the orchestrate thread for one run: its observer forwards every
+/// lifecycle event into the channel, the shared flag carries interrupts in,
+/// and its return arrives as [`Msg::Finished`].
+fn spawn_run(config: Arc<LoadedConfig>, tx: SyncSender<Msg>, interrupt: Arc<AtomicBool>) {
+    thread::spawn(move || {
+        let events = tx.clone();
+        let observer = move |event: &LifecycleEvent| {
+            let _ = events.send(Msg::Event(event.clone()));
+        };
+        // `orchestrate` can unwind rather than return `Err` — the scheduler
+        // re-raises a worker or journal-sink panic at its scope join. Catch it
+        // so the UI loop always receives a return: an unwinding orchestrate
+        // thread would otherwise never send `Finished` and leave the session
+        // hung. The panic hook is inert off the UI thread, so it does not touch
+        // the terminal from here. Catching is this caller's own boundary
+        // decision, made because a hung session inside a raw-mode alternate
+        // screen is worse than a lost backtrace; `sima run` makes the opposite
+        // choice and dies with the panic. `catch_unwind` intercepts only
+        // unwinding panics: under `panic = "abort"` this catch is unreachable
+        // and the session dies with the process — a crash the store's
+        // recovery guarantee covers, so nothing here depends on unwinding
+        // for correctness.
+        let outcome = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            let control = RunControl {
+                observer: &observer,
+                interrupt: &interrupt,
+            };
+            orchestrate(&config, &control)
+        }))
+        .unwrap_or_else(|payload| Err(panic_fault(payload)));
+        let _ = tx.send(Msg::Finished(outcome));
+    });
+}
+
+/// Renders a caught panic payload as an error, so an orchestrate-thread panic
+/// reaches the UI loop as a fault outcome.
+fn panic_fault(payload: Box<dyn Any + Send>) -> Error {
+    let text = payload
+        .downcast_ref::<&str>()
+        .map(|s| (*s).to_string())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "unknown cause".to_string());
+    Error::Validation(format!("the run thread panicked: {text}"))
+}
+
+/// Restores the terminal on a UI-thread panic before the default hook prints,
+/// so a panic never leaves the shell in raw mode on the alternate screen. The
+/// hook is inert on every other thread: a worker-thread executor panic is
+/// caught around the executor call and surfaces as a rejection or fault line,
+/// and a scheduler-bug panic re-raises at the scope join into the orchestrate
+/// thread, where [`spawn_run`] catches it as `Finished(Err)`. Restoring the
+/// terminal from one of those threads — while the UI loop keeps drawing —
+/// would corrupt the live session, so only the UI thread's panic acts here.
+fn install_panic_hook() {
+    let default = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        if !ON_UI_THREAD.with(Cell::get) {
+            return;
+        }
+        let _ = disable_raw_mode();
+        let _ = execute!(io::stdout(), LeaveAlternateScreen);
+        default(info);
+    }));
+}
+
+/// An RAII terminal guard: raw mode and the alternate screen on construction,
+/// both restored on drop however the session leaves — a return, an error, or
+/// the unwinding a caught panic starts.
+struct TerminalGuard {
+    terminal: Terminal<CrosstermBackend<Stdout>>,
+}
+
+impl TerminalGuard {
+    /// Enters raw mode and the alternate screen, returning the drawing
+    /// terminal.
+    fn enter() -> io::Result<TerminalGuard> {
+        enable_raw_mode()?;
+        let mut out = io::stdout();
+        execute!(out, EnterAlternateScreen)?;
+        let terminal = Terminal::new(CrosstermBackend::new(out))?;
+        Ok(TerminalGuard { terminal })
+    }
+}
+
+impl Drop for TerminalGuard {
+    fn drop(&mut self) {
+        // Best effort: nothing actionable remains if restoring the terminal
+        // itself fails while leaving.
+        let _ = disable_raw_mode();
+        let _ = execute!(io::stdout(), LeaveAlternateScreen);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn press(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
+        KeyEvent::new(code, modifiers)
+    }
+
+    #[test]
+    fn keys_map_to_their_actions() {
+        assert_eq!(
+            key_action(press(KeyCode::Char('s'), KeyModifiers::NONE)),
+            Some(KeyAction::Start)
+        );
+        assert_eq!(
+            key_action(press(KeyCode::Char('x'), KeyModifiers::NONE)),
+            Some(KeyAction::Stop)
+        );
+        assert_eq!(
+            key_action(press(KeyCode::Char('q'), KeyModifiers::NONE)),
+            Some(KeyAction::Quit)
+        );
+        assert_eq!(
+            key_action(press(KeyCode::Char('Q'), KeyModifiers::SHIFT)),
+            Some(KeyAction::ForceQuit)
+        );
+        assert_eq!(
+            key_action(press(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+            Some(KeyAction::Stop)
+        );
+        // `?` opens help under any modifier, since it arrives with shift on
+        // many layouts.
+        assert_eq!(
+            key_action(press(KeyCode::Char('?'), KeyModifiers::NONE)),
+            Some(KeyAction::Help)
+        );
+        assert_eq!(
+            key_action(press(KeyCode::Char('?'), KeyModifiers::SHIFT)),
+            Some(KeyAction::Help)
+        );
+    }
+
+    #[test]
+    fn unbound_keys_map_to_nothing() {
+        assert_eq!(
+            key_action(press(KeyCode::Char('z'), KeyModifiers::NONE)),
+            None
+        );
+        assert_eq!(key_action(press(KeyCode::Esc, KeyModifiers::NONE)), None);
+        // A bare 'c' without control is not the interrupt.
+        assert_eq!(
+            key_action(press(KeyCode::Char('c'), KeyModifiers::NONE)),
+            None
+        );
+    }
+
+    #[test]
+    fn a_modifier_on_an_action_letter_maps_to_nothing() {
+        // The plain-letter actions require no modifier, so a chord over them
+        // is not the action.
+        assert_eq!(
+            key_action(press(KeyCode::Char('s'), KeyModifiers::CONTROL)),
+            None
+        );
+        assert_eq!(
+            key_action(press(KeyCode::Char('q'), KeyModifiers::CONTROL)),
+            None
+        );
+        assert_eq!(
+            key_action(press(KeyCode::Char('x'), KeyModifiers::ALT)),
+            None
+        );
+    }
+
+    #[test]
+    fn a_caught_panic_renders_its_cause_as_a_fault() {
+        // A panic carries its message as either a &str or a String; both
+        // reach the fault so the run thread's cause is not lost.
+        let from_str: Box<dyn Any + Send> = Box::new("boom");
+        assert!(panic_fault(from_str).to_string().contains("boom"));
+        let from_string: Box<dyn Any + Send> = Box::new("kaboom".to_string());
+        assert!(panic_fault(from_string).to_string().contains("kaboom"));
+    }
+}

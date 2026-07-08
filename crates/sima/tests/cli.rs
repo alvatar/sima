@@ -132,6 +132,29 @@ fn an_unknown_subcommand_exits_1_with_usage_on_stderr() {
 }
 
 #[test]
+fn the_usage_text_names_the_tui_subcommand() {
+    let output = sima(&[]);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).expect("stderr is UTF-8");
+    assert!(stderr.contains("sima tui"), "usage names tui: {stderr}");
+}
+
+#[test]
+fn tui_without_a_terminal_exits_1_and_names_the_requirement() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config = write_config(dir.path(), r#""succeed""#);
+    // The test harness captures stdout, so it is not a TTY: the tui
+    // subcommand must refuse rather than drive a terminal it has not got.
+    let output = sima(&["tui", config.to_str().expect("utf-8 path")]);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).expect("stderr is UTF-8");
+    assert!(
+        stderr.contains("requires a terminal"),
+        "names the terminal requirement: {stderr}"
+    );
+}
+
+#[test]
 fn sigint_interrupts_gracefully_and_a_rerun_matches_an_uninterrupted_store() {
     let dir = tempfile::tempdir().expect("temp dir");
     let behaviors = r#""sleep:1500", "sleep:1500", "sleep:1500", "sleep:1500""#;

@@ -13,6 +13,8 @@ sima-core = { path = "../sima-core" }
 sima-pipeline = { path = "../sima-pipeline" }
 sima-scheduler = { path = "../sima-scheduler" }
 sima-store = { path = "../sima-store" }
+crossterm.workspace = true
+ratatui.workspace = true
 signal-hook.workspace = true
 
 [dev-dependencies]

@@ -34,7 +34,7 @@ Strictly downward dependencies, enforced by workspace crate edges.
 | L4    | `sima-domains`   | per-format executors, generators, codecs, environments, id dispatch, and config translation; the reference stub domain |
 | L5    | `sima-scheduler` | task sources, worker pool, leases, retry, run driver                 |
 | L6    | `sima-pipeline`  | config loading, orchestration, run status                            |
-| L7    | `sima`           | CLI: run, status                                                      |
+| L7    | `sima`           | CLI: run, status, tui                                                 |
 
 The store is the only durable state. Queues, schedulers, and orchestrators
 are ephemeral: the runnable frontier is derived from (config, store state),
@@ -477,7 +477,8 @@ is indistinguishable from a live one by the journal alone.
 ## `sima` (L7)
 
 The CLI holds no orchestration logic — parsing, rendering, signal
-registration, and exit codes only:
+registration, exit codes, and, for `tui`, an interactive terminal
+frontend over the observer seam:
 
 - **`sima run <config.toml>`** — drives the configured run, printing one
   plain line per meaningful event from the observer seam. SIGINT sets the
@@ -487,8 +488,16 @@ registration, and exit codes only:
 - **`sima status <config.toml>`** — prints the status block. The config
   file is the one argument: its execution section names the store and its
   identity section derives the run id.
+- **`sima tui <config.toml>`** — drives the same run inside a full-screen
+  terminal UI: an idle screen lists the configured workers, a keypress
+  starts the run, and the tui applies each observer event as it arrives, so
+  the worker rows and counters update live, with keys to wind the run down
+  gracefully or leave and a `?` overlay listing every binding.
+  It requires a terminal; with stdout not a TTY it exits 1. `ratatui`
+  and its `crossterm` backend are the terminal-UI dependencies, and they
+  enter the workspace at this layer alone.
 
-Exit codes:
+Exit codes (shared across `run` and `tui`):
 
 - **0** — the run finalized (or `status` answered);
 - **2** — a definitive candidate failure;

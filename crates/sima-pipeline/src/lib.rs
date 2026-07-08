@@ -18,4 +18,4 @@ pub use orchestrate::orchestrate;
 // The scheduler types a caller drives and observes runs through, re-exported
 // so the CLI consumes one coherent surface.
 pub use sima_scheduler::{LifecycleEvent, RunControl, RunOutcome};
-pub use status::{RunState, RunStatus, status};
+pub use status::{Occupancy, RunState, RunStatus, status};

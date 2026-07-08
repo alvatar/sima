@@ -10,6 +10,7 @@
 //! - 1 — everything else: infrastructure fault, config error, usage error.
 
 mod render;
+mod tui;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -20,23 +21,25 @@ use sima_core::{Error, Result};
 use sima_pipeline::{RunControl, RunOutcome, RunStatus, load, orchestrate, status};
 
 /// Exit code for a definitive candidate failure.
-const EXIT_FAILED: u8 = 2;
-/// Exit code for a run wound down by Ctrl-C, matching the shell convention
-/// for death by SIGINT.
-const EXIT_INTERRUPTED: u8 = 130;
+pub(crate) const EXIT_FAILED: u8 = 2;
+/// Exit code for a run wound down by an interrupt, matching the shell
+/// convention for death by SIGINT.
+pub(crate) const EXIT_INTERRUPTED: u8 = 130;
 /// Exit code for everything else that is not success: infrastructure
 /// fault, config error, usage error.
-const EXIT_ERROR: u8 = 1;
+pub(crate) const EXIT_ERROR: u8 = 1;
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.iter().map(String::as_str).collect::<Vec<_>>()[..] {
         ["run", config] => run_command(&resolve_config(config)),
         ["status", config] => status_command(&resolve_config(config)),
+        ["tui", config] => tui::tui_command(&resolve_config(config)),
         _ => {
             eprint!(
                 "usage: sima run <config>     drive the configured run\n\
                  \x20      sima status <config>  report the run's state\n\
+                 \x20      sima tui <config>     drive the run in a full-screen terminal UI\n\
                  \x20      <config> is a sima.toml path; the .toml extension may be omitted\n"
             );
             ExitCode::from(EXIT_ERROR)
@@ -65,9 +68,7 @@ fn resolve_config(arg: &str) -> PathBuf {
 /// to the exit code.
 fn run_command(config: &Path) -> ExitCode {
     match drive(config) {
-        Ok(RunOutcome::Finalized { .. }) => ExitCode::SUCCESS,
-        Ok(RunOutcome::Failed { .. }) => ExitCode::from(EXIT_FAILED),
-        Ok(RunOutcome::Interrupted { .. }) => ExitCode::from(EXIT_INTERRUPTED),
+        Ok(outcome) => ExitCode::from(outcome_exit_code(&outcome)),
         Err(e) => report(e),
     }
 }
@@ -112,7 +113,7 @@ fn read_status(config: &Path) -> Result<RunStatus> {
 }
 
 /// Prints `error` to stderr and yields the generic error exit code.
-fn report(error: Error) -> ExitCode {
+pub(crate) fn report(error: Error) -> ExitCode {
     eprintln!("sima: {error}");
     ExitCode::from(EXIT_ERROR)
 }
@@ -121,4 +122,39 @@ fn report(error: Error) -> ExitCode {
 /// the handler, surfaced before the run starts.
 fn register_error(e: std::io::Error) -> Error {
     Error::Validation(format!("cannot register the SIGINT handler: {e}"))
+}
+
+/// The exit code a finished run maps to — the mapping `run` and `tui` share:
+/// success when finalized, the failure code for a definitive candidate
+/// failure, and the interrupt code for a wound-down run.
+pub(crate) fn outcome_exit_code(outcome: &RunOutcome) -> u8 {
+    match outcome {
+        RunOutcome::Finalized { .. } => 0,
+        RunOutcome::Failed { .. } => EXIT_FAILED,
+        RunOutcome::Interrupted { .. } => EXIT_INTERRUPTED,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sima_core::hash_bytes;
+    use sima_model::{RunId, TaskKey};
+
+    #[test]
+    fn each_outcome_maps_to_its_exit_code() {
+        let run = RunId::from_hash(hash_bytes(b"exit code run"));
+        assert_eq!(outcome_exit_code(&RunOutcome::Finalized { run }), 0);
+        assert_eq!(
+            outcome_exit_code(&RunOutcome::Failed {
+                task: TaskKey::from_hash(hash_bytes(b"a task")),
+                reason: "rejected".to_string(),
+            }),
+            EXIT_FAILED
+        );
+        assert_eq!(
+            outcome_exit_code(&RunOutcome::Interrupted { run }),
+            EXIT_INTERRUPTED
+        );
+    }
 }

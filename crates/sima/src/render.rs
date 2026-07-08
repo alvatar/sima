@@ -10,8 +10,48 @@ use sima_pipeline::{LifecycleEvent, RunState, RunStatus};
 const SHORT: usize = 12;
 
 /// The leading `SHORT` characters of a journaled id.
-fn short(id: &str) -> &str {
+pub fn short(id: &str) -> &str {
     &id[..id.len().min(SHORT)]
+}
+
+/// Renders `event` to the one line it warrants, or `None` for the `Queued`
+/// and `Leased` bookkeeping events. `committed`/`tasks` supply the running
+/// `committed k/n` count a commit line shows. The single source of the
+/// event wording: `sima run` prints these lines to stdout and the tui folds
+/// them into its event log.
+pub fn describe(event: &LifecycleEvent, committed: usize, tasks: usize) -> Option<String> {
+    Some(match event {
+        LifecycleEvent::RunStarted { tasks, .. } => format!("started: {tasks} tasks"),
+        LifecycleEvent::Committed { task, .. } => {
+            format!("committed {committed}/{tasks}  {}", short(task))
+        }
+        LifecycleEvent::Retried { task, next_attempt } => {
+            format!("retrying {} (attempt {next_attempt})", short(task))
+        }
+        LifecycleEvent::Rejected { task, reason, .. } => {
+            format!("rejected {}: {reason}", short(task))
+        }
+        LifecycleEvent::Failed {
+            task,
+            attempt,
+            reason,
+            ..
+        } => format!("failed {} (attempt {attempt}): {reason}", short(task)),
+        LifecycleEvent::Faulted { task, error, .. } => format!("fault {}: {error}", short(task)),
+        LifecycleEvent::LeaseExpired {
+            task, elapsed_ms, ..
+        } => format!("lease expired {} ({elapsed_ms} ms)", short(task)),
+        LifecycleEvent::RunFinalized { committed, .. } => {
+            format!("finalized: {committed} tasks committed")
+        }
+        LifecycleEvent::RunFailed { task, reason, .. } => {
+            format!("run failed on {}: {reason}", short(task))
+        }
+        LifecycleEvent::RunInterrupted { .. } => {
+            "interrupted: store resumable, re-run to continue".to_string()
+        }
+        LifecycleEvent::Queued { .. } | LifecycleEvent::Leased { .. } => return None,
+    })
 }
 
 /// Progress rendering over a run's event stream: prints one line per
@@ -34,51 +74,21 @@ impl Progress {
         }
     }
 
-    /// Prints the line `event` warrants, if any. `Queued` and `Leased` are
-    /// bookkeeping and stay silent.
+    /// Prints the line `event` warrants, if any, keeping the running commit
+    /// count for the `committed k/n` line. `Queued` and `Leased` yield no
+    /// line and stay silent.
     pub fn event(&self, event: &LifecycleEvent) {
-        match event {
-            LifecycleEvent::RunStarted { tasks, .. } => {
-                self.tasks.store(*tasks, Ordering::Relaxed);
-                println!("started: {tasks} tasks");
-            }
-            LifecycleEvent::Committed { task, .. } => {
-                let k = self.committed.fetch_add(1, Ordering::Relaxed) + 1;
-                let n = self.tasks.load(Ordering::Relaxed);
-                println!("committed {k}/{n}  {}", short(task));
-            }
-            LifecycleEvent::Retried { task, next_attempt } => {
-                println!("retrying {} (attempt {next_attempt})", short(task));
-            }
-            LifecycleEvent::Rejected { task, reason, .. } => {
-                println!("rejected {}: {reason}", short(task));
-            }
-            LifecycleEvent::Failed {
-                task,
-                attempt,
-                reason,
-                ..
-            } => {
-                println!("failed {} (attempt {attempt}): {reason}", short(task));
-            }
-            LifecycleEvent::Faulted { task, error, .. } => {
-                println!("fault {}: {error}", short(task));
-            }
-            LifecycleEvent::LeaseExpired {
-                task, elapsed_ms, ..
-            } => {
-                println!("lease expired {} ({elapsed_ms} ms)", short(task));
-            }
-            LifecycleEvent::RunFinalized { committed, .. } => {
-                println!("finalized: {committed} tasks committed");
-            }
-            LifecycleEvent::RunFailed { task, reason, .. } => {
-                println!("run failed on {}: {reason}", short(task));
-            }
-            LifecycleEvent::RunInterrupted { .. } => {
-                println!("interrupted: store resumable, re-run to continue");
-            }
-            LifecycleEvent::Queued { .. } | LifecycleEvent::Leased { .. } => {}
+        if let LifecycleEvent::RunStarted { tasks, .. } = event {
+            self.tasks.store(*tasks, Ordering::Relaxed);
+        }
+        // A commit advances the running count; every other line reads it
+        // without moving it.
+        let committed = match event {
+            LifecycleEvent::Committed { .. } => self.committed.fetch_add(1, Ordering::Relaxed) + 1,
+            _ => self.committed.load(Ordering::Relaxed),
+        };
+        if let Some(line) = describe(event, committed, self.tasks.load(Ordering::Relaxed)) {
+            println!("{line}");
         }
     }
 }
@@ -133,6 +143,7 @@ mod tests {
             faulted: 0,
             lease_expired: 0,
             state: RunState::InProgress,
+            occupancy: std::collections::BTreeMap::new(),
         };
         let block = status_block(&status);
         for field in [
