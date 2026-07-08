@@ -23,7 +23,7 @@ use sima_store::Store;
 
 use crate::config::ExecutionConfig;
 use crate::control::RunControl;
-use crate::coordinator::{Coordinator, Failure, Pending, Shared, Stop};
+use crate::coordinator::{Coordinator, Failure, Pending, RunState, Shared};
 use crate::event::LifecycleEvent;
 use crate::journal_sink::{JournalSink, emit};
 use crate::static_batch::StaticBatch;
@@ -210,8 +210,9 @@ const INTERRUPT_POLL: Duration = Duration::from_millis(50);
 /// Whether the pool is quiescent: no lease outstanding and, while the run is
 /// healthy, nothing queued. A terminal state only waits for the in-flight
 /// work to drain, and queued tasks are then abandoned.
-fn quiescent(state: &Shared) -> bool {
-    state.leases.is_empty() && (!matches!(state.stop, Stop::Running) || state.queue.is_empty())
+fn quiescent(shared: &Shared) -> bool {
+    shared.leases.is_empty()
+        && (!matches!(shared.state, RunState::Running) || shared.queue.is_empty())
 }
 
 /// Feeds the queue and waits for the pool: each time the pool goes quiescent
@@ -236,37 +237,37 @@ fn drive(
         // Observe quiescence and take the terminal reason, if any, in one
         // block-scoped lock region; without quiescence, park for one bounded
         // wait and loop around to re-check the interrupt flag.
-        let stop = {
-            let mut state = coordinator.lock();
-            if !quiescent(&state) {
+        let terminal = {
+            let mut shared = coordinator.lock();
+            if !quiescent(&shared) {
                 drop(
                     coordinator
-                        .idle
-                        .wait_timeout(state, INTERRUPT_POLL)
+                        .state_changed
+                        .wait_timeout(shared, INTERRUPT_POLL)
                         .unwrap_or_else(|p| p.into_inner()),
                 );
                 continue;
             }
-            if matches!(state.stop, Stop::Running) {
+            if matches!(shared.state, RunState::Running) {
                 None
             } else {
                 // Take the terminal reason by value: the Error/Failure payload
                 // moves out to be returned, and the Finished left in its place
                 // is the signal that makes every worker's next_task exit.
-                let stop = std::mem::replace(&mut state.stop, Stop::Finished);
-                coordinator.idle.notify_all();
-                Some(stop)
+                let terminal = std::mem::replace(&mut shared.state, RunState::Finished);
+                coordinator.state_changed.notify_all();
+                Some(terminal)
             }
         };
-        if let Some(stop) = stop {
-            return match stop {
-                Stop::Failed(failure) => Ok(DriveOutcome::Fail(failure)),
-                Stop::Fault(fault) => Err(fault),
-                Stop::Interrupted => Ok(DriveOutcome::Interrupt),
+        if let Some(terminal) = terminal {
+            return match terminal {
+                RunState::Failed(failure) => Ok(DriveOutcome::Fail(failure)),
+                RunState::Fault(fault) => Err(fault),
+                RunState::Interrupted => Ok(DriveOutcome::Interrupt),
                 // Quiescent with the run already wound down: finalize.
-                Stop::Finished => Ok(DriveOutcome::Finalize),
+                RunState::Finished => Ok(DriveOutcome::Finalize),
                 // This arm is guarded by the `Running` check above.
-                Stop::Running => unreachable!("the terminal branch excludes Running"),
+                RunState::Running => unreachable!("the terminal branch excludes Running"),
             };
         }
         // Healthy and quiescent: poll. A poll fault set the terminal state;
@@ -275,9 +276,9 @@ fn drive(
         match poll_source(coordinator, source) {
             None => {}
             Some(more) if more.is_empty() => {
-                let mut state = coordinator.lock();
-                state.stop = Stop::Finished;
-                coordinator.idle.notify_all();
+                let mut shared = coordinator.lock();
+                shared.state = RunState::Finished;
+                coordinator.state_changed.notify_all();
                 return Ok(DriveOutcome::Finalize);
             }
             Some(more) => enqueue(coordinator, events, more),
@@ -288,15 +289,18 @@ fn drive(
 /// Polls the source. A poll error becomes the run's terminal fault so the pool
 /// winds down and the driver reports it; `None` signals that routing, `Some`
 /// carries the polled tasks.
-fn poll_source(coordinator: &Coordinator, source: &mut dyn TaskSource) -> Option<Vec<RunnableTask>> {
+fn poll_source(
+    coordinator: &Coordinator,
+    source: &mut dyn TaskSource,
+) -> Option<Vec<RunnableTask>> {
     match source.poll() {
         Ok(tasks) => Some(tasks),
         Err(e) => {
-            let mut state = coordinator.lock();
-            if matches!(state.stop, Stop::Running) {
-                state.stop = Stop::Fault(e);
+            let mut shared = coordinator.lock();
+            if matches!(shared.state, RunState::Running) {
+                shared.state = RunState::Fault(e);
             }
-            coordinator.idle.notify_all();
+            coordinator.state_changed.notify_all();
             None
         }
     }
@@ -326,9 +330,9 @@ fn enqueue(coordinator: &Coordinator, events: &Sender<LifecycleEvent>, tasks: Ve
             },
         );
     }
-    let mut state = coordinator.lock();
-    state.queue.extend(pending);
-    coordinator.idle.notify_all();
+    let mut shared = coordinator.lock();
+    shared.queue.extend(pending);
+    coordinator.state_changed.notify_all();
 }
 
 #[cfg(test)]
@@ -406,11 +410,16 @@ mod tests {
         let coordinator = Coordinator::new();
         let (events, _rx) = mpsc::channel();
         // With no live workers, the first poll faults immediately.
-        let result = drive(&coordinator, &mut FailingSource, &events, &RunControl::detached());
+        let result = drive(
+            &coordinator,
+            &mut FailingSource,
+            &events,
+            &RunControl::detached(),
+        );
         assert!(matches!(result, Err(Error::Validation(_))));
         // The terminal state is what a real pool observes to drain: a poll
         // error that left `Running` in place would park the workers forever.
-        assert!(!matches!(coordinator.lock().stop, Stop::Running));
+        assert!(!matches!(coordinator.lock().state, RunState::Running));
     }
 
     #[test]
@@ -426,13 +435,13 @@ mod tests {
             &RunControl::detached(),
         );
         assert!(matches!(result, Ok(DriveOutcome::Finalize)));
-        assert!(matches!(coordinator.lock().stop, Stop::Finished));
+        assert!(matches!(coordinator.lock().state, RunState::Finished));
     }
 
     #[test]
     fn a_preset_failure_is_reported_and_the_pool_asked_to_exit() {
         let coordinator = Coordinator::new();
-        coordinator.lock().stop = Stop::Failed(Failure {
+        coordinator.lock().state = RunState::Failed(Failure {
             task: a_key(),
             reason: "candidate rejected".to_string(),
         });
@@ -451,13 +460,13 @@ mod tests {
             _ => panic!("expected the preset failure to be reported"),
         }
         // Finished is left in the state's place: the pool's exit signal.
-        assert!(matches!(coordinator.lock().stop, Stop::Finished));
+        assert!(matches!(coordinator.lock().state, RunState::Finished));
     }
 
     #[test]
     fn a_preset_fault_is_returned_as_the_run_error() {
         let coordinator = Coordinator::new();
-        coordinator.lock().stop = Stop::Fault(Error::Corruption("store broke".to_string()));
+        coordinator.lock().state = RunState::Fault(Error::Corruption("store broke".to_string()));
         let (events, _rx) = mpsc::channel();
         let result = drive(
             &coordinator,
@@ -469,7 +478,7 @@ mod tests {
             Err(e) => assert_eq!(e.to_string(), "store corruption: store broke"),
             Ok(_) => panic!("expected the preset fault to be returned"),
         }
-        assert!(matches!(coordinator.lock().stop, Stop::Finished));
+        assert!(matches!(coordinator.lock().state, RunState::Finished));
     }
 
     #[test]
@@ -490,9 +499,9 @@ mod tests {
             );
         }
         // Both tasks sit in the queue at attempt 0 with their key precomputed.
-        let state = coordinator.lock();
-        assert_eq!(state.queue.len(), 2);
-        for (pending, key) in state.queue.iter().zip(&keys) {
+        let shared = coordinator.lock();
+        assert_eq!(shared.queue.len(), 2);
+        for (pending, key) in shared.queue.iter().zip(&keys) {
             assert_eq!(pending.key, *key);
             assert_eq!(pending.key, pending.task.identity.key());
             assert_eq!(pending.attempt, 0);

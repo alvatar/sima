@@ -13,13 +13,17 @@ use std::time::{Duration, Instant};
 
 use sima_model::TaskKey;
 
-use crate::coordinator::{Coordinator, Stop};
+use crate::coordinator::{Coordinator, RunState};
 use crate::event::LifecycleEvent;
 use crate::journal_sink::emit;
 
 /// Scans the lease table on an interval, reporting each expired lease once,
 /// until the run winds down and the pool has drained.
-pub(crate) fn watchdog_loop(coordinator: &Coordinator, timeout: Duration, events: &Sender<LifecycleEvent>) {
+pub(crate) fn watchdog_loop(
+    coordinator: &Coordinator,
+    timeout: Duration,
+    events: &Sender<LifecycleEvent>,
+) {
     // Scan several times per timeout; a small floor keeps a tiny timeout from
     // spinning.
     let interval = (timeout / 4).max(Duration::from_millis(1));
@@ -29,13 +33,13 @@ pub(crate) fn watchdog_loop(coordinator: &Coordinator, timeout: Duration, events
     // The scan, the exit check, and the wait share one continuous guard: every
     // notify_all site takes this mutex first, so a terminal wakeup landing
     // between the check and the wait cannot be lost.
-    let mut state = coordinator.lock();
+    let mut shared = coordinator.lock();
     loop {
         let now = Instant::now();
         // Detection only: read the lease table, never mutate it. Emitting under
         // the lock is safe here — the channel is unbounded so the send never
         // blocks, and expiries are rare.
-        for (key, lease) in &state.leases {
+        for (key, lease) in &shared.leases {
             let elapsed = now.duration_since(lease.leased_at);
             if elapsed > timeout && reported.insert((*key, lease.attempt)) {
                 emit(
@@ -48,13 +52,13 @@ pub(crate) fn watchdog_loop(coordinator: &Coordinator, timeout: Duration, events
                 );
             }
         }
-        if !matches!(state.stop, Stop::Running) && state.leases.is_empty() {
+        if !matches!(shared.state, RunState::Running) && shared.leases.is_empty() {
             return;
         }
         // Sleep for the interval, waking early on any state change.
-        state = coordinator
-            .idle
-            .wait_timeout(state, interval)
+        shared = coordinator
+            .state_changed
+            .wait_timeout(shared, interval)
             .unwrap_or_else(|p| p.into_inner())
             .0;
     }

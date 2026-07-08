@@ -286,7 +286,7 @@ mod tests {
     use sima_model::{EnvironmentId, FormatId, GeneratorConfig, GeneratorId, Params, Spec, SpecId};
 
     use super::*;
-    use crate::coordinator::Stop;
+    use crate::coordinator::RunState;
     use crate::lease::Lease;
 
     /// A throwaway task key.
@@ -314,11 +314,11 @@ mod tests {
             panic!("worker body panicked");
         }));
         assert!(result.is_err());
-        let state = coordinator.lock();
+        let shared = coordinator.lock();
         // The lease is released and the run winds down, so drive() can observe
         // quiescence instead of blocking forever.
-        assert!(!state.leases.contains_key(&key));
-        assert!(matches!(state.stop, Stop::Fault(_)));
+        assert!(!shared.leases.contains_key(&key));
+        assert!(matches!(shared.state, RunState::Fault(_)));
     }
 
     #[test]
@@ -330,11 +330,11 @@ mod tests {
             let guard = PanicGuard::arm(&coordinator, key);
             guard.disarm();
         }
-        let state = coordinator.lock();
+        let shared = coordinator.lock();
         // Disarm settles nothing itself — the normal process() path does — so
         // the state is untouched: no fault, and the lease still stands.
-        assert!(matches!(state.stop, Stop::Running));
-        assert!(state.leases.contains_key(&key));
+        assert!(matches!(shared.state, RunState::Running));
+        assert!(shared.leases.contains_key(&key));
     }
 
     /// The outcome of running `process` once against a stub `Succeed` candidate
@@ -470,7 +470,7 @@ mod tests {
     fn a_missing_input_state_object_is_a_fault() -> Result<()> {
         let run = run_process(b"never stored", false)?;
         assert!(run.store.record(&run.identity.key())?.is_none());
-        assert!(matches!(run.coordinator.lock().stop, Stop::Fault(_)));
+        assert!(matches!(run.coordinator.lock().state, RunState::Fault(_)));
         assert!(
             run.events
                 .iter()
