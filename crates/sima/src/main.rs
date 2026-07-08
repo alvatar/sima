@@ -10,6 +10,7 @@
 //! - 1 — everything else: infrastructure fault, config error, usage error.
 
 mod render;
+mod tui;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -20,23 +21,25 @@ use sima_core::{Error, Result};
 use sima_pipeline::{RunControl, RunOutcome, RunStatus, load, orchestrate, status};
 
 /// Exit code for a definitive candidate failure.
-const EXIT_FAILED: u8 = 2;
-/// Exit code for a run wound down by Ctrl-C, matching the shell convention
-/// for death by SIGINT.
-const EXIT_INTERRUPTED: u8 = 130;
+pub(crate) const EXIT_FAILED: u8 = 2;
+/// Exit code for a run wound down by an interrupt, matching the shell
+/// convention for death by SIGINT.
+pub(crate) const EXIT_INTERRUPTED: u8 = 130;
 /// Exit code for everything else that is not success: infrastructure
 /// fault, config error, usage error.
-const EXIT_ERROR: u8 = 1;
+pub(crate) const EXIT_ERROR: u8 = 1;
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.iter().map(String::as_str).collect::<Vec<_>>()[..] {
         ["run", config] => run_command(&resolve_config(config)),
         ["status", config] => status_command(&resolve_config(config)),
+        ["tui", config] => tui::tui_command(&resolve_config(config)),
         _ => {
             eprint!(
                 "usage: sima run <config>     drive the configured run\n\
                  \x20      sima status <config>  report the run's state\n\
+                 \x20      sima tui <config>     drive the run in a full-screen terminal UI\n\
                  \x20      <config> is a sima.toml path; the .toml extension may be omitted\n"
             );
             ExitCode::from(EXIT_ERROR)
