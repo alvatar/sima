@@ -2,7 +2,10 @@
 //! the key mapping, and the event loop that folds observations into the
 //! display and drives the run on a background thread.
 
+use std::any::Any;
+use std::cell::Cell;
 use std::io::{self, IsTerminal, Stdout};
+use std::panic::AssertUnwindSafe;
 use std::path::Path;
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -19,10 +22,18 @@ use crossterm::terminal::{
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 
+use sima_core::Error;
 use sima_pipeline::{LifecycleEvent, LoadedConfig, RunControl, RunStatus, load, orchestrate};
 
 use super::state::{KeyAction, Msg, TuiState};
 use super::view;
+
+thread_local! {
+    /// Set on the orchestrate thread so the panic hook knows a panic there is
+    /// caught and reported as a fault by [`spawn_run`], and must not touch the
+    /// terminal the UI thread owns.
+    static ON_RUN_THREAD: Cell<bool> = const { Cell::new(false) };
+}
 
 /// How long the loop waits for a key before ticking, in milliseconds. Short
 /// enough that a redraw after a folded event feels immediate.
@@ -50,7 +61,16 @@ pub fn tui_command(config: &Path) -> ExitCode {
             return ExitCode::from(crate::EXIT_ERROR);
         }
     };
-    match run_session(loaded) {
+    // Seed before entering the terminal so a store fault surfaces on the
+    // normal screen, exactly as `sima status` would report it.
+    let status = match seed_status(&loaded) {
+        Ok(status) => status,
+        Err(e) => {
+            eprintln!("sima: {e}");
+            return ExitCode::from(crate::EXIT_ERROR);
+        }
+    };
+    match run_session(loaded, status) {
         Ok(code) => ExitCode::from(code),
         Err(e) => {
             // The guard has restored the terminal by now, so the message
@@ -81,21 +101,23 @@ fn key_action(key: KeyEvent) -> Option<KeyAction> {
 
 /// Seeds the display from any existing journal for `config`'s run, folding it
 /// through the shared accumulator so a resumed run shows its prior progress.
-/// A run never driven — or an unreadable store — starts from a zeroed status;
-/// re-running surfaces any real store problem.
-fn seed_status(config: &LoadedConfig) -> RunStatus {
+/// A store that does not exist yet, or a run never driven, seeds a zeroed
+/// status; a corrupt journal or an I/O fault is a real problem `sima status`
+/// reports, so it surfaces here rather than hiding behind a blank screen.
+fn seed_status(config: &LoadedConfig) -> sima_core::Result<RunStatus> {
     match sima_pipeline::status(config) {
-        Ok(status) => status,
-        Err(_) => RunStatus::new(config.run.id()),
+        Ok(status) => Ok(status),
+        Err(Error::Validation(_)) => Ok(RunStatus::new(config.run.id())),
+        Err(other) => Err(other),
     }
 }
 
 /// Runs one terminal session over `config`, returning its exit code. Sets up
 /// the terminal, folds keys and run events into the state, drives the run on a
 /// background thread, and tears the terminal down on return.
-fn run_session(config: LoadedConfig) -> io::Result<u8> {
+fn run_session(config: LoadedConfig, status: RunStatus) -> io::Result<u8> {
     let workers = config.execution.workers;
-    let mut state = TuiState::new(seed_status(&config), workers);
+    let mut state = TuiState::new(status, workers);
     let config = Arc::new(config);
 
     install_panic_hook();
@@ -147,24 +169,49 @@ fn run_session(config: LoadedConfig) -> io::Result<u8> {
 /// and its return arrives as [`Msg::Finished`].
 fn spawn_run(config: Arc<LoadedConfig>, tx: SyncSender<Msg>, interrupt: Arc<AtomicBool>) {
     thread::spawn(move || {
+        ON_RUN_THREAD.with(|flag| flag.set(true));
         let events = tx.clone();
         let observer = move |event: &LifecycleEvent| {
             let _ = events.send(Msg::Event(event.clone()));
         };
-        let control = RunControl {
-            observer: &observer,
-            interrupt: &interrupt,
-        };
-        let outcome = orchestrate(&config, &control);
+        // `orchestrate` can unwind rather than return `Err` — the scheduler
+        // re-raises a worker or journal-sink panic at its scope join. Catch it
+        // so the UI loop always receives a return: an unwinding run thread
+        // would otherwise never send `Finished` and leave the session hung.
+        let outcome = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            let control = RunControl {
+                observer: &observer,
+                interrupt: &interrupt,
+            };
+            orchestrate(&config, &control)
+        }))
+        .unwrap_or_else(|payload| Err(panic_fault(payload)));
         let _ = tx.send(Msg::Finished(outcome));
     });
 }
 
-/// Restores the terminal on a panic before the default hook prints, so a
-/// panic never leaves the shell in raw mode on the alternate screen.
+/// Renders a caught panic payload as an error, so a run-thread panic reaches
+/// the UI loop as a fault outcome.
+fn panic_fault(payload: Box<dyn Any + Send>) -> Error {
+    let text = payload
+        .downcast_ref::<&str>()
+        .map(|s| (*s).to_string())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "unknown cause".to_string());
+    Error::Validation(format!("the run thread panicked: {text}"))
+}
+
+/// Restores the terminal on a UI-thread panic before the default hook prints,
+/// so a panic never leaves the shell in raw mode on the alternate screen. A
+/// panic on the run thread is left to [`spawn_run`], which catches it and
+/// reports it as a fault, so the hook neither touches the terminal — the UI
+/// thread owns it — nor prints from there.
 fn install_panic_hook() {
     let default = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
+        if ON_RUN_THREAD.with(Cell::get) {
+            return;
+        }
         let _ = disable_raw_mode();
         let _ = execute!(io::stdout(), LeaveAlternateScreen);
         default(info);
