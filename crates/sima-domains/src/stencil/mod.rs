@@ -9,5 +9,7 @@
 //! kernel, genome, and reference.
 
 mod grid;
+mod reference;
 
 pub use grid::Grid;
+pub use reference::StencilRule;

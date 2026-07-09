@@ -83,6 +83,13 @@ impl Grid {
         &self.data
     }
 
+    /// The cell-major interleaved payload, mutably. The slice's length is
+    /// fixed, so a caller writes cells in place without disturbing the
+    /// dimensions the payload length is tied to.
+    pub fn data_mut(&mut self) -> &mut [f32] {
+        &mut self.data
+    }
+
     /// The canonical byte form: the format tag, the three dimensions as
     /// little-endian `u32`, then the payload as a bare little-endian `f32`
     /// sequence whose length the dimensions fix.
