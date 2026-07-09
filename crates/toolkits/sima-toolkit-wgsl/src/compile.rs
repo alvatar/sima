@@ -133,6 +133,33 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         assert_eq!(COMPILER_ID, "naga 30.0.0; spirv=1.5; opt=none");
     }
 
+    #[test]
+    fn malformed_wgsl_maps_to_gpu_parse_error() {
+        let result = compile(
+            "@compute @workgroup_size(64) fn main() { let x = ; }",
+            "main",
+        );
+        match result {
+            Err(Error::Gpu(msg)) => {
+                assert!(msg.contains("parse WGSL"), "unexpected message: {msg}");
+            }
+            Err(other) => panic!("expected a Gpu parse error, got {other:?}"),
+            Ok(_) => panic!("expected compilation of malformed WGSL to fail"),
+        }
+    }
+
+    #[test]
+    fn unknown_entry_point_maps_to_gpu_emit_error() {
+        let result = compile(SAMPLE, "does_not_exist");
+        match result {
+            Err(Error::Gpu(msg)) => {
+                assert!(msg.contains("emit SPIR-V"), "unexpected message: {msg}");
+            }
+            Err(other) => panic!("expected a Gpu emit error, got {other:?}"),
+            Ok(_) => panic!("expected compilation for a missing entry point to fail"),
+        }
+    }
+
     /// Pinned blake3 of the sample's SPIR-V (little-endian words).
     const SPIRV_DIGEST: &str = "371649a4a9eb9519680f198ddffb78b60cbc4a32f9073186067a1f962a931e71";
     /// Pinned blake3 of the sample's WGSL source bytes.
