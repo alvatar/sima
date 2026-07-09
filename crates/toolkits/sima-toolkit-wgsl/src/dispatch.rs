@@ -209,4 +209,37 @@ mod tests {
         let output: &[u32] = bytemuck::cast_slice(&read_back);
         assert_eq!(output, [3, 5, 7, 9]);
     }
+
+    /// Requires a real Vulkan device. Run with `cargo test -- --ignored`.
+    ///
+    /// A dispatch that reads a buffer a prior dispatch wrote must observe that
+    /// output: the toolkit orders cross-dispatch shader-write to shader-read
+    /// visibility through the leading buffer barrier's source scope. Applying
+    /// `out = in * 2 + 1` twice, ping-ponging the two buffers, yields
+    /// `in * 4 + 3`.
+    #[test]
+    #[ignore = "requires a Vulkan device"]
+    fn a_dispatch_observes_a_prior_dispatchs_writes() {
+        let context = Context::new().expect("create compute context");
+        let kernel = context.kernel(SMOKE_WGSL, "main").expect("build kernel");
+        let input: [u32; 4] = [1, 2, 3, 4];
+        let bytes: &[u8] = bytemuck::cast_slice(&input);
+        let a = context.buffer(bytes.len()).expect("buffer a");
+        let b = context.buffer(bytes.len()).expect("buffer b");
+        context.upload(&a, bytes).expect("upload input");
+
+        // First pass writes b = a * 2 + 1 through the shader; the second pass
+        // reads that shader output back out of b and writes a.
+        context
+            .dispatch(&kernel, &[&a, &b], [1, 1, 1])
+            .expect("first dispatch");
+        context
+            .dispatch(&kernel, &[&b, &a], [1, 1, 1])
+            .expect("second dispatch");
+
+        let read_back = context.download(&a).expect("download");
+        let output: &[u32] = bytemuck::cast_slice(&read_back);
+        // (in * 2 + 1) * 2 + 1 = in * 4 + 3.
+        assert_eq!(output, [7, 11, 15, 19]);
+    }
 }
