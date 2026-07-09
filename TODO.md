@@ -9,37 +9,41 @@ which must therefore carry everything durable. This document is living —
 structure and content evolve through discussion.
 
 Settled context: Rust; local execution first, distributed by design. Workspace under `crates/`, one crate per
-layer (below). GPU execution via Vulkan compute (`ash`), shaders compiled to
-SPIR-V at build time (shaderc). Content addressing with blake3. Concurrency
-via std threads and channels — no async runtime (revisit only if P3
-transports force it). All randomness in result-affecting paths comes from the
-project's counter-based SplitMix64 PRNG (`sima-core`), implemented identically
-on CPU and GPU; the `rand` crate is banned from result paths. Candidates are
-specs — opaque bytes plus a format id; domains interpret them (CA families
-call theirs genomes). Run parameters (extent, steps, budgets) are a separate
-opaque params blob: generators produce specs, config produces params, and the
-spec's format id governs the interpretation of both. CA is the substrate; the research object is
-learned/evolved computation on it. Primary workload shape: huge grids, 3D
-included — a single simulation can saturate a GPU; small grids are supported
-via within-launch batching (P7), never the design driver. Families divide by
-executor kind — the compute shape their engine has:
+layer (below). GPU execution via Vulkan compute (`ash`); kernels are authored
+in WGSL and compiled to SPIR-V by `naga` (pure Rust, no build-time C
+toolchain). Content addressing with blake3. Concurrency via std threads and
+channels — no async runtime (revisit only if P4 transports force it). All
+randomness in result-affecting paths comes from the project's counter-based
+SplitMix64 PRNG (`sima-core`), implemented identically on CPU and GPU; the
+`rand` crate is banned from result paths. Candidates are specs — opaque bytes
+plus a format id; domains interpret them (CA families call theirs genomes).
+Run parameters (extent, steps, budgets) are a separate opaque params blob:
+generators produce specs, config produces params, and the spec's format id
+governs the interpretation of both. The research object is learned/evolved
+computation on data-parallel substrates; cellular automata are the first
+family, neural cellular automata and Lenia the near-term targets. Primary
+workload shape: huge grids, 3D included — a single simulation can saturate a
+GPU; small grids are supported via within-launch batching (P8), never the
+design driver. Families divide by executor kind — the compute shape their
+engine has:
 - Stencil/convolution kind: double-buffered grid state (extent × channels ×
   dtype); each output cell is a function of a neighborhood of the input grid.
-  Covers totalistic (integer, 1×u8 — P2) and reaction-diffusion,
-  Lenia/Flow-Lenia, Neural CA (float, N channels — P7).
+  Covers reaction-diffusion, Lenia, and Neural CA (float, N channels — P3),
+  with Flow-Lenia and cross-substrate rigor in P8.
 - Agent-field kind: state is an agent population (position, heading) plus a
   field grid; agents sense the field, move, deposit onto it, and the field
-  diffuses and decays. Covers Physarum (P8).
+  diffuses and decays. Covers Physarum (P9).
 At the infra layer both are opaque content-addressed state; the domain owns
 serialization and the compute shape. Required families across the ladder:
-totalistic, reaction-diffusion, Lenia/Flow-Lenia, Neural CA, Physarum.
+reaction-diffusion, Lenia/Flow-Lenia, Neural CA, Physarum.
 Visualization is out of scope: snapshots in the store are
 consumed by external tools (the `../luz` renderer reads them as volumes).
 CI is in place (`.github/workflows/ci.yml`: fmt + clippy + workspace tests on
 every push and PR); GPU-gated tests are skipped in hosted CI and run on the
-dev machine — self-hosted runner revisited in P3. Evaluation research and
-model-family research are standing tracks, deliberately out of the phase
-ladder.
+dev machine — self-hosted runner revisited in P4. Reproducibility is declared
+per domain across two tiers (README, Determinism), a property rather than the
+objective. Evaluation research and model-family research are standing tracks,
+deliberately out of the phase ladder.
 
 Layering (strictly downward dependencies, enforced by workspace crate edges;
 layer numbers follow the dependency order):
@@ -48,15 +52,17 @@ key, provenance, run config) → `sima-store` (L2: cas, catalog, journal
 modules) → `sima-contracts` (L3: generator/executor traits + stubs) →
 `sima-scheduler` (L4: task sources, leases, lifecycle state machine) →
 `sima-pipeline` (L5: orchestration, resume, re-evaluation) → `sima` (L6: CLI
-binary). Implementation crates at L3: `sima-gpu` (ash wrapper, depends on
-core) and `sima-domains` (rule families: CPU references + GPU kernels;
-depends on contracts + gpu), arriving in P2.
+binary). Implementation crates at L3: execution toolkits under
+`crates/toolkits/` (`sima-toolkit-wgsl`: WGSL → naga → ash compute, depends on
+core), arriving in P2; `sima-domains` (rule families: CPU references + WGSL
+kernels; depends on contracts + the toolkits it uses), with its first real
+domain in P3.
 
 Running model: one orchestrator per run — the `sima run` process itself; no
 daemon. Single-writer per run enforced by a stale-detectable lease file.
 Workers are stateless leaseholders (threads in P1, processes and remote
-workers later). Executors are pure compute; workers commit results through
-the catalog. The store is the only durable state; the orchestrator process is
+workers later). Executors are pure compute; workers commit results through the
+catalog. The store is the only durable state; the orchestrator process is
 disposable at any instant.
 
 ## P1 — Infrastructure spine
@@ -143,12 +149,12 @@ Phase-level decisions:
       leased → executing → committed | failed → retried) emitted as typed
       lifecycle events — structured data, not formatted strings — with the
       store's journal as the one sink they serialize into now (the same events
-      feed the distributed trace facade when it arrives, M3.4); thread-worker
-      transport (interim: replaced outright by the M3.1 subprocess worker; the
-      two worker models never coexist — see M3.1); a watchdog that stamps each
+      feed the distributed trace facade when it arrives, M4.4); thread-worker
+      transport (interim: replaced outright by the M4.1 subprocess worker; the
+      two worker models never coexist — see M4.1); a watchdog that stamps each
       lease with a deadline and journals a `TaskOverran` event when an attempt
       runs past it (in-process execution cannot be preempted, so an overrun is
-      detected and reported, never killed — real preemption is M3.1); failure
+      detected and reported, never killed — real preemption is M4.1); failure
       matrix driven by the programmable stub; an `ExecutionConfig` injected as
       a struct (worker count, timeouts, retry cap — operational,
       never hashed), whose file form is the execution section of M1.6's
@@ -187,57 +193,89 @@ Phase-level decisions:
       their own config translation, so the bundle never pairs executor and
       generator 1:1
 
-## P2 — GPU executor + totalistic family
+## P2 — GPU compute toolkit + float foundation
 
-First real executor. Outer-totalistic 3D CA as the simplest family: exercises
-the GPU path and the family boundary while staying trivial to verify. It
-establishes the stencil/convolution executor kind in its integer, bit-exact-
-everywhere form; the float variant of this kind arrives in P7 and the second
-kind (agent-field) in P8.
+First real GPU compute. The execution toolkit that lets a domain run WGSL
+kernels on the GPU, plus the float grid state the near-term families need. No
+domain and no family land here — this phase builds what the P3 families run
+on. Reproducibility is a per-domain property (README), not this phase's
+organizing concern.
 
-Phase acceptance: GPU results bit-identical to the CPU reference across the
-full M2.3 matrix; a ≥1000-genome search completes through the spine within
-its stated disk budget; a segment chain interrupted and resumed is
-bit-identical to an unsegmented run of equal length.
+Phase acceptance: the toolkit runs a WGSL compute kernel end to end on the
+local GPU (compile, allocate, transfer, dispatch, read back); float
+multi-channel grid state round-trips through the store as an opaque snapshot;
+a run split into a chain of segments and resumed equals an unsegmented run of
+equal length.
 
-- [ ] M2.1 ash compute bringup (`sima-gpu`): device selection, buffers,
-      dispatch, build-time shaderc, SPIR-V hashes folded into the environment
-      hash; device and driver recorded as provenance metadata but kept out of
-      the env hash for integer families (results are device-independent —
-      README, Determinism; float families revisit this in P7)
-- [ ] M2.2 Totalistic family (`sima-families`): outer-totalistic 3D rule —
-      Moore-26 neighborhood, u8 state (0 = dead, 1..states-1 = decay levels),
-      genome = birth mask ‖ survive mask (bitmasks over live-neighbor counts)
-      ‖ state count, toroidal wrap as the only boundary condition; genome
-      encode/validate, seeded generator, mutation + CPU reference engine with
-      known-answer tests (mutation is dormant until the first evolutionary
-      loop in P7; built here for family completeness)
-- [ ] M2.3 GPU totalistic kernel + CPU/GPU bit-equality cross-check matrix
-      (extents, genomes, step counts)
-- [ ] M2.4 First real search: ≥1000 genomes on the local GPU through the full
-      spine; per-candidate result stats recorded as metadata (final population
-      count from the result snapshot — inspection aid, not a funnel);
-      throughput numbers recorded here. Result snapshots are stored in full
-      (re-evaluation and portability require them), so extent × batch is
-      chosen to a stated disk budget; retention policy is deliberately
-      deferred to P6. Revisit CAS cost here, where disk volume and write
-      throughput first bite: measure the cost of re-hashing every object on
-      read and decide whether large artifacts get a bulk read that skips
-      verification while identity objects stay verified; measure the
-      per-object fsync write cost and weigh batching many objects behind one
-      group-commit fsync
-- [ ] M2.5 Segmented execution: a long simulation runs as a chain of tasks
+- [ ] M2.1 `sima-toolkit-wgsl` (`crates/toolkits/`): WGSL → naga → ash compute
+      toolkit. `Context` (instance, device selection, compute queue, command
+      pool), `Buffer` (device-local storage with staging up/download),
+      `Kernel` (WGSL compiled to SPIR-V, compute pipeline; exposes source
+      digest + compiler id for a domain to record), `Dispatch`. The runtime is
+      hidden behind a WGSL-only API; ash is never exposed to domains. One
+      throwaway WGSL smoke kernel proves the path; no family, no domain.
+      Add an `Error::Gpu` variant to `sima-core`. GPU tests are `#[ignore]`
+      (dev-machine only); the crate builds with no native toolchain. Fully
+      elaborated in `work/TODO-2.1.md`
+- [ ] M2.2 Float grid state foundation: multi-channel float grid state as an
+      opaque content-addressed snapshot object; the WGSL compute path for
+      float stencils and convolutions; the CPU-reference pattern the families
+      cross-check against. Minimal — enough to run the float families; the
+      cross-substrate tolerance policy is P8
+- [ ] M2.3 Segmented execution: a long simulation runs as a chain of tasks
       (state Sₙ + k steps → state Sₙ₊₁), checkpoint states as store objects,
       segment length from config; a task source that yields the next
       uncommitted task in each chain (successor keys derived from produced
-      state hashes), plugging into M1.5's interface;
-      determinism test: N steps + resume N ≡ 2N steps, bit-exact. This is
-      what makes pausing and migrating a specific in-progress simulation
-      possible, not just a whole job
+      state hashes), plugging into M1.5's interface. General over families,
+      not tied to any one. Determinism check: N steps + resume N ≡ 2N steps
+      on a pinned backend. This is what makes pausing and migrating a specific
+      in-progress simulation possible, not just a whole job
 
-## P3 — Distribution
+## P3 — First model families
 
-The distributed-systems heavy lifting, done early against the real P2
+The near-term research targets, running end to end and explorable: reaction-
+diffusion, Neural CA, Lenia. Each lands as a domain (CPU reference + WGSL
+kernel + seeded generator) on the P2 toolkit and float foundation. Determinism
+is at the pragmatic per-backend level — deterministic run to run on one
+machine, exact where it is cheap — without the cross-substrate tolerance
+apparatus (P8). The point is having the families in hand and iterating.
+
+Phase acceptance: NCA and Lenia run through the full spine (generate → execute
+→ commit → inspect) from a `sima.toml`; a local search over a float family
+completes and records per-candidate stats; a recorded run re-evaluates from
+the store without re-execution; results reproduce run to run on the dev
+machine.
+
+- [ ] M3.1 Reaction-diffusion (Gray-Scott): the simplest float family — 2
+      channels, small-stencil Laplacian + local reaction. Genome = feed / kill
+      / diffusion rates; genome encode/validate, seeded generator, CPU
+      reference engine with known-answer tests, WGSL kernel. First float
+      family through the toolkit, proving the float path before the harder two
+- [ ] M3.2 Neural CA: genome = perception + update-network parameters, both
+      evolvable; the trainable, self-repairing family (regrows when disturbed,
+      two trained textures graftable). Seed-derived initialization and
+      mutation; CPU reference + WGSL kernel; runs the automaton for a fixed
+      step count from a seeded state and scores by fidelity to a target
+- [ ] M3.3 Lenia: large-radius convolution kernel + growth function. Genome =
+      kernel / growth parameters; seeded generator, CPU reference + WGSL
+      kernel. Flow-Lenia (mass-conserving advection, localized parameters) is
+      deferred to P8 — the order-independent scatter it needs is a rigor
+      problem, not a first-cut one
+- [ ] M3.4 First real search: a family search of ≥1000 candidates on the local
+      GPU through the full spine; per-candidate result stats recorded as
+      metadata (population/activity from the result snapshot — inspection aid,
+      not a funnel); throughput numbers recorded here. Result snapshots are
+      stored in full (re-evaluation and portability require them), so extent ×
+      batch is chosen to a stated disk budget; retention policy deferred to
+      P7. Revisit CAS cost here, where disk volume and write throughput first
+      bite: measure the cost of re-hashing every object on read and decide
+      whether large artifacts get a bulk read that skips verification while
+      identity objects stay verified; measure the per-object fsync write cost
+      and weigh batching many objects behind one group-commit fsync
+
+## P4 — Distribution
+
+The distributed-systems heavy lifting, done early against the real family
 workload. The scheduler contract from M1.5 gains transports. Content-addressed
 idempotent tasks make at-least-once delivery, retry, dedup, and spot-check
 verification safe by construction.
@@ -247,17 +285,17 @@ spread across processes, multiple GPUs, and one SSH remote yields identical
 manifests — determinism is transport-invariant; killing a remote worker
 mid-lease converges through retry with no manifest difference.
 
-- [ ] M3.1 Multi-process worker transport (same scheduler contract): replaces
+- [ ] M4.1 Multi-process worker transport (same scheduler contract): replaces
       the M1.5 in-process thread worker outright — the two worker models never
       coexist, since mixing them would mean inconsistent execution guarantees —
       and brings real timeout preemption (kill the subprocess) that the
       in-process watchdog can only detect, not enforce
-- [ ] M3.2 Multi-GPU on one host
-- [ ] M3.3 Remote worker over SSH: container image with Vulkan runtime, worker
+- [ ] M4.2 Multi-GPU on one host
+- [ ] M4.3 Remote worker over SSH: container image with Vulkan runtime, worker
       bootstrap, bidirectional store sync (have/want negotiation — results
-      home, closures out; the same protocol M5.8's migrate later composes)
+      home, closures out; the same protocol M6.8's migrate later composes)
       against a manually provisioned machine
-- [ ] M3.4 Distributed trace facade: a low-level structured-event interface
+- [ ] M4.4 Distributed trace facade: a low-level structured-event interface
       usable from every crate at every layer, placed at or near `sima-core`
       so the strict downward layering holds and any layer can emit without an
       upward edge. It carries the typed lifecycle events M1.5 defines plus
@@ -269,7 +307,7 @@ mid-lease converges through retry with no manifest difference.
 
 Expected to be re-split when reached; remote transport hides surprises.
 
-## P4 — Run control & observability
+## P5 — Run control & observability
 
 The view layer over the lifecycle journal, positioned before slingshot: paid
 remote hardware is not operated blind. The journal and state machine already
@@ -280,45 +318,45 @@ inspect, follow, timeline) from another terminal; observation is read-only
 over journal and store and never perturbs the run — proven by manifest
 equality between an observed and an unobserved run.
 
-- [ ] M4.1 `sima status` / `sima inspect <task>`: run and task state, attempt
+- [ ] M5.1 `sima status` / `sima inspect <task>`: run and task state, attempt
       history, durations, failure summaries — local and remote runs alike
-- [ ] M4.2 Live follow: workers emit events over their transport, the
+- [ ] M5.2 Live follow: workers emit events over their transport, the
       orchestrator journals them; follow tails the journal into one
       aggregated view (works from another terminal against a running
       orchestrator, local or SSH)
-- [ ] M4.3 Run timeline and summary report: throughput, retry rates, worker
+- [ ] M5.3 Run timeline and summary report: throughput, retry rates, worker
       utilization per run
 
-## P5 — Slingshot
+## P6 — Slingshot
 
 One command sends an experiment to rented hardware and brings results home:
 provision, bootstrap, run, sync, tear down. Teardown must be guaranteed —
 leaked instances are leaked money.
 
-- [ ] M5.1 Provider abstraction: provision / destroy / list / price query;
+- [ ] M6.1 Provider abstraction: provision / destroy / list / price query;
       instance lifecycle owned by the run, teardown on success, failure, and
       interrupt
-- [ ] M5.2 Vast.ai backend
-- [ ] M5.3 Hetzner backend
-- [ ] M5.4 AWS backend
-- [ ] M5.5 On-worker stats reduction: kernel-side population/activity counts
+- [ ] M6.2 Vast.ai backend
+- [ ] M6.3 Hetzner backend
+- [ ] M6.4 AWS backend
+- [ ] M6.5 On-worker stats reduction: kernel-side population/activity counts
       so remote runs return stats always, snapshots only on a cheap predicate
-      (placed here as the bandwidth guard; P6's funnel metrics consume the
+      (placed here as the bandwidth guard; P7's funnel metrics consume the
       same reduction — the mechanism is shared). "Stats always" covers the
       failed-evaluation case: M1.5 gave `Outcome::Failed` stats symmetric with
       `Completed`, so the reduction covers failures too and a failed evaluation
       returns its cheap counts over the wire like a success. This is also the first
       real producer of stats, so it forces the `Stats` type decision M1.4
       deferred: M1.4 ships `Stats` as opaque bytes, and here it should likely
-      become structured named scalars (population, activity, ...) the P6 funnel
+      become structured named scalars (population, activity, ...) the P7 funnel
       can threshold family-agnostically, plus an optional opaque family blob
-      for anything richer — decide the shape here, consumed at M6.2
-- [ ] M5.6 Budget guard: max price, max wall-clock, spend accounting per run
-- [ ] M5.7 Trust-tiered scheduling: redundant execution, quorum validation,
+      for anything richer — decide the shape here, consumed at M7.2
+- [ ] M6.6 Budget guard: max price, max wall-clock, spend accounting per run
+- [ ] M6.7 Trust-tiered scheduling: redundant execution, quorum validation,
       spot-check sampling, host reputation — the BOINC playbook; the largest
       mechanism in this phase, expected to split into several PRs at
       elaboration
-- [ ] M5.8 End-to-end slingshot consolidation (phase acceptance): start a
+- [ ] M6.8 End-to-end slingshot consolidation (phase acceptance): start a
       search locally; interrupt it mid-simulation (inside a segment chain);
       `sima migrate` to a freshly provisioned instance — sync closure, resume
       remotely, follow events live; sync results home; teardown verified.
@@ -328,7 +366,7 @@ leaked instances are leaked money.
 Expected to be re-split when reached; provider APIs and trust mechanisms hide
 surprises.
 
-## P6 — Evaluation funnel v1
+## P7 — Evaluation funnel v1
 
 Deliberately simple. The funnel machinery, with the cheapest deterministic
 metrics only; metric research lives in its own track.
@@ -337,65 +375,54 @@ Phase acceptance: verdicts are pure functions of recorded data — re-running
 the funnel over a recorded run reproduces identical verdicts, and changing
 thresholds re-classifies without any re-execution.
 
-- [ ] M6.1 Periodic snapshot/stats recording: segment boundaries (M2.5) are
+- [ ] M7.1 Periodic snapshot/stats recording: segment boundaries (M2.3) are
       the natural sampling points; this milestone adds the recording policy,
       not a new mechanism. Absorbs the snapshot retention policy deferred
-      from M2.4: what is kept, for how long, and what re-evaluation minimally
+      from M3.4: what is kept, for how long, and what re-evaluation minimally
       requires
-- [ ] M6.2 Verdict classification: dead / frozen / exploding / cyclic,
+- [ ] M7.2 Verdict classification: dead / frozen / exploding / cyclic,
       thresholds from config. Classification reads named numeric metrics
-      generically, so it requires the structured `Stats` decided at M5.5 rather
+      generically, so it requires the structured `Stats` decided at M6.5 rather
       than the opaque bytes M1.4 shipped — opaque stats would force a per-family
       decoder here and defeat the funnel's family-agnostic design
-- [ ] M6.3 Staged cheapest-first funnel + re-evaluation from recorded runs
+- [ ] M7.3 Staged cheapest-first funnel + re-evaluation from recorded runs
       without re-execution
-- [ ] M6.4 Object packing for scale, beside retention (M6.1) as the other
+- [ ] M7.4 Object packing for scale, beside retention (M7.1) as the other
       store-scaling lever: millions of small objects press on inode and
       directory limits; a pack format — many objects in one file with an
       index — is the answer
 
-## P7 — Continuous CA families
+## P8 — Continuous-family rigor
 
-Float, multi-channel grid families on the stencil/convolution executor kind.
-First the float-determinism foundation, then families in ascending complexity:
-reaction-diffusion, Lenia/Flow-Lenia, Neural CA. Neural CA is one family here,
-not the phase's headline — the trainable, self-repairing family, distinct from
-the emergent-dynamics families beside it.
+Final research on the float families: the hard determinism, the harder
+variants, and scale. The families already run and are explorable (P3); this
+phase makes them rigorous and complete.
 
-Phase acceptance: on one pinned backend class, every family here is
+Phase acceptance: on one pinned backend class, every float family is
 bit-identical run-to-run; across two distinct backend classes, results agree
 within the recorded tolerance policy; a seeded search run reproduces its
-fitness trajectory exactly. The tolerance policy (M7.1) is a written
+fitness trajectory exactly. The tolerance policy (M8.1) is a written
 deliverable — comparison metric, bound, and its provenance record format —
 not an aspiration; it is the hardest determinism question in the project and
 "done" is defined by tests against it.
 
-- [ ] M7.1 Float/multi-channel grid state, strict-IEEE shader path, tolerance
-      policy for cross-substrate checks (the policy document + tests are the
-      deliverable — see phase acceptance). Shared foundation for every family
-      below
-- [ ] M7.2 Reaction-diffusion (Gray-Scott): 2-channel float, small-stencil
-      Laplacian + local reaction — the simplest float family and the first
-      consumer of the tolerance policy, proving the float path before the
-      harder families. Genome = feed / kill / diffusion rates; seeded
-      generator, mutation, CPU reference + GPU kernel + cross-substrate
-      tolerance tests
-- [ ] M7.3 Lenia / Flow-Lenia: large-radius convolution kernel + growth
-      function; Flow-Lenia adds mass-conserving advection (semi-Lagrangian
-      transport — the mass-redistribution scatter needs an order-independent
-      scheme or it is nondeterministic even on one device) and spatially
-      localized parameters (genome becomes a per-region field, not one global
-      vector). CPU reference + GPU kernel + tolerance tests
-- [ ] M7.4 Neural CA: genome = perception + update parameters, both evolvable;
-      the trainable, self-repairing family (regrows when disturbed, two
-      trained textures graftable). CPU reference + GPU kernel + tolerance
-      tests
-- [ ] M7.5 Search loop over continuous genomes (ES; gradient-based training is
+- [ ] M8.1 Cross-substrate float tolerance policy: strict-IEEE shader path,
+      fixed reduction order, and the tolerance policy document + tests (the
+      comparison metric, bound, and provenance record format — the
+      deliverable, per phase acceptance). Folds the compiled kernel and driver
+      into the environment hash for the float families. Shared foundation for
+      cross-substrate agreement across every family in P3
+- [ ] M8.2 Flow-Lenia: mass-conserving advection (semi-Lagrangian transport —
+      the mass-redistribution scatter needs an order-independent scheme or it
+      is nondeterministic even on one device) and spatially localized
+      parameters (genome becomes a per-region field, not one global vector).
+      CPU reference + WGSL kernel + cross-substrate tolerance tests
+- [ ] M8.3 Search loop over continuous genomes (ES; gradient-based training is
       a standing research track — it changes the executor contract from "run"
       to "run + accumulate gradients")
-- [ ] M7.6 Within-launch population batching for small grids
+- [ ] M8.4 Within-launch population batching for small grids
 
-## P8 — Physarum (agent-field family)
+## P9 — Physarum (agent-field family)
 
 The second executor kind: a stigmergic multi-agent model (Jones's slime-mould
 transport networks). State is an agent population plus a trail field; the step
@@ -405,39 +432,39 @@ slingshot, funnel — is unchanged; the phase adds an executor kind in the
 families layer and nothing beneath it. It is the proof that the infra is
 family-agnostic.
 
-Determinism approach (integer tier, bit-exact everywhere like totalistic — to
-confirm at M8.2): fixed-point agent state (position, heading) and nearest-cell
-sensing keep motion exact on any hardware; deposits accumulate as fixed-point
-integers via order-independent atomic add (integer addition is associative and
-exact, so scatter ordering cannot change the sum); the field diffuse/decay is
-an integer stencil. This keeps Physarum out of the P7 float-tolerance
+Determinism approach (integer tier, bit-exact everywhere — to confirm at
+M9.2): fixed-point agent state (position, heading) and nearest-cell sensing
+keep motion exact on any hardware; deposits accumulate as fixed-point integers
+via order-independent atomic add (integer addition is associative and exact,
+so scatter ordering cannot change the sum); the field diffuse/decay is an
+integer stencil. This keeps Physarum out of the P8 float-tolerance
 machinery. The alternative — float agent state — moves it into that tier; the
 tradeoff (dynamic range and motion smoothness vs bit-exactness) is the open
-decision resolved in M8.2.
+decision resolved in M9.2.
 
 Phase acceptance: CPU/GPU bit-equality across an agent-count × field-extent ×
 step-count matrix; a segmented agent-field run (compound state checkpoint)
 resumed equals an unsegmented run of equal length, bit-exact.
 
-- [ ] M8.1 Agent-field executor kind (`sima-families`): compound state (agent
+- [ ] M9.1 Agent-field executor kind (`sima-domains`): compound state (agent
       buffer ‖ field grid) serialized as one opaque snapshot object;
       segmentation composes — the checkpoint is the compound state, the
       task-key input-state-ref mechanism is unchanged
-- [ ] M8.2 Physarum family: fixed-point agent state, nearest-cell sensing,
+- [ ] M9.2 Physarum family: fixed-point agent state, nearest-cell sensing,
       order-independent integer deposit, field diffuse/decay stencil; genome =
       sensor geometry (angles, distance), turn rate, deposit amount,
       decay/diffusion rates; seeded generator, mutation, CPU reference with
       known-answer tests; the fixed-point-vs-float determinism decision is
       resolved here
-- [ ] M8.3 GPU kernels (agent update + field update) + CPU/GPU bit-equality
+- [ ] M9.3 GPU kernels (agent update + field update) + CPU/GPU bit-equality
       matrix
-- [ ] M8.4 First Physarum search through the full spine (funnel, slingshot,
+- [ ] M9.4 First Physarum search through the full spine (funnel, slingshot,
       distribution unchanged); network-structure interestingness metrics feed
-      the P6 funnel via the standing evaluation track
+      the P7 funnel via the standing evaluation track
 
-## P9 — Out-of-tree executors (extensibility without forking)
+## P10 — Out-of-tree executors (extensibility without forking)
 
-Through P8 every executor and generator is an in-tree trait implementation
+Through P9 every executor and generator is an in-tree trait implementation
 selected by a compile-time format-id match (M1.6). This phase opens the
 contract as a public extension surface: a custom executor — and generator, by
 the same mechanism — is added against a stable API and registered at runtime,
@@ -447,8 +474,8 @@ makes loading foreign code safe; here it is enforced by isolation, not only by
 convention. The contract must be proven by several real in-tree families first,
 which is why the phase sits after the family phases rather than beside M1.4.
 
-Mechanism is deliberately open, chosen at elaboration and informed by the P2 /
-P7 / P8 families built against the same contract: dynamic library loading, a
+Mechanism is deliberately open, chosen at elaboration and informed by the P3 /
+P8 / P9 families built against the same contract: dynamic library loading, a
 subprocess/IPC protocol, WASM, or a manifest plus external binary each trade
 isolation, performance, and packaging differently.
 
@@ -460,25 +487,25 @@ environment hash, so two machines that load the same custom executor agree and
 one that loads a different build is distinguished — determinism and store
 portability (P1 acceptance (d)) hold across the boundary.
 
-- [ ] P9.1 Stable contract API: freeze the executor/generator traits and their
+- [ ] P10.1 Stable contract API: freeze the executor/generator traits and their
       wire types (spec, params, artifact, stats, task input, execution context)
       as a versioned public surface decoupled from internal crate churn;
       document the compatibility guarantee.
-- [ ] P9.2 Runtime registration: an out-of-tree executor announces its format
+- [ ] P10.2 Runtime registration: an out-of-tree executor announces its format
       id and is selected without editing sima's dispatch — the static
       format-id match (M1.6) becomes a registry. Registration and loading
       mechanism decided here. The registration unit follows the `Family`-bundle
       decision from M1.6: a third party registers the format-bound bundle
       (codec + executor + reference + kernel) as one object, with generators a
       separate plug targeting the format — do not fuse executor and generator.
-- [ ] P9.3 Isolation and trust: run out-of-tree executors process-isolated so
+- [ ] P10.3 Isolation and trust: run out-of-tree executors process-isolated so
       the pure-compute boundary is OS-enforced (foreign code cannot reach the
-      store); their results feed the trust-tiered validation (P5.7).
-- [ ] P9.4 Identity and packaging: fold a custom executor's identity (version,
+      store); their results feed the trust-tiered validation (P6.7).
+- [ ] P10.4 Identity and packaging: fold a custom executor's identity (version,
       build/content hash) into the environment hash so runs stay reproducible
       and portable; define how a custom family is packaged, versioned, and
       pinned.
-- [ ] P9.5 Reference out-of-tree executor: a worked example family in a
+- [ ] P10.5 Reference out-of-tree executor: a worked example family in a
       separate repository, built only against the published API and exercised
       through the full spine — the phase's proof that no fork is required.
 
@@ -492,9 +519,9 @@ Parallel to the phase ladder, each eventually feeding it:
 - **Further model families** — graph CAs, attention-based update rules,
   program-shaped candidates; each lands as a rule family on unchanged infra.
   The ladder's own family phases (reaction-diffusion, Lenia/Flow-Lenia, Neural
-  CA in P7; Physarum in P8) are the first proof of that promise
+  CA in P3; Physarum in P9) are the first proof of that promise
 - **Evaluation / interestingness** — novelty, diversity, complexity metrics;
-  the funnel machinery (P6) is the harness, the metrics are open research
+  the funnel machinery (P7) is the harness, the metrics are open research
 - **Gradient-based training** — backprop through CA steps changes the executor
   contract from "run" to "run + accumulate gradients"; NCA literature
   precedent exists
@@ -505,3 +532,7 @@ Parallel to the phase ladder, each eventually feeding it:
 ## Done
 
 ## Dropped
+
+- Totalistic family (outer-totalistic 3D CA): dropped as a domain. It was
+  scaffolding to exercise the GPU path; the M2.1 toolkit's own smoke kernel
+  serves that role, and the float families (P3) are the real first workload.

@@ -109,44 +109,44 @@ execution and spot-checking trivial, in the tradition of BOINC.
 
 ## Determinism
 
-Determinism is decided per family by the arithmetic of its engine, and it is a
-tested property, never an assumption: the same task run twice — or on two
-substrates — must produce identical content hashes, or agree within a recorded
-tolerance, and CI enforces it.
+SIMA reproduces a result from its recorded identity, and it supports a spectrum
+of reproducibility rather than demanding a single standard. Which tier a domain
+belongs to is a property it declares through its environment components. Both
+tiers are first-class: neither is privileged, and SIMA's job is to record
+identity honestly at whichever tier a workload needs.
 
-**Integer families are bit-exact everywhere.** A synchronous, double-buffered
-stencil over integer state makes each output cell a pure integer function of
-the previous grid. Scheduling order, workgroup shape, GPU model, vendor, and
-driver are all irrelevant to the result: the same genome and seed produce the
-identical grid on a CPU reference implementation, the local GPU, and any
-rented backend. Cross-substrate verification compares hashes for equality, so
-spot-checking an untrusted worker is exact.
+**Tier 1 — reproducible by content.** The engine is code whose arithmetic SIMA
+controls end to end, with no external numerical library in the path. Its
+identity is the engine source plus the compiler that produced it: the source
+digest, the compiler name and version, and the compile options that affect the
+emitted program. Integer engines are then bit-exact on every device — a
+synchronous double-buffered stencil over integer state makes each cell a pure
+integer function of the previous grid, so GPU model, vendor, and driver cannot
+change the result, and cross-substrate verification compares content hashes for
+equality. Float engines hold within a backend class once the compiler and
+reduction order are pinned, with a recorded tolerance across classes. *Example:*
+a Vulkan compute kernel compiled from WGSL to SPIR-V by naga, no library
+dependency.
 
-**Float families — continuous automata and neural networks — are reproducible
-per backend class.** The variables are the compiler and the kernel: FMA
-contraction, reassociation, fast-math relaxations, and the order of any
-reduction differ across drivers, vendors, and library versions. SIMA compiles
-with strict IEEE settings, holds reductions to a fixed order, and folds the
-compiled kernel and driver into the environment hash, so a task key pins the
-exact arithmetic: the same GPU model and driver class reproduce results
-bit-for-bit, and comparisons across classes use a recorded tolerance policy.
-Where an engine can remove a hazard structurally it does — a double-buffered
-stencil has no cross-cell reduction to order — but a neural engine's matmuls
-and convolutions do, so there determinism is deliberate: deterministic kernels
-and a fixed reduction order rather than a gift of the substrate. If
-unconditional bit-exactness is ever required, fixed-point integer arithmetic
-restores it at some cost in dynamic range.
+**Tier 2 — reproducible by declaration.** The engine calls into an external
+library or model whose internal determinism SIMA does not control. SIMA records
+the declared identity — engine source, compiler, and the name and version of
+each library and model in the path — and treats that library or model as a
+determinism boundary: variation inside it is out of scope by declaration, not a
+defect. *Example:* a PyTorch or TensorFlow run, where cuDNN autotuning and
+nondeterministic reductions vary run to run; or an LLM autoresearch loop, where
+model sampling varies. SIMA guarantees provenance and identity here — the same
+declared environment is recorded and addressable — and compares by a tolerance
+or a rubric score rather than by hash equality.
 
-**Nondeterminism is controlled at the engine, not assumed away.** The sources
-that plague general GPU compute — atomics-ordered accumulation, multi-kernel
-async races, library autotuning, unordered reductions — are designed out of the
-stencil engines and pinned down in the neural ones. A candidate is data for a
-fixed engine, never arbitrary code, so the only surface where nondeterminism
-can enter is the engine itself — established and tested once per family, not per
-candidate.
+The tiers differ only in where the boundary of hashed identity falls: Tier 1
+hashes everything that determines the bytes; Tier 2 hashes everything declared
+to determine them and names the rest out of scope. A domain chooses its tier by
+what it puts in the path — controlled code, or a library that trades exact
+reproducibility for capability.
 
-All randomness is derived from a counter-based PRNG implemented identically on
-every substrate; no result-affecting path uses a platform RNG.
+All randomness in a result-affecting path is derived from a counter-based PRNG
+implemented identically on every substrate; no result path uses a platform RNG.
 
 ## Design principles
 

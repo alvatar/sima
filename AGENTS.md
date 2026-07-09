@@ -65,12 +65,13 @@
 
 Settled invariants:
 - Layering, strictly downward, enforced by workspace crate dependency edges: `sima-core` → `sima-model` → `sima-store` → `sima-contracts` → `sima-domains` → `sima-scheduler` → `sima-pipeline` → `sima` (CLI binary). No upward imports, ever; a lower crate never depends on a higher one. `sima-domains` is imported by the pipeline; the scheduler's `[dependencies]` never include it, though its tests may take it as a dev-dependency for the reference stub domain.
+- Execution backends are implementation crates under `crates/toolkits/` (`sima-toolkit-*`), depending on `sima-core` (and `sima-contracts` when needed); `sima-domains` depends on the toolkits its domains use, and each toolkit isolates its own dependency set.
 - The store is the only durable state. Queues, schedulers, and orchestrators are ephemeral; a task source derives the currently-runnable frontier from (config, store state) — static batches and segment chains are two implementations of that one interface. Resume, crash-recovery, and re-run are one code path: re-derive the frontier, continue.
 - One orchestrator per run — the `sima run` process itself, no daemon; single-writer enforced by an OS file lock the kernel releases when the holder exits, so no staleness protocol exists; the lock file's content (pid, hostname) is diagnostic only. Workers are stateless leaseholders.
 - Executors are pure compute: they receive (spec, params, seed, env) and return artifacts + stats, never touching the store. Workers commit results through the catalog. The trust boundary lives on this seam.
 - Candidates are opaque at the infrastructure layer: a spec is (format id, opaque bytes), content-addressed. Domains interpret specs; "genome" is domain vocabulary. Run parameters are a second opaque content-addressed blob (params): generators produce specs, config produces params, and the spec's format id governs the interpretation of both — so one candidate stays addressable across evaluation stages and the generator contract never carries evaluation policy.
 - Two serialization worlds: identity-bearing bytes (anything hashed) go through the canonical `Enc`/`Dec` encoding exclusively; human-readable artifacts are serde and never identity-bearing.
-- Anything claimed deterministic is proven by a test (same config run in two fresh stores → identical manifests), never assumed. Manifests are canonicalized so run hashes are independent of worker completion order; journals are observational and excluded from equality criteria.
+- Reproducibility is declared per domain across two tiers (README, Determinism), not assumed uniform. The infrastructure guarantees run identity regardless: manifests are canonicalized so run hashes are independent of worker completion order, and journals are observational, excluded from equality criteria.
 
 Principles:
 - Clean, pristine architecture: clear spine, truthful boundaries, no split brain.
@@ -92,6 +93,7 @@ Applies to `docs/` and long-form comments:
 - Prefer minimal clean module boundaries over giant files
 - Module layout rule: use a directory module only when it represents a real semantic namespace; if a module has no submodules, prefer a single `name.rs` file. `mod.rs` may contain module docs, submodule declarations, and small curated re-exports that define the namespace surface. Do not put substantive implementation logic in `mod.rs`; that code should go into its own file/module. Exception: integration-test helpers live in `tests/common/mod.rs` and may hold the helper logic directly, because Cargo compiles every top-level file under a crate's `tests/` directory as its own test crate, so shared code must sit in a subdirectory.
 - Naming rule: if a module primarily exists to hold one major type, the file name should match the type name clearly (e.g. `RenderState` -> `render_state.rs`)
+- Execution-toolkit naming: crates under `crates/toolkits/` are named by the developer-facing contract, not the runtime that powers them (`sima-toolkit-wgsl`, not its ash/wgpu backend); the runtime enters the name only if it leaks into the domain-facing API (`sima-toolkit-ash-wgsl`)
 - Add inline comments for key operations / tricky logic
 - Comments should not have historical references to the previous versions of the code. They should be explain what the code does now, exclusively.
 - Add doc comments for functions / important APIs, in all languages and parts of the project
