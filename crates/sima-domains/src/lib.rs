@@ -16,6 +16,7 @@
 
 mod domain;
 mod domains;
+pub mod stencil;
 
 pub use domain::{Domain, domain_for, generator_for, generator_params_for, params_for};
 pub use domains::stub::{
