@@ -13,7 +13,7 @@ use sima_core::{Error, Hash, Result, hash_bytes};
 /// The value is a pinned constant; the known-answer test in this module fails
 /// if a `naga` upgrade changes emitted SPIR-V, forcing a deliberate update
 /// here in the same change that bumps the dependency.
-pub const COMPILER_ID: &str = "naga 26.0.0; spirv=1.5; opt=none";
+pub const COMPILER_ID: &str = "naga 30.0.0; spirv=1.5; opt=none";
 
 /// Target SPIR-V version. `1.5` is accepted by Vulkan 1.3.
 const SPIRV_VERSION: (u8, u8) = (1, 5);
@@ -130,7 +130,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     #[test]
     fn compiler_id_is_pinned() {
-        assert_eq!(COMPILER_ID, "naga 26.0.0; spirv=1.5; opt=none");
+        assert_eq!(COMPILER_ID, "naga 30.0.0; spirv=1.5; opt=none");
     }
 
     /// Pinned blake3 of the sample's SPIR-V (little-endian words).
