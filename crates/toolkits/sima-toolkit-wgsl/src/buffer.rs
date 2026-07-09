@@ -40,8 +40,14 @@ impl Context {
     /// Allocates a device-local storage buffer of `size` bytes.
     ///
     /// Usage is `STORAGE | TRANSFER_SRC | TRANSFER_DST`, so the buffer can bind
-    /// to a kernel and take part in uploads and downloads.
+    /// to a kernel and take part in uploads and downloads. `size` must be
+    /// greater than zero: Vulkan rejects a zero-sized buffer.
     pub fn buffer(&self, size: usize) -> Result<Buffer> {
+        if size == 0 {
+            return Err(Error::Gpu(
+                "buffer size must be greater than zero".to_string(),
+            ));
+        }
         create_buffer(
             self.device(),
             self.memory_properties(),
@@ -253,6 +259,14 @@ fn create_buffer(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Requires a real Vulkan device. Run with `cargo test -- --ignored`.
+    #[test]
+    #[ignore = "requires a Vulkan device"]
+    fn buffer_rejects_zero_size() {
+        let context = Context::new().expect("create compute context");
+        assert!(matches!(context.buffer(0), Err(Error::Gpu(_))));
+    }
 
     /// Requires a real Vulkan device. Run with `cargo test -- --ignored`.
     #[test]
