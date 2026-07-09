@@ -9,6 +9,12 @@
 //! entries) are the crate's surface; each domain's pieces live in its own
 //! module under `domains/`.
 //!
+//! Beside the concrete domains, the [`stencil`] module holds the shared
+//! substrate of the stencil/convolution executor kind: the [`Grid`](stencil::Grid)
+//! state, the [`run`](stencil::run) double-buffered dispatch harness, and the
+//! [`StencilRule`](stencil::StencilRule) CPU-reference contract the float
+//! families build their kernels on.
+//!
 //! The pipeline calls this crate to resolve a config's format and generator
 //! ids to code; the scheduler tests use the stub domain as a deterministic,
 //! programmable substrate through a dev-dependency. `sima-contracts` sits
