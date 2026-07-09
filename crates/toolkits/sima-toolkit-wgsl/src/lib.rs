@@ -10,6 +10,7 @@
 mod buffer;
 mod compile;
 mod context;
+mod dispatch;
 mod kernel;
 mod selection;
 mod validation;
