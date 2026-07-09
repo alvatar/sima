@@ -15,8 +15,9 @@ impl Context {
     /// One buffer is required per reflected binding, matched by position to the
     /// ascending binding numbers. A transient descriptor pool and set carry the
     /// bindings for this one dispatch and are freed after it completes. A
-    /// leading barrier makes each buffer's prior transfer writes available to
-    /// the shader.
+    /// leading barrier makes each buffer's prior writes — from a transfer
+    /// upload or an earlier dispatch — available to the shader, so a buffer a
+    /// previous dispatch wrote can be read by this one.
     pub fn dispatch(&self, kernel: &Kernel, buffers: &[&Buffer], groups: [u32; 3]) -> Result<()> {
         let bindings = kernel.bindings();
         if buffers.len() != bindings.len() {
@@ -83,7 +84,7 @@ fn record_dispatch(
         .iter()
         .map(|buffer| {
             vk::BufferMemoryBarrier::default()
-                .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+                .src_access_mask(vk::AccessFlags::TRANSFER_WRITE | vk::AccessFlags::SHADER_WRITE)
                 .dst_access_mask(vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE)
                 .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
                 .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
@@ -98,7 +99,7 @@ fn record_dispatch(
     unsafe {
         device.cmd_pipeline_barrier(
             command_buffer,
-            vk::PipelineStageFlags::TRANSFER,
+            vk::PipelineStageFlags::TRANSFER | vk::PipelineStageFlags::COMPUTE_SHADER,
             vk::PipelineStageFlags::COMPUTE_SHADER,
             vk::DependencyFlags::empty(),
             &[],
