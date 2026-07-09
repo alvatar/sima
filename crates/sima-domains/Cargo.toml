@@ -9,5 +9,9 @@ sima-model = { path = "../sima-model" }
 sima-contracts = { path = "../sima-contracts" }
 toml.workspace = true
 
+[dev-dependencies]
+sima-store = { path = "../sima-store" }
+tempfile.workspace = true
+
 [lints]
 workspace = true
