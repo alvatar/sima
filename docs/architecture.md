@@ -40,6 +40,13 @@ The store is the only durable state. Queues, schedulers, and orchestrators
 are ephemeral: the runnable frontier is derived from (config, store state),
 so resume, crash-recovery, and re-run are one code path.
 
+Execution backends sit off the spine as a sibling group under
+`crates/toolkits/` (`sima-toolkit-*`). A toolkit is a compute library a domain
+computes on, below `sima-domains` and beside `sima-contracts`: it depends on
+`sima-core` (and `sima-contracts` when it needs the contract types) and each
+isolates its own dependency set. `sima-domains` depends on the toolkits its
+executors use. See [Execution toolkits](#execution-toolkits).
+
 ## Two serialization worlds
 
 - **Identity-bearing bytes** — anything hashed — use the canonical binary
@@ -298,6 +305,66 @@ number, and the artifact the behavior eventually commits does not depend on
 which attempt reached it. The pipeline reaches this domain through the id
 dispatch and the scheduler tests through a dev-dependency; the shipped
 scheduler library never depends on `sima-domains`.
+
+## Execution toolkits
+
+Execution backends live under `crates/toolkits/` as `sima-toolkit-*` crates. A
+toolkit is a compute library, not an `Executor`: it holds no store handle and
+builds no run identity, so it sits below `sima-domains` and beside
+`sima-contracts` in the crate graph. A domain depends on the toolkits its
+executors compute on, and each toolkit isolates its own dependency set behind a
+surface stated in the developer-facing contract — the authoring language, not
+the runtime that powers it.
+
+### `sima-toolkit-wgsl`
+
+Runs WGSL compute kernels on Vulkan without a domain author writing raw Vulkan
+or seeing an `ash` or `vk` type. Kernels are authored in **WGSL** and compiled
+to **SPIR-V** in process with `naga`; `ash` drives Vulkan 1.3, and the system
+Vulkan loader is opened at runtime, so the crate builds with no native
+toolchain. The surface is three types:
+
+- **`Context`** — owns the Vulkan instance, logical device, compute queue, and
+  command pool for one headless compute session, and is the single owner of the
+  true Vulkan lifetime. It allocates buffers, compiles kernels, uploads and
+  downloads bytes, and dispatches.
+- **`Buffer`** — a device-local storage buffer. Host transfers go through a
+  per-transfer host-visible staging buffer; there is no pooled allocator.
+- **`Kernel`** — a compute pipeline compiled from WGSL for one entry point,
+  plus the identity inputs it surfaces.
+
+**Device selection** keeps devices exposing a compute queue family and picks
+deterministically by type — discrete, then integrated, then virtual, then CPU,
+then other — with the lowest enumeration index breaking ties;
+`SIMA_GPU_DEVICE` overrides the pick by index. Validation is opt-in under
+`SIMA_VULKAN_VALIDATION` and off at zero cost otherwise.
+
+**Ownership** follows a wait-idle-before-drop contract. `Buffer` and `Kernel`
+each hold a cloned `ash::Device` and free their own Vulkan objects on drop; the
+`Context` outlives them and drains the device before its own teardown, so no
+per-object drop synchronizes. Construction rolls back through per-object guards,
+so a mid-build failure orphans nothing.
+
+**Synchronization** favors obvious correctness: each upload, dispatch, and
+download is a separate one-time command buffer, submitted to the one compute
+queue and fence-waited before the next, with a leading buffer memory barrier
+carrying the dependency between stages.
+
+**Binding model.** The group-0 storage buffers a kernel declares are reflected
+from the parsed `naga` module and become one descriptor set of
+`STORAGE_BUFFER` bindings; a dispatch binds one buffer per binding in ascending
+order. Kernels take no push constants or uniforms — a domain that needs
+parameters passes them as an additional storage buffer, and in-shader bounds
+come from `arrayLength`.
+
+**Identity surface.** The toolkit does not build an `Environment`; it surfaces
+the two inputs a domain records for a kernel: the **source digest** (blake3 of
+the WGSL bytes) and the **compiler id**, a canonical string naming the compiler
+and the output-affecting options. This places a WGSL-on-Vulkan domain at the
+content-reproducible tier (README, Determinism): its identity is the shader
+source plus the compiler that produced it. A known-answer test pins the emitted
+SPIR-V so a `naga` change that shifts output fails the build and forces a
+deliberate compiler-id update.
 
 ## `sima-scheduler` (L5)
 
