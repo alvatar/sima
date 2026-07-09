@@ -6,3 +6,7 @@
 //! `ash`/Vulkan and compiles WGSL to SPIR-V in process with `naga`. It is an
 //! execution backend a domain depends on, a compute library rather than an
 //! executor: it holds no store handle and builds no run identity.
+
+mod compile;
+
+pub use compile::{COMPILER_ID, source_digest};
