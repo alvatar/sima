@@ -10,9 +10,11 @@
 mod buffer;
 mod compile;
 mod context;
+mod kernel;
 mod selection;
 mod validation;
 
 pub use buffer::Buffer;
 pub use compile::{COMPILER_ID, source_digest};
 pub use context::Context;
+pub use kernel::Kernel;
