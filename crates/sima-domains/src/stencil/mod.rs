@@ -10,6 +10,8 @@
 
 mod grid;
 mod reference;
+mod step;
 
 pub use grid::Grid;
 pub use reference::StencilRule;
+pub use step::run;
