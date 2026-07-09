@@ -215,26 +215,16 @@ mod tests {
     use super::*;
     use crate::source_digest;
 
-    /// A valid compute kernel with two group-0 storage buffers.
-    const SAMPLE: &str = "\
-@group(0) @binding(0) var<storage, read> in_buf: array<u32>;
-@group(0) @binding(1) var<storage, read_write> out_buf: array<u32>;
-
-@compute @workgroup_size(64)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-    let i = gid.x;
-    if (i >= arrayLength(&out_buf)) { return; }
-    out_buf[i] = in_buf[i] * 2u + 1u;
-}
-";
+    /// The shipped compute kernel with two group-0 storage buffers.
+    const SMOKE_WGSL: &str = include_str!("../shaders/smoke.wgsl");
 
     /// Requires a real Vulkan device. Run with `cargo test -- --ignored`.
     #[test]
     #[ignore = "requires a Vulkan device"]
     fn kernel_reports_identity_inputs() {
         let context = Context::new().expect("create compute context");
-        let kernel = context.kernel(SAMPLE, "main").expect("build kernel");
-        assert_eq!(kernel.source_digest(), source_digest(SAMPLE));
+        let kernel = context.kernel(SMOKE_WGSL, "main").expect("build kernel");
+        assert_eq!(kernel.source_digest(), source_digest(SMOKE_WGSL));
         assert_eq!(kernel.compiler_id(), COMPILER_ID);
     }
 }
