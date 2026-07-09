@@ -24,7 +24,6 @@ pub struct Context {
     instance: ash::Instance,
     device: ash::Device,
     queue: vk::Queue,
-    queue_family_index: u32,
     command_pool: vk::CommandPool,
     memory_properties: vk::PhysicalDeviceMemoryProperties,
     device_name: String,
@@ -129,7 +128,6 @@ impl Context {
             instance: instance.finish()?,
             device: device.finish()?,
             queue,
-            queue_family_index,
             command_pool: command_pool.finish()?,
             memory_properties,
             device_name,
@@ -146,6 +144,62 @@ impl Context {
     /// The selected device's reported driver version, for provenance.
     pub fn driver_version(&self) -> &str {
         &self.driver_version
+    }
+
+    /// The logical device, for objects that hold a cloned handle.
+    pub(crate) fn device(&self) -> &ash::Device {
+        &self.device
+    }
+
+    /// The device's memory properties, for memory-type selection.
+    pub(crate) fn memory_properties(&self) -> &vk::PhysicalDeviceMemoryProperties {
+        &self.memory_properties
+    }
+
+    /// Records a one-time command buffer through `recorder`, submits it to the
+    /// compute queue, and blocks until its fence signals.
+    ///
+    /// Every transfer and dispatch is one such submission: the queue drains it
+    /// before the next begins, trading batching for a simple, obviously correct
+    /// ordering. The command buffer and fence are freed on every path.
+    pub(crate) fn submit_immediate(&self, recorder: impl FnOnce(vk::CommandBuffer)) -> Result<()> {
+        let mut submission = OneTimeSubmit::begin(&self.device, self.command_pool)?;
+        let command_buffer = submission.command_buffer;
+        let begin_info = vk::CommandBufferBeginInfo::default()
+            .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+        // SAFETY: the buffer was just allocated in the initial state and is local
+        // to this call; `begin_info` lives through it and starts recording.
+        unsafe {
+            self.device
+                .begin_command_buffer(command_buffer, &begin_info)
+        }
+        .map_err(|e| Error::Gpu(format!("begin command buffer: {e}")))?;
+        recorder(command_buffer);
+        // SAFETY: the buffer is recording after `begin` and the recorder has run,
+        // so ending it into the executable state is legal.
+        unsafe { self.device.end_command_buffer(command_buffer) }
+            .map_err(|e| Error::Gpu(format!("end command buffer: {e}")))?;
+        let submit_info =
+            vk::SubmitInfo::default().command_buffers(std::slice::from_ref(&command_buffer));
+        // SAFETY: the buffer is executable; `submit_info` borrows it via from_ref
+        // and lives through the call; the fence is signalled only by this submit.
+        unsafe {
+            self.device.queue_submit(
+                self.queue,
+                std::slice::from_ref(&submit_info),
+                submission.fence,
+            )
+        }
+        .map_err(|e| Error::Gpu(format!("submit command buffer: {e}")))?;
+        submission.submitted = true;
+        // SAFETY: the fence was passed to the submit above and is the only wait
+        // target; the slice lives through the call.
+        unsafe {
+            self.device
+                .wait_for_fences(std::slice::from_ref(&submission.fence), true, u64::MAX)
+        }
+        .map_err(|e| Error::Gpu(format!("wait for fence: {e}")))?;
+        Ok(())
     }
 }
 
@@ -272,6 +326,72 @@ impl Drop for CommandPoolGuard {
             if let Some(command_pool) = self.command_pool.take() {
                 self.device.destroy_command_pool(command_pool, None);
             }
+        }
+    }
+}
+
+/// Owns a one-time command buffer and its fence, freeing both on every path.
+///
+/// If the submission was issued but the fence wait failed, the drop drains the
+/// device before freeing so no queue work still references the buffer.
+struct OneTimeSubmit {
+    device: ash::Device,
+    command_pool: vk::CommandPool,
+    command_buffer: vk::CommandBuffer,
+    fence: vk::Fence,
+    submitted: bool,
+}
+
+impl OneTimeSubmit {
+    fn begin(device: &ash::Device, command_pool: vk::CommandPool) -> Result<Self> {
+        let alloc_info = vk::CommandBufferAllocateInfo::default()
+            .command_pool(command_pool)
+            .level(vk::CommandBufferLevel::PRIMARY)
+            .command_buffer_count(1);
+        // SAFETY: `command_pool` is owned by the caller's context; `alloc_info`
+        // lives through the call and requests exactly one buffer.
+        let command_buffers = unsafe { device.allocate_command_buffers(&alloc_info) }
+            .map_err(|e| Error::Gpu(format!("allocate command buffer: {e}")))?;
+        let command_buffer = *command_buffers
+            .first()
+            .ok_or_else(|| Error::Gpu("no command buffer allocated".to_string()))?;
+        // SAFETY: default (unsignaled) fence create info is stack-local.
+        let fence = match unsafe { device.create_fence(&vk::FenceCreateInfo::default(), None) } {
+            Ok(fence) => fence,
+            Err(e) => {
+                // SAFETY: the buffer was just allocated from `command_pool`; free
+                // it before returning so the failure orphans nothing.
+                unsafe {
+                    device
+                        .free_command_buffers(command_pool, std::slice::from_ref(&command_buffer));
+                }
+                return Err(Error::Gpu(format!("create submit fence: {e}")));
+            }
+        };
+        Ok(Self {
+            device: device.clone(),
+            command_pool,
+            command_buffer,
+            fence,
+            submitted: false,
+        })
+    }
+}
+
+impl Drop for OneTimeSubmit {
+    fn drop(&mut self) {
+        // SAFETY: this value solely owns the buffer and fence; a completed or
+        // never-issued submission frees directly, while an issued-but-unwaited
+        // one drains the device first so no in-flight work references them.
+        unsafe {
+            if self.submitted {
+                let _ = self.device.device_wait_idle();
+            }
+            self.device.free_command_buffers(
+                self.command_pool,
+                std::slice::from_ref(&self.command_buffer),
+            );
+            self.device.destroy_fence(self.fence, None);
         }
     }
 }
