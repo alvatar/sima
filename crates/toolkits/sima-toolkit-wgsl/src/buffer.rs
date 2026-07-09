@@ -119,9 +119,6 @@ impl Context {
     /// readback copy, and a trailing barrier makes the copied bytes available to
     /// the host read.
     pub fn download(&self, src: &Buffer) -> Result<Vec<u8>> {
-        if src.size == 0 {
-            return Ok(Vec::new());
-        }
         let staging = create_buffer(
             self.device(),
             self.memory_properties(),
