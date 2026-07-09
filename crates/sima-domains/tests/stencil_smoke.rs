@@ -39,7 +39,7 @@ impl StencilRule for SmokeMax {
 }
 
 /// The kernel the reference mirrors.
-const SMOKE_WGSL: &str = include_str!("../src/shaders/smoke.wgsl");
+const SMOKE_WGSL: &str = include_str!("../shaders/smoke.wgsl");
 
 /// Requires a real Vulkan device. Run with `cargo test -- --ignored`.
 #[test]

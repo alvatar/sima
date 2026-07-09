@@ -80,7 +80,7 @@ mod tests {
 
     /// The neighborhood-max kernel that exercises the path. Its bindings and
     /// dispatch match the stencil-kind convention the harness encodes.
-    const SMOKE_WGSL: &str = include_str!("../shaders/smoke.wgsl");
+    const SMOKE_WGSL: &str = include_str!("../../shaders/smoke.wgsl");
 
     /// Builds a context and compiles the smoke kernel, or panics with context.
     fn smoke(context: &Context) -> Kernel {
