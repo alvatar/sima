@@ -1,0 +1,15 @@
+[package]
+name = "sima-toolkit-wgsl"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+sima-core = { path = "../../sima-core" }
+ash.workspace = true
+naga.workspace = true
+
+[dev-dependencies]
+bytemuck.workspace = true
+
+[lints]
+workspace = true
