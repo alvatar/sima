@@ -5,10 +5,11 @@
 //! across the codebase. The format: every integer little-endian at its
 //! natural width, `i64` two's-complement little-endian, bytes and str framed
 //! by a `u64` little-endian length prefix (str is its UTF-8 bytes), `Hash`
-//! as its 32 raw digest bytes, `Option<Hash>` as a present-flag byte (0 or
-//! 1) followed by the digest when present, `f32` as its IEEE-754 bits in a
-//! little-endian `u32`, and an `f32` slice as those elements written back to
-//! back with no length prefix (the count is fixed by surrounding context).
+//! as its 32 raw digest bytes, `Option<Hash>` as a present-flag byte of value
+//! zero or one followed by the digest when present, `f32` as its IEEE-754
+//! bits in a little-endian `u32`, and an `f32` slice as those elements written
+//! back to back with no length prefix (the count is fixed by surrounding
+//! context).
 
 use crate::error::{Error, Result};
 use crate::hash::Hash;
