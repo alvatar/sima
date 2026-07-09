@@ -8,5 +8,9 @@
 //! executor: it holds no store handle and builds no run identity.
 
 mod compile;
+mod context;
+mod selection;
+mod validation;
 
 pub use compile::{COMPILER_ID, source_digest};
+pub use context::Context;
