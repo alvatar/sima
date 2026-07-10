@@ -155,6 +155,7 @@ fn an_undispatchable_config_orchestrates_to_validation_without_touching_the_stor
     let config = LoadedConfig {
         run: RunConfig {
             root_seed: 1,
+            segments: None,
             format: FormatId::new("no-such-domain.v1")?,
             generator: GeneratorConfig {
                 id: GeneratorId::new("stub.v1")?,
@@ -162,7 +163,7 @@ fn an_undispatchable_config_orchestrates_to_validation_without_touching_the_stor
             },
             params: Params { bytes: Vec::new() },
         },
-        execution: ExecutionConfig::new(1, 1, std::time::Duration::MAX)?,
+        execution: ExecutionConfig::new(1, 1, std::time::Duration::MAX, std::time::Duration::MAX)?,
         store: dir.path().join("store"),
     };
     assert!(matches!(

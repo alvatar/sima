@@ -66,6 +66,14 @@ pub(crate) struct Shared {
     pub(crate) leases: HashMap<TaskKey, Lease>,
     /// The run's wind-down state.
     pub(crate) state: RunState,
+    /// Monotonic count of lease releases: incremented once per settled
+    /// attempt, whatever the outcome. The driver records this count at each
+    /// poll of the task source and polls again only after it has moved.
+    /// The count is the right poll trigger because a source derives its
+    /// frontier from committed records, only workers commit them, and a
+    /// worker commits before releasing its lease — so an unchanged count
+    /// means a re-poll would derive the same frontier.
+    pub(crate) settled: u64,
 }
 
 /// The shared state plus the condition every thread waits on.
@@ -83,6 +91,7 @@ impl Coordinator {
                 queue: VecDeque::new(),
                 leases: HashMap::new(),
                 state: RunState::Running,
+                settled: 0,
             }),
             state_changed: Condvar::new(),
         }
@@ -125,8 +134,8 @@ impl Coordinator {
                 );
                 return Some(pending);
             }
-            // The queue is empty: this worker may be the one making the pool
-            // quiescent, so wake the driver before parking for new work.
+            // The queue is empty: wake the driver — it may have a poll or
+            // a wind-down decision pending on this — before parking.
             self.state_changed.notify_all();
             shared = self
                 .state_changed
@@ -142,6 +151,7 @@ impl Coordinator {
     fn settle<R>(&self, key: TaskKey, apply: impl FnOnce(&mut Shared) -> R) -> R {
         let mut shared = self.lock();
         shared.leases.remove(&key);
+        shared.settled += 1;
         let result = apply(&mut shared);
         self.state_changed.notify_all();
         result

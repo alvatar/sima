@@ -6,7 +6,9 @@
 //! the domain seam, without a store: it compares committed records only —
 //! the equality criterion the phases use — and never the observational stats.
 
-use sima_contracts::{ExecutionContext, Executor, Generator, Outcome, TaskInput, WorkerId};
+use sima_contracts::{
+    ExecutionContext, Executor, Generator, NoCheckpoint, Outcome, TaskInput, WorkerId,
+};
 use sima_core::{Hash, Result, hash_bytes, prng};
 use sima_domains::{StubBehavior, StubExecutor, StubGenerator, StubGeneratorConfig};
 use sima_model::{ArtifactRef, EnvironmentId, FormatId, Params, TaskIdentity, TaskRecord};
@@ -49,7 +51,8 @@ fn run_digest(attempt: u32, worker: WorkerId) -> Result<Hash> {
             environment,
             input_state: None,
         };
-        let outcome = executor.execute(&input, &ExecutionContext { attempt, worker })?;
+        let outcome =
+            executor.execute(&input, &ExecutionContext { attempt, worker }, &NoCheckpoint)?;
         let Outcome::Completed { artifacts, .. } = outcome else {
             panic!("expected every candidate to complete");
         };

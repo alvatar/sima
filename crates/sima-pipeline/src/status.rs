@@ -32,6 +32,8 @@ pub struct RunStatus {
     pub faulted: usize,
     /// Lease-expiry reports across the whole journal.
     pub lease_expired: usize,
+    /// Degraded checkpoint saves or loads across the whole journal.
+    pub checkpoint_degraded: usize,
     /// The run's current state.
     pub state: RunState,
     /// Workers currently holding a lease: worker id → the task it leased and
@@ -84,6 +86,7 @@ impl RunStatus {
             rejected: 0,
             faulted: 0,
             lease_expired: 0,
+            checkpoint_degraded: 0,
             state: RunState::InProgress,
             occupancy: BTreeMap::new(),
         }
@@ -138,6 +141,11 @@ impl RunStatus {
                 // Detection only, no preemption: the lease stands, so
                 // occupancy is untouched.
                 self.lease_expired += 1;
+            }
+            LifecycleEvent::CheckpointDegraded { .. } => {
+                // An optimization failed; the attempt's result is unaffected,
+                // so only the counter moves.
+                self.checkpoint_degraded += 1;
             }
             LifecycleEvent::RunFinalized { .. } => {
                 self.state = RunState::Finalized;
@@ -323,6 +331,21 @@ mod tests {
     }
 
     #[test]
+    fn checkpoint_degradation_counts_and_keeps_the_lease() {
+        let mut status = RunStatus::new(run_id());
+        status.apply(&started(1));
+        status.apply(&leased("aa", 0, 0));
+        status.apply(&LifecycleEvent::CheckpointDegraded {
+            task: "aa".to_string(),
+            error: "checkpoint dir is unwritable".to_string(),
+        });
+        assert_eq!(status.checkpoint_degraded, 1);
+        // The attempt continues: the worker still holds its lease.
+        assert_eq!(status.occupancy.get(&0), Some(&occupancy("aa", 0)));
+        assert!(matches!(status.state, RunState::InProgress));
+    }
+
+    #[test]
     fn lease_expiry_counts_and_keeps_the_lease() {
         let mut status = RunStatus::new(run_id());
         status.apply(&started(1));
@@ -384,6 +407,7 @@ mod tests {
     fn parity_test_config() -> Result<RunConfig> {
         Ok(RunConfig {
             root_seed: 1,
+            segments: None,
             format: FormatId::new("stub.v1")?,
             generator: GeneratorConfig {
                 id: GeneratorId::new("stub.v1")?,

@@ -41,6 +41,9 @@ pub fn describe(event: &LifecycleEvent, committed: usize, tasks: usize) -> Optio
         LifecycleEvent::LeaseExpired {
             task, elapsed_ms, ..
         } => format!("lease expired {} ({elapsed_ms} ms)", short(task)),
+        LifecycleEvent::CheckpointDegraded { task, error } => {
+            format!("checkpoint degraded {}: {error}", short(task))
+        }
         LifecycleEvent::RunFinalized { committed, .. } => {
             format!("finalized: {committed} tasks committed")
         }
@@ -104,14 +107,15 @@ pub fn status_block(status: &RunStatus) -> String {
         RunState::Interrupted => "interrupted".to_string(),
     };
     format!(
-        "run            {}\n\
-         state          {state}\n\
-         tasks          {}\n\
-         committed      {}\n\
-         retried        {}\n\
-         rejected       {}\n\
-         faulted        {}\n\
-         lease expired  {}",
+        "run                  {}\n\
+         state                {state}\n\
+         tasks                {}\n\
+         committed            {}\n\
+         retried              {}\n\
+         rejected             {}\n\
+         faulted              {}\n\
+         lease expired        {}\n\
+         checkpoint degraded  {}",
         status.run,
         status.tasks,
         status.committed,
@@ -119,6 +123,7 @@ pub fn status_block(status: &RunStatus) -> String {
         status.rejected,
         status.faulted,
         status.lease_expired,
+        status.checkpoint_degraded,
     )
 }
 
@@ -133,6 +138,17 @@ mod tests {
     }
 
     #[test]
+    fn a_degraded_checkpoint_renders_a_line() {
+        let event = LifecycleEvent::CheckpointDegraded {
+            task: "ab".repeat(32),
+            error: "checkpoint dir is unwritable".to_string(),
+        };
+        let line = describe(&event, 0, 0).expect("a degraded checkpoint warrants a line");
+        assert!(line.contains("checkpoint degraded"), "{line}");
+        assert!(line.contains("unwritable"), "{line}");
+    }
+
+    #[test]
     fn the_status_block_names_every_field() {
         let status = RunStatus {
             run: sima_model::RunId::from_hash(sima_core::hash_bytes(b"a run to render")),
@@ -142,6 +158,7 @@ mod tests {
             rejected: 0,
             faulted: 0,
             lease_expired: 0,
+            checkpoint_degraded: 0,
             state: RunState::InProgress,
             occupancy: std::collections::BTreeMap::new(),
         };
@@ -155,6 +172,7 @@ mod tests {
             "rejected",
             "faulted",
             "lease expired",
+            "checkpoint degraded",
         ] {
             assert!(block.contains(field), "missing {field}: {block}");
         }

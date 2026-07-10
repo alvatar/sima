@@ -63,6 +63,10 @@ pub enum LifecycleEvent {
         worker: u64,
         elapsed_ms: u64,
     },
+    /// A checkpoint save or load failed. Checkpointing is an optimization,
+    /// never a task outcome: execution continues and the attempt's result is
+    /// unaffected, so this event is the only trace.
+    CheckpointDegraded { task: String, error: String },
     /// Every task committed and the manifest was written.
     RunFinalized { run: String, committed: usize },
     /// A definitive failure terminated the run; no manifest was written.
@@ -184,6 +188,10 @@ mod tests {
                 task: task.clone(),
                 worker: 1,
                 elapsed_ms: 100,
+            },
+            LifecycleEvent::CheckpointDegraded {
+                task: task.clone(),
+                error: "checkpoint dir is unwritable".to_string(),
             },
             LifecycleEvent::RunFinalized {
                 run: run.clone(),

@@ -21,12 +21,22 @@ pub struct ExecutionConfig {
     /// example [`Duration::MAX`]) disables expiry reporting: no lease's age
     /// ever exceeds it.
     pub attempt_timeout: Duration,
+    /// Wall-clock cadence between checkpoint saves during one attempt: the
+    /// first save becomes due one full interval after execution starts.
+    /// [`Duration::MAX`] disables checkpointing — no offer is ever due, so
+    /// no slot is written or read.
+    pub checkpoint_interval: Duration,
 }
 
 impl ExecutionConfig {
     /// Validates the settings and wraps them: `workers` and `max_attempts`
     /// must each be at least 1 ([`Error::Validation`] otherwise).
-    pub fn new(workers: usize, max_attempts: u32, attempt_timeout: Duration) -> Result<Self> {
+    pub fn new(
+        workers: usize,
+        max_attempts: u32,
+        attempt_timeout: Duration,
+        checkpoint_interval: Duration,
+    ) -> Result<Self> {
         if workers == 0 {
             return Err(Error::Validation(
                 "execution config requires at least one worker".to_string(),
@@ -41,6 +51,7 @@ impl ExecutionConfig {
             workers,
             max_attempts,
             attempt_timeout,
+            checkpoint_interval,
         })
     }
 }
@@ -52,7 +63,7 @@ mod tests {
 
     #[test]
     fn new_accepts_valid_settings() -> Result<()> {
-        let config = ExecutionConfig::new(4, 3, Duration::from_millis(50))?;
+        let config = ExecutionConfig::new(4, 3, Duration::from_millis(50), Duration::MAX)?;
         assert_eq!(config.workers, 4);
         assert_eq!(config.max_attempts, 3);
         assert_eq!(config.attempt_timeout, Duration::from_millis(50));
@@ -62,7 +73,7 @@ mod tests {
     #[test]
     fn new_rejects_zero_workers() {
         assert!(matches!(
-            ExecutionConfig::new(0, 1, Duration::from_millis(1)),
+            ExecutionConfig::new(0, 1, Duration::from_millis(1), Duration::MAX),
             Err(Error::Validation(_))
         ));
     }
@@ -70,7 +81,7 @@ mod tests {
     #[test]
     fn new_rejects_zero_attempts() {
         assert!(matches!(
-            ExecutionConfig::new(1, 0, Duration::from_millis(1)),
+            ExecutionConfig::new(1, 0, Duration::from_millis(1), Duration::MAX),
             Err(Error::Validation(_))
         ));
     }

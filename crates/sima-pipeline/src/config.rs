@@ -6,6 +6,7 @@
 //! [run]                     # identity section — canonicalized into
 //! root_seed = 42            # RunConfig, so these fields define the RunId
 //! format = "stub.v1"
+//! segments = 10             # optional; absent = static batch; must be >= 1
 //!
 //! [run.generator]
 //! id = "stub.v1"
@@ -20,6 +21,7 @@
 //! workers = 4
 //! max_attempts = 3
 //! attempt_timeout_ms = 5000 # optional; absent disables expiry reporting
+//! checkpoint_interval_ms = 30000 # optional; absent disables checkpointing
 //! ```
 //!
 //! The `[run]` section is canonicalized into [`RunConfig`], so its fields
@@ -70,6 +72,9 @@ struct RunSection {
     /// `i64::MAX` are not expressible in the file format.
     root_seed: i64,
     format: String,
+    /// The number of tasks each candidate's chain comprises; validated to be
+    /// at least 1. Absent means one stateless task per candidate.
+    segments: Option<i64>,
     generator: GeneratorSection,
     /// Domain-owned; absent means an empty table, and the domain decides
     /// the defaults.
@@ -94,6 +99,7 @@ struct ExecutionSection {
     workers: usize,
     max_attempts: u32,
     attempt_timeout_ms: Option<u64>,
+    checkpoint_interval_ms: Option<u64>,
 }
 
 /// Loads and translates the `sima.toml` at `path`. Parse errors, unknown
@@ -115,6 +121,21 @@ pub fn load(path: &Path) -> Result<LoadedConfig> {
             file.run.root_seed
         ))
     })?;
+    let segments = file
+        .run
+        .segments
+        .map(|value| {
+            u64::try_from(value)
+                .ok()
+                .and_then(std::num::NonZeroU64::new)
+                .ok_or_else(|| {
+                    Error::Validation(format!(
+                        "{}: segments must be at least 1, got {value}",
+                        path.display()
+                    ))
+                })
+        })
+        .transpose()?;
     let format = FormatId::new(file.run.format)?;
     let generator_id = GeneratorId::new(file.run.generator.id)?;
     // Identity flows through the dispatched-to code: the generator and the
@@ -123,6 +144,7 @@ pub fn load(path: &Path) -> Result<LoadedConfig> {
     let params = params_for(&format, &file.run.params)?;
     let run = RunConfig {
         root_seed,
+        segments,
         format,
         generator: GeneratorConfig {
             id: generator_id,
@@ -135,10 +157,15 @@ pub fn load(path: &Path) -> Result<LoadedConfig> {
         .execution
         .attempt_timeout_ms
         .map_or(Duration::MAX, Duration::from_millis);
+    let checkpoint_interval = file
+        .execution
+        .checkpoint_interval_ms
+        .map_or(Duration::MAX, Duration::from_millis);
     let execution = ExecutionConfig::new(
         file.execution.workers,
         file.execution.max_attempts,
         attempt_timeout,
+        checkpoint_interval,
     )?;
 
     // Relative to the config file's directory, never the working directory;
@@ -298,6 +325,70 @@ mod tests {
                 "a config missing {required:?} must be rejected"
             );
         }
+    }
+
+    #[test]
+    fn segments_loads_into_the_run_config() -> Result<()> {
+        let text = BASE.replace("root_seed = 42", "root_seed = 42\nsegments = 10");
+        let loaded = load_text(&text)?;
+        assert_eq!(loaded.run.segments, std::num::NonZeroU64::new(10));
+        Ok(())
+    }
+
+    #[test]
+    fn absent_segments_loads_none() -> Result<()> {
+        assert_eq!(load_text(BASE)?.run.segments, None);
+        Ok(())
+    }
+
+    #[test]
+    fn zero_or_negative_segments_are_rejected_naming_the_field() {
+        for value in ["segments = 0", "segments = -1"] {
+            let text = BASE.replace("root_seed = 42", &format!("root_seed = 42\n{value}"));
+            match load_text(&text) {
+                Err(Error::Validation(msg)) => {
+                    assert!(msg.contains("segments"), "the error names the field: {msg}");
+                }
+                other => panic!("expected Validation for {value:?}, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn segments_changes_the_run_id() {
+        let base = id_of(BASE);
+        let segmented = BASE.replace("root_seed = 42", "root_seed = 42\nsegments = 10");
+        assert_ne!(base, id_of(&segmented));
+        // Different segment counts also differ from each other.
+        let five = BASE.replace("root_seed = 42", "root_seed = 42\nsegments = 5");
+        assert_ne!(id_of(&segmented), id_of(&five));
+    }
+
+    #[test]
+    fn checkpoint_interval_loads_and_defaults_to_disabled() -> Result<()> {
+        assert_eq!(
+            load_text(BASE)?.execution.checkpoint_interval,
+            Duration::MAX
+        );
+        let text = BASE.replace(
+            "attempt_timeout_ms = 5000",
+            "attempt_timeout_ms = 5000\ncheckpoint_interval_ms = 30000",
+        );
+        assert_eq!(
+            load_text(&text)?.execution.checkpoint_interval,
+            Duration::from_millis(30000)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn checkpoint_interval_never_touches_the_run_id() {
+        let base = id_of(BASE);
+        let text = BASE.replace(
+            "attempt_timeout_ms = 5000",
+            "attempt_timeout_ms = 5000\ncheckpoint_interval_ms = 1",
+        );
+        assert_eq!(base, id_of(&text));
     }
 
     #[test]

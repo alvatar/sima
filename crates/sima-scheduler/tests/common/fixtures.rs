@@ -31,6 +31,7 @@ pub fn environment() -> Environment {
 pub fn config(root_seed: u64, behaviors: Vec<StubBehavior>) -> RunConfig {
     RunConfig {
         root_seed,
+        segments: None,
         format: FormatId::new("stub.v1").expect("format id"),
         generator: GeneratorConfig {
             id: GeneratorId::new("stub.v1").expect("generator id"),
@@ -50,7 +51,7 @@ pub fn exec(workers: usize, max_attempts: u32, timeout_ms: u64) -> ExecutionConf
 /// A validated execution config with an explicit attempt timeout, for tests
 /// that need a duration outside the millisecond range such as `Duration::MAX`.
 pub fn exec_with_timeout(workers: usize, max_attempts: u32, timeout: Duration) -> ExecutionConfig {
-    ExecutionConfig::new(workers, max_attempts, timeout).expect("execution config")
+    ExecutionConfig::new(workers, max_attempts, timeout, Duration::MAX).expect("execution config")
 }
 
 /// A fresh store under a temporary directory; the directory is returned so it

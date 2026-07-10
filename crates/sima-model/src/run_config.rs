@@ -8,7 +8,9 @@
 //! id is also absent: config records intent, and the environment travels
 //! in every task key.
 
-use sima_core::{Dec, Enc, Result, hash_bytes};
+use std::num::NonZeroU64;
+
+use sima_core::{Dec, Enc, Error, Result, hash_bytes};
 
 use crate::canonical::{self, TAG_RUN_CONFIG};
 use crate::params::Params;
@@ -53,6 +55,10 @@ pub struct GeneratorConfig {
 pub struct RunConfig {
     /// The run's root seed, from which task seeds derive.
     pub root_seed: u64,
+    /// The number of tasks each candidate's chain comprises: the run's
+    /// work-division quantity, walked segment by segment through committed
+    /// state. Absent means one stateless task per candidate.
+    pub segments: Option<NonZeroU64>,
     /// Format governing the interpretation of generated specs and of the
     /// run params.
     pub format: FormatId,
@@ -64,12 +70,13 @@ pub struct RunConfig {
 }
 
 impl RunConfig {
-    /// Appends the tagged canonical form: tag, root_seed u64, format str,
-    /// generator id str, generator params bytes, then the embedded run
-    /// params encoding (its own tag included).
+    /// Appends the tagged canonical form: tag, root_seed u64, segments
+    /// optional u64, format str, generator id str, generator params bytes,
+    /// then the embedded run params encoding (its own tag included).
     pub fn encode(&self, enc: &mut Enc) {
         enc.str(TAG_RUN_CONFIG)
             .u64(self.root_seed)
+            .opt_u64(self.segments.map(NonZeroU64::get))
             .str(self.format.as_str())
             .str(self.generator.id.as_str())
             .bytes(&self.generator.params);
@@ -81,6 +88,13 @@ impl RunConfig {
     pub fn decode(dec: &mut Dec<'_>) -> Result<RunConfig> {
         canonical::expect_tag(dec, TAG_RUN_CONFIG)?;
         let root_seed = dec.u64()?;
+        let segments = dec
+            .opt_u64()?
+            .map(|n| {
+                NonZeroU64::new(n)
+                    .ok_or_else(|| Error::Encoding("segments must be non-zero".into()))
+            })
+            .transpose()?;
         let format = FormatId::new(dec.str()?)?;
         let generator = GeneratorConfig {
             id: GeneratorId::new(dec.str()?)?,
@@ -89,6 +103,7 @@ impl RunConfig {
         let params = Params::decode(dec)?;
         Ok(RunConfig {
             root_seed,
+            segments,
             format,
             generator,
             params,
@@ -121,6 +136,7 @@ mod tests {
     fn sample_config() -> Result<RunConfig> {
         Ok(RunConfig {
             root_seed: 42,
+            segments: None,
             format: FormatId::new("stub.v1")?,
             generator: GeneratorConfig {
                 id: GeneratorId::new("gen.v1")?,
@@ -136,6 +152,7 @@ mod tests {
     /// encoding order per the `sima-core` encode format:
     ///   str tag "sima.run-config.v1" -> u64 len 18 LE ‖ UTF-8 bytes
     ///   root_seed        -> u64 LE: 2a00000000000000
+    ///   segments absent  -> Option<u64> flag byte 00
     ///   str format       "stub.v1" -> u64 len 7 LE ‖ UTF-8 bytes
     ///   str generator id "gen.v1"  -> u64 len 6 LE ‖ UTF-8 bytes
     ///   generator params [de, ad]  -> u64 len 2 LE ‖ payload
@@ -143,6 +160,7 @@ mod tests {
     ///     "sima.params.v1", bytes [01, 02, 03] (u64 len 3 LE ‖ payload)
     const PINNED_HEX: &str = "120000000000000073696d612e72756e2d636f6e6669672e7631\
                               2a00000000000000\
+                              00\
                               0700000000000000737475622e7631\
                               060000000000000067656e2e7631\
                               0200000000000000dead\
@@ -151,10 +169,29 @@ mod tests {
     /// blake3 of the `PINNED_HEX` bytes, computed independently with Python
     /// blake3 (pip package `blake3`):
     /// `blake3.blake3(bytes.fromhex(PINNED_HEX)).hexdigest()`.
-    const PINNED_ID_HEX: &str = "0aaaca9861f35e442cf23ec57b1c0d8258d0912d74e8ccd175d959731e5ca65f";
+    const PINNED_ID_HEX: &str = "18ad1dd30bc36b634e749b10755626411a367ba066c579e3c299a3eda98d4c7b";
+
+    /// `sample_config` with `segments = 7`: the absent flag byte 00 becomes
+    /// flag byte 01 followed by u64 LE 7. Id computed independently as above.
+    const PINNED_SEGMENTS_HEX: &str = "120000000000000073696d612e72756e2d636f6e6669672e7631\
+                                       2a00000000000000\
+                                       010700000000000000\
+                                       0700000000000000737475622e7631\
+                                       060000000000000067656e2e7631\
+                                       0200000000000000dead\
+                                       0e0000000000000073696d612e706172616d732e76310300000000000000010203";
+    const PINNED_SEGMENTS_ID_HEX: &str =
+        "2fcb67605146f0a53395b9aa009fc90b0e90a3c3ed71cae93311cc32f22b902a";
 
     fn pinned() -> String {
         PINNED_HEX.split_whitespace().collect()
+    }
+
+    fn sample_segmented() -> Result<RunConfig> {
+        Ok(RunConfig {
+            segments: NonZeroU64::new(7),
+            ..sample_config()?
+        })
     }
 
     #[test]
@@ -188,6 +225,34 @@ mod tests {
     }
 
     #[test]
+    fn segmented_encoding_matches_the_hand_derived_layout() -> Result<()> {
+        let expected: String = PINNED_SEGMENTS_HEX.split_whitespace().collect();
+        assert_eq!(to_hex(&sample_segmented()?.to_bytes()), expected);
+        Ok(())
+    }
+
+    #[test]
+    fn segmented_id_matches_the_independently_computed_digest() -> Result<()> {
+        assert_eq!(
+            sample_segmented()?.id(),
+            RunId::from_hex(PINNED_SEGMENTS_ID_HEX)?
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn decode_rejects_zero_segments() {
+        // A present flag with value zero is malformed: the type is
+        // Option<NonZeroU64>, and zero has no representation.
+        let mut enc = Enc::new();
+        enc.str(TAG_RUN_CONFIG).u64(42).opt_u64(Some(0));
+        assert!(matches!(
+            RunConfig::from_bytes(&enc.finish()),
+            Err(Error::Encoding(_))
+        ));
+    }
+
+    #[test]
     fn to_bytes_from_bytes_round_trips() -> Result<()> {
         let full = sample_config()?;
         let empty_blobs = RunConfig {
@@ -198,7 +263,7 @@ mod tests {
             params: Params { bytes: Vec::new() },
             ..sample_config()?
         };
-        for config in [full, empty_blobs] {
+        for config in [full, empty_blobs, sample_segmented()?] {
             assert_eq!(RunConfig::from_bytes(&config.to_bytes())?, config);
         }
         Ok(())
@@ -240,7 +305,7 @@ mod tests {
         // Decode revalidates the name rules: a format id violating the
         // name rule is rejected even in well-framed bytes.
         let mut enc = Enc::new();
-        enc.str(TAG_RUN_CONFIG).u64(42).str("Stub");
+        enc.str(TAG_RUN_CONFIG).u64(42).opt_u64(None).str("Stub");
         assert!(matches!(
             RunConfig::from_bytes(&enc.finish()),
             Err(Error::Validation(_))
@@ -253,6 +318,7 @@ mod tests {
         let mut enc = Enc::new();
         enc.str(TAG_RUN_CONFIG)
             .u64(42)
+            .opt_u64(None)
             .str("stub.v1")
             .str("Bad Gen");
         assert!(matches!(
@@ -268,6 +334,10 @@ mod tests {
             base.clone(),
             RunConfig {
                 root_seed: 43,
+                ..base.clone()
+            },
+            RunConfig {
+                segments: NonZeroU64::new(10),
                 ..base.clone()
             },
             RunConfig {

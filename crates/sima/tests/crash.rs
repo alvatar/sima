@@ -54,6 +54,149 @@ fn an_unarmed_run_is_not_sigkilled() {
     assert_eq!(status.code(), Some(0), "unarmed child finalizes");
 }
 
+/// A segmented, checkpointing config over one `accumulate` chain: `k`
+/// steps per segment, `segments` tasks, a zero checkpoint interval so
+/// every step boundary saves.
+fn write_segmented_config(dir: &Path, name: &str, store: &str) -> PathBuf {
+    let text = r#"
+        [run]
+        root_seed = 11
+        format = "stub.v1"
+        segments = 2
+
+        [run.generator]
+        id = "stub.v1"
+        behaviors = ["accumulate:100"]
+
+        [execution]
+        store = "STORE"
+        workers = 2
+        max_attempts = 3
+        checkpoint_interval_ms = 0
+    "#
+    .replace("STORE", store);
+    common::write_config_text(dir, name, &text)
+}
+
+/// The steps each committed attempt executed after the journal's last
+/// `run_started` line — the resume segment — from the stub's stats
+/// encoding `(u32 attempt, u64 steps)`.
+fn resumed_steps(config_path: &Path) -> Vec<u64> {
+    let config = load(config_path).expect("load config");
+    let store = Store::open(&config.store).expect("open store");
+    let lines = store.journal(&config.run.id()).expect("read journal");
+    let events: Vec<sima_pipeline::LifecycleEvent> = lines
+        .iter()
+        .map(|line| sima_pipeline::LifecycleEvent::from_line(line).expect("parse journal line"))
+        .collect();
+    let resume_start = events
+        .iter()
+        .rposition(|e| matches!(e, sima_pipeline::LifecycleEvent::RunStarted { .. }))
+        .expect("a run_started line");
+    events[resume_start..]
+        .iter()
+        .filter_map(|e| match e {
+            sima_pipeline::LifecycleEvent::Committed { stats_hex, .. } => {
+                let bytes: Vec<u8> = (0..stats_hex.len())
+                    .step_by(2)
+                    .map(|i| u8::from_str_radix(&stats_hex[i..i + 2], 16).expect("hex"))
+                    .collect();
+                let mut dec = sima_core::Dec::new(&bytes);
+                dec.u32().expect("attempt");
+                Some(dec.u64().expect("steps"))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// A death mid-segment under a segmented, checkpointing run: the resumed
+/// run converges on the reference manifest, and its journal proves the
+/// checkpoint shortened re-execution — the resumed segment ran fewer
+/// steps than a full segment.
+#[test]
+fn a_death_mid_segment_resumes_from_the_checkpoint() {
+    let dir = tempfile::tempdir().expect("temp dir");
+
+    let reference_config =
+        write_segmented_config(dir.path(), "reference.toml", "./store-seg-reference");
+    assert_eq!(sima_run(&reference_config, None).code(), Some(0));
+    let reference = manifest_of(&reference_config).expect("reference manifest");
+
+    // Hit 150 of the per-step point lands 50 steps into the second
+    // segment; the zero interval saved a checkpoint at every prior step.
+    let config = write_segmented_config(dir.path(), "armed.toml", "./store-seg-armed");
+    let status = sima_run(&config, Some("stub.accumulate.step:150"));
+    assert_eq!(
+        status.signal(),
+        Some(9),
+        "the armed child dies by SIGKILL, got {status:?}"
+    );
+    assert!(manifest_of(&config).is_none(), "no manifest survives");
+
+    let resumed = sima_run(&config, None);
+    assert_eq!(resumed.code(), Some(0), "the resumed run finalizes");
+    assert_eq!(
+        manifest_of(&config).as_ref(),
+        Some(&reference),
+        "the resumed manifest equals the reference"
+    );
+
+    // The second segment resumed from its checkpoint: strictly fewer than
+    // its full 100 steps ran on the resumed attempt.
+    let steps = resumed_steps(&config);
+    assert_eq!(steps.len(), 1, "one task ran on resume, got {steps:?}");
+    assert!(
+        steps[0] < 100,
+        "the checkpoint must shorten re-execution, got {} steps",
+        steps[0]
+    );
+}
+
+/// The pre-existing crashpoints re-run under a segmented, checkpointing
+/// config: every death resumes to the segmented reference manifest.
+#[test]
+fn existing_crashpoints_hold_under_a_segmented_config() {
+    let dir = tempfile::tempdir().expect("temp dir");
+
+    let reference_config =
+        write_segmented_config(dir.path(), "seg-reference.toml", "./store-seg-ref");
+    assert_eq!(sima_run(&reference_config, None).code(), Some(0));
+    let reference = manifest_of(&reference_config).expect("reference manifest");
+
+    for arming in [
+        "object.mid-write:1",
+        "commit.after-object:1",
+        "lease.held:1",
+        "finalize.pre-write:1",
+    ] {
+        let slug = format!("seg-{}", arming.replace([':', '.'], "-"));
+        let config = write_segmented_config(
+            dir.path(),
+            &format!("{slug}.toml"),
+            &format!("./store-{slug}"),
+        );
+
+        let status = sima_run(&config, Some(arming));
+        assert_eq!(
+            status.signal(),
+            Some(9),
+            "{arming}: the armed child dies by SIGKILL, got {status:?}"
+        );
+        let resumed = sima_run(&config, None);
+        assert_eq!(
+            resumed.code(),
+            Some(0),
+            "{arming}: the resumed run finalizes"
+        );
+        assert_eq!(
+            manifest_of(&config).as_ref(),
+            Some(&reference),
+            "{arming}: the resumed manifest equals the reference"
+        );
+    }
+}
+
 /// The matrix over the four planted points, each at the first hit and —
 /// where a run hits the point more than once — at a mid-run count.
 /// `finalize.pre-write` fires once per run, so only `:1` can land.

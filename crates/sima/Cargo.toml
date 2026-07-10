@@ -6,7 +6,11 @@ edition.workspace = true
 [features]
 # Forwards crash-injection to the layers that plant points, so the crash
 # harness can arm them in this binary.
-crash-injection = ["sima-store/crash-injection", "sima-scheduler/crash-injection"]
+crash-injection = [
+    "sima-store/crash-injection",
+    "sima-scheduler/crash-injection",
+    "sima-pipeline/crash-injection",
+]
 
 [dependencies]
 sima-core = { path = "../sima-core" }

@@ -93,7 +93,8 @@ fn reject_unknown_keys(table: &toml::Table, known: &[&str], section: &str) -> Re
 }
 
 /// Parses one behavior word: `succeed`, `flaky:N`, `sleep:MS`, `reject`,
-/// or `panic`. Anything else is [`Error::Validation`] naming the entry.
+/// `panic`, or `accumulate:K` with K ≥ 1. Anything else is
+/// [`Error::Validation`] naming the entry.
 fn parse_behavior(entry: &str) -> Result<StubBehavior> {
     let (word, argument) = match entry.split_once(':') {
         Some((word, argument)) => (word, Some(argument)),
@@ -101,7 +102,8 @@ fn parse_behavior(entry: &str) -> Result<StubBehavior> {
     };
     let bad = || {
         Error::Validation(format!(
-            "unknown stub behavior {entry:?}: expected succeed, flaky:N, sleep:MS, reject, or panic"
+            "unknown stub behavior {entry:?}: expected succeed, flaky:N, sleep:MS, reject, \
+             panic, or accumulate:K"
         ))
     };
     match (word, argument) {
@@ -110,6 +112,12 @@ fn parse_behavior(entry: &str) -> Result<StubBehavior> {
         ("panic", None) => Ok(StubBehavior::Panic),
         ("flaky", Some(n)) => n.parse().map(StubBehavior::Flaky).map_err(|_| bad()),
         ("sleep", Some(millis)) => millis.parse().map(StubBehavior::Sleep).map_err(|_| bad()),
+        ("accumulate", Some(k)) => match k.parse() {
+            // A zero-step segment does no work and commits its input
+            // unchanged; requiring K ≥ 1 keeps every task meaningful.
+            Ok(0) | Err(_) => Err(bad()),
+            Ok(k) => Ok(StubBehavior::Accumulate(k)),
+        },
         _ => Err(bad()),
     }
 }
@@ -159,6 +167,7 @@ mod tests {
             ("sleep:50", StubBehavior::Sleep(50)),
             ("reject", StubBehavior::Reject),
             ("panic", StubBehavior::Panic),
+            ("accumulate:100", StubBehavior::Accumulate(100)),
         ] {
             assert_eq!(parse_behavior(word)?, expected, "{word}");
         }
@@ -167,7 +176,17 @@ mod tests {
 
     #[test]
     fn malformed_behaviors_are_rejected_naming_the_entry() {
-        for bad in ["flaky", "flaky:x", "sleep:-1", "explode", "succeed:1", ""] {
+        for bad in [
+            "flaky",
+            "flaky:x",
+            "sleep:-1",
+            "explode",
+            "succeed:1",
+            "",
+            "accumulate",
+            "accumulate:x",
+            "accumulate:0",
+        ] {
             match parse_behavior(bad) {
                 Err(Error::Validation(msg)) => {
                     assert!(

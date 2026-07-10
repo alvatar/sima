@@ -15,14 +15,22 @@
 //! context — attempt number and worker id — which it may read but which
 //! never influences a committed artifact. Stats is the one output that may
 //! reflect execution context; it is observational and destined for the
-//! journal.
+//! journal. The third `execute` parameter, the checkpoint handle, carries the
+//! crash-resume channel under the same discipline: the executor offers
+//! continuation bytes and may adopt saved ones, while the handle owns every
+//! write, so executors still never touch durable state and checkpoints never
+//! influence committed bytes.
 //!
 //! The concrete implementations that satisfy these traits live in
 //! `sima-domains`, one per format; this crate holds the traits and their
 //! shared vocabulary alone.
 
+mod checkpoint;
 mod executor;
 mod generator;
 
-pub use executor::{Artifact, ExecutionContext, Executor, Outcome, Stats, TaskInput, WorkerId};
+pub use checkpoint::{Checkpoint, NoCheckpoint};
+pub use executor::{
+    Artifact, ExecutionContext, Executor, Outcome, STATE_ARTIFACT, Stats, TaskInput, WorkerId,
+};
 pub use generator::Generator;

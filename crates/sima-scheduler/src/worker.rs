@@ -11,11 +11,15 @@
 //! this commit path.
 
 use std::any::Any;
+use std::cell::Cell;
 use std::sync::mpsc::Sender;
+use std::time::{Duration, Instant};
 
-use sima_contracts::{Artifact, ExecutionContext, Executor, Outcome, TaskInput, WorkerId};
+use sima_contracts::{
+    Artifact, Checkpoint, ExecutionContext, Executor, NoCheckpoint, Outcome, TaskInput, WorkerId,
+};
 use sima_core::{Error, Hash, Result, to_hex};
-use sima_model::{ArtifactRef, RunConfig, TaskIdentity, TaskKey, TaskRecord};
+use sima_model::{ArtifactRef, RunConfig, RunId, TaskIdentity, TaskKey, TaskRecord};
 use sima_store::Store;
 
 use crate::config::ExecutionConfig;
@@ -30,6 +34,8 @@ use crate::task_source::RunnableTask;
 pub(crate) struct WorkerContext<'a> {
     pub(crate) coordinator: &'a Coordinator,
     pub(crate) store: &'a Store,
+    /// The run the worker commits under; keys the checkpoint slots.
+    pub(crate) run: RunId,
     pub(crate) config: &'a RunConfig,
     pub(crate) executor: &'a (dyn Executor + Sync),
     pub(crate) exec: &'a ExecutionConfig,
@@ -105,12 +111,65 @@ impl Drop for PanicGuard<'_> {
     }
 }
 
+/// The worker's store-side arm of the checkpoint contract for one attempt of
+/// one chain task: it owns all slot I/O, enforces the wall-clock cadence, and
+/// serves the resume bytes loaded before execution started. The executor on
+/// the other side of the seam only offers and adopts bytes — it never touches
+/// the store.
+struct SlotCheckpoint<'a> {
+    store: &'a Store,
+    run: RunId,
+    slot: u64,
+    key: TaskKey,
+    task: &'a str,
+    interval: Duration,
+    /// When the last save happened — initialized to the attempt's start, so
+    /// the first save becomes due one full interval in.
+    last_saved: Cell<Instant>,
+    resume: Option<Vec<u8>>,
+    events: &'a Sender<LifecycleEvent>,
+}
+
+impl Checkpoint for SlotCheckpoint<'_> {
+    fn resume(&self) -> Option<&[u8]> {
+        self.resume.as_deref()
+    }
+
+    fn offer(&self, produce: &dyn Fn() -> Vec<u8>) {
+        if self.last_saved.get().elapsed() < self.interval {
+            return;
+        }
+        // The clock resets before the save is attempted — chosen over
+        // retrying at the next offer, so a persistently failing slot
+        // degrades once per interval instead of once per offer.
+        self.last_saved.set(Instant::now());
+        if let Err(e) = self
+            .store
+            .save_checkpoint(&self.run, self.slot, &self.key, &produce())
+        {
+            // Checkpointing is an optimization, never a task outcome: the
+            // failure is journaled and execution continues.
+            emit(
+                self.events,
+                LifecycleEvent::CheckpointDegraded {
+                    task: self.task.to_string(),
+                    error: e.to_string(),
+                },
+            );
+        }
+    }
+}
+
 /// Evaluates one leased task and resolves its outcome: commit, retry, reject,
 /// or record an infrastructure fault.
 fn process(ctx: &WorkerContext<'_>, worker: WorkerId, pending: Pending) {
     let key = pending.key;
     let attempt = pending.attempt;
-    let RunnableTask { spec, identity } = pending.task;
+    let RunnableTask {
+        spec,
+        identity,
+        chain,
+    } = pending.task;
     let task = key.to_string();
     emit(
         &ctx.events,
@@ -139,6 +198,50 @@ fn process(ctx: &WorkerContext<'_>, worker: WorkerId, pending: Pending) {
         None => None,
     };
 
+    // Select the attempt's checkpoint handle. The run keeps one checkpoint
+    // slot per chain — mutable scratch storage for the continuation state a
+    // running segment offers. A chain task under an enabled interval gets
+    // the handle that reads and writes its chain's slot, loading whatever
+    // the slot holds for this key — a slot that is missing, torn, or keyed
+    // to another segment loads as nothing. Stateless tasks and disabled
+    // checkpointing get the inert handle, and the slot is never read.
+    let slot_checkpoint = match chain {
+        Some(slot) if ctx.exec.checkpoint_interval != Duration::MAX => {
+            let resume = match ctx.store.checkpoint(&ctx.run, slot, &key) {
+                Ok(resume) => resume,
+                Err(e) => {
+                    // A checkpoint is disposable, so a load failure degrades
+                    // to a fresh start — chosen over faulting the attempt:
+                    // the resume is lost, the task still runs.
+                    emit(
+                        &ctx.events,
+                        LifecycleEvent::CheckpointDegraded {
+                            task: task.clone(),
+                            error: e.to_string(),
+                        },
+                    );
+                    None
+                }
+            };
+            Some(SlotCheckpoint {
+                store: ctx.store,
+                run: ctx.run,
+                slot,
+                key,
+                task: &task,
+                interval: ctx.exec.checkpoint_interval,
+                last_saved: Cell::new(Instant::now()),
+                resume,
+                events: &ctx.events,
+            })
+        }
+        _ => None,
+    };
+    let checkpoint: &dyn Checkpoint = match &slot_checkpoint {
+        Some(slot_checkpoint) => slot_checkpoint,
+        None => &NoCheckpoint,
+    };
+
     let exec_ctx = ExecutionContext { attempt, worker };
     let input = TaskInput {
         spec: &spec,
@@ -155,7 +258,7 @@ fn process(ctx: &WorkerContext<'_>, worker: WorkerId, pending: Pending) {
     // panic kills the process instead — a crash the store's recovery
     // guarantee covers, so no correctness contract depends on unwinding.
     let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        ctx.executor.execute(&input, &exec_ctx)
+        ctx.executor.execute(&input, &exec_ctx, checkpoint)
     }));
     // `input` (and its borrow of `spec`) is unused past this point, so the
     // retry path below is free to move `spec` back into a re-enqueued task.
@@ -193,10 +296,15 @@ fn process(ctx: &WorkerContext<'_>, worker: WorkerId, pending: Pending) {
                 },
             );
             if attempt + 1 < ctx.exec.max_attempts {
-                if ctx
-                    .coordinator
-                    .requeue(key, RunnableTask { spec, identity }, attempt + 1)
-                {
+                if ctx.coordinator.requeue(
+                    key,
+                    RunnableTask {
+                        spec,
+                        identity,
+                        chain,
+                    },
+                    attempt + 1,
+                ) {
                     emit(
                         &ctx.events,
                         LifecycleEvent::Retried {
@@ -395,6 +503,7 @@ mod tests {
 
         let config = RunConfig {
             root_seed: 0,
+            segments: None,
             format: FormatId::new("stub.v1")?,
             generator: GeneratorConfig {
                 id: GeneratorId::new("stub.v1")?,
@@ -402,8 +511,9 @@ mod tests {
             },
             params,
         };
+        let run = store.create_run(&config)?;
         let executor = StubExecutor::new()?;
-        let exec = ExecutionConfig::new(1, 1, Duration::from_secs(1))?;
+        let exec = ExecutionConfig::new(1, 1, Duration::from_secs(1), Duration::MAX)?;
 
         // The stub artifact this identity commits when the state bytes reach the
         // executor: computed by calling the executor directly with the bytes.
@@ -419,6 +529,7 @@ mod tests {
                 attempt: 0,
                 worker: WorkerId(0),
             },
+            &NoCheckpoint,
         )? {
             Outcome::Completed { artifacts, .. } => {
                 artifacts.into_iter().next().expect("one artifact").bytes
@@ -432,6 +543,7 @@ mod tests {
             let ctx = WorkerContext {
                 coordinator: &coordinator,
                 store: &store,
+                run,
                 config: &config,
                 executor: &executor,
                 exec: &exec,
@@ -442,6 +554,7 @@ mod tests {
                 task: RunnableTask {
                     spec: spec.clone(),
                     identity,
+                    chain: None,
                 },
                 attempt: 0,
             };
@@ -484,6 +597,244 @@ mod tests {
                 .any(|e| matches!(e, LifecycleEvent::Faulted { .. })),
             "the load failure emits a Faulted event"
         );
+        Ok(())
+    }
+
+    /// A one-task `accumulate:k` fixture: store, registered run, and the
+    /// segment-0 identity, ready for `process` runs with checkpoint knobs.
+    struct AccumulateFixture {
+        _dir: tempfile::TempDir,
+        store: Store,
+        run: sima_model::RunId,
+        config: RunConfig,
+        spec: Spec,
+        identity: TaskIdentity,
+    }
+
+    impl AccumulateFixture {
+        fn new(k: u64) -> Result<AccumulateFixture> {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let store = Store::open(dir.path()).expect("open store");
+            let params = Params {
+                bytes: vec![1, 2, 3],
+            };
+            store.put(&params.to_bytes())?;
+            let environment = EnvironmentId::from_hash(store.put(b"unit-test environment")?);
+            let spec = Spec {
+                format: FormatId::new("stub.v1")?,
+                bytes: StubProgram {
+                    behavior: StubBehavior::Accumulate(k),
+                    nonce: 7,
+                }
+                .to_bytes(),
+            };
+            let spec_id = SpecId::from_hash(store.put(&spec.to_bytes())?);
+            let identity = TaskIdentity {
+                spec: spec_id,
+                params: params.id(),
+                seed: 42,
+                environment,
+                input_state: None,
+            };
+            let config = RunConfig {
+                root_seed: 0,
+                segments: std::num::NonZeroU64::new(1),
+                format: FormatId::new("stub.v1")?,
+                generator: GeneratorConfig {
+                    id: GeneratorId::new("stub.v1")?,
+                    params: Vec::new(),
+                },
+                params,
+            };
+            let run = store.create_run(&config)?;
+            Ok(AccumulateFixture {
+                _dir: dir,
+                store,
+                run,
+                config,
+                spec,
+                identity,
+            })
+        }
+
+        fn key(&self) -> TaskKey {
+            self.identity.key()
+        }
+
+        /// Runs `process` once over the fixture task with the given chain
+        /// slot and checkpoint interval; returns the emitted events.
+        fn process(&self, chain: Option<u64>, interval: Duration) -> Result<Vec<LifecycleEvent>> {
+            let executor = StubExecutor::new()?;
+            let exec = ExecutionConfig::new(1, 1, Duration::from_secs(5), interval)?;
+            let coordinator = Coordinator::new();
+            let (tx, rx) = mpsc::channel();
+            {
+                let ctx = WorkerContext {
+                    coordinator: &coordinator,
+                    store: &self.store,
+                    run: self.run,
+                    config: &self.config,
+                    executor: &executor,
+                    exec: &exec,
+                    events: tx,
+                };
+                let pending = Pending {
+                    key: self.key(),
+                    task: RunnableTask {
+                        spec: self.spec.clone(),
+                        identity: self.identity,
+                        chain,
+                    },
+                    attempt: 1,
+                };
+                process(&ctx, WorkerId(0), pending);
+            }
+            Ok(rx.into_iter().collect())
+        }
+
+        /// The committed `state` artifact bytes.
+        fn state_artifact(&self) -> Result<Vec<u8>> {
+            let record = self
+                .store
+                .record(&self.key())?
+                .expect("the task committed a record");
+            assert_eq!(record.artifacts().len(), 1);
+            self.store.get(record.artifacts()[0].object())
+        }
+    }
+
+    /// The steps the committed attempt executed, from the stub's stats in
+    /// the `Committed` event: `(u32 attempt, u64 steps)`.
+    fn committed_steps(events: &[LifecycleEvent]) -> u64 {
+        let stats_hex = events
+            .iter()
+            .find_map(|e| match e {
+                LifecycleEvent::Committed { stats_hex, .. } => Some(stats_hex.clone()),
+                _ => None,
+            })
+            .expect("a Committed event");
+        let bytes: Vec<u8> = (0..stats_hex.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&stats_hex[i..i + 2], 16).expect("hex"))
+            .collect();
+        let mut dec = sima_core::Dec::new(&bytes);
+        dec.u32().expect("attempt");
+        let steps = dec.u64().expect("steps");
+        dec.finish().expect("stats end");
+        steps
+    }
+
+    /// The stub trajectory from `{step: 0, acc: seed}` through `steps` steps.
+    fn folded_state(seed: u64, steps: u64) -> sima_domains::StubState {
+        let mut state = sima_domains::StubState { step: 0, acc: seed };
+        for _ in 0..steps {
+            state.acc = sima_core::prng::derive(state.acc, state.step);
+            state.step += 1;
+        }
+        state
+    }
+
+    #[test]
+    fn a_preseeded_checkpoint_shortens_reexecution() -> Result<()> {
+        let fixture = AccumulateFixture::new(5)?;
+        // A valid checkpoint three steps in, keyed to this task.
+        fixture.store.save_checkpoint(
+            &fixture.run,
+            0,
+            &fixture.key(),
+            &folded_state(42, 3).to_bytes(),
+        )?;
+        let events = fixture.process(Some(0), Duration::ZERO)?;
+        assert_eq!(
+            committed_steps(&events),
+            2,
+            "the resumed attempt executes only the remaining steps"
+        );
+        // The committed state is the full trajectory regardless.
+        assert_eq!(fixture.state_artifact()?, folded_state(42, 5).to_bytes());
+        Ok(())
+    }
+
+    #[test]
+    fn a_checkpoint_keyed_to_another_task_is_ignored() -> Result<()> {
+        let fixture = AccumulateFixture::new(5)?;
+        // The stale previous-segment case: the slot holds valid-looking state
+        // under a different task key.
+        let other = TaskKey::from_hash(hash_bytes(b"the previous segment's key"));
+        fixture
+            .store
+            .save_checkpoint(&fixture.run, 0, &other, &folded_state(42, 3).to_bytes())?;
+        let events = fixture.process(Some(0), Duration::ZERO)?;
+        assert_eq!(committed_steps(&events), 5, "the task runs fully");
+        assert_eq!(fixture.state_artifact()?, folded_state(42, 5).to_bytes());
+        Ok(())
+    }
+
+    #[test]
+    fn a_disabled_interval_writes_no_slot() -> Result<()> {
+        let fixture = AccumulateFixture::new(3)?;
+        fixture.process(Some(0), Duration::MAX)?;
+        assert_eq!(
+            fixture.store.checkpoint(&fixture.run, 0, &fixture.key())?,
+            None
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn an_enabled_interval_writes_the_slot() -> Result<()> {
+        let fixture = AccumulateFixture::new(3)?;
+        // A zero interval makes every offer due, so the last save carries
+        // the final step's state.
+        fixture.process(Some(0), Duration::ZERO)?;
+        let saved = fixture
+            .store
+            .checkpoint(&fixture.run, 0, &fixture.key())?
+            .expect("the slot was written");
+        assert_eq!(saved, folded_state(42, 3).to_bytes());
+        Ok(())
+    }
+
+    #[test]
+    fn a_save_failure_degrades_and_the_task_still_commits() -> Result<()> {
+        let fixture = AccumulateFixture::new(3)?;
+        // Occupy the checkpoint directory's path with a file, so creating
+        // the directory — and thus every save — fails.
+        let blocker = fixture
+            ._dir
+            .path()
+            .join("runs")
+            .join(fixture.run.to_string())
+            .join("checkpoint");
+        std::fs::write(&blocker, b"not a directory").expect("write blocker");
+        let events = fixture.process(Some(0), Duration::ZERO)?;
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, LifecycleEvent::CheckpointDegraded { .. })),
+            "a save failure emits CheckpointDegraded"
+        );
+        assert_eq!(committed_steps(&events), 3, "the task still commits");
+        assert_eq!(fixture.state_artifact()?, folded_state(42, 3).to_bytes());
+        Ok(())
+    }
+
+    #[test]
+    fn committed_bytes_are_identical_with_checkpointing_on_off_and_resumed() -> Result<()> {
+        let off = AccumulateFixture::new(4)?;
+        off.process(None, Duration::MAX)?;
+        let on = AccumulateFixture::new(4)?;
+        on.process(Some(0), Duration::ZERO)?;
+        let resumed = AccumulateFixture::new(4)?;
+        resumed.store.save_checkpoint(
+            &resumed.run,
+            0,
+            &resumed.key(),
+            &folded_state(42, 2).to_bytes(),
+        )?;
+        resumed.process(Some(0), Duration::ZERO)?;
+        assert_eq!(off.state_artifact()?, on.state_artifact()?);
+        assert_eq!(off.state_artifact()?, resumed.state_artifact()?);
         Ok(())
     }
 }

@@ -34,6 +34,14 @@ pub fn write_config(dir: &Path, name: &str, behaviors: &str, store: &str) -> Pat
     path
 }
 
+/// Writes `text` as a config file named `name` under `dir` — for suites
+/// whose configs need keys beyond [`write_config`]'s shape.
+pub fn write_config_text(dir: &Path, name: &str, text: &str) -> PathBuf {
+    let path = dir.join(name);
+    std::fs::write(&path, text).expect("write config");
+    path
+}
+
 /// A command over the built sima binary, its environment cleared of any
 /// crashpoint arming so only an explicit test arms one.
 pub fn sima_command() -> Command {

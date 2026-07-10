@@ -2,10 +2,10 @@
 
 use sima_contracts::Generator;
 use sima_core::{Result, prng};
-use sima_model::{Environment, RunConfig, SpecId, TaskIdentity, TaskKey};
+use sima_model::{Environment, RunConfig, TaskIdentity, TaskKey};
 use sima_store::Store;
 
-use crate::task_source::{RunnableTask, TaskSource};
+use crate::task_source::{RunnableTask, TaskSource, generate_specs};
 
 /// A task source over a fixed batch of candidates. On construction it
 /// materializes the frontier: it generates the run's specs, stores each spec
@@ -35,17 +35,12 @@ impl StaticBatch {
         environment: &Environment,
         store: &Store,
     ) -> Result<StaticBatch> {
-        let specs =
-            generator.generate(config.root_seed, &config.generator.params, &config.format)?;
+        let specs = generate_specs(generator, config, store)?;
         let params = config.params.id();
         let environment_id = environment.id();
         let mut all_keys = Vec::with_capacity(specs.len());
         let mut runnable = Vec::new();
-        for (i, spec) in specs.into_iter().enumerate() {
-            // The spec object is durable before any task referencing it can
-            // commit; its address is the spec id (both are the blake3 of the
-            // spec's canonical bytes).
-            let spec_id = SpecId::from_hash(store.put(&spec.to_bytes())?);
+        for (i, (spec, spec_id)) in specs.into_iter().enumerate() {
             let identity = TaskIdentity {
                 spec: spec_id,
                 params,
@@ -60,7 +55,11 @@ impl StaticBatch {
             // An existence check, not a read: resuming a mostly-complete run
             // must not decode every committed record to answer a boolean.
             if !store.has_record(&key)? {
-                runnable.push(RunnableTask { spec, identity });
+                runnable.push(RunnableTask {
+                    spec,
+                    identity,
+                    chain: None,
+                });
             }
         }
         Ok(StaticBatch {
@@ -83,6 +82,10 @@ impl TaskSource for StaticBatch {
     fn all_keys(&self) -> &[TaskKey] {
         &self.all_keys
     }
+
+    fn task_total(&self) -> usize {
+        self.all_keys.len()
+    }
 }
 
 #[cfg(test)]
@@ -95,6 +98,7 @@ mod tests {
     fn config(behaviors: Vec<StubBehavior>) -> Result<RunConfig> {
         Ok(RunConfig {
             root_seed: 7,
+            segments: None,
             format: sima_model::FormatId::new("stub.v1")?,
             generator: GeneratorConfig {
                 id: sima_model::GeneratorId::new("stub.v1")?,
