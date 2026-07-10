@@ -5,8 +5,11 @@
 //! across the codebase. The format: every integer little-endian at its
 //! natural width, `i64` two's-complement little-endian, bytes and str framed
 //! by a `u64` little-endian length prefix (str is its UTF-8 bytes), `Hash`
-//! as its 32 raw digest bytes, `Option<Hash>` as a present-flag byte (0 or
-//! 1) followed by the digest when present.
+//! as its 32 raw digest bytes, `Option<Hash>` as a present-flag byte of value
+//! zero or one followed by the digest when present, `f32` as its IEEE-754
+//! bits in a little-endian `u32`, and an `f32` slice as those elements written
+//! back to back with no length prefix (the count is fixed by surrounding
+//! context).
 
 use crate::error::{Error, Result};
 use crate::hash::Hash;
@@ -61,6 +64,22 @@ impl Enc {
     pub fn u32x3(&mut self, v: [u32; 3]) -> &mut Self {
         for part in v {
             self.u32(part);
+        }
+        self
+    }
+
+    /// Writes an `f32` as its IEEE-754 bits in a little-endian `u32`.
+    pub fn f32(&mut self, v: f32) -> &mut Self {
+        self.buf.extend_from_slice(&v.to_bits().to_le_bytes());
+        self
+    }
+
+    /// Writes each `f32` as its little-endian bits, contiguously, with no
+    /// length prefix — the element count is fixed by surrounding context.
+    pub fn f32_slice(&mut self, v: &[f32]) -> &mut Self {
+        self.buf.reserve(v.len() * 4);
+        for &value in v {
+            self.buf.extend_from_slice(&value.to_bits().to_le_bytes());
         }
         self
     }
@@ -160,6 +179,28 @@ impl<'a> Dec<'a> {
     /// Reads three little-endian `u32`s.
     pub fn u32x3(&mut self) -> Result<[u32; 3]> {
         Ok([self.u32()?, self.u32()?, self.u32()?])
+    }
+
+    /// Reads an `f32` from its little-endian IEEE-754 bits.
+    pub fn f32(&mut self) -> Result<f32> {
+        Ok(f32::from_bits(u32::from_le_bytes(self.array()?)))
+    }
+
+    /// Reads `count` `f32` elements written back to back with no length
+    /// prefix. The byte span is validated against the remaining input before
+    /// any allocation, so an absurd `count` errors without allocating.
+    pub fn f32_vec(&mut self, count: usize) -> Result<Vec<f32>> {
+        let byte_len = count
+            .checked_mul(4)
+            .ok_or_else(|| Error::Encoding(format!("f32 count {count} overflows a byte length")))?;
+        let raw = self.take(byte_len)?;
+        let mut out = Vec::with_capacity(count);
+        for chunk in raw.chunks_exact(4) {
+            out.push(f32::from_bits(u32::from_le_bytes([
+                chunk[0], chunk[1], chunk[2], chunk[3],
+            ])));
+        }
+        Ok(out)
     }
 
     /// Reads a `u64` length prefix, then borrows that many bytes. The length
@@ -275,6 +316,65 @@ mod tests {
         .concat();
         assert_eq!(to_hex(&composite()?), expected);
         Ok(())
+    }
+
+    #[test]
+    fn f32_round_trips_representative_values() -> Result<()> {
+        let values = [
+            1.5f32,
+            -0.0,
+            0.0,
+            f32::MIN,
+            f32::MAX,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+        ];
+        for v in values {
+            let mut enc = Enc::new();
+            enc.f32(v);
+            let buf = enc.finish();
+            let mut dec = Dec::new(&buf);
+            // Compare by bits so -0.0 and the infinities are distinguished.
+            assert_eq!(dec.f32()?.to_bits(), v.to_bits());
+            dec.finish()?;
+        }
+        Ok(())
+    }
+
+    /// `f32` is written as its IEEE-754 bits in a little-endian `u32`. `1.5f32`
+    /// has bit pattern `0x3FC00000`, little-endian bytes `00 00 c0 3f`.
+    #[test]
+    fn f32_encoding_is_byte_stable() {
+        let mut enc = Enc::new();
+        enc.f32(1.5);
+        assert_eq!(to_hex(&enc.finish()), "0000c03f");
+    }
+
+    #[test]
+    fn f32_slice_round_trips_without_a_length_prefix() -> Result<()> {
+        let values = [1.5f32, -2.0, 0.25, 1024.0];
+        let mut enc = Enc::new();
+        enc.f32_slice(&values);
+        let buf = enc.finish();
+        // No length prefix: four contiguous 4-byte elements, 16 bytes.
+        assert_eq!(buf.len(), values.len() * 4);
+        let mut dec = Dec::new(&buf);
+        let read = dec.f32_vec(values.len())?;
+        dec.finish()?;
+        let read_bits: Vec<u32> = read.iter().map(|v| v.to_bits()).collect();
+        let want_bits: Vec<u32> = values.iter().map(|v| v.to_bits()).collect();
+        assert_eq!(read_bits, want_bits);
+        Ok(())
+    }
+
+    #[test]
+    fn f32_truncation_errors_never_panics() {
+        assert!(matches!(Dec::new(&[0u8; 3]).f32(), Err(Error::Encoding(_))));
+        // A vector read past the remaining input errors before allocating.
+        assert!(matches!(
+            Dec::new(&[0u8; 7]).f32_vec(2),
+            Err(Error::Encoding(_))
+        ));
     }
 
     #[test]

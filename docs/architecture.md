@@ -306,6 +306,58 @@ which attempt reached it. The pipeline reaches this domain through the id
 dispatch and the scheduler tests through a dev-dependency; the shipped
 scheduler library never depends on `sima-domains`.
 
+### The cellular kind
+
+The float families — reaction-diffusion, Neural CA, Lenia — share one executor
+kind, the **cellular kind**: a multi-channel float grid advanced by
+a WGSL update kernel dispatched over it, each output cell a function of a
+neighborhood of the input. Its state, dispatch harness, and cross-check
+scaffold live once in the `cellular` module; a family supplies the update
+kernel, the genome, and the CPU reference, differing in those and the channel
+count, not in the state shape or the harness.
+
+**Grid state.** `Grid` is a 2D, multi-channel `f32` field: extent
+$(width, height)$, a channel count, and a cell-major interleaved payload where
+channel $c$ of the cell at $(x, y)$ is at index
+$((y \cdot width) + x) \cdot channels + c$. It serializes to identity-bearing
+bytes through the canonical encoding — a domain tag, the three dimensions as
+`u32`, then the payload as a bare `f32` sequence whose length the dimensions
+fix — and addresses itself by the blake3 of those bytes. So a grid round-trips
+through the content-addressed store as an opaque snapshot object, the address
+the store returns equal to the grid's content id. The cells are `f32`; the kind
+carries no dtype tag.
+
+**Dispatch harness.** `run` advances a grid by a step count of double-buffered
+dispatches. It allocates two device buffers plus a fixed dimensions buffer,
+uploads the payload, and for each step dispatches the kernel over the whole
+grid — one invocation per cell, $\lceil width \cdot height / 64 \rceil$ groups
+along x — then swaps the input and output buffers. The swap after each dispatch
+leaves the result on the most recently written buffer for both even and odd
+step counts. Each step is one fence-waited submission, reusing the toolkit's
+per-op synchronization. The harness is neighborhood-agnostic: a small stencil
+and a large-radius convolution are both just the kernel argument.
+
+**Binding and dispatch convention.** The kind's kernels bind group-0 storage
+buffers in a fixed order:
+
+- binding 0 the input grid,
+- binding 1 the output grid,
+- binding 2 the dimensions `[width, height, channels]`,
+- bindings 3+ the family parameters.
+
+A kernel runs one invocation per cell under `@workgroup_size(64)`, guards the
+cell index against the cell count, and loops its channels internally. The
+harness ping-pongs bindings 0 and 1 each step and holds the dimensions and
+parameters fixed.
+
+**CPU reference and cross-check.** `CellularRule` is the CPU reference a family's
+kernel is checked against: one step maps a whole input grid to a whole output
+grid. A family confirms its kernel by advancing the same initial grid through
+the reference and through the harness for equal step counts and comparing the
+resulting grids. Where a kernel uses only exact operations — a neighborhood max
+— the two agree byte for byte with no tolerance; agreement across distinct GPU
+backend classes is a separate tolerance policy.
+
 ## Execution toolkits
 
 Execution backends live under `crates/toolkits/` as `sima-toolkit-*` crates. A

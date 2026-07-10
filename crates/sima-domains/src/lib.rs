@@ -9,11 +9,18 @@
 //! entries) are the crate's surface; each domain's pieces live in its own
 //! module under `domains/`.
 //!
+//! Beside the concrete domains, the [`cellular`] module holds the shared
+//! substrate of the cellular executor kind: the [`Grid`](cellular::Grid)
+//! state, the [`run`](cellular::run) double-buffered dispatch harness, and the
+//! [`CellularRule`](cellular::CellularRule) CPU-reference contract the float
+//! families build their kernels on.
+//!
 //! The pipeline calls this crate to resolve a config's format and generator
 //! ids to code; the scheduler tests use the stub domain as a deterministic,
 //! programmable substrate through a dev-dependency. `sima-contracts` sits
 //! below and holds the traits alone.
 
+pub mod cellular;
 mod domain;
 mod domains;
 

@@ -761,9 +761,13 @@ dependencies = [
 name = "sima-domains"
 version = "0.1.0"
 dependencies = [
+ "bytemuck",
  "sima-contracts",
  "sima-core",
  "sima-model",
+ "sima-store",
+ "sima-toolkit-wgsl",
+ "tempfile",
  "toml",
 ]
 
