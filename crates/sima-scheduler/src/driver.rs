@@ -180,7 +180,7 @@ pub fn run(
     Ok(outcome)
 }
 
-/// What the driver decided the run should do once the pool went quiescent.
+/// What the driver decided the run should do once its gate resolved.
 enum DriveOutcome {
     /// Every task committed; finalize the run.
     Finalize,
@@ -207,39 +207,81 @@ enum DriveOutcome {
 /// acquisitions.
 const INTERRUPT_POLL: Duration = Duration::from_millis(50);
 
-/// Whether the pool is quiescent: no lease outstanding and, while the run is
-/// healthy, nothing queued. A terminal state only waits for the in-flight
-/// work to drain, and queued tasks are then abandoned.
-fn quiescent(shared: &Shared) -> bool {
+/// Whether a wound-down pool has drained: no lease outstanding. Queued tasks
+/// are then abandoned. Gates only the terminal states; a healthy run is
+/// driven by the poll gate instead.
+fn drained(shared: &Shared) -> bool {
     shared.leases.is_empty()
-        && (!matches!(shared.state, RunState::Running) || shared.queue.is_empty())
 }
 
-/// Feeds the queue and waits for the pool: each time the pool goes quiescent
-/// it polls the source — the first loop iteration is trivially quiescent, so
-/// the first poll happens immediately, and a source that derives new tasks
-/// from committed results hands them out at exactly those points — until a
-/// poll yields nothing more (finalize) or an interrupt, a definitive failure,
-/// or a fault ends the run. Every wakeup — a pool notification or the bounded
-/// wait elapsing — re-checks `control`'s interrupt flag, so an interrupt is
-/// observed within [`INTERRUPT_POLL`] and upgrades a healthy run to
-/// `Interrupted`; the wind-down then rides the ordinary drain path.
+/// What one locked look at the shared state told the driver to do next.
+enum Gate {
+    /// Nothing to do until the next wakeup.
+    Wait,
+    /// The run wound down and the pool drained; the taken terminal reason.
+    Terminal(RunState),
+    /// Poll the source: the queue is empty and the store state may have
+    /// changed since the last poll. `idle` is whether the pool also holds no
+    /// leases — the finalize condition when the poll comes back empty —
+    /// and `settled` is the release count the poll is current as of.
+    Poll { idle: bool, settled: u64 },
+}
+
+/// Feeds the queue and waits for the pool. While the run is healthy it polls
+/// the source whenever the queue is empty and a lease release has happened
+/// since the last poll — a release is when committed results can have
+/// changed the store state a source derives new tasks from — so each chain
+/// advances the moment its own predecessor commits, leases outstanding or
+/// not. The first poll happens immediately. An empty poll at an idle pool
+/// finalizes; an empty poll with leases outstanding waits, and the releases
+/// of those leases trigger the polls that follow. A terminal state — an
+/// interrupt, a definitive failure, or a fault — waits for the in-flight
+/// leases to drain, abandoning queued tasks. Every wakeup — a pool
+/// notification or the bounded wait elapsing — re-checks `control`'s
+/// interrupt flag, so an interrupt is observed within [`INTERRUPT_POLL`] and
+/// upgrades a healthy run to `Interrupted`; the wind-down then rides the
+/// ordinary drain path.
 fn drive(
     coordinator: &Coordinator,
     source: &mut dyn TaskSource,
     events: &Sender<LifecycleEvent>,
     control: &RunControl,
 ) -> Result<DriveOutcome> {
+    // The release count the last poll was current as of; `None` before the
+    // first poll, so it fires unconditionally.
+    let mut polled_at: Option<u64> = None;
     loop {
         if control.interrupt.load(Ordering::Relaxed) {
             coordinator.interrupt();
         }
-        // Observe quiescence and take the terminal reason, if any, in one
-        // block-scoped lock region; without quiescence, park for one bounded
-        // wait and loop around to re-check the interrupt flag.
-        let terminal = {
+        // Decide the next action in one block-scoped lock region; a poll runs
+        // outside it. Without anything to do, park for one bounded wait —
+        // under the same lock acquisition, so a notification between the
+        // decision and the park is not missed — and loop around to re-check
+        // the interrupt flag.
+        let gate = {
             let mut shared = coordinator.lock();
-            if !quiescent(&shared) {
+            let decision = if !matches!(shared.state, RunState::Running) {
+                if drained(&shared) {
+                    // Take the terminal reason by value: the Error/Failure
+                    // payload moves out to be returned, and the Finished left
+                    // in its place is the signal that makes every worker's
+                    // next_task exit.
+                    let terminal = std::mem::replace(&mut shared.state, RunState::Finished);
+                    coordinator.state_changed.notify_all();
+                    Gate::Terminal(terminal)
+                } else {
+                    Gate::Wait
+                }
+            } else if shared.queue.is_empty() && polled_at != Some(shared.settled) {
+                Gate::Poll {
+                    idle: shared.leases.is_empty(),
+                    settled: shared.settled,
+                }
+            } else {
+                Gate::Wait
+            };
+            if matches!(decision, Gate::Wait) {
                 drop(
                     coordinator
                         .state_changed
@@ -248,40 +290,40 @@ fn drive(
                 );
                 continue;
             }
-            if matches!(shared.state, RunState::Running) {
-                None
-            } else {
-                // Take the terminal reason by value: the Error/Failure payload
-                // moves out to be returned, and the Finished left in its place
-                // is the signal that makes every worker's next_task exit.
-                let terminal = std::mem::replace(&mut shared.state, RunState::Finished);
-                coordinator.state_changed.notify_all();
-                Some(terminal)
-            }
+            decision
         };
-        if let Some(terminal) = terminal {
-            return match terminal {
-                RunState::Failed(failure) => Ok(DriveOutcome::Fail(failure)),
-                RunState::Fault(fault) => Err(fault),
-                RunState::Interrupted => Ok(DriveOutcome::Interrupt),
-                // Quiescent with the run already wound down: finalize.
-                RunState::Finished => Ok(DriveOutcome::Finalize),
-                // This arm is guarded by the `Running` check above.
-                RunState::Running => unreachable!("the terminal branch excludes Running"),
-            };
-        }
-        // Healthy and quiescent: poll. A poll fault set the terminal state;
-        // the next iteration's wait drains in-flight work and the terminal
-        // branch returns it. Nothing more means the run is done.
-        match poll_source(coordinator, source) {
-            None => {}
-            Some(more) if more.is_empty() => {
-                let mut shared = coordinator.lock();
-                shared.state = RunState::Finished;
-                coordinator.state_changed.notify_all();
-                return Ok(DriveOutcome::Finalize);
+        match gate {
+            Gate::Terminal(terminal) => {
+                return match terminal {
+                    RunState::Failed(failure) => Ok(DriveOutcome::Fail(failure)),
+                    RunState::Fault(fault) => Err(fault),
+                    RunState::Interrupted => Ok(DriveOutcome::Interrupt),
+                    // Drained with the run already wound down: finalize.
+                    RunState::Finished => Ok(DriveOutcome::Finalize),
+                    // This arm is guarded by the `Running` check above.
+                    RunState::Running => unreachable!("the terminal branch excludes Running"),
+                };
             }
-            Some(more) => enqueue(coordinator, events, more),
+            Gate::Poll { idle, settled } => {
+                polled_at = Some(settled);
+                // A poll fault set the terminal state; the next iteration
+                // drains the in-flight work and the terminal branch returns
+                // it. An empty poll finalizes only at an idle pool; with
+                // leases outstanding, their releases trigger the next poll.
+                match poll_source(coordinator, source) {
+                    None => {}
+                    Some(more) if more.is_empty() => {
+                        if idle {
+                            let mut shared = coordinator.lock();
+                            shared.state = RunState::Finished;
+                            coordinator.state_changed.notify_all();
+                            return Ok(DriveOutcome::Finalize);
+                        }
+                    }
+                    Some(more) => enqueue(coordinator, events, more),
+                }
+            }
+            Gate::Wait => unreachable!("a Wait decision parks and continues above"),
         }
     }
 }
@@ -434,8 +476,9 @@ mod tests {
     fn an_empty_source_finalizes_immediately() {
         let coordinator = Coordinator::new();
         let (events, _rx) = mpsc::channel();
-        // The first iteration is trivially quiescent, so the empty poll is the
-        // whole run: one poll, then finalize.
+        // Nothing has been polled yet, so the first poll fires immediately;
+        // it comes back empty at an idle pool, which is the whole run:
+        // one poll, then finalize.
         let result = drive(
             &coordinator,
             &mut ScriptedSource::default(),
@@ -487,6 +530,181 @@ mod tests {
             Ok(_) => panic!("expected the preset fault to be returned"),
         }
         assert!(matches!(coordinator.lock().state, RunState::Finished));
+    }
+
+    /// Drains `rx` until a `Queued` event for `key` arrives, bounded by
+    /// `deadline`; returns whether it arrived.
+    fn saw_queued(rx: &mpsc::Receiver<LifecycleEvent>, key: &TaskKey, deadline: Duration) -> bool {
+        let end = std::time::Instant::now() + deadline;
+        loop {
+            let Some(remaining) = end.checked_duration_since(std::time::Instant::now()) else {
+                return false;
+            };
+            match rx.recv_timeout(remaining) {
+                Ok(LifecycleEvent::Queued { task }) if task == key.to_string() => return true,
+                Ok(_) => {}
+                Err(_) => return false,
+            }
+        }
+    }
+
+    #[test]
+    fn a_successor_is_handed_out_while_another_lease_is_outstanding() {
+        // A chain source derives new work from commits; each chain must
+        // advance the moment its own predecessor commits, without waiting for
+        // the whole pool to drain. Scripted: poll 1 yields tasks A and C,
+        // poll 2 yields B — modeling C's successor. The fake worker resolves
+        // C while holding A's lease; B must be queued before A releases,
+        // which only a poll gate that runs with leases outstanding can do.
+        let coordinator = Coordinator::new();
+        let (events, rx) = mpsc::channel();
+        let task_a = runnable(1);
+        let task_c = runnable(3);
+        let task_b = runnable(2);
+        let key_b = task_b.identity.key();
+        let mut source = ScriptedSource {
+            polls: VecDeque::from([vec![task_a, task_c], vec![task_b]]),
+        };
+        let queued_during_lease = std::sync::atomic::AtomicBool::new(false);
+        let outcome = thread::scope(|scope| {
+            // The receiver moves into the worker thread; the rest is borrowed.
+            let coordinator = &coordinator;
+            let queued_during_lease = &queued_during_lease;
+            scope.spawn(move || {
+                // FIFO queue: the first lease is A, the second is C.
+                let a = coordinator.next_task(WorkerId(0)).expect("task A");
+                let c = coordinator.next_task(WorkerId(0)).expect("task C");
+                coordinator.resolve(c.key);
+                // C's commit derives B; it must arrive while A is still held.
+                if saw_queued(&rx, &key_b, Duration::from_secs(5)) {
+                    queued_during_lease.store(true, Ordering::Relaxed);
+                }
+                coordinator.resolve(a.key);
+                // Drain whatever else the driver hands out, so the run can
+                // finalize in both the passing and the failing sequence.
+                while let Some(t) = coordinator.next_task(WorkerId(0)) {
+                    coordinator.resolve(t.key);
+                }
+            });
+            drive(coordinator, &mut source, &events, &RunControl::detached())
+        });
+        assert!(matches!(outcome, Ok(DriveOutcome::Finalize)));
+        assert!(
+            queued_during_lease.load(Ordering::Relaxed),
+            "task B must be queued while task A's lease is outstanding"
+        );
+    }
+
+    #[test]
+    fn an_empty_poll_with_a_lease_outstanding_does_not_finalize() {
+        // Finalize requires an empty poll and an idle pool. The fake worker
+        // holds the sole task's lease across an empty poll; drive must wait
+        // for the release instead of finalizing under the lease.
+        let coordinator = Coordinator::new();
+        let (events, _rx) = mpsc::channel();
+        let task_a = runnable(1);
+        let mut source = ScriptedSource {
+            polls: VecDeque::from([vec![task_a]]),
+        };
+        let resolved = std::sync::atomic::AtomicBool::new(false);
+        let outcome = thread::scope(|scope| {
+            scope.spawn(|| {
+                let a = coordinator.next_task(WorkerId(0)).expect("task A");
+                // Long enough for several empty polls under the 50 ms cadence.
+                thread::sleep(Duration::from_millis(300));
+                resolved.store(true, Ordering::Relaxed);
+                coordinator.resolve(a.key);
+                while let Some(t) = coordinator.next_task(WorkerId(0)) {
+                    coordinator.resolve(t.key);
+                }
+            });
+            drive(&coordinator, &mut source, &events, &RunControl::detached())
+        });
+        assert!(matches!(outcome, Ok(DriveOutcome::Finalize)));
+        assert!(
+            resolved.load(Ordering::Relaxed),
+            "drive returned before the outstanding lease was released"
+        );
+    }
+
+    #[test]
+    fn a_poll_fault_under_an_outstanding_lease_drains_and_reports() {
+        // The second poll faults while the fake worker still holds task A.
+        // The run must wind down through the ordinary drain — wait for the
+        // lease, then report the fault — instead of hanging or returning
+        // under the lease.
+        struct FaultAfterFirst {
+            first: Option<Vec<RunnableTask>>,
+        }
+        impl TaskSource for FaultAfterFirst {
+            fn poll(&mut self) -> Result<Vec<RunnableTask>> {
+                match self.first.take() {
+                    Some(tasks) => Ok(tasks),
+                    None => Err(Error::Validation("source poll failed".to_string())),
+                }
+            }
+            fn all_keys(&self) -> &[TaskKey] {
+                &[]
+            }
+            fn task_total(&self) -> usize {
+                0
+            }
+        }
+        let coordinator = Coordinator::new();
+        let (events, _rx) = mpsc::channel();
+        let mut source = FaultAfterFirst {
+            first: Some(vec![runnable(1)]),
+        };
+        let resolved = std::sync::atomic::AtomicBool::new(false);
+        let outcome = thread::scope(|scope| {
+            scope.spawn(|| {
+                let a = coordinator.next_task(WorkerId(0)).expect("task A");
+                thread::sleep(Duration::from_millis(200));
+                resolved.store(true, Ordering::Relaxed);
+                coordinator.resolve(a.key);
+                while let Some(t) = coordinator.next_task(WorkerId(0)) {
+                    coordinator.resolve(t.key);
+                }
+            });
+            drive(&coordinator, &mut source, &events, &RunControl::detached())
+        });
+        assert!(matches!(outcome, Err(Error::Validation(_))));
+        assert!(
+            resolved.load(Ordering::Relaxed),
+            "the fault must drain the in-flight lease before reporting"
+        );
+    }
+
+    #[test]
+    fn an_interrupt_mid_chain_drains_and_reports_interrupted() {
+        // The interrupt lands while task A is leased and more chain work
+        // remains scripted. The in-flight attempt drains; the pending
+        // successor is never handed out; the run reports Interrupted.
+        let coordinator = Coordinator::new();
+        let (events, _rx) = mpsc::channel();
+        // A local flag: `detached()`'s flag is a process-wide static shared
+        // by every detached control, so setting it would poison other tests.
+        let interrupt = std::sync::atomic::AtomicBool::new(false);
+        let control = RunControl {
+            observer: &|_| {},
+            interrupt: &interrupt,
+        };
+        let mut source = ScriptedSource {
+            polls: VecDeque::from([vec![runnable(1)], vec![runnable(2)]]),
+        };
+        let outcome = thread::scope(|scope| {
+            scope.spawn(|| {
+                let a = coordinator.next_task(WorkerId(0)).expect("task A");
+                control.interrupt.store(true, Ordering::Relaxed);
+                thread::sleep(Duration::from_millis(200));
+                coordinator.resolve(a.key);
+                while let Some(t) = coordinator.next_task(WorkerId(0)) {
+                    coordinator.resolve(t.key);
+                }
+            });
+            drive(&coordinator, &mut source, &events, &control)
+        });
+        assert!(matches!(outcome, Ok(DriveOutcome::Interrupt)));
     }
 
     #[test]
