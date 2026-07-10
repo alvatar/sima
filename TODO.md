@@ -222,14 +222,41 @@ equal length.
       float stencils and convolutions; the CPU-reference pattern the families
       cross-check against. Minimal — enough to run the float families; the
       cross-substrate tolerance policy is P8
-- [ ] M2.3 Segmented execution: a long simulation runs as a chain of tasks
-      (state Sₙ + k steps → state Sₙ₊₁), checkpoint states as store objects,
-      segment length from config; a task source that yields the next
-      uncommitted task in each chain (successor keys derived from produced
-      state hashes), plugging into M1.5's interface. General over families,
-      not tied to any one. Determinism check: N steps + resume N ≡ 2N steps
-      on a pinned backend. This is what makes pausing and migrating a specific
-      in-progress simulation possible, not just a whole job
+- [ ] M2.3 Segmented execution and resume checkpoints: two distinct
+      mechanisms, kept separate because one names committed work and the other
+      is disposable resume state.
+      (a) Segmentation — the committed work-division mechanism. A long
+      simulation runs as a chain of tasks (state Sₙ + k steps → state Sₙ₊₁);
+      each segment's output state is committed as a store object; a task
+      source yields the next uncommitted task in each chain (successor keys
+      derived from produced state hashes), plugging into M1.5's interface.
+      Segment length k comes from config and must be deterministic, because a
+      segment boundary is a committed task whose key enters the run manifest,
+      and the same config must produce the same manifest (P1 acceptance a).
+      Segments are the portable resume point that `sima migrate` (P4) ships in
+      a run closure, and the leasable unit for distribution. General over
+      families. Determinism check: N steps + resume ≡ 2N steps on a pinned
+      backend.
+      (b) Resume checkpoints — the disposable crash-resume mechanism. During
+      execution, every X steps or every T wall-clock seconds (from config, and
+      free to choose because a checkpoint enters no hash and no manifest), the
+      running task writes its full continuation state to a mutable per-run
+      scratch slot (`runs/<run-id>/checkpoint/<chain>`), overwriting the prior
+      write — latest-only, so it costs one state per chain and needs no
+      deletion. The write holds everything required to continue identically to
+      an uninterrupted run: grid state, step index, the counter-based PRNG's
+      counter (one integer), and domain aux. On start a task resumes from its
+      scratch checkpoint if present, else from its segment input; the committed
+      result is identical either way, so this is a local capability inside
+      execution that touches no key, manifest, or work decomposition. Only the
+      final result is held deterministic; checkpoint timing is not.
+      Result/run reclamation: committed segment states and result snapshots do
+      accumulate. A reference-guarded deletion primitive — remove an object
+      only when no live manifest references it; remove a run's exclusive
+      closure — lands when result objects first fill disk (M3.4 at the latest,
+      earlier if M2.2/M2.3 test runs pile objects up), not before. It is the
+      same retention lever P7 (M7.1) formalizes; it arrives early only because
+      disk pressure does.
 
 ## P3 — First model families
 
@@ -266,8 +293,11 @@ machine.
       metadata (population/activity from the result snapshot — inspection aid,
       not a funnel); throughput numbers recorded here. Result snapshots are
       stored in full (re-evaluation and portability require them), so extent ×
-      batch is chosen to a stated disk budget; retention policy deferred to
-      P7. Revisit CAS cost here, where disk volume and write throughput first
+      batch is chosen to a stated disk budget. The retention policy — what is
+      kept and for how long — is deferred to P7, but the reference-guarded
+      deletion primitive it will drive lands here (see M2.3), because this is
+      where object volume first fills disk. Revisit CAS cost here, where disk
+      volume and write throughput first
       bite: measure the cost of re-hashing every object on read and decide
       whether large artifacts get a bulk read that skips verification while
       identity objects stay verified; measure the per-object fsync write cost
@@ -443,13 +473,13 @@ tradeoff (dynamic range and motion smoothness vs bit-exactness) is the open
 decision resolved in M9.2.
 
 Phase acceptance: CPU/GPU bit-equality across an agent-count × field-extent ×
-step-count matrix; a segmented agent-field run (compound state checkpoint)
+step-count matrix; a segmented agent-field run (compound segment state)
 resumed equals an unsegmented run of equal length, bit-exact.
 
 - [ ] M9.1 Agent-field executor kind (`sima-domains`): compound state (agent
       buffer ‖ field grid) serialized as one opaque snapshot object;
-      segmentation composes — the checkpoint is the compound state, the
-      task-key input-state-ref mechanism is unchanged
+      segmentation composes — the segment boundary state is the compound
+      state, the task-key input-state-ref mechanism is unchanged
 - [ ] M9.2 Physarum family: fixed-point agent state, nearest-cell sensing,
       order-independent integer deposit, field diffuse/decay stencil; genome =
       sensor geometry (angles, distance), turn rate, deposit amount,
