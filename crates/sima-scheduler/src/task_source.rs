@@ -1,8 +1,10 @@
 //! The task-source interface: it derives the runnable frontier from
 //! `(config, store state)`.
 
+use sima_contracts::Generator;
 use sima_core::Result;
-use sima_model::{Spec, TaskIdentity, TaskKey};
+use sima_model::{RunConfig, Spec, SpecId, TaskIdentity, TaskKey};
+use sima_store::Store;
 
 /// A runnable task: the resolved candidate and its identity. The spec bytes
 /// travel with the task so the worker builds a [`sima_contracts::TaskInput`]
@@ -39,4 +41,24 @@ pub trait TaskSource {
     /// the run-started report; unlike [`TaskSource::all_keys`], it never
     /// grows.
     fn task_total(&self) -> usize;
+}
+
+/// The construction prologue every task source shares: runs `generator` under
+/// `config` and stores each spec object, returning each spec paired with its
+/// id. The spec object is durable before any task referencing it can commit;
+/// its address is the spec id (both are the blake3 of the spec's canonical
+/// bytes).
+pub(crate) fn generate_specs(
+    generator: &dyn Generator,
+    config: &RunConfig,
+    store: &Store,
+) -> Result<Vec<(Spec, SpecId)>> {
+    let specs = generator.generate(config.root_seed, &config.generator.params, &config.format)?;
+    specs
+        .into_iter()
+        .map(|spec| {
+            let id = SpecId::from_hash(store.put(&spec.to_bytes())?);
+            Ok((spec, id))
+        })
+        .collect()
 }
