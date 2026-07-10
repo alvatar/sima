@@ -10,7 +10,7 @@ use common::{
     lease_expired_count, leased_count, rejected_count, retried_count, run_id, run_into, run_with,
     task_keys, temp_store,
 };
-use sima_contracts::{ExecutionContext, Executor, Outcome, TaskInput};
+use sima_contracts::{Checkpoint, ExecutionContext, Executor, Outcome, TaskInput};
 use sima_core::{Error, Result};
 use sima_domains::{StubBehavior, StubExecutor, StubProgram};
 use sima_model::{FormatId, RunConfig};
@@ -302,10 +302,15 @@ impl Executor for FaultyExecutor {
         &self.format
     }
 
-    fn execute(&self, input: &TaskInput<'_>, ctx: &ExecutionContext) -> Result<Outcome> {
+    fn execute(
+        &self,
+        input: &TaskInput<'_>,
+        ctx: &ExecutionContext,
+        checkpoint: &dyn Checkpoint,
+    ) -> Result<Outcome> {
         let program = StubProgram::from_bytes(&input.spec.bytes)?;
         if matches!(program.behavior, StubBehavior::Succeed) {
-            self.inner.execute(input, ctx)
+            self.inner.execute(input, ctx, checkpoint)
         } else {
             Err(Error::Validation(
                 "injected infrastructure fault".to_string(),

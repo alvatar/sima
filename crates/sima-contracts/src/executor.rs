@@ -3,12 +3,22 @@
 //! An executor is pure compute over one candidate. It receives two disjoint
 //! input groups — [`TaskInput`], the identity-bearing inputs that determine
 //! the task key and the committed artifacts, and [`ExecutionContext`], the
-//! per-attempt facts it may read but must never fold into an artifact — and
-//! returns an [`Outcome`]: committed [`Artifact`]s plus observational
-//! [`Stats`], or a domain [`Outcome::Failed`].
+//! per-attempt facts it may read but must never fold into an artifact — plus
+//! the attempt's [`Checkpoint`] resume channel, and returns an [`Outcome`]:
+//! committed [`Artifact`]s plus observational [`Stats`], or a domain
+//! [`Outcome::Failed`].
 
 use sima_core::Result;
 use sima_model::{EnvironmentId, FormatId, Params, Spec};
+
+use crate::checkpoint::Checkpoint;
+
+/// Artifact name under which a segmented executor commits its continuation
+/// state. The next segment's task carries this artifact's object hash as
+/// `input_state`, so the chain walks committed state hop by hop. A segmented
+/// run over an executor that never commits it is a misconfiguration the
+/// scheduler reports as a validation error.
+pub const STATE_ARTIFACT: &str = "state";
 
 /// Opaque worker label. An executor may read it (e.g. for logging) but must
 /// never let it influence a committed artifact.
@@ -100,7 +110,15 @@ pub trait Executor {
     /// [`Outcome`] for the three arms and their retry semantics. `Err` is
     /// reserved for an infrastructure fault — a structurally invalid spec, a
     /// store fault — never a candidate that merely evaluated badly.
-    fn execute(&self, input: &TaskInput<'_>, ctx: &ExecutionContext) -> Result<Outcome>;
+    ///
+    /// `checkpoint` is the attempt's resume channel — see [`Checkpoint`] for
+    /// the contract. Stateless executors ignore it.
+    fn execute(
+        &self,
+        input: &TaskInput<'_>,
+        ctx: &ExecutionContext,
+        checkpoint: &dyn Checkpoint,
+    ) -> Result<Outcome>;
 }
 
 /// `Executor` is dyn-compatible: it carries no auto-trait supertraits, and

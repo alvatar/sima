@@ -13,7 +13,9 @@
 use std::any::Any;
 use std::sync::mpsc::Sender;
 
-use sima_contracts::{Artifact, ExecutionContext, Executor, Outcome, TaskInput, WorkerId};
+use sima_contracts::{
+    Artifact, ExecutionContext, Executor, NoCheckpoint, Outcome, TaskInput, WorkerId,
+};
 use sima_core::{Error, Hash, Result, to_hex};
 use sima_model::{ArtifactRef, RunConfig, TaskIdentity, TaskKey, TaskRecord};
 use sima_store::Store;
@@ -155,7 +157,7 @@ fn process(ctx: &WorkerContext<'_>, worker: WorkerId, pending: Pending) {
     // panic kills the process instead — a crash the store's recovery
     // guarantee covers, so no correctness contract depends on unwinding.
     let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        ctx.executor.execute(&input, &exec_ctx)
+        ctx.executor.execute(&input, &exec_ctx, &NoCheckpoint)
     }));
     // `input` (and its borrow of `spec`) is unused past this point, so the
     // retry path below is free to move `spec` back into a re-enqueued task.
@@ -420,6 +422,7 @@ mod tests {
                 attempt: 0,
                 worker: WorkerId(0),
             },
+            &NoCheckpoint,
         )? {
             Outcome::Completed { artifacts, .. } => {
                 artifacts.into_iter().next().expect("one artifact").bytes

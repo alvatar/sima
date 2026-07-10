@@ -16,7 +16,7 @@ use sima_core::{Enc, Error, Hash, Result, hash_bytes};
 use sima_model::FormatId;
 
 use super::program::{StubBehavior, StubProgram};
-use sima_contracts::{Artifact, ExecutionContext, Executor, Outcome, Stats, TaskInput};
+use sima_contracts::{Artifact, Checkpoint, ExecutionContext, Executor, Outcome, Stats, TaskInput};
 
 /// Evaluates a candidate carrying a [`StubProgram`], under format `stub.v1`.
 #[derive(Debug, Clone)]
@@ -38,7 +38,12 @@ impl Executor for StubExecutor {
         &self.format
     }
 
-    fn execute(&self, input: &TaskInput<'_>, ctx: &ExecutionContext) -> Result<Outcome> {
+    fn execute(
+        &self,
+        input: &TaskInput<'_>,
+        ctx: &ExecutionContext,
+        _checkpoint: &dyn Checkpoint,
+    ) -> Result<Outcome> {
         // A spec whose bytes are not a valid program is a structural input
         // fault, not a candidate failure: it is `Err`, not `Outcome::Failed`.
         let program = StubProgram::from_bytes(&input.spec.bytes)
@@ -115,7 +120,7 @@ fn stats(ctx: &ExecutionContext) -> Stats {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sima_contracts::WorkerId;
+    use sima_contracts::{NoCheckpoint, WorkerId};
     use sima_model::{EnvironmentId, Params, Spec};
 
     fn spec_for(behavior: StubBehavior, nonce: u64) -> Result<Spec> {
@@ -168,7 +173,7 @@ mod tests {
             environment: env(),
             input_state: None,
         };
-        let outcome = exec.execute(&input, &ctx(0, 0))?;
+        let outcome = exec.execute(&input, &ctx(0, 0), &NoCheckpoint)?;
         let artifact = artifact(&outcome);
         assert_eq!(artifact.name, "output");
         assert_eq!(artifact.bytes.len(), Hash::LEN);
@@ -190,7 +195,7 @@ mod tests {
         let mut artifacts = Vec::new();
         let mut stats_by_attempt = Vec::new();
         for (attempt, worker) in [(0u32, 0u64), (1, 1), (5, 99)] {
-            let outcome = exec.execute(&input, &ctx(attempt, worker))?;
+            let outcome = exec.execute(&input, &ctx(attempt, worker), &NoCheckpoint)?;
             match outcome {
                 Outcome::Completed {
                     artifacts: a,
@@ -230,7 +235,7 @@ mod tests {
         };
         for attempt in [0u32, 1, 2] {
             assert!(matches!(
-                exec.execute(&input, &ctx(attempt, 0))?,
+                exec.execute(&input, &ctx(attempt, 0), &NoCheckpoint)?,
                 Outcome::Failed { .. }
             ));
         }
@@ -249,8 +254,8 @@ mod tests {
             environment: env(),
             input_state: None,
         };
-        let at_three = exec.execute(&input, &ctx(3, 0))?;
-        let at_four = exec.execute(&input, &ctx(4, 7))?;
+        let at_three = exec.execute(&input, &ctx(3, 0), &NoCheckpoint)?;
+        let at_four = exec.execute(&input, &ctx(4, 7), &NoCheckpoint)?;
         // The eventual artifact does not depend on which attempt reached it.
         assert_eq!(artifact(&at_three), artifact(&at_four));
         Ok(())
@@ -269,7 +274,7 @@ mod tests {
             input_state: None,
         };
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            exec.execute(&input, &ctx(0, 0))
+            exec.execute(&input, &ctx(0, 0), &NoCheckpoint)
         }));
         assert!(result.is_err());
         Ok(())
@@ -288,7 +293,7 @@ mod tests {
             input_state: None,
         };
         assert!(matches!(
-            exec.execute(&input, &ctx(0, 0))?,
+            exec.execute(&input, &ctx(0, 0), &NoCheckpoint)?,
             Outcome::Completed { .. }
         ));
         Ok(())
@@ -306,7 +311,7 @@ mod tests {
             environment: env(),
             input_state: None,
         };
-        match exec.execute(&input, &ctx(2, 0))? {
+        match exec.execute(&input, &ctx(2, 0), &NoCheckpoint)? {
             Outcome::Rejected { reason, stats } => {
                 assert_eq!(reason, "programmed rejection");
                 // The stub folds the attempt into the observational stats.
@@ -332,8 +337,8 @@ mod tests {
         // A transient failure still reports stats, and they carry the attempt,
         // so successive attempts differ.
         let (first, second) = match (
-            exec.execute(&input, &ctx(0, 0))?,
-            exec.execute(&input, &ctx(1, 0))?,
+            exec.execute(&input, &ctx(0, 0), &NoCheckpoint)?,
+            exec.execute(&input, &ctx(1, 0), &NoCheckpoint)?,
         ) {
             (Outcome::Failed { stats: a, .. }, Outcome::Failed { stats: b, .. }) => (a, b),
             other => panic!("expected two Failed outcomes, got {other:?}"),
@@ -355,15 +360,15 @@ mod tests {
             environment: env(),
             input_state: state,
         };
-        let none = exec.execute(&make(None), &ctx(0, 0))?;
-        let a = exec.execute(&make(Some(&[1, 2, 3])), &ctx(0, 0))?;
-        let b = exec.execute(&make(Some(&[4, 5, 6])), &ctx(0, 0))?;
+        let none = exec.execute(&make(None), &ctx(0, 0), &NoCheckpoint)?;
+        let a = exec.execute(&make(Some(&[1, 2, 3])), &ctx(0, 0), &NoCheckpoint)?;
+        let b = exec.execute(&make(Some(&[4, 5, 6])), &ctx(0, 0), &NoCheckpoint)?;
         // Three distinct input states yield three distinct artifacts.
         assert_ne!(artifact(&none), artifact(&a));
         assert_ne!(artifact(&none), artifact(&b));
         assert_ne!(artifact(&a), artifact(&b));
         // The same input state reproduces the same artifact.
-        let a_again = exec.execute(&make(Some(&[1, 2, 3])), &ctx(9, 3))?;
+        let a_again = exec.execute(&make(Some(&[1, 2, 3])), &ctx(9, 3), &NoCheckpoint)?;
         assert_eq!(artifact(&a), artifact(&a_again));
         Ok(())
     }
@@ -382,6 +387,7 @@ mod tests {
                 input_state: None,
             },
             &ctx(0, 0),
+            &NoCheckpoint,
         )?;
 
         // Varying the spec (a different nonce mints a different spec id).
@@ -395,6 +401,7 @@ mod tests {
                 input_state: None,
             },
             &ctx(0, 0),
+            &NoCheckpoint,
         )?;
         assert_ne!(artifact(&base), artifact(&vary_spec));
 
@@ -409,6 +416,7 @@ mod tests {
                 input_state: None,
             },
             &ctx(0, 0),
+            &NoCheckpoint,
         )?;
         assert_ne!(artifact(&base), artifact(&vary_params));
 
@@ -422,6 +430,7 @@ mod tests {
                 input_state: None,
             },
             &ctx(0, 0),
+            &NoCheckpoint,
         )?;
         assert_ne!(artifact(&base), artifact(&vary_seed));
 
@@ -435,6 +444,7 @@ mod tests {
                 input_state: None,
             },
             &ctx(0, 0),
+            &NoCheckpoint,
         )?;
         assert_ne!(artifact(&base), artifact(&vary_env));
         Ok(())
@@ -457,7 +467,7 @@ mod tests {
                 input_state: None,
             };
             assert!(matches!(
-                exec.execute(&input, &ctx(0, 0)),
+                exec.execute(&input, &ctx(0, 0), &NoCheckpoint),
                 Err(Error::Validation(_))
             ));
         }
