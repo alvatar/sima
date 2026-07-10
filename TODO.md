@@ -301,7 +301,16 @@ machine.
       bite: measure the cost of re-hashing every object on read and decide
       whether large artifacts get a bulk read that skips verification while
       identity objects stay verified; measure the per-object fsync write cost
-      and weigh batching many objects behind one group-commit fsync
+      and weigh batching many objects behind one group-commit fsync.
+      Step-count checkpoint cadence lands here too: `[execution]` gains
+      optional `checkpoint_interval_steps = N` — the worker's checkpoint
+      handle saves on every Nth offer since the last save (an offer is a
+      domain step boundary, so with a domain offering per step this is
+      "every N steps"), unioned with the wall-clock interval (either due →
+      save; either knob present enables checkpointing). M2.3(b) specified
+      both cadence axes; M2.3 landed the wall-clock axis only, and this is
+      where cadence tuning first meets measured GPU throughput and real
+      state sizes
 
 ## P4 — Distribution
 
