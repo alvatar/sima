@@ -138,6 +138,17 @@ mod tests {
     }
 
     #[test]
+    fn a_degraded_checkpoint_renders_a_line() {
+        let event = LifecycleEvent::CheckpointDegraded {
+            task: "ab".repeat(32),
+            error: "checkpoint dir is unwritable".to_string(),
+        };
+        let line = describe(&event, 0, 0).expect("a degraded checkpoint warrants a line");
+        assert!(line.contains("checkpoint degraded"), "{line}");
+        assert!(line.contains("unwritable"), "{line}");
+    }
+
+    #[test]
     fn the_status_block_names_every_field() {
         let status = RunStatus {
             run: sima_model::RunId::from_hash(sima_core::hash_bytes(b"a run to render")),

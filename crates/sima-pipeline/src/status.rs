@@ -331,6 +331,21 @@ mod tests {
     }
 
     #[test]
+    fn checkpoint_degradation_counts_and_keeps_the_lease() {
+        let mut status = RunStatus::new(run_id());
+        status.apply(&started(1));
+        status.apply(&leased("aa", 0, 0));
+        status.apply(&LifecycleEvent::CheckpointDegraded {
+            task: "aa".to_string(),
+            error: "checkpoint dir is unwritable".to_string(),
+        });
+        assert_eq!(status.checkpoint_degraded, 1);
+        // The attempt continues: the worker still holds its lease.
+        assert_eq!(status.occupancy.get(&0), Some(&occupancy("aa", 0)));
+        assert!(matches!(status.state, RunState::InProgress));
+    }
+
+    #[test]
     fn lease_expiry_counts_and_keeps_the_lease() {
         let mut status = RunStatus::new(run_id());
         status.apply(&started(1));

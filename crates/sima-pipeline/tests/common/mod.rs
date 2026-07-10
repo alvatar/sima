@@ -45,6 +45,14 @@ pub fn loaded(dir: &Path, behaviors: &str, workers: u32) -> Result<LoadedConfig>
     loaded_with(dir, "sima.toml", behaviors, workers, "./store")
 }
 
+/// Writes `text` as a config file named `name` under `dir` and loads it —
+/// for suites whose configs need keys beyond [`loaded_with`]'s shape.
+pub fn loaded_text(dir: &Path, name: &str, text: &str) -> Result<LoadedConfig> {
+    let path: PathBuf = dir.join(name);
+    std::fs::write(&path, text).expect("write config");
+    load(&path)
+}
+
 /// The typed journal of `config`'s run in its store.
 pub fn journal_events(config: &LoadedConfig) -> Vec<LifecycleEvent> {
     let store = Store::open(&config.store).expect("open store");
