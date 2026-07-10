@@ -15,6 +15,10 @@ pub struct RunnableTask {
     pub spec: Spec,
     /// The identity whose evaluation this task commits.
     pub identity: TaskIdentity,
+    /// The chain this task belongs to, when a chain source derived it; the
+    /// worker keys the run's checkpoint slot by it. Stateless tasks carry
+    /// `None` and get no slot.
+    pub chain: Option<u64>,
 }
 
 /// Derives the currently-runnable tasks of a run from `(config, store state)`.

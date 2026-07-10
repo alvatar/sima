@@ -55,7 +55,11 @@ impl StaticBatch {
             // An existence check, not a read: resuming a mostly-complete run
             // must not decode every committed record to answer a boolean.
             if !store.has_record(&key)? {
-                runnable.push(RunnableTask { spec, identity });
+                runnable.push(RunnableTask {
+                    spec,
+                    identity,
+                    chain: None,
+                });
             }
         }
         Ok(StaticBatch {

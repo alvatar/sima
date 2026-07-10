@@ -112,7 +112,11 @@ impl Drop for PanicGuard<'_> {
 fn process(ctx: &WorkerContext<'_>, worker: WorkerId, pending: Pending) {
     let key = pending.key;
     let attempt = pending.attempt;
-    let RunnableTask { spec, identity } = pending.task;
+    let RunnableTask {
+        spec,
+        identity,
+        chain,
+    } = pending.task;
     let task = key.to_string();
     emit(
         &ctx.events,
@@ -195,10 +199,15 @@ fn process(ctx: &WorkerContext<'_>, worker: WorkerId, pending: Pending) {
                 },
             );
             if attempt + 1 < ctx.exec.max_attempts {
-                if ctx
-                    .coordinator
-                    .requeue(key, RunnableTask { spec, identity }, attempt + 1)
-                {
+                if ctx.coordinator.requeue(
+                    key,
+                    RunnableTask {
+                        spec,
+                        identity,
+                        chain,
+                    },
+                    attempt + 1,
+                ) {
                     emit(
                         &ctx.events,
                         LifecycleEvent::Retried {
@@ -446,6 +455,7 @@ mod tests {
                 task: RunnableTask {
                     spec: spec.clone(),
                     identity,
+                    chain: None,
                 },
                 attempt: 0,
             };

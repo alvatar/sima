@@ -26,6 +26,7 @@ use crate::control::RunControl;
 use crate::coordinator::{Coordinator, Failure, Pending, RunState, Shared};
 use crate::event::LifecycleEvent;
 use crate::journal_sink::{JournalSink, emit};
+use crate::segment_chain::SegmentChain;
 use crate::static_batch::StaticBatch;
 use crate::task_source::{RunnableTask, TaskSource};
 use crate::watchdog::watchdog_loop;
@@ -85,7 +86,13 @@ pub fn run(
     store.put(&config.params.to_bytes())?;
     store.put(&environment.to_bytes())?;
 
-    let mut source = StaticBatch::new(generator, config, environment, store)?;
+    // The work-division quantity selects the source: a segment count means
+    // per-candidate chains walked through committed state, its absence one
+    // stateless task per candidate.
+    let mut source: Box<dyn TaskSource + '_> = match config.segments {
+        Some(_) => Box::new(SegmentChain::new(generator, config, environment, store)?),
+        None => Box::new(StaticBatch::new(generator, config, environment, store)?),
+    };
     let writer = store.journal_writer(&run)?;
     let coordinator = Coordinator::new();
     let coordinator = &coordinator;
@@ -122,7 +129,7 @@ pub fn run(
                 let events = events.clone();
                 pool.spawn(move || watchdog_loop(coordinator, exec.attempt_timeout, &events));
             }
-            drive(coordinator, &mut source, &events, control)
+            drive(coordinator, source.as_mut(), &events, control)
         });
 
         // Whatever the pool returned, decide the outcome, then always flush
@@ -447,7 +454,11 @@ mod tests {
             environment: EnvironmentId::from_hash(hash_bytes(b"unit-test environment")),
             input_state: None,
         };
-        RunnableTask { spec, identity }
+        RunnableTask {
+            spec,
+            identity,
+            chain: None,
+        }
     }
 
     /// A throwaway task key.
