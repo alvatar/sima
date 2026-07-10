@@ -139,7 +139,8 @@ impl Checkpoint for SlotCheckpoint<'_> {
         if self.last_saved.get().elapsed() < self.interval {
             return;
         }
-        // The clock resets on failure too, so a persistently failing slot
+        // The clock resets before the save is attempted — chosen over
+        // retrying at the next offer, so a persistently failing slot
         // degrades once per interval instead of once per offer.
         self.last_saved.set(Instant::now());
         if let Err(e) = self
@@ -197,16 +198,21 @@ fn process(ctx: &WorkerContext<'_>, worker: WorkerId, pending: Pending) {
         None => None,
     };
 
-    // A chain task under an enabled interval gets the slot-backed handle,
-    // loading whatever the slot holds for this key — a slot that is missing,
-    // torn, or keyed to another segment loads as nothing. Stateless tasks and
-    // disabled checkpointing get the inert handle, and the slot is never read.
+    // Select the attempt's checkpoint handle. The run keeps one checkpoint
+    // slot per chain — mutable scratch storage for the continuation state a
+    // running segment offers. A chain task under an enabled interval gets
+    // the handle that reads and writes its chain's slot, loading whatever
+    // the slot holds for this key — a slot that is missing, torn, or keyed
+    // to another segment loads as nothing. Stateless tasks and disabled
+    // checkpointing get the inert handle, and the slot is never read.
     let slot_checkpoint = match chain {
         Some(slot) if ctx.exec.checkpoint_interval != Duration::MAX => {
             let resume = match ctx.store.checkpoint(&ctx.run, slot, &key) {
                 Ok(resume) => resume,
                 Err(e) => {
-                    // A load failure costs the resume, never the attempt.
+                    // A checkpoint is disposable, so a load failure degrades
+                    // to a fresh start — chosen over faulting the attempt:
+                    // the resume is lost, the task still runs.
                     emit(
                         &ctx.events,
                         LifecycleEvent::CheckpointDegraded {
