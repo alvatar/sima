@@ -7,11 +7,7 @@
 //! carries no input state; segment j+1's input state is the object hash of
 //! segment j's committed `state` artifact, so the chain walks committed
 //! state hop by hop and the frontier is derived from `(config, store
-//! state)` — resume is the same construction. Identities are
-//! content-addressed, so a state fixed point (or cycle) makes later
-//! segments reuse earlier keys: the walk stays bounded by the segment
-//! count, already-committed successors advance instantly, and the key set
-//! deduplicates.
+//! state)` — resume is the same construction.
 
 use std::collections::HashSet;
 
@@ -46,7 +42,11 @@ impl KeySet {
     }
 }
 
-/// One candidate's chain: the constant identity parts and the walk position.
+/// One candidate's chain: the candidate's evaluation divided into a fixed
+/// number of segments, each a task taking the previous segment's committed
+/// state as input (segment 0 takes none). At most one segment is
+/// runnable at a time, the frontier, so the struct is a cursor: the
+/// identity parts constant across the chain plus the walk position.
 struct Chain {
     /// The candidate every segment of this chain evaluates.
     spec: Spec,
@@ -68,8 +68,7 @@ impl Chain {
     /// segments remain, read the committed record's `state` artifact and
     /// derive the successor identity, collecting each new key. Runs once at
     /// construction (resume) and again whenever a handed-out segment may
-    /// have committed. A committed segment without the state artifact is the
-    /// misconfiguration signal for a segmented run over a stateless domain.
+    /// have committed.
     fn advance(
         &mut self,
         store: &Store,
@@ -78,11 +77,20 @@ impl Chain {
         segments: u64,
         keys: &mut KeySet,
     ) -> Result<()> {
+        // Identities are content-addressed, so a state fixed point (or
+        // cycle) makes a successor reuse an earlier key. The loop needs no
+        // special case for that: the store answers the repeated key
+        // immediately, `committed` still counts every hop up to `segments`,
+        // and `keys` deduplicates.
         while let Some(identity) = &self.frontier {
             let key = identity.key();
             let Some(record) = store.record(&key)? else {
                 break;
             };
+            // A committed segment without the state artifact means the run's
+            // domain carries no continuation state: a segmented run over a
+            // stateless domain is a misconfiguration, reported as a
+            // validation error.
             let state = record
                 .artifacts()
                 .iter()
@@ -113,8 +121,14 @@ impl Chain {
     }
 }
 
-/// A task source over per-candidate segment chains, selected by the driver
-/// when the run config carries a segment count.
+/// The task source over all of a run's chains, selected by the driver when
+/// the run config carries a segment count. Where a `Chain` is one
+/// candidate's cursor through its segments, `SegmentChain` holds every
+/// chain and derives the run's frontier from their positions. It borrows
+/// the store because advancing a chain means reading its committed records:
+/// the frontier depends on store state for the run's whole life, where
+/// [`StaticBatch`](crate::StaticBatch) reads the store at construction
+/// only.
 pub struct SegmentChain<'a> {
     store: &'a Store,
     params: ParamsId,
