@@ -1,17 +1,17 @@
-//! End-to-end check of the stencil path: the GPU harness advancing a grid with
+//! End-to-end check of the cellular path: the GPU harness advancing a grid with
 //! the neighborhood-max kernel produces byte-identical results to the CPU
 //! reference over several steps, on a real device.
 
 mod common;
 
-use sima_domains::stencil::{Grid, StencilRule};
+use sima_domains::cellular::{CellularRule, Grid};
 use sima_toolkit_wgsl::Context;
 
 /// The CPU reference matching `shaders/smoke.wgsl`: a 5-point neighborhood max
 /// with toroidal boundaries, each channel reduced independently.
 struct SmokeMax;
 
-impl StencilRule for SmokeMax {
+impl CellularRule for SmokeMax {
     fn step(&self, input: &Grid, output: &mut Grid) {
         let width = input.width() as usize;
         let height = input.height() as usize;

@@ -1,15 +1,15 @@
-//! [`StencilRule`]: the CPU-reference contract a stencil family implements.
+//! [`CellularRule`]: the CPU-reference contract a cellular family implements.
 
-use crate::stencil::Grid;
+use crate::cellular::Grid;
 
-/// A synchronous stencil update: one step maps a whole input grid to a whole
+/// A synchronous cellular update: one step maps a whole input grid to a whole
 /// output grid, each output cell a pure function of a neighborhood of the
 /// input.
 ///
-/// Implementors are the CPU reference a stencil family's GPU kernel is
+/// Implementors are the CPU reference a cellular family's GPU kernel is
 /// cross-checked against: the reference and the kernel compute the same step,
 /// and their resulting grids are compared for the family.
-pub trait StencilRule {
+pub trait CellularRule {
     /// Computes one step from `input` into `output`. The two grids share
     /// `input`'s dimensions; the step overwrites every cell of `output`.
     fn step(&self, input: &Grid, output: &mut Grid);
@@ -25,7 +25,7 @@ mod tests {
     /// cell-local map.
     struct RightMax;
 
-    impl StencilRule for RightMax {
+    impl CellularRule for RightMax {
         fn step(&self, input: &Grid, output: &mut Grid) {
             let width = input.width() as usize;
             let height = input.height() as usize;

@@ -1,9 +1,9 @@
-// Exercises the stencil compute path: a 5-point neighborhood max over a
+// Exercises the cellular compute path: a 5-point neighborhood max over a
 // multi-channel grid with toroidal (wrap-around) boundaries. For each cell and
 // each channel independently, the output is the maximum of that channel over
 // the cell and its four axis neighbors, indices wrapping modulo width/height.
 //
-// Bindings follow the stencil-kind convention: binding 0 the input grid,
+// Bindings follow the cellular-kind convention: binding 0 the input grid,
 // binding 1 the output grid, binding 2 the dimensions [width, height,
 // channels]. One invocation per cell along x; the bounds guard lets the launch
 // round the workgroup count up past the cell count. A cell loops its channels.

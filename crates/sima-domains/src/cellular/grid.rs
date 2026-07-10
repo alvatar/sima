@@ -1,12 +1,12 @@
-//! [`Grid`]: the 2D multi-channel `f32` state of the stencil kind.
+//! [`Grid`]: the 2D multi-channel `f32` state of the cellular kind.
 
 use sima_core::{Dec, Enc, Error, Hash, Result, hash_bytes};
 
 /// Canonical format tag for a serialized [`Grid`], written first in its bytes
 /// so a decoder rejects any other object outright.
-const GRID_TAG: &str = "sima.stencil.grid.v1";
+const GRID_TAG: &str = "sima.cellular.grid.v1";
 
-/// A 2D, multi-channel `f32` grid: the state a stencil update advances.
+/// A 2D, multi-channel `f32` grid: the state a cellular update advances.
 ///
 /// The payload is cell-major interleaved. For extent `(width, height)` and
 /// `channels` channels, channel `c` of the cell at `(x, y)` sits at index
@@ -151,13 +151,13 @@ mod tests {
     /// The canonical bytes for [`sample`], derived by hand from the format:
     /// tag (u64 length prefix + UTF-8), three u32 dimensions, then four
     /// little-endian f32. Independently reproduced with Python `struct`.
-    const SAMPLE_BYTES_HEX: &str = "140000000000000073696d612e7374656e63696c2e677269642e763102000000\
-01000000020000000000c03f000000c00000803e00008044";
+    const SAMPLE_BYTES_HEX: &str = "150000000000000073696d612e63656c6c756c61722e677269642e7631020000\
+0001000000020000000000c03f000000c00000803e00008044";
 
     /// blake3 of `SAMPLE_BYTES_HEX`, computed independently with the Python
     /// `blake3` package: `blake3.blake3(bytes.fromhex(...)).hexdigest()`.
     const SAMPLE_CONTENT_ID_HEX: &str =
-        "6b3627fd3e606e7c44cc619d1ae3ef9a210759b32f71920cb17689ac8e37f520";
+        "4bcece3cf89b7c946acac80ea79b849f921ef4c94c8e12ee3054679788317a22";
 
     #[test]
     fn new_rejects_a_zero_dimension() {
@@ -217,7 +217,7 @@ mod tests {
     #[test]
     fn from_bytes_rejects_a_wrong_tag() {
         let mut enc = Enc::new();
-        enc.str("sima.stencil.grid.v2")
+        enc.str("sima.cellular.grid.v2")
             .u32(1)
             .u32(1)
             .u32(1)

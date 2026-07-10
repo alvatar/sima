@@ -3,14 +3,14 @@
 use sima_core::Result;
 use sima_toolkit_wgsl::{Buffer, Context, Kernel};
 
-use crate::stencil::Grid;
+use crate::cellular::Grid;
 
 /// Advances `initial` by `steps` double-buffered dispatches of `kernel`,
 /// returning the resulting grid.
 ///
 /// Each step dispatches `kernel` over the whole grid with one invocation per
 /// cell, ping-ponging between two device buffers. The bindings follow the
-/// stencil-kind convention: binding 0 the input grid, binding 1 the output
+/// cellular-kind convention: binding 0 the input grid, binding 1 the output
 /// grid, binding 2 the dimensions `[width, height, channels]`, and bindings
 /// 3+ the `params` storage buffers in order (empty for a parameterless
 /// kernel). The dimensions and params buffers are bound unchanged every step
@@ -79,7 +79,7 @@ mod tests {
     use super::*;
 
     /// The neighborhood-max kernel that exercises the path. Its bindings and
-    /// dispatch match the stencil-kind convention the harness encodes.
+    /// dispatch match the cellular-kind convention the harness encodes.
     const SMOKE_WGSL: &str = include_str!("../../shaders/smoke.wgsl");
 
     /// Builds a context and compiles the smoke kernel, or panics with context.

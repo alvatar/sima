@@ -1,4 +1,4 @@
-//! The stencil kind: multi-channel `f32` grid state advanced by a WGSL update
+//! The cellular kind: multi-channel `f32` grid state advanced by a WGSL update
 //! kernel dispatched over it, with a CPU reference the GPU path cross-checks
 //! against.
 //!
@@ -13,5 +13,5 @@ mod reference;
 mod step;
 
 pub use grid::Grid;
-pub use reference::StencilRule;
+pub use reference::CellularRule;
 pub use step::run;

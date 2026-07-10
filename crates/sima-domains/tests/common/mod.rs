@@ -1,18 +1,18 @@
 //! Shared support for the sima-domains integration tests.
 
-use sima_domains::stencil::{Grid, StencilRule, run};
+use sima_domains::cellular::{CellularRule, Grid, run};
 use sima_toolkit_wgsl::{Context, Kernel};
 
 /// Advances `initial` by `steps` both ways — through the CPU `rule` and through
 /// the GPU harness with `kernel` — and asserts the two grids are byte-identical.
 ///
-/// A stencil family uses this to confirm its WGSL kernel matches its CPU
+/// A cellular family uses this to confirm its WGSL kernel matches its CPU
 /// reference: the reference and the kernel compute the same step, so their
 /// resulting grids must agree byte for byte.
 pub fn cross_check(
     context: &Context,
     kernel: &Kernel,
-    rule: &impl StencilRule,
+    rule: &impl CellularRule,
     initial: &Grid,
     steps: u32,
 ) {
