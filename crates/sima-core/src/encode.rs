@@ -6,7 +6,8 @@
 //! natural width, `i64` two's-complement little-endian, bytes and str framed
 //! by a `u64` little-endian length prefix (str is its UTF-8 bytes), `Hash`
 //! as its 32 raw digest bytes, `Option<Hash>` as a present-flag byte of value
-//! zero or one followed by the digest when present, `f32` as its IEEE-754
+//! zero or one followed by the digest when present, `Option<u64>` as the same
+//! present-flag byte followed by the little-endian value, `f32` as its IEEE-754
 //! bits in a little-endian `u32`, and an `f32` slice as those elements written
 //! back to back with no length prefix (the count is fixed by surrounding
 //! context).
@@ -107,6 +108,14 @@ impl Enc {
         match v {
             None => self.u8(0),
             Some(h) => self.u8(1).hash(h),
+        }
+    }
+
+    /// Writes a present-flag byte, then the `u64` little-endian when present.
+    pub fn opt_u64(&mut self, v: Option<u64>) -> &mut Self {
+        match v {
+            None => self.u8(0),
+            Some(n) => self.u8(1).u64(n),
         }
     }
 }
@@ -235,6 +244,18 @@ impl<'a> Dec<'a> {
         }
     }
 
+    /// Reads a present-flag byte (0 or 1), then the little-endian `u64` when
+    /// present.
+    pub fn opt_u64(&mut self) -> Result<Option<u64>> {
+        match self.u8()? {
+            0 => Ok(None),
+            1 => Ok(Some(self.u64()?)),
+            flag => Err(Error::Encoding(format!(
+                "invalid Option<u64> flag byte {flag}, expected 0 or 1"
+            ))),
+        }
+    }
+
     /// Ends decoding, rejecting trailing bytes.
     pub fn finish(self) -> Result<()> {
         let trailing = self.input.len() - self.pos;
@@ -273,7 +294,9 @@ mod tests {
             .str("hi")
             .hash(&h1)
             .opt_hash(None)
-            .opt_hash(Some(&h2));
+            .opt_hash(Some(&h2))
+            .opt_u64(None)
+            .opt_u64(Some(0x1011_1213_1415_1617));
         Ok(enc.finish())
     }
 
@@ -292,6 +315,8 @@ mod tests {
         assert_eq!(dec.hash()?, sample_hash("11")?);
         assert_eq!(dec.opt_hash()?, None);
         assert_eq!(dec.opt_hash()?, Some(sample_hash("22")?));
+        assert_eq!(dec.opt_u64()?, None);
+        assert_eq!(dec.opt_u64()?, Some(0x1011_1213_1415_1617));
         dec.finish()
     }
 
@@ -312,6 +337,8 @@ mod tests {
             &"11".repeat(Hash::LEN),                  // hash digest
             "00",                                     // Option<Hash> absent
             &format!("01{}", "22".repeat(Hash::LEN)), // Option<Hash> present
+            "00",                                     // Option<u64> absent
+            "011716151413121110",                     // Option<u64> present: flag + u64 LE
         ]
         .concat();
         assert_eq!(to_hex(&composite()?), expected);
@@ -392,6 +419,11 @@ mod tests {
         assert!(matches!(Dec::new(&[0; 31]).hash(), Err(Error::Encoding(_))));
         // Present-flag says a digest follows, but input ends.
         assert!(matches!(Dec::new(&[1]).opt_hash(), Err(Error::Encoding(_))));
+        // Present-flag says a u64 follows, but input ends.
+        assert!(matches!(
+            Dec::new(&[1; 8]).opt_u64(),
+            Err(Error::Encoding(_))
+        ));
         // Length prefix itself truncated.
         assert!(matches!(
             Dec::new(&[2, 0, 0]).bytes(),
@@ -423,6 +455,13 @@ mod tests {
         // Flag byte 2 followed by a full digest's worth of bytes.
         let buf = [2u8; 1 + Hash::LEN];
         assert!(matches!(Dec::new(&buf).opt_hash(), Err(Error::Encoding(_))));
+    }
+
+    #[test]
+    fn opt_u64_rejects_invalid_flag() {
+        // Flag byte 2 followed by a full u64's worth of bytes.
+        let buf = [2u8; 9];
+        assert!(matches!(Dec::new(&buf).opt_u64(), Err(Error::Encoding(_))));
     }
 
     #[test]
