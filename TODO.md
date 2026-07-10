@@ -26,7 +26,7 @@ workload shape: huge grids, 3D included — a single simulation can saturate a
 GPU; small grids are supported via within-launch batching (P8), never the
 design driver. Families divide by executor kind — the compute shape their
 engine has:
-- Stencil/convolution kind: double-buffered grid state (extent × channels ×
+- Cellular kind: double-buffered grid state (extent × channels ×
   dtype); each output cell is a function of a neighborhood of the input grid.
   Covers reaction-diffusion, Lenia, and Neural CA (float, N channels — P3),
   with Flow-Lenia and cross-substrate rigor in P8.

@@ -306,13 +306,13 @@ which attempt reached it. The pipeline reaches this domain through the id
 dispatch and the scheduler tests through a dev-dependency; the shipped
 scheduler library never depends on `sima-domains`.
 
-### The stencil kind
+### The cellular kind
 
 The float families — reaction-diffusion, Neural CA, Lenia — share one executor
-kind, the **stencil/convolution kind**: a multi-channel float grid advanced by
+kind, the **cellular kind**: a multi-channel float grid advanced by
 a WGSL update kernel dispatched over it, each output cell a function of a
 neighborhood of the input. Its state, dispatch harness, and cross-check
-scaffold live once in the `stencil` module; a family supplies the update
+scaffold live once in the `cellular` module; a family supplies the update
 kernel, the genome, and the CPU reference, differing in those and the channel
 count, not in the state shape or the harness.
 
@@ -350,7 +350,7 @@ cell index against the cell count, and loops its channels internally. The
 harness ping-pongs bindings 0 and 1 each step and holds the dimensions and
 parameters fixed.
 
-**CPU reference and cross-check.** `StencilRule` is the CPU reference a family's
+**CPU reference and cross-check.** `CellularRule` is the CPU reference a family's
 kernel is checked against: one step maps a whole input grid to a whole output
 grid. A family confirms its kernel by advancing the same initial grid through
 the reference and through the harness for equal step counts and comparing the
