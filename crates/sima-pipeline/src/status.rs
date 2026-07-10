@@ -32,6 +32,8 @@ pub struct RunStatus {
     pub faulted: usize,
     /// Lease-expiry reports across the whole journal.
     pub lease_expired: usize,
+    /// Degraded checkpoint saves or loads across the whole journal.
+    pub checkpoint_degraded: usize,
     /// The run's current state.
     pub state: RunState,
     /// Workers currently holding a lease: worker id → the task it leased and
@@ -84,6 +86,7 @@ impl RunStatus {
             rejected: 0,
             faulted: 0,
             lease_expired: 0,
+            checkpoint_degraded: 0,
             state: RunState::InProgress,
             occupancy: BTreeMap::new(),
         }
@@ -138,6 +141,11 @@ impl RunStatus {
                 // Detection only, no preemption: the lease stands, so
                 // occupancy is untouched.
                 self.lease_expired += 1;
+            }
+            LifecycleEvent::CheckpointDegraded { .. } => {
+                // An optimization failed; the attempt's result is unaffected,
+                // so only the counter moves.
+                self.checkpoint_degraded += 1;
             }
             LifecycleEvent::RunFinalized { .. } => {
                 self.state = RunState::Finalized;

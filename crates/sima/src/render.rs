@@ -41,6 +41,9 @@ pub fn describe(event: &LifecycleEvent, committed: usize, tasks: usize) -> Optio
         LifecycleEvent::LeaseExpired {
             task, elapsed_ms, ..
         } => format!("lease expired {} ({elapsed_ms} ms)", short(task)),
+        LifecycleEvent::CheckpointDegraded { task, error } => {
+            format!("checkpoint degraded {}: {error}", short(task))
+        }
         LifecycleEvent::RunFinalized { committed, .. } => {
             format!("finalized: {committed} tasks committed")
         }
@@ -111,7 +114,8 @@ pub fn status_block(status: &RunStatus) -> String {
          retried        {}\n\
          rejected       {}\n\
          faulted        {}\n\
-         lease expired  {}",
+         lease expired  {}\n\
+         ckpt degraded  {}",
         status.run,
         status.tasks,
         status.committed,
@@ -119,6 +123,7 @@ pub fn status_block(status: &RunStatus) -> String {
         status.rejected,
         status.faulted,
         status.lease_expired,
+        status.checkpoint_degraded,
     )
 }
 
@@ -142,6 +147,7 @@ mod tests {
             rejected: 0,
             faulted: 0,
             lease_expired: 0,
+            checkpoint_degraded: 0,
             state: RunState::InProgress,
             occupancy: std::collections::BTreeMap::new(),
         };
@@ -155,6 +161,7 @@ mod tests {
             "rejected",
             "faulted",
             "lease expired",
+            "ckpt degraded",
         ] {
             assert!(block.contains(field), "missing {field}: {block}");
         }

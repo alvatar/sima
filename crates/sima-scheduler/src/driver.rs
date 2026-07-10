@@ -118,6 +118,7 @@ pub fn run(
                 let ctx = WorkerContext {
                     coordinator,
                     store,
+                    run,
                     config,
                     executor,
                     exec,

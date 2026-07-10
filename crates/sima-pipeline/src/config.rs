@@ -140,6 +140,7 @@ pub fn load(path: &Path) -> Result<LoadedConfig> {
         file.execution.workers,
         file.execution.max_attempts,
         attempt_timeout,
+        Duration::MAX,
     )?;
 
     // Relative to the config file's directory, never the working directory;
