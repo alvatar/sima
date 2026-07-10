@@ -99,7 +99,9 @@ length-prefixed string domain tag, fixed forever (a layout change mints a
   journal material, or run portability fails by construction.
 - Identity and execution split: `RunConfig` holds the identity-bearing
   config only — `RunId = blake3(config bytes)` survives changes in worker
-  count, store path, or hardware. `TaskRecord` holds identity plus artifact
+  count, store path, or hardware. The optional segment count is part of it:
+  work division is structural, so runs of different segmentation are
+  different runs. `TaskRecord` holds identity plus artifact
   references only — attempts, timings, and workers live in the journal.
 - Names (format ids, generator ids, component and artifact names): 1..=64
   bytes of `[a-z0-9._-]`.
@@ -115,6 +117,7 @@ One `Store` type over a root directory:
 <root>/runs/<run-id>/manifest.json
 <root>/runs/<run-id>/journal
 <root>/runs/<run-id>/orchestrator.lock
+<root>/runs/<run-id>/checkpoint/<slot>   mutable resume scratch
 ```
 
 ### Components
@@ -135,6 +138,10 @@ One `Store` type over a root directory:
   the fixed set of tasks the run comprises.
 - **journal** — a run's append-only observational history, one event per
   line.
+- **checkpoint slot** — a run's mutable per-chain scratch file holding the
+  latest continuation state a running segment offered. Written atomically,
+  latest-only, never hashed and never part of a manifest or closure; a slot
+  that is missing, torn, or keyed to another task loads as nothing.
 - **closure** — the deduplicated, sorted set of objects a finalized run
   depends on: config, records, and every object those records reference. The
   unit of run portability and store sync.
@@ -266,6 +273,17 @@ through a model `ArtifactRef` — and must be a pure function of the identity
 inputs. `Stats` is opaque observational bytes destined for the journal; it may
 reflect the execution context and never enters a record.
 
+The third `execute` parameter is the attempt's `Checkpoint` handle — the
+crash-resume channel under the same discipline. The executor decides what
+bytes capture its continuation state and when a step boundary makes them safe
+to offer; the handle decides whether an offer is written and performs all
+I/O, so executors still never touch durable state. `resume` serves bytes a
+previous attempt saved, and using or ignoring them must yield byte-identical
+committed artifacts. Stateless call sites pass the inert `NoCheckpoint`. The
+crate also fixes the state-artifact convention: a segmented executor commits
+its continuation state under the artifact name `STATE_ARTIFACT` (`"state"`),
+the name the chain source walks.
+
 ## `sima-domains` (L4)
 
 The executable substance behind each format id. A `Domain` groups what a
@@ -296,8 +314,13 @@ reads its own sections.
 The stub domain supplies the contracts without a GPU or a store, so the
 scheduler has a deterministic, programmable substrate for its failure matrix:
 a spec carries a stub program selecting one behavior — succeed, flaky (fail a
-bounded number of attempts, then succeed), reject definitively, panic, or
-sleep. The stub's committed artifact is the digest of the identity inputs
+bounded number of attempts, then succeed), reject definitively, panic, sleep,
+or accumulate, the stateful behavior segmented runs chain through: k steps of
+`acc = derive(acc, step)` keyed by the absolute step index, committing the
+resulting `(step, acc)` state under the `state` artifact and offering it as a
+checkpoint at every step boundary. The absolute-step keying makes the
+trajectory invariant under where the segmentation cuts fall, which is what
+the segmented-equals-unsegmented acceptance proof leans on. The stub's committed artifact is the digest of the identity inputs
 alone, so it reproduces across attempts and workers; the attempt number folds
 only into the stats and into the gate that decides whether the behavior fails
 this attempt or completes. That gate is the one sanctioned read of the attempt
@@ -430,14 +453,81 @@ free of the store, so the boundary holds in the crate graph.
 ### Task source
 
 A task source derives the currently-runnable frontier from `(config, store
-state)`. The static-batch source runs a resolved generator once, stores each
-spec object, builds each task identity — spec, params, the per-task seed
+state)`. One interface covers both sources, selected by the run config's
+segment count; a source returns each runnable task exactly once across the
+run, and its key set is complete once a poll has returned empty at an idle
+pool — the finalize point.
+
+The static-batch source runs a resolved generator once, stores each spec
+object, builds each task identity — spec, params, the per-task seed
 `derive(root_seed, i)`, environment, no input state — and separates the keys
 the store already answers from those still to run, so a resume runs only the
 unfinished work. The frontier is a pure function of `(config, environment)`.
-One interface covers this and, later, a segment chain that derives successors
-as predecessors commit; the driver polls it in a loop, which is the seam a
-dynamic source reuses.
+
+The driver polls the source whenever the ready queue is empty and a lease
+release has happened since the last poll — a release is the only point in a
+run where the store state a source derives new tasks from can have changed —
+so a chain's successor is handed out the moment its predecessor commits,
+leases outstanding or not, and the bounded-wait wakeups carry no polling
+storm. An empty poll finalizes only at an idle pool; with leases outstanding
+it waits, and the releases of those leases trigger the polls that follow.
+
+### Segmented execution
+
+Segmentation is the committed work-division mechanism: a long simulation runs
+as a chain of tasks, each advancing state $S_n$ by its segment's steps and
+committing $S_{n+1}$ as a store object. The segment-chain source materializes
+one chain per generated spec:
+
+- **Chain identity** — chain $i$'s seed is `derive(root_seed, i)`, the same
+  substream a static batch would give candidate $i$, constant across the
+  chain's segments; segments are distinguished by `input_state` alone.
+  Segment 0 carries no input state (the executor initializes from spec,
+  params, and seed); segment $j{+}1$'s input state is the object hash of
+  segment $j$'s committed `state` artifact. A chain has exactly the config's
+  segment count of tasks.
+- **The state-artifact convention** — a segmented executor commits its
+  continuation state under the artifact name `state`. A committed segment
+  record without it is a validation fault naming the artifact and the task
+  key: the misconfiguration signal for a segmented run over a stateless
+  domain.
+- **Resume is construction** — the source fast-forwards each chain against
+  the store at construction, walking past every already-committed segment,
+  and re-runs that walk whenever a handed-out segment may have committed.
+  The frontier is derived from `(config, store state)`, so crash recovery,
+  interrupt resume, and re-run are the one code path.
+- **Convergence** — identities are content-addressed, so a state fixed point
+  (or cycle) makes later segments reuse earlier keys: the walk stays bounded
+  by the segment count, already-committed successors advance instantly, and
+  the key set deduplicates, satisfying finalize's duplicate rejection.
+  Cross-run reuse of chain prefixes in a shared store is the same mechanism:
+  a longer run over a store holding a shorter run's chain re-executes only
+  the segments past the shared prefix.
+
+### Resume checkpoints
+
+Checkpoints are the disposable crash-resume mechanism, orthogonal to
+segmentation: during a segment's execution the running task periodically
+writes its full continuation state to the run's per-chain slot, overwriting
+the previous write, and a restarted attempt continues from the saved bytes
+instead of the segment's start.
+
+- **The slot** — `runs/<run-id>/checkpoint/<chain>`, owned by the store and
+  written through its one atomic-write path. Latest-only: the next save, and
+  the next segment's saves, overwrite it; nothing is ever deleted.
+- **Staleness** — the slot frame carries the owning task's key. A slot that
+  is missing, malformed, or keyed to another task loads as nothing, never an
+  error — the previous segment's leftover state cannot leak into the next.
+- **The contract split** — the executor offers continuation bytes at step
+  boundaries and may adopt served resume bytes; the worker-owned handle
+  loads the slot before execution, enforces the wall-clock cadence (the
+  first save becomes due one full interval after the attempt starts), and
+  performs every write. A save or load failure emits a `checkpoint degraded`
+  journal event and execution continues.
+- **Disposability** — checkpoint bytes enter no hash, no record, and no
+  manifest; the committed result is byte-identical with checkpointing on,
+  off, or resumed. Checkpoints change recovery time only, so losing one
+  costs a partial re-execution and nothing else.
 
 ### Worker pool and the outcome classifier
 
@@ -518,7 +608,7 @@ lease-expiry detection, not termination.
 The scheduler owns the journal's meaning. A typed `LifecycleEvent` serializes
 to one JSON line, with ids and stats rendered as hex. The vocabulary:
 
-- **run started** — the run began, over every task key of the run, those
+- **run started** — the run began; carries the planned task total, those
   already committed and those still to run.
 - **queued** — a task entered the ready queue.
 - **leased** — a worker leased a task for one attempt.
@@ -531,6 +621,9 @@ to one JSON line, with ids and stats rendered as hex. The vocabulary:
   with an error.
 - **lease expired** — a lease's age ran past the attempt timeout; detection
   only, no preemption.
+- **checkpoint degraded** — a checkpoint save or load failed; execution
+  continues and the attempt's result is unaffected, so this event is the
+  only trace.
 - **run finalized** — every task committed and the manifest was written.
 - **run failed** — a definitive candidate failure terminated the run; no
   manifest was written.
@@ -556,13 +649,15 @@ scheduler over the configured store.
 The config file carries the same split the model enforces:
 
 - **`[run]`** — the identity section, canonicalized into `RunConfig`, so
-  its fields define the `RunId`: the root seed, the format, the generator
+  its fields define the `RunId`: the root seed, the format, the optional
+  segment count (at least 1; absent means a static batch), the generator
   (its id plus the generator-owned keys), and the domain-owned run params.
 - **`[execution]`** — the operational section: the store path (resolved
-  relative to the config file's directory), worker count, attempt cap, and
-  an optional attempt timeout whose absence disables lease-expiry
-  reporting. Never hashed — a run resumed with different execution
-  settings keeps its id.
+  relative to the config file's directory), worker count, attempt cap, an
+  optional attempt timeout whose absence disables lease-expiry reporting,
+  and an optional checkpoint interval whose absence disables checkpointing.
+  Never hashed — a run resumed with different execution settings keeps its
+  id.
 
 The structural keys are strict: an unknown key at any level is a validation
 error naming it.
@@ -588,7 +683,8 @@ and a finalized one re-finalizes idempotently without touching an executor.
 ### Run status
 
 `status` computes a run's observable state from its journal alone. The
-counters — tasks, committed, retried, rejected, faulted, lease expiries —
+counters — tasks, committed, retried, rejected, faulted, lease expiries,
+checkpoint degradations —
 sum across every resume segment, and the last run-level event decides the
 state. A journal ending mid-run reads as in progress: a dead orchestrator
 is indistinguishable from a live one by the journal alone.
