@@ -148,6 +148,20 @@ reproducibility for capability.
 All randomness in a result-affecting path is derived from a counter-based PRNG
 implemented identically on every substrate; no result path uses a platform RNG.
 
+### Toolkit registry
+
+Each execution toolkit under `crates/toolkits/` pins the canonical version id of
+the engine or compiler it runs kernels through. That id is an environment
+component: hashed with a domain's other components, it forms the `environment`
+term of the task key. The identity-bearing value is a constant in the toolkit,
+guarded by a known-answer test on its output so a dependency bump that changes
+the emitted program forces a deliberate update in the same change. This table is
+the human-readable registry of those ids; it mirrors the constants for reference.
+
+| Toolkit | Canonical id | Tier | Guard |
+|---|---|---|---|
+| `sima-toolkit-wgsl` | `naga 30.0.0; spirv=1.5; opt=none` | 1 | SPIR-V known-answer test (`compile.rs`) |
+
 ## Design principles
 
 - **Reproducibility.** All randomness is seeded and captured; a recorded
