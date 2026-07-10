@@ -228,27 +228,24 @@ enum Gate {
     Wait,
     /// The run wound down and the pool drained; the taken terminal reason.
     Terminal(RunState),
-    /// Poll the source: the queue is empty and the store state may have
-    /// changed since the last poll. `idle` is whether the pool also holds no
-    /// leases — the finalize condition when the poll comes back empty —
-    /// and `settled` is the release count the poll is current as of.
+    /// Poll the source: the queue is empty and a lease release moved
+    /// `settled` past the last poll. `idle` is whether the pool also holds
+    /// no leases; `settled` is the release count the poll is current as of.
     Poll { idle: bool, settled: u64 },
 }
 
-/// Feeds the queue and waits for the pool. While the run is healthy it polls
-/// the source whenever the queue is empty and a lease release has happened
-/// since the last poll — a release is when committed results can have
-/// changed the store state a source derives new tasks from — so each chain
-/// advances the moment its own predecessor commits, leases outstanding or
-/// not. The first poll happens immediately. An empty poll at an idle pool
-/// finalizes; an empty poll with leases outstanding waits, and the releases
-/// of those leases trigger the polls that follow. A terminal state — an
-/// interrupt, a definitive failure, or a fault — waits for the in-flight
-/// leases to drain, abandoning queued tasks. Every wakeup — a pool
-/// notification or the bounded wait elapsing — re-checks `control`'s
-/// interrupt flag, so an interrupt is observed within [`INTERRUPT_POLL`] and
-/// upgrades a healthy run to `Interrupted`; the wind-down then rides the
-/// ordinary drain path.
+/// Feeds the queue and waits for the pool, deciding the run's outcome.
+/// Three ideas govern the loop:
+///
+/// - **Poll gate**: while the run is healthy, the source is polled when the
+///   queue is empty and a lease has been released since the last poll. A
+///   source reads committed records to decide what is runnable next, and
+///   only a settling worker changes them, so releases are the poll trigger.
+/// - **Finalize condition**: an empty poll at an idle pool — no queue, no
+///   leases — means no task remains, and the run finalizes.
+/// - **Terminal drain**: a terminal state (a caller interrupt, a definitive
+///   failure, a fault) waits for the in-flight leases to drain, abandoning
+///   queued tasks.
 fn drive(
     coordinator: &Coordinator,
     source: &mut dyn TaskSource,
@@ -259,6 +256,10 @@ fn drive(
     // first poll, so it fires unconditionally.
     let mut polled_at: Option<u64> = None;
     loop {
+        // Every wakeup — a pool notification or the bounded wait elapsing —
+        // passes through here, so a set interrupt flag is observed within
+        // `INTERRUPT_POLL`. It upgrades a healthy run to `Interrupted`, and
+        // the wind-down rides the ordinary drain path below.
         if control.interrupt.load(Ordering::Relaxed) {
             coordinator.interrupt();
         }
@@ -282,6 +283,9 @@ fn drive(
                     Gate::Wait
                 }
             } else if shared.queue.is_empty() && polled_at != Some(shared.settled) {
+                // The gate ignores outstanding leases, so a chain task's
+                // successor is handed out the moment its own predecessor
+                // commits, while other tasks still run.
                 Gate::Poll {
                     idle: shared.leases.is_empty(),
                     settled: shared.settled,

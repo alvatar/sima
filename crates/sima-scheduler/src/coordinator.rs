@@ -66,11 +66,13 @@ pub(crate) struct Shared {
     pub(crate) leases: HashMap<TaskKey, Lease>,
     /// The run's wind-down state.
     pub(crate) state: RunState,
-    /// Monotonic count of lease releases. The driver polls the task source
-    /// only when this moved past its last poll: a release is the only point
-    /// in a run where the store state a source derives its frontier from can
-    /// have changed, so gating polls on it avoids re-polling on every
-    /// bounded-wait wakeup.
+    /// Monotonic count of lease releases: incremented once per settled
+    /// task, whatever the outcome. The driver records this count at each
+    /// poll of the task source and polls again only after it has moved.
+    /// The count is the right poll trigger because a source derives its
+    /// frontier from committed records, only workers commit them, and a
+    /// worker commits before releasing its lease — so an unchanged count
+    /// means a re-poll would derive the same frontier.
     pub(crate) settled: u64,
 }
 
