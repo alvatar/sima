@@ -67,7 +67,7 @@ pub(crate) struct Shared {
     /// The run's wind-down state.
     pub(crate) state: RunState,
     /// Monotonic count of lease releases: incremented once per settled
-    /// task, whatever the outcome. The driver records this count at each
+    /// attempt, whatever the outcome. The driver records this count at each
     /// poll of the task source and polls again only after it has moved.
     /// The count is the right poll trigger because a source derives its
     /// frontier from committed records, only workers commit them, and a
