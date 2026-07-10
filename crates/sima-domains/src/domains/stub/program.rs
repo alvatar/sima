@@ -27,6 +27,10 @@ pub enum StubBehavior {
     /// scheduler terminates the run without retrying. The deterministic model
     /// of a candidate the executor cleanly judges non-viable.
     Reject,
+    /// Fold the seed through the given number of accumulation steps and
+    /// commit the resulting state — the stateful behavior segmented runs
+    /// chain through. The argument is k, the steps one task performs.
+    Accumulate(u64),
 }
 
 impl StubBehavior {
@@ -49,6 +53,9 @@ impl StubBehavior {
             StubBehavior::Reject => {
                 enc.u8(4);
             }
+            StubBehavior::Accumulate(k) => {
+                enc.u8(5).u64(*k);
+            }
         }
     }
 
@@ -61,6 +68,7 @@ impl StubBehavior {
             2 => Ok(StubBehavior::Panic),
             3 => Ok(StubBehavior::Sleep(dec.u64()?)),
             4 => Ok(StubBehavior::Reject),
+            5 => Ok(StubBehavior::Accumulate(dec.u64()?)),
             tag => Err(Error::Encoding(format!("unknown stub behavior tag {tag}"))),
         }
     }
@@ -130,6 +138,11 @@ mod tests {
                 "0000000000000000",
             ),
             (StubBehavior::Reject, "04", "0000000000000000"),
+            (
+                StubBehavior::Accumulate(100),
+                "056400000000000000",
+                "0000000000000000",
+            ),
         ];
         for (behavior, behavior_hex, nonce_hex) in cases {
             let program = StubProgram { behavior, nonce: 0 };
@@ -148,6 +161,7 @@ mod tests {
             StubBehavior::Panic,
             StubBehavior::Sleep(7),
             StubBehavior::Reject,
+            StubBehavior::Accumulate(100),
         ];
         for behavior in behaviors {
             for nonce in [0u64, 1, 0x0102_0304_0506_0708] {

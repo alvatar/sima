@@ -3,12 +3,12 @@
 //!
 //! [`StubExecutor`] decodes the [`StubProgram`] a spec carries and acts on it:
 //! succeed, fail while below a threshold attempt, reject definitively, panic,
-//! or sleep. The one
-//! committed [`Artifact`] is the digest of the identity inputs alone — a pure
-//! function of [`TaskInput`] — so it never varies with the execution context.
-//! The attempt number folds only into [`Stats`], the observational output, and
-//! into the `Flaky` retry gate. This split is the boundary the whole
-//! contract exists to enforce.
+//! sleep, or accumulate — the stateful behavior that folds a seed through a
+//! deterministic step function and commits the resulting [`StubState`]. Every
+//! committed [`Artifact`] is a pure function of [`TaskInput`] alone, so it
+//! never varies with the execution context. The attempt number folds only
+//! into [`Stats`], the observational output, and into the `Flaky` retry gate.
+//! This split is the boundary the whole contract exists to enforce.
 
 use std::time::Duration;
 
@@ -16,6 +16,7 @@ use sima_core::{Enc, Error, Hash, Result, hash_bytes};
 use sima_model::FormatId;
 
 use super::program::{StubBehavior, StubProgram};
+use super::state::StubState;
 use sima_contracts::{Artifact, Checkpoint, ExecutionContext, Executor, Outcome, Stats, TaskInput};
 
 /// Evaluates a candidate carrying a [`StubProgram`], under format `stub.v1`.
@@ -42,7 +43,7 @@ impl Executor for StubExecutor {
         &self,
         input: &TaskInput<'_>,
         ctx: &ExecutionContext,
-        _checkpoint: &dyn Checkpoint,
+        checkpoint: &dyn Checkpoint,
     ) -> Result<Outcome> {
         // A spec whose bytes are not a valid program is a structural input
         // fault, not a candidate failure: it is `Err`, not `Outcome::Failed`.
@@ -71,8 +72,66 @@ impl Executor for StubExecutor {
                 reason: "programmed rejection".to_string(),
                 stats: stats(ctx),
             }),
+            StubBehavior::Accumulate(k) => accumulate(input, ctx, checkpoint, k),
         }
     }
+}
+
+/// The `Accumulate` semantics: fold the accumulator through k steps keyed by
+/// the absolute step index — so the trajectory is invariant under where the
+/// segmentation cuts fall — offering a checkpoint at every step boundary, and
+/// commit the resulting state as the `state` artifact. The stats carry the
+/// steps this attempt actually executed, so a test can prove a resume
+/// checkpoint shortened re-execution.
+fn accumulate(
+    input: &TaskInput<'_>,
+    ctx: &ExecutionContext,
+    checkpoint: &dyn Checkpoint,
+    k: u64,
+) -> Result<Outcome> {
+    // Malformed input state is a structural input fault, like a malformed
+    // spec: the identity referenced bytes that are not a stub state.
+    let mut state = match input.input_state {
+        None => StubState {
+            step: 0,
+            acc: input.seed,
+        },
+        Some(bytes) => StubState::from_bytes(bytes)
+            .map_err(|e| Error::Validation(format!("stub input state is malformed: {e}")))?,
+    };
+    let start = state.step;
+    let end = start
+        .checked_add(k)
+        .ok_or_else(|| Error::Validation(format!("stub step range {start} + {k} overflows u64")))?;
+    // A saved checkpoint is adopted only when it decodes and its step lies
+    // inside this task's range; anything else is stale and ignored — resuming
+    // never changes the committed bytes, only how many steps reach them.
+    if let Some(bytes) = checkpoint.resume()
+        && let Ok(saved) = StubState::from_bytes(bytes)
+        && saved.step >= start
+        && saved.step < end
+    {
+        state = saved;
+    }
+    let mut steps_executed: u64 = 0;
+    while state.step < end {
+        state.acc = sima_core::prng::derive(state.acc, state.step);
+        state.step += 1;
+        steps_executed += 1;
+        sima_core::crashpoint("stub.accumulate.step");
+        checkpoint.offer(&|| state.to_bytes());
+    }
+    let mut stats = Enc::new();
+    stats.u32(ctx.attempt).u64(steps_executed);
+    Ok(Outcome::Completed {
+        artifacts: vec![Artifact {
+            name: sima_contracts::STATE_ARTIFACT.to_string(),
+            bytes: state.to_bytes(),
+        }],
+        stats: Stats {
+            bytes: stats.finish(),
+        },
+    })
 }
 
 /// The successful outcome: the identity artifact plus the stats carrying the
@@ -447,6 +506,179 @@ mod tests {
             &NoCheckpoint,
         )?;
         assert_ne!(artifact(&base), artifact(&vary_env));
+        Ok(())
+    }
+
+    /// A scripted checkpoint double: serves preset resume bytes and records
+    /// every offered payload by invoking the producer.
+    struct ScriptedCheckpoint {
+        resume: Option<Vec<u8>>,
+        offers: std::cell::RefCell<Vec<Vec<u8>>>,
+    }
+
+    impl ScriptedCheckpoint {
+        fn new(resume: Option<Vec<u8>>) -> ScriptedCheckpoint {
+            ScriptedCheckpoint {
+                resume,
+                offers: std::cell::RefCell::new(Vec::new()),
+            }
+        }
+    }
+
+    impl Checkpoint for ScriptedCheckpoint {
+        fn resume(&self) -> Option<&[u8]> {
+            self.resume.as_deref()
+        }
+
+        fn offer(&self, produce: &dyn Fn() -> Vec<u8>) {
+            self.offers.borrow_mut().push(produce());
+        }
+    }
+
+    /// The reference trajectory: `acc` folded from `state.acc` through the
+    /// absolute steps `[state.step, state.step + steps)`.
+    fn fold(mut state: StubState, steps: u64) -> StubState {
+        for _ in 0..steps {
+            state.acc = sima_core::prng::derive(state.acc, state.step);
+            state.step += 1;
+        }
+        state
+    }
+
+    /// Runs an `Accumulate(k)` task and returns its outcome.
+    fn run_accumulate(
+        k: u64,
+        seed: u64,
+        input_state: Option<&[u8]>,
+        attempt: u32,
+        checkpoint: &dyn Checkpoint,
+    ) -> Result<Outcome> {
+        let exec = StubExecutor::new()?;
+        let spec = spec_for(StubBehavior::Accumulate(k), 0)?;
+        let params = params();
+        let input = TaskInput {
+            spec: &spec,
+            params: &params,
+            seed,
+            environment: env(),
+            input_state,
+        };
+        exec.execute(&input, &ctx(attempt, 0), checkpoint)
+    }
+
+    /// The `state` artifact bytes and decoded stats of a `Completed`
+    /// accumulate outcome; panics otherwise.
+    fn state_and_stats(outcome: &Outcome) -> (Vec<u8>, u32, u64) {
+        let Outcome::Completed { artifacts, stats } = outcome else {
+            panic!("expected Completed, got {outcome:?}");
+        };
+        assert_eq!(artifacts.len(), 1, "accumulate commits one artifact");
+        assert_eq!(artifacts[0].name, sima_contracts::STATE_ARTIFACT);
+        let mut dec = sima_core::Dec::new(&stats.bytes);
+        let attempt = dec.u32().expect("stats attempt");
+        let steps = dec.u64().expect("stats steps");
+        dec.finish().expect("stats end");
+        (artifacts[0].bytes.clone(), attempt, steps)
+    }
+
+    #[test]
+    fn accumulate_initializes_from_the_seed() -> Result<()> {
+        let outcome = run_accumulate(3, 42, None, 0, &NoCheckpoint)?;
+        let (state_bytes, attempt, steps) = state_and_stats(&outcome);
+        let expected = fold(StubState { step: 0, acc: 42 }, 3);
+        assert_eq!(state_bytes, expected.to_bytes());
+        assert_eq!(attempt, 0);
+        assert_eq!(steps, 3);
+        Ok(())
+    }
+
+    #[test]
+    fn accumulate_continues_from_the_input_state() -> Result<()> {
+        let mid = fold(StubState { step: 0, acc: 42 }, 2);
+        let outcome = run_accumulate(2, 42, Some(&mid.to_bytes()), 1, &NoCheckpoint)?;
+        let (state_bytes, attempt, steps) = state_and_stats(&outcome);
+        assert_eq!(state_bytes, fold(mid, 2).to_bytes());
+        assert_eq!(attempt, 1);
+        assert_eq!(steps, 2);
+        Ok(())
+    }
+
+    #[test]
+    fn two_segments_equal_one_task_of_double_length() -> Result<()> {
+        // The trajectory is keyed by the absolute step index, so where the
+        // segmentation cut falls cannot change the final state.
+        let first = run_accumulate(2, 7, None, 0, &NoCheckpoint)?;
+        let (first_state, _, _) = state_and_stats(&first);
+        let second = run_accumulate(2, 7, Some(&first_state), 0, &NoCheckpoint)?;
+        let (segmented, _, _) = state_and_stats(&second);
+        let whole = run_accumulate(4, 7, None, 0, &NoCheckpoint)?;
+        let (unsegmented, _, _) = state_and_stats(&whole);
+        assert_eq!(segmented, unsegmented);
+        Ok(())
+    }
+
+    #[test]
+    fn accumulate_offers_a_checkpoint_at_every_step() -> Result<()> {
+        let handle = ScriptedCheckpoint::new(None);
+        run_accumulate(3, 42, None, 0, &handle)?;
+        let offers = handle.offers.borrow();
+        // One offer per step, each carrying the state after that step.
+        assert_eq!(offers.len(), 3);
+        for (i, offered) in offers.iter().enumerate() {
+            let expected = fold(StubState { step: 0, acc: 42 }, i as u64 + 1);
+            assert_eq!(offered, &expected.to_bytes(), "offer {i}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_resume_checkpoint_in_range_is_adopted() -> Result<()> {
+        // A saved state two steps in: the resumed attempt executes only the
+        // remaining step, and the committed state is byte-identical to an
+        // uninterrupted run.
+        let saved = fold(StubState { step: 0, acc: 42 }, 2);
+        let handle = ScriptedCheckpoint::new(Some(saved.to_bytes()));
+        let outcome = run_accumulate(3, 42, None, 1, &handle)?;
+        let (state_bytes, _, steps) = state_and_stats(&outcome);
+        assert_eq!(steps, 1);
+        let reference = run_accumulate(3, 42, None, 0, &NoCheckpoint)?;
+        let (reference_bytes, _, reference_steps) = state_and_stats(&reference);
+        assert_eq!(reference_steps, 3);
+        assert_eq!(state_bytes, reference_bytes);
+        Ok(())
+    }
+
+    #[test]
+    fn a_stale_resume_checkpoint_is_ignored() -> Result<()> {
+        // Out-of-range saved steps — before this segment's start and at or
+        // past its end — and undecodable bytes are all ignored: the task
+        // runs fully and commits the reference state.
+        let start = fold(StubState { step: 0, acc: 42 }, 2);
+        let reference = run_accumulate(2, 42, Some(&start.to_bytes()), 0, &NoCheckpoint)?;
+        let (reference_bytes, _, _) = state_and_stats(&reference);
+        let stale = [
+            fold(StubState { step: 0, acc: 42 }, 1).to_bytes(), // before start
+            fold(StubState { step: 0, acc: 42 }, 4).to_bytes(), // at the end
+            b"garbage".to_vec(),
+        ];
+        for bytes in stale {
+            let handle = ScriptedCheckpoint::new(Some(bytes));
+            let outcome = run_accumulate(2, 42, Some(&start.to_bytes()), 1, &handle)?;
+            let (state_bytes, _, steps) = state_and_stats(&outcome);
+            assert_eq!(steps, 2, "a stale checkpoint must not shorten the run");
+            assert_eq!(state_bytes, reference_bytes);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn accumulate_rejects_malformed_input_state() -> Result<()> {
+        // Malformed input state is an infrastructure fault, like a malformed
+        // spec: the identity referenced bytes that are not a stub state.
+        assert!(matches!(
+            run_accumulate(2, 42, Some(b"not a state"), 0, &NoCheckpoint),
+            Err(Error::Validation(_))
+        ));
         Ok(())
     }
 
