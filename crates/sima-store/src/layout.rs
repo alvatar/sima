@@ -10,6 +10,7 @@
 //! <root>/runs/<run-id-hex>/manifest.json
 //! <root>/runs/<run-id-hex>/journal
 //! <root>/runs/<run-id-hex>/orchestrator.lock
+//! <root>/runs/<run-id-hex>/checkpoint/<slot>   mutable resume scratch
 //! ```
 
 use std::path::{Path, PathBuf};
@@ -72,4 +73,14 @@ pub(crate) fn journal_path(root: &Path, run: &RunId) -> PathBuf {
 /// A run's orchestrator-lock path: `runs/<run-id-hex>/orchestrator.lock`.
 pub(crate) fn lock_path(root: &Path, run: &RunId) -> PathBuf {
     run_dir(root, run).join("orchestrator.lock")
+}
+
+/// A run's checkpoint directory: `runs/<run-id-hex>/checkpoint/`.
+pub(crate) fn checkpoint_dir(root: &Path, run: &RunId) -> PathBuf {
+    run_dir(root, run).join("checkpoint")
+}
+
+/// A chain's checkpoint-slot path: `runs/<run-id-hex>/checkpoint/<slot>`.
+pub(crate) fn checkpoint_path(root: &Path, run: &RunId, slot: u64) -> PathBuf {
+    checkpoint_dir(root, run).join(slot.to_string())
 }
