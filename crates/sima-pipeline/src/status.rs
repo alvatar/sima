@@ -384,6 +384,7 @@ mod tests {
     fn parity_test_config() -> Result<RunConfig> {
         Ok(RunConfig {
             root_seed: 1,
+            segments: None,
             format: FormatId::new("stub.v1")?,
             generator: GeneratorConfig {
                 id: GeneratorId::new("stub.v1")?,

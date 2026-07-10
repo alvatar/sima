@@ -31,6 +31,7 @@ pub fn environment() -> Environment {
 pub fn config(root_seed: u64, behaviors: Vec<StubBehavior>) -> RunConfig {
     RunConfig {
         root_seed,
+        segments: None,
         format: FormatId::new("stub.v1").expect("format id"),
         generator: GeneratorConfig {
             id: GeneratorId::new("stub.v1").expect("generator id"),

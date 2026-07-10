@@ -395,6 +395,7 @@ mod tests {
 
         let config = RunConfig {
             root_seed: 0,
+            segments: None,
             format: FormatId::new("stub.v1")?,
             generator: GeneratorConfig {
                 id: GeneratorId::new("stub.v1")?,

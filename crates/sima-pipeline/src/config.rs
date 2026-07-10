@@ -123,6 +123,7 @@ pub fn load(path: &Path) -> Result<LoadedConfig> {
     let params = params_for(&format, &file.run.params)?;
     let run = RunConfig {
         root_seed,
+        segments: None,
         format,
         generator: GeneratorConfig {
             id: generator_id,

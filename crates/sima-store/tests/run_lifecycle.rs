@@ -37,6 +37,7 @@ fn environment() -> Environment {
 fn config() -> RunConfig {
     RunConfig {
         root_seed: 42,
+        segments: None,
         format: FormatId::new("stub.v1").expect("format id"),
         generator: GeneratorConfig {
             id: GeneratorId::new("gen.v1").expect("generator id"),

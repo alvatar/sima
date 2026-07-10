@@ -470,7 +470,7 @@ mod tests {
     /// blake3(record bytes). Key 42.. sorts before key 7a.., so the seed-1
     /// entry comes first regardless of finalization order.
     const PINNED_MANIFEST: &str = r#"{
-  "run": "0aaaca9861f35e442cf23ec57b1c0d8258d0912d74e8ccd175d959731e5ca65f",
+  "run": "18ad1dd30bc36b634e749b10755626411a367ba066c579e3c299a3eda98d4c7b",
   "entries": [
     {
       "task": "420b9fda1a25806fa8be45d75081d6b26f6f7bbe2925d17d44c4c0aada6f2836",

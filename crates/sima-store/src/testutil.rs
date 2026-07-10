@@ -44,6 +44,7 @@ pub(crate) fn sample_environment() -> Environment {
 pub(crate) fn sample_run_config(root_seed: u64) -> RunConfig {
     RunConfig {
         root_seed,
+        segments: None,
         format: FormatId::new("stub.v1").expect("format id"),
         generator: GeneratorConfig {
             id: GeneratorId::new("gen.v1").expect("generator id"),

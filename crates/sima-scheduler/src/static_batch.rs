@@ -95,6 +95,7 @@ mod tests {
     fn config(behaviors: Vec<StubBehavior>) -> Result<RunConfig> {
         Ok(RunConfig {
             root_seed: 7,
+            segments: None,
             format: sima_model::FormatId::new("stub.v1")?,
             generator: GeneratorConfig {
                 id: sima_model::GeneratorId::new("stub.v1")?,
