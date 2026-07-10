@@ -83,6 +83,10 @@ impl TaskSource for StaticBatch {
     fn all_keys(&self) -> &[TaskKey] {
         &self.all_keys
     }
+
+    fn task_total(&self) -> usize {
+        self.all_keys.len()
+    }
 }
 
 #[cfg(test)]

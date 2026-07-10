@@ -102,7 +102,7 @@ pub fn run(
             &events,
             LifecycleEvent::RunStarted {
                 run: run.to_string(),
-                tasks: source.all_keys().len(),
+                tasks: source.task_total(),
             },
         );
 
@@ -358,6 +358,10 @@ mod tests {
         fn all_keys(&self) -> &[TaskKey] {
             &[]
         }
+
+        fn task_total(&self) -> usize {
+            0
+        }
     }
 
     /// A task source that hands out scripted batches, one per poll, and yields
@@ -374,6 +378,10 @@ mod tests {
 
         fn all_keys(&self) -> &[TaskKey] {
             &[]
+        }
+
+        fn task_total(&self) -> usize {
+            0
         }
     }
 

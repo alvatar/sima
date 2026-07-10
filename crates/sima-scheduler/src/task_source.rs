@@ -23,12 +23,20 @@ pub struct RunnableTask {
 /// the candidates.
 pub trait TaskSource {
     /// Return the tasks runnable now and not yet handed out. The driver calls
-    /// this repeatedly: the static batch returns the full unanswered set on
-    /// the first call and an empty vec thereafter; a chain source returns
-    /// successors as their predecessors commit.
+    /// this repeatedly, leases outstanding or not, and the source returns each
+    /// runnable task exactly once across the run: it tracks what it has handed
+    /// out and watches the store for the commit. The static batch returns the
+    /// full unanswered set on the first call and an empty vec thereafter; a
+    /// chain source returns successors as their predecessors commit.
     fn poll(&mut self) -> Result<Vec<RunnableTask>>;
 
-    /// The full set of task keys the run comprises, materialized when the
-    /// frontier is. The driver finalizes over exactly this set.
+    /// The task keys the run comprises, as materialized so far. The set is
+    /// complete once a poll has returned empty at an idle pool — the point at
+    /// which the driver finalizes over exactly this set.
     fn all_keys(&self) -> &[TaskKey];
+
+    /// The planned task count of the whole run, known at construction. Feeds
+    /// the run-started report; unlike [`TaskSource::all_keys`], it never
+    /// grows.
+    fn task_total(&self) -> usize;
 }
