@@ -107,15 +107,15 @@ pub fn status_block(status: &RunStatus) -> String {
         RunState::Interrupted => "interrupted".to_string(),
     };
     format!(
-        "run            {}\n\
-         state          {state}\n\
-         tasks          {}\n\
-         committed      {}\n\
-         retried        {}\n\
-         rejected       {}\n\
-         faulted        {}\n\
-         lease expired  {}\n\
-         ckpt degraded  {}",
+        "run                  {}\n\
+         state                {state}\n\
+         tasks                {}\n\
+         committed            {}\n\
+         retried              {}\n\
+         rejected             {}\n\
+         faulted              {}\n\
+         lease expired        {}\n\
+         checkpoint degraded  {}",
         status.run,
         status.tasks,
         status.committed,
@@ -172,7 +172,7 @@ mod tests {
             "rejected",
             "faulted",
             "lease expired",
-            "ckpt degraded",
+            "checkpoint degraded",
         ] {
             assert!(block.contains(field), "missing {field}: {block}");
         }
