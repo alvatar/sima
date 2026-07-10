@@ -47,6 +47,69 @@ computes on, below `sima-domains` and beside `sima-contracts`: it depends on
 isolates its own dependency set. `sima-domains` depends on the toolkits its
 executors use. See [Execution toolkits](#execution-toolkits).
 
+## Anatomy of a run
+
+The component hierarchy of one running `sima run` process, with the store it
+drives. Later sections describe each component in detail.
+
+```
+sima run  (one orchestrator process per run; OS file lock on the store)
+│
+├─ Store ················ the only durable state
+│    objects/                 content-addressed bytes (specs, params,
+│                             states, artifacts)
+│    tasks/<key>              committed task records
+│    runs/<run-id>/
+│      manifest.json          written once, at finalize
+│      journal                append-only lifecycle events
+│      checkpoint/<chain>     mutable resume scratch, one slot per chain
+│
+└─ Driver ··············· polls the source on queue drain, feeds the
+   │                      queue, finalizes on empty poll + idle pool
+   │
+   ├─ TaskSource ········ derives the runnable frontier from (config, store)
+   │   ├─ StaticBatch        segments absent: one stateless task per candidate
+   │   └─ SegmentChain       segments = N: one chain per candidate
+   │       └─ Chain ····· the source's in-memory cursor over one
+   │           │          candidate's chain — no thread, no lease, no
+   │           │          durable form of its own:
+   │           │            spec, spec_id   the candidate under evaluation
+   │           │            seed            constant across the chain
+   │           │            frontier        next uncommitted segment's
+   │           │                            identity; None when walked out
+   │           │            committed       segments walked past so far
+   │           │            handed_out      frontier is out with a worker
+   │           │
+   │           └─ Segment (yielded one at a time, as RunnableTask)
+   │                key = hash(spec, params, seed, env, input_state)
+   │                segment 0:   input_state = None
+   │                segment j+1: input_state = hash of segment j's
+   │                             committed "state" artifact
+   │
+   ├─ Coordinator ······· in-memory queue + leases + release counter
+   ├─ JournalSink ······· one writer thread: events → journal + observer
+   ├─ Watchdog ·········· lease-expiry detection
+   │
+   └─ Worker pool (N threads, stateless leaseholders)
+       └─ Worker ········ leases one task = runs one attempt
+           │
+           ├─ Checkpoint handle   (worker-owned; all slot I/O)
+           │   ├─ SlotCheckpoint      chain task + interval enabled: loads
+           │   │                      the slot, enforces cadence, writes
+           │   │                      offers to checkpoint/<chain>
+           │   └─ NoCheckpoint        stateless task or disabled: inert
+           │
+           ├─ Executor ·· pure compute: execute(input, ctx, checkpoint);
+           │              offers continuation bytes, never touches the store
+           │
+           └─ commit ···· artifacts → objects, then the task record
+```
+
+A chain exists durably only as the trail of committed records linked by
+`input_state` hashes in the store; `Chain` is the cursor `SegmentChain`
+rebuilds from that trail at construction, which is why crash recovery,
+interrupt resume, and re-run are one code path.
+
 ## Two serialization worlds
 
 - **Identity-bearing bytes** — anything hashed — use the canonical binary
