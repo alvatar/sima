@@ -23,8 +23,11 @@ pub trait Checkpoint {
     fn resume(&self) -> Option<&[u8]>;
 
     /// Offers continuation state at a point where resuming from it is safe.
-    /// The handle calls `produce` only when it decides to perform a save, so
-    /// serialization costs nothing when no save is due.
+    /// The executor calls this from inside
+    /// [`execute`](crate::Executor::execute), at its own safe step
+    /// boundaries; the handle may decline. It calls `produce` only when it
+    /// decides to perform a save, so serialization costs nothing when no
+    /// save is due.
     fn offer(&self, produce: &dyn Fn() -> Vec<u8>);
 }
 
