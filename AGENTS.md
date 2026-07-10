@@ -95,6 +95,7 @@ Applies to `docs/` and long-form comments:
 - Naming rule: if a module primarily exists to hold one major type, the file name should match the type name clearly (e.g. `RenderState` -> `render_state.rs`)
 - Execution-toolkit naming: crates under `crates/toolkits/` are named by the developer-facing contract, not the runtime that powers them (`sima-toolkit-wgsl`, not its ash/wgpu backend); the runtime enters the name only if it leaks into the domain-facing API (`sima-toolkit-ash-wgsl`)
 - Add inline comments for key operations / tricky logic
+- Comment placement follows the level of the idea, to avoid drift: type-level and high-level doc comments carry the big and key ideas only; algorithmic details are commented inline, directly where they happen. When a detail changes, the adjacent inline comment is updated in the same edit — a detail described far from its code (in a type doc, a module doc, another function) goes stale silently.
 - Comments should not have historical references to the previous versions of the code. They should be explain what the code does now, exclusively.
 - Add doc comments for functions / important APIs, in all languages and parts of the project
 - Use the project `Error` / `Result<T>` types for fallible project code; do not introduce ad-hoc string error returns
