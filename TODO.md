@@ -277,10 +277,10 @@ machine.
       channels, small-stencil Laplacian + local reaction. First float family
       through the toolkit, proving the float path before the harder two.
       Split into four sub-milestones, one PR each, each reviewed on its own:
-- [ ] M3.1a Genome: genome = feed / kill / diffusion rates; canonical
-      encode/decode (identity-bearing, own format tag) plus range validation,
-      with pinned byte-stability and independent content-id tests per the
-      grid-format precedent
+- [ ] M3.1a Genome: genome = feed / kill / diffusion rates as the spec's
+      untagged payload (the spec frames it with the format id, per the stub
+      program precedent); canonical encode/decode plus validation, with
+      pinned byte-stability and independently computed spec-id tests
 - [ ] M3.1b Seeded generator: a deterministic genome population from
       (config, seed) through the generator contract — the first generator
       producing real specs
