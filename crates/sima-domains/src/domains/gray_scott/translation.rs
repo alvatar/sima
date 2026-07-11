@@ -8,7 +8,6 @@ use super::GrayScottGeneratorConfig;
 use crate::domains::translate::reject_unknown_keys;
 
 /// The Gray-Scott format id, doubling as its generator id.
-#[allow(dead_code)]
 pub(crate) const ID: &str = "gray-scott.v1";
 
 /// Translates the `[run.generator]` table (minus `id`): a required `count`
@@ -17,7 +16,6 @@ pub(crate) const ID: &str = "gray-scott.v1";
 /// here. All five keys are required, with no defaults — every value that
 /// determines candidate identity is visible in the config file. Unknown
 /// keys are rejected.
-#[allow(dead_code)]
 pub(crate) fn generator_params(table: &toml::Table) -> Result<Vec<u8>> {
     reject_unknown_keys(
         ID,

@@ -12,7 +12,7 @@ use sima_contracts::{Executor, Generator};
 use sima_core::{Error, Result};
 use sima_model::{Environment, FormatId, GeneratorId, Params};
 
-use crate::domains::stub;
+use crate::domains::{gray_scott, stub};
 
 /// Everything a format id binds: the executor that evaluates specs of the
 /// format and the environment its results depend on. The format's params
@@ -49,6 +49,7 @@ pub fn params_for(format: &FormatId, table: &toml::Table) -> Result<Params> {
 pub fn generator_for(id: &GeneratorId) -> Result<Box<dyn Generator>> {
     match id.as_str() {
         stub::ID => Ok(Box::new(stub::StubGenerator::new()?)),
+        gray_scott::ID => Ok(Box::new(gray_scott::GrayScottGenerator::new()?)),
         other => Err(Error::Validation(format!("unknown generator id {other:?}"))),
     }
 }
@@ -59,6 +60,7 @@ pub fn generator_for(id: &GeneratorId) -> Result<Box<dyn Generator>> {
 pub fn generator_params_for(id: &GeneratorId, table: &toml::Table) -> Result<Vec<u8>> {
     match id.as_str() {
         stub::ID => stub::generator_params(table),
+        gray_scott::ID => gray_scott::generator_params(table),
         other => Err(Error::Validation(format!("unknown generator id {other:?}"))),
     }
 }
@@ -131,6 +133,31 @@ mod tests {
     fn the_stub_generator_dispatches() -> Result<()> {
         let generator = generator_for(&generator("stub.v1"))?;
         assert_eq!(generator.id().as_str(), "stub.v1");
+        Ok(())
+    }
+
+    #[test]
+    fn the_gray_scott_generator_dispatches() -> Result<()> {
+        let generator = generator_for(&generator("gray-scott.v1"))?;
+        assert_eq!(generator.id().as_str(), "gray-scott.v1");
+        Ok(())
+    }
+
+    #[test]
+    fn the_gray_scott_generator_translation_dispatches() -> Result<()> {
+        let table: toml::Table = r#"
+            count = 64
+            feed = [0.01, 0.08]
+            kill = [0.03, 0.07]
+            diffusion_u = [0.16, 0.16]
+            diffusion_v = [0.08, 0.08]
+        "#
+        .parse()
+        .expect("parse test table");
+        assert_eq!(
+            generator_params_for(&generator("gray-scott.v1"), &table)?,
+            gray_scott::generator_params(&table)?
+        );
         Ok(())
     }
 }
