@@ -14,6 +14,7 @@ use sima_model::{Environment, EnvironmentComponent, EnvironmentValue, FormatId, 
 
 use super::{StubBehavior, StubExecutor, StubGeneratorConfig};
 use crate::domain::Domain;
+use crate::domains::translate::reject_unknown_keys;
 
 /// The stub format id, doubling as the stub generator id.
 pub(crate) const ID: &str = "stub.v1";
@@ -36,7 +37,7 @@ pub(crate) fn domain() -> Result<Domain> {
 /// meaning, so hex is the transparent spelling of arbitrary bytes. Unknown
 /// keys are rejected.
 pub(crate) fn params(table: &toml::Table) -> Result<Params> {
-    reject_unknown_keys(table, &["hex"], "params")?;
+    reject_unknown_keys(ID, table, &["hex"], "params")?;
     let bytes = match table.get("hex") {
         None => Vec::new(),
         Some(toml::Value::String(hex)) => decode_hex(hex)?,
@@ -54,7 +55,7 @@ pub(crate) fn params(table: &toml::Table) -> Result<Params> {
 /// `behaviors` list of behavior words, encoded through the stub generator's
 /// own codec. Unknown keys are rejected.
 pub(crate) fn generator_params(table: &toml::Table) -> Result<Vec<u8>> {
-    reject_unknown_keys(table, &["behaviors"], "generator")?;
+    reject_unknown_keys(ID, table, &["behaviors"], "generator")?;
     let Some(value) = table.get("behaviors") else {
         return Err(Error::Validation(
             "generator stub.v1 requires a behaviors list".to_string(),
@@ -77,19 +78,6 @@ pub(crate) fn generator_params(table: &toml::Table) -> Result<Vec<u8>> {
         })
         .collect::<Result<Vec<StubBehavior>>>()?;
     Ok(StubGeneratorConfig { behaviors }.to_bytes())
-}
-
-/// Rejects any key of `table` outside `known`, naming the key and the
-/// `section` it appeared in.
-fn reject_unknown_keys(table: &toml::Table, known: &[&str], section: &str) -> Result<()> {
-    for key in table.keys() {
-        if !known.contains(&key.as_str()) {
-            return Err(Error::Validation(format!(
-                "stub.v1 {section} config does not define the key {key:?}"
-            )));
-        }
-    }
-    Ok(())
 }
 
 /// Parses one behavior word: `succeed`, `flaky:N`, `sleep:MS`, `reject`,
