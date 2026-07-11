@@ -26,7 +26,7 @@ mod domain;
 mod domains;
 
 pub use domain::{Domain, domain_for, generator_for, generator_params_for, params_for};
-pub use domains::gray_scott::GrayScottGenome;
+pub use domains::gray_scott::{GrayScottGenerator, GrayScottGeneratorConfig, GrayScottGenome};
 pub use domains::stub::{
     StubBehavior, StubExecutor, StubGenerator, StubGeneratorConfig, StubProgram, StubState,
 };

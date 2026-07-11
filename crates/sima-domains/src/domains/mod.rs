@@ -6,3 +6,4 @@
 
 pub(crate) mod gray_scott;
 pub(crate) mod stub;
+pub(crate) mod translate;
