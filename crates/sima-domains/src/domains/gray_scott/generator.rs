@@ -1,7 +1,17 @@
-//! The Gray-Scott generator's configuration: the candidate count and the
-//! sampling range of each genome parameter, with its canonical byte codec.
+//! The Gray-Scott generator: turns a seeded config into a run's candidate
+//! specs.
+//!
+//! [`GrayScottGeneratorConfig`] is the generator's params blob — the
+//! candidate count and one sampling range per genome parameter, with its
+//! canonical byte codec. [`GrayScottGenerator`] reads it and draws `count`
+//! genomes uniformly from the configured box, one decorrelated PRNG
+//! substream per candidate.
 
-use sima_core::{Dec, Enc, Error, Result};
+use std::collections::HashMap;
+
+use sima_contracts::Generator;
+use sima_core::{Dec, Enc, Error, Result, prng};
+use sima_model::{FormatId, GeneratorId, Spec};
 
 use super::genome::GrayScottGenome;
 
@@ -148,9 +158,94 @@ impl GrayScottGeneratorConfig {
     }
 }
 
+/// Draws a run's candidate genomes uniformly from the box a
+/// [`GrayScottGeneratorConfig`] defines. Candidate `i` owns the decorrelated
+/// PRNG substream `derive(root_seed, i)` and takes one draw per genome
+/// parameter, so a candidate depends only on `(root_seed, i, ranges)`:
+/// raising the count appends candidates and never changes existing ones,
+/// keeping their spec ids — and any cached evaluation results — valid.
+#[derive(Debug, Clone)]
+pub struct GrayScottGenerator {
+    id: GeneratorId,
+}
+
+impl GrayScottGenerator {
+    /// Constructs the generator, registered under id `gray-scott.v1`.
+    pub fn new() -> Result<GrayScottGenerator> {
+        Ok(GrayScottGenerator {
+            id: GeneratorId::new("gray-scott.v1")?,
+        })
+    }
+}
+
+impl Generator for GrayScottGenerator {
+    fn id(&self) -> &GeneratorId {
+        &self.id
+    }
+
+    fn generate(&self, root_seed: u64, params: &[u8], format: &FormatId) -> Result<Vec<Spec>> {
+        let config = GrayScottGeneratorConfig::from_bytes(params)?;
+        let ranges = [
+            config.feed(),
+            config.kill(),
+            config.diffusion_u(),
+            config.diffusion_v(),
+        ];
+        let mut specs = Vec::with_capacity(config.count() as usize);
+        for i in 0..config.count() {
+            // Candidate i owns the substream derive(root_seed, i) and takes
+            // one draw per parameter, counters in the frozen field order.
+            let seed = prng::derive(root_seed, i);
+            let draw = |counter: u64, [lo, hi]: [f32; 2]| -> f32 {
+                // Frozen identity-bearing arithmetic: t ∈ [0, 1) in f64,
+                // mapped affinely and rounded once to f32 (to nearest even).
+                // The result lies in [lo, hi] up to that final rounding, and
+                // every point of the box is a valid genome by the config's
+                // corner validation.
+                let t = prng::unit_f64(prng::next(seed, counter));
+                (lo as f64 + t * (hi as f64 - lo as f64)) as f32
+            };
+            // Construction cannot fail inside the validated box, but the
+            // result is propagated rather than unwrapped: the validating
+            // constructor is the genome's only entry, and propagation covers
+            // the extreme f32 edges (a corner at f32::MAX, where the final
+            // rounding could reach infinity).
+            let genome = GrayScottGenome::new(
+                draw(0, ranges[0]),
+                draw(1, ranges[1]),
+                draw(2, ranges[2]),
+                draw(3, ranges[3]),
+            )?;
+            specs.push(Spec {
+                format: format.clone(),
+                bytes: genome.to_bytes(),
+            });
+        }
+        // Specs are content-addressed and the genome carries no nonce, so
+        // identical draws would collapse to one identity; surfacing them as
+        // an error exposes the config mistake (ranges admitting too few
+        // distinct values) instead of silently shrinking the run. Payload
+        // equality is spec-id equality within one call: every spec here
+        // shares one format.
+        let mut first_drawn_at: HashMap<&[u8], usize> = HashMap::with_capacity(specs.len());
+        for (i, spec) in specs.iter().enumerate() {
+            if let Some(&j) = first_drawn_at.get(spec.bytes.as_slice()) {
+                return Err(Error::Validation(format!(
+                    "gray-scott generator drew identical genomes at candidates {j} and {i}: \
+                     the configured ranges admit too few distinct values"
+                )));
+            }
+            first_drawn_at.insert(&spec.bytes, i);
+        }
+        Ok(specs)
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use sima_contracts::Generator;
     use sima_core::to_hex;
+    use sima_model::FormatId;
 
     use super::*;
 
@@ -295,6 +390,163 @@ mod tests {
         // corner check.
         with_substituted(0, [0.0, 0.0])?;
         with_substituted(1, [0.0, 0.07])?;
+        Ok(())
+    }
+
+    /// A config with all four ranges degenerate at the classical
+    /// pattern-forming point.
+    fn degenerate(count: u64) -> GrayScottGeneratorConfig {
+        GrayScottGeneratorConfig::new(
+            count,
+            [0.055, 0.055],
+            [0.062, 0.062],
+            [0.16, 0.16],
+            [0.08, 0.08],
+        )
+        .expect("valid degenerate config")
+    }
+
+    /// The payload bytes of candidate 0 for `root_seed = 42` and [`sample`],
+    /// derived from an independent Python implementation of the whole
+    /// sampling path — SplitMix64 (`mix`, `next`, `derive`, `unit_f64`) from
+    /// the published algorithm, validated against the pinned known-answer
+    /// values in `sima-core`'s `prng` tests, then
+    /// `f32(lo + unit_f64(next(derive(42, 0), c)) * (hi - lo))` per range in
+    /// the frozen order, packed with `struct.pack('<f', v)` — never from
+    /// this crate's output.
+    const CANDIDATE0_BYTES_HEX: &str = "13e1533d7e27153d0ad7233e0ad7a33d";
+
+    #[test]
+    fn generate_is_deterministic() -> Result<()> {
+        let generator = GrayScottGenerator::new()?;
+        let format = FormatId::new("gray-scott.v1")?;
+        let params = sample().to_bytes();
+        assert_eq!(
+            generator.generate(42, &params, &format)?,
+            generator.generate(42, &params, &format)?
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn generate_stamps_the_requested_format() -> Result<()> {
+        let generator = GrayScottGenerator::new()?;
+        // The format is stamped as received (the trait's contract; pairing
+        // generator and format is the pipeline's concern).
+        let format = FormatId::new("domain-a.v1")?;
+        let specs = generator.generate(1, &sample().to_bytes(), &format)?;
+        assert!(!specs.is_empty());
+        for spec in specs {
+            assert_eq!(spec.format, format);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn different_root_seed_changes_the_specs() -> Result<()> {
+        let generator = GrayScottGenerator::new()?;
+        let format = FormatId::new("gray-scott.v1")?;
+        let params = sample().to_bytes();
+        let a = generator.generate(1, &params, &format)?;
+        let b = generator.generate(2, &params, &format)?;
+        assert_ne!(a[0].id(), b[0].id());
+        Ok(())
+    }
+
+    #[test]
+    fn sampled_genomes_lie_within_the_configured_ranges() -> Result<()> {
+        let generator = GrayScottGenerator::new()?;
+        let config = sample();
+        let format = FormatId::new("gray-scott.v1")?;
+        let specs = generator.generate(7, &config.to_bytes(), &format)?;
+        assert_eq!(specs.len(), 64);
+        for spec in specs {
+            let genome = GrayScottGenome::from_bytes(&spec.bytes)?;
+            // `hi` is inclusive: `t < 1` in f64, but the f32 rounding of the
+            // result may land on `hi` exactly.
+            for (value, [lo, hi]) in [
+                (genome.feed(), config.feed()),
+                (genome.kill(), config.kill()),
+                (genome.diffusion_u(), config.diffusion_u()),
+                (genome.diffusion_v(), config.diffusion_v()),
+            ] {
+                assert!(lo <= value && value <= hi, "{value} outside [{lo}, {hi}]");
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn raising_count_preserves_existing_candidates() -> Result<()> {
+        let generator = GrayScottGenerator::new()?;
+        let format = FormatId::new("gray-scott.v1")?;
+        let three = GrayScottGeneratorConfig::new(
+            3,
+            [0.01, 0.08],
+            [0.03, 0.07],
+            [0.16, 0.16],
+            [0.08, 0.08],
+        )?;
+        let five = GrayScottGeneratorConfig::new(
+            5,
+            [0.01, 0.08],
+            [0.03, 0.07],
+            [0.16, 0.16],
+            [0.08, 0.08],
+        )?;
+        let a = generator.generate(9, &three.to_bytes(), &format)?;
+        let b = generator.generate(9, &five.to_bytes(), &format)?;
+        assert_eq!(a[..], b[..3]);
+        Ok(())
+    }
+
+    #[test]
+    fn degenerate_ranges_produce_the_fixed_genome() -> Result<()> {
+        let generator = GrayScottGenerator::new()?;
+        let format = FormatId::new("gray-scott.v1")?;
+        let specs = generator.generate(3, &degenerate(1).to_bytes(), &format)?;
+        // The mapping is exact on degenerate ranges: `t * 0 = 0`.
+        assert_eq!(
+            specs[0].bytes,
+            GrayScottGenome::new(0.055, 0.062, 0.16, 0.08)?.to_bytes()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn duplicate_draws_are_rejected() -> Result<()> {
+        let generator = GrayScottGenerator::new()?;
+        let format = FormatId::new("gray-scott.v1")?;
+        match generator.generate(3, &degenerate(2).to_bytes(), &format) {
+            Err(Error::Validation(message)) => {
+                assert!(
+                    message.contains("candidates 0 and 1"),
+                    "the error names the colliding candidates: {message}"
+                );
+            }
+            other => panic!("expected Validation, got {other:?}"),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn candidate_zero_matches_independent_reference() -> Result<()> {
+        let generator = GrayScottGenerator::new()?;
+        let format = FormatId::new("gray-scott.v1")?;
+        let specs = generator.generate(42, &sample().to_bytes(), &format)?;
+        assert_eq!(to_hex(&specs[0].bytes), CANDIDATE0_BYTES_HEX);
+        Ok(())
+    }
+
+    #[test]
+    fn generate_rejects_malformed_params() -> Result<()> {
+        let generator = GrayScottGenerator::new()?;
+        let format = FormatId::new("gray-scott.v1")?;
+        // A single byte cannot even hold the u64 count prefix.
+        assert!(matches!(
+            generator.generate(1, &[0xFF], &format),
+            Err(Error::Encoding(_))
+        ));
         Ok(())
     }
 }
