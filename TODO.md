@@ -274,10 +274,24 @@ the store without re-execution; results reproduce run to run on the dev
 machine.
 
 - [ ] M3.1 Reaction-diffusion (Gray-Scott): the simplest float family — 2
-      channels, small-stencil Laplacian + local reaction. Genome = feed / kill
-      / diffusion rates; genome encode/validate, seeded generator, CPU
-      reference engine with known-answer tests, WGSL kernel. First float
-      family through the toolkit, proving the float path before the harder two
+      channels, small-stencil Laplacian + local reaction. First float family
+      through the toolkit, proving the float path before the harder two.
+      Split into four sub-milestones, one PR each, each reviewed on its own:
+- [ ] M3.1a Genome: genome = feed / kill / diffusion rates; canonical
+      encode/decode (identity-bearing, own format tag) plus range validation,
+      with pinned byte-stability and independent content-id tests per the
+      grid-format precedent
+- [ ] M3.1b Seeded generator: a deterministic genome population from
+      (config, seed) through the generator contract — the first generator
+      producing real specs
+- [ ] M3.1c CPU reference engine: the Gray-Scott rule as a `CellularRule`
+      with known-answer tests — pinned states for fixed genome/seed/steps,
+      plus qualitative checks (a known pattern-forming (f, k) point forms
+      structure; a known dead point decays)
+- [ ] M3.1d WGSL kernel and full spine: the rule as a compute kernel through
+      `sima-toolkit-wgsl`, cross-checked against the CPU reference within a
+      stated per-backend tolerance; the domain wired end to end (generate →
+      execute → commit → inspect) from a `sima.toml`
 - [ ] M3.2 Neural CA: genome = perception + update-network parameters, both
       evolvable; the trainable, self-repairing family (regrows when disturbed,
       two trained textures graftable). Seed-derived initialization and
