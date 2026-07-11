@@ -9,6 +9,7 @@
 
 mod generator;
 mod genome;
+mod translation;
 
 pub use generator::{GrayScottGenerator, GrayScottGeneratorConfig};
 pub use genome::GrayScottGenome;
