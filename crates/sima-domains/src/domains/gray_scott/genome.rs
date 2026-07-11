@@ -149,6 +149,9 @@ impl GrayScottGenome {
 
 #[cfg(test)]
 mod tests {
+    use sima_core::to_hex;
+    use sima_model::{FormatId, Spec, SpecId};
+
     use super::*;
 
     /// A pattern-forming point with the classical diffusion pair.
@@ -163,6 +166,19 @@ mod tests {
         p[position] = value;
         GrayScottGenome::new(p[0], p[1], p[2], p[3])
     }
+
+    /// The canonical bytes of [`sample`], derived by hand from the layout —
+    /// each value's `to_bits()` as little-endian hex, concatenated in field
+    /// order — and independently reproduced with Python `struct`:
+    /// `''.join(struct.pack('<f', v).hex() for v in (0.055, 0.062, 0.16, 0.08))`.
+    const SAMPLE_BYTES_HEX: &str = "ae47613db6f37d3d0ad7233e0ad7a33d";
+
+    /// blake3 of the sample's full spec bytes — str `"sima.spec.v1"`, str
+    /// `"gray-scott.v1"`, then the length-prefixed payload, per the `Spec`
+    /// layout — computed independently with the Python `blake3` package:
+    /// `blake3.blake3(bytes.fromhex(spec_hex)).hexdigest()`.
+    const SAMPLE_SPEC_ID_HEX: &str =
+        "bb484ad5583d693bd06e055e39c84a5d41c4ac1a0c808881246a921721c7c4b8";
 
     #[test]
     fn new_accepts_the_classical_parameter_point() -> Result<()> {
@@ -222,6 +238,11 @@ mod tests {
     }
 
     #[test]
+    fn to_bytes_is_byte_stable() {
+        assert_eq!(to_hex(&sample().to_bytes()), SAMPLE_BYTES_HEX);
+    }
+
+    #[test]
     fn round_trips_through_bytes() -> Result<()> {
         let genome = sample();
         // Derived equality is exact here: validation excludes NaN and -0.0,
@@ -264,5 +285,46 @@ mod tests {
             GrayScottGenome::from_bytes(&enc.finish()),
             Err(Error::Validation(_))
         ));
+    }
+
+    #[test]
+    fn spec_id_matches_independent_blake3() -> Result<()> {
+        // Pins the candidate's actual store address end to end.
+        let spec = Spec {
+            format: FormatId::new("gray-scott.v1")?,
+            bytes: sample().to_bytes(),
+        };
+        assert_eq!(spec.id(), SpecId::from_hex(SAMPLE_SPEC_ID_HEX)?);
+        Ok(())
+    }
+
+    #[test]
+    fn adjacent_genomes_have_distinct_spec_ids() -> Result<()> {
+        // Every representable parameter difference is a distinct candidate:
+        // one bit up in any position changes the bytes and the spec id.
+        let base = sample();
+        let format = FormatId::new("gray-scott.v1")?;
+        let base_id = Spec {
+            format: format.clone(),
+            bytes: base.to_bytes(),
+        }
+        .id();
+        let values = [
+            base.feed(),
+            base.kill(),
+            base.diffusion_u(),
+            base.diffusion_v(),
+        ];
+        for (position, value) in values.iter().enumerate() {
+            let perturbed = with_substituted(position, f32::from_bits(value.to_bits() + 1))?;
+            assert_ne!(perturbed.to_bytes(), base.to_bytes());
+            let perturbed_id = Spec {
+                format: format.clone(),
+                bytes: perturbed.to_bytes(),
+            }
+            .id();
+            assert_ne!(perturbed_id, base_id);
+        }
+        Ok(())
     }
 }
