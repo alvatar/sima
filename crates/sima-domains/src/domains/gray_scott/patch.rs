@@ -1,7 +1,9 @@
 //! [`GrayScottPatch`]: the ignition configuration of the Gray-Scott domain's
 //! initial grid.
 
-use sima_core::{Error, Result};
+use sima_core::{Error, Result, prng};
+
+use crate::cellular::Grid;
 
 /// The ignition configuration of the Gray-Scott domain's initial grid: the
 /// base values dropped into the centered square patch, the divisor of the
@@ -83,11 +85,78 @@ impl GrayScottPatch {
     pub fn noise_width(&self) -> f64 {
         self.noise_width
     }
+
+    /// The seeded initial grid every Gray-Scott evaluation ignites from:
+    /// the exact fixed point `(u, v) = (1, 0)` everywhere except a centered
+    /// square patch of this configuration's base values, each patch cell
+    /// perturbed by seeded relative noise of this configuration's width.
+    ///
+    /// The uniform fixed point evolves into nothing, so the patch is what
+    /// makes the trajectory exist, and the noise breaks the square's mirror
+    /// symmetry — a deterministic symmetric rule maps a symmetric state to
+    /// a symmetric state forever, so without it the evolution would stay
+    /// mirror-symmetric and the task seed would be dead weight. The
+    /// construction is identity-bearing: the patch values and the seed
+    /// determine the trajectory, and the arithmetic below is frozen.
+    ///
+    /// A zero or overflowing extent is [`Error::Validation`] through
+    /// [`Grid::new`].
+    pub fn seeded_initial(&self, width: u32, height: u32, seed: u64) -> Result<Grid> {
+        // The payload allocation needs the element count up front. Zero and
+        // overflowing extents are Grid::new's rules: hand it an empty
+        // payload so its own validation produces the error — its zero and
+        // overflow checks precede the payload length check.
+        let count = if width == 0 || height == 0 {
+            None
+        } else {
+            (width as usize)
+                .checked_mul(height as usize)
+                .and_then(|cells| cells.checked_mul(2))
+        };
+        let Some(count) = count else {
+            return Grid::new(width, height, 2, Vec::new());
+        };
+        // The background is the exact fixed point and takes no PRNG draws:
+        // its bytes are exactly 1.0f32 / 0.0f32 and the PRNG cost is
+        // proportional to the patch, not the grid.
+        let mut data = Vec::with_capacity(count);
+        for _ in 0..count / 2 {
+            data.push(1.0f32);
+            data.push(0.0f32);
+        }
+        // Patch geometry: a centered square spanning
+        // [x0, x0 + side) x [y0, y0 + side), integer division throughout.
+        let side = (width.min(height) / self.side_divisor()).max(1);
+        let x0 = (width - side) / 2;
+        let y0 = (height - side) / 2;
+        for y in y0..y0 + side {
+            for x in x0..x0 + side {
+                // Cell index widened to u64 before multiplying, so the
+                // substream tag is exact for every representable grid.
+                let s = prng::derive(seed, y as u64 * width as u64 + x as u64);
+                let t_u = prng::unit_f64(prng::next(s, 0));
+                let t_v = prng::unit_f64(prng::next(s, 1));
+                // Frozen identity-bearing draw: counter 0 perturbs u,
+                // counter 1 perturbs v, each in f64 with one final cast.
+                let u = (self.base_u() * (1.0 + (t_u - 0.5) * self.noise_width())) as f32;
+                let v = (self.base_v() * (1.0 + (t_v - 0.5) * self.noise_width())) as f32;
+                let idx = (y as usize * width as usize + x as usize) * 2;
+                data[idx] = u;
+                data[idx + 1] = v;
+            }
+        }
+        Grid::new(width, height, 2, data)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Pearson's classical ignition configuration.
+    fn pearson_patch() -> GrayScottPatch {
+        GrayScottPatch::new(0.5, 0.25, 8, 0.02).expect("valid pearson patch")
+    }
 
     #[test]
     fn patch_rejects_invalid_values() -> Result<()> {
@@ -119,6 +188,110 @@ mod tests {
         assert_eq!(patch.base_v(), 0.25);
         assert_eq!(patch.side_divisor(), 8);
         assert_eq!(patch.noise_width(), 0.02);
+        Ok(())
+    }
+
+    #[test]
+    fn the_background_is_the_exact_fixed_point() -> Result<()> {
+        // 16x16: side = max(16 / 8, 1) = 2, x0 = y0 = (16 - 2) / 2 = 7, so
+        // the patch spans [7, 9) x [7, 9); every other cell must carry the
+        // fixed point's exact bit patterns.
+        let grid = pearson_patch().seeded_initial(16, 16, 7)?;
+        for y in 0..16usize {
+            for x in 0..16usize {
+                if (7..9).contains(&x) && (7..9).contains(&y) {
+                    continue;
+                }
+                let idx = (y * 16 + x) * 2;
+                let u = grid.data()[idx];
+                let v = grid.data()[idx + 1];
+                assert_eq!(u.to_bits(), 1.0f32.to_bits(), "u at ({x}, {y})");
+                assert_eq!(v.to_bits(), 0.0f32.to_bits(), "v at ({x}, {y})");
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn the_patch_is_centered_with_the_specified_side() -> Result<()> {
+        // 64x64: side = 8, x0 = y0 = (64 - 8) / 2 = 28, so the patch spans
+        // [28, 36) x [28, 36). The four cells just outside each boundary
+        // are background; the two opposite patch corners are not.
+        let grid = pearson_patch().seeded_initial(64, 64, 3)?;
+        let is_background = |x: usize, y: usize| {
+            let idx = (y * 64 + x) * 2;
+            grid.data()[idx] == 1.0 && grid.data()[idx + 1] == 0.0
+        };
+        for (x, y) in [(27, 28), (36, 28), (28, 27), (28, 36)] {
+            assert!(is_background(x, y), "({x}, {y}) must be background");
+        }
+        for (x, y) in [(28, 28), (35, 35)] {
+            assert!(!is_background(x, y), "({x}, {y}) must be patch");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn patch_values_stay_inside_the_noise_band() -> Result<()> {
+        // ±1% around the Pearson base values 0.5 and 0.25. The draw maps
+        // t ∈ [0, 1), so the true range is half-open; the closed bounds
+        // here need not encode that.
+        let grid = pearson_patch().seeded_initial(64, 64, 3)?;
+        for y in 28..36usize {
+            for x in 28..36usize {
+                let idx = (y * 64 + x) * 2;
+                let u = grid.data()[idx];
+                let v = grid.data()[idx + 1];
+                assert!((0.495..=0.505).contains(&u), "u at ({x}, {y}): {u}");
+                assert!((0.2475..=0.2525).contains(&v), "v at ({x}, {y}): {v}");
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn the_seed_selects_the_state() -> Result<()> {
+        let one = pearson_patch().seeded_initial(16, 16, 1)?;
+        let two = pearson_patch().seeded_initial(16, 16, 2)?;
+        assert_ne!(one.to_bytes(), two.to_bytes());
+        let again = pearson_patch().seeded_initial(16, 16, 1)?;
+        assert_eq!(one.to_bytes(), again.to_bytes());
+        Ok(())
+    }
+
+    #[test]
+    fn a_tiny_grid_has_a_one_cell_patch() -> Result<()> {
+        // side = max(1 / 8, 1) = 1: the single cell is patch, not
+        // background.
+        let grid = pearson_patch().seeded_initial(1, 1, 5)?;
+        assert!((0.495..=0.505).contains(&grid.data()[0]));
+        assert!((0.2475..=0.2525).contains(&grid.data()[1]));
+        Ok(())
+    }
+
+    #[test]
+    fn seeded_initial_rejects_a_zero_dimension() {
+        for (width, height) in [(0, 16), (16, 0)] {
+            assert!(matches!(
+                pearson_patch().seeded_initial(width, height, 7),
+                Err(Error::Validation(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn a_noiseless_patch_ignores_the_seed() -> Result<()> {
+        // noise_width 0 is the legitimate noiseless configuration:
+        // (t - 0.5) * 0.0 == 0.0 for every t the PRNG produces, so the draw
+        // is exact and every patch cell carries the base values' own bit
+        // patterns; the seed then selects nothing.
+        let patch = GrayScottPatch::new(0.5, 0.25, 8, 0.0)?;
+        let grid = patch.seeded_initial(16, 16, 1)?;
+        let idx = (7 * 16 + 7) * 2;
+        assert_eq!(grid.data()[idx].to_bits(), 0.5f32.to_bits());
+        assert_eq!(grid.data()[idx + 1].to_bits(), 0.25f32.to_bits());
+        let other = patch.seeded_initial(16, 16, 2)?;
+        assert_eq!(grid.to_bytes(), other.to_bytes());
         Ok(())
     }
 }
