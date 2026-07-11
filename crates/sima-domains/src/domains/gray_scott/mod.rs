@@ -2,7 +2,7 @@
 //! grid whose candidates are the four evolvable scalars of its update rule.
 //!
 //! The module holds [`GrayScottGenome`], the validated payload type the
-//! domain's specs carry.
+//! domain's specs carry, with its canonical byte codec.
 
 mod genome;
 

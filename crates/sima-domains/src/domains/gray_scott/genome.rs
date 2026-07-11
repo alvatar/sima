@@ -1,6 +1,6 @@
 //! [`GrayScottGenome`]: the evolvable parameters of the Gray-Scott domain.
 
-use sima_core::{Error, Result};
+use sima_core::{Dec, Enc, Error, Result};
 
 /// The Gray-Scott genome: the four evolvable scalars of the two-chemical
 /// reaction-diffusion system
@@ -15,10 +15,19 @@ use sima_core::{Error, Result};
 /// reaction converting `u` into `v`, and `Du`, `Dv` scale each channel's
 /// diffusion.
 ///
-/// Validation is part of the format contract and therefore rejects only what
-/// is meaningless under every possible engine. Sampling bounds are generator
-/// configuration and integration stability is engine policy; neither belongs
-/// in the permanent format.
+/// The canonical form is the four values in the frozen order `feed`, `kill`,
+/// `diffusion_u`, `diffusion_v`, each as its IEEE-754 bits in a little-endian
+/// `u32`: exactly 16 bytes. All four are `f32` — the width of the grid state
+/// and the widest float WGSL offers — so CPU and GPU consume bit-identical
+/// parameters. The payload carries no inner tag: the
+/// [`Spec`](sima_model::Spec) holding it frames the outer object with the
+/// spec tag and the format id, both inside the hashed identity.
+///
+/// Validation is part of the format contract — decode funnels through it, so
+/// changing it would retroactively change which stored specs decode — and
+/// therefore rejects only what is meaningless under every possible engine.
+/// Sampling bounds are generator configuration and integration stability is
+/// engine policy; neither belongs in the permanent format.
 // On constructed values the derived `PartialEq` is total and coincides with
 // byte equality, because validation excludes NaN (which would make equality
 // irreflexive) and -0.0 (the one value that equals another numerically while
@@ -101,6 +110,41 @@ impl GrayScottGenome {
     pub fn diffusion_v(&self) -> f32 {
         self.diffusion_v
     }
+
+    /// Appends the canonical form: the four parameters in the frozen field
+    /// order, each via [`Enc::f32`].
+    pub fn encode(&self, enc: &mut Enc) {
+        enc.f32(self.feed)
+            .f32(self.kill)
+            .f32(self.diffusion_u)
+            .f32(self.diffusion_v);
+    }
+
+    /// Reads a canonical form written by [`GrayScottGenome::encode`],
+    /// funneling the values through [`GrayScottGenome::new`] so decode and
+    /// construction share one validation path.
+    pub fn decode(dec: &mut Dec<'_>) -> Result<GrayScottGenome> {
+        let feed = dec.f32()?;
+        let kill = dec.f32()?;
+        let diffusion_u = dec.f32()?;
+        let diffusion_v = dec.f32()?;
+        GrayScottGenome::new(feed, kill, diffusion_u, diffusion_v)
+    }
+
+    /// The standalone canonical bytes — exactly the bytes a spec carries.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut enc = Enc::new();
+        self.encode(&mut enc);
+        enc.finish()
+    }
+
+    /// Parses standalone canonical bytes, rejecting trailing input.
+    pub fn from_bytes(bytes: &[u8]) -> Result<GrayScottGenome> {
+        let mut dec = Dec::new(bytes);
+        let genome = GrayScottGenome::decode(&mut dec)?;
+        dec.finish()?;
+        Ok(genome)
+    }
 }
 
 #[cfg(test)]
@@ -175,5 +219,50 @@ mod tests {
         // diffusion rule rejects is admitted by the sign rule.
         GrayScottGenome::new(0.0, 0.0, 0.16, 0.08)?;
         Ok(())
+    }
+
+    #[test]
+    fn round_trips_through_bytes() -> Result<()> {
+        let genome = sample();
+        // Derived equality is exact here: validation excludes NaN and -0.0,
+        // so `PartialEq` coincides with byte equality on constructed values.
+        assert_eq!(GrayScottGenome::from_bytes(&genome.to_bytes())?, genome);
+        Ok(())
+    }
+
+    #[test]
+    fn from_bytes_rejects_every_truncation() {
+        let full = sample().to_bytes();
+        for cut in 0..full.len() {
+            assert!(
+                matches!(
+                    GrayScottGenome::from_bytes(&full[..cut]),
+                    Err(Error::Encoding(_))
+                ),
+                "prefix of {cut} bytes must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn from_bytes_rejects_trailing_bytes() {
+        let mut buf = sample().to_bytes();
+        buf.push(0);
+        assert!(matches!(
+            GrayScottGenome::from_bytes(&buf),
+            Err(Error::Encoding(_))
+        ));
+    }
+
+    #[test]
+    fn from_bytes_rejects_invalid_values() {
+        // Sixteen well-formed bytes whose first four encode a NaN: the
+        // structure decodes, the value fails — decode funnels through `new`.
+        let mut enc = Enc::new();
+        enc.f32(f32::NAN).f32(0.062).f32(0.16).f32(0.08);
+        assert!(matches!(
+            GrayScottGenome::from_bytes(&enc.finish()),
+            Err(Error::Validation(_))
+        ));
     }
 }
