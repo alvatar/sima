@@ -1,0 +1,15 @@
+[package]
+name = "sima-integration"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dev-dependencies]
+sima-core = { path = "../sima-core" }
+sima-domains = { path = "../sima-domains" }
+sima-pipeline = { path = "../sima-pipeline" }
+sima-store = { path = "../sima-store" }
+tempfile.workspace = true
+
+[lints]
+workspace = true
