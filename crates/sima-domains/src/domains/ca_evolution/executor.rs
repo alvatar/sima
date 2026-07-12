@@ -1,4 +1,4 @@
-//! [`GrayScottExecutor`]: evaluates a Gray-Scott candidate on the GPU.
+//! [`CaEvolutionExecutor`]: evaluates a `ca_evolution` candidate on the GPU.
 
 use std::sync::Mutex;
 
@@ -6,7 +6,7 @@ use sima_core::{Error, Result};
 use sima_model::FormatId;
 use sima_toolkit_wgsl::{Context, Kernel};
 
-use super::{GrayScottGenome, GrayScottParams};
+use super::{CaEvolutionGenome, CaEvolutionParams};
 use crate::cellular::{Grid, run};
 use sima_contracts::{
     Artifact, Checkpoint, ExecutionContext, Executor, Outcome, STATE_ARTIFACT, Stats, TaskInput,
@@ -17,8 +17,8 @@ use sima_contracts::{
 /// source that fails to compile without needing a device.
 pub(crate) const KERNEL_WGSL: &str = include_str!("../../../shaders/gray_scott.wgsl");
 
-/// Evaluates a Gray-Scott candidate on the GPU, under format
-/// `gray-scott.v1`: the spec's genome and the run params frame one task —
+/// Evaluates a `ca_evolution` candidate on the GPU, under format
+/// `ca_evolution.v1`: the spec's genome and the run params frame one task —
 /// ignite (or continue) a grid, advance it `steps` kernel dispatches, commit
 /// the final grid's canonical bytes as the `state` artifact with empty
 /// stats.
@@ -38,7 +38,7 @@ pub(crate) const KERNEL_WGSL: &str = include_str!("../../../shaders/gray_scott.w
 /// the segment's input — bounded by `steps`, which `segments` controls. A
 /// config that sets a checkpoint interval simply never gets a save for this
 /// domain. Ignoring the channel cannot change committed bytes.
-pub struct GrayScottExecutor {
+pub struct CaEvolutionExecutor {
     format: FormatId,
     /// The lazily initialized engine: `None` until the first execute, then
     /// a fully constructed engine for the process's lifetime. A failed
@@ -56,18 +56,18 @@ struct GpuEngine {
     context: Context,
 }
 
-impl GrayScottExecutor {
-    /// Constructs the executor for the `gray-scott.v1` format, performing
+impl CaEvolutionExecutor {
+    /// Constructs the executor for the `ca_evolution.v1` format, performing
     /// no GPU work.
-    pub fn new() -> Result<GrayScottExecutor> {
-        Ok(GrayScottExecutor {
-            format: FormatId::new("gray-scott.v1")?,
+    pub fn new() -> Result<CaEvolutionExecutor> {
+        Ok(CaEvolutionExecutor {
+            format: FormatId::new("ca_evolution.v1")?,
             gpu: Mutex::new(None),
         })
     }
 }
 
-impl Executor for GrayScottExecutor {
+impl Executor for CaEvolutionExecutor {
     fn format(&self) -> &FormatId {
         &self.format
     }
@@ -82,11 +82,11 @@ impl Executor for GrayScottExecutor {
         // spec, params, or input state is an identity fault (`Err`), never a
         // candidate failure — and the error paths stay device-free, like the
         // stub's treatment.
-        let genome = GrayScottGenome::from_bytes(&input.spec.bytes).map_err(|e| {
-            Error::Validation(format!("gray-scott spec is not a valid genome: {e}"))
+        let genome = CaEvolutionGenome::from_bytes(&input.spec.bytes).map_err(|e| {
+            Error::Validation(format!("ca_evolution spec is not a valid genome: {e}"))
         })?;
-        let params = GrayScottParams::from_bytes(&input.params.bytes)
-            .map_err(|e| Error::Validation(format!("gray-scott params are malformed: {e}")))?;
+        let params = CaEvolutionParams::from_bytes(&input.params.bytes)
+            .map_err(|e| Error::Validation(format!("ca_evolution params are malformed: {e}")))?;
         let initial = match input.input_state {
             // The first segment ignites from the seeded patch.
             None => params
@@ -96,13 +96,13 @@ impl Executor for GrayScottExecutor {
             // which must match the run's dimensions exactly.
             Some(bytes) => {
                 let grid = Grid::from_bytes(bytes).map_err(|e| {
-                    Error::Validation(format!("gray-scott input state is malformed: {e}"))
+                    Error::Validation(format!("ca_evolution input state is malformed: {e}"))
                 })?;
                 let got = (grid.width(), grid.height(), grid.channels());
                 let want = (params.width(), params.height(), 2);
                 if got != want {
                     return Err(Error::Validation(format!(
-                        "gray-scott input state dimensions {got:?} do not match the run \
+                        "ca_evolution input state dimensions {got:?} do not match the run \
                          params {want:?}"
                     )));
                 }
@@ -161,22 +161,22 @@ mod tests {
     use sima_core::hash_bytes;
     use sima_model::{EnvironmentId, Params, Spec};
 
-    use super::super::GrayScottPatch;
+    use super::super::CaEvolutionPatch;
     use super::*;
 
     /// The pattern-forming sample point with the classical diffusion pair.
-    fn sample_genome() -> GrayScottGenome {
-        GrayScottGenome::new(0.055, 0.062, 0.16, 0.08).expect("valid sample genome")
+    fn sample_genome() -> CaEvolutionGenome {
+        CaEvolutionGenome::new(0.055, 0.062, 0.16, 0.08).expect("valid sample genome")
     }
 
     /// Pearson's classical ignition configuration.
-    fn pearson_patch() -> GrayScottPatch {
-        GrayScottPatch::new(0.5, 0.25, 8, 0.02).expect("valid pearson patch")
+    fn pearson_patch() -> CaEvolutionPatch {
+        CaEvolutionPatch::new(0.5, 0.25, 8, 0.02).expect("valid pearson patch")
     }
 
-    fn spec_for(genome: &GrayScottGenome) -> Spec {
+    fn spec_for(genome: &CaEvolutionGenome) -> Spec {
         Spec {
-            format: FormatId::new("gray-scott.v1").expect("valid format id"),
+            format: FormatId::new("ca_evolution.v1").expect("valid format id"),
             bytes: genome.to_bytes(),
         }
     }
@@ -185,7 +185,7 @@ mod tests {
     /// patch, advancing `steps` per task.
     fn params_for_steps(steps: u32) -> Params {
         Params {
-            bytes: GrayScottParams::new(64, 64, steps, 1.0, pearson_patch())
+            bytes: CaEvolutionParams::new(64, 64, steps, 1.0, pearson_patch())
                 .expect("valid params")
                 .to_bytes(),
         }
@@ -206,8 +206,8 @@ mod tests {
     /// bytes, asserting the outcome shape: one `state` artifact, empty
     /// stats.
     fn run_state(
-        exec: &GrayScottExecutor,
-        genome: &GrayScottGenome,
+        exec: &CaEvolutionExecutor,
+        genome: &CaEvolutionGenome,
         steps: u32,
         input_state: Option<&[u8]>,
     ) -> Vec<u8> {
@@ -227,7 +227,7 @@ mod tests {
             Outcome::Completed { artifacts, stats } => {
                 assert_eq!(artifacts.len(), 1, "one committed artifact");
                 assert_eq!(artifacts[0].name, STATE_ARTIFACT);
-                assert!(stats.bytes.is_empty(), "gray-scott stats are empty");
+                assert!(stats.bytes.is_empty(), "ca_evolution stats are empty");
                 artifacts[0].bytes.clone()
             }
             other => panic!("expected Completed, got {other:?}"),
@@ -240,18 +240,21 @@ mod tests {
     }
 
     #[test]
-    fn format_answers_gray_scott() -> Result<()> {
-        assert_eq!(GrayScottExecutor::new()?.format().as_str(), "gray-scott.v1");
+    fn format_answers_ca_evolution() -> Result<()> {
+        assert_eq!(
+            CaEvolutionExecutor::new()?.format().as_str(),
+            "ca_evolution.v1"
+        );
         Ok(())
     }
 
     #[test]
     fn a_malformed_spec_is_an_error() -> Result<()> {
-        let exec = GrayScottExecutor::new()?;
+        let exec = CaEvolutionExecutor::new()?;
         let params = params_for_steps(100);
         for bytes in [vec![0xFF], Vec::new()] {
             let spec = Spec {
-                format: FormatId::new("gray-scott.v1")?,
+                format: FormatId::new("ca_evolution.v1")?,
                 bytes,
             };
             let input = TaskInput {
@@ -276,7 +279,7 @@ mod tests {
 
     #[test]
     fn malformed_params_are_an_error() -> Result<()> {
-        let exec = GrayScottExecutor::new()?;
+        let exec = CaEvolutionExecutor::new()?;
         let spec = spec_for(&sample_genome());
         let params = Params {
             bytes: vec![1, 2, 3],
@@ -299,7 +302,7 @@ mod tests {
     fn a_mismatched_input_state_is_an_error() -> Result<()> {
         // An 8x8 predecessor grid against 64x64 run params: the error names
         // both dimension triples.
-        let exec = GrayScottExecutor::new()?;
+        let exec = CaEvolutionExecutor::new()?;
         let spec = spec_for(&sample_genome());
         let params = params_for_steps(100);
         let state = Grid::new(8, 8, 2, vec![0.0; 128])?.to_bytes();
@@ -324,7 +327,7 @@ mod tests {
 
     #[test]
     fn a_non_grid_input_state_is_an_error() -> Result<()> {
-        let exec = GrayScottExecutor::new()?;
+        let exec = CaEvolutionExecutor::new()?;
         let spec = spec_for(&sample_genome());
         let params = params_for_steps(100);
         let input = TaskInput {
@@ -354,7 +357,7 @@ mod tests {
         //   - the count of cells with v > 0.1 catches a patch that survived
         //     without growing: more than four times the initial patch means
         //     the structure demonstrably grew beyond its seed.
-        let exec = GrayScottExecutor::new()?;
+        let exec = CaEvolutionExecutor::new()?;
         let state = run_state(&exec, &sample_genome(), 3000, None);
         let evolved = Grid::from_bytes(&state)?;
         assert!(evolved.data().iter().all(|value| value.is_finite()));
@@ -382,8 +385,8 @@ mod tests {
         // Same frame at (f, k) = (0.05, 0.075): k sits above the pattern
         // band of the (f, k) map, so the patch reacts transiently, fails to
         // self-sustain, and dies; the feed then pulls u back toward 1.
-        let genome = GrayScottGenome::new(0.05, 0.075, 0.16, 0.08)?;
-        let exec = GrayScottExecutor::new()?;
+        let genome = CaEvolutionGenome::new(0.05, 0.075, 0.16, 0.08)?;
+        let exec = CaEvolutionExecutor::new()?;
         let state = run_state(&exec, &genome, 3000, None);
         let evolved = Grid::from_bytes(&state)?;
         let max_v = evolved
@@ -409,7 +412,7 @@ mod tests {
         // Two fresh execute calls over the same TaskInput: per-backend
         // determinism at the executor level — results reproduce run to run
         // on one machine.
-        let exec = GrayScottExecutor::new()?;
+        let exec = CaEvolutionExecutor::new()?;
         let first = run_state(&exec, &sample_genome(), 3000, None);
         let second = run_state(&exec, &sample_genome(), 3000, None);
         assert_eq!(first, second);
@@ -425,7 +428,7 @@ mod tests {
         // decode path restores the exact grid, and grid bytes alone are the
         // complete continuation state. Same machine, same backend, so
         // equality is exact.
-        let exec = GrayScottExecutor::new()?;
+        let exec = CaEvolutionExecutor::new()?;
         let first = run_state(&exec, &sample_genome(), 200, None);
         let second = run_state(&exec, &sample_genome(), 200, Some(&first));
         let whole = run_state(&exec, &sample_genome(), 400, None);

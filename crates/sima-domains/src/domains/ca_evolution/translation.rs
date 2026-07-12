@@ -1,6 +1,6 @@
-//! The Gray-Scott config translations — the `[run.generator]` section into
-//! canonical [`GrayScottGeneratorConfig`] bytes, the `[run.params]` section
-//! into canonical [`GrayScottParams`] bytes — and the binding of the
+//! The `ca_evolution` config translations — the `[run.generator]` section into
+//! canonical [`CaEvolutionGeneratorConfig`] bytes, the `[run.params]` section
+//! into canonical [`CaEvolutionParams`] bytes — and the binding of the
 //! domain's id to its executor and environment.
 
 use sima_core::{Error, Result};
@@ -8,15 +8,16 @@ use sima_model::{Environment, EnvironmentComponent, EnvironmentValue, FormatId, 
 use sima_toolkit_wgsl::{COMPILER_ID, source_digest};
 
 use super::{
-    GrayScottExecutor, GrayScottGeneratorConfig, GrayScottParams, GrayScottPatch, KERNEL_WGSL,
+    CaEvolutionExecutor, CaEvolutionGeneratorConfig, CaEvolutionParams, CaEvolutionPatch,
+    KERNEL_WGSL,
 };
 use crate::domain::Domain;
 use crate::domains::translate::reject_unknown_keys;
 
-/// The Gray-Scott format id, doubling as its generator id.
-pub(crate) const ID: &str = "gray-scott.v1";
+/// The `ca_evolution` format id, doubling as its generator id.
+pub(crate) const ID: &str = "ca_evolution.v1";
 
-/// The Gray-Scott domain: the GPU executor and a three-component
+/// The `ca_evolution` domain: the GPU executor and a three-component
 /// environment — the executor's own version, the blake3 digest of the WGSL
 /// kernel source, and the pinned WGSL compiler id. Source digest and
 /// compiler id together pin the compiled SPIR-V: editing the shader or
@@ -27,14 +28,14 @@ pub(crate) const ID: &str = "gray-scott.v1";
 pub(crate) fn domain() -> Result<Domain> {
     Ok(Domain {
         format: FormatId::new(ID)?,
-        executor: Box::new(GrayScottExecutor::new()?),
+        executor: Box::new(CaEvolutionExecutor::new()?),
         environment: Environment::new(vec![
             EnvironmentComponent::new(
-                "gray-scott.executor",
+                "ca_evolution.executor",
                 EnvironmentValue::Version("v1".to_string()),
             )?,
             EnvironmentComponent::new(
-                "gray-scott.kernel",
+                "ca_evolution.kernel",
                 EnvironmentValue::Digest(source_digest(KERNEL_WGSL)),
             )?,
             EnvironmentComponent::new(
@@ -47,7 +48,7 @@ pub(crate) fn domain() -> Result<Domain> {
 
 /// Translates the `[run.generator]` table (minus `id`): a required `count`
 /// and one required range per genome parameter, encoded through
-/// [`GrayScottGeneratorConfig`]'s own codec, so the box validation surfaces
+/// [`CaEvolutionGeneratorConfig`]'s own codec, so the box validation surfaces
 /// here. All five keys are required, with no defaults — every value that
 /// determines candidate identity is visible in the config file. Unknown
 /// keys are rejected.
@@ -63,12 +64,12 @@ pub(crate) fn generator_params(table: &toml::Table) -> Result<Vec<u8>> {
     let kill = range(table, "kill")?;
     let diffusion_u = range(table, "diffusion_u")?;
     let diffusion_v = range(table, "diffusion_v")?;
-    Ok(GrayScottGeneratorConfig::new(count, feed, kill, diffusion_u, diffusion_v)?.to_bytes())
+    Ok(CaEvolutionGeneratorConfig::new(count, feed, kill, diffusion_u, diffusion_v)?.to_bytes())
 }
 
 /// Translates the `[run.params]` table: eight required keys — the grid
 /// extents, the per-task step count, the integration step, and the four
-/// ignition patch values — encoded through [`GrayScottParams`]'s own codec,
+/// ignition patch values — encoded through [`CaEvolutionParams`]'s own codec,
 /// so the params and patch validation surfaces here. All eight keys are
 /// required, with no defaults — every value that determines candidate
 /// identity is visible in the config file. Unknown keys are rejected.
@@ -97,9 +98,9 @@ pub(crate) fn params(table: &toml::Table) -> Result<Params> {
     let base_v = float(table, "base_v")?;
     let side_divisor = integer(table, "side_divisor")?;
     let noise_width = float(table, "noise_width")?;
-    let patch = GrayScottPatch::new(base_u, base_v, side_divisor, noise_width)?;
+    let patch = CaEvolutionPatch::new(base_u, base_v, side_divisor, noise_width)?;
     Ok(Params {
-        bytes: GrayScottParams::new(width, height, steps, dt, patch)?.to_bytes(),
+        bytes: CaEvolutionParams::new(width, height, steps, dt, patch)?.to_bytes(),
     })
 }
 
@@ -110,11 +111,11 @@ fn integer(table: &toml::Table, key: &str) -> Result<u32> {
     match required(table, "params", key)? {
         toml::Value::Integer(n) => u32::try_from(*n).map_err(|_| {
             Error::Validation(format!(
-                "params gray-scott.v1 {key} must be an unsigned 32-bit integer, got {n}"
+                "params ca_evolution.v1 {key} must be an unsigned 32-bit integer, got {n}"
             ))
         }),
         other => Err(Error::Validation(format!(
-            "params gray-scott.v1 {key} must be an integer, got {}",
+            "params ca_evolution.v1 {key} must be an integer, got {}",
             other.type_str()
         ))),
     }
@@ -128,7 +129,7 @@ fn float(table: &toml::Table, key: &str) -> Result<f64> {
         toml::Value::Integer(n) => Ok(*n as f64),
         toml::Value::Float(f) => Ok(*f),
         other => Err(Error::Validation(format!(
-            "params gray-scott.v1 {key} must be a number, got {}",
+            "params ca_evolution.v1 {key} must be a number, got {}",
             other.type_str()
         ))),
     }
@@ -139,10 +140,10 @@ fn count(table: &toml::Table) -> Result<u64> {
     match required(table, "generator", "count")? {
         toml::Value::Integer(n) if *n >= 1 => Ok(*n as u64),
         toml::Value::Integer(n) => Err(Error::Validation(format!(
-            "generator gray-scott.v1 count must be at least 1, got {n}"
+            "generator ca_evolution.v1 count must be at least 1, got {n}"
         ))),
         other => Err(Error::Validation(format!(
-            "generator gray-scott.v1 count must be an integer, got {}",
+            "generator ca_evolution.v1 count must be an integer, got {}",
             other.type_str()
         ))),
     }
@@ -158,7 +159,7 @@ fn range(table: &toml::Table, key: &str) -> Result<[f32; 2]> {
         return Ok([lo, hi]);
     }
     Err(Error::Validation(format!(
-        "generator gray-scott.v1 {key} must be a two-element [lo, hi] array of numbers, got {}",
+        "generator ca_evolution.v1 {key} must be a two-element [lo, hi] array of numbers, got {}",
         value.type_str()
     )))
 }
@@ -167,7 +168,9 @@ fn range(table: &toml::Table, key: &str) -> Result<[f32; 2]> {
 /// the `section` it belongs to.
 fn required<'t>(table: &'t toml::Table, section: &str, key: &str) -> Result<&'t toml::Value> {
     table.get(key).ok_or_else(|| {
-        Error::Validation(format!("{section} gray-scott.v1 requires the key {key:?}"))
+        Error::Validation(format!(
+            "{section} ca_evolution.v1 requires the key {key:?}"
+        ))
     })
 }
 
@@ -203,7 +206,7 @@ mod tests {
 
     #[test]
     fn a_full_table_encodes_through_the_config_codec() -> Result<()> {
-        let expected = GrayScottGeneratorConfig::new(
+        let expected = CaEvolutionGeneratorConfig::new(
             64,
             [0.01, 0.08],
             [0.03, 0.07],
@@ -295,8 +298,8 @@ mod tests {
 
     #[test]
     fn a_full_params_table_encodes_through_the_params_codec() -> Result<()> {
-        let patch = GrayScottPatch::new(0.5, 0.25, 8, 0.02)?;
-        let expected = GrayScottParams::new(64, 48, 100, 1.0, patch)?;
+        let patch = CaEvolutionPatch::new(0.5, 0.25, 8, 0.02)?;
+        let expected = CaEvolutionParams::new(64, 48, 100, 1.0, patch)?;
         assert_eq!(params(&table(FULL_PARAMS))?.bytes, expected.to_bytes());
         Ok(())
     }
@@ -343,7 +346,7 @@ mod tests {
     #[test]
     fn malformed_params_values_are_rejected() {
         // Translation-level shape errors first, then value rules surfacing
-        // through the GrayScottParams and GrayScottPatch validation.
+        // through the CaEvolutionParams and CaEvolutionPatch validation.
         let cases = [
             ("width = 64", r#"width = "wide""#),
             ("width = 64", "width = -1"),

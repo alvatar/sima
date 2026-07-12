@@ -1,11 +1,11 @@
-//! [`GrayScottPatch`]: the ignition configuration of the Gray-Scott domain's
-//! initial grid.
+//! [`CaEvolutionPatch`]: the ignition configuration of the `ca_evolution`
+//! domain's initial grid.
 
 use sima_core::{Dec, Enc, Error, Result, prng};
 
 use crate::cellular::Grid;
 
-/// The ignition configuration of the Gray-Scott domain's initial grid: the
+/// The ignition configuration of the `ca_evolution` domain's initial grid: the
 /// base values dropped into the centered square patch, the divisor of the
 /// shorter grid extent giving the patch side, and the full relative width of
 /// the noise band around each base value.
@@ -14,7 +14,7 @@ use crate::cellular::Grid;
 /// the caller: the values determine candidate identity, so there is no
 /// `Default` — identity-determining values are always explicit.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct GrayScottPatch {
+pub struct CaEvolutionPatch {
     /// Base value of chemical `u` inside the patch.
     base_u: f64,
     /// Base value of chemical `v` inside the patch.
@@ -36,12 +36,12 @@ fn finite_sign_positive(name: &str, value: f64) -> Result<f64> {
         Ok(value)
     } else {
         Err(Error::Validation(format!(
-            "gray-scott patch {name} must be a finite value with positive sign, got {value}"
+            "ca_evolution patch {name} must be a finite value with positive sign, got {value}"
         )))
     }
 }
 
-impl GrayScottPatch {
+impl CaEvolutionPatch {
     /// Builds a patch configuration, validating each field: `base_u`,
     /// `base_v`, and `noise_width` must be finite with positive sign
     /// (`+0.0` admitted); `side_divisor` must be at least 1, since 0 would
@@ -52,13 +52,13 @@ impl GrayScottPatch {
         base_v: f64,
         side_divisor: u32,
         noise_width: f64,
-    ) -> Result<GrayScottPatch> {
+    ) -> Result<CaEvolutionPatch> {
         if side_divisor == 0 {
             return Err(Error::Validation(
-                "gray-scott patch side_divisor must be at least 1, got 0".to_string(),
+                "ca_evolution patch side_divisor must be at least 1, got 0".to_string(),
             ));
         }
-        Ok(GrayScottPatch {
+        Ok(CaEvolutionPatch {
             base_u: finite_sign_positive("base_u", base_u)?,
             base_v: finite_sign_positive("base_v", base_v)?,
             side_divisor,
@@ -96,18 +96,18 @@ impl GrayScottPatch {
             .f64(self.noise_width);
     }
 
-    /// Reads a canonical form written by [`GrayScottPatch::encode`],
-    /// funneling the values through [`GrayScottPatch::new`] so decode and
+    /// Reads a canonical form written by [`CaEvolutionPatch::encode`],
+    /// funneling the values through [`CaEvolutionPatch::new`] so decode and
     /// construction share one validation path.
-    pub fn decode(dec: &mut Dec<'_>) -> Result<GrayScottPatch> {
+    pub fn decode(dec: &mut Dec<'_>) -> Result<CaEvolutionPatch> {
         let base_u = dec.f64()?;
         let base_v = dec.f64()?;
         let side_divisor = dec.u32()?;
         let noise_width = dec.f64()?;
-        GrayScottPatch::new(base_u, base_v, side_divisor, noise_width)
+        CaEvolutionPatch::new(base_u, base_v, side_divisor, noise_width)
     }
 
-    /// The seeded initial grid every Gray-Scott evaluation ignites from:
+    /// The seeded initial grid every `ca_evolution` evaluation ignites from:
     /// the exact fixed point `(u, v) = (1, 0)` everywhere except a centered
     /// square patch of this configuration's base values, each patch cell
     /// perturbed by seeded relative noise of this configuration's width.
@@ -177,8 +177,8 @@ mod tests {
     use super::*;
 
     /// Pearson's classical ignition configuration.
-    fn pearson_patch() -> GrayScottPatch {
-        GrayScottPatch::new(0.5, 0.25, 8, 0.02).expect("valid pearson patch")
+    fn pearson_patch() -> CaEvolutionPatch {
+        CaEvolutionPatch::new(0.5, 0.25, 8, 0.02).expect("valid pearson patch")
     }
 
     /// The canonical bytes of [`pearson_patch`], derived by hand from the
@@ -193,14 +193,14 @@ mod tests {
     fn codec_round_trips() -> Result<()> {
         // The noiseless patch sits on the admitted boundary of the sign
         // rule, so the round trip covers +0.0 explicitly.
-        for patch in [pearson_patch(), GrayScottPatch::new(0.5, 0.25, 8, 0.0)?] {
+        for patch in [pearson_patch(), CaEvolutionPatch::new(0.5, 0.25, 8, 0.0)?] {
             let mut enc = Enc::new();
             patch.encode(&mut enc);
             let buf = enc.finish();
             let mut dec = Dec::new(&buf);
             // Derived equality coincides with byte equality on constructed
             // values: validation excludes NaN and -0.0.
-            assert_eq!(GrayScottPatch::decode(&mut dec)?, patch);
+            assert_eq!(CaEvolutionPatch::decode(&mut dec)?, patch);
             dec.finish()?;
         }
         Ok(())
@@ -222,7 +222,7 @@ mod tests {
         let buf = enc.finish();
         let mut dec = Dec::new(&buf);
         assert!(matches!(
-            GrayScottPatch::decode(&mut dec),
+            CaEvolutionPatch::decode(&mut dec),
             Err(Error::Validation(_))
         ));
     }
@@ -237,7 +237,7 @@ mod tests {
             for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -0.5, -0.0] {
                 let mut p = [0.5, 0.25, 0.02];
                 p[position] = bad;
-                match GrayScottPatch::new(p[0], p[1], 8, p[2]) {
+                match CaEvolutionPatch::new(p[0], p[1], 8, p[2]) {
                     Err(Error::Validation(message)) => assert!(
                         message.contains(name),
                         "message {message:?} must name {name}"
@@ -248,11 +248,11 @@ mod tests {
         }
         // A zero divisor would divide by zero in the side computation.
         assert!(matches!(
-            GrayScottPatch::new(0.5, 0.25, 0, 0.02),
+            CaEvolutionPatch::new(0.5, 0.25, 0, 0.02),
             Err(Error::Validation(_))
         ));
         // A valid construction round-trips through the accessors.
-        let patch = GrayScottPatch::new(0.5, 0.25, 8, 0.02)?;
+        let patch = CaEvolutionPatch::new(0.5, 0.25, 8, 0.02)?;
         assert_eq!(patch.base_u(), 0.5);
         assert_eq!(patch.base_v(), 0.25);
         assert_eq!(patch.side_divisor(), 8);
@@ -354,7 +354,7 @@ mod tests {
         // (t - 0.5) * 0.0 == 0.0 for every t the PRNG produces, so the draw
         // is exact and every patch cell carries the base values' own bit
         // patterns; the seed then selects nothing.
-        let patch = GrayScottPatch::new(0.5, 0.25, 8, 0.0)?;
+        let patch = CaEvolutionPatch::new(0.5, 0.25, 8, 0.0)?;
         let grid = patch.seeded_initial(16, 16, 1)?;
         let idx = (7 * 16 + 7) * 2;
         assert_eq!(grid.data()[idx].to_bits(), 0.5f32.to_bits());

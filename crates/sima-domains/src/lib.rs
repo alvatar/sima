@@ -9,8 +9,8 @@
 //! entries) are the crate's surface; each domain's pieces live in its own
 //! module under `domains/`.
 //!
-//! Beside the concrete domains — the stub and the Gray-Scott
-//! reaction-diffusion family — the [`cellular`] module holds the shared
+//! Beside the concrete domains — the stub and `ca_evolution` — the
+//! [`cellular`] module holds the shared
 //! substrate of the cellular executor kind: the [`Grid`](cellular::Grid)
 //! state, the [`run`](cellular::run) double-buffered dispatch harness, and the
 //! [`CellularRule`](cellular::CellularRule) CPU-reference contract the float
@@ -26,9 +26,9 @@ mod domain;
 mod domains;
 
 pub use domain::{Domain, domain_for, generator_for, generator_params_for, params_for};
-pub use domains::gray_scott::{
-    GrayScottExecutor, GrayScottGenerator, GrayScottGeneratorConfig, GrayScottGenome,
-    GrayScottParams, GrayScottPatch,
+pub use domains::ca_evolution::{
+    CaEvolutionExecutor, CaEvolutionGenerator, CaEvolutionGeneratorConfig, CaEvolutionGenome,
+    CaEvolutionParams, CaEvolutionPatch,
 };
 pub use domains::stub::{
     StubBehavior, StubExecutor, StubGenerator, StubGeneratorConfig, StubProgram, StubState,

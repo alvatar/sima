@@ -1,4 +1,4 @@
-//! [`GrayScottGenome`]: the evolvable parameters of the Gray-Scott domain.
+//! [`CaEvolutionGenome`]: the evolvable parameters of the `ca_evolution` domain.
 
 use sima_core::{Dec, Enc, Error, Result};
 
@@ -33,7 +33,7 @@ use sima_core::{Dec, Enc, Error, Result};
 // irreflexive) and -0.0 (the one value that equals another numerically while
 // differing in bytes).
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct GrayScottGenome {
+pub struct CaEvolutionGenome {
     /// Feed rate `f`: replenishes `u` toward 1.
     feed: f32,
     /// Kill rate `k`: `v` decays at total rate `f + k`.
@@ -54,7 +54,7 @@ fn finite_sign_positive(name: &str, value: f32) -> Result<f32> {
         Ok(value)
     } else {
         Err(Error::Validation(format!(
-            "gray-scott genome {name} must be a finite value with positive sign, got {value}"
+            "ca_evolution genome {name} must be a finite value with positive sign, got {value}"
         )))
     }
 }
@@ -67,12 +67,12 @@ fn finite_positive(name: &str, value: f32) -> Result<f32> {
         Ok(value)
     } else {
         Err(Error::Validation(format!(
-            "gray-scott genome {name} must be a finite value greater than zero, got {value}"
+            "ca_evolution genome {name} must be a finite value greater than zero, got {value}"
         )))
     }
 }
 
-impl GrayScottGenome {
+impl CaEvolutionGenome {
     /// Builds a genome, validating each parameter: `feed` and `kill` must be
     /// finite with positive sign (`+0.0` is admitted); `diffusion_u` and
     /// `diffusion_v` must be finite and greater than zero. Any violation is
@@ -82,8 +82,8 @@ impl GrayScottGenome {
         kill: f32,
         diffusion_u: f32,
         diffusion_v: f32,
-    ) -> Result<GrayScottGenome> {
-        Ok(GrayScottGenome {
+    ) -> Result<CaEvolutionGenome> {
+        Ok(CaEvolutionGenome {
             feed: finite_sign_positive("feed", feed)?,
             kill: finite_sign_positive("kill", kill)?,
             diffusion_u: finite_positive("diffusion_u", diffusion_u)?,
@@ -120,15 +120,15 @@ impl GrayScottGenome {
             .f32(self.diffusion_v);
     }
 
-    /// Reads a canonical form written by [`GrayScottGenome::encode`],
-    /// funneling the values through [`GrayScottGenome::new`] so decode and
+    /// Reads a canonical form written by [`CaEvolutionGenome::encode`],
+    /// funneling the values through [`CaEvolutionGenome::new`] so decode and
     /// construction share one validation path.
-    pub fn decode(dec: &mut Dec<'_>) -> Result<GrayScottGenome> {
+    pub fn decode(dec: &mut Dec<'_>) -> Result<CaEvolutionGenome> {
         let feed = dec.f32()?;
         let kill = dec.f32()?;
         let diffusion_u = dec.f32()?;
         let diffusion_v = dec.f32()?;
-        GrayScottGenome::new(feed, kill, diffusion_u, diffusion_v)
+        CaEvolutionGenome::new(feed, kill, diffusion_u, diffusion_v)
     }
 
     /// The standalone canonical bytes — exactly the bytes a spec carries.
@@ -139,9 +139,9 @@ impl GrayScottGenome {
     }
 
     /// Parses standalone canonical bytes, rejecting trailing input.
-    pub fn from_bytes(bytes: &[u8]) -> Result<GrayScottGenome> {
+    pub fn from_bytes(bytes: &[u8]) -> Result<CaEvolutionGenome> {
         let mut dec = Dec::new(bytes);
-        let genome = GrayScottGenome::decode(&mut dec)?;
+        let genome = CaEvolutionGenome::decode(&mut dec)?;
         dec.finish()?;
         Ok(genome)
     }
@@ -155,16 +155,16 @@ mod tests {
     use super::*;
 
     /// A pattern-forming point with the classical diffusion pair.
-    fn sample() -> GrayScottGenome {
-        GrayScottGenome::new(0.055, 0.062, 0.16, 0.08).expect("valid sample genome")
+    fn sample() -> CaEvolutionGenome {
+        CaEvolutionGenome::new(0.055, 0.062, 0.16, 0.08).expect("valid sample genome")
     }
 
     /// The sample's parameters with `value` substituted at `position`, in the
     /// frozen field order `feed`, `kill`, `diffusion_u`, `diffusion_v`.
-    fn with_substituted(position: usize, value: f32) -> Result<GrayScottGenome> {
+    fn with_substituted(position: usize, value: f32) -> Result<CaEvolutionGenome> {
         let mut p = [0.055, 0.062, 0.16, 0.08];
         p[position] = value;
-        GrayScottGenome::new(p[0], p[1], p[2], p[3])
+        CaEvolutionGenome::new(p[0], p[1], p[2], p[3])
     }
 
     /// The canonical bytes of [`sample`], derived by hand from the layout —
@@ -174,11 +174,11 @@ mod tests {
     const SAMPLE_BYTES_HEX: &str = "ae47613db6f37d3d0ad7233e0ad7a33d";
 
     /// blake3 of the sample's full spec bytes — str `"sima.spec.v1"`, str
-    /// `"gray-scott.v1"`, then the length-prefixed payload, per the `Spec`
+    /// `"ca_evolution.v1"`, then the length-prefixed payload, per the `Spec`
     /// layout — computed independently with the Python `blake3` package:
     /// `blake3.blake3(bytes.fromhex(spec_hex)).hexdigest()`.
     const SAMPLE_SPEC_ID_HEX: &str =
-        "bb484ad5583d693bd06e055e39c84a5d41c4ac1a0c808881246a921721c7c4b8";
+        "c4a3b78eeb056e08d796e72f95533601643dcd8d9513c337332399ffb7f1fb1f";
 
     #[test]
     fn new_accepts_the_classical_parameter_point() -> Result<()> {
@@ -233,7 +233,7 @@ mod tests {
         ));
         // Pins the asymmetry between the two predicates: the zero the
         // diffusion rule rejects is admitted by the sign rule.
-        GrayScottGenome::new(0.0, 0.0, 0.16, 0.08)?;
+        CaEvolutionGenome::new(0.0, 0.0, 0.16, 0.08)?;
         Ok(())
     }
 
@@ -247,7 +247,7 @@ mod tests {
         let genome = sample();
         // Derived equality is exact here: validation excludes NaN and -0.0,
         // so `PartialEq` coincides with byte equality on constructed values.
-        assert_eq!(GrayScottGenome::from_bytes(&genome.to_bytes())?, genome);
+        assert_eq!(CaEvolutionGenome::from_bytes(&genome.to_bytes())?, genome);
         Ok(())
     }
 
@@ -257,7 +257,7 @@ mod tests {
         for cut in 0..full.len() {
             assert!(
                 matches!(
-                    GrayScottGenome::from_bytes(&full[..cut]),
+                    CaEvolutionGenome::from_bytes(&full[..cut]),
                     Err(Error::Encoding(_))
                 ),
                 "prefix of {cut} bytes must be rejected"
@@ -270,7 +270,7 @@ mod tests {
         let mut buf = sample().to_bytes();
         buf.push(0);
         assert!(matches!(
-            GrayScottGenome::from_bytes(&buf),
+            CaEvolutionGenome::from_bytes(&buf),
             Err(Error::Encoding(_))
         ));
     }
@@ -282,7 +282,7 @@ mod tests {
         let mut enc = Enc::new();
         enc.f32(f32::NAN).f32(0.062).f32(0.16).f32(0.08);
         assert!(matches!(
-            GrayScottGenome::from_bytes(&enc.finish()),
+            CaEvolutionGenome::from_bytes(&enc.finish()),
             Err(Error::Validation(_))
         ));
     }
@@ -291,7 +291,7 @@ mod tests {
     fn spec_id_matches_independent_blake3() -> Result<()> {
         // Pins the candidate's actual store address end to end.
         let spec = Spec {
-            format: FormatId::new("gray-scott.v1")?,
+            format: FormatId::new("ca_evolution.v1")?,
             bytes: sample().to_bytes(),
         };
         assert_eq!(spec.id(), SpecId::from_hex(SAMPLE_SPEC_ID_HEX)?);
@@ -303,7 +303,7 @@ mod tests {
         // Every representable parameter difference is a distinct candidate:
         // one bit up in any position changes the bytes and the spec id.
         let base = sample();
-        let format = FormatId::new("gray-scott.v1")?;
+        let format = FormatId::new("ca_evolution.v1")?;
         let base_id = Spec {
             format: format.clone(),
             bytes: base.to_bytes(),

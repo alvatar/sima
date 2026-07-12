@@ -16,10 +16,11 @@ its reproducibility hooks are the seed (which pins sampling) and the
 environment (which pins the versions a result depends on: engine, model,
 toolchain, hardware).
 
-Today only the **stub domain** carries code — a deterministic, programmable
-substrate the infrastructure layers test against. The sections below are the
-planned roster; each lands as its own module under `domains/` when it gets
-real work.
+Today the **stub** and **`ca_evolution`** domains carry code. The stub is a
+deterministic, programmable substrate the infrastructure layers test against;
+`ca_evolution` runs a GPU reaction-diffusion executor. The remaining sections
+below are the planned roster; each lands as its own module under `domains/`
+when it gets real work.
 
 ## `llm_autoresearch`
 

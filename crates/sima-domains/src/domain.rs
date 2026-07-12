@@ -12,7 +12,7 @@ use sima_contracts::{Executor, Generator};
 use sima_core::{Error, Result};
 use sima_model::{Environment, FormatId, GeneratorId, Params};
 
-use crate::domains::{gray_scott, stub};
+use crate::domains::{ca_evolution, stub};
 
 /// Everything a format id binds: the executor that evaluates specs of the
 /// format and the environment its results depend on. The format's params
@@ -31,7 +31,7 @@ pub struct Domain {
 pub fn domain_for(format: &FormatId) -> Result<Domain> {
     match format.as_str() {
         stub::ID => stub::domain(),
-        gray_scott::ID => gray_scott::domain(),
+        ca_evolution::ID => ca_evolution::domain(),
         other => Err(Error::Validation(format!("unknown format id {other:?}"))),
     }
 }
@@ -41,7 +41,7 @@ pub fn domain_for(format: &FormatId) -> Result<Domain> {
 pub fn params_for(format: &FormatId, table: &toml::Table) -> Result<Params> {
     match format.as_str() {
         stub::ID => stub::params(table),
-        gray_scott::ID => gray_scott::params(table),
+        ca_evolution::ID => ca_evolution::params(table),
         other => Err(Error::Validation(format!("unknown format id {other:?}"))),
     }
 }
@@ -51,7 +51,7 @@ pub fn params_for(format: &FormatId, table: &toml::Table) -> Result<Params> {
 pub fn generator_for(id: &GeneratorId) -> Result<Box<dyn Generator>> {
     match id.as_str() {
         stub::ID => Ok(Box::new(stub::StubGenerator::new()?)),
-        gray_scott::ID => Ok(Box::new(gray_scott::GrayScottGenerator::new()?)),
+        ca_evolution::ID => Ok(Box::new(ca_evolution::CaEvolutionGenerator::new()?)),
         other => Err(Error::Validation(format!("unknown generator id {other:?}"))),
     }
 }
@@ -62,7 +62,7 @@ pub fn generator_for(id: &GeneratorId) -> Result<Box<dyn Generator>> {
 pub fn generator_params_for(id: &GeneratorId, table: &toml::Table) -> Result<Vec<u8>> {
     match id.as_str() {
         stub::ID => stub::generator_params(table),
-        gray_scott::ID => gray_scott::generator_params(table),
+        ca_evolution::ID => ca_evolution::generator_params(table),
         other => Err(Error::Validation(format!("unknown generator id {other:?}"))),
     }
 }
@@ -139,29 +139,29 @@ mod tests {
     }
 
     #[test]
-    fn the_gray_scott_domain_binds_executor_and_environment() -> Result<()> {
+    fn the_ca_evolution_domain_binds_executor_and_environment() -> Result<()> {
         use sima_model::EnvironmentValue;
         use sima_toolkit_wgsl::{COMPILER_ID, source_digest};
 
         // Constructing the domain here proves domain_for is device-free:
         // this test runs everywhere, GPU or not.
-        let domain = domain_for(&format("gray-scott.v1"))?;
-        assert_eq!(domain.format.as_str(), "gray-scott.v1");
-        assert_eq!(domain.executor.format().as_str(), "gray-scott.v1");
+        let domain = domain_for(&format("ca_evolution.v1"))?;
+        assert_eq!(domain.format.as_str(), "ca_evolution.v1");
+        assert_eq!(domain.executor.format().as_str(), "ca_evolution.v1");
         // Three components: the executor version, the kernel source digest,
         // and the pinned compiler id — together they pin the compiled
         // SPIR-V in every task's identity.
         let components = domain.environment.components();
         assert_eq!(components.len(), 3);
-        assert_eq!(components[0].name(), "gray-scott.executor");
+        assert_eq!(components[0].name(), "ca_evolution.executor");
         assert_eq!(
             *components[0].value(),
             EnvironmentValue::Version("v1".to_string())
         );
-        assert_eq!(components[1].name(), "gray-scott.kernel");
+        assert_eq!(components[1].name(), "ca_evolution.kernel");
         assert_eq!(
             *components[1].value(),
-            EnvironmentValue::Digest(source_digest(gray_scott::KERNEL_WGSL))
+            EnvironmentValue::Digest(source_digest(ca_evolution::KERNEL_WGSL))
         );
         assert_eq!(components[2].name(), "wgsl.compiler");
         assert_eq!(
@@ -172,7 +172,7 @@ mod tests {
     }
 
     #[test]
-    fn the_gray_scott_params_translation_dispatches() -> Result<()> {
+    fn the_ca_evolution_params_translation_dispatches() -> Result<()> {
         let table: toml::Table = r#"
             width = 64
             height = 48
@@ -186,21 +186,21 @@ mod tests {
         .parse()
         .expect("parse test table");
         assert_eq!(
-            params_for(&format("gray-scott.v1"), &table)?.bytes,
-            gray_scott::params(&table)?.bytes
+            params_for(&format("ca_evolution.v1"), &table)?.bytes,
+            ca_evolution::params(&table)?.bytes
         );
         Ok(())
     }
 
     #[test]
-    fn the_gray_scott_generator_dispatches() -> Result<()> {
-        let generator = generator_for(&generator("gray-scott.v1"))?;
-        assert_eq!(generator.id().as_str(), "gray-scott.v1");
+    fn the_ca_evolution_generator_dispatches() -> Result<()> {
+        let generator = generator_for(&generator("ca_evolution.v1"))?;
+        assert_eq!(generator.id().as_str(), "ca_evolution.v1");
         Ok(())
     }
 
     #[test]
-    fn the_gray_scott_generator_translation_dispatches() -> Result<()> {
+    fn the_ca_evolution_generator_translation_dispatches() -> Result<()> {
         let table: toml::Table = r#"
             count = 64
             feed = [0.01, 0.08]
@@ -211,8 +211,8 @@ mod tests {
         .parse()
         .expect("parse test table");
         assert_eq!(
-            generator_params_for(&generator("gray-scott.v1"), &table)?,
-            gray_scott::generator_params(&table)?
+            generator_params_for(&generator("ca_evolution.v1"), &table)?,
+            ca_evolution::generator_params(&table)?
         );
         Ok(())
     }

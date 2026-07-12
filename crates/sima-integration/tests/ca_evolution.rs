@@ -1,5 +1,5 @@
-//! End-to-end acceptance of the Gray-Scott domain through the pipeline API:
-//! a gray-scott `sima.toml` runs generate → execute → commit → inspect to a
+//! End-to-end acceptance of the `ca_evolution` domain through the pipeline API:
+//! a ca_evolution `sima.toml` runs generate → execute → commit → inspect to a
 //! finalized manifest, a segment boundary leaves the committed trajectory
 //! byte-identical, and a malformed `[run.params]` section fails at load —
 //! before any store or GPU work.
@@ -14,7 +14,7 @@ use sima_domains::cellular::Grid;
 use sima_pipeline::{LoadedConfig, RunControl, RunOutcome, orchestrate};
 use sima_store::Store;
 
-/// The gray-scott config text: `count` candidates in a narrow band around
+/// The ca_evolution config text: `count` candidates in a narrow band around
 /// the pattern point — the feed range is the one non-degenerate axis, so
 /// every candidate is distinct (the generator rejects duplicate draws) —
 /// on a 32x32 grid, `steps` per task. `segments` renders the optional
@@ -25,11 +25,11 @@ fn config_text(store: &str, count: u32, steps: u32, segments: Option<u64>) -> St
         r#"
         [run]
         root_seed = 42
-        format = "gray-scott.v1"
+        format = "ca_evolution.v1"
         {segments}
 
         [run.generator]
-        id = "gray-scott.v1"
+        id = "ca_evolution.v1"
         count = {count}
         feed = [0.054, 0.056]
         kill = [0.062, 0.062]
@@ -54,8 +54,8 @@ fn config_text(store: &str, count: u32, steps: u32, segments: Option<u64>) -> St
     )
 }
 
-/// Writes and loads a gray-scott config named `name` under `dir`.
-fn gray_scott_config(
+/// Writes and loads a ca_evolution config named `name` under `dir`.
+fn ca_evolution_config(
     dir: &Path,
     name: &str,
     store: &str,
@@ -84,7 +84,7 @@ fn manifest_states(config: &LoadedConfig) -> Result<Vec<(Hash, Grid)>> {
                 .artifacts()
                 .iter()
                 .find(|a| a.name() == "state")
-                .expect("a gray-scott record commits the state artifact");
+                .expect("a ca_evolution record commits the state artifact");
             let grid = Grid::from_bytes(&store.get(artifact.object())?)?;
             Ok((*artifact.object(), grid))
         })
@@ -94,9 +94,9 @@ fn manifest_states(config: &LoadedConfig) -> Result<Vec<(Hash, Grid)>> {
 /// Requires a real Vulkan device. Run with `cargo test -- --ignored`.
 #[test]
 #[ignore = "requires a Vulkan device"]
-fn a_gray_scott_config_runs_the_full_spine() -> Result<()> {
+fn a_ca_evolution_config_runs_the_full_spine() -> Result<()> {
     let dir = tempfile::tempdir().expect("temp dir");
-    let config = gray_scott_config(dir.path(), "sima.toml", "./store", 4, 100, None)?;
+    let config = ca_evolution_config(dir.path(), "sima.toml", "./store", 4, 100, None)?;
     assert!(matches!(
         orchestrate(&config, &RunControl::detached())?,
         RunOutcome::Finalized { .. }
@@ -118,7 +118,7 @@ fn a_gray_scott_config_runs_the_full_spine() -> Result<()> {
 fn a_segment_boundary_leaves_the_trajectory_byte_identical() -> Result<()> {
     let dir = tempfile::tempdir().expect("temp dir");
     // One candidate as a chain of two 50-step segments.
-    let segmented = gray_scott_config(
+    let segmented = ca_evolution_config(
         dir.path(),
         "segmented.toml",
         "./store-segmented",
@@ -137,7 +137,7 @@ fn a_segment_boundary_leaves_the_trajectory_byte_identical() -> Result<()> {
     }
 
     // The same trajectory as one unsegmented 100-step task, fresh store.
-    let whole = gray_scott_config(dir.path(), "whole.toml", "./store-whole", 1, 100, None)?;
+    let whole = ca_evolution_config(dir.path(), "whole.toml", "./store-whole", 1, 100, None)?;
     assert!(matches!(
         orchestrate(&whole, &RunControl::detached())?,
         RunOutcome::Finalized { .. }

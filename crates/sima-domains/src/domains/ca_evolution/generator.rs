@@ -1,9 +1,9 @@
-//! The Gray-Scott generator: turns a seeded config into a run's candidate
+//! The `ca_evolution` generator: turns a seeded config into a run's candidate
 //! specs.
 //!
-//! [`GrayScottGeneratorConfig`] is the generator's params blob — the
+//! [`CaEvolutionGeneratorConfig`] is the generator's params blob — the
 //! candidate count and one sampling range per genome parameter, with its
-//! canonical byte codec. [`GrayScottGenerator`] reads it and draws `count`
+//! canonical byte codec. [`CaEvolutionGenerator`] reads it and draws `count`
 //! genomes uniformly from the configured box, one decorrelated PRNG
 //! substream per candidate.
 
@@ -13,9 +13,9 @@ use sima_contracts::Generator;
 use sima_core::{Dec, Enc, Error, Result, prng};
 use sima_model::{FormatId, GeneratorId, Spec};
 
-use super::genome::GrayScottGenome;
+use super::genome::CaEvolutionGenome;
 
-/// The Gray-Scott generator's params: the candidate count and the sampled
+/// The `ca_evolution` generator's params: the candidate count and the sampled
 /// box — one `[lo, hi]` range per genome parameter, in the frozen field
 /// order `feed`, `kill`, `diffusion_u`, `diffusion_v`.
 ///
@@ -32,7 +32,7 @@ use super::genome::GrayScottGenome;
 // numerically while differing in bytes) from every bound, and `u64`
 // equality is exact.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct GrayScottGeneratorConfig {
+pub struct CaEvolutionGeneratorConfig {
     /// The number of candidates to draw.
     count: u64,
     /// Sampling range `[lo, hi]` of the feed rate `f`.
@@ -45,7 +45,7 @@ pub struct GrayScottGeneratorConfig {
     diffusion_v: [f32; 2],
 }
 
-impl GrayScottGeneratorConfig {
+impl CaEvolutionGeneratorConfig {
     /// Builds a config, validating the count and the box: `count` must be at
     /// least 1, both box corners must construct as genomes, and each range
     /// must satisfy `lo ≤ hi`. Any violation is [`Error::Validation`].
@@ -55,21 +55,21 @@ impl GrayScottGeneratorConfig {
         kill: [f32; 2],
         diffusion_u: [f32; 2],
         diffusion_v: [f32; 2],
-    ) -> Result<GrayScottGeneratorConfig> {
+    ) -> Result<CaEvolutionGeneratorConfig> {
         // A zero-candidate run is meaningless; enforcing it here makes
         // decode, which funnels through this constructor, reject such
         // blobs too.
         if count == 0 {
             return Err(Error::Validation(format!(
-                "gray-scott generator count must be at least 1, got {count}"
+                "ca_evolution generator count must be at least 1, got {count}"
             )));
         }
         // Both box corners must construct as genomes — the genome's own
         // validation, reused verbatim, whose errors already name the
         // parameter and the value. Each parameter's valid set is an
         // interval, so valid corners imply every point of the box is valid.
-        GrayScottGenome::new(feed[0], kill[0], diffusion_u[0], diffusion_v[0])?;
-        GrayScottGenome::new(feed[1], kill[1], diffusion_u[1], diffusion_v[1])?;
+        CaEvolutionGenome::new(feed[0], kill[0], diffusion_u[0], diffusion_v[0])?;
+        CaEvolutionGenome::new(feed[1], kill[1], diffusion_u[1], diffusion_v[1])?;
         // Ordered bounds, checked after the corners so both bounds are known
         // non-NaN and the comparison is meaningful.
         for (name, [lo, hi]) in [
@@ -80,11 +80,11 @@ impl GrayScottGeneratorConfig {
         ] {
             if lo > hi {
                 return Err(Error::Validation(format!(
-                    "gray-scott generator {name} range must satisfy lo <= hi, got [{lo}, {hi}]"
+                    "ca_evolution generator {name} range must satisfy lo <= hi, got [{lo}, {hi}]"
                 )));
             }
         }
-        Ok(GrayScottGeneratorConfig {
+        Ok(CaEvolutionGeneratorConfig {
             count,
             feed,
             kill,
@@ -129,17 +129,17 @@ impl GrayScottGeneratorConfig {
         }
     }
 
-    /// Reads a canonical form written by [`GrayScottGeneratorConfig::encode`],
-    /// funneling the values through [`GrayScottGeneratorConfig::new`] so
+    /// Reads a canonical form written by [`CaEvolutionGeneratorConfig::encode`],
+    /// funneling the values through [`CaEvolutionGeneratorConfig::new`] so
     /// decode and construction share one validation path.
-    pub fn decode(dec: &mut Dec<'_>) -> Result<GrayScottGeneratorConfig> {
+    pub fn decode(dec: &mut Dec<'_>) -> Result<CaEvolutionGeneratorConfig> {
         let count = dec.u64()?;
         let mut range = || -> Result<[f32; 2]> { Ok([dec.f32()?, dec.f32()?]) };
         let feed = range()?;
         let kill = range()?;
         let diffusion_u = range()?;
         let diffusion_v = range()?;
-        GrayScottGeneratorConfig::new(count, feed, kill, diffusion_u, diffusion_v)
+        CaEvolutionGeneratorConfig::new(count, feed, kill, diffusion_u, diffusion_v)
     }
 
     /// The standalone canonical bytes of this config.
@@ -150,41 +150,41 @@ impl GrayScottGeneratorConfig {
     }
 
     /// Parses standalone canonical bytes, rejecting trailing input.
-    pub fn from_bytes(bytes: &[u8]) -> Result<GrayScottGeneratorConfig> {
+    pub fn from_bytes(bytes: &[u8]) -> Result<CaEvolutionGeneratorConfig> {
         let mut dec = Dec::new(bytes);
-        let config = GrayScottGeneratorConfig::decode(&mut dec)?;
+        let config = CaEvolutionGeneratorConfig::decode(&mut dec)?;
         dec.finish()?;
         Ok(config)
     }
 }
 
 /// Draws a run's candidate genomes uniformly from the box a
-/// [`GrayScottGeneratorConfig`] defines. Candidate `i` owns the decorrelated
+/// [`CaEvolutionGeneratorConfig`] defines. Candidate `i` owns the decorrelated
 /// PRNG substream `derive(root_seed, i)` and takes one draw per genome
 /// parameter, so a candidate depends only on `(root_seed, i, ranges)`:
 /// raising the count appends candidates and never changes existing ones,
 /// keeping their spec ids — and any cached evaluation results — valid.
 #[derive(Debug, Clone)]
-pub struct GrayScottGenerator {
+pub struct CaEvolutionGenerator {
     id: GeneratorId,
 }
 
-impl GrayScottGenerator {
-    /// Constructs the generator, registered under id `gray-scott.v1`.
-    pub fn new() -> Result<GrayScottGenerator> {
-        Ok(GrayScottGenerator {
-            id: GeneratorId::new("gray-scott.v1")?,
+impl CaEvolutionGenerator {
+    /// Constructs the generator, registered under id `ca_evolution.v1`.
+    pub fn new() -> Result<CaEvolutionGenerator> {
+        Ok(CaEvolutionGenerator {
+            id: GeneratorId::new("ca_evolution.v1")?,
         })
     }
 }
 
-impl Generator for GrayScottGenerator {
+impl Generator for CaEvolutionGenerator {
     fn id(&self) -> &GeneratorId {
         &self.id
     }
 
     fn generate(&self, root_seed: u64, params: &[u8], format: &FormatId) -> Result<Vec<Spec>> {
-        let config = GrayScottGeneratorConfig::from_bytes(params)?;
+        let config = CaEvolutionGeneratorConfig::from_bytes(params)?;
         let ranges = [
             config.feed(),
             config.kill(),
@@ -210,7 +210,7 @@ impl Generator for GrayScottGenerator {
             // constructor is the genome's only entry, and propagation covers
             // the extreme f32 edges (a corner at f32::MAX, where the final
             // rounding could reach infinity).
-            let genome = GrayScottGenome::new(
+            let genome = CaEvolutionGenome::new(
                 draw(0, ranges[0]),
                 draw(1, ranges[1]),
                 draw(2, ranges[2]),
@@ -231,7 +231,7 @@ impl Generator for GrayScottGenerator {
         for (i, spec) in specs.iter().enumerate() {
             if let Some(&j) = first_drawn_at.get(spec.bytes.as_slice()) {
                 return Err(Error::Validation(format!(
-                    "gray-scott generator drew identical genomes at candidates {j} and {i}: \
+                    "ca_evolution generator drew identical genomes at candidates {j} and {i}: \
                      the configured ranges admit too few distinct values"
                 )));
             }
@@ -251,17 +251,17 @@ mod tests {
 
     /// A config spanning the interesting region of parameter space
     /// (Pearson's map) with the classical diffusion pair pinned.
-    fn sample() -> GrayScottGeneratorConfig {
-        GrayScottGeneratorConfig::new(64, [0.01, 0.08], [0.03, 0.07], [0.16, 0.16], [0.08, 0.08])
+    fn sample() -> CaEvolutionGeneratorConfig {
+        CaEvolutionGeneratorConfig::new(64, [0.01, 0.08], [0.03, 0.07], [0.16, 0.16], [0.08, 0.08])
             .expect("valid sample config")
     }
 
     /// The sample's ranges with `range` substituted at `position`, in the
     /// frozen field order `feed`, `kill`, `diffusion_u`, `diffusion_v`.
-    fn with_substituted(position: usize, range: [f32; 2]) -> Result<GrayScottGeneratorConfig> {
+    fn with_substituted(position: usize, range: [f32; 2]) -> Result<CaEvolutionGeneratorConfig> {
         let mut r = [[0.01, 0.08], [0.03, 0.07], [0.16, 0.16], [0.08, 0.08]];
         r[position] = range;
-        GrayScottGeneratorConfig::new(64, r[0], r[1], r[2], r[3])
+        CaEvolutionGeneratorConfig::new(64, r[0], r[1], r[2], r[3])
     }
 
     /// The canonical bytes of [`sample`], derived by hand from the layout —
@@ -280,7 +280,7 @@ mod tests {
 
     #[test]
     fn config_round_trips_through_bytes() -> Result<()> {
-        let minimal = GrayScottGeneratorConfig::new(
+        let minimal = CaEvolutionGeneratorConfig::new(
             1,
             [0.01, 0.01],
             [0.03, 0.03],
@@ -289,7 +289,7 @@ mod tests {
         )?;
         for config in [sample(), minimal] {
             assert_eq!(
-                GrayScottGeneratorConfig::from_bytes(&config.to_bytes())?,
+                CaEvolutionGeneratorConfig::from_bytes(&config.to_bytes())?,
                 config
             );
         }
@@ -303,7 +303,7 @@ mod tests {
         for cut in 0..full.len() {
             assert!(
                 matches!(
-                    GrayScottGeneratorConfig::from_bytes(&full[..cut]),
+                    CaEvolutionGeneratorConfig::from_bytes(&full[..cut]),
                     Err(Error::Encoding(_))
                 ),
                 "prefix of {cut} bytes must be rejected"
@@ -312,7 +312,7 @@ mod tests {
         let mut trailing = full;
         trailing.push(0);
         assert!(matches!(
-            GrayScottGeneratorConfig::from_bytes(&trailing),
+            CaEvolutionGeneratorConfig::from_bytes(&trailing),
             Err(Error::Encoding(_))
         ));
     }
@@ -320,7 +320,7 @@ mod tests {
     #[test]
     fn config_rejects_zero_count() {
         assert!(matches!(
-            GrayScottGeneratorConfig::new(
+            CaEvolutionGeneratorConfig::new(
                 0,
                 [0.01, 0.08],
                 [0.03, 0.07],
@@ -395,8 +395,8 @@ mod tests {
 
     /// A config with all four ranges degenerate at the classical
     /// pattern-forming point.
-    fn degenerate(count: u64) -> GrayScottGeneratorConfig {
-        GrayScottGeneratorConfig::new(
+    fn degenerate(count: u64) -> CaEvolutionGeneratorConfig {
+        CaEvolutionGeneratorConfig::new(
             count,
             [0.055, 0.055],
             [0.062, 0.062],
@@ -418,8 +418,8 @@ mod tests {
 
     #[test]
     fn generate_is_deterministic() -> Result<()> {
-        let generator = GrayScottGenerator::new()?;
-        let format = FormatId::new("gray-scott.v1")?;
+        let generator = CaEvolutionGenerator::new()?;
+        let format = FormatId::new("ca_evolution.v1")?;
         let params = sample().to_bytes();
         assert_eq!(
             generator.generate(42, &params, &format)?,
@@ -430,7 +430,7 @@ mod tests {
 
     #[test]
     fn generate_stamps_the_requested_format() -> Result<()> {
-        let generator = GrayScottGenerator::new()?;
+        let generator = CaEvolutionGenerator::new()?;
         // The format is stamped as received (the trait's contract; pairing
         // generator and format is the pipeline's concern).
         let format = FormatId::new("domain-a.v1")?;
@@ -444,8 +444,8 @@ mod tests {
 
     #[test]
     fn different_root_seed_changes_the_specs() -> Result<()> {
-        let generator = GrayScottGenerator::new()?;
-        let format = FormatId::new("gray-scott.v1")?;
+        let generator = CaEvolutionGenerator::new()?;
+        let format = FormatId::new("ca_evolution.v1")?;
         let params = sample().to_bytes();
         let a = generator.generate(1, &params, &format)?;
         let b = generator.generate(2, &params, &format)?;
@@ -455,13 +455,13 @@ mod tests {
 
     #[test]
     fn sampled_genomes_lie_within_the_configured_ranges() -> Result<()> {
-        let generator = GrayScottGenerator::new()?;
+        let generator = CaEvolutionGenerator::new()?;
         let config = sample();
-        let format = FormatId::new("gray-scott.v1")?;
+        let format = FormatId::new("ca_evolution.v1")?;
         let specs = generator.generate(7, &config.to_bytes(), &format)?;
         assert_eq!(specs.len(), 64);
         for spec in specs {
-            let genome = GrayScottGenome::from_bytes(&spec.bytes)?;
+            let genome = CaEvolutionGenome::from_bytes(&spec.bytes)?;
             // `hi` is inclusive: `t < 1` in f64, but the f32 rounding of the
             // result may land on `hi` exactly.
             for (value, [lo, hi]) in [
@@ -478,16 +478,16 @@ mod tests {
 
     #[test]
     fn raising_count_preserves_existing_candidates() -> Result<()> {
-        let generator = GrayScottGenerator::new()?;
-        let format = FormatId::new("gray-scott.v1")?;
-        let three = GrayScottGeneratorConfig::new(
+        let generator = CaEvolutionGenerator::new()?;
+        let format = FormatId::new("ca_evolution.v1")?;
+        let three = CaEvolutionGeneratorConfig::new(
             3,
             [0.01, 0.08],
             [0.03, 0.07],
             [0.16, 0.16],
             [0.08, 0.08],
         )?;
-        let five = GrayScottGeneratorConfig::new(
+        let five = CaEvolutionGeneratorConfig::new(
             5,
             [0.01, 0.08],
             [0.03, 0.07],
@@ -502,21 +502,21 @@ mod tests {
 
     #[test]
     fn degenerate_ranges_produce_the_fixed_genome() -> Result<()> {
-        let generator = GrayScottGenerator::new()?;
-        let format = FormatId::new("gray-scott.v1")?;
+        let generator = CaEvolutionGenerator::new()?;
+        let format = FormatId::new("ca_evolution.v1")?;
         let specs = generator.generate(3, &degenerate(1).to_bytes(), &format)?;
         // The mapping is exact on degenerate ranges: `t * 0 = 0`.
         assert_eq!(
             specs[0].bytes,
-            GrayScottGenome::new(0.055, 0.062, 0.16, 0.08)?.to_bytes()
+            CaEvolutionGenome::new(0.055, 0.062, 0.16, 0.08)?.to_bytes()
         );
         Ok(())
     }
 
     #[test]
     fn duplicate_draws_are_rejected() -> Result<()> {
-        let generator = GrayScottGenerator::new()?;
-        let format = FormatId::new("gray-scott.v1")?;
+        let generator = CaEvolutionGenerator::new()?;
+        let format = FormatId::new("ca_evolution.v1")?;
         match generator.generate(3, &degenerate(2).to_bytes(), &format) {
             Err(Error::Validation(message)) => {
                 assert!(
@@ -531,8 +531,8 @@ mod tests {
 
     #[test]
     fn candidate_zero_matches_independent_reference() -> Result<()> {
-        let generator = GrayScottGenerator::new()?;
-        let format = FormatId::new("gray-scott.v1")?;
+        let generator = CaEvolutionGenerator::new()?;
+        let format = FormatId::new("ca_evolution.v1")?;
         let specs = generator.generate(42, &sample().to_bytes(), &format)?;
         assert_eq!(to_hex(&specs[0].bytes), CANDIDATE0_BYTES_HEX);
         Ok(())
@@ -540,8 +540,8 @@ mod tests {
 
     #[test]
     fn generate_rejects_malformed_params() -> Result<()> {
-        let generator = GrayScottGenerator::new()?;
-        let format = FormatId::new("gray-scott.v1")?;
+        let generator = CaEvolutionGenerator::new()?;
+        let format = FormatId::new("ca_evolution.v1")?;
         // A single byte cannot even hold the u64 count prefix.
         assert!(matches!(
             generator.generate(1, &[0xFF], &format),
