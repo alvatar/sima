@@ -15,6 +15,8 @@
 //!
 //! [run.params]              # domain-specific; stub.v1 takes:
 //! hex = ""                  # optional hex string, default empty
+//! # gray-scott.v1 takes eight required keys: width, height, steps, dt,
+//! # base_u, base_v, side_divisor, noise_width
 //!
 //! [execution]               # operational — never hashed
 //! store = "./store"         # resolved relative to this file's directory
