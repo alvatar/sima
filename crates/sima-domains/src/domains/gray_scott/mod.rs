@@ -20,8 +20,9 @@ mod patch;
 mod translation;
 
 pub use executor::GrayScottExecutor;
+pub(crate) use executor::KERNEL_WGSL;
 pub use generator::{GrayScottGenerator, GrayScottGeneratorConfig};
 pub use genome::GrayScottGenome;
 pub use params::GrayScottParams;
 pub use patch::GrayScottPatch;
-pub(crate) use translation::{ID, generator_params};
+pub(crate) use translation::{ID, domain, generator_params, params};

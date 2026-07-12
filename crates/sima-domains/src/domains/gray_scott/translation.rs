@@ -1,16 +1,49 @@
-//! The Gray-Scott config translations: the `[run.generator]` section into
+//! The Gray-Scott config translations — the `[run.generator]` section into
 //! canonical [`GrayScottGeneratorConfig`] bytes, the `[run.params]` section
-//! into canonical [`GrayScottParams`] bytes, and the binding of the
-//! domain's id.
+//! into canonical [`GrayScottParams`] bytes — and the binding of the
+//! domain's id to its executor and environment.
 
 use sima_core::{Error, Result};
-use sima_model::Params;
+use sima_model::{Environment, EnvironmentComponent, EnvironmentValue, FormatId, Params};
+use sima_toolkit_wgsl::{COMPILER_ID, source_digest};
 
-use super::{GrayScottGeneratorConfig, GrayScottParams, GrayScottPatch};
+use super::{
+    GrayScottExecutor, GrayScottGeneratorConfig, GrayScottParams, GrayScottPatch, KERNEL_WGSL,
+};
+use crate::domain::Domain;
 use crate::domains::translate::reject_unknown_keys;
 
 /// The Gray-Scott format id, doubling as its generator id.
 pub(crate) const ID: &str = "gray-scott.v1";
+
+/// The Gray-Scott domain: the GPU executor and a three-component
+/// environment — the executor's own version, the blake3 digest of the WGSL
+/// kernel source, and the pinned WGSL compiler id. Source digest and
+/// compiler id together pin the compiled SPIR-V: editing the shader or
+/// upgrading the compiler changes every task key, forcing re-execution
+/// instead of silently reusing stale results. All three components are
+/// computed device-free, so [`domain_for`](crate::domain_for) never needs
+/// a GPU.
+pub(crate) fn domain() -> Result<Domain> {
+    Ok(Domain {
+        format: FormatId::new(ID)?,
+        executor: Box::new(GrayScottExecutor::new()?),
+        environment: Environment::new(vec![
+            EnvironmentComponent::new(
+                "gray-scott.executor",
+                EnvironmentValue::Version("v1".to_string()),
+            )?,
+            EnvironmentComponent::new(
+                "gray-scott.kernel",
+                EnvironmentValue::Digest(source_digest(KERNEL_WGSL)),
+            )?,
+            EnvironmentComponent::new(
+                "wgsl.compiler",
+                EnvironmentValue::Version(COMPILER_ID.to_string()),
+            )?,
+        ])?,
+    })
+}
 
 /// Translates the `[run.generator]` table (minus `id`): a required `count`
 /// and one required range per genome parameter, encoded through
@@ -39,7 +72,6 @@ pub(crate) fn generator_params(table: &toml::Table) -> Result<Vec<u8>> {
 /// so the params and patch validation surfaces here. All eight keys are
 /// required, with no defaults — every value that determines candidate
 /// identity is visible in the config file. Unknown keys are rejected.
-#[allow(dead_code)]
 pub(crate) fn params(table: &toml::Table) -> Result<Params> {
     reject_unknown_keys(
         ID,

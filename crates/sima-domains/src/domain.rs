@@ -31,6 +31,7 @@ pub struct Domain {
 pub fn domain_for(format: &FormatId) -> Result<Domain> {
     match format.as_str() {
         stub::ID => stub::domain(),
+        gray_scott::ID => gray_scott::domain(),
         other => Err(Error::Validation(format!("unknown format id {other:?}"))),
     }
 }
@@ -40,6 +41,7 @@ pub fn domain_for(format: &FormatId) -> Result<Domain> {
 pub fn params_for(format: &FormatId, table: &toml::Table) -> Result<Params> {
     match format.as_str() {
         stub::ID => stub::params(table),
+        gray_scott::ID => gray_scott::params(table),
         other => Err(Error::Validation(format!("unknown format id {other:?}"))),
     }
 }
@@ -133,6 +135,60 @@ mod tests {
     fn the_stub_generator_dispatches() -> Result<()> {
         let generator = generator_for(&generator("stub.v1"))?;
         assert_eq!(generator.id().as_str(), "stub.v1");
+        Ok(())
+    }
+
+    #[test]
+    fn the_gray_scott_domain_binds_executor_and_environment() -> Result<()> {
+        use sima_model::EnvironmentValue;
+        use sima_toolkit_wgsl::{COMPILER_ID, source_digest};
+
+        // Constructing the domain here proves domain_for is device-free:
+        // this test runs everywhere, GPU or not.
+        let domain = domain_for(&format("gray-scott.v1"))?;
+        assert_eq!(domain.format.as_str(), "gray-scott.v1");
+        assert_eq!(domain.executor.format().as_str(), "gray-scott.v1");
+        // Three components: the executor version, the kernel source digest,
+        // and the pinned compiler id — together they pin the compiled
+        // SPIR-V in every task's identity.
+        let components = domain.environment.components();
+        assert_eq!(components.len(), 3);
+        assert_eq!(components[0].name(), "gray-scott.executor");
+        assert_eq!(
+            *components[0].value(),
+            EnvironmentValue::Version("v1".to_string())
+        );
+        assert_eq!(components[1].name(), "gray-scott.kernel");
+        assert_eq!(
+            *components[1].value(),
+            EnvironmentValue::Digest(source_digest(gray_scott::KERNEL_WGSL))
+        );
+        assert_eq!(components[2].name(), "wgsl.compiler");
+        assert_eq!(
+            *components[2].value(),
+            EnvironmentValue::Version(COMPILER_ID.to_string())
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn the_gray_scott_params_translation_dispatches() -> Result<()> {
+        let table: toml::Table = r#"
+            width = 64
+            height = 48
+            steps = 100
+            dt = 1.0
+            base_u = 0.5
+            base_v = 0.25
+            side_divisor = 8
+            noise_width = 0.02
+        "#
+        .parse()
+        .expect("parse test table");
+        assert_eq!(
+            params_for(&format("gray-scott.v1"), &table)?.bytes,
+            gray_scott::params(&table)?.bytes
+        );
         Ok(())
     }
 
