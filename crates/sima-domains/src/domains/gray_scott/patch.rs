@@ -1,7 +1,7 @@
 //! [`GrayScottPatch`]: the ignition configuration of the Gray-Scott domain's
 //! initial grid.
 
-use sima_core::{Error, Result, prng};
+use sima_core::{Dec, Enc, Error, Result, prng};
 
 use crate::cellular::Grid;
 
@@ -86,6 +86,27 @@ impl GrayScottPatch {
         self.noise_width
     }
 
+    /// Appends the canonical form: `base_u` and `base_v` each via
+    /// [`Enc::f64`], `side_divisor` via [`Enc::u32`], `noise_width` via
+    /// [`Enc::f64`], in the frozen field order.
+    pub fn encode(&self, enc: &mut Enc) {
+        enc.f64(self.base_u)
+            .f64(self.base_v)
+            .u32(self.side_divisor)
+            .f64(self.noise_width);
+    }
+
+    /// Reads a canonical form written by [`GrayScottPatch::encode`],
+    /// funneling the values through [`GrayScottPatch::new`] so decode and
+    /// construction share one validation path.
+    pub fn decode(dec: &mut Dec<'_>) -> Result<GrayScottPatch> {
+        let base_u = dec.f64()?;
+        let base_v = dec.f64()?;
+        let side_divisor = dec.u32()?;
+        let noise_width = dec.f64()?;
+        GrayScottPatch::new(base_u, base_v, side_divisor, noise_width)
+    }
+
     /// The seeded initial grid every Gray-Scott evaluation ignites from:
     /// the exact fixed point `(u, v) = (1, 0)` everywhere except a centered
     /// square patch of this configuration's base values, each patch cell
@@ -151,11 +172,59 @@ impl GrayScottPatch {
 
 #[cfg(test)]
 mod tests {
+    use sima_core::{Dec, Enc, to_hex};
+
     use super::*;
 
     /// Pearson's classical ignition configuration.
     fn pearson_patch() -> GrayScottPatch {
         GrayScottPatch::new(0.5, 0.25, 8, 0.02).expect("valid pearson patch")
+    }
+
+    /// The canonical bytes of [`pearson_patch`], derived by hand from the
+    /// layout — `base_u` and `base_v` as f64 bits little-endian,
+    /// `side_divisor` as u32 little-endian, `noise_width` as f64 bits
+    /// little-endian: `0.5 = 0x3FE0000000000000`, `0.25 =
+    /// 0x3FD0000000000000`, `8`, `0.02 = 0x3F947AE147AE147B` — and
+    /// independently reproduced with Python `struct`.
+    const PEARSON_BYTES_HEX: &str = "000000000000e03f000000000000d03f080000007b14ae47e17a943f";
+
+    #[test]
+    fn codec_round_trips() -> Result<()> {
+        // The noiseless patch sits on the admitted boundary of the sign
+        // rule, so the round trip covers +0.0 explicitly.
+        for patch in [pearson_patch(), GrayScottPatch::new(0.5, 0.25, 8, 0.0)?] {
+            let mut enc = Enc::new();
+            patch.encode(&mut enc);
+            let buf = enc.finish();
+            let mut dec = Dec::new(&buf);
+            // Derived equality coincides with byte equality on constructed
+            // values: validation excludes NaN and -0.0.
+            assert_eq!(GrayScottPatch::decode(&mut dec)?, patch);
+            dec.finish()?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn encoding_is_byte_stable() {
+        let mut enc = Enc::new();
+        pearson_patch().encode(&mut enc);
+        assert_eq!(to_hex(&enc.finish()), PEARSON_BYTES_HEX);
+    }
+
+    #[test]
+    fn decode_rejects_invalid_values() {
+        // Well-formed 28 bytes whose base_u bits encode a NaN: the structure
+        // decodes, the value fails — decode funnels through `new`.
+        let mut enc = Enc::new();
+        enc.f64(f64::NAN).f64(0.25).u32(8).f64(0.02);
+        let buf = enc.finish();
+        let mut dec = Dec::new(&buf);
+        assert!(matches!(
+            GrayScottPatch::decode(&mut dec),
+            Err(Error::Validation(_))
+        ));
     }
 
     #[test]
