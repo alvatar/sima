@@ -207,7 +207,7 @@ multi-channel grid state round-trips through the store as an opaque snapshot;
 a run split into a chain of segments and resumed equals an unsegmented run of
 equal length.
 
-- [ ] M2.1 `sima-toolkit-wgsl` (`crates/toolkits/`): WGSL → naga → ash compute
+- [x] M2.1 `sima-toolkit-wgsl` (`crates/toolkits/`): WGSL → naga → ash compute
       toolkit. `Context` (instance, device selection, compute queue, command
       pool), `Buffer` (device-local storage with staging up/download),
       `Kernel` (WGSL compiled to SPIR-V, compute pipeline; exposes source
@@ -217,12 +217,12 @@ equal length.
       Add an `Error::Gpu` variant to `sima-core`. GPU tests are `#[ignore]`
       (dev-machine only); the crate builds with no native toolchain. Fully
       elaborated in `work/TODO-2.1.md`
-- [ ] M2.2 Float grid state foundation: multi-channel float grid state as an
+- [x] M2.2 Float grid state foundation: multi-channel float grid state as an
       opaque content-addressed snapshot object; the WGSL compute path for
       float stencils and convolutions; the CPU-reference pattern the families
       cross-check against. Minimal — enough to run the float families; the
       cross-substrate tolerance policy is P8
-- [ ] M2.3 Segmented execution and resume checkpoints: two distinct
+- [x] M2.3 Segmented execution and resume checkpoints: two distinct
       mechanisms, kept separate because one names committed work and the other
       is disposable resume state.
       (a) Segmentation — the committed work-division mechanism. A long
@@ -273,22 +273,22 @@ completes and records per-candidate stats; a recorded run re-evaluates from
 the store without re-execution; results reproduce run to run on the dev
 machine.
 
-- [ ] M3.1 Reaction-diffusion (Gray-Scott): the simplest float family — 2
+- [x] M3.1 Reaction-diffusion (Gray-Scott): the simplest float family — 2
       channels, small-stencil Laplacian + local reaction. First float family
       through the toolkit, proving the float path before the harder two.
       Split into four sub-milestones, one PR each, each reviewed on its own:
-- [ ] M3.1a Genome: genome = feed / kill / diffusion rates as the spec's
+- [x] M3.1a Genome: genome = feed / kill / diffusion rates as the spec's
       untagged payload (the spec frames it with the format id, per the stub
       program precedent); canonical encode/decode plus validation, with
       pinned byte-stability and independently computed spec-id tests
-- [ ] M3.1b Seeded generator: a deterministic genome population from
+- [x] M3.1b Seeded generator: a deterministic genome population from
       (config, seed) through the generator contract — the first generator
       producing real specs
-- [ ] M3.1c CPU reference engine: the Gray-Scott rule as a `CellularRule`
+- [x] M3.1c CPU reference engine: the Gray-Scott rule as a `CellularRule`
       with known-answer tests — pinned states for fixed genome/seed/steps,
       plus qualitative checks (a known pattern-forming (f, k) point forms
       structure; a known dead point decays)
-- [ ] M3.1d WGSL kernel and full spine: the rule as a compute kernel through
+- [x] M3.1d WGSL kernel and full spine: the rule as a compute kernel through
       `sima-toolkit-wgsl`, cross-checked against the CPU reference within a
       stated per-backend tolerance; the domain wired end to end (generate →
       execute → commit → inspect) from a `sima.toml`
