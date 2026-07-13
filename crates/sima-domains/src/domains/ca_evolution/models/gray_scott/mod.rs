@@ -2,10 +2,11 @@
 //! candidates are the four evolvable scalars of its update rule.
 //!
 //! [`GrayScottGenome`] is the spec payload (feed, kill, and the two diffusion
-//! rates), [`GrayScottIgnition`] the model's slice of `[run.params]` (the former
-//! patch), and [`GrayScottGenConfig`] the sampling box. [`GrayScott`] binds them
-//! to the generic machinery through [`CaModel`], with the reaction-diffusion
-//! kernel co-located in `gray_scott.wgsl`.
+//! rates), [`GrayScottIgnition`] the model's slice of `[run.params]` (the
+//! centered seeded patch over the fixed point), and [`GrayScottGenConfig`] the
+//! sampling box. [`GrayScott`] binds them to the generic machinery through
+//! [`CaModel`], with the reaction-diffusion kernel co-located in
+//! `gray_scott.wgsl`.
 
 mod gen_config;
 mod genome;

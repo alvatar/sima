@@ -29,7 +29,9 @@ pub(crate) struct GrayScottIgnition {
     /// `side = max(min(width, height) / side_divisor, 1)`.
     side_divisor: u32,
     /// Full relative width of the noise band around each base value:
-    /// `(t - 0.5) * noise_width` spans ±`noise_width / 2` for `t ∈ [0, 1)`.
+    /// `(t - 0.5) * noise_width` spans ±`noise_width / 2` for `t ∈ [0, 1]` — the
+    /// unit draw's `[0, 1)` closes at the top when `unit_f64(..) as f32` rounds a
+    /// large draw up to `1.0`.
     noise_width: f32,
 }
 
