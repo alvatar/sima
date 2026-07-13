@@ -11,7 +11,7 @@ mod gen_config;
 mod genome;
 mod ignition;
 
-use sima_core::{Dec, Enc, Result};
+use sima_core::{Codec, Dec, Enc, Result, TomlConfig};
 
 use super::super::ignition::{PatchSpec, seeded_patch};
 use super::super::model::CaModel;
@@ -75,7 +75,7 @@ impl CaModel for GrayScott {
     }
 
     fn parse_ignition(table: &toml::Table) -> Result<GrayScottIgnition> {
-        GrayScottIgnition::parse(table, Self::FORMAT_ID)
+        GrayScottIgnition::parse(table, Self::FORMAT_ID, "params")
     }
 
     fn encode_ignition(ignition: &GrayScottIgnition, enc: &mut Enc) {
@@ -87,7 +87,7 @@ impl CaModel for GrayScott {
     }
 
     fn parse_gen_config(table: &toml::Table) -> Result<GrayScottGenConfig> {
-        GrayScottGenConfig::parse(table, Self::FORMAT_ID)
+        GrayScottGenConfig::parse(table, Self::FORMAT_ID, "generator")
     }
 
     fn encode_gen_config(cfg: &GrayScottGenConfig) -> Vec<u8> {

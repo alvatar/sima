@@ -1,9 +1,7 @@
 //! [`GrayScottIgnition`]: the ignition configuration of the Gray-Scott model's
 //! initial grid, and the model's `[run.params]` ignition keys.
 
-use sima_core::{Dec, Enc, Error, Result};
-
-use crate::domains::translate;
+use sima_core::{Codec, Error, Result, TomlConfig};
 
 /// The ignition configuration of the Gray-Scott model's initial grid: the base
 /// values dropped into the centered square patch, the divisor of the shorter
@@ -19,7 +17,9 @@ use crate::domains::translate;
 /// little-endian: exactly 16 bytes. Every scalar is `f32` — the width of the
 /// grid state these values seed — so the ignition's content address reflects
 /// exactly the precision the grid carries.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Codec, TomlConfig)]
+#[codec(validate = new)]
+#[toml(validate = new)]
 pub(crate) struct GrayScottIgnition {
     /// Base value of chemical `u` inside the patch.
     base_u: f32,
@@ -91,50 +91,11 @@ impl GrayScottIgnition {
     pub(crate) fn noise_width(&self) -> f32 {
         self.noise_width
     }
-
-    /// Appends the canonical form: `base_u` and `base_v` each via [`Enc::f32`],
-    /// `side_divisor` via [`Enc::u32`], `noise_width` via [`Enc::f32`], in the
-    /// frozen field order.
-    pub(crate) fn encode(&self, enc: &mut Enc) {
-        enc.f32(self.base_u)
-            .f32(self.base_v)
-            .u32(self.side_divisor)
-            .f32(self.noise_width);
-    }
-
-    /// Reads a canonical form written by [`GrayScottIgnition::encode`], funneling
-    /// the values through [`GrayScottIgnition::new`] so decode and construction
-    /// share one validation path.
-    pub(crate) fn decode(dec: &mut Dec<'_>) -> Result<GrayScottIgnition> {
-        let base_u = dec.f32()?;
-        let base_v = dec.f32()?;
-        let side_divisor = dec.u32()?;
-        let noise_width = dec.f32()?;
-        GrayScottIgnition::new(base_u, base_v, side_divisor, noise_width)
-    }
-
-    /// Reads the ignition keys from the `[run.params]` table (the shared keys are
-    /// already stripped), rejecting any key it does not define. All four keys are
-    /// required, with no defaults — every value that determines candidate
-    /// identity is visible in the config file.
-    pub(crate) fn parse(table: &toml::Table, id: &str) -> Result<GrayScottIgnition> {
-        translate::reject_unknown_keys(
-            id,
-            table,
-            &["base_u", "base_v", "side_divisor", "noise_width"],
-            "params",
-        )?;
-        let base_u = translate::float(table, id, "params", "base_u")? as f32;
-        let base_v = translate::float(table, id, "params", "base_v")? as f32;
-        let side_divisor = translate::integer(table, id, "params", "side_divisor")?;
-        let noise_width = translate::float(table, id, "params", "noise_width")? as f32;
-        GrayScottIgnition::new(base_u, base_v, side_divisor, noise_width)
-    }
 }
 
 #[cfg(test)]
 mod tests {
-    use sima_core::to_hex;
+    use sima_core::{Dec, Enc, to_hex};
 
     use super::*;
 
@@ -237,11 +198,11 @@ mod tests {
         // `noise_width = 0` (integer) reads through the one number path as +0.0.
         let integer = KEYS.replace("noise_width = 0.02", "noise_width = 0");
         assert_eq!(
-            GrayScottIgnition::parse(&table(&integer), "id")?,
+            GrayScottIgnition::parse(&table(&integer), "id", "params")?,
             GrayScottIgnition::new(0.5, 0.25, 8, 0.0)?
         );
         assert_eq!(
-            GrayScottIgnition::parse(&table(KEYS), "id")?,
+            GrayScottIgnition::parse(&table(KEYS), "id", "params")?,
             GrayScottIgnition::new(0.5, 0.25, 8, 0.02)?
         );
         Ok(())
@@ -252,7 +213,7 @@ mod tests {
         for key in ["base_u", "base_v", "side_divisor", "noise_width"] {
             let mut incomplete = table(KEYS);
             incomplete.remove(key);
-            match GrayScottIgnition::parse(&incomplete, "id") {
+            match GrayScottIgnition::parse(&incomplete, "id", "params") {
                 Err(Error::Validation(message)) => {
                     assert!(message.contains(key), "the error names {key}: {message}")
                 }
@@ -265,7 +226,7 @@ mod tests {
     fn parse_rejects_an_unknown_key() {
         let mut extended = table(KEYS);
         extended.insert("surprise".to_string(), toml::Value::Integer(1));
-        match GrayScottIgnition::parse(&extended, "id") {
+        match GrayScottIgnition::parse(&extended, "id", "params") {
             Err(Error::Validation(message)) => {
                 assert!(
                     message.contains("surprise"),
@@ -287,7 +248,7 @@ mod tests {
             let text = KEYS.replace(original, bad);
             assert!(
                 matches!(
-                    GrayScottIgnition::parse(&table(&text), "id"),
+                    GrayScottIgnition::parse(&table(&text), "id", "params"),
                     Err(Error::Validation(_))
                 ),
                 "{bad} must be rejected"

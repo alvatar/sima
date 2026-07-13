@@ -1,11 +1,10 @@
 //! [`CaParams`]: the run knobs every CA model shares, and the shared half of the
 //! `[run.params]` translation.
 
-use sima_core::{Dec, Enc, Error, Result};
+use sima_core::{Codec, Dec, Enc, Error, Result, TomlConfig};
 use sima_model::Params;
 
 use super::model::CaModel;
-use crate::domains::translate;
 
 /// The run parameters shared by every CA model: the grid extents, the steps one
 /// segment advances, and the integration step size. A model's own ignition
@@ -20,7 +19,9 @@ use crate::domains::translate;
 /// `segments * steps` steps. A total-steps-across-segments reading would need a
 /// segment index threaded into the task input; the design keeps `steps`
 /// per-segment, which needs no such index.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Codec, TomlConfig)]
+#[codec(validate = new)]
+#[toml(validate = new)]
 pub(crate) struct CaParams {
     width: u32,
     height: u32,
@@ -80,26 +81,6 @@ impl CaParams {
     pub(crate) fn dt(&self) -> f32 {
         self.dt
     }
-
-    /// Appends the canonical form: `width`, `height`, `steps` via [`Enc::u32`],
-    /// `dt` via [`Enc::f32`], in the frozen field order.
-    pub(crate) fn encode(&self, enc: &mut Enc) {
-        enc.u32(self.width)
-            .u32(self.height)
-            .u32(self.steps)
-            .f32(self.dt);
-    }
-
-    /// Reads a canonical form written by [`CaParams::encode`], funneling the
-    /// values through [`CaParams::new`] so decode and construction share one
-    /// validation path.
-    pub(crate) fn decode(dec: &mut Dec<'_>) -> Result<CaParams> {
-        let width = dec.u32()?;
-        let height = dec.u32()?;
-        let steps = dec.u32()?;
-        let dt = dec.f32()?;
-        CaParams::new(width, height, steps, dt)
-    }
 }
 
 /// The canonical run-params blob: the shared fields, then the model's ignition.
@@ -122,31 +103,23 @@ pub(crate) fn decode_params<M: CaModel>(bytes: &[u8]) -> Result<(CaParams, M::Ig
 
 /// Translates the `[run.params]` table into the canonical params blob: the
 /// shared keys here, the model's ignition keys via [`CaModel::parse_ignition`].
-/// The model receives the table with the shared keys stripped, so it rejects
-/// only keys outside its own set. All shared keys are required, with no
-/// defaults — every value that determines candidate identity is visible in the
-/// config file.
+/// The table is split so each derived parser rejects only the unknown keys in
+/// its own set — the shared keys go to [`CaParams`], the rest to the model. All
+/// keys are required, with no defaults — every value that determines candidate
+/// identity is visible in the config file.
 pub(crate) fn translate<M: CaModel>(table: &toml::Table) -> Result<Params> {
-    let shared = parse_shared(table, M::FORMAT_ID)?;
+    let mut shared_table = toml::Table::new();
     let mut model_keys = table.clone();
     for key in SHARED_KEYS {
-        model_keys.remove(key);
+        if let Some(value) = model_keys.remove(key) {
+            shared_table.insert(key.to_string(), value);
+        }
     }
+    let shared = CaParams::parse(&shared_table, M::FORMAT_ID, "params")?;
     let ignition = M::parse_ignition(&model_keys)?;
     Ok(Params {
         bytes: encode_params::<M>(&shared, &ignition),
     })
-}
-
-/// Reads the shared `[run.params]` keys, validating them through
-/// [`CaParams::new`].
-fn parse_shared(table: &toml::Table, id: &str) -> Result<CaParams> {
-    let width = translate::integer(table, id, "params", "width")?;
-    let height = translate::integer(table, id, "params", "height")?;
-    let steps = translate::integer(table, id, "params", "steps")?;
-    // dt is the one f32 field; it narrows from the shared f64 number path.
-    let dt = translate::float(table, id, "params", "dt")? as f32;
-    CaParams::new(width, height, steps, dt)
 }
 
 #[cfg(test)]

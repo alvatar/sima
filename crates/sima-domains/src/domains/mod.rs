@@ -6,4 +6,3 @@
 
 pub(crate) mod ca_evolution;
 pub(crate) mod stub;
-pub(crate) mod translate;

@@ -14,7 +14,7 @@ use sima_model::{Environment, EnvironmentComponent, EnvironmentValue, FormatId, 
 
 use super::{StubBehavior, StubExecutor, StubGeneratorConfig};
 use crate::domain::Domain;
-use crate::domains::translate::reject_unknown_keys;
+use sima_core::toml_config::reject_unknown_keys;
 
 /// The stub format id, doubling as the stub generator id.
 pub(crate) const ID: &str = "stub.v1";

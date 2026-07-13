@@ -1,6 +1,6 @@
 //! [`GrayScottGenome`]: the evolvable parameters of the Gray-Scott model.
 
-use sima_core::{Dec, Enc, Error, Result};
+use sima_core::{Codec, Error, Result};
 
 /// The Gray-Scott genome: the four evolvable scalars of the two-chemical
 /// reaction-diffusion system
@@ -32,7 +32,8 @@ use sima_core::{Dec, Enc, Error, Result};
 // byte equality, because validation excludes NaN (which would make equality
 // irreflexive) and -0.0 (the one value that equals another numerically while
 // differing in bytes).
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Codec)]
+#[codec(validate = new)]
 pub(crate) struct GrayScottGenome {
     /// Feed rate `f`: replenishes `u` toward 1.
     feed: f32,
@@ -110,46 +111,11 @@ impl GrayScottGenome {
     pub(crate) fn diffusion_v(&self) -> f32 {
         self.diffusion_v
     }
-
-    /// Appends the canonical form: the four parameters in the frozen field
-    /// order, each via [`Enc::f32`].
-    pub(crate) fn encode(&self, enc: &mut Enc) {
-        enc.f32(self.feed)
-            .f32(self.kill)
-            .f32(self.diffusion_u)
-            .f32(self.diffusion_v);
-    }
-
-    /// Reads a canonical form written by [`GrayScottGenome::encode`], funneling
-    /// the values through [`GrayScottGenome::new`] so decode and construction
-    /// share one validation path.
-    pub(crate) fn decode(dec: &mut Dec<'_>) -> Result<GrayScottGenome> {
-        let feed = dec.f32()?;
-        let kill = dec.f32()?;
-        let diffusion_u = dec.f32()?;
-        let diffusion_v = dec.f32()?;
-        GrayScottGenome::new(feed, kill, diffusion_u, diffusion_v)
-    }
-
-    /// The standalone canonical bytes — exactly the bytes a spec carries.
-    pub(crate) fn to_bytes(self) -> Vec<u8> {
-        let mut enc = Enc::new();
-        self.encode(&mut enc);
-        enc.finish()
-    }
-
-    /// Parses standalone canonical bytes, rejecting trailing input.
-    pub(crate) fn from_bytes(bytes: &[u8]) -> Result<GrayScottGenome> {
-        let mut dec = Dec::new(bytes);
-        let genome = GrayScottGenome::decode(&mut dec)?;
-        dec.finish()?;
-        Ok(genome)
-    }
 }
 
 #[cfg(test)]
 mod tests {
-    use sima_core::to_hex;
+    use sima_core::{Enc, to_hex};
     use sima_model::{FormatId, Spec, SpecId};
 
     use super::*;

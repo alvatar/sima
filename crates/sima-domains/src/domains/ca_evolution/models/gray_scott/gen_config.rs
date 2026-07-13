@@ -1,10 +1,9 @@
 //! [`GrayScottGenConfig`]: the Gray-Scott generator's sampling box, and the
 //! model's `[run.generator]` sampling keys.
 
-use sima_core::{Dec, Enc, Error, Result, prng};
+use sima_core::{Codec, Error, Result, TomlConfig, prng};
 
 use super::genome::GrayScottGenome;
-use crate::domains::translate;
 
 /// The Gray-Scott generator's sampling box: one `[lo, hi]` range per genome
 /// parameter, in the frozen field order `feed`, `kill`, `diffusion_u`,
@@ -22,7 +21,9 @@ use crate::domains::translate;
 // equality: the corner validation excludes NaN (which would make equality
 // irreflexive) and -0.0 (the one value that equals another numerically while
 // differing in bytes) from every bound.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Codec, TomlConfig)]
+#[codec(validate = new)]
+#[toml(validate = new)]
 pub(crate) struct GrayScottGenConfig {
     /// Sampling range `[lo, hi]` of the feed rate `f`.
     feed: [f32; 2],
@@ -70,59 +71,6 @@ impl GrayScottGenConfig {
             diffusion_u,
             diffusion_v,
         })
-    }
-
-    /// Appends the canonical form: the four ranges in the frozen field order,
-    /// each bound via [`Enc::f32`].
-    pub(crate) fn encode(&self, enc: &mut Enc) {
-        for [lo, hi] in [self.feed, self.kill, self.diffusion_u, self.diffusion_v] {
-            enc.f32(lo).f32(hi);
-        }
-    }
-
-    /// Reads a canonical form written by [`GrayScottGenConfig::encode`],
-    /// funneling the values through [`GrayScottGenConfig::new`] so decode and
-    /// construction share one validation path.
-    pub(crate) fn decode(dec: &mut Dec<'_>) -> Result<GrayScottGenConfig> {
-        let mut range = || -> Result<[f32; 2]> { Ok([dec.f32()?, dec.f32()?]) };
-        let feed = range()?;
-        let kill = range()?;
-        let diffusion_u = range()?;
-        let diffusion_v = range()?;
-        GrayScottGenConfig::new(feed, kill, diffusion_u, diffusion_v)
-    }
-
-    /// The standalone canonical bytes of this config.
-    pub(crate) fn to_bytes(self) -> Vec<u8> {
-        let mut enc = Enc::new();
-        self.encode(&mut enc);
-        enc.finish()
-    }
-
-    /// Parses standalone canonical bytes, rejecting trailing input.
-    pub(crate) fn from_bytes(bytes: &[u8]) -> Result<GrayScottGenConfig> {
-        let mut dec = Dec::new(bytes);
-        let config = GrayScottGenConfig::decode(&mut dec)?;
-        dec.finish()?;
-        Ok(config)
-    }
-
-    /// Reads the sampling keys from the `[run.generator]` table (the shared
-    /// `count` is already stripped), rejecting any key it does not define. Each
-    /// range is required, with no defaults — every value that determines
-    /// candidate identity is visible in the config file.
-    pub(crate) fn parse(table: &toml::Table, id: &str) -> Result<GrayScottGenConfig> {
-        translate::reject_unknown_keys(
-            id,
-            table,
-            &["feed", "kill", "diffusion_u", "diffusion_v"],
-            "generator",
-        )?;
-        let feed = translate::range(table, id, "feed")?;
-        let kill = translate::range(table, id, "kill")?;
-        let diffusion_u = translate::range(table, id, "diffusion_u")?;
-        let diffusion_v = translate::range(table, id, "diffusion_v")?;
-        GrayScottGenConfig::new(feed, kill, diffusion_u, diffusion_v)
     }
 
     /// Draws candidate `index`'s genome for chain seed `seed`. Candidate `index`
@@ -342,10 +290,13 @@ mod tests {
         // degenerate range [+0.0, +0.0].
         let integer = KEYS.replace("feed = [0.01, 0.08]", "feed = [0, 0]");
         assert_eq!(
-            GrayScottGenConfig::parse(&table(&integer), "id")?,
+            GrayScottGenConfig::parse(&table(&integer), "id", "generator")?,
             GrayScottGenConfig::new([0.0, 0.0], [0.03, 0.07], [0.16, 0.16], [0.08, 0.08])?
         );
-        assert_eq!(GrayScottGenConfig::parse(&table(KEYS), "id")?, sample());
+        assert_eq!(
+            GrayScottGenConfig::parse(&table(KEYS), "id", "generator")?,
+            sample()
+        );
         Ok(())
     }
 
@@ -354,7 +305,7 @@ mod tests {
         for key in ["feed", "kill", "diffusion_u", "diffusion_v"] {
             let mut incomplete = table(KEYS);
             incomplete.remove(key);
-            match GrayScottGenConfig::parse(&incomplete, "id") {
+            match GrayScottGenConfig::parse(&incomplete, "id", "generator") {
                 Err(Error::Validation(message)) => {
                     assert!(message.contains(key), "the error names {key}: {message}")
                 }
@@ -367,7 +318,7 @@ mod tests {
     fn parse_rejects_an_unknown_key() {
         let mut extended = table(KEYS);
         extended.insert("surprise".to_string(), toml::Value::Integer(1));
-        match GrayScottGenConfig::parse(&extended, "id") {
+        match GrayScottGenConfig::parse(&extended, "id", "generator") {
             Err(Error::Validation(message)) => {
                 assert!(
                     message.contains("surprise"),
@@ -392,7 +343,7 @@ mod tests {
             let text = KEYS.replace(original, bad);
             assert!(
                 matches!(
-                    GrayScottGenConfig::parse(&table(&text), "id"),
+                    GrayScottGenConfig::parse(&table(&text), "id", "generator"),
                     Err(Error::Validation(_))
                 ),
                 "{bad} must be rejected"
