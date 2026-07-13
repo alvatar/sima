@@ -32,7 +32,7 @@ pub(crate) struct CaParams {
 pub(crate) const SHARED_KEYS: [&str; 4] = ["width", "height", "steps", "dt"];
 
 /// Validates a count parameter: at least 1. Zero cells make no grid, and a
-/// zero-step task would commit its input unchanged.
+/// zero-step segment would commit its input unchanged.
 fn at_least_one(name: &str, value: u32) -> Result<u32> {
     if value >= 1 {
         Ok(value)
