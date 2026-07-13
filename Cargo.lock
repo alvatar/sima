@@ -758,15 +758,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "sima-core-derive"
-version = "0.1.0"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn",
-]
-
-[[package]]
 name = "sima-domains"
 version = "0.1.0"
 dependencies = [
