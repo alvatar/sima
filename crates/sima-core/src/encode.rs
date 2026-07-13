@@ -275,11 +275,11 @@ impl<'a> Dec<'a> {
 }
 
 /// A type with a canonical byte encoding: its fields written through [`Enc`] in
-/// declaration order and read back through [`Dec`]. `#[derive(Codec)]`
-/// implements it field by field from the struct's declared types;
-/// [`to_bytes`](Codec::to_bytes) and [`from_bytes`](Codec::from_bytes) are the
-/// standalone forms, provided here in terms of [`encode`](Codec::encode) and
-/// [`decode`](Codec::decode).
+/// declaration order and read back through [`Dec`]. Implemented by hand per type,
+/// one [`encode`](Codec::encode)/[`decode`](Codec::decode) pair reproducing the
+/// type's frozen layout; [`to_bytes`](Codec::to_bytes) and
+/// [`from_bytes`](Codec::from_bytes) are the standalone forms, provided here in
+/// terms of that pair.
 pub trait Codec: Sized {
     /// Appends the canonical form to `enc`.
     fn encode(&self, enc: &mut Enc);
