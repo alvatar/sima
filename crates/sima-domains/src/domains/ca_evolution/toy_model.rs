@@ -1,22 +1,22 @@
 //! A minimal [`CaModel`] used only by tests to prove the generic CA machinery
 //! runs with no dependency on any concrete model.
 
-use sima_core::{Codec, Dec, Enc, Error, Result, TomlConfig, prng};
+use sima_core::{Codec, Error, Result, TomlConfig, prng};
 
 use super::ignition::{PatchSpec, seeded_patch};
 use super::model::CaModel;
 use super::params::CaParams;
 use crate::cellular::Grid;
 
-/// A one-channel toy model: the genome is a single rate, the ignition a single
+/// A one-channel toy model: the genome is a single value, the ignition a single
 /// base value, the generator config a single sampling range.
 pub(crate) struct Toy;
 
-/// The toy genome: one rate scalar.
+/// The toy genome: one scalar value.
 #[derive(Debug, Clone, Copy, PartialEq, Codec)]
 #[codec(validate = new)]
 pub(crate) struct ToyGenome {
-    rate: f32,
+    value: f32,
 }
 
 /// The toy ignition: one base value.
@@ -32,14 +32,14 @@ pub(crate) struct ToyIgnition {
 #[codec(validate = new)]
 #[toml(validate = new)]
 pub(crate) struct ToyGenConfig {
-    rate: [f32; 2],
+    value: [f32; 2],
 }
 
 impl ToyGenome {
-    /// Builds a toy genome. The toy rate carries no validation rule; `new`
+    /// Builds a toy genome. The toy value carries no validation rule; `new`
     /// exists so decode routes through it, like every model genome.
-    pub(crate) fn new(rate: f32) -> Result<ToyGenome> {
-        Ok(ToyGenome { rate })
+    pub(crate) fn new(value: f32) -> Result<ToyGenome> {
+        Ok(ToyGenome { value })
     }
 }
 
@@ -52,20 +52,20 @@ impl ToyIgnition {
 
 impl ToyGenConfig {
     /// Builds a toy generator config, validating `lo <= hi`.
-    pub(crate) fn new(rate: [f32; 2]) -> Result<ToyGenConfig> {
-        if rate[0] > rate[1] {
+    pub(crate) fn new(value: [f32; 2]) -> Result<ToyGenConfig> {
+        if value[0] > value[1] {
             return Err(Error::Validation(format!(
-                "toy generator rate range must satisfy lo <= hi, got {rate:?}"
+                "toy generator value range must satisfy lo <= hi, got {value:?}"
             )));
         }
-        Ok(ToyGenConfig { rate })
+        Ok(ToyGenConfig { value })
     }
 }
 
 impl Toy {
-    /// A toy genome with the given rate.
-    pub(crate) fn genome(rate: f32) -> ToyGenome {
-        ToyGenome { rate }
+    /// A toy genome with the given value.
+    pub(crate) fn genome(value: f32) -> ToyGenome {
+        ToyGenome { value }
     }
 
     /// A toy ignition with the given base value.
@@ -74,8 +74,8 @@ impl Toy {
     }
 
     /// A toy generator config with the given sampling range.
-    pub(crate) fn gen_config(rate: [f32; 2]) -> ToyGenConfig {
-        ToyGenConfig { rate }
+    pub(crate) fn gen_config(value: [f32; 2]) -> ToyGenConfig {
+        ToyGenConfig { value }
     }
 }
 
@@ -90,16 +90,8 @@ impl CaModel for Toy {
     const CHANNELS: u32 = 1;
     const KERNEL_WGSL: &'static str = "// toy kernel";
 
-    fn decode_genome(bytes: &[u8]) -> Result<ToyGenome> {
-        ToyGenome::from_bytes(bytes)
-    }
-
-    fn encode_genome(genome: &ToyGenome) -> Vec<u8> {
-        genome.to_bytes()
-    }
-
     fn uniforms(genome: &ToyGenome, shared: &CaParams) -> Vec<f32> {
-        vec![genome.rate, shared.dt()]
+        vec![genome.value, shared.dt()]
     }
 
     fn ignite(shared: &CaParams, ignition: &ToyIgnition, seed: u64) -> Result<Grid> {
@@ -117,36 +109,12 @@ impl CaModel for Toy {
         )
     }
 
-    fn parse_ignition(table: &toml::Table) -> Result<ToyIgnition> {
-        ToyIgnition::parse(table, Self::FORMAT_ID, "params")
-    }
-
-    fn encode_ignition(ignition: &ToyIgnition, enc: &mut Enc) {
-        ignition.encode(enc);
-    }
-
-    fn decode_ignition(dec: &mut Dec) -> Result<ToyIgnition> {
-        ToyIgnition::decode(dec)
-    }
-
-    fn parse_gen_config(table: &toml::Table) -> Result<ToyGenConfig> {
-        ToyGenConfig::parse(table, Self::FORMAT_ID, "generator")
-    }
-
-    fn encode_gen_config(cfg: &ToyGenConfig) -> Vec<u8> {
-        cfg.to_bytes()
-    }
-
-    fn decode_gen_config(bytes: &[u8]) -> Result<ToyGenConfig> {
-        ToyGenConfig::from_bytes(bytes)
-    }
-
     fn sample(cfg: &ToyGenConfig, seed: u64, index: u64) -> ToyGenome {
         let s = prng::derive(seed, index);
         let t = prng::unit_f64(prng::next(s, 0)) as f32;
-        let [lo, hi] = cfg.rate;
+        let [lo, hi] = cfg.value;
         ToyGenome {
-            rate: lo + t * (hi - lo),
+            value: lo + t * (hi - lo),
         }
     }
 }
@@ -184,12 +152,12 @@ mod tests {
     #[test]
     fn the_genome_codec_round_trips() -> Result<()> {
         let genome = Toy::genome(0.5);
-        assert_eq!(Toy::decode_genome(&Toy::encode_genome(&genome))?, genome);
+        assert_eq!(ToyGenome::from_bytes(&genome.to_bytes())?, genome);
         // Trailing bytes are rejected.
-        let mut bytes = Toy::encode_genome(&genome);
+        let mut bytes = genome.to_bytes();
         bytes.push(0);
         assert!(matches!(
-            Toy::decode_genome(&bytes),
+            ToyGenome::from_bytes(&bytes),
             Err(Error::Encoding(_))
         ));
         Ok(())
@@ -209,7 +177,7 @@ mod tests {
 
         // Generator translation and sampling: three distinct candidates, each a
         // toy spec stamped with the requested format.
-        let gen_table: toml::Table = "count = 3\nrate = [0.01, 0.08]"
+        let gen_table: toml::Table = "count = 3\nvalue = [0.01, 0.08]"
             .parse()
             .expect("parse generator table");
         let gen_blob = translate_generator::<Toy>(&gen_table)?;
@@ -218,7 +186,7 @@ mod tests {
         assert_eq!(specs.len(), 3);
         for spec in &specs {
             assert_eq!(spec.format, format);
-            Toy::decode_genome(&spec.bytes)?;
+            ToyGenome::from_bytes(&spec.bytes)?;
         }
         // Distinct candidates: the three specs are pairwise different.
         assert_ne!(specs[0].bytes, specs[1].bytes);

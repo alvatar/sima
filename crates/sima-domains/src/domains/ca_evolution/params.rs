@@ -87,26 +87,26 @@ impl CaParams {
 pub(crate) fn encode_params<M: CaModel>(shared: &CaParams, ignition: &M::Ignition) -> Vec<u8> {
     let mut enc = Enc::new();
     shared.encode(&mut enc);
-    M::encode_ignition(ignition, &mut enc);
+    ignition.encode(&mut enc);
     enc.finish()
 }
 
-/// Parses the run-params blob: the shared fields, then `M::decode_ignition`
-/// consumes the remainder. Trailing bytes are a decode error.
+/// Parses the run-params blob: the shared fields, then the model's ignition
+/// codec consumes the remainder. Trailing bytes are a decode error.
 pub(crate) fn decode_params<M: CaModel>(bytes: &[u8]) -> Result<(CaParams, M::Ignition)> {
     let mut dec = Dec::new(bytes);
     let shared = CaParams::decode(&mut dec)?;
-    let ignition = M::decode_ignition(&mut dec)?;
+    let ignition = M::Ignition::decode(&mut dec)?;
     dec.finish()?;
     Ok((shared, ignition))
 }
 
 /// Translates the `[run.params]` table into the canonical params blob: the
-/// shared keys here, the model's ignition keys via [`CaModel::parse_ignition`].
-/// The table is split so each derived parser rejects only the unknown keys in
-/// its own set — the shared keys go to [`CaParams`], the rest to the model. All
-/// keys are required, with no defaults — every value that determines candidate
-/// identity is visible in the config file.
+/// shared keys here, the model's ignition keys via its ignition's
+/// [`TomlConfig`] parser. The table is split so each derived parser rejects only
+/// the unknown keys in its own set — the shared keys go to [`CaParams`], the
+/// rest to the model. All keys are required, with no defaults — every value that
+/// determines candidate identity is visible in the config file.
 pub(crate) fn translate<M: CaModel>(table: &toml::Table) -> Result<Params> {
     let mut shared_table = toml::Table::new();
     let mut model_keys = table.clone();
@@ -116,7 +116,7 @@ pub(crate) fn translate<M: CaModel>(table: &toml::Table) -> Result<Params> {
         }
     }
     let shared = CaParams::parse(&shared_table, M::FORMAT_ID, "params")?;
-    let ignition = M::parse_ignition(&model_keys)?;
+    let ignition = M::Ignition::parse(&model_keys, M::FORMAT_ID, "params")?;
     Ok(Params {
         bytes: encode_params::<M>(&shared, &ignition),
     })
@@ -234,8 +234,8 @@ mod tests {
 
     #[test]
     fn translate_encodes_a_full_table_through_the_blob() -> Result<()> {
-        // The shared keys here, the model's `base` via parse_ignition; the result
-        // decodes back to the same shared params and ignition.
+        // The shared keys here, the model's `base` via its ignition parser; the
+        // result decodes back to the same shared params and ignition.
         let blob = translate::<Toy>(&params_table(FULL_PARAMS))?.bytes;
         let (shared, ignition) = decode_params::<Toy>(&blob)?;
         assert_eq!(shared, CaParams::new(64, 48, 100, 1.0)?);
@@ -260,7 +260,8 @@ mod tests {
 
     #[test]
     fn translate_rejects_a_missing_model_key_naming_it() {
-        // A missing model key surfaces from parse_ignition, naming the key.
+        // A missing model key surfaces from the model's ignition parser, naming
+        // the key.
         let mut table = params_table(FULL_PARAMS);
         table.remove("base");
         match translate::<Toy>(&table) {

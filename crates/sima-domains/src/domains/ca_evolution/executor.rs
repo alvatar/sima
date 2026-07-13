@@ -6,7 +6,7 @@ use std::sync::Mutex;
 use sima_contracts::{
     Artifact, Checkpoint, ExecutionContext, Executor, Outcome, STATE_ARTIFACT, Stats, TaskInput,
 };
-use sima_core::{Error, Result};
+use sima_core::{Codec, Error, Result};
 use sima_model::FormatId;
 use sima_toolkit_wgsl::{Context, Kernel};
 
@@ -78,7 +78,7 @@ impl<M: CaModel> Executor for CaExecutor<M> {
         // Structural validation strictly before any GPU touch: a malformed spec,
         // params, or input state is an identity fault (`Err`), never a candidate
         // failure — and the error paths stay device-free, like the stub's.
-        let genome = M::decode_genome(&input.spec.bytes).map_err(|e| {
+        let genome = M::Genome::from_bytes(&input.spec.bytes).map_err(|e| {
             Error::Validation(format!("{} spec is not a valid genome: {e}", M::NAME))
         })?;
         let (shared, ignition) = decode_params::<M>(&input.params.bytes)
@@ -164,11 +164,11 @@ mod tests {
         }
     }
 
-    /// A well-formed toy spec at the given rate.
+    /// A well-formed toy spec at the given value.
     fn spec() -> Spec {
         Spec {
             format: FormatId::new(Toy::FORMAT_ID).expect("valid format id"),
-            bytes: Toy::encode_genome(&Toy::genome(0.5)),
+            bytes: Toy::genome(0.5).to_bytes(),
         }
     }
 

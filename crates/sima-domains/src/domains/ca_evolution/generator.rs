@@ -6,7 +6,7 @@ use std::marker::PhantomData;
 
 use sima_contracts::Generator;
 use sima_core::toml_config;
-use sima_core::{Dec, Enc, Error, Result};
+use sima_core::{Codec, Dec, Enc, Error, Result, TomlConfig};
 use sima_model::{FormatId, GeneratorId, Spec};
 
 use super::model::CaModel;
@@ -43,24 +43,25 @@ impl<M: CaModel> Generator for CaGenerator<M> {
         // Content addressing: identical draws would collapse to one identity, so
         // a collision is surfaced as an error exposing the config mistake
         // (ranges admitting too few distinct values) instead of silently
-        // shrinking the run. Dedup is by the model's genome key.
+        // shrinking the run. Dedup is by the genome's canonical bytes, which are
+        // exactly the bytes the spec carries.
         let mut first_drawn_at: HashMap<Vec<u8>, u64> = HashMap::with_capacity(count as usize);
         for i in 0..count {
             // Candidate i owns the substream the model derives from
             // (root_seed, i), so a candidate depends only on (root_seed, i, cfg).
             let genome = M::sample(&cfg, root_seed, i);
-            let key = M::genome_key(&genome);
-            if let Some(&j) = first_drawn_at.get(&key) {
+            let bytes = genome.to_bytes();
+            if let Some(&j) = first_drawn_at.get(&bytes) {
                 return Err(Error::Validation(format!(
                     "{} generator drew identical genomes at candidates {j} and {i}: \
                      the configured ranges admit too few distinct values",
                     M::NAME
                 )));
             }
-            first_drawn_at.insert(key, i);
+            first_drawn_at.insert(bytes.clone(), i);
             specs.push(Spec {
                 format: format.clone(),
-                bytes: M::encode_genome(&genome),
+                bytes,
             });
         }
         Ok(specs)
@@ -68,14 +69,14 @@ impl<M: CaModel> Generator for CaGenerator<M> {
 }
 
 /// Translates the `[run.generator]` table into the generator params blob: the
-/// shared `count` here, the model's sampling keys via
-/// [`CaModel::parse_gen_config`]. The model receives the table with `count`
-/// stripped, so it rejects only keys outside its own set.
+/// shared `count` here, the model's sampling keys via its generator config's
+/// [`TomlConfig`] parser. The model receives the table with `count` stripped,
+/// so it rejects only keys outside its own set.
 pub(crate) fn translate<M: CaModel>(table: &toml::Table) -> Result<Vec<u8>> {
     let count = parse_count::<M>(table)?;
     let mut model_keys = table.clone();
     model_keys.remove("count");
-    let cfg = M::parse_gen_config(&model_keys)?;
+    let cfg = M::GenConfig::parse(&model_keys, M::FORMAT_ID, "generator")?;
     Ok(encode_gen_params::<M>(count, &cfg))
 }
 
@@ -85,7 +86,7 @@ fn encode_gen_params<M: CaModel>(count: u64, cfg: &M::GenConfig) -> Vec<u8> {
     let mut enc = Enc::new();
     enc.u64(count);
     let mut bytes = enc.finish();
-    bytes.extend_from_slice(&M::encode_gen_config(cfg));
+    bytes.extend_from_slice(&cfg.to_bytes());
     bytes
 }
 
@@ -95,7 +96,7 @@ fn encode_gen_params<M: CaModel>(count: u64, cfg: &M::GenConfig) -> Vec<u8> {
 fn decode_gen_params<M: CaModel>(bytes: &[u8]) -> Result<(u64, M::GenConfig)> {
     let mut dec = Dec::new(bytes);
     let count = validated_count(dec.u64()?)?;
-    let cfg = M::decode_gen_config(&bytes[std::mem::size_of::<u64>()..])?;
+    let cfg = M::GenConfig::from_bytes(&bytes[std::mem::size_of::<u64>()..])?;
     Ok((count, cfg))
 }
 
@@ -215,20 +216,20 @@ mod tests {
     }
 
     /// The toy model's full `[run.generator]` grammar: the shared `count` plus
-    /// the toy model's single `rate` range.
+    /// the toy model's single `value` range.
     fn gen_table(text: &str) -> toml::Table {
         text.parse().expect("parse test table")
     }
 
     const FULL_GEN: &str = r#"
         count = 8
-        rate = [0.01, 0.08]
+        value = [0.01, 0.08]
     "#;
 
     #[test]
     fn translate_encodes_a_full_table_then_decodes_back() -> Result<()> {
-        // The shared count here, the model's range via parse_gen_config; the blob
-        // decodes back to the same count and config.
+        // The shared count here, the model's range via its generator config
+        // parser; the blob decodes back to the same count and config.
         let blob = translate::<Toy>(&gen_table(FULL_GEN))?;
         let (count, cfg) = decode_gen_params::<Toy>(&blob)?;
         assert_eq!(count, 8);
@@ -253,7 +254,7 @@ mod tests {
 
     #[test]
     fn translate_rejects_a_zero_count() {
-        let table = gen_table("count = 0\n        rate = [0.01, 0.08]");
+        let table = gen_table("count = 0\n        value = [0.01, 0.08]");
         assert!(matches!(
             translate::<Toy>(&table),
             Err(Error::Validation(_))
@@ -263,10 +264,13 @@ mod tests {
     #[test]
     fn translate_rejects_a_missing_model_key_naming_it() {
         let mut table = gen_table(FULL_GEN);
-        table.remove("rate");
+        table.remove("value");
         match translate::<Toy>(&table) {
             Err(Error::Validation(message)) => {
-                assert!(message.contains("rate"), "the error names rate: {message}")
+                assert!(
+                    message.contains("value"),
+                    "the error names value: {message}"
+                )
             }
             other => panic!("expected Validation, got {other:?}"),
         }

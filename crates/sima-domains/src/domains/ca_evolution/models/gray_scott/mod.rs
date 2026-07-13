@@ -11,7 +11,7 @@ mod gen_config;
 mod genome;
 mod ignition;
 
-use sima_core::{Codec, Dec, Enc, Result, TomlConfig};
+use sima_core::Result;
 
 use super::super::ignition::{PatchSpec, seeded_patch};
 use super::super::model::CaModel;
@@ -37,14 +37,6 @@ impl CaModel for GrayScott {
     const VERSION: &'static str = "v1";
     const CHANNELS: u32 = 2;
     const KERNEL_WGSL: &'static str = include_str!("gray_scott.wgsl");
-
-    fn decode_genome(bytes: &[u8]) -> Result<GrayScottGenome> {
-        GrayScottGenome::from_bytes(bytes)
-    }
-
-    fn encode_genome(genome: &GrayScottGenome) -> Vec<u8> {
-        genome.to_bytes()
-    }
 
     fn uniforms(genome: &GrayScottGenome, shared: &CaParams) -> Vec<f32> {
         // Binding 3 of the cellular convention: [f, k, du, dv, dt].
@@ -72,30 +64,6 @@ impl CaModel for GrayScott {
             },
             seed,
         )
-    }
-
-    fn parse_ignition(table: &toml::Table) -> Result<GrayScottIgnition> {
-        GrayScottIgnition::parse(table, Self::FORMAT_ID, "params")
-    }
-
-    fn encode_ignition(ignition: &GrayScottIgnition, enc: &mut Enc) {
-        ignition.encode(enc);
-    }
-
-    fn decode_ignition(dec: &mut Dec) -> Result<GrayScottIgnition> {
-        GrayScottIgnition::decode(dec)
-    }
-
-    fn parse_gen_config(table: &toml::Table) -> Result<GrayScottGenConfig> {
-        GrayScottGenConfig::parse(table, Self::FORMAT_ID, "generator")
-    }
-
-    fn encode_gen_config(cfg: &GrayScottGenConfig) -> Vec<u8> {
-        cfg.to_bytes()
-    }
-
-    fn decode_gen_config(bytes: &[u8]) -> Result<GrayScottGenConfig> {
-        GrayScottGenConfig::from_bytes(bytes)
     }
 
     fn sample(cfg: &GrayScottGenConfig, seed: u64, index: u64) -> GrayScottGenome {
