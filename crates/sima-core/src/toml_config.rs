@@ -66,22 +66,21 @@ pub fn integer(table: &toml::Table, id: &str, section: &str, key: &str) -> Resul
 }
 
 /// The required number at `key`: integer and float are both accepted (`0` means
-/// `+0.0`), read as `f32` — the config file's one number path.
+/// `+0.0`), read as `f32` — the config file's one number path via [`number`].
 pub fn float(table: &toml::Table, id: &str, section: &str, key: &str) -> Result<f32> {
-    match required(table, id, section, key)? {
-        toml::Value::Integer(n) => Ok(*n as f64 as f32),
-        toml::Value::Float(f) => Ok(*f as f32),
-        other => Err(Error::Validation(format!(
+    let value = required(table, id, section, key)?;
+    number(value).ok_or_else(|| {
+        Error::Validation(format!(
             "{section} {id} {key} must be a number, got {}",
-            other.type_str()
-        ))),
-    }
+            value.type_str()
+        ))
+    })
 }
 
 /// The numeric reading of a TOML value: integer and float are both accepted (a
 /// `0` means `+0.0`), converted as f64 then f32 — the config file's one number
 /// path.
-pub fn number(value: &toml::Value) -> Option<f32> {
+pub(crate) fn number(value: &toml::Value) -> Option<f32> {
     match value {
         toml::Value::Integer(n) => Some(*n as f64 as f32),
         toml::Value::Float(f) => Some(*f as f32),
