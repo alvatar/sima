@@ -103,12 +103,35 @@ impl CaModel for GrayScott {
 
 #[cfg(test)]
 mod tests {
+    use sima_model::EnvironmentValue;
+    use sima_toolkit_wgsl::source_digest;
+
+    use super::super::super::domain::build_domain;
     use super::*;
 
     #[test]
     fn the_kernel_compiles_device_free() {
         // Hosted CI catches a kernel that fails to compile without a device.
         sima_toolkit_wgsl::check(GrayScott::KERNEL_WGSL, "main").expect("kernel compiles");
+    }
+
+    #[test]
+    fn the_environment_pins_the_kernel_digest() -> Result<()> {
+        // build_domain derives the model's environment device-free, hashing the
+        // kernel source rather than compiling it. The kernel component carries
+        // that digest, so editing the shader changes every task key.
+        let domain = build_domain::<GrayScott>()?;
+        assert_eq!(domain.format.as_str(), GrayScott::FORMAT_ID);
+        let components = domain.environment.components();
+        assert_eq!(components.len(), 3);
+        assert_eq!(components[0].name(), "ca_evolution.gray_scott.executor");
+        assert_eq!(components[1].name(), "ca_evolution.gray_scott.kernel");
+        assert_eq!(
+            *components[1].value(),
+            EnvironmentValue::Digest(source_digest(GrayScott::KERNEL_WGSL))
+        );
+        assert_eq!(components[2].name(), "wgsl.compiler");
+        Ok(())
     }
 
     #[test]

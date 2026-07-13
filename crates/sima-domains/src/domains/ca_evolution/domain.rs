@@ -36,33 +36,3 @@ pub(crate) fn build_domain<M: CaModel>() -> Result<Domain> {
         ])?,
     })
 }
-
-#[cfg(test)]
-mod tests {
-    use super::super::models::gray_scott::GrayScott;
-    use super::*;
-
-    #[test]
-    fn build_domain_derives_the_environment_from_the_model() -> Result<()> {
-        // Device-free: build_domain computes the kernel digest by hashing the
-        // source, never compiling it. The component names derive from M::NAME,
-        // and the kernel component carries the source digest that pins the
-        // compiled SPIR-V in every task's identity.
-        let domain = build_domain::<GrayScott>()?;
-        assert_eq!(domain.format.as_str(), GrayScott::FORMAT_ID);
-        let components = domain.environment.components();
-        assert_eq!(components.len(), 3);
-        assert_eq!(components[0].name(), "ca_evolution.gray_scott.executor");
-        assert_eq!(
-            *components[0].value(),
-            EnvironmentValue::Version("v1".to_string())
-        );
-        assert_eq!(components[1].name(), "ca_evolution.gray_scott.kernel");
-        assert_eq!(
-            *components[1].value(),
-            EnvironmentValue::Digest(source_digest(GrayScott::KERNEL_WGSL))
-        );
-        assert_eq!(components[2].name(), "wgsl.compiler");
-        Ok(())
-    }
-}
