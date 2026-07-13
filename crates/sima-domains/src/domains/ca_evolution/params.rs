@@ -1,35 +1,35 @@
-//! [`CaEvolutionParams`]: the run parameters of the `ca_evolution` domain.
+//! [`CaParams`]: the run knobs every CA model shares, and the shared half of the
+//! `[run.params]` translation.
 
 use sima_core::{Dec, Enc, Error, Result};
+use sima_model::Params;
 
-use super::CaEvolutionPatch;
+use super::model::CaModel;
+use crate::domains::translate;
 
-/// The `ca_evolution` run parameters: the grid extents, the steps one task
-/// advances, the integration step size, and the ignition patch
-/// configuration.
+/// The run parameters shared by every CA model: the grid extents, the steps one
+/// segment advances, and the integration step size. A model's own ignition
+/// configuration follows these in the canonical params blob.
 ///
-/// The canonical form is `width`, `height`, `steps` as little-endian `u32`,
-/// `dt` as its IEEE-754 bits in a little-endian `u32`, then the patch's
-/// canonical form: exactly 44 bytes. The payload carries no inner tag: the
-/// spec's format id frames the interpretation of the params blob, the same
-/// rule the genome's spec payload follows.
+/// The canonical form is `width`, `height`, `steps` as little-endian `u32`, `dt`
+/// as its IEEE-754 bits in a little-endian `u32` — exactly 16 bytes — then the
+/// model's ignition bytes.
 ///
-/// `steps` counts one task's steps: with `segments = N` in the run config a
-/// candidate runs as a chain of N tasks, so the full trajectory spans
-/// `N * steps` steps.
+/// `steps` counts one segment's steps. A candidate's trajectory is a chain of
+/// `segments` tasks, one task per segment, so the full trajectory spans
+/// `segments * steps` steps. A total-steps-across-segments reading would need a
+/// segment index threaded into the task input; the design keeps `steps`
+/// per-segment, which needs no such index.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct CaEvolutionParams {
-    /// Grid width in cells.
+pub(crate) struct CaParams {
     width: u32,
-    /// Grid height in cells.
     height: u32,
-    /// Simulation steps one task advances.
     steps: u32,
-    /// Integration step size.
     dt: f32,
-    /// Ignition configuration of the initial grid.
-    patch: CaEvolutionPatch,
 }
+
+/// The shared `[run.params]` keys; the model owns any key beyond these.
+pub(crate) const SHARED_KEYS: [&str; 4] = ["width", "height", "steps", "dt"];
 
 /// Validates a count parameter: at least 1. Zero cells make no grid, and a
 /// zero-step task would commit its input unchanged.
@@ -43,119 +43,126 @@ fn at_least_one(name: &str, value: u32) -> Result<u32> {
     }
 }
 
-impl CaEvolutionParams {
-    /// Builds run parameters, validating each field: `width`, `height`, and
-    /// `steps` must be at least 1; `dt` must be finite and strictly greater
-    /// than zero. The patch arrives already validated by
-    /// [`CaEvolutionPatch::new`]. Any violation is [`Error::Validation`]
-    /// naming the field.
-    pub fn new(
-        width: u32,
-        height: u32,
-        steps: u32,
-        dt: f32,
-        patch: CaEvolutionPatch,
-    ) -> Result<CaEvolutionParams> {
+impl CaParams {
+    /// Builds shared run parameters, validating each field: `width`, `height`,
+    /// and `steps` must be at least 1; `dt` must be finite and strictly greater
+    /// than zero. Any violation is [`Error::Validation`] naming the field.
+    pub(crate) fn new(width: u32, height: u32, steps: u32, dt: f32) -> Result<CaParams> {
         if !(dt.is_finite() && dt > 0.0) {
             return Err(Error::Validation(format!(
                 "ca_evolution params dt must be a finite value greater than zero, got {dt}"
             )));
         }
-        Ok(CaEvolutionParams {
+        Ok(CaParams {
             width: at_least_one("width", width)?,
             height: at_least_one("height", height)?,
             steps: at_least_one("steps", steps)?,
             dt,
-            patch,
         })
     }
 
     /// The grid width in cells.
-    pub fn width(&self) -> u32 {
+    pub(crate) fn width(&self) -> u32 {
         self.width
     }
 
     /// The grid height in cells.
-    pub fn height(&self) -> u32 {
+    pub(crate) fn height(&self) -> u32 {
         self.height
     }
 
-    /// The simulation steps one task advances.
-    pub fn steps(&self) -> u32 {
+    /// The simulation steps one segment advances.
+    pub(crate) fn steps(&self) -> u32 {
         self.steps
     }
 
     /// The integration step size.
-    pub fn dt(&self) -> f32 {
+    pub(crate) fn dt(&self) -> f32 {
         self.dt
     }
 
-    /// The ignition configuration of the initial grid.
-    pub fn patch(&self) -> CaEvolutionPatch {
-        self.patch
-    }
-
-    /// Appends the canonical form: `width`, `height`, `steps` via
-    /// [`Enc::u32`], `dt` via [`Enc::f32`], then the patch via
-    /// [`CaEvolutionPatch::encode`], in the frozen field order.
-    pub fn encode(&self, enc: &mut Enc) {
+    /// Appends the canonical form: `width`, `height`, `steps` via [`Enc::u32`],
+    /// `dt` via [`Enc::f32`], in the frozen field order.
+    pub(crate) fn encode(&self, enc: &mut Enc) {
         enc.u32(self.width)
             .u32(self.height)
             .u32(self.steps)
             .f32(self.dt);
-        self.patch.encode(enc);
     }
 
-    /// Reads a canonical form written by [`CaEvolutionParams::encode`],
-    /// funneling the values through [`CaEvolutionParams::new`] so decode and
-    /// construction share one validation path.
-    pub fn decode(dec: &mut Dec<'_>) -> Result<CaEvolutionParams> {
+    /// Reads a canonical form written by [`CaParams::encode`], funneling the
+    /// values through [`CaParams::new`] so decode and construction share one
+    /// validation path.
+    pub(crate) fn decode(dec: &mut Dec<'_>) -> Result<CaParams> {
         let width = dec.u32()?;
         let height = dec.u32()?;
         let steps = dec.u32()?;
         let dt = dec.f32()?;
-        let patch = CaEvolutionPatch::decode(dec)?;
-        CaEvolutionParams::new(width, height, steps, dt, patch)
+        CaParams::new(width, height, steps, dt)
     }
+}
 
-    /// The standalone canonical bytes — exactly the bytes the run's params
-    /// blob carries.
-    pub fn to_bytes(&self) -> Vec<u8> {
-        let mut enc = Enc::new();
-        self.encode(&mut enc);
-        enc.finish()
-    }
+/// The canonical run-params blob: the shared fields, then the model's ignition.
+pub(crate) fn encode_params<M: CaModel>(shared: &CaParams, ignition: &M::Ignition) -> Vec<u8> {
+    let mut enc = Enc::new();
+    shared.encode(&mut enc);
+    M::encode_ignition(ignition, &mut enc);
+    enc.finish()
+}
 
-    /// Parses standalone canonical bytes, rejecting trailing input.
-    pub fn from_bytes(bytes: &[u8]) -> Result<CaEvolutionParams> {
-        let mut dec = Dec::new(bytes);
-        let params = CaEvolutionParams::decode(&mut dec)?;
-        dec.finish()?;
-        Ok(params)
+/// Parses the run-params blob: the shared fields, then `M::decode_ignition`
+/// consumes the remainder. Trailing bytes are a decode error.
+pub(crate) fn decode_params<M: CaModel>(bytes: &[u8]) -> Result<(CaParams, M::Ignition)> {
+    let mut dec = Dec::new(bytes);
+    let shared = CaParams::decode(&mut dec)?;
+    let ignition = M::decode_ignition(&mut dec)?;
+    dec.finish()?;
+    Ok((shared, ignition))
+}
+
+/// Translates the `[run.params]` table into the canonical params blob: the
+/// shared keys here, the model's ignition keys via [`CaModel::parse_ignition`].
+/// The model receives the table with the shared keys stripped, so it rejects
+/// only keys outside its own set. All shared keys are required, with no
+/// defaults — every value that determines candidate identity is visible in the
+/// config file.
+pub(crate) fn translate<M: CaModel>(table: &toml::Table) -> Result<Params> {
+    let shared = parse_shared(table, M::FORMAT_ID)?;
+    let mut model_keys = table.clone();
+    for key in SHARED_KEYS {
+        model_keys.remove(key);
     }
+    let ignition = M::parse_ignition(&model_keys)?;
+    Ok(Params {
+        bytes: encode_params::<M>(&shared, &ignition),
+    })
+}
+
+/// Reads the shared `[run.params]` keys, validating them through
+/// [`CaParams::new`].
+fn parse_shared(table: &toml::Table, id: &str) -> Result<CaParams> {
+    let width = translate::integer(table, id, "params", "width")?;
+    let height = translate::integer(table, id, "params", "height")?;
+    let steps = translate::integer(table, id, "params", "steps")?;
+    // dt is the one f32 field; it narrows from the shared f64 number path.
+    let dt = translate::float(table, id, "params", "dt")? as f32;
+    CaParams::new(width, height, steps, dt)
 }
 
 #[cfg(test)]
 mod tests {
     use sima_core::to_hex;
 
+    use super::super::toy_model::Toy;
     use super::*;
 
-    /// Pearson's classical ignition configuration.
-    fn pearson_patch() -> CaEvolutionPatch {
-        CaEvolutionPatch::new(0.5, 0.25, 8, 0.02).expect("valid pearson patch")
+    fn sample() -> CaParams {
+        CaParams::new(64, 48, 100, 1.0).expect("valid sample params")
     }
 
-    fn sample() -> CaEvolutionParams {
-        CaEvolutionParams::new(64, 48, 100, 1.0, pearson_patch()).expect("valid sample params")
-    }
-
-    /// The canonical bytes of [`sample`], derived by hand from the layout —
-    /// width 64, height 48, steps 100 as little-endian `u32`, dt 1.0 as its
-    /// f32 bits (`0x3F800000`) little-endian, then the patch's 28 canonical
-    /// bytes — and independently reproduced with Python `struct`.
-    const SAMPLE_BYTES_HEX: &str =
-        "4000000030000000640000000000803f000000000000e03f000000000000d03f080000007b14ae47e17a943f";
+    /// The canonical bytes of [`sample`]: width 64, height 48, steps 100 as
+    /// little-endian `u32`, dt 1.0 as its f32 bits (`0x3F800000`) little-endian.
+    const SAMPLE_BYTES_HEX: &str = "4000000030000000640000000000803f";
 
     #[test]
     fn new_rejects_zero_counts() {
@@ -163,7 +170,7 @@ mod tests {
         for (position, name) in names.iter().enumerate() {
             let mut p = [64u32, 48, 100];
             p[position] = 0;
-            match CaEvolutionParams::new(p[0], p[1], p[2], 1.0, pearson_patch()) {
+            match CaParams::new(p[0], p[1], p[2], 1.0) {
                 Err(Error::Validation(message)) => {
                     assert!(
                         message.contains(name),
@@ -178,7 +185,7 @@ mod tests {
     #[test]
     fn new_rejects_invalid_dt() {
         for bad in [0.0f32, -1.0, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
-            match CaEvolutionParams::new(64, 48, 100, bad, pearson_patch()) {
+            match CaParams::new(64, 48, 100, bad) {
                 Err(Error::Validation(message)) => {
                     assert!(message.contains("dt"), "the error names dt: {message}")
                 }
@@ -188,64 +195,123 @@ mod tests {
     }
 
     #[test]
-    fn accessors_round_trip() -> Result<()> {
+    fn accessors_round_trip() {
         let params = sample();
         assert_eq!(params.width(), 64);
         assert_eq!(params.height(), 48);
         assert_eq!(params.steps(), 100);
         assert_eq!(params.dt(), 1.0);
-        assert_eq!(params.patch(), pearson_patch());
-        Ok(())
+    }
+
+    #[test]
+    fn shared_fields_are_byte_stable() {
+        let mut enc = Enc::new();
+        sample().encode(&mut enc);
+        assert_eq!(to_hex(&enc.finish()), SAMPLE_BYTES_HEX);
     }
 
     #[test]
     fn round_trips_through_bytes() -> Result<()> {
-        let params = sample();
-        // Derived equality coincides with byte equality on constructed
-        // values: validation excludes NaN and -0.0 everywhere.
-        assert_eq!(CaEvolutionParams::from_bytes(&params.to_bytes())?, params);
+        let mut enc = Enc::new();
+        sample().encode(&mut enc);
+        let buf = enc.finish();
+        let mut dec = Dec::new(&buf);
+        assert_eq!(CaParams::decode(&mut dec)?, sample());
+        dec.finish()?;
         Ok(())
     }
 
     #[test]
-    fn to_bytes_is_byte_stable() {
-        assert_eq!(to_hex(&sample().to_bytes()), SAMPLE_BYTES_HEX);
+    fn params_blob_splits_shared_from_ignition() -> Result<()> {
+        // A toy model with a one-scalar ignition: encode_params writes the four
+        // shared fields then the model's ignition, and decode_params reads the
+        // shared fields back and hands the remainder to the model.
+        let shared = sample();
+        let ignition = Toy::ignition(7.5);
+        let blob = encode_params::<Toy>(&shared, &ignition);
+        let (decoded_shared, decoded_ignition) = decode_params::<Toy>(&blob)?;
+        assert_eq!(decoded_shared, shared);
+        assert_eq!(decoded_ignition, ignition);
+        Ok(())
     }
 
     #[test]
-    fn from_bytes_rejects_trailing_bytes() {
-        let mut buf = sample().to_bytes();
-        buf.push(0);
+    fn params_blob_rejects_trailing_bytes() {
+        let mut blob = encode_params::<Toy>(&sample(), &Toy::ignition(1.0));
+        blob.push(0);
         assert!(matches!(
-            CaEvolutionParams::from_bytes(&buf),
+            decode_params::<Toy>(&blob),
             Err(Error::Encoding(_))
         ));
     }
 
+    /// The toy model's full `[run.params]` grammar: the shared keys plus the toy
+    /// model's single `base` key.
+    fn params_table(text: &str) -> toml::Table {
+        text.parse().expect("parse test table")
+    }
+
+    const FULL_PARAMS: &str = r#"
+        width = 64
+        height = 48
+        steps = 100
+        dt = 1.0
+        base = 0.5
+    "#;
+
     #[test]
-    fn from_bytes_rejects_every_truncation() {
-        let full = sample().to_bytes();
-        for cut in 0..full.len() {
-            assert!(
-                matches!(
-                    CaEvolutionParams::from_bytes(&full[..cut]),
-                    Err(Error::Encoding(_))
-                ),
-                "prefix of {cut} bytes must be rejected"
-            );
+    fn translate_encodes_a_full_table_through_the_blob() -> Result<()> {
+        // The shared keys here, the model's `base` via parse_ignition; the result
+        // decodes back to the same shared params and ignition.
+        let blob = translate::<Toy>(&params_table(FULL_PARAMS))?.bytes;
+        let (shared, ignition) = decode_params::<Toy>(&blob)?;
+        assert_eq!(shared, CaParams::new(64, 48, 100, 1.0)?);
+        assert_eq!(ignition, Toy::ignition(0.5));
+        Ok(())
+    }
+
+    #[test]
+    fn translate_rejects_a_missing_shared_key_naming_it() {
+        // A missing shared key surfaces before the model runs, naming the key.
+        for key in SHARED_KEYS {
+            let mut table = params_table(FULL_PARAMS);
+            table.remove(key);
+            match translate::<Toy>(&table) {
+                Err(Error::Validation(message)) => {
+                    assert!(message.contains(key), "the error names {key}: {message}")
+                }
+                other => panic!("expected Validation for missing {key}, got {other:?}"),
+            }
         }
     }
 
     #[test]
-    fn from_bytes_rejects_invalid_values() {
-        // Well-formed 44 bytes encoding steps = 0: the structure decodes,
-        // the value fails — decode funnels through `new`.
-        let mut enc = Enc::new();
-        enc.u32(64).u32(48).u32(0).f32(1.0);
-        pearson_patch().encode(&mut enc);
-        assert!(matches!(
-            CaEvolutionParams::from_bytes(&enc.finish()),
-            Err(Error::Validation(_))
-        ));
+    fn translate_rejects_a_missing_model_key_naming_it() {
+        // A missing model key surfaces from parse_ignition, naming the key.
+        let mut table = params_table(FULL_PARAMS);
+        table.remove("base");
+        match translate::<Toy>(&table) {
+            Err(Error::Validation(message)) => {
+                assert!(message.contains("base"), "the error names base: {message}")
+            }
+            other => panic!("expected Validation for missing base, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn translate_rejects_an_unknown_key() {
+        // An unknown key is neither shared nor a model key, so the model rejects
+        // it once the shared keys are stripped.
+        let mut table = params_table(FULL_PARAMS);
+        table.insert("surprise".to_string(), toml::Value::Integer(1));
+        match translate::<Toy>(&table) {
+            Err(Error::Validation(message)) => {
+                assert!(
+                    message.contains("surprise"),
+                    "the error names the key: {message}"
+                )
+            }
+            other => panic!("expected Validation, got {other:?}"),
+        }
     }
 }

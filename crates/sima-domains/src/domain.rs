@@ -26,45 +26,61 @@ pub struct Domain {
     pub environment: Environment,
 }
 
-/// Static dispatch: the domains this build knows. An unknown format id is
-/// [`Error::Validation`].
+/// Static dispatch: the domains this build knows. The stub is matched directly;
+/// every other id is offered to `ca_evolution`, whose registry claims its
+/// models. An unclaimed id is [`Error::Validation`].
 pub fn domain_for(format: &FormatId) -> Result<Domain> {
-    match format.as_str() {
-        stub::ID => stub::domain(),
-        ca_evolution::ID => ca_evolution::domain(),
-        other => Err(Error::Validation(format!("unknown format id {other:?}"))),
+    if format.as_str() == stub::ID {
+        return stub::domain();
     }
+    ca_evolution::domain_for(format).unwrap_or_else(|| {
+        Err(Error::Validation(format!(
+            "unknown format id {:?}",
+            format.as_str()
+        )))
+    })
 }
 
-/// Params translation for the domain: the `[run.params]` table into the
-/// opaque canonical params bytes. The domain owns and validates its keys.
+/// Params translation for the domain: the `[run.params]` table into the opaque
+/// canonical params bytes. The domain owns and validates its keys.
 pub fn params_for(format: &FormatId, table: &toml::Table) -> Result<Params> {
-    match format.as_str() {
-        stub::ID => stub::params(table),
-        ca_evolution::ID => ca_evolution::params(table),
-        other => Err(Error::Validation(format!("unknown format id {other:?}"))),
+    if format.as_str() == stub::ID {
+        return stub::params(table);
     }
+    ca_evolution::params_for(format, table).unwrap_or_else(|| {
+        Err(Error::Validation(format!(
+            "unknown format id {:?}",
+            format.as_str()
+        )))
+    })
 }
 
-/// Static generator dispatch. An unknown generator id is
-/// [`Error::Validation`].
+/// Static generator dispatch. An unknown generator id is [`Error::Validation`].
 pub fn generator_for(id: &GeneratorId) -> Result<Box<dyn Generator>> {
-    match id.as_str() {
-        stub::ID => Ok(Box::new(stub::StubGenerator::new()?)),
-        ca_evolution::ID => Ok(Box::new(ca_evolution::CaEvolutionGenerator::new()?)),
-        other => Err(Error::Validation(format!("unknown generator id {other:?}"))),
+    if id.as_str() == stub::ID {
+        return Ok(Box::new(stub::StubGenerator::new()?));
     }
+    ca_evolution::generator_for(id).unwrap_or_else(|| {
+        Err(Error::Validation(format!(
+            "unknown generator id {:?}",
+            id.as_str()
+        )))
+    })
 }
 
 /// Translation of the generator's own config table — the `[run.generator]`
 /// section minus `id` — into its opaque params blob. The generator owns and
 /// validates its keys.
 pub fn generator_params_for(id: &GeneratorId, table: &toml::Table) -> Result<Vec<u8>> {
-    match id.as_str() {
-        stub::ID => stub::generator_params(table),
-        ca_evolution::ID => ca_evolution::generator_params(table),
-        other => Err(Error::Validation(format!("unknown generator id {other:?}"))),
+    if id.as_str() == stub::ID {
+        return stub::generator_params(table);
     }
+    ca_evolution::generator_params_for(id, table).unwrap_or_else(|| {
+        Err(Error::Validation(format!(
+            "unknown generator id {:?}",
+            id.as_str()
+        )))
+    })
 }
 
 #[cfg(test)]
@@ -139,81 +155,39 @@ mod tests {
     }
 
     #[test]
-    fn the_ca_evolution_domain_binds_executor_and_environment() -> Result<()> {
-        use sima_model::EnvironmentValue;
-        use sima_toolkit_wgsl::{COMPILER_ID, source_digest};
-
-        // Constructing the domain here proves domain_for is device-free:
-        // this test runs everywhere, GPU or not.
-        let domain = domain_for(&format("ca_evolution.v1"))?;
-        assert_eq!(domain.format.as_str(), "ca_evolution.v1");
-        assert_eq!(domain.executor.format().as_str(), "ca_evolution.v1");
-        // Three components: the executor version, the kernel source digest,
-        // and the pinned compiler id — together they pin the compiled
-        // SPIR-V in every task's identity.
-        let components = domain.environment.components();
-        assert_eq!(components.len(), 3);
-        assert_eq!(components[0].name(), "ca_evolution.executor");
+    fn a_ca_evolution_model_id_delegates_to_the_registry() -> Result<()> {
+        // The crate-level dispatch claims no ca_evolution id itself: it offers
+        // the id to the registry. Binding here proves domain_for is device-free —
+        // this test runs everywhere, GPU or not — and that the delegation reaches
+        // the Gray-Scott model. The environment component digest is asserted in
+        // the registry's own tests, which can read the model's kernel source.
+        let domain = domain_for(&format("ca_evolution.gray_scott.v1"))?;
+        assert_eq!(domain.format.as_str(), "ca_evolution.gray_scott.v1");
         assert_eq!(
-            *components[0].value(),
-            EnvironmentValue::Version("v1".to_string())
+            domain.executor.format().as_str(),
+            "ca_evolution.gray_scott.v1"
         );
-        assert_eq!(components[1].name(), "ca_evolution.kernel");
+        let names: Vec<&str> = domain
+            .environment
+            .components()
+            .iter()
+            .map(|c| c.name())
+            .collect();
         assert_eq!(
-            *components[1].value(),
-            EnvironmentValue::Digest(source_digest(ca_evolution::KERNEL_WGSL))
-        );
-        assert_eq!(components[2].name(), "wgsl.compiler");
-        assert_eq!(
-            *components[2].value(),
-            EnvironmentValue::Version(COMPILER_ID.to_string())
+            names,
+            [
+                "ca_evolution.gray_scott.executor",
+                "ca_evolution.gray_scott.kernel",
+                "wgsl.compiler",
+            ]
         );
         Ok(())
     }
 
     #[test]
-    fn the_ca_evolution_params_translation_dispatches() -> Result<()> {
-        let table: toml::Table = r#"
-            width = 64
-            height = 48
-            steps = 100
-            dt = 1.0
-            base_u = 0.5
-            base_v = 0.25
-            side_divisor = 8
-            noise_width = 0.02
-        "#
-        .parse()
-        .expect("parse test table");
-        assert_eq!(
-            params_for(&format("ca_evolution.v1"), &table)?.bytes,
-            ca_evolution::params(&table)?.bytes
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn the_ca_evolution_generator_dispatches() -> Result<()> {
-        let generator = generator_for(&generator("ca_evolution.v1"))?;
-        assert_eq!(generator.id().as_str(), "ca_evolution.v1");
-        Ok(())
-    }
-
-    #[test]
-    fn the_ca_evolution_generator_translation_dispatches() -> Result<()> {
-        let table: toml::Table = r#"
-            count = 64
-            feed = [0.01, 0.08]
-            kill = [0.03, 0.07]
-            diffusion_u = [0.16, 0.16]
-            diffusion_v = [0.08, 0.08]
-        "#
-        .parse()
-        .expect("parse test table");
-        assert_eq!(
-            generator_params_for(&generator("ca_evolution.v1"), &table)?,
-            ca_evolution::generator_params(&table)?
-        );
+    fn a_ca_evolution_generator_delegates() -> Result<()> {
+        let generator = generator_for(&generator("ca_evolution.gray_scott.v1"))?;
+        assert_eq!(generator.id().as_str(), "ca_evolution.gray_scott.v1");
         Ok(())
     }
 }

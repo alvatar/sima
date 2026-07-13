@@ -1,29 +1,68 @@
-//! The `ca_evolution` domain: a 2D cellular grid evolved by a reaction-diffusion
-//! rule — today the Gray-Scott two-chemical system, whose candidates are the
-//! four evolvable scalars of that update rule.
+//! The `ca_evolution` domain: a generic cellular-automaton substrate behind the
+//! [`CaModel`](model::CaModel) seam, with one model per registered format id.
 //!
-//! The module holds [`CaEvolutionGenome`], the validated payload type the
-//! domain's specs carry, [`CaEvolutionGeneratorConfig`], the generator config
-//! naming the candidate count and the sampled box — each with its canonical
-//! byte codec — [`CaEvolutionGenerator`], the seeded generator drawing a
-//! run's candidates from that box, [`CaEvolutionPatch`], the ignition
-//! configuration of the domain's initial grid, [`CaEvolutionParams`], the
-//! run parameters framing one task's evaluation, and
-//! [`CaEvolutionExecutor`], the GPU executor advancing that grid through the
-//! domain's WGSL kernel. The translation module turns the domain's config
-//! sections into those canonical bytes and binds the domain's id.
+//! The domain owns the shared machinery — [`CaExecutor<M>`](executor::CaExecutor),
+//! [`CaGenerator<M>`](generator::CaGenerator), [`CaParams`](params::CaParams),
+//! the [`seeded_patch`](ignition::seeded_patch) ignition primitive, and
+//! [`build_domain`](domain::build_domain) — and each model under `models/`
+//! implements [`CaModel`](model::CaModel). This module is the registry: it maps
+//! a format or generator id to its model and delegates. Adding a model is a new
+//! module under `models/` plus one arm here; the generic machinery never
+//! changes.
 
+mod domain;
 mod executor;
 mod generator;
-mod genome;
+mod ignition;
+mod model;
+mod models;
 mod params;
-mod patch;
-mod translation;
 
-pub use executor::CaEvolutionExecutor;
-pub(crate) use executor::KERNEL_WGSL;
-pub use generator::{CaEvolutionGenerator, CaEvolutionGeneratorConfig};
-pub use genome::CaEvolutionGenome;
-pub use params::CaEvolutionParams;
-pub use patch::CaEvolutionPatch;
-pub(crate) use translation::{ID, domain, generator_params, params};
+#[cfg(test)]
+mod toy_model;
+
+use sima_contracts::Generator;
+use sima_core::Result;
+use sima_model::{FormatId, GeneratorId, Params};
+
+use crate::domain::Domain;
+use model::CaModel;
+use models::gray_scott::GrayScott;
+
+/// Resolves a format id to one of this domain's models, binding its [`Domain`],
+/// or `None` if no model claims it.
+pub(crate) fn domain_for(format: &FormatId) -> Option<Result<Domain>> {
+    match format.as_str() {
+        GrayScott::FORMAT_ID => Some(domain::build_domain::<GrayScott>()),
+        _ => None,
+    }
+}
+
+/// Resolves the `[run.params]` translation for a format id, or `None`.
+pub(crate) fn params_for(format: &FormatId, table: &toml::Table) -> Option<Result<Params>> {
+    match format.as_str() {
+        GrayScott::FORMAT_ID => Some(params::translate::<GrayScott>(table)),
+        _ => None,
+    }
+}
+
+/// Resolves a generator id to one of this domain's models, or `None`.
+pub(crate) fn generator_for(id: &GeneratorId) -> Option<Result<Box<dyn Generator>>> {
+    match id.as_str() {
+        GrayScott::FORMAT_ID => Some(
+            generator::CaGenerator::<GrayScott>::new().map(|g| Box::new(g) as Box<dyn Generator>),
+        ),
+        _ => None,
+    }
+}
+
+/// Resolves the `[run.generator]` translation for a generator id, or `None`.
+pub(crate) fn generator_params_for(
+    id: &GeneratorId,
+    table: &toml::Table,
+) -> Option<Result<Vec<u8>>> {
+    match id.as_str() {
+        GrayScott::FORMAT_ID => Some(generator::translate::<GrayScott>(table)),
+        _ => None,
+    }
+}

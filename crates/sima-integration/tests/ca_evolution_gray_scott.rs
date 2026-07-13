@@ -1,8 +1,8 @@
-//! End-to-end acceptance of the `ca_evolution` domain through the pipeline API:
-//! a ca_evolution `sima.toml` runs generate → execute → commit → inspect to a
-//! finalized manifest, a segment boundary leaves the committed trajectory
-//! byte-identical, and a malformed `[run.params]` section fails at load —
-//! before any store or GPU work.
+//! End-to-end acceptance of the `ca_evolution` domain's Gray-Scott model through
+//! the pipeline API: a `ca_evolution.gray_scott` `sima.toml` runs generate →
+//! execute → commit → inspect to a finalized manifest, a segment boundary leaves
+//! the committed trajectory byte-identical, and a malformed `[run.params]`
+//! section fails at load — before any store or GPU work.
 
 mod common;
 
@@ -14,22 +14,21 @@ use sima_domains::cellular::Grid;
 use sima_pipeline::{LoadedConfig, RunControl, RunOutcome, orchestrate};
 use sima_store::Store;
 
-/// The ca_evolution config text: `count` candidates in a narrow band around
-/// the pattern point — the feed range is the one non-degenerate axis, so
-/// every candidate is distinct (the generator rejects duplicate draws) —
-/// on a 32x32 grid, `steps` per task. `segments` renders the optional
-/// `[run]` key.
+/// The ca_evolution.gray_scott config text: `count` candidates in a narrow band
+/// around the pattern point — the feed range is the one non-degenerate axis, so
+/// every candidate is distinct (the generator rejects duplicate draws) — on a
+/// 32x32 grid, `steps` per segment. `segments` renders the optional `[run]` key.
 fn config_text(store: &str, count: u32, steps: u32, segments: Option<u64>) -> String {
     let segments = segments.map_or(String::new(), |n| format!("segments = {n}"));
     format!(
         r#"
         [run]
         root_seed = 42
-        format = "ca_evolution.v1"
+        format = "ca_evolution.gray_scott.v1"
         {segments}
 
         [run.generator]
-        id = "ca_evolution.v1"
+        id = "ca_evolution.gray_scott.v1"
         count = {count}
         feed = [0.054, 0.056]
         kill = [0.062, 0.062]
