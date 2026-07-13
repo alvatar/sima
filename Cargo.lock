@@ -772,6 +772,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "sima-integration"
+version = "0.1.0"
+dependencies = [
+ "sima-core",
+ "sima-domains",
+ "sima-pipeline",
+ "sima-store",
+ "tempfile",
+]
+
+[[package]]
 name = "sima-model"
 version = "0.1.0"
 dependencies = [

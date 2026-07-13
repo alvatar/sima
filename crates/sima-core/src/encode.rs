@@ -2,15 +2,20 @@
 //!
 //! Every structure that is ever hashed serializes through [`Enc`] and reads
 //! back through [`Dec`]; this module exists so `to_le_bytes` never scatters
-//! across the codebase. The format: every integer little-endian at its
-//! natural width, `i64` two's-complement little-endian, bytes and str framed
-//! by a `u64` little-endian length prefix (str is its UTF-8 bytes), `Hash`
-//! as its 32 raw digest bytes, `Option<Hash>` as a present-flag byte of value
-//! zero or one followed by the digest when present, `Option<u64>` as the same
-//! present-flag byte followed by the little-endian value, `f32` as its IEEE-754
-//! bits in a little-endian `u32`, and an `f32` slice as those elements written
-//! back to back with no length prefix (the count is fixed by surrounding
-//! context).
+//! across the codebase. The format:
+//!
+//! - every integer little-endian at its natural width
+//! - `i64` two's-complement little-endian
+//! - bytes and str framed by a `u64` little-endian length prefix (str is its
+//!   UTF-8 bytes)
+//! - `Hash` as its 32 raw digest bytes
+//! - `Option<Hash>` as a present-flag byte of value zero or one followed by the
+//!   digest when present
+//! - `Option<u64>` as the same present-flag byte followed by the little-endian
+//!   value
+//! - `f32` as its IEEE-754 bits in a little-endian `u32`
+//! - an `f32` slice as those elements written back to back with no length prefix
+//!   (the count is fixed by surrounding context)
 
 use crate::error::{Error, Result};
 use crate::hash::Hash;
@@ -266,6 +271,37 @@ impl<'a> Dec<'a> {
             )));
         }
         Ok(())
+    }
+}
+
+/// A type with a canonical byte encoding: its fields written through [`Enc`] in
+/// declaration order and read back through [`Dec`]. Implemented by hand per type,
+/// one [`encode`](Codec::encode)/[`decode`](Codec::decode) pair reproducing the
+/// type's frozen layout; [`to_bytes`](Codec::to_bytes) and
+/// [`from_bytes`](Codec::from_bytes) are the standalone forms, provided here in
+/// terms of that pair.
+pub trait Codec: Sized {
+    /// Appends the canonical form to `enc`.
+    fn encode(&self, enc: &mut Enc);
+
+    /// Reads a canonical form written by [`encode`](Codec::encode). A type that
+    /// routes decode through a validating constructor surfaces an invalid value
+    /// as [`Error::Validation`]; a truncated buffer is [`Error::Encoding`].
+    fn decode(dec: &mut Dec<'_>) -> Result<Self>;
+
+    /// The standalone canonical bytes.
+    fn to_bytes(&self) -> Vec<u8> {
+        let mut enc = Enc::new();
+        self.encode(&mut enc);
+        enc.finish()
+    }
+
+    /// Parses standalone canonical bytes, rejecting trailing input.
+    fn from_bytes(bytes: &[u8]) -> Result<Self> {
+        let mut dec = Dec::new(bytes);
+        let value = Self::decode(&mut dec)?;
+        dec.finish()?;
+        Ok(value)
     }
 }
 

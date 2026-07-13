@@ -1,4 +1,4 @@
-//! [`CellularRule`]: the CPU-reference contract a cellular family implements.
+//! [`CellularRule`]: the CPU-reference contract the harness is validated against.
 
 use crate::cellular::Grid;
 
@@ -6,9 +6,11 @@ use crate::cellular::Grid;
 /// output grid, each output cell a pure function of a neighborhood of the
 /// input.
 ///
-/// Implementors are the CPU reference a cellular family's GPU kernel is
-/// cross-checked against: the reference and the kernel compute the same step,
-/// and their resulting grids are compared for the family.
+/// A test implements this as an independent CPU reference for a WGSL kernel, so
+/// the dispatch harness can be cross-checked against it: the reference and the
+/// kernel compute the same step, and their resulting grids must agree byte for
+/// byte. It is substrate test scaffolding, not a per-model contract — models
+/// supply a kernel and genome, never a reference.
 pub trait CellularRule {
     /// Computes one step from `input` into `output`. The two grids share
     /// `input`'s dimensions; the step overwrites every cell of `output`.

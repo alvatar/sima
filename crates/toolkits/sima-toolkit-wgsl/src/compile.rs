@@ -30,6 +30,13 @@ pub fn source_digest(wgsl: &str) -> Hash {
     hash_bytes(wgsl.as_bytes())
 }
 
+/// Compiles `wgsl` for `entry` and discards the result: a device-free
+/// validity check for kernels a domain embeds. Errors are the same
+/// [`Error::Gpu`] the full path produces.
+pub fn check(wgsl: &str, entry: &str) -> Result<()> {
+    compile(wgsl, entry).map(|_| ())
+}
+
 /// Compiles WGSL to SPIR-V for the named compute entry point.
 ///
 /// The three naga stages — parse, validate, emit — each map their failure to
@@ -101,6 +108,22 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     /// Little-endian byte serialization of the SPIR-V words, for hashing.
     fn spirv_bytes(words: &[u32]) -> Vec<u8> {
         words.iter().flat_map(|w| w.to_le_bytes()).collect()
+    }
+
+    #[test]
+    fn check_accepts_a_valid_kernel() {
+        check(SAMPLE, "main").expect("check sample");
+    }
+
+    #[test]
+    fn check_rejects_malformed_wgsl() {
+        assert!(matches!(
+            check(
+                "@compute @workgroup_size(64) fn main() { let x = ; }",
+                "main"
+            ),
+            Err(Error::Gpu(_))
+        ));
     }
 
     #[test]

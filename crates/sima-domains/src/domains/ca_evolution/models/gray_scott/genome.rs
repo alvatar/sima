@@ -1,6 +1,6 @@
-//! [`GrayScottGenome`]: the evolvable parameters of the Gray-Scott domain.
+//! [`GrayScottGenome`]: the evolvable parameters of the Gray-Scott model.
 
-use sima_core::{Dec, Enc, Error, Result};
+use sima_core::{Codec, Dec, Enc, Error, Result};
 
 /// The Gray-Scott genome: the four evolvable scalars of the two-chemical
 /// reaction-diffusion system
@@ -17,11 +17,11 @@ use sima_core::{Dec, Enc, Error, Result};
 ///
 /// The canonical form is the four values in the frozen order `feed`, `kill`,
 /// `diffusion_u`, `diffusion_v`, each as its IEEE-754 bits in a little-endian
-/// `u32`: exactly 16 bytes. All four are `f32` — the width of the grid state
-/// and the widest float WGSL offers — so CPU and GPU consume bit-identical
+/// `u32`: exactly 16 bytes. All four are `f32` — the width of the grid state and
+/// the widest float WGSL offers — so CPU and GPU consume bit-identical
 /// parameters. The payload carries no inner tag: the
-/// [`Spec`](sima_model::Spec) holding it frames the outer object with the
-/// spec tag and the format id, both inside the hashed identity.
+/// [`Spec`](sima_model::Spec) holding it frames the outer object with the spec
+/// tag and the format id, both inside the hashed identity.
 ///
 /// Validation is part of the format contract — decode funnels through it, so
 /// changing it would retroactively change which stored specs decode — and
@@ -33,7 +33,7 @@ use sima_core::{Dec, Enc, Error, Result};
 // irreflexive) and -0.0 (the one value that equals another numerically while
 // differing in bytes).
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct GrayScottGenome {
+pub(crate) struct GrayScottGenome {
     /// Feed rate `f`: replenishes `u` toward 1.
     feed: f32,
     /// Kill rate `k`: `v` decays at total rate `f + k`.
@@ -46,15 +46,15 @@ pub struct GrayScottGenome {
 
 /// Validates a rate parameter: finite with positive sign. Admits `+0.0` and
 /// rejects NaN, both infinities, negatives, and `-0.0`. Rejecting `-0.0`
-/// preserves one value, one byte image: `-0.0 == 0.0` numerically but their
-/// bit patterns differ, so admitting both would give numerically identical
-/// genomes distinct content ids.
+/// preserves one value, one byte image: `-0.0 == 0.0` numerically but their bit
+/// patterns differ, so admitting both would give numerically identical genomes
+/// distinct content ids.
 fn finite_sign_positive(name: &str, value: f32) -> Result<f32> {
     if value.is_finite() && value.is_sign_positive() {
         Ok(value)
     } else {
         Err(Error::Validation(format!(
-            "gray-scott genome {name} must be a finite value with positive sign, got {value}"
+            "gray_scott genome {name} must be a finite value with positive sign, got {value}"
         )))
     }
 }
@@ -67,7 +67,7 @@ fn finite_positive(name: &str, value: f32) -> Result<f32> {
         Ok(value)
     } else {
         Err(Error::Validation(format!(
-            "gray-scott genome {name} must be a finite value greater than zero, got {value}"
+            "gray_scott genome {name} must be a finite value greater than zero, got {value}"
         )))
     }
 }
@@ -77,7 +77,7 @@ impl GrayScottGenome {
     /// finite with positive sign (`+0.0` is admitted); `diffusion_u` and
     /// `diffusion_v` must be finite and greater than zero. Any violation is
     /// [`Error::Validation`] naming the parameter.
-    pub fn new(
+    pub(crate) fn new(
         feed: f32,
         kill: f32,
         diffusion_u: f32,
@@ -92,64 +92,50 @@ impl GrayScottGenome {
     }
 
     /// The feed rate `f`.
-    pub fn feed(&self) -> f32 {
+    pub(crate) fn feed(&self) -> f32 {
         self.feed
     }
 
     /// The kill rate `k`.
-    pub fn kill(&self) -> f32 {
+    pub(crate) fn kill(&self) -> f32 {
         self.kill
     }
 
     /// The diffusion coefficient of the `u` channel.
-    pub fn diffusion_u(&self) -> f32 {
+    pub(crate) fn diffusion_u(&self) -> f32 {
         self.diffusion_u
     }
 
     /// The diffusion coefficient of the `v` channel.
-    pub fn diffusion_v(&self) -> f32 {
+    pub(crate) fn diffusion_v(&self) -> f32 {
         self.diffusion_v
     }
+}
 
-    /// Appends the canonical form: the four parameters in the frozen field
-    /// order, each via [`Enc::f32`].
-    pub fn encode(&self, enc: &mut Enc) {
+impl Codec for GrayScottGenome {
+    /// Appends the four parameters in the frozen field order, each via
+    /// [`Enc::f32`].
+    fn encode(&self, enc: &mut Enc) {
         enc.f32(self.feed)
             .f32(self.kill)
             .f32(self.diffusion_u)
             .f32(self.diffusion_v);
     }
 
-    /// Reads a canonical form written by [`GrayScottGenome::encode`],
-    /// funneling the values through [`GrayScottGenome::new`] so decode and
-    /// construction share one validation path.
-    pub fn decode(dec: &mut Dec<'_>) -> Result<GrayScottGenome> {
+    /// Reads the four parameters and funnels them through [`GrayScottGenome::new`]
+    /// so decode and construction share one validation path.
+    fn decode(dec: &mut Dec<'_>) -> Result<GrayScottGenome> {
         let feed = dec.f32()?;
         let kill = dec.f32()?;
         let diffusion_u = dec.f32()?;
         let diffusion_v = dec.f32()?;
         GrayScottGenome::new(feed, kill, diffusion_u, diffusion_v)
     }
-
-    /// The standalone canonical bytes — exactly the bytes a spec carries.
-    pub fn to_bytes(&self) -> Vec<u8> {
-        let mut enc = Enc::new();
-        self.encode(&mut enc);
-        enc.finish()
-    }
-
-    /// Parses standalone canonical bytes, rejecting trailing input.
-    pub fn from_bytes(bytes: &[u8]) -> Result<GrayScottGenome> {
-        let mut dec = Dec::new(bytes);
-        let genome = GrayScottGenome::decode(&mut dec)?;
-        dec.finish()?;
-        Ok(genome)
-    }
 }
 
 #[cfg(test)]
 mod tests {
-    use sima_core::to_hex;
+    use sima_core::{Enc, to_hex};
     use sima_model::{FormatId, Spec, SpecId};
 
     use super::*;
@@ -167,18 +153,18 @@ mod tests {
         GrayScottGenome::new(p[0], p[1], p[2], p[3])
     }
 
-    /// The canonical bytes of [`sample`], derived by hand from the layout —
-    /// each value's `to_bits()` as little-endian hex, concatenated in field
-    /// order — and independently reproduced with Python `struct`:
+    /// The canonical bytes of [`sample`], derived by hand from the layout — each
+    /// value's `to_bits()` as little-endian hex, concatenated in field order —
+    /// and independently reproduced with Python `struct`:
     /// `''.join(struct.pack('<f', v).hex() for v in (0.055, 0.062, 0.16, 0.08))`.
     const SAMPLE_BYTES_HEX: &str = "ae47613db6f37d3d0ad7233e0ad7a33d";
 
     /// blake3 of the sample's full spec bytes — str `"sima.spec.v1"`, str
-    /// `"gray-scott.v1"`, then the length-prefixed payload, per the `Spec`
-    /// layout — computed independently with the Python `blake3` package:
+    /// `"ca_evolution.gray_scott.v1"`, then the length-prefixed payload, per the
+    /// `Spec` layout — computed independently with the Python `blake3` package:
     /// `blake3.blake3(bytes.fromhex(spec_hex)).hexdigest()`.
     const SAMPLE_SPEC_ID_HEX: &str =
-        "bb484ad5583d693bd06e055e39c84a5d41c4ac1a0c808881246a921721c7c4b8";
+        "f152a17609f06c94d693184c5fbff0346618fdc6682d5b08c857d33a607a5fd1";
 
     #[test]
     fn new_accepts_the_classical_parameter_point() -> Result<()> {
@@ -231,8 +217,8 @@ mod tests {
             with_substituted(3, 0.0),
             Err(Error::Validation(_))
         ));
-        // Pins the asymmetry between the two predicates: the zero the
-        // diffusion rule rejects is admitted by the sign rule.
+        // Pins the asymmetry between the two predicates: the zero the diffusion
+        // rule rejects is admitted by the sign rule.
         GrayScottGenome::new(0.0, 0.0, 0.16, 0.08)?;
         Ok(())
     }
@@ -245,8 +231,8 @@ mod tests {
     #[test]
     fn round_trips_through_bytes() -> Result<()> {
         let genome = sample();
-        // Derived equality is exact here: validation excludes NaN and -0.0,
-        // so `PartialEq` coincides with byte equality on constructed values.
+        // Derived equality is exact here: validation excludes NaN and -0.0, so
+        // `PartialEq` coincides with byte equality on constructed values.
         assert_eq!(GrayScottGenome::from_bytes(&genome.to_bytes())?, genome);
         Ok(())
     }
@@ -277,8 +263,8 @@ mod tests {
 
     #[test]
     fn from_bytes_rejects_invalid_values() {
-        // Sixteen well-formed bytes whose first four encode a NaN: the
-        // structure decodes, the value fails — decode funnels through `new`.
+        // Sixteen well-formed bytes whose first four encode a NaN: the structure
+        // decodes, the value fails — decode funnels through `new`.
         let mut enc = Enc::new();
         enc.f32(f32::NAN).f32(0.062).f32(0.16).f32(0.08);
         assert!(matches!(
@@ -291,7 +277,7 @@ mod tests {
     fn spec_id_matches_independent_blake3() -> Result<()> {
         // Pins the candidate's actual store address end to end.
         let spec = Spec {
-            format: FormatId::new("gray-scott.v1")?,
+            format: FormatId::new("ca_evolution.gray_scott.v1")?,
             bytes: sample().to_bytes(),
         };
         assert_eq!(spec.id(), SpecId::from_hex(SAMPLE_SPEC_ID_HEX)?);
@@ -300,10 +286,10 @@ mod tests {
 
     #[test]
     fn adjacent_genomes_have_distinct_spec_ids() -> Result<()> {
-        // Every representable parameter difference is a distinct candidate:
-        // one bit up in any position changes the bytes and the spec id.
+        // Every representable parameter difference is a distinct candidate: one
+        // bit up in any position changes the bytes and the spec id.
         let base = sample();
-        let format = FormatId::new("gray-scott.v1")?;
+        let format = FormatId::new("ca_evolution.gray_scott.v1")?;
         let base_id = Spec {
             format: format.clone(),
             bytes: base.to_bytes(),

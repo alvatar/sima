@@ -25,6 +25,7 @@
 
 - Rust logic is tested in Rust tests, next to the type or function it covers.
 - Cross-crate and end-to-end behavior is tested in integration tests under the consuming crate's `tests/` directory (workspace: each crate owns its integration tests).
+- End-to-end tests of real domains through the full spine live in `crates/sima-integration`.
 
 ## Test-code structure
 

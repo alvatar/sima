@@ -4,6 +4,6 @@
 //! generator, codecs, environment, and the TOML translation of its config
 //! sections — which [`crate::domain`] resolves through its id dispatch.
 
-pub(crate) mod gray_scott;
+pub(crate) mod ca_evolution;
 pub(crate) mod stub;
 pub(crate) mod translate;
