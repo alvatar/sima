@@ -9,9 +9,13 @@
 //! `sima_core::TomlConfig`. The generated paths are absolute (`sima_core::…`),
 //! so any crate that depends on `sima-core` can apply the derives with a plain
 //! `use sima_core::{Codec, TomlConfig};`.
+//!
+//! The generated code names its parameters at the macro's own span with a `__`
+//! prefix, so a struct field may carry any name in the accepted set — including
+//! `id`, `table`, or `dec` — without aliasing a generated binding.
 
 use proc_macro::TokenStream;
-use proc_macro2::{Literal, TokenStream as TokenStream2};
+use proc_macro2::{Literal, Span, TokenStream as TokenStream2};
 use quote::quote;
 use syn::{Data, DeriveInput, Expr, Fields, Ident, Lit, Type, parse_macro_input};
 
@@ -91,9 +95,17 @@ fn classify(ty: &Type) -> Option<FieldKind> {
 }
 
 /// The named fields of a struct, each classified, with its TOML key resolved
-/// from an optional `#[toml(key = "…")]` override. Errors on a non-struct, on
-/// tuple/unit fields, or on a field type outside the accepted set.
+/// from an optional `#[toml(key = "…")]` override. Errors on a generic struct,
+/// a non-struct, tuple/unit fields, or a field type outside the accepted set.
 fn field_specs(input: &DeriveInput) -> syn::Result<Vec<FieldSpec>> {
+    // A generic or lifetime parameter would leave `impl … for #name` malformed;
+    // reject it with the crate's own spanned error rather than a raw one.
+    if !input.generics.params.is_empty() {
+        return Err(syn::Error::new_spanned(
+            &input.generics,
+            "this derive does not support generic or lifetime parameters",
+        ));
+    }
     let Data::Struct(data) = &input.data else {
         return Err(syn::Error::new_spanned(
             &input.ident,
@@ -180,6 +192,11 @@ fn expand_codec(input: DeriveInput) -> syn::Result<TokenStream2> {
     let fields = field_specs(&input)?;
     let validate = validate_target(&input, "codec")?;
     let idents: Vec<&Ident> = fields.iter().map(|f| &f.ident).collect();
+    // The generated parameters take `__`-prefixed names at the macro's own span,
+    // so a struct field named `enc` or `dec` cannot alias them. The per-field
+    // `let` bindings keep the field names and only shadow one another harmlessly.
+    let enc = Ident::new("__enc", Span::mixed_site());
+    let dec = Ident::new("__dec", Span::mixed_site());
 
     let mut encode_stmts = Vec::new();
     let mut decode_reads = Vec::new();
@@ -187,21 +204,21 @@ fn expand_codec(input: DeriveInput) -> syn::Result<TokenStream2> {
         let ident = &field.ident;
         match &field.kind {
             FieldKind::F32 => {
-                encode_stmts.push(quote! { enc.f32(self.#ident); });
-                decode_reads.push(quote! { let #ident = dec.f32()?; });
+                encode_stmts.push(quote! { #enc.f32(self.#ident); });
+                decode_reads.push(quote! { let #ident = #dec.f32()?; });
             }
             FieldKind::U32 => {
-                encode_stmts.push(quote! { enc.u32(self.#ident); });
-                decode_reads.push(quote! { let #ident = dec.u32()?; });
+                encode_stmts.push(quote! { #enc.u32(self.#ident); });
+                decode_reads.push(quote! { let #ident = #dec.u32()?; });
             }
             FieldKind::F32Array(n) => {
                 let mut writes = TokenStream2::new();
                 for i in 0..*n {
                     let index = Literal::usize_unsuffixed(i);
-                    writes.extend(quote! { enc.f32(self.#ident[#index]); });
+                    writes.extend(quote! { #enc.f32(self.#ident[#index]); });
                 }
                 encode_stmts.push(writes);
-                let reads = (0..*n).map(|_| quote! { dec.f32()? });
+                let reads = (0..*n).map(|_| quote! { #dec.f32()? });
                 decode_reads.push(quote! { let #ident = [ #(#reads),* ]; });
             }
         }
@@ -209,10 +226,10 @@ fn expand_codec(input: DeriveInput) -> syn::Result<TokenStream2> {
     let build = construct(name, &validate, &idents);
     Ok(quote! {
         impl sima_core::Codec for #name {
-            fn encode(&self, enc: &mut sima_core::Enc) {
+            fn encode(&self, #enc: &mut sima_core::Enc) {
                 #(#encode_stmts)*
             }
-            fn decode(dec: &mut sima_core::Dec<'_>) -> sima_core::Result<Self> {
+            fn decode(#dec: &mut sima_core::Dec<'_>) -> sima_core::Result<Self> {
                 #(#decode_reads)*
                 #build
             }
@@ -227,19 +244,38 @@ fn expand_toml_config(input: DeriveInput) -> syn::Result<TokenStream2> {
     let idents: Vec<&Ident> = fields.iter().map(|f| &f.ident).collect();
     let keys: Vec<&String> = fields.iter().map(|f| &f.key).collect();
 
+    // Two fields resolving to the same TOML key (after a `#[toml(key = "…")]`
+    // override) would read one key twice and silently drop the other; reject it.
+    let mut seen = std::collections::HashSet::new();
+    for field in &fields {
+        if !seen.insert(field.key.as_str()) {
+            return Err(syn::Error::new_spanned(
+                &field.ident,
+                format!("two fields resolve to the same TOML key {:?}", field.key),
+            ));
+        }
+    }
+
+    // Parameter names at the macro's own span, so a field named `table`, `id`,
+    // or `section` cannot alias them (a `u32` field `id` would otherwise be
+    // passed where the helpers expect the `&str` parameter).
+    let table = Ident::new("__table", Span::mixed_site());
+    let id = Ident::new("__id", Span::mixed_site());
+    let section = Ident::new("__section", Span::mixed_site());
+
     let mut reads = Vec::new();
     for field in &fields {
         let ident = &field.ident;
         let key = &field.key;
         let read = match &field.kind {
             FieldKind::F32 => {
-                quote! { let #ident = sima_core::toml_config::float(table, id, section, #key)?; }
+                quote! { let #ident = sima_core::toml_config::float(#table, #id, #section, #key)?; }
             }
             FieldKind::U32 => {
-                quote! { let #ident = sima_core::toml_config::integer(table, id, section, #key)?; }
+                quote! { let #ident = sima_core::toml_config::integer(#table, #id, #section, #key)?; }
             }
             FieldKind::F32Array(2) => {
-                quote! { let #ident = sima_core::toml_config::range(table, id, section, #key)?; }
+                quote! { let #ident = sima_core::toml_config::range(#table, #id, #section, #key)?; }
             }
             FieldKind::F32Array(_) => {
                 return Err(syn::Error::new_spanned(
@@ -254,11 +290,11 @@ fn expand_toml_config(input: DeriveInput) -> syn::Result<TokenStream2> {
     Ok(quote! {
         impl sima_core::TomlConfig for #name {
             fn parse(
-                table: &toml::Table,
-                id: &str,
-                section: &str,
+                #table: &toml::Table,
+                #id: &str,
+                #section: &str,
             ) -> sima_core::Result<Self> {
-                sima_core::toml_config::reject_unknown_keys(id, table, &[ #(#keys),* ], section)?;
+                sima_core::toml_config::reject_unknown_keys(#id, #table, &[ #(#keys),* ], #section)?;
                 #(#reads)*
                 #build
             }

@@ -186,3 +186,29 @@ fn toml_key_override_renames_the_key() -> Result<()> {
     }
     Ok(())
 }
+
+/// A struct whose field `id` shares a name with a parameter the generated
+/// `parse` uses. The derives must be hygienic against field names, so `id` — a
+/// plausible config field — compiles and round-trips like any other field.
+#[derive(Debug, PartialEq, Codec, TomlConfig)]
+#[codec(validate = new)]
+#[toml(validate = new)]
+struct Collision {
+    id: u32,
+    scale: f32,
+}
+
+impl Collision {
+    fn new(id: u32, scale: f32) -> Result<Collision> {
+        Ok(Collision { id, scale })
+    }
+}
+
+#[test]
+fn a_field_named_like_a_generated_parameter_round_trips() -> Result<()> {
+    let value = Collision::new(7, 1.5)?;
+    assert_eq!(Collision::from_bytes(&value.to_bytes())?, value);
+    let parsed = Collision::parse(&table("id = 7\nscale = 1.5"), "collision.v1", "params")?;
+    assert_eq!(parsed, value);
+    Ok(())
+}
