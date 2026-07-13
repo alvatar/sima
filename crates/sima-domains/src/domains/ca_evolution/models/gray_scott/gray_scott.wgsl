@@ -57,6 +57,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let dv = rates[3];
     let dt = rates[4];
 
+    // The model is these three reaction terms; everything above is addressing.
+    // uvv is the autocatalysis (v consumes u to make more v), f feeds u back
+    // toward 1, and f + k drains v.
     let uvv = u * v * v;
     out_grid[base] = u + dt * (du * lap_u - uvv + f * (1.0 - u));
     out_grid[base + 1u] = v + dt * (dv * lap_v + uvv - (f + k) * v);
