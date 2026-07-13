@@ -755,6 +755,17 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "libc",
+ "sima-core-derive",
+ "toml",
+]
+
+[[package]]
+name = "sima-core-derive"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]

@@ -9,8 +9,10 @@ edition.workspace = true
 crash-injection = ["dep:libc"]
 
 [dependencies]
+sima-core-derive = { path = "../sima-core-derive" }
 blake3.workspace = true
 libc = { workspace = true, optional = true }
+toml.workspace = true
 
 [lints]
 workspace = true

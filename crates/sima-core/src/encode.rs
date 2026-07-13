@@ -269,6 +269,37 @@ impl<'a> Dec<'a> {
     }
 }
 
+/// A type with a canonical byte encoding: its fields written through [`Enc`] in
+/// declaration order and read back through [`Dec`]. `#[derive(Codec)]`
+/// implements it field by field from the struct's declared types;
+/// [`to_bytes`](Codec::to_bytes) and [`from_bytes`](Codec::from_bytes) are the
+/// standalone forms, provided here in terms of [`encode`](Codec::encode) and
+/// [`decode`](Codec::decode).
+pub trait Codec: Sized {
+    /// Appends the canonical form to `enc`.
+    fn encode(&self, enc: &mut Enc);
+
+    /// Reads a canonical form written by [`encode`](Codec::encode). A type that
+    /// routes decode through a validating constructor surfaces an invalid value
+    /// as [`Error::Validation`]; a truncated buffer is [`Error::Encoding`].
+    fn decode(dec: &mut Dec<'_>) -> Result<Self>;
+
+    /// The standalone canonical bytes.
+    fn to_bytes(&self) -> Vec<u8> {
+        let mut enc = Enc::new();
+        self.encode(&mut enc);
+        enc.finish()
+    }
+
+    /// Parses standalone canonical bytes, rejecting trailing input.
+    fn from_bytes(bytes: &[u8]) -> Result<Self> {
+        let mut dec = Dec::new(bytes);
+        let value = Self::decode(&mut dec)?;
+        dec.finish()?;
+        Ok(value)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
