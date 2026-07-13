@@ -136,3 +136,79 @@ impl CaModel for Toy {
         }
     }
 }
+
+/// The genericity lock: the generic CA machinery runs end to end over the toy
+/// model, with no dependency on Gray-Scott. Together with the toy-driven tests
+/// in `params`, `generator`, and `executor`, this proves the domain is
+/// model-agnostic — a second model plugs in by implementing [`CaModel`] alone.
+#[cfg(test)]
+mod tests {
+    use sima_contracts::Generator;
+    use sima_model::FormatId;
+
+    use super::super::domain::build_domain;
+    use super::super::generator::{CaGenerator, translate as translate_generator};
+    use super::super::params::{decode_params, translate as translate_params};
+    use super::*;
+
+    #[test]
+    fn the_environment_names_derive_from_the_model() -> Result<()> {
+        // build_domain forms the component names from M::NAME, so a different
+        // model yields different names with no change to the builder.
+        let domain = build_domain::<Toy>()?;
+        assert_eq!(domain.format.as_str(), "toy.v1");
+        let names: Vec<&str> = domain
+            .environment
+            .components()
+            .iter()
+            .map(|c| c.name())
+            .collect();
+        assert_eq!(names, ["toy.executor", "toy.kernel", "wgsl.compiler"]);
+        Ok(())
+    }
+
+    #[test]
+    fn the_genome_codec_round_trips() -> Result<()> {
+        let genome = Toy::genome(0.5);
+        assert_eq!(Toy::decode_genome(&Toy::encode_genome(&genome))?, genome);
+        // Trailing bytes are rejected.
+        let mut bytes = Toy::encode_genome(&genome);
+        bytes.push(0);
+        assert!(matches!(
+            Toy::decode_genome(&bytes),
+            Err(Error::Encoding(_))
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn the_spine_runs_over_a_non_gray_scott_model() -> Result<()> {
+        // Params translation: a full toy `[run.params]` table becomes a blob that
+        // decodes back to the shared fields and the toy ignition.
+        let params_table: toml::Table = "width = 8\nheight = 8\nsteps = 4\ndt = 1.0\nbase = 0.5"
+            .parse()
+            .expect("parse params table");
+        let blob = translate_params::<Toy>(&params_table)?.bytes;
+        let (shared, ignition) = decode_params::<Toy>(&blob)?;
+        assert_eq!((shared.width(), shared.height(), shared.steps()), (8, 8, 4));
+        assert_eq!(ignition, Toy::ignition(0.5));
+
+        // Generator translation and sampling: three distinct candidates, each a
+        // toy spec stamped with the requested format.
+        let gen_table: toml::Table = "count = 3\nrate = [0.01, 0.08]"
+            .parse()
+            .expect("parse generator table");
+        let gen_blob = translate_generator::<Toy>(&gen_table)?;
+        let format = FormatId::new(Toy::FORMAT_ID)?;
+        let specs = CaGenerator::<Toy>::new()?.generate(42, &gen_blob, &format)?;
+        assert_eq!(specs.len(), 3);
+        for spec in &specs {
+            assert_eq!(spec.format, format);
+            Toy::decode_genome(&spec.bytes)?;
+        }
+        // Distinct candidates: the three specs are pairwise different.
+        assert_ne!(specs[0].bytes, specs[1].bytes);
+        assert_ne!(specs[1].bytes, specs[2].bytes);
+        Ok(())
+    }
+}
