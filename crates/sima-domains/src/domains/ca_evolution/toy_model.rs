@@ -1,5 +1,10 @@
-//! A minimal [`CaModel`] used only by tests to prove the generic CA machinery
-//! runs with no dependency on any concrete model.
+//! A minimal [`CaModel`](super::model::CaModel), compiled only under
+//! `#[cfg(test)]`, that locks the genericity of the generic CA machinery: its
+//! device-free tests drive [`CaGenerator<M>`](super::generator::CaGenerator) and
+//! [`CaExecutor<M>`](super::executor::CaExecutor) over a model that is not
+//! Gray-Scott, proving they depend on no concrete model. It is unregistered and
+//! has no WGSL kernel, so it is not runnable — a genericity lock, not a model a
+//! run can select.
 
 use sima_core::{Codec, Dec, Enc, Error, Result, prng};
 
