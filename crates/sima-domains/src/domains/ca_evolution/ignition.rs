@@ -122,6 +122,16 @@ mod tests {
         )
     }
 
+    /// The exact bits of both channels at interior patch cell `(7, 7)` of the
+    /// `two_channel(16, 16, 7)` grid (side 2, patch `[7, 9) × [7, 9)`), derived
+    /// from an independent Python implementation of the whole seeded-patch path —
+    /// SplitMix64 (`mix`, `next`, `derive`, `unit_f64`) from the published
+    /// algorithm, validated against `sima-core`'s `prng` known-answer values,
+    /// then `t = f32(unit_f64(next(derive(7, 7 * 16 + 7), c)))` and
+    /// `f32(base * (1.0 + (t - 0.5) * 0.02))` with `base = 0.5` for channel 0 and
+    /// `0.25` for channel 1 — never read off this crate's output.
+    const PATCH_CELL_7_7_BITS: [u32; 2] = [0x3f01_05db, 0x3e7f_a8cc];
+
     #[test]
     fn the_background_fills_the_untouched_cells() -> Result<()> {
         // 16x16: side = max(16 / 8, 1) = 2, x0 = y0 = (16 - 2) / 2 = 7, so the
@@ -187,6 +197,18 @@ mod tests {
                 );
             }
         }
+        Ok(())
+    }
+
+    #[test]
+    fn the_nonzero_noise_patch_cell_is_byte_pinned() -> Result<()> {
+        // The patch arithmetic is identity-bearing, so its exact bits are pinned:
+        // band containment alone passes through a rounding regression or a
+        // (t - 0.5) -> (0.5 - t) sign flip, and this catches both.
+        let grid = two_channel(16, 16, 7)?;
+        let cell = (7 * 16 + 7) * 2;
+        assert_eq!(grid.data()[cell].to_bits(), PATCH_CELL_7_7_BITS[0]);
+        assert_eq!(grid.data()[cell + 1].to_bits(), PATCH_CELL_7_7_BITS[1]);
         Ok(())
     }
 
