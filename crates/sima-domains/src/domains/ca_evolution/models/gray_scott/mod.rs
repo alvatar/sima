@@ -13,7 +13,7 @@ mod ignition;
 
 use sima_core::{Dec, Enc, Result};
 
-use super::super::ignition::seeded_patch;
+use super::super::ignition::{PatchSpec, seeded_patch};
 use super::super::model::CaModel;
 use super::super::params::CaParams;
 use crate::cellular::Grid;
@@ -64,10 +64,12 @@ impl CaModel for GrayScott {
             shared.width(),
             shared.height(),
             Self::CHANNELS,
-            &[1.0, 0.0],
-            &[ignition.base_u(), ignition.base_v()],
-            ignition.side_divisor(),
-            ignition.noise_width(),
+            PatchSpec {
+                background: &[1.0, 0.0],
+                patch: &[ignition.base_u(), ignition.base_v()],
+                side_divisor: ignition.side_divisor(),
+                noise: ignition.noise_width(),
+            },
             seed,
         )
     }

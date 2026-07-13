@@ -3,7 +3,7 @@
 
 use sima_core::{Dec, Enc, Error, Result, prng};
 
-use super::ignition::seeded_patch;
+use super::ignition::{PatchSpec, seeded_patch};
 use super::model::CaModel;
 use super::params::CaParams;
 use crate::cellular::Grid;
@@ -81,10 +81,12 @@ impl CaModel for Toy {
             shared.width(),
             shared.height(),
             Self::CHANNELS,
-            &[0.0],
-            &[ignition.base],
-            4,
-            0.0,
+            PatchSpec {
+                background: &[0.0],
+                patch: &[ignition.base],
+                side_divisor: 4,
+                noise: 0.0,
+            },
             seed,
         )
     }

@@ -4,33 +4,49 @@ use sima_core::{Result, prng};
 
 use crate::cellular::Grid;
 
+/// What a model stamps into its seeded grid: the per-channel `background` (the
+/// model's fixed point) filling the whole grid, and the per-channel `patch`
+/// bases stamped into a centered square whose side is set by `side_divisor`,
+/// perturbed by a relative `noise` band. `background` and `patch` are each
+/// length `channels`.
+pub(crate) struct PatchSpec<'a> {
+    /// Per-channel background fill, the model's fixed point.
+    pub(crate) background: &'a [f64],
+    /// Per-channel patch base values stamped into the centered square.
+    pub(crate) patch: &'a [f64],
+    /// Divisor of the shorter grid extent giving the patch side:
+    /// `side = max(min(width, height) / side_divisor, 1)`.
+    pub(crate) side_divisor: u32,
+    /// Full relative width of the noise band around each patch base.
+    pub(crate) noise: f64,
+}
+
 /// Builds the seeded initial grid a CA model ignites from: the whole grid filled
-/// with the per-channel `background` (the model's fixed point), then a centered
-/// square of side `max(min(width, height) / side_divisor, 1)` whose every cell's
-/// channel `c` is `(patch[c] * (1.0 + (t - 0.5) * noise)) as f32`, with
+/// with `spec.background`, then a centered square of side
+/// `max(min(width, height) / spec.side_divisor, 1)` whose every cell's channel
+/// `c` is `(spec.patch[c] * (1.0 + (t - 0.5) * spec.noise)) as f32`, with
 /// `t = unit_f64(next(derive(seed, y * width + x), c))`.
 ///
-/// `background` and `patch` are length `channels`. The arithmetic is f64 and
-/// identity-bearing: the patch values, `noise`, and the seed determine the
-/// committed trajectory, and this arithmetic is frozen. `side_divisor` must be
-/// at least 1 (the model's ignition config validates it).
+/// The arithmetic is f64 and identity-bearing: the patch values, the noise, and
+/// the seed determine the committed trajectory, and this arithmetic is frozen.
+/// `spec.side_divisor` must be at least 1 (the model's ignition config validates
+/// it).
 ///
 /// A zero or overflowing extent is [`Error::Validation`](sima_core::Error)
 /// through [`Grid::new`].
-// The eight inputs are irreducibly separate: grid geometry, the per-channel
-// background and patch bases, the patch side and noise, and the seed. This is
-// the model-facing seam, so they stay loose rather than bundled into a type.
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn seeded_patch(
     width: u32,
     height: u32,
     channels: u32,
-    background: &[f64],
-    patch: &[f64],
-    side_divisor: u32,
-    noise: f64,
+    spec: PatchSpec<'_>,
     seed: u64,
 ) -> Result<Grid> {
+    let PatchSpec {
+        background,
+        patch,
+        side_divisor,
+        noise,
+    } = spec;
     let channels = channels as usize;
     debug_assert_eq!(
         background.len(),
@@ -89,18 +105,29 @@ mod tests {
 
     use super::*;
 
-    /// Gray-Scott's ignition through the primitive: the fixed point background
-    /// `(1, 0)` with the Pearson patch base values and noise.
-    fn pearson(width: u32, height: u32, seed: u64) -> Result<Grid> {
-        seeded_patch(width, height, 2, &[1.0, 0.0], &[0.5, 0.25], 8, 0.02, seed)
+    /// A two-channel seeded grid through the primitive: an arbitrary background
+    /// and patch base pair with a small noise band.
+    fn two_channel(width: u32, height: u32, seed: u64) -> Result<Grid> {
+        seeded_patch(
+            width,
+            height,
+            2,
+            PatchSpec {
+                background: &[1.0, 0.0],
+                patch: &[0.5, 0.25],
+                side_divisor: 8,
+                noise: 0.02,
+            },
+            seed,
+        )
     }
 
     #[test]
-    fn the_background_is_the_exact_fixed_point() -> Result<()> {
+    fn the_background_fills_the_untouched_cells() -> Result<()> {
         // 16x16: side = max(16 / 8, 1) = 2, x0 = y0 = (16 - 2) / 2 = 7, so the
         // patch spans [7, 9) x [7, 9); every other cell carries the background's
         // exact bit patterns.
-        let grid = pearson(16, 16, 7)?;
+        let grid = two_channel(16, 16, 7)?;
         for y in 0..16usize {
             for x in 0..16usize {
                 if (7..9).contains(&x) && (7..9).contains(&y) {
@@ -110,12 +137,12 @@ mod tests {
                 assert_eq!(
                     grid.data()[idx].to_bits(),
                     1.0f32.to_bits(),
-                    "u at ({x}, {y})"
+                    "channel 0 at ({x}, {y})"
                 );
                 assert_eq!(
                     grid.data()[idx + 1].to_bits(),
                     0.0f32.to_bits(),
-                    "v at ({x}, {y})"
+                    "channel 1 at ({x}, {y})"
                 );
             }
         }
@@ -127,7 +154,7 @@ mod tests {
         // 64x64: side = 8, x0 = y0 = (64 - 8) / 2 = 28, so the patch spans
         // [28, 36) x [28, 36). Cells just outside each boundary are background;
         // the two opposite patch corners are not.
-        let grid = pearson(64, 64, 3)?;
+        let grid = two_channel(64, 64, 3)?;
         let is_background = |x: usize, y: usize| {
             let idx = (y * 64 + x) * 2;
             grid.data()[idx] == 1.0 && grid.data()[idx + 1] == 0.0
@@ -143,15 +170,21 @@ mod tests {
 
     #[test]
     fn patch_values_stay_inside_the_noise_band() -> Result<()> {
-        // ±1% around the Pearson base values 0.5 and 0.25.
-        let grid = pearson(64, 64, 3)?;
+        // ±1% around the patch base values 0.5 and 0.25.
+        let grid = two_channel(64, 64, 3)?;
         for y in 28..36usize {
             for x in 28..36usize {
                 let idx = (y * 64 + x) * 2;
-                let u = grid.data()[idx];
-                let v = grid.data()[idx + 1];
-                assert!((0.495..=0.505).contains(&u), "u at ({x}, {y}): {u}");
-                assert!((0.2475..=0.2525).contains(&v), "v at ({x}, {y}): {v}");
+                let c0 = grid.data()[idx];
+                let c1 = grid.data()[idx + 1];
+                assert!(
+                    (0.495..=0.505).contains(&c0),
+                    "channel 0 at ({x}, {y}): {c0}"
+                );
+                assert!(
+                    (0.2475..=0.2525).contains(&c1),
+                    "channel 1 at ({x}, {y}): {c1}"
+                );
             }
         }
         Ok(())
@@ -159,10 +192,10 @@ mod tests {
 
     #[test]
     fn the_seed_selects_the_state() -> Result<()> {
-        let one = pearson(16, 16, 1)?;
-        let two = pearson(16, 16, 2)?;
+        let one = two_channel(16, 16, 1)?;
+        let two = two_channel(16, 16, 2)?;
         assert_ne!(one.to_bytes(), two.to_bytes());
-        let again = pearson(16, 16, 1)?;
+        let again = two_channel(16, 16, 1)?;
         assert_eq!(one.to_bytes(), again.to_bytes());
         Ok(())
     }
@@ -170,7 +203,7 @@ mod tests {
     #[test]
     fn a_tiny_grid_has_a_one_cell_patch() -> Result<()> {
         // side = max(1 / 8, 1) = 1: the single cell is patch, not background.
-        let grid = pearson(1, 1, 5)?;
+        let grid = two_channel(1, 1, 5)?;
         assert!((0.495..=0.505).contains(&grid.data()[0]));
         assert!((0.2475..=0.2525).contains(&grid.data()[1]));
         Ok(())
@@ -180,7 +213,7 @@ mod tests {
     fn a_zero_dimension_is_rejected() {
         for (width, height) in [(0, 16), (16, 0)] {
             assert!(matches!(
-                pearson(width, height, 7),
+                two_channel(width, height, 7),
                 Err(Error::Validation(_))
             ));
         }
@@ -190,11 +223,17 @@ mod tests {
     fn zero_noise_ignores_the_seed() -> Result<()> {
         // (t - 0.5) * 0.0 == 0.0 for every t, so each patch cell carries the base
         // values' own bit patterns and the seed selects nothing.
-        let a = seeded_patch(16, 16, 2, &[1.0, 0.0], &[0.5, 0.25], 8, 0.0, 1)?;
+        let spec = || PatchSpec {
+            background: &[1.0, 0.0],
+            patch: &[0.5, 0.25],
+            side_divisor: 8,
+            noise: 0.0,
+        };
+        let a = seeded_patch(16, 16, 2, spec(), 1)?;
         let idx = (7 * 16 + 7) * 2;
         assert_eq!(a.data()[idx].to_bits(), 0.5f32.to_bits());
         assert_eq!(a.data()[idx + 1].to_bits(), 0.25f32.to_bits());
-        let b = seeded_patch(16, 16, 2, &[1.0, 0.0], &[0.5, 0.25], 8, 0.0, 2)?;
+        let b = seeded_patch(16, 16, 2, spec(), 2)?;
         assert_eq!(a.to_bytes(), b.to_bytes());
         Ok(())
     }
@@ -202,7 +241,18 @@ mod tests {
     #[test]
     fn a_single_channel_grid_ignites() -> Result<()> {
         // The primitive is channel-generic: one channel, background 0, patch 1.
-        let grid = seeded_patch(8, 8, 1, &[0.0], &[1.0], 4, 0.0, 3)?;
+        let grid = seeded_patch(
+            8,
+            8,
+            1,
+            PatchSpec {
+                background: &[0.0],
+                patch: &[1.0],
+                side_divisor: 4,
+                noise: 0.0,
+            },
+            3,
+        )?;
         assert_eq!((grid.width(), grid.height(), grid.channels()), (8, 8, 1));
         // side = max(8 / 4, 1) = 2, centered at [3, 5); a corner cell is patch.
         assert_eq!(grid.data()[3 * 8 + 3].to_bits(), 1.0f32.to_bits());
