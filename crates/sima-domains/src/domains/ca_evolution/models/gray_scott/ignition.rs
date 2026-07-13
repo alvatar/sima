@@ -14,28 +14,30 @@ use crate::domains::translate;
 /// caller: the values determine candidate identity, so there is no `Default` —
 /// identity-determining values are always explicit.
 ///
-/// The canonical form is `base_u` and `base_v` each as f64 bits little-endian,
-/// `side_divisor` as a little-endian `u32`, `noise_width` as f64 bits
-/// little-endian: exactly 28 bytes.
+/// The canonical form is `base_u` and `base_v` each as f32 bits little-endian,
+/// `side_divisor` as a little-endian `u32`, `noise_width` as f32 bits
+/// little-endian: exactly 16 bytes. Every scalar is `f32` — the width of the
+/// grid state these values seed — so the ignition's content address reflects
+/// exactly the precision the grid carries.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct GrayScottIgnition {
     /// Base value of chemical `u` inside the patch.
-    base_u: f64,
+    base_u: f32,
     /// Base value of chemical `v` inside the patch.
-    base_v: f64,
+    base_v: f32,
     /// Divisor of the shorter grid extent giving the patch side:
     /// `side = max(min(width, height) / side_divisor, 1)`.
     side_divisor: u32,
     /// Full relative width of the noise band around each base value:
     /// `(t - 0.5) * noise_width` spans ±`noise_width / 2` for `t ∈ [0, 1)`.
-    noise_width: f64,
+    noise_width: f32,
 }
 
 /// Validates an ignition parameter: finite with positive sign. Admits `+0.0` —
 /// zero noise width is the legitimate noiseless configuration — and rejects NaN,
 /// both infinities, negatives, and `-0.0`, keeping one value, one byte image
 /// once these values enter run params.
-fn finite_sign_positive(name: &str, value: f64) -> Result<f64> {
+fn finite_sign_positive(name: &str, value: f32) -> Result<f32> {
     if value.is_finite() && value.is_sign_positive() {
         Ok(value)
     } else {
@@ -52,10 +54,10 @@ impl GrayScottIgnition {
     /// in the side computation. Any violation is [`Error::Validation`] naming the
     /// field.
     pub(crate) fn new(
-        base_u: f64,
-        base_v: f64,
+        base_u: f32,
+        base_v: f32,
         side_divisor: u32,
-        noise_width: f64,
+        noise_width: f32,
     ) -> Result<GrayScottIgnition> {
         if side_divisor == 0 {
             return Err(Error::Validation(
@@ -71,12 +73,12 @@ impl GrayScottIgnition {
     }
 
     /// The base value of chemical `u` inside the patch.
-    pub(crate) fn base_u(&self) -> f64 {
+    pub(crate) fn base_u(&self) -> f32 {
         self.base_u
     }
 
     /// The base value of chemical `v` inside the patch.
-    pub(crate) fn base_v(&self) -> f64 {
+    pub(crate) fn base_v(&self) -> f32 {
         self.base_v
     }
 
@@ -86,28 +88,28 @@ impl GrayScottIgnition {
     }
 
     /// The full relative width of the noise band around each base value.
-    pub(crate) fn noise_width(&self) -> f64 {
+    pub(crate) fn noise_width(&self) -> f32 {
         self.noise_width
     }
 
-    /// Appends the canonical form: `base_u` and `base_v` each via [`Enc::f64`],
-    /// `side_divisor` via [`Enc::u32`], `noise_width` via [`Enc::f64`], in the
+    /// Appends the canonical form: `base_u` and `base_v` each via [`Enc::f32`],
+    /// `side_divisor` via [`Enc::u32`], `noise_width` via [`Enc::f32`], in the
     /// frozen field order.
     pub(crate) fn encode(&self, enc: &mut Enc) {
-        enc.f64(self.base_u)
-            .f64(self.base_v)
+        enc.f32(self.base_u)
+            .f32(self.base_v)
             .u32(self.side_divisor)
-            .f64(self.noise_width);
+            .f32(self.noise_width);
     }
 
     /// Reads a canonical form written by [`GrayScottIgnition::encode`], funneling
     /// the values through [`GrayScottIgnition::new`] so decode and construction
     /// share one validation path.
     pub(crate) fn decode(dec: &mut Dec<'_>) -> Result<GrayScottIgnition> {
-        let base_u = dec.f64()?;
-        let base_v = dec.f64()?;
+        let base_u = dec.f32()?;
+        let base_v = dec.f32()?;
         let side_divisor = dec.u32()?;
-        let noise_width = dec.f64()?;
+        let noise_width = dec.f32()?;
         GrayScottIgnition::new(base_u, base_v, side_divisor, noise_width)
     }
 
@@ -122,10 +124,10 @@ impl GrayScottIgnition {
             &["base_u", "base_v", "side_divisor", "noise_width"],
             "params",
         )?;
-        let base_u = translate::float(table, id, "params", "base_u")?;
-        let base_v = translate::float(table, id, "params", "base_v")?;
+        let base_u = translate::float(table, id, "params", "base_u")? as f32;
+        let base_v = translate::float(table, id, "params", "base_v")? as f32;
         let side_divisor = translate::integer(table, id, "params", "side_divisor")?;
-        let noise_width = translate::float(table, id, "params", "noise_width")?;
+        let noise_width = translate::float(table, id, "params", "noise_width")? as f32;
         GrayScottIgnition::new(base_u, base_v, side_divisor, noise_width)
     }
 }
@@ -142,11 +144,11 @@ mod tests {
     }
 
     /// The canonical bytes of [`pearson`], derived by hand from the layout —
-    /// `base_u` and `base_v` as f64 bits little-endian, `side_divisor` as u32
-    /// little-endian, `noise_width` as f64 bits little-endian: `0.5 =
-    /// 0x3FE0000000000000`, `0.25 = 0x3FD0000000000000`, `8`, `0.02 =
-    /// 0x3F947AE147AE147B` — and independently reproduced with Python `struct`.
-    const PEARSON_BYTES_HEX: &str = "000000000000e03f000000000000d03f080000007b14ae47e17a943f";
+    /// `base_u` and `base_v` as f32 bits little-endian, `side_divisor` as u32
+    /// little-endian, `noise_width` as f32 bits little-endian: `0.5 =
+    /// 0x3F000000`, `0.25 = 0x3E800000`, `8`, `0.02 = 0x3CA3D70A` — and
+    /// independently reproduced with Python `struct`.
+    const PEARSON_BYTES_HEX: &str = "0000003f0000803e080000000ad7a33c";
 
     #[test]
     fn codec_round_trips() -> Result<()> {
@@ -172,10 +174,10 @@ mod tests {
 
     #[test]
     fn decode_rejects_invalid_values() {
-        // Well-formed 28 bytes whose base_u bits encode a NaN: the structure
+        // Well-formed 16 bytes whose base_u bits encode a NaN: the structure
         // decodes, the value fails — decode funnels through `new`.
         let mut enc = Enc::new();
-        enc.f64(f64::NAN).f64(0.25).u32(8).f64(0.02);
+        enc.f32(f32::NAN).f32(0.25).u32(8).f32(0.02);
         let buf = enc.finish();
         let mut dec = Dec::new(&buf);
         assert!(matches!(
@@ -186,12 +188,12 @@ mod tests {
 
     #[test]
     fn new_rejects_invalid_values() -> Result<()> {
-        // Each invalid value substituted into each f64 field; the error names the
+        // Each invalid value substituted into each f32 field; the error names the
         // field. -0.0 is rejected like the genome's rule: one value, one byte
         // image.
         let names = ["base_u", "base_v", "noise_width"];
         for (position, name) in names.iter().enumerate() {
-            for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -0.5, -0.0] {
+            for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, -0.5, -0.0] {
                 let mut p = [0.5, 0.25, 0.02];
                 p[position] = bad;
                 match GrayScottIgnition::new(p[0], p[1], 8, p[2]) {

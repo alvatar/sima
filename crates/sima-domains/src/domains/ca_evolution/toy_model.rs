@@ -22,7 +22,7 @@ pub(crate) struct ToyGenome {
 /// The toy ignition: one base value.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct ToyIgnition {
-    base: f64,
+    base: f32,
 }
 
 /// The toy generator config: one `[lo, hi]` sampling range.
@@ -38,7 +38,7 @@ impl Toy {
     }
 
     /// A toy ignition with the given base value.
-    pub(crate) fn ignition(base: f64) -> ToyIgnition {
+    pub(crate) fn ignition(base: f32) -> ToyIgnition {
         ToyIgnition { base }
     }
 
@@ -93,16 +93,16 @@ impl CaModel for Toy {
 
     fn parse_ignition(table: &toml::Table) -> Result<ToyIgnition> {
         translate::reject_unknown_keys(Self::FORMAT_ID, table, &["base"], "params")?;
-        let base = translate::float(table, Self::FORMAT_ID, "params", "base")?;
+        let base = translate::float(table, Self::FORMAT_ID, "params", "base")? as f32;
         Ok(ToyIgnition { base })
     }
 
     fn encode_ignition(ignition: &ToyIgnition, enc: &mut Enc) {
-        enc.f64(ignition.base);
+        enc.f32(ignition.base);
     }
 
     fn decode_ignition(dec: &mut Dec) -> Result<ToyIgnition> {
-        Ok(ToyIgnition { base: dec.f64()? })
+        Ok(ToyIgnition { base: dec.f32()? })
     }
 
     fn parse_gen_config(table: &toml::Table) -> Result<ToyGenConfig> {

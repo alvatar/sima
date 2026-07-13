@@ -11,23 +11,23 @@ use crate::cellular::Grid;
 /// length `channels`.
 pub(crate) struct PatchSpec<'a> {
     /// Per-channel background fill, the model's fixed point.
-    pub(crate) background: &'a [f64],
+    pub(crate) background: &'a [f32],
     /// Per-channel patch base values stamped into the centered square.
-    pub(crate) patch: &'a [f64],
+    pub(crate) patch: &'a [f32],
     /// Divisor of the shorter grid extent giving the patch side:
     /// `side = max(min(width, height) / side_divisor, 1)`.
     pub(crate) side_divisor: u32,
     /// Full relative width of the noise band around each patch base.
-    pub(crate) noise: f64,
+    pub(crate) noise: f32,
 }
 
 /// Builds the seeded initial grid a CA model ignites from: the whole grid filled
 /// with `spec.background`, then a centered square of side
 /// `max(min(width, height) / spec.side_divisor, 1)` whose every cell's channel
-/// `c` is `(spec.patch[c] * (1.0 + (t - 0.5) * spec.noise)) as f32`, with
-/// `t = unit_f64(next(derive(seed, y * width + x), c))`.
+/// `c` is `spec.patch[c] * (1.0 + (t - 0.5) * spec.noise)`, with
+/// `t = unit_f64(next(derive(seed, y * width + x), c)) as f32`.
 ///
-/// The arithmetic is f64 and identity-bearing: the patch values, the noise, and
+/// The arithmetic is f32 and identity-bearing: the patch values, the noise, and
 /// the seed determine the committed trajectory, and this arithmetic is frozen.
 /// `spec.side_divisor` must be at least 1 (the model's ignition config validates
 /// it).
@@ -69,12 +69,11 @@ pub(crate) fn seeded_patch(
         return Grid::new(width, height, channels as u32, Vec::new());
     };
     // The background takes no PRNG draws: its bytes are exactly each per-channel
-    // base cast to f32, and the PRNG cost is proportional to the patch, not the
-    // grid.
+    // base, and the PRNG cost is proportional to the patch, not the grid.
     let mut data = Vec::with_capacity(count);
     for _ in 0..count / channels {
         for &base in background {
-            data.push(base as f32);
+            data.push(base);
         }
     }
     // Patch geometry: a centered square spanning [x0, x0 + side) x [y0, y0 +
@@ -89,10 +88,11 @@ pub(crate) fn seeded_patch(
             let s = prng::derive(seed, y as u64 * width as u64 + x as u64);
             let cell = (y as usize * width as usize + x as usize) * channels;
             for (c, &base) in patch.iter().enumerate() {
-                // Frozen identity-bearing draw: counter c perturbs channel c, in
-                // f64 with one final cast.
-                let t = prng::unit_f64(prng::next(s, c as u64));
-                data[cell + c] = (base * (1.0 + (t - 0.5) * noise)) as f32;
+                // Frozen identity-bearing draw: counter c perturbs channel c. The
+                // unit draw narrows to f32 at the source, so every downstream
+                // operation and the stored cell are f32.
+                let t = prng::unit_f64(prng::next(s, c as u64)) as f32;
+                data[cell + c] = base * (1.0 + (t - 0.5) * noise);
             }
         }
     }
