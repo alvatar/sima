@@ -10,11 +10,11 @@
 //! module under `domains/`.
 //!
 //! Beside the concrete domains — the stub and `ca_evolution` — the
-//! [`cellular`] module holds the shared
-//! substrate of the cellular executor kind: the [`Grid`](cellular::Grid)
-//! state, the [`run`](cellular::run) double-buffered dispatch harness, and the
-//! [`CellularRule`](cellular::CellularRule) CPU-reference contract the float
-//! families build their kernels on.
+//! [`cellular`] module holds the shared substrate of the cellular executor
+//! kind: the [`Grid`](cellular::Grid) state, the [`run`](cellular::run)
+//! double-buffered dispatch harness, and the
+//! [`CellularRule`](cellular::CellularRule) CPU-reference contract used solely
+//! to cross-check that harness against an independent implementation in tests.
 //!
 //! The pipeline calls this crate to resolve a config's format and generator
 //! ids to code; the scheduler tests use the stub domain as a deterministic,
