@@ -1,9 +1,10 @@
 //! [`GrayScottGenConfig`]: the Gray-Scott generator's sampling box, and the
 //! model's `[run.generator]` sampling keys.
 
-use sima_core::{Codec, Error, Result, TomlConfig, prng};
+use sima_core::{Codec, Dec, Enc, Error, Result, prng};
 
 use super::genome::GrayScottGenome;
+use crate::domains::translate::{self, TomlConfig};
 
 /// The Gray-Scott generator's sampling box: one `[lo, hi]` range per genome
 /// parameter, in the frozen field order `feed`, `kill`, `diffusion_u`,
@@ -21,9 +22,7 @@ use super::genome::GrayScottGenome;
 // equality: the corner validation excludes NaN (which would make equality
 // irreflexive) and -0.0 (the one value that equals another numerically while
 // differing in bytes) from every bound.
-#[derive(Debug, Clone, Copy, PartialEq, Codec, TomlConfig)]
-#[codec(validate = new)]
-#[toml(validate = new)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct GrayScottGenConfig {
     /// Sampling range `[lo, hi]` of the feed rate `f`.
     feed: [f32; 2],
@@ -94,6 +93,47 @@ impl GrayScottGenConfig {
             draw(3, ranges[3]),
         )
         .expect("a draw from the validated box is a valid genome")
+    }
+}
+
+impl Codec for GrayScottGenConfig {
+    /// Appends the four ranges in the frozen field order, each bound via
+    /// [`Enc::f32`].
+    fn encode(&self, enc: &mut Enc) {
+        for [lo, hi] in [self.feed, self.kill, self.diffusion_u, self.diffusion_v] {
+            enc.f32(lo).f32(hi);
+        }
+    }
+
+    /// Reads the four ranges and funnels them through [`GrayScottGenConfig::new`]
+    /// so decode and construction share one validation path.
+    fn decode(dec: &mut Dec<'_>) -> Result<GrayScottGenConfig> {
+        let mut range = || -> Result<[f32; 2]> { Ok([dec.f32()?, dec.f32()?]) };
+        let feed = range()?;
+        let kill = range()?;
+        let diffusion_u = range()?;
+        let diffusion_v = range()?;
+        GrayScottGenConfig::new(feed, kill, diffusion_u, diffusion_v)
+    }
+}
+
+impl TomlConfig for GrayScottGenConfig {
+    /// Reads the sampling keys from the `[run.generator]` table (the shared
+    /// `count` is already stripped), rejecting any key it does not define. Each
+    /// range is required, with no defaults — every value that determines candidate
+    /// identity is visible in the config file.
+    fn parse(table: &toml::Table, id: &str, section: &str) -> Result<GrayScottGenConfig> {
+        translate::reject_unknown_keys(
+            id,
+            table,
+            &["feed", "kill", "diffusion_u", "diffusion_v"],
+            section,
+        )?;
+        let feed = translate::range(table, id, section, "feed")?;
+        let kill = translate::range(table, id, section, "kill")?;
+        let diffusion_u = translate::range(table, id, section, "diffusion_u")?;
+        let diffusion_v = translate::range(table, id, section, "diffusion_v")?;
+        GrayScottGenConfig::new(feed, kill, diffusion_u, diffusion_v)
     }
 }
 

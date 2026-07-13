@@ -1,10 +1,11 @@
 //! [`CaParams`]: the run knobs every CA model shares, and the shared half of the
 //! `[run.params]` translation.
 
-use sima_core::{Codec, Dec, Enc, Error, Result, TomlConfig};
+use sima_core::{Codec, Dec, Enc, Error, Result};
 use sima_model::Params;
 
 use super::model::CaModel;
+use crate::domains::translate::{TomlConfig, float, integer, reject_unknown_keys};
 
 /// The run parameters shared by every CA model: the grid extents, the steps one
 /// segment advances, and the integration step size. A model's own ignition
@@ -19,9 +20,7 @@ use super::model::CaModel;
 /// `segments * steps` steps. A total-steps-across-segments reading would need a
 /// segment index threaded into the task input; the design keeps `steps`
 /// per-segment, which needs no such index.
-#[derive(Debug, Clone, Copy, PartialEq, Codec, TomlConfig)]
-#[codec(validate = new)]
-#[toml(validate = new)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct CaParams {
     width: u32,
     height: u32,
@@ -80,6 +79,40 @@ impl CaParams {
     /// The integration step size.
     pub(crate) fn dt(&self) -> f32 {
         self.dt
+    }
+}
+
+impl Codec for CaParams {
+    /// Appends `width`, `height`, `steps` via [`Enc::u32`], `dt` via [`Enc::f32`],
+    /// in the frozen field order.
+    fn encode(&self, enc: &mut Enc) {
+        enc.u32(self.width)
+            .u32(self.height)
+            .u32(self.steps)
+            .f32(self.dt);
+    }
+
+    /// Reads the fields and funnels them through [`CaParams::new`] so decode and
+    /// construction share one validation path.
+    fn decode(dec: &mut Dec<'_>) -> Result<CaParams> {
+        let width = dec.u32()?;
+        let height = dec.u32()?;
+        let steps = dec.u32()?;
+        let dt = dec.f32()?;
+        CaParams::new(width, height, steps, dt)
+    }
+}
+
+impl TomlConfig for CaParams {
+    /// Reads the shared `[run.params]` keys, rejecting any key outside the set,
+    /// and funnels them through [`CaParams::new`].
+    fn parse(table: &toml::Table, id: &str, section: &str) -> Result<CaParams> {
+        reject_unknown_keys(id, table, &SHARED_KEYS, section)?;
+        let width = integer(table, id, section, "width")?;
+        let height = integer(table, id, section, "height")?;
+        let steps = integer(table, id, section, "steps")?;
+        let dt = float(table, id, section, "dt")?;
+        CaParams::new(width, height, steps, dt)
     }
 }
 

@@ -1,36 +1,32 @@
 //! A minimal [`CaModel`] used only by tests to prove the generic CA machinery
 //! runs with no dependency on any concrete model.
 
-use sima_core::{Codec, Error, Result, TomlConfig, prng};
+use sima_core::{Codec, Dec, Enc, Error, Result, prng};
 
 use super::ignition::{PatchSpec, seeded_patch};
 use super::model::CaModel;
 use super::params::CaParams;
 use crate::cellular::Grid;
+use crate::domains::translate::{self, TomlConfig};
 
 /// A one-channel toy model: the genome is a single value, the ignition a single
 /// base value, the generator config a single sampling range.
 pub(crate) struct Toy;
 
 /// The toy genome: one scalar value.
-#[derive(Debug, Clone, Copy, PartialEq, Codec)]
-#[codec(validate = new)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct ToyGenome {
     value: f32,
 }
 
 /// The toy ignition: one base value.
-#[derive(Debug, Clone, Copy, PartialEq, Codec, TomlConfig)]
-#[codec(validate = new)]
-#[toml(validate = new)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct ToyIgnition {
     base: f32,
 }
 
 /// The toy generator config: one `[lo, hi]` sampling range.
-#[derive(Debug, Clone, Copy, PartialEq, Codec, TomlConfig)]
-#[codec(validate = new)]
-#[toml(validate = new)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct ToyGenConfig {
     value: [f32; 2],
 }
@@ -59,6 +55,50 @@ impl ToyGenConfig {
             )));
         }
         Ok(ToyGenConfig { value })
+    }
+}
+
+impl Codec for ToyGenome {
+    fn encode(&self, enc: &mut Enc) {
+        enc.f32(self.value);
+    }
+
+    fn decode(dec: &mut Dec<'_>) -> Result<ToyGenome> {
+        ToyGenome::new(dec.f32()?)
+    }
+}
+
+impl Codec for ToyIgnition {
+    fn encode(&self, enc: &mut Enc) {
+        enc.f32(self.base);
+    }
+
+    fn decode(dec: &mut Dec<'_>) -> Result<ToyIgnition> {
+        ToyIgnition::new(dec.f32()?)
+    }
+}
+
+impl TomlConfig for ToyIgnition {
+    fn parse(table: &toml::Table, id: &str, section: &str) -> Result<ToyIgnition> {
+        translate::reject_unknown_keys(id, table, &["base"], section)?;
+        ToyIgnition::new(translate::float(table, id, section, "base")?)
+    }
+}
+
+impl Codec for ToyGenConfig {
+    fn encode(&self, enc: &mut Enc) {
+        enc.f32(self.value[0]).f32(self.value[1]);
+    }
+
+    fn decode(dec: &mut Dec<'_>) -> Result<ToyGenConfig> {
+        ToyGenConfig::new([dec.f32()?, dec.f32()?])
+    }
+}
+
+impl TomlConfig for ToyGenConfig {
+    fn parse(table: &toml::Table, id: &str, section: &str) -> Result<ToyGenConfig> {
+        translate::reject_unknown_keys(id, table, &["value"], section)?;
+        ToyGenConfig::new(translate::range(table, id, section, "value")?)
     }
 }
 

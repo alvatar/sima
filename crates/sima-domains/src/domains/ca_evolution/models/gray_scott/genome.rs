@@ -1,6 +1,6 @@
 //! [`GrayScottGenome`]: the evolvable parameters of the Gray-Scott model.
 
-use sima_core::{Codec, Error, Result};
+use sima_core::{Codec, Dec, Enc, Error, Result};
 
 /// The Gray-Scott genome: the four evolvable scalars of the two-chemical
 /// reaction-diffusion system
@@ -32,8 +32,7 @@ use sima_core::{Codec, Error, Result};
 // byte equality, because validation excludes NaN (which would make equality
 // irreflexive) and -0.0 (the one value that equals another numerically while
 // differing in bytes).
-#[derive(Debug, Clone, Copy, PartialEq, Codec)]
-#[codec(validate = new)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct GrayScottGenome {
     /// Feed rate `f`: replenishes `u` toward 1.
     feed: f32,
@@ -110,6 +109,27 @@ impl GrayScottGenome {
     /// The diffusion coefficient of the `v` channel.
     pub(crate) fn diffusion_v(&self) -> f32 {
         self.diffusion_v
+    }
+}
+
+impl Codec for GrayScottGenome {
+    /// Appends the four parameters in the frozen field order, each via
+    /// [`Enc::f32`].
+    fn encode(&self, enc: &mut Enc) {
+        enc.f32(self.feed)
+            .f32(self.kill)
+            .f32(self.diffusion_u)
+            .f32(self.diffusion_v);
+    }
+
+    /// Reads the four parameters and funnels them through [`GrayScottGenome::new`]
+    /// so decode and construction share one validation path.
+    fn decode(dec: &mut Dec<'_>) -> Result<GrayScottGenome> {
+        let feed = dec.f32()?;
+        let kill = dec.f32()?;
+        let diffusion_u = dec.f32()?;
+        let diffusion_v = dec.f32()?;
+        GrayScottGenome::new(feed, kill, diffusion_u, diffusion_v)
     }
 }
 

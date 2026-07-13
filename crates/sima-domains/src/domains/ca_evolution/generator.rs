@@ -5,11 +5,11 @@ use std::collections::HashMap;
 use std::marker::PhantomData;
 
 use sima_contracts::Generator;
-use sima_core::toml_config;
-use sima_core::{Codec, Dec, Enc, Error, Result, TomlConfig};
+use sima_core::{Codec, Dec, Enc, Error, Result};
 use sima_model::{FormatId, GeneratorId, Spec};
 
 use super::model::CaModel;
+use crate::domains::translate::{TomlConfig, required};
 
 /// Draws a run's candidate genomes for the model `M`. Candidate `i` is drawn by
 /// `M::sample(cfg, root_seed, i)`, so a candidate depends only on
@@ -102,7 +102,7 @@ fn decode_gen_params<M: CaModel>(bytes: &[u8]) -> Result<(u64, M::GenConfig)> {
 
 /// The shared `count` key: a TOML integer at least 1.
 fn parse_count<M: CaModel>(table: &toml::Table) -> Result<u64> {
-    match toml_config::required(table, M::FORMAT_ID, "generator", "count")? {
+    match required(table, M::FORMAT_ID, "generator", "count")? {
         toml::Value::Integer(n) if *n >= 1 => Ok(*n as u64),
         toml::Value::Integer(n) => Err(Error::Validation(format!(
             "generator {} count must be at least 1, got {n}",

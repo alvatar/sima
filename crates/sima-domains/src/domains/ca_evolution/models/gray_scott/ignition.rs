@@ -1,7 +1,9 @@
 //! [`GrayScottIgnition`]: the ignition configuration of the Gray-Scott model's
 //! initial grid, and the model's `[run.params]` ignition keys.
 
-use sima_core::{Codec, Error, Result, TomlConfig};
+use sima_core::{Codec, Dec, Enc, Error, Result};
+
+use crate::domains::translate::{self, TomlConfig};
 
 /// The ignition configuration of the Gray-Scott model's initial grid: the base
 /// values dropped into the centered square patch, the divisor of the shorter
@@ -17,9 +19,7 @@ use sima_core::{Codec, Error, Result, TomlConfig};
 /// little-endian: exactly 16 bytes. Every scalar is `f32` — the width of the
 /// grid state these values seed — so the ignition's content address reflects
 /// exactly the precision the grid carries.
-#[derive(Debug, Clone, Copy, PartialEq, Codec, TomlConfig)]
-#[codec(validate = new)]
-#[toml(validate = new)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct GrayScottIgnition {
     /// Base value of chemical `u` inside the patch.
     base_u: f32,
@@ -92,6 +92,47 @@ impl GrayScottIgnition {
     /// The full relative width of the noise band around each base value.
     pub(crate) fn noise_width(&self) -> f32 {
         self.noise_width
+    }
+}
+
+impl Codec for GrayScottIgnition {
+    /// Appends `base_u` and `base_v` via [`Enc::f32`], `side_divisor` via
+    /// [`Enc::u32`], `noise_width` via [`Enc::f32`], in the frozen field order.
+    fn encode(&self, enc: &mut Enc) {
+        enc.f32(self.base_u)
+            .f32(self.base_v)
+            .u32(self.side_divisor)
+            .f32(self.noise_width);
+    }
+
+    /// Reads the fields and funnels them through [`GrayScottIgnition::new`] so
+    /// decode and construction share one validation path.
+    fn decode(dec: &mut Dec<'_>) -> Result<GrayScottIgnition> {
+        let base_u = dec.f32()?;
+        let base_v = dec.f32()?;
+        let side_divisor = dec.u32()?;
+        let noise_width = dec.f32()?;
+        GrayScottIgnition::new(base_u, base_v, side_divisor, noise_width)
+    }
+}
+
+impl TomlConfig for GrayScottIgnition {
+    /// Reads the ignition keys from the `[run.params]` table (the shared keys are
+    /// already stripped), rejecting any key it does not define. All four keys are
+    /// required, with no defaults — every value that determines candidate identity
+    /// is visible in the config file.
+    fn parse(table: &toml::Table, id: &str, section: &str) -> Result<GrayScottIgnition> {
+        translate::reject_unknown_keys(
+            id,
+            table,
+            &["base_u", "base_v", "side_divisor", "noise_width"],
+            section,
+        )?;
+        let base_u = translate::float(table, id, section, "base_u")?;
+        let base_v = translate::float(table, id, section, "base_v")?;
+        let side_divisor = translate::integer(table, id, section, "side_divisor")?;
+        let noise_width = translate::float(table, id, section, "noise_width")?;
+        GrayScottIgnition::new(base_u, base_v, side_divisor, noise_width)
     }
 }
 
