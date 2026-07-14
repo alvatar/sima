@@ -12,7 +12,7 @@ use std::path::Path;
 use common::loaded_text;
 use sima_core::{Error, Hash, Result};
 use sima_domains::cellular::Grid;
-use sima_domains::decode_continuation;
+use sima_domains::{decode_continuation, encode_continuation};
 use sima_pipeline::{LoadedConfig, RunControl, RunOutcome, orchestrate};
 use sima_store::Store;
 
@@ -149,12 +149,12 @@ fn a_segment_boundary_leaves_the_trajectory_byte_identical() -> Result<()> {
 
     // The framed step makes the committed state a complete continuation, so the
     // 100-step state is byte-identical whether or not a segment boundary cut the
-    // trajectory. That turns into a content-addressed membership check: the
-    // unsegmented state's object must already exist in the segmented run's store,
-    // because the second segment committed the same framed bytes.
+    // trajectory. The unsegmented state's object must already exist in the
+    // segmented run's store — the `get` errors if absent, so it is the membership
+    // check — and its bytes must equal the framed state reconstructed here from
+    // the decoded step and grid, not a second fetch of the same object.
     let from_segmented = Store::open(&segmented.store)?.get(whole_object)?;
-    let from_whole = Store::open(&whole.store)?.get(whole_object)?;
-    assert_eq!(from_segmented, from_whole);
+    assert_eq!(from_segmented, encode_continuation(*whole_step, whole_grid));
     Ok(())
 }
 
