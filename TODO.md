@@ -295,8 +295,9 @@ machine.
 - [x] M3.2 Neural CA (asynchronous), the second `ca_evolution` model beside
       Gray-Scott: genome = perception filters + update-network weights,
       seed-sampled from the generator; asynchronous stochastic update at fire
-      rate ½ with the step carried as a clock channel in the grid, so segments
-      continue byte-identically; WGSL kernel over an in-shader SplitMix64 PRNG.
+      rate ½ keyed on the per-step index the harness supplies, with committed
+      state framed as that step ahead of the grid, so segments continue
+      byte-identically; WGSL kernel over an in-shader SplitMix64 PRNG.
       Training and mutation deferred to P8/M8.3, fitness scoring to P7; CPU
       reference descoped as in M3.1d
 - [ ] M3.3 Lenia: large-radius convolution kernel + growth function. Genome =
