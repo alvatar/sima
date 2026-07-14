@@ -55,8 +55,8 @@ pub(crate) trait CaModel: 'static {
     /// ahead of the grid ([`encode_continuation`](super::continuation)) — because
     /// a kernel that consumes the step makes the bare grid an incomplete
     /// continuation. The two are inseparable, so one const drives both. The
-    /// default keeps the bare-grid state a model's kernel needs no step to
-    /// continue.
+    /// default keeps the bare-grid state, for a model whose kernel needs no step
+    /// to continue.
     const STEPPED: bool = false;
 
     /// Packs the kernel's binding-3 uniform buffer from the genome and the
