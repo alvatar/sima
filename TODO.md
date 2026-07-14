@@ -21,7 +21,7 @@ Run parameters (extent, steps, budgets) are a separate opaque params blob:
 generators produce specs, config produces params, and the spec's format id
 governs the interpretation of both. The research object is learned/evolved
 computation on data-parallel substrates; cellular automata are the first
-family, neural cellular automata and Lenia the near-term targets. Primary
+family, neural cellular automata the near-term target (Lenia in P8). Primary
 workload shape: huge grids, 3D included — a single simulation can saturate a
 GPU; small grids are supported via within-launch batching (P8), never the
 design driver. Families divide by executor kind — the compute shape their
@@ -261,13 +261,14 @@ equal length.
 ## P3 — First model families
 
 The near-term research targets, running end to end and explorable: reaction-
-diffusion, Neural CA, Lenia. Each lands as a domain (CPU reference + WGSL
-kernel + seeded generator) on the P2 toolkit and float foundation. Determinism
+diffusion and Neural CA (Lenia is descoped to P8, M8.2). Each lands as a
+domain (CPU reference + WGSL kernel + seeded generator) on the P2 toolkit and
+float foundation. Determinism
 is at the pragmatic per-backend level — deterministic run to run on one
 machine, exact where it is cheap — without the cross-substrate tolerance
 apparatus (P8). The point is having the families in hand and iterating.
 
-Phase acceptance: NCA and Lenia run through the full spine (generate → execute
+Phase acceptance: NCA runs through the full spine (generate → execute
 → commit → inspect) from a `sima.toml`; a local search over a float family
 completes and records per-candidate stats; a recorded run re-evaluates from
 the store without re-execution; results reproduce run to run on the dev
@@ -300,11 +301,9 @@ machine.
       byte-identically; WGSL kernel over an in-shader SplitMix64 PRNG.
       Training and mutation deferred to P8/M8.3, fitness scoring to P7; CPU
       reference descoped as in M3.1d
-- [ ] M3.3 Lenia: large-radius convolution kernel + growth function. Genome =
-      kernel / growth parameters; seeded generator, CPU reference + WGSL
-      kernel. Flow-Lenia (mass-conserving advection, localized parameters) is
-      deferred to P8 — the order-independent scatter it needs is a rigor
-      problem, not a first-cut one
+- M3.3 Lenia: descoped from P3 to P8, folded into M8.2 beside Flow-Lenia, so
+      the whole Lenia line (plain and flow variants) lands in one place under
+      the cross-substrate rigor apparatus
 - [ ] M3.4 First real search: a family search of ≥1000 candidates on the local
       GPU through the full spine; per-candidate result stats recorded as
       metadata (population/activity from the result snapshot — inspection aid,
@@ -468,7 +467,10 @@ not an aspiration; it is the hardest determinism question in the project and
       deliverable, per phase acceptance). Folds the compiled kernel and driver
       into the environment hash for the float families. Shared foundation for
       cross-substrate agreement across every family in P3
-- [ ] M8.2 Flow-Lenia: mass-conserving advection (semi-Lagrangian transport —
+- [ ] M8.2 Lenia and Flow-Lenia (Lenia descoped here from P3). Lenia:
+      large-radius convolution kernel + growth function; genome = kernel /
+      growth parameters; seeded generator, CPU reference + WGSL kernel.
+      Flow-Lenia: mass-conserving advection (semi-Lagrangian transport —
       the mass-redistribution scatter needs an order-independent scheme or it
       is nondeterministic even on one device) and spatially localized
       parameters (genome becomes a per-region field, not one global vector).
