@@ -57,10 +57,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let dt = params[OFF_DT];
 
     // Perception: perc[c*P + p] is filter p's response on state channel c.
-    var perc: array<f32, C_STATE * P>;
-    for (var i = 0u; i < C_STATE * P; i = i + 1u) {
-        perc[i] = 0.0;
-    }
+    var perc = array<f32, C_STATE * P>();
     // Accumulate over the 3x3 toroidal neighborhood; the `+ extent + d - 1` form
     // keeps the offset in unsigned range for d in {0, 1, 2} (taps -1, 0, +1).
     for (var dy = 0u; dy < 3u; dy = dy + 1u) {
