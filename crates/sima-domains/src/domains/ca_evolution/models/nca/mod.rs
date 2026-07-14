@@ -203,13 +203,15 @@ mod tests {
             }
         }
 
-        /// Asserts every cell's clock channel (index 8) equals `expected`.
+        /// Asserts every cell's clock channel (the channel after the state
+        /// channels) equals `expected`.
         fn assert_clock(grid: &Grid, expected: f32) {
             let data = grid.data();
+            let stride = CHANNELS as usize;
             let cells = (grid.width() * grid.height()) as usize;
             for cell in 0..cells {
                 assert_eq!(
-                    data[cell * 9 + 8],
+                    data[cell * stride + C_STATE],
                     expected,
                     "clock at cell {cell} must be {expected}"
                 );
