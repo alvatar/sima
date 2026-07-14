@@ -10,6 +10,7 @@
 //! module under `models/` plus one arm here; the generic machinery never
 //! changes.
 
+pub(crate) mod continuation;
 mod domain;
 mod executor;
 mod generator;
