@@ -293,17 +293,12 @@ machine.
       stated per-backend tolerance; the domain wired end to end (generate →
       execute → commit → inspect) from a `sima.toml`
 - [x] M3.2 Neural CA (asynchronous), the second `ca_evolution` model beside
-      Gray-Scott: genome = perception filters + update-network weights, both
-      seed-sampled from the generator; an asynchronous stochastic update (fire
-      rate ½) whose per-cell mask carries the step index as a clock channel
-      inside the grid, so a committed grid is a complete continuation and
-      segments continue byte-identically. WGSL kernel composing the shared
-      counter-based SplitMix64 PRNG reproduced in-shader, known-answer tested
-      against `sima-core::prng`; runs the automaton for a fixed step count from a
-      seeded state and commits the final grid. Correctness rests on codec byte
-      pins, byte determinism across repeated runs, and byte-identical segment
-      continuation. Training and mutation are deferred to P8/M8.3, fitness
-      scoring and targets to P7; a CPU reference is descoped as in M3.1d
+      Gray-Scott: genome = perception filters + update-network weights,
+      seed-sampled from the generator; asynchronous stochastic update at fire
+      rate ½ with the step carried as a clock channel in the grid, so segments
+      continue byte-identically; WGSL kernel over an in-shader SplitMix64 PRNG.
+      Training and mutation deferred to P8/M8.3, fitness scoring to P7; CPU
+      reference descoped as in M3.1d
 - [ ] M3.3 Lenia: large-radius convolution kernel + growth function. Genome =
       kernel / growth parameters; seeded generator, CPU reference + WGSL
       kernel. Flow-Lenia (mass-conserving advection, localized parameters) is
