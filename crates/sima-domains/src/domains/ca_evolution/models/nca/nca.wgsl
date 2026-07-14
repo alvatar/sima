@@ -57,7 +57,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let dt = params[OFF_DT];
 
     // Perception: perc[c*P + p] is filter p's response on state channel c.
-    var perc: array<f32, 24>; // C_STATE * P
+    var perc: array<f32, C_STATE * P>;
     for (var i = 0u; i < C_STATE * P; i = i + 1u) {
         perc[i] = 0.0;
     }
@@ -79,7 +79,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
 
     // Dense 24 -> 32 with ReLU. W1 is input-major: W1[i*H + h].
-    var hidden: array<f32, 32>; // H
+    var hidden: array<f32, H>;
     for (var h = 0u; h < H; h = h + 1u) {
         var acc = params[OFF_B1 + h];
         for (var i = 0u; i < C_STATE * P; i = i + 1u) {
