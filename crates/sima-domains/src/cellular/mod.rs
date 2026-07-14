@@ -9,6 +9,7 @@
 //! tests. Each family supplies its own kernel and genome, not a reference.
 
 mod grid;
+mod prng;
 mod reference;
 mod step;
 

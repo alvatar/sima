@@ -38,6 +38,26 @@ pub(crate) trait CaModel: 'static {
     const CHANNELS: u32;
     /// The WGSL update kernel source (`include_str!` of the co-located file).
     const KERNEL_WGSL: &'static str;
+    /// Whether the kernel declares the binding-4 seed buffer: the candidate's
+    /// u64 seed as two u32 words, low then high. A model consuming the seed at
+    /// runtime (an asynchronous update mask) opts in; the default keeps the
+    /// binding-3 f32 buffer as the kernel's only parameter buffer.
+    ///
+    /// The kernel's storage bindings are ascending and positional: 0 input grid,
+    /// 1 output grid, 2 dimensions, 3 the model uniforms, then the seed buffer if
+    /// [`SEED_BUFFER`](CaModel::SEED_BUFFER) is set, then the step buffer if
+    /// [`STEPPED`](CaModel::STEPPED) is set. For a model opting into both, seed is
+    /// binding 4 and step is binding 5.
+    const SEED_BUFFER: bool = false;
+    /// Whether the model advances against an absolute step index. A stepped model
+    /// receives the per-step index buffer (the harness uploads `step_base + i`
+    /// before dispatch `i`) and commits framed continuation state — a `u64` step
+    /// ahead of the grid ([`encode_continuation`](super::continuation)) — because
+    /// a kernel that consumes the step makes the bare grid an incomplete
+    /// continuation. The two are inseparable, so one const drives both. The
+    /// default keeps the bare-grid state, for a model whose kernel needs no step
+    /// to continue.
+    const STEPPED: bool = false;
 
     /// Packs the kernel's binding-3 uniform buffer from the genome and the
     /// shared params.

@@ -292,11 +292,14 @@ machine.
       `sima-toolkit-wgsl`, cross-checked against the CPU reference within a
       stated per-backend tolerance; the domain wired end to end (generate →
       execute → commit → inspect) from a `sima.toml`
-- [ ] M3.2 Neural CA: genome = perception + update-network parameters, both
-      evolvable; the trainable, self-repairing family (regrows when disturbed,
-      two trained textures graftable). Seed-derived initialization and
-      mutation; CPU reference + WGSL kernel; runs the automaton for a fixed
-      step count from a seeded state and scores by fidelity to a target
+- [x] M3.2 Neural CA (asynchronous), the second `ca_evolution` model beside
+      Gray-Scott: genome = perception filters + update-network weights,
+      seed-sampled from the generator; asynchronous stochastic update at fire
+      rate ½ keyed on the per-step index the harness supplies, with committed
+      state framed as that step ahead of the grid, so segments continue
+      byte-identically; WGSL kernel over an in-shader SplitMix64 PRNG.
+      Training and mutation deferred to P8/M8.3, fitness scoring to P7; CPU
+      reference descoped as in M3.1d
 - [ ] M3.3 Lenia: large-radius convolution kernel + growth function. Genome =
       kernel / growth parameters; seeded generator, CPU reference + WGSL
       kernel. Flow-Lenia (mass-conserving advection, localized parameters) is

@@ -25,7 +25,7 @@ pub fn cross_check(
         std::mem::swap(&mut current, &mut next);
     }
 
-    let gpu = run(context, kernel, initial, steps, &[]).expect("harness run");
+    let gpu = run(context, kernel, initial, steps, &[], None).expect("harness run");
     assert_eq!(
         gpu.to_bytes(),
         current.to_bytes(),
