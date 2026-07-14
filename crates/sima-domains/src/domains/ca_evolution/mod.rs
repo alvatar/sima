@@ -28,12 +28,14 @@ use sima_model::{FormatId, GeneratorId, Params};
 use crate::domain::Domain;
 use model::CaModel;
 use models::gray_scott::GrayScott;
+use models::nca::Nca;
 
 /// Resolves a format id to one of this domain's models, binding its [`Domain`],
 /// or `None` if no model claims it.
 pub(crate) fn domain_for(format: &FormatId) -> Option<Result<Domain>> {
     match format.as_str() {
         GrayScott::FORMAT_ID => Some(domain::build_domain::<GrayScott>()),
+        Nca::FORMAT_ID => Some(domain::build_domain::<Nca>()),
         _ => None,
     }
 }
@@ -42,6 +44,7 @@ pub(crate) fn domain_for(format: &FormatId) -> Option<Result<Domain>> {
 pub(crate) fn params_for(format: &FormatId, table: &toml::Table) -> Option<Result<Params>> {
     match format.as_str() {
         GrayScott::FORMAT_ID => Some(params::translate::<GrayScott>(table)),
+        Nca::FORMAT_ID => Some(params::translate::<Nca>(table)),
         _ => None,
     }
 }
@@ -52,6 +55,9 @@ pub(crate) fn generator_for(id: &GeneratorId) -> Option<Result<Box<dyn Generator
         GrayScott::FORMAT_ID => Some(
             generator::CaGenerator::<GrayScott>::new().map(|g| Box::new(g) as Box<dyn Generator>),
         ),
+        Nca::FORMAT_ID => {
+            Some(generator::CaGenerator::<Nca>::new().map(|g| Box::new(g) as Box<dyn Generator>))
+        }
         _ => None,
     }
 }
@@ -63,6 +69,7 @@ pub(crate) fn generator_params_for(
 ) -> Option<Result<Vec<u8>>> {
     match id.as_str() {
         GrayScott::FORMAT_ID => Some(generator::translate::<GrayScott>(table)),
+        Nca::FORMAT_ID => Some(generator::translate::<Nca>(table)),
         _ => None,
     }
 }
