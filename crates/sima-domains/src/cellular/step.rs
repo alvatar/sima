@@ -111,9 +111,12 @@ mod tests {
     /// dispatch match the cellular-kind convention the harness encodes.
     const SMOKE_WGSL: &str = include_str!("../../shaders/smoke.wgsl");
 
-    /// A one-channel probe kernel that writes the low word of the per-step index
-    /// into every cell. It declares the step buffer at binding 3 (no params), so
-    /// after `steps` dispatches from `base` every cell holds `base + steps - 1`.
+    /// A one-channel probe kernel that adds the low word of the per-step index to
+    /// every cell. It declares the step buffer at binding 3 (no params), so after
+    /// `steps` dispatches from `base` every cell holds the sum of the step
+    /// indices `base ..= base + steps - 1`. Accumulating makes every dispatch's
+    /// upload contribute, so a wrong intermediate step index is caught, not only
+    /// a wrong final one.
     const STEP_PROBE_WGSL: &str = r#"
 @group(0) @binding(0) var<storage, read> in_grid: array<f32>;
 @group(0) @binding(1) var<storage, read_write> out_grid: array<f32>;
@@ -124,8 +127,8 @@ mod tests {
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let cell = gid.x;
     if (cell >= dims[0] * dims[1]) { return; }
-    // The test keeps the step well under 2^24, so the f32 holds it exactly.
-    out_grid[cell] = f32(step_words[0]);
+    // The test keeps the running sum well under 2^24, so the f32 holds it exactly.
+    out_grid[cell] = in_grid[cell] + f32(step_words[0]);
 }
 "#;
 
@@ -202,9 +205,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     #[ignore = "requires a Vulkan device"]
     fn run_transports_the_per_step_index() {
         // A kernel reading the step buffer observes `base + i` on dispatch `i`.
-        // After `steps` dispatches from `base`, the last dispatch wrote
-        // `base + steps - 1` into every cell, and the ping-pong returns that
-        // buffer.
+        // The probe accumulates, so after `steps` dispatches from `base` every
+        // cell holds the sum of `base ..= base + steps - 1`, and a wrong index on
+        // any single dispatch — not only the last — changes the total.
         let context = Context::new().expect("create compute context");
         let kernel = context
             .kernel(STEP_PROBE_WGSL, "main")
@@ -212,10 +215,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let initial = Grid::new(4, 4, 1, vec![0.0; 16]).expect("grid");
         let (base, steps) = (100u64, 5u32);
         let result = run(&context, &kernel, &initial, steps, &[], Some(base)).expect("run");
-        let expected = (base + u64::from(steps) - 1) as f32;
+        // Sum of base ..= base + steps - 1 = 100 + 101 + 102 + 103 + 104 = 510.
+        let expected = (base..base + u64::from(steps)).sum::<u64>() as f32;
         assert!(
             result.data().iter().all(|&v| v == expected),
-            "every cell must hold base + steps - 1 = {expected}, got {:?}",
+            "every cell must hold the summed step indices {expected}, got {:?}",
             result.data()
         );
     }
