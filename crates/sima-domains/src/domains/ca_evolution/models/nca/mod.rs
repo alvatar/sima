@@ -141,7 +141,7 @@ mod tests {
     /// validation of a stepped input state before any GPU work. Neither touches
     /// a store.
     #[cfg(test)]
-    mod gpu {
+    mod executor {
         use sima_contracts::{
             Checkpoint, ExecutionContext, Executor, NoCheckpoint, Outcome, STATE_ARTIFACT,
             TaskInput, WorkerId,
