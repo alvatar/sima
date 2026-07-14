@@ -1,9 +1,9 @@
 //! End-to-end acceptance of the `ca_evolution` domain's asynchronous Neural CA
 //! model through the pipeline API: a `ca_evolution.nca` `sima.toml` runs generate
-//! → execute → commit → inspect to a finalized manifest committing 9-channel
-//! grids, a segment boundary leaves the committed trajectory byte-identical, and
-//! a malformed `[run.params]` or `[run.generator]` section fails at load — before
-//! any store or GPU work.
+//! → execute → commit → inspect to a finalized manifest committing framed
+//! continuation state over 8-channel grids, a segment boundary leaves the
+//! committed trajectory byte-identical, and a malformed `[run.params]` or
+//! `[run.generator]` section fails at load — before any store or GPU work.
 
 mod common;
 
@@ -12,6 +12,7 @@ use std::path::Path;
 use common::loaded_text;
 use sima_core::{Error, Hash, Result};
 use sima_domains::cellular::Grid;
+use sima_domains::decode_continuation;
 use sima_pipeline::{LoadedConfig, RunControl, RunOutcome, orchestrate};
 use sima_store::Store;
 
@@ -63,8 +64,8 @@ fn nca_config(
 }
 
 /// The `state` artifacts across the run's manifest entries: each entry's object
-/// hash and its decoded grid.
-fn manifest_states(config: &LoadedConfig) -> Result<Vec<(Hash, Grid)>> {
+/// hash, the step its framed continuation state reached, and its decoded grid.
+fn manifest_states(config: &LoadedConfig) -> Result<Vec<(Hash, u64, Grid)>> {
     let store = Store::open(&config.store)?;
     let manifest = store
         .manifest(&config.run.id())?
@@ -81,8 +82,10 @@ fn manifest_states(config: &LoadedConfig) -> Result<Vec<(Hash, Grid)>> {
                 .iter()
                 .find(|a| a.name() == "state")
                 .expect("a ca_evolution record commits the state artifact");
-            let grid = Grid::from_bytes(&store.get(artifact.object())?)?;
-            Ok((*artifact.object(), grid))
+            // The NCA is a stepped model, so its committed state frames the step
+            // reached ahead of the grid's canonical bytes.
+            let (step, grid) = decode_continuation(&store.get(artifact.object())?)?;
+            Ok((*artifact.object(), step, grid))
         })
         .collect()
 }
@@ -97,12 +100,13 @@ fn a_ca_evolution_nca_config_runs_the_full_spine() -> Result<()> {
         orchestrate(&config, &RunControl::detached())?,
         RunOutcome::Finalized { .. }
     ));
-    // Four candidates, one manifest entry each, every committed state a 32x32
-    // nine-channel grid (eight state channels plus the clock).
+    // Four candidates, one manifest entry each, every committed state framed at
+    // step 100 over a 32x32 eight-channel grid.
     let states = manifest_states(&config)?;
     assert_eq!(states.len(), 4);
-    for (_, grid) in &states {
-        assert_eq!((grid.width(), grid.height(), grid.channels()), (32, 32, 9));
+    for (_, step, grid) in &states {
+        assert_eq!(*step, 100, "a single 100-step segment reaches step 100");
+        assert_eq!((grid.width(), grid.height(), grid.channels()), (32, 32, 8));
     }
     Ok(())
 }
@@ -127,8 +131,8 @@ fn a_segment_boundary_leaves_the_trajectory_byte_identical() -> Result<()> {
     ));
     let segment_states = manifest_states(&segmented)?;
     assert_eq!(segment_states.len(), 2);
-    for (_, grid) in &segment_states {
-        assert_eq!((grid.width(), grid.height(), grid.channels()), (32, 32, 9));
+    for (_, _, grid) in &segment_states {
+        assert_eq!((grid.width(), grid.height(), grid.channels()), (32, 32, 8));
     }
 
     // The same trajectory as one unsegmented 100-step task, fresh store.
@@ -139,15 +143,18 @@ fn a_segment_boundary_leaves_the_trajectory_byte_identical() -> Result<()> {
     ));
     let whole_states = manifest_states(&whole)?;
     assert_eq!(whole_states.len(), 1);
+    let (whole_object, whole_step, whole_grid) = &whole_states[0];
+    assert_eq!(*whole_step, 100, "the unsegmented run reaches step 100");
+    assert_eq!(whole_grid.channels(), 8);
 
-    // The clock channel makes the committed grid a complete continuation, so the
-    // 100-step grid is byte-identical whether or not a segment boundary cut the
-    // trajectory. That turns into a hash membership check: the unsegmented state's
-    // object must already exist in the segmented run's store, because the second
-    // segment committed the same bytes.
-    let (whole_object, whole_grid) = &whole_states[0];
-    let bytes = Store::open(&segmented.store)?.get(whole_object)?;
-    assert_eq!(bytes, whole_grid.to_bytes());
+    // The framed step makes the committed state a complete continuation, so the
+    // 100-step state is byte-identical whether or not a segment boundary cut the
+    // trajectory. That turns into a content-addressed membership check: the
+    // unsegmented state's object must already exist in the segmented run's store,
+    // because the second segment committed the same framed bytes.
+    let from_segmented = Store::open(&segmented.store)?.get(whole_object)?;
+    let from_whole = Store::open(&whole.store)?.get(whole_object)?;
+    assert_eq!(from_segmented, from_whole);
     Ok(())
 }
 
