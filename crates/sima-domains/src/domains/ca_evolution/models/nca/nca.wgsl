@@ -6,27 +6,27 @@
 //   1. perceive: P depthwise 3x3 filters over the 8 state channels of the 3x3
 //      toroidal neighborhood -> a perception vector of length C_state*P = 24.
 //   2. update net: dense 24->32 with ReLU, then dense 32->8 -> delta state.
-//   3. clock' = clock + 1 (always, unmasked): a global step counter carried in
-//      the grid so the committed grid is a complete continuation.
-//   4. mask: a per-(cell, step) stochastic bit at fire rate 1/2; state channels
-//      move by delta only where the mask fires. The clock is never masked.
+//   3. mask: a per-(cell, step) stochastic bit at fire rate 1/2; state channels
+//      move by delta only where the mask fires.
 //
 // Bindings follow the cellular-kind convention: binding 0 the input grid,
 // binding 1 the output grid, binding 2 the dimensions [width, height, channels],
 // binding 3 the params [dt, then the 1091 genome weights], binding 4 the
-// candidate seed as two u32 words [lo, hi]. The kernel writes all 9 channels of
-// every output cell, since the harness ping-pongs whole buffers.
+// candidate seed as two u32 words [lo, hi], binding 5 the absolute step as two
+// u32 words [lo, hi]. The step is supplied by the harness, not carried in the
+// grid, so the committed grid is exactly the 8 state channels.
 
 @group(0) @binding(0) var<storage, read> in_grid: array<f32>;
 @group(0) @binding(1) var<storage, read_write> out_grid: array<f32>;
 @group(0) @binding(2) var<storage, read> dims: array<u32>;
 @group(0) @binding(3) var<storage, read> params: array<f32>;
 @group(0) @binding(4) var<storage, read> seed_words: array<u32>;
+@group(0) @binding(5) var<storage, read> step_words: array<u32>;
 
 const C_STATE: u32 = 8u;
 const P: u32 = 3u;
 const H: u32 = 32u;
-const CHANNELS: u32 = C_STATE + 1u; // 8 state channels + 1 clock channel
+const CHANNELS: u32 = C_STATE; // every grid channel is network state
 
 // Block offsets into the params buffer: dt at 0, then the genome weights in
 // their frozen order (perception, W1, b1, W2, b2).
@@ -85,19 +85,15 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         hidden[h] = max(acc, 0.0);
     }
 
-    // The clock advances every step, unmasked. An f32 channel holds integers
-    // exactly up to 2^24; past that clock + 1 rounds back to clock and the mask
-    // sequence stalls. The bound is on total trajectory length across segments.
-    let clock = in_grid[base + C_STATE];
-    let next_clock = clock + 1.0;
-
     // The mask fires when unit_f64(r) < 0.5, which at fire rate 1/2 is exactly
     // bit 63 of r being 0 — a single high-bit test, no float arithmetic. The
-    // clock channel holds exact integers, so u32(clock) is exact.
+    // step is the absolute trajectory step the harness supplied, keyed as an
+    // integer, so the mask sequence is exact for the whole trajectory.
     let seed = U64(seed_words[0], seed_words[1]);
+    let step = U64(step_words[0], step_words[1]);
     let cell_stream = prng_derive(seed, U64(cell, 0u));
     let mask_stream = prng_derive(cell_stream, U64(MASK_TAG, 0u));
-    let r = prng_next(mask_stream, U64(u32(clock), 0u));
+    let r = prng_next(mask_stream, step);
     let fires = (r.hi >> 31u) == 0u;
     let m = select(0.0, 1.0, fires);
 
@@ -110,5 +106,4 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         }
         out_grid[base + c] = in_grid[base + c] + m * dt * acc;
     }
-    out_grid[base + C_STATE] = next_clock;
 }

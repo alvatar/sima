@@ -4,14 +4,14 @@
 use sima_core::{Codec, Dec, Enc, Error, Result};
 
 use super::super::super::ignition::{PatchSpec, seeded_patch};
-use super::{C_STATE, CHANNELS};
+use super::CHANNELS;
 use crate::cellular::Grid;
 use crate::domains::translate::{self, TomlConfig};
 
 /// The ignition configuration of the Neural CA's initial grid: the amplitude
-/// seeded into the `C_STATE` state channels of a centered square patch, the
-/// divisor of the shorter grid extent giving the patch side, and the full
-/// relative width of the noise band around the seeded amplitude.
+/// seeded into every state channel of a centered square patch, the divisor of
+/// the shorter grid extent giving the patch side, and the full relative width of
+/// the noise band around the seeded amplitude.
 ///
 /// The values determine candidate identity, so there is no `Default` — they are
 /// always spelled by the caller.
@@ -21,8 +21,8 @@ use crate::domains::translate::{self, TomlConfig};
 /// bytes. Every scalar is `f32` — the width of the grid state these values seed.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct NcaIgnition {
-    /// Amplitude seeded into each of the `C_STATE` state channels inside the
-    /// patch. An arbitrary finite seed amplitude, with no sign rule.
+    /// Amplitude seeded into every state channel inside the patch. An arbitrary
+    /// finite seed amplitude, with no sign rule.
     seed_value: f32,
     /// Divisor of the shorter grid extent giving the patch side:
     /// `side = max(min(width, height) / side_divisor, 1)`.
@@ -60,23 +60,17 @@ impl NcaIgnition {
     }
 
     /// Builds the seeded initial grid over [`CHANNELS`] channels: an all-zero
-    /// background (state channels and clock), a centered square whose `C_STATE`
-    /// state channels carry `seed_value` while the clock channel stays zero, so
-    /// the whole grid starts at step 0.
+    /// background and a centered square whose every state channel carries
+    /// `seed_value`. The trajectory's step lives in the harness index, not the
+    /// grid, so ignition sets no phase.
     pub(crate) fn ignite(&self, width: u32, height: u32, seed: u64) -> Result<Grid> {
-        // The clock is the last channel: leaving its patch entry 0 (and the
-        // background 0) starts the trajectory uniformly at step 0.
-        let mut patch = [0.0f32; CHANNELS as usize];
-        for slot in patch.iter_mut().take(C_STATE) {
-            *slot = self.seed_value;
-        }
         seeded_patch(
             width,
             height,
             CHANNELS,
             PatchSpec {
                 background: &[0.0; CHANNELS as usize],
-                patch: &patch,
+                patch: &[self.seed_value; CHANNELS as usize],
                 side_divisor: self.side_divisor,
                 noise: self.noise_width,
             },
@@ -218,33 +212,24 @@ mod tests {
     }
 
     #[test]
-    fn ignite_builds_a_nine_channel_grid_with_zero_clock() -> Result<()> {
+    fn ignite_builds_an_eight_channel_seeded_grid() -> Result<()> {
         // Noiseless so the patch state channels carry seed_value exactly. On a
         // 32x32 grid: side = max(32 / 8, 1) = 4, x0 = y0 = (32 - 4) / 2 = 14, so
         // the patch spans [14, 18) x [14, 18).
+        let stride = CHANNELS as usize;
         let ignition = NcaIgnition::new(1.0, 8, 0.0)?;
         let grid = ignition.ignite(32, 32, 42)?;
-        assert_eq!((grid.width(), grid.height(), grid.channels()), (32, 32, 9));
+        assert_eq!((grid.width(), grid.height(), grid.channels()), (32, 32, 8));
         let data = grid.data();
-        // Every cell's clock channel (index 8) is exactly zero.
-        for cell in 0..(32 * 32) {
-            assert_eq!(
-                data[cell * 9 + 8].to_bits(),
-                0.0f32.to_bits(),
-                "clock at cell {cell}"
-            );
-        }
-        // A background cell (0, 0): all nine channels zero.
-        for (c, value) in data[..9].iter().enumerate() {
+        // A background cell (0, 0): all eight channels zero.
+        for (c, value) in data[..stride].iter().enumerate() {
             assert_eq!(value.to_bits(), 0.0f32.to_bits(), "background channel {c}");
         }
-        // A patch cell (14, 14): the eight state channels carry seed_value, the
-        // clock stays zero.
-        let patch = (14 * 32 + 14) * 9;
-        for (c, value) in data[patch..patch + 8].iter().enumerate() {
+        // A patch cell (14, 14): every state channel carries seed_value.
+        let patch = (14 * 32 + 14) * stride;
+        for (c, value) in data[patch..patch + stride].iter().enumerate() {
             assert_eq!(value.to_bits(), 1.0f32.to_bits(), "patch channel {c}");
         }
-        assert_eq!(data[patch + 8].to_bits(), 0.0f32.to_bits(), "patch clock");
         Ok(())
     }
 

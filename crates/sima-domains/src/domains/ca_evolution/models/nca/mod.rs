@@ -1,13 +1,14 @@
 //! The asynchronous Neural Cellular Automaton: a grid of cells that update
 //! their state channels by a small learned network, stochastically and out of
-//! phase, with the update mask keyed on a clock channel carried inside the grid.
+//! phase, with the update mask keyed on the absolute step the harness supplies.
 //!
 //! [`NcaGenome`] is the spec payload (the flat network weight vector),
 //! [`NcaIgnition`] the model's slice of `[run.params]` (the centered seeded
 //! patch), and [`NcaGenConfig`] the sampling box. The model binds them to the
 //! generic machinery through [`CaModel`](super::super::model::CaModel), with the
 //! asynchronous update kernel co-located in `nca.wgsl` and composed on top of the
-//! shared WGSL PRNG.
+//! shared WGSL PRNG. The model is stepped: its kernel reads the per-step index
+//! from the harness and its committed state frames that step ahead of the grid.
 
 mod gen_config;
 mod genome;
@@ -23,18 +24,17 @@ use gen_config::NcaGenConfig;
 use genome::NcaGenome;
 use ignition::NcaIgnition;
 
-/// State channels the network reads and writes. Channels `0..C_STATE` of the
-/// grid are network state; the channel after them is the clock.
+/// State channels the network reads and writes. Every grid channel is network
+/// state; the asynchronous update's phase travels as the harness step index, not
+/// a grid channel.
 pub(crate) const C_STATE: usize = 8;
 /// Learned 3×3 depthwise perception filters, each applied to every state
 /// channel.
 pub(crate) const P: usize = 3;
 /// Hidden units in the update network's single hidden layer.
 pub(crate) const H: usize = 32;
-/// Grid channels per cell: the `C_STATE` network state channels plus one clock
-/// channel (index `C_STATE`) that carries the asynchronous update's phase, so a
-/// committed grid is a complete continuation.
-pub(crate) const CHANNELS: u32 = C_STATE as u32 + 1;
+/// Grid channels per cell: exactly the `C_STATE` network state channels.
+pub(crate) const CHANNELS: u32 = C_STATE as u32;
 
 /// The asynchronous Neural CA model. Zero-sized: the generic machinery is
 /// monomorphized over it, and every rule-specific value is a genome, ignition,
@@ -62,6 +62,10 @@ impl CaModel for Nca {
     // The kernel reads the candidate seed at runtime for the async mask, so the
     // executor binds it as the binding-4 seed buffer.
     const SEED_BUFFER: bool = true;
+    // The mask is keyed on the absolute step, so the kernel reads the per-step
+    // index from the binding-5 step buffer and the committed state frames that
+    // step ahead of the grid.
+    const STEPPED: bool = true;
 
     fn uniforms(genome: &NcaGenome, shared: &CaParams) -> Vec<f32> {
         // Binding 3 of the cellular convention: [dt, then the N genome weights].
@@ -131,17 +135,21 @@ mod tests {
         Ok(())
     }
 
-    /// GPU executor fixtures: they drive the real [`CaExecutor<Nca>`] end to end
-    /// so the seed-buffer binding and the async kernel run exactly as in a live
-    /// run, without touching any store.
+    /// Executor fixtures driving the real [`CaExecutor<Nca>`]: the GPU-gated
+    /// tests run the async kernel through the seed and step buffers exactly as a
+    /// live run does, and the device-free tests exercise the executor's
+    /// validation of a stepped input state before any GPU work. Neither touches
+    /// a store.
     #[cfg(test)]
     mod gpu {
         use sima_contracts::{
             Checkpoint, ExecutionContext, Executor, NoCheckpoint, Outcome, STATE_ARTIFACT,
             TaskInput, WorkerId,
         };
+        use sima_core::Error;
         use sima_model::{EnvironmentId, FormatId, Params, Spec};
 
+        use super::super::super::super::continuation::{decode_continuation, encode_continuation};
         use super::super::super::super::executor::CaExecutor;
         use super::super::super::super::params::encode_params;
         use super::*;
@@ -176,6 +184,21 @@ mod tests {
             }
         }
 
+        /// A task input with a fixed seed and environment.
+        fn input<'a>(
+            spec: &'a Spec,
+            params: &'a Params,
+            input_state: Option<&'a [u8]>,
+        ) -> TaskInput<'a> {
+            TaskInput {
+                spec,
+                params,
+                seed: 42,
+                environment: EnvironmentId::from_hash(hash_bytes(b"env")),
+                input_state,
+            }
+        }
+
         /// Runs the executor and returns the committed `state` artifact bytes.
         fn run_state(
             exec: &CaExecutor<Nca>,
@@ -183,15 +206,11 @@ mod tests {
             params: &Params,
             input_state: Option<&[u8]>,
         ) -> Vec<u8> {
-            let input = TaskInput {
-                spec,
-                params,
-                seed: 42,
-                environment: EnvironmentId::from_hash(hash_bytes(b"env")),
-                input_state,
-            };
             let checkpoint: &dyn Checkpoint = &NoCheckpoint;
-            match exec.execute(&input, &ctx(), checkpoint).expect("execute") {
+            match exec
+                .execute(&input(spec, params, input_state), &ctx(), checkpoint)
+                .expect("execute")
+            {
                 Outcome::Completed { artifacts, .. } => {
                     artifacts
                         .into_iter()
@@ -203,27 +222,17 @@ mod tests {
             }
         }
 
-        /// Asserts every cell's clock channel (the channel after the state
-        /// channels) equals `expected`.
-        fn assert_clock(grid: &Grid, expected: f32) {
-            let data = grid.data();
-            let stride = CHANNELS as usize;
-            let cells = (grid.width() * grid.height()) as usize;
-            for cell in 0..cells {
-                assert_eq!(
-                    data[cell * stride + C_STATE],
-                    expected,
-                    "clock at cell {cell} must be {expected}"
-                );
-            }
+        /// The step and grid the committed `state` bytes frame.
+        fn framed(bytes: &[u8]) -> (u64, Grid) {
+            decode_continuation(bytes).expect("framed continuation state")
         }
 
         /// Requires a real Vulkan device. Run with `cargo test -- --ignored`.
         #[test]
         #[ignore = "requires a Vulkan device"]
         fn repeated_runs_are_byte_identical() {
-            // The async mask is deterministic in (seed, cell, clock), so two runs
-            // of the same task commit byte-identical grids.
+            // The async mask is deterministic in (seed, cell, step), so two runs
+            // of the same task commit byte-identical framed states.
             let exec = CaExecutor::<Nca>::new().expect("executor");
             let (spec, params) = (spec(0.5), params(50));
             let first = run_state(&exec, &spec, &params, None);
@@ -235,35 +244,83 @@ mod tests {
         #[test]
         #[ignore = "requires a Vulkan device"]
         fn segment_continuation_is_cadence_invariant() {
-            // Ignite + 50 -> A; continue A + 50 -> B; ignite + 100 -> C. The clock
-            // channel makes the grid a complete continuation, so B is byte-identical
-            // to C: splitting the trajectory at a segment boundary changes nothing.
+            // Ignite + 50 -> A; continue A + 50 -> B; ignite + 100 -> C. The framed
+            // step makes the committed state a complete continuation, so B is
+            // byte-identical to C: splitting the trajectory at a segment boundary
+            // changes nothing.
             let exec = CaExecutor::<Nca>::new().expect("executor");
             let spec = spec(0.5);
             let a = run_state(&exec, &spec, &params(50), None);
             let b = run_state(&exec, &spec, &params(50), Some(&a));
             let c = run_state(&exec, &spec, &params(100), None);
             assert_eq!(b, c, "segmented 50+50 must equal unsegmented 100");
-            // A carries clock 50 everywhere; C carries clock 100.
-            assert_clock(&Grid::from_bytes(&a).expect("grid A"), 50.0);
-            assert_clock(&Grid::from_bytes(&c).expect("grid C"), 100.0);
+            // A reached step 50, C step 100, each over an 8-channel grid.
+            let (a_step, a_grid) = framed(&a);
+            let (c_step, c_grid) = framed(&c);
+            assert_eq!(a_step, 50, "segment A reached step 50");
+            assert_eq!(c_step, 100, "the whole run reached step 100");
+            assert_eq!(a_grid.channels(), 8);
+            assert_eq!(c_grid.channels(), 8);
         }
 
         /// Requires a real Vulkan device. Run with `cargo test -- --ignored`.
         #[test]
         #[ignore = "requires a Vulkan device"]
-        fn a_smoke_run_yields_a_finite_clocked_grid() {
+        fn a_smoke_run_yields_a_finite_grid() {
             // A small scale keeps the residual dynamics bounded over a few steps,
-            // so every committed value is finite; the clock equals the step count.
+            // so every committed value is finite; the framed step equals the step
+            // count over an 8-channel grid.
             let exec = CaExecutor::<Nca>::new().expect("executor");
             let steps = 8;
             let bytes = run_state(&exec, &spec(0.02), &params(steps), None);
-            let grid = Grid::from_bytes(&bytes).expect("grid");
-            assert_eq!((grid.width(), grid.height(), grid.channels()), (32, 32, 9));
+            let (step, grid) = framed(&bytes);
+            assert_eq!(
+                step,
+                u64::from(steps),
+                "the framed step equals the step count"
+            );
+            assert_eq!((grid.width(), grid.height(), grid.channels()), (32, 32, 8));
             for &value in grid.data() {
                 assert!(value.is_finite(), "committed value {value} must be finite");
             }
-            assert_clock(&grid, steps as f32);
+        }
+
+        #[test]
+        fn a_malformed_stepped_input_state_is_an_error() {
+            // A stepped model decodes its input state as (step, grid); a buffer
+            // too short for even the eight-byte step header is Validation before
+            // any GPU work.
+            let exec = CaExecutor::<Nca>::new().expect("executor");
+            let (spec, params) = (spec(0.5), params(50));
+            match exec.execute(
+                &input(&spec, &params, Some(&[0u8; 4])),
+                &ctx(),
+                &NoCheckpoint,
+            ) {
+                Err(Error::Validation(message)) => assert!(
+                    message.contains("input state"),
+                    "the error names the input state: {message}"
+                ),
+                other => panic!("expected Validation, got {other:?}"),
+            }
+        }
+
+        #[test]
+        fn a_mismatched_stepped_state_is_an_error() {
+            // A well-framed state whose grid is 8x8x8 against 32x32 run params:
+            // the header decodes, the grid dimensions do not match, and the error
+            // names both triples before any GPU work.
+            let exec = CaExecutor::<Nca>::new().expect("executor");
+            let (spec, params) = (spec(0.5), params(50));
+            let wrong =
+                encode_continuation(0, &Grid::new(8, 8, 8, vec![0.0; 8 * 8 * 8]).expect("grid"));
+            match exec.execute(&input(&spec, &params, Some(&wrong)), &ctx(), &NoCheckpoint) {
+                Err(Error::Validation(message)) => assert!(
+                    message.contains("(8, 8, 8)") && message.contains("(32, 32, 8)"),
+                    "the error names both dimension triples: {message}"
+                ),
+                other => panic!("expected Validation, got {other:?}"),
+            }
         }
     }
 }
