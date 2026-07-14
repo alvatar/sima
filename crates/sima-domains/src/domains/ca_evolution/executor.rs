@@ -152,6 +152,7 @@ impl<M: CaModel> Executor for CaExecutor<M> {
             &initial,
             shared.steps(),
             &params,
+            None,
         )?;
         // The final grid's canonical bytes are the one committed artifact: the
         // update is the same map at every step, so grid bytes alone are the
