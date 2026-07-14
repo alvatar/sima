@@ -8,7 +8,7 @@ use sima_contracts::{
 };
 use sima_core::{Codec, Error, Result};
 use sima_model::FormatId;
-use sima_toolkit_wgsl::{Context, Kernel};
+use sima_toolkit_wgsl::{Buffer, Context, Kernel};
 
 use super::model::CaModel;
 use super::params::decode_params;
@@ -128,12 +128,30 @@ impl<M: CaModel> Executor for CaExecutor<M> {
         let uniform_bytes: &[u8] = bytemuck::cast_slice(&uniforms);
         let uniforms_buffer = engine.context.buffer(uniform_bytes.len())?;
         engine.context.upload(&uniforms_buffer, uniform_bytes)?;
+        // Binding 4, opted into per model via `M::SEED_BUFFER`: the candidate's
+        // u64 seed as two u32 words (low, high). A kernel consuming the seed at
+        // runtime — an asynchronous update mask — reads it here; integers must
+        // travel as integers, since a driver may rewrite a raw bit pattern
+        // parked in an f32 slot. Held in this scope so it outlives the dispatch.
+        let seed_buffer = if M::SEED_BUFFER {
+            let words = [input.seed as u32, (input.seed >> 32) as u32];
+            let seed_bytes: &[u8] = bytemuck::cast_slice(&words);
+            let buffer = engine.context.buffer(seed_bytes.len())?;
+            engine.context.upload(&buffer, seed_bytes)?;
+            Some(buffer)
+        } else {
+            None
+        };
+        let mut params: Vec<&Buffer> = vec![&uniforms_buffer];
+        if let Some(seed_buffer) = seed_buffer.as_ref() {
+            params.push(seed_buffer);
+        }
         let last = run(
             &engine.context,
             &engine.kernel,
             &initial,
             shared.steps(),
-            &[&uniforms_buffer],
+            &params,
         )?;
         // The final grid's canonical bytes are the one committed artifact: the
         // update is the same map at every step, so grid bytes alone are the

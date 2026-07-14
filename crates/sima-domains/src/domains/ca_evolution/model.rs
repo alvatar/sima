@@ -38,6 +38,11 @@ pub(crate) trait CaModel: 'static {
     const CHANNELS: u32;
     /// The WGSL update kernel source (`include_str!` of the co-located file).
     const KERNEL_WGSL: &'static str;
+    /// Whether the kernel declares the binding-4 seed buffer: the candidate's
+    /// u64 seed as two u32 words, low then high. A model consuming the seed at
+    /// runtime (an asynchronous update mask) opts in; the default keeps the
+    /// binding-3 f32 buffer as the kernel's only parameter buffer.
+    const SEED_BUFFER: bool = false;
 
     /// Packs the kernel's binding-3 uniform buffer from the genome and the
     /// shared params.
