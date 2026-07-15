@@ -15,6 +15,7 @@ mod state;
 mod translation;
 
 pub use executor::StubExecutor;
+pub(crate) use executor::describe_stats;
 pub use generator::{StubGenerator, StubGeneratorConfig};
 pub use program::{StubBehavior, StubProgram};
 pub use state::StubState;

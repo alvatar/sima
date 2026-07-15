@@ -87,6 +87,37 @@ fn status_before_any_run_exits_1_and_after_reports_the_counts() {
 }
 
 #[test]
+fn report_after_a_run_prints_one_line_per_committed_task() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config = write_config(dir.path(), r#""succeed", "succeed""#);
+    let path = config.to_str().expect("utf-8 path");
+
+    assert_eq!(sima(&["run", path]).status.code(), Some(0));
+    let output = sima(&["report", path]);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let text = stdout(&output);
+    // One line per committed task, each a stub `succeed` whose stats render the
+    // attempt.
+    assert_eq!(
+        text.lines().count(),
+        2,
+        "one line per committed task: {text}"
+    );
+    assert!(
+        text.lines().all(|line| line.contains("attempt 0")),
+        "each line renders the stats: {text}"
+    );
+}
+
+#[test]
+fn report_before_any_run_exits_1() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config = write_config(dir.path(), r#""succeed""#);
+    let output = sima(&["report", config.to_str().expect("utf-8 path")]);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+}
+
+#[test]
 fn status_on_a_missing_store_exits_1_and_creates_nothing() {
     let dir = tempfile::tempdir().expect("temp dir");
     let config = write_config(dir.path(), r#""succeed""#);
@@ -123,7 +154,13 @@ fn a_malformed_config_exits_1() {
 
 #[test]
 fn an_unknown_subcommand_exits_1_with_usage_on_stderr() {
-    for args in [vec!["frobnicate"], vec![], vec!["run"], vec!["status"]] {
+    for args in [
+        vec!["frobnicate"],
+        vec![],
+        vec!["run"],
+        vec!["status"],
+        vec!["report"],
+    ] {
         let output = sima(&args);
         assert_eq!(output.status.code(), Some(1), "{args:?}: {output:?}");
         let stderr = String::from_utf8(output.stderr).expect("stderr is UTF-8");
@@ -137,6 +174,10 @@ fn the_usage_text_names_the_tui_subcommand() {
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let stderr = String::from_utf8(output.stderr).expect("stderr is UTF-8");
     assert!(stderr.contains("sima tui"), "usage names tui: {stderr}");
+    assert!(
+        stderr.contains("sima report"),
+        "usage names report: {stderr}"
+    );
 }
 
 #[test]

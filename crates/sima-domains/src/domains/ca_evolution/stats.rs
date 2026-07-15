@@ -2,14 +2,17 @@
 //! observational metadata carried on the executor's [`Stats`](sima_contracts::Stats)
 //! channel.
 //!
-//! [`grid_stats`] summarizes the final grid into canonical bytes; the renderer
-//! that reads them back lives beside it here, so the encoding and its reader
-//! cannot drift. The bytes travel only the observational path — executor `Stats`
-//! to the journal — and never enter a record, a manifest, or any identity
-//! criterion; [`Enc`] is used because the summary is structured and
-//! machine-decoded, and a byte pin keeps the format stable for the renderer.
+//! [`grid_stats`] summarizes the final grid into canonical bytes; [`describe_stats`]
+//! reads them back into one human-readable line for `sima report`. Both halves
+//! live here, so the encoding and its reader cannot drift. The bytes travel only
+//! the observational path — executor `Stats` to the journal — and never enter a
+//! record, a manifest, or any identity criterion; [`Enc`]/[`Dec`] is used because
+//! the summary is structured and machine-decoded, and a byte pin keeps the format
+//! stable for the renderer.
 
-use sima_core::Enc;
+use std::fmt::Write;
+
+use sima_core::{Dec, Enc, Error, Result};
 
 use crate::cellular::Grid;
 
@@ -57,9 +60,44 @@ pub(crate) fn grid_stats(grid: &Grid) -> Vec<u8> {
     enc.finish()
 }
 
+/// Renders the bytes written by [`grid_stats`] into one line: each channel as
+/// `c<index>: mean <m> var <v> min <lo> max <hi>`, channels joined by ` | `.
+///
+/// Malformed bytes — a wrong length, a truncated field, or trailing input — are
+/// [`Error::Validation`]: `sima report` renders untrusted journal bytes, so a
+/// summary the format does not recognize is a validation fault, not an internal
+/// decode error.
+pub(crate) fn describe_stats(bytes: &[u8]) -> Result<String> {
+    render(bytes).map_err(|e| Error::Validation(format!("malformed ca_evolution stats: {e}")))
+}
+
+/// Decodes and formats the summary; decoder faults surface as
+/// [`Error::Encoding`], which [`describe_stats`] restates as a validation fault.
+fn render(bytes: &[u8]) -> Result<String> {
+    let mut dec = Dec::new(bytes);
+    let channels = dec.u32()?;
+    let mut line = String::new();
+    for channel in 0..channels {
+        let mean = dec.f32()?;
+        let variance = dec.f32()?;
+        let min = dec.f32()?;
+        let max = dec.f32()?;
+        if channel > 0 {
+            line.push_str(" | ");
+        }
+        // Writing to a String is infallible.
+        let _ = write!(
+            line,
+            "c{channel}: mean {mean:.3} var {variance:.3} min {min:.3} max {max:.3}"
+        );
+    }
+    dec.finish()?;
+    Ok(line)
+}
+
 #[cfg(test)]
 mod tests {
-    use sima_core::to_hex;
+    use sima_core::{Error, to_hex};
 
     use super::*;
 
@@ -97,5 +135,35 @@ mod tests {
             to_hex(&grid_stats(&grid)),
             "010000000000803e000000000000803e0000803e"
         );
+    }
+
+    #[test]
+    fn describe_stats_renders_the_pinned_bytes() -> Result<()> {
+        let line = describe_stats(&grid_stats(&sample_grid()))?;
+        assert_eq!(
+            line,
+            "c0: mean 2.000 var 1.000 min 1.000 max 3.000 | \
+c1: mean 3.500 var 2.250 min 2.000 max 5.000"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn describe_stats_rejects_a_truncated_field() {
+        let bytes = grid_stats(&sample_grid());
+        // Every prefix that cuts a field mid-way is a validation fault.
+        for cut in 0..bytes.len() {
+            assert!(
+                matches!(describe_stats(&bytes[..cut]), Err(Error::Validation(_))),
+                "prefix of {cut} bytes must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn describe_stats_rejects_trailing_bytes() {
+        let mut bytes = grid_stats(&sample_grid());
+        bytes.push(0);
+        assert!(matches!(describe_stats(&bytes), Err(Error::Validation(_))));
     }
 }

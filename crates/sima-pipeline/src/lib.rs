@@ -11,10 +11,12 @@
 
 mod config;
 mod orchestrate;
+mod report;
 mod status;
 
 pub use config::{LoadedConfig, load};
 pub use orchestrate::orchestrate;
+pub use report::{ReportRow, report};
 // The scheduler types a caller drives and observes runs through, re-exported
 // so the CLI consumes one coherent surface.
 pub use sima_scheduler::{LifecycleEvent, RunControl, RunOutcome};

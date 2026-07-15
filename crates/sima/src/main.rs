@@ -18,7 +18,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
 use sima_core::{Error, Result};
-use sima_pipeline::{RunControl, RunOutcome, RunStatus, load, orchestrate, status};
+use sima_pipeline::{ReportRow, RunControl, RunOutcome, RunStatus, load, orchestrate, status};
 
 /// Exit code for a definitive candidate failure.
 pub(crate) const EXIT_FAILED: u8 = 2;
@@ -34,11 +34,13 @@ fn main() -> ExitCode {
     match args.iter().map(String::as_str).collect::<Vec<_>>()[..] {
         ["run", config] => run_command(&resolve_config(config)),
         ["status", config] => status_command(&resolve_config(config)),
+        ["report", config] => report_command(&resolve_config(config)),
         ["tui", config] => tui::tui_command(&resolve_config(config)),
         _ => {
             eprint!(
                 "usage: sima run <config>     drive the configured run\n\
                  \x20      sima status <config>  report the run's state\n\
+                 \x20      sima report <config>  print each committed task's stats\n\
                  \x20      sima tui <config>     drive the run in a full-screen terminal UI\n\
                  \x20      <config> is a sima.toml path; the .toml extension may be omitted\n"
             );
@@ -110,6 +112,27 @@ fn status_command(config: &Path) -> ExitCode {
 fn read_status(config: &Path) -> Result<RunStatus> {
     let loaded = load(config)?;
     status(&loaded)
+}
+
+/// `sima report <config.toml>`: prints one line per committed task —
+/// `<short task key>  <rendered stats>`. The store and run id come from the
+/// config the same way `status` derives them.
+fn report_command(config: &Path) -> ExitCode {
+    match read_report(config) {
+        Ok(rows) => {
+            for row in &rows {
+                println!("{}  {}", render::short(&row.task), row.stats);
+            }
+            ExitCode::SUCCESS
+        }
+        Err(e) => report(e),
+    }
+}
+
+/// Loads the config and renders each committed task's stats from its journal.
+fn read_report(config: &Path) -> Result<Vec<ReportRow>> {
+    let loaded = load(config)?;
+    sima_pipeline::report(&loaded)
 }
 
 /// Prints `error` to stderr and yields the generic error exit code.
