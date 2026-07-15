@@ -118,6 +118,44 @@ fn report_before_any_run_exits_1() {
 }
 
 #[test]
+fn rm_removes_the_only_run_and_a_second_rm_fails_cleanly() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config = write_config(dir.path(), r#""succeed", "succeed""#);
+    let path = config.to_str().expect("utf-8 path");
+
+    assert_eq!(sima(&["run", path]).status.code(), Some(0));
+    let rm = sima(&["rm", path]);
+    assert_eq!(rm.status.code(), Some(0), "{rm:?}");
+    assert!(
+        stdout(&rm).contains("removed run"),
+        "prints the report: {}",
+        stdout(&rm)
+    );
+
+    // The run is gone: status fails, and the objects directory holds no files.
+    assert_eq!(sima(&["status", path]).status.code(), Some(1));
+    let objects = dir.path().join("store").join("objects");
+    let object_files: usize = std::fs::read_dir(&objects)
+        .expect("read objects dir")
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().is_dir())
+        .map(|e| std::fs::read_dir(e.path()).expect("read fan-out").count())
+        .sum();
+    assert_eq!(object_files, 0, "no object files survive the removal");
+
+    // A second rm fails cleanly rather than panicking.
+    assert_eq!(sima(&["rm", path]).status.code(), Some(1));
+}
+
+#[test]
+fn rm_before_any_run_exits_1() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config = write_config(dir.path(), r#""succeed""#);
+    let output = sima(&["rm", config.to_str().expect("utf-8 path")]);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+}
+
+#[test]
 fn status_on_a_missing_store_exits_1_and_creates_nothing() {
     let dir = tempfile::tempdir().expect("temp dir");
     let config = write_config(dir.path(), r#""succeed""#);
@@ -160,6 +198,7 @@ fn an_unknown_subcommand_exits_1_with_usage_on_stderr() {
         vec!["run"],
         vec!["status"],
         vec!["report"],
+        vec!["rm"],
     ] {
         let output = sima(&args);
         assert_eq!(output.status.code(), Some(1), "{args:?}: {output:?}");
@@ -178,6 +217,7 @@ fn the_usage_text_names_the_tui_subcommand() {
         stderr.contains("sima report"),
         "usage names report: {stderr}"
     );
+    assert!(stderr.contains("sima rm"), "usage names rm: {stderr}");
 }
 
 #[test]

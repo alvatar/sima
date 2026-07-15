@@ -18,7 +18,9 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
 use sima_core::{Error, Result};
-use sima_pipeline::{ReportRow, RunControl, RunOutcome, RunStatus, load, orchestrate, status};
+use sima_pipeline::{
+    RemovalReport, ReportRow, RunControl, RunOutcome, RunStatus, load, orchestrate, status,
+};
 
 /// Exit code for a definitive candidate failure.
 pub(crate) const EXIT_FAILED: u8 = 2;
@@ -35,12 +37,14 @@ fn main() -> ExitCode {
         ["run", config] => run_command(&resolve_config(config)),
         ["status", config] => status_command(&resolve_config(config)),
         ["report", config] => report_command(&resolve_config(config)),
+        ["rm", config] => rm_command(&resolve_config(config)),
         ["tui", config] => tui::tui_command(&resolve_config(config)),
         _ => {
             eprint!(
                 "usage: sima run <config>     drive the configured run\n\
                  \x20      sima status <config>  report the run's state\n\
                  \x20      sima report <config>  print each committed task's stats\n\
+                 \x20      sima rm <config>      delete the run's exclusive closure\n\
                  \x20      sima tui <config>     drive the run in a full-screen terminal UI\n\
                  \x20      <config> is a sima.toml path; the .toml extension may be omitted\n"
             );
@@ -133,6 +137,28 @@ fn report_command(config: &Path) -> ExitCode {
 fn read_report(config: &Path) -> Result<Vec<ReportRow>> {
     let loaded = load(config)?;
     sima_pipeline::report(&loaded)
+}
+
+/// `sima rm <config.toml>`: deletes the run's exclusive closure under its run
+/// lock and prints what was removed. The run id comes from the config's
+/// identity section, as `status` derives it.
+fn rm_command(config: &Path) -> ExitCode {
+    match remove_run(config) {
+        Ok(report) => {
+            println!(
+                "removed run: {} objects, {} index entries",
+                report.objects_removed, report.index_entries_removed
+            );
+            ExitCode::SUCCESS
+        }
+        Err(e) => report(e),
+    }
+}
+
+/// Loads the config and removes its run.
+fn remove_run(config: &Path) -> Result<RemovalReport> {
+    let loaded = load(config)?;
+    sima_pipeline::remove(&loaded)
 }
 
 /// Prints `error` to stderr and yields the generic error exit code.

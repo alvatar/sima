@@ -11,6 +11,7 @@
 //! <root>/runs/<run-id-hex>/journal
 //! <root>/runs/<run-id-hex>/orchestrator.lock
 //! <root>/runs/<run-id-hex>/checkpoint/<slot>   mutable resume scratch
+//! <root>/runs/<run-id-hex>/remove-intent       resumable removal plan
 //! ```
 
 use std::path::{Path, PathBuf};
@@ -83,4 +84,9 @@ pub(crate) fn checkpoint_dir(root: &Path, run: &RunId) -> PathBuf {
 /// A chain's checkpoint-slot path: `runs/<run-id-hex>/checkpoint/<slot>`.
 pub(crate) fn checkpoint_path(root: &Path, run: &RunId, slot: u64) -> PathBuf {
     checkpoint_dir(root, run).join(slot.to_string())
+}
+
+/// A run's removal-intent path: `runs/<run-id-hex>/remove-intent`.
+pub(crate) fn remove_intent_path(root: &Path, run: &RunId) -> PathBuf {
+    run_dir(root, run).join("remove-intent")
 }

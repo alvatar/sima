@@ -42,6 +42,76 @@ fn sima_run(config: &Path, crashpoint: Option<&str>) -> ExitStatus {
     command.status().expect("spawn sima")
 }
 
+/// Runs `sima rm <config>`, armed with `crashpoint` when given, and returns
+/// the exit status. Output is discarded — the store carries the assertions.
+fn sima_rm(config: &Path, crashpoint: Option<&str>) -> ExitStatus {
+    let mut command = sima_command();
+    command
+        .args(["rm", config.to_str().expect("utf-8 path")])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    if let Some(arming) = crashpoint {
+        command.env("SIMA_CRASHPOINT", arming);
+    }
+    command.status().expect("spawn sima")
+}
+
+/// The number of object files under a store's `objects/`, recursively.
+fn object_file_count(store: &Path) -> usize {
+    std::fs::read_dir(store.join("objects"))
+        .expect("read objects dir")
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| entry.path().is_dir())
+        .map(|entry| {
+            std::fs::read_dir(entry.path())
+                .expect("read fan-out")
+                .count()
+        })
+        .sum()
+}
+
+/// A run removal SIGKILLed at each of its crashpoints resumes to the same
+/// empty store an uninterrupted removal produces: the intent written before
+/// any deletion makes the removal replayable.
+#[test]
+fn a_removal_death_resumes_to_an_empty_store() {
+    for arming in ["remove.after-intent", "remove.mid-objects"] {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let slug = arming.replace('.', "-");
+        let store_rel = format!("./store-{slug}");
+        let config = write_config(dir.path(), &format!("rm-{slug}.toml"), &store_rel);
+
+        // A finalized run, then an armed removal that dies mid-way.
+        assert_eq!(sima_run(&config, None).code(), Some(0));
+        let status = sima_rm(&config, Some(arming));
+        assert_eq!(
+            status.signal(),
+            Some(9),
+            "{arming}: the armed removal dies by SIGKILL, got {status:?}"
+        );
+
+        // Resume unarmed: the intent replays and the store empties.
+        assert_eq!(
+            sima_rm(&config, None).code(),
+            Some(0),
+            "{arming}: the resumed removal finalizes"
+        );
+        let store = dir.path().join(format!("store-{slug}"));
+        assert_eq!(
+            object_file_count(&store),
+            0,
+            "{arming}: object files survived the removal"
+        );
+        assert_eq!(
+            std::fs::read_dir(store.join("runs"))
+                .expect("read runs dir")
+                .count(),
+            0,
+            "{arming}: a run directory survived the removal"
+        );
+    }
+}
+
 /// Harness soundness: the SIGKILL assertion is falsifiable. An unarmed
 /// child sails past every planted point and exits 0, so a passing armed
 /// case below genuinely proves the injected death.
