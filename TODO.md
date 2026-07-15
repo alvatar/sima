@@ -304,7 +304,7 @@ machine.
 - M3.3 Lenia: descoped from P3 to P8, folded into M8.2 beside Flow-Lenia, so
       the whole Lenia line (plain and flow variants) lands in one place under
       the cross-substrate rigor apparatus
-- [ ] M3.4 First real search: a family search of ≥1000 candidates on the local
+- [x] M3.4 First real search: a family search of ≥1000 candidates on the local
       GPU through the full spine; per-candidate result stats recorded as
       metadata (population/activity from the result snapshot — inspection aid,
       not a funnel); throughput numbers recorded here. Result snapshots are
@@ -326,7 +326,25 @@ machine.
       save; either knob present enables checkpointing). M2.3(b) specified
       both cadence axes; M2.3 landed the wall-clock axis only, and this is
       where cadence tuning first meets measured GPU throughput and real
-      state sizes
+      state sizes.
+
+      Run: the Gray-Scott family (`examples/gray-scott-search.toml`), 1000
+      candidates on a 128×128×2 grid over 2000 steps, two workers. Recorded on
+      the dev GPU:
+      - wall-clock ≈ 619 s (≈ 10.3 min), ≈ 1.6 committed tasks/s;
+      - store 143 MB, 3003 objects (1000 states + 1000 records + 1000 specs +
+        the shared config, params, and environment);
+      - re-evaluation of the finalized run re-finalizes in ≈ 36 ms, committing
+        nothing and touching no executor;
+      - reference-guarded removal of the run empties the store to its skeleton
+        (3003 objects, 1000 index entries).
+
+      CAS cost decision: keep verified reads and per-object fsync unchanged.
+      The measured write path (≈ 0.1 s over the run's 1000 snapshots) is under
+      0.05 % of the search wall-clock, and verified-read throughput
+      (1.7–1.9 GB/s) is far above the 500 MB/s floor below which hashing, not
+      I/O, would bound a full-closure read. Neither the bulk unverified read
+      nor group-commit fsync is warranted at this workload.
 
 ## P4 — Distribution
 

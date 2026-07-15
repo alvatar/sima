@@ -21,8 +21,13 @@
 //! workers = 4
 //! max_attempts = 3
 //! attempt_timeout_ms = 5000 # optional; absent disables expiry reporting
-//! checkpoint_interval_ms = 30000 # optional; absent disables checkpointing
+//! checkpoint_interval_ms = 30000 # optional; wall-clock checkpoint cadence
+//! checkpoint_interval_steps = 100 # optional; step-count cadence, >= 1
 //! ```
+//!
+//! The two checkpoint cadences are unioned: a save is due when either fires,
+//! and either present enables checkpointing. With both absent, no checkpoint
+//! is ever written.
 //!
 //! The `[run]` section is canonicalized into [`RunConfig`], so its fields
 //! define the run id; `[execution]` is operational and never hashed — a run
@@ -33,6 +38,7 @@
 //! and validate their keys.
 
 use std::fs;
+use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -100,6 +106,7 @@ struct ExecutionSection {
     max_attempts: u32,
     attempt_timeout_ms: Option<u64>,
     checkpoint_interval_ms: Option<u64>,
+    checkpoint_interval_steps: Option<u64>,
 }
 
 /// Loads and translates the `sima.toml` at `path`. Parse errors, unknown
@@ -161,11 +168,27 @@ pub fn load(path: &Path) -> Result<LoadedConfig> {
         .execution
         .checkpoint_interval_ms
         .map_or(Duration::MAX, Duration::from_millis);
+    // The step cadence is optional and, when present, at least 1: a zero
+    // cadence has no meaning (every offer, and no offer, at once), so it is a
+    // validation fault naming the key.
+    let checkpoint_interval_steps = file
+        .execution
+        .checkpoint_interval_steps
+        .map(|n| {
+            NonZeroU64::new(n).ok_or_else(|| {
+                Error::Validation(format!(
+                    "{}: checkpoint_interval_steps must be at least 1, got 0",
+                    path.display()
+                ))
+            })
+        })
+        .transpose()?;
     let execution = ExecutionConfig::new(
         file.execution.workers,
         file.execution.max_attempts,
         attempt_timeout,
         checkpoint_interval,
+        checkpoint_interval_steps,
     )?;
 
     // Relative to the config file's directory, never the working directory;
@@ -379,6 +402,45 @@ mod tests {
             Duration::from_millis(30000)
         );
         Ok(())
+    }
+
+    #[test]
+    fn checkpoint_interval_steps_loads_and_defaults_to_disabled() -> Result<()> {
+        assert_eq!(load_text(BASE)?.execution.checkpoint_interval_steps, None);
+        let text = BASE.replace(
+            "attempt_timeout_ms = 5000",
+            "attempt_timeout_ms = 5000\ncheckpoint_interval_steps = 100",
+        );
+        assert_eq!(
+            load_text(&text)?.execution.checkpoint_interval_steps,
+            NonZeroU64::new(100)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_zero_checkpoint_interval_steps_is_rejected_naming_the_key() {
+        let text = BASE.replace(
+            "attempt_timeout_ms = 5000",
+            "attempt_timeout_ms = 5000\ncheckpoint_interval_steps = 0",
+        );
+        match load_text(&text) {
+            Err(Error::Validation(msg)) => assert!(
+                msg.contains("checkpoint_interval_steps"),
+                "the error names the key: {msg}"
+            ),
+            other => panic!("expected Validation, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn checkpoint_interval_steps_never_touches_the_run_id() {
+        let base = id_of(BASE);
+        let text = BASE.replace(
+            "attempt_timeout_ms = 5000",
+            "attempt_timeout_ms = 5000\ncheckpoint_interval_steps = 7",
+        );
+        assert_eq!(base, id_of(&text));
     }
 
     #[test]

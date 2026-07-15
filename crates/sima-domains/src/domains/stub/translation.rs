@@ -29,6 +29,7 @@ pub(crate) fn domain() -> Result<Domain> {
             "stub.executor",
             EnvironmentValue::Version("v1".to_string()),
         )?])?,
+        stats: super::describe_stats,
     })
 }
 

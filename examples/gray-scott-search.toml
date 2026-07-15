@@ -1,0 +1,26 @@
+[run]
+root_seed = 1
+format = "ca_evolution.gray_scott.v1"
+
+[run.generator]
+id = "ca_evolution.gray_scott.v1"
+count = 1000
+feed = [0.010, 0.110]
+kill = [0.045, 0.070]
+diffusion_u = [0.16, 0.16]
+diffusion_v = [0.08, 0.08]
+
+[run.params]
+width = 128
+height = 128
+steps = 2000
+dt = 1.0
+base_u = 0.5
+base_v = 0.25
+side_divisor = 8
+noise_width = 0.02
+
+[execution]
+store = "./store"
+workers = 2
+max_attempts = 3

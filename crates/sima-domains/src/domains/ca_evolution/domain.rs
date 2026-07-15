@@ -6,6 +6,7 @@ use sima_toolkit_wgsl::{COMPILER_ID, source_digest};
 
 use super::executor::CaExecutor;
 use super::model::CaModel;
+use super::stats::describe_stats;
 use crate::domain::Domain;
 
 /// Assembles the [`Domain`] for the model `M`: the GPU executor and a
@@ -34,5 +35,7 @@ pub(crate) fn build_domain<M: CaModel>() -> Result<Domain> {
                 EnvironmentValue::Version(COMPILER_ID.to_string()),
             )?,
         ])?,
+        // Every CA model shares one channel-generic stats renderer.
+        stats: describe_stats,
     })
 }

@@ -78,6 +78,22 @@ pub fn to_hex(bytes: &[u8]) -> String {
     out
 }
 
+/// Parses a canonical lowercase-hex string into its bytes — the inverse of
+/// [`to_hex`]. Rejects an odd length, uppercase digits, and non-hex characters
+/// with [`Error::Encoding`].
+pub fn from_hex(s: &str) -> Result<Vec<u8>> {
+    let hex = s.as_bytes();
+    if !hex.len().is_multiple_of(2) {
+        return Err(Error::Encoding(format!(
+            "hex string must have even length, got {}",
+            hex.len()
+        )));
+    }
+    hex.chunks_exact(2)
+        .map(|pair| Ok((hex_val(pair[0])? << 4) | hex_val(pair[1])?))
+        .collect()
+}
+
 /// Hashes `data` with blake3.
 pub fn hash_bytes(data: &[u8]) -> Hash {
     Hash(*blake3::hash(data).as_bytes())
@@ -136,5 +152,23 @@ mod tests {
         let upper = EMPTY_HEX.to_uppercase();
         assert!(matches!(Hash::from_hex(&bad_char), Err(Error::Encoding(_))));
         assert!(matches!(Hash::from_hex(&upper), Err(Error::Encoding(_))));
+    }
+
+    #[test]
+    fn to_hex_and_from_hex_round_trip() -> Result<()> {
+        // The free `from_hex` inverts `to_hex` over arbitrary byte lengths,
+        // including the empty string.
+        for bytes in [vec![], vec![0x00], vec![0xde, 0xad, 0xbe, 0xef]] {
+            assert_eq!(from_hex(&to_hex(&bytes))?, bytes);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn from_hex_rejects_odd_length_and_non_hex() {
+        assert!(matches!(from_hex("abc"), Err(Error::Encoding(_))));
+        assert!(matches!(from_hex("zz"), Err(Error::Encoding(_))));
+        // Uppercase is not the canonical form `to_hex` produces.
+        assert!(matches!(from_hex("AB"), Err(Error::Encoding(_))));
     }
 }

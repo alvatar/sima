@@ -206,8 +206,9 @@ impl Store {
 
     /// Reads the index entry for `key`: the record hash it names, `None`
     /// when absent, [`Error::Corruption`] when the entry does not parse
-    /// as record-hash hex + newline.
-    fn index_entry(&self, key: &TaskKey) -> Result<Option<Hash>> {
+    /// as record-hash hex + newline. Crate-visible so retention's index
+    /// walk parses entries through the one reader.
+    pub(crate) fn index_entry(&self, key: &TaskKey) -> Result<Option<Hash>> {
         let path = layout::task_path(self.root(), key);
         let bytes = match fs::read(&path) {
             Ok(bytes) => bytes,

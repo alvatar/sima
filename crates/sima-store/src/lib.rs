@@ -31,6 +31,7 @@ mod journal;
 mod layout;
 mod lock;
 mod manifest;
+mod retention;
 mod store;
 #[cfg(test)]
 mod testutil;
@@ -38,4 +39,5 @@ mod testutil;
 pub use journal::JournalWriter;
 pub use lock::RunLock;
 pub use manifest::{Manifest, ManifestEntry};
+pub use retention::RemovalReport;
 pub use store::Store;

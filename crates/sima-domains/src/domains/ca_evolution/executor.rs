@@ -13,6 +13,7 @@ use sima_toolkit_wgsl::{Buffer, Context, Kernel};
 use super::continuation::{decode_continuation, encode_continuation};
 use super::model::CaModel;
 use super::params::decode_params;
+use super::stats::grid_stats;
 use crate::cellular::{Grid, run};
 
 /// Evaluates a candidate of the model `M` on the GPU, under format
@@ -180,12 +181,17 @@ impl<M: CaModel> Executor for CaExecutor<M> {
             Some(base) => encode_continuation(base + u64::from(shared.steps()), &last),
             None => last.to_bytes(),
         };
+        // Observational per-candidate stats over the final decoded grid (never
+        // the continuation frame): they travel the `Stats` channel to the journal
+        // and enter no record, manifest, or identity criterion.
         Ok(Outcome::Completed {
             artifacts: vec![Artifact {
                 name: STATE_ARTIFACT.to_string(),
                 bytes,
             }],
-            stats: Stats { bytes: Vec::new() },
+            stats: Stats {
+                bytes: grid_stats(&last),
+            },
         })
     }
 }
@@ -197,9 +203,18 @@ mod tests {
     use sima_core::hash_bytes;
     use sima_model::{EnvironmentId, Params, Spec};
 
+    use super::super::models::gray_scott::GrayScott;
+    use super::super::models::nca::Nca;
     use super::super::params::{CaParams, encode_params};
     use super::super::toy_model::Toy;
     use super::*;
+
+    /// The models' constructor-bearing types. The model submodules are private,
+    /// so the genome, ignition, and sampling-config types are reachable here
+    /// only through the trait's associated types.
+    type Genome<M> = <M as CaModel>::Genome;
+    type Ignition<M> = <M as CaModel>::Ignition;
+    type GenConfig<M> = <M as CaModel>::GenConfig;
 
     fn env() -> EnvironmentId {
         EnvironmentId::from_hash(hash_bytes(b"env"))
@@ -321,5 +336,79 @@ mod tests {
             Err(Error::Validation(_))
         ));
         Ok(())
+    }
+
+    /// Requires a real Vulkan device. Run with `cargo test -- --ignored`.
+    #[test]
+    #[ignore = "requires a Vulkan device"]
+    fn stats_summarize_the_committed_grid() {
+        // A bare-grid model commits the grid alone, so its stats are
+        // `grid_stats` of the grid the committed bytes decode to. Gray-Scott,
+        // the simplest bare-grid model, is the vehicle.
+        let exec = CaExecutor::<GrayScott>::new().expect("executor");
+        let spec = Spec {
+            format: FormatId::new(GrayScott::FORMAT_ID).expect("format id"),
+            bytes: Genome::<GrayScott>::new(0.055, 0.062, 0.16, 0.08)
+                .expect("genome")
+                .to_bytes(),
+        };
+        let params = Params {
+            bytes: encode_params::<GrayScott>(
+                &CaParams::new(32, 32, 16, 1.0).expect("params"),
+                &Ignition::<GrayScott>::new(0.5, 0.25, 8, 0.02).expect("ignition"),
+            ),
+        };
+        match exec
+            .execute(&input(&spec, &params, None), &ctx(), &NoCheckpoint)
+            .expect("execute")
+        {
+            Outcome::Completed { artifacts, stats } => {
+                let state = artifacts
+                    .iter()
+                    .find(|a| a.name == STATE_ARTIFACT)
+                    .expect("a state artifact");
+                let grid = Grid::from_bytes(&state.bytes).expect("grid");
+                assert_eq!(stats.bytes, grid_stats(&grid));
+                assert!(!stats.bytes.is_empty(), "the stats channel is filled");
+            }
+            other => panic!("expected Completed, got {other:?}"),
+        }
+    }
+
+    /// Requires a real Vulkan device. Run with `cargo test -- --ignored`.
+    #[test]
+    #[ignore = "requires a Vulkan device"]
+    fn stats_summarize_the_decoded_grid() {
+        // A stepped model commits framed continuation state, and its stats are
+        // `grid_stats` of the final decoded grid — the grid inside the
+        // continuation frame, never the framed bytes. NCA, the simplest
+        // stepped model, is the vehicle.
+        let exec = CaExecutor::<Nca>::new().expect("executor");
+        let genome = Nca::sample(&GenConfig::<Nca>::new(0.5).expect("config"), 42, 0);
+        let spec = Spec {
+            format: FormatId::new(Nca::FORMAT_ID).expect("format id"),
+            bytes: genome.to_bytes(),
+        };
+        let params = Params {
+            bytes: encode_params::<Nca>(
+                &CaParams::new(32, 32, 50, 1.0).expect("params"),
+                &Ignition::<Nca>::new(1.0, 8, 0.0).expect("ignition"),
+            ),
+        };
+        match exec
+            .execute(&input(&spec, &params, None), &ctx(), &NoCheckpoint)
+            .expect("execute")
+        {
+            Outcome::Completed { artifacts, stats } => {
+                let state = artifacts
+                    .iter()
+                    .find(|a| a.name == STATE_ARTIFACT)
+                    .expect("a state artifact");
+                let (_, grid) = decode_continuation(&state.bytes).expect("framed");
+                assert_eq!(stats.bytes, grid_stats(&grid));
+                assert!(!stats.bytes.is_empty(), "the stats channel is filled");
+            }
+            other => panic!("expected Completed, got {other:?}"),
+        }
     }
 }

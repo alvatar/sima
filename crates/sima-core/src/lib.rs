@@ -13,4 +13,4 @@ pub mod prng;
 pub use crashpoint::crashpoint;
 pub use encode::{Codec, Dec, Enc};
 pub use error::{Error, Result};
-pub use hash::{Hash, hash_bytes, to_hex};
+pub use hash::{Hash, from_hex, hash_bytes, to_hex};

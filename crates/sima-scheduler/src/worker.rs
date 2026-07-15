@@ -12,6 +12,7 @@
 
 use std::any::Any;
 use std::cell::Cell;
+use std::num::NonZeroU64;
 use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant};
 
@@ -123,9 +124,14 @@ struct SlotCheckpoint<'a> {
     key: TaskKey,
     task: &'a str,
     interval: Duration,
+    /// Step-count cadence: a save is due every `n`th offer since the last save.
+    /// `None` leaves the wall-clock `interval` as the only cadence.
+    step_interval: Option<NonZeroU64>,
     /// When the last save happened — initialized to the attempt's start, so
     /// the first save becomes due one full interval in.
     last_saved: Cell<Instant>,
+    /// Offers seen since the last save, driving the step-count cadence.
+    offers_since_save: Cell<u64>,
     resume: Option<Vec<u8>>,
     events: &'a Sender<LifecycleEvent>,
 }
@@ -136,12 +142,13 @@ impl Checkpoint for SlotCheckpoint<'_> {
     }
 
     fn offer(&self, produce: &dyn Fn() -> Vec<u8>) {
-        if self.last_saved.get().elapsed() < self.interval {
+        if !self.save_due() {
             return;
         }
-        // The clock resets before the save is attempted — chosen over
-        // retrying at the next offer, so a persistently failing slot
-        // degrades once per interval instead of once per offer.
+        // Both cadences reset before the save is attempted — chosen over
+        // retrying at the next offer, so a persistently failing slot degrades
+        // once per cadence period instead of once per offer.
+        self.offers_since_save.set(0);
         self.last_saved.set(Instant::now());
         if let Err(e) = self
             .store
@@ -157,6 +164,33 @@ impl Checkpoint for SlotCheckpoint<'_> {
                 },
             );
         }
+    }
+}
+
+/// Whether either checkpoint cadence axis is set, so a chain task gets a slot
+/// handle. With both axes disabled the inert handle is used and no slot is
+/// touched.
+fn checkpointing_enabled(exec: &ExecutionConfig) -> bool {
+    exec.checkpoint_interval != Duration::MAX || exec.checkpoint_interval_steps.is_some()
+}
+
+impl SlotCheckpoint<'_> {
+    /// Whether this offer triggers a save, under either cadence axis. The
+    /// step-count axis advances its offer counter here, so every offer is
+    /// counted exactly once; the wall-clock axis reads the elapsed time since
+    /// the last save. A save is due when either axis fires.
+    fn save_due(&self) -> bool {
+        let step_due = match self.step_interval {
+            Some(n) => {
+                let count = self.offers_since_save.get() + 1;
+                self.offers_since_save.set(count);
+                count >= n.get()
+            }
+            None => false,
+        };
+        let clock_due =
+            self.interval != Duration::MAX && self.last_saved.get().elapsed() >= self.interval;
+        step_due || clock_due
     }
 }
 
@@ -206,7 +240,7 @@ fn process(ctx: &WorkerContext<'_>, worker: WorkerId, pending: Pending) {
     // to another segment loads as nothing. Stateless tasks and disabled
     // checkpointing get the inert handle, and the slot is never read.
     let slot_checkpoint = match chain {
-        Some(slot) if ctx.exec.checkpoint_interval != Duration::MAX => {
+        Some(slot) if checkpointing_enabled(ctx.exec) => {
             let resume = match ctx.store.checkpoint(&ctx.run, slot, &key) {
                 Ok(resume) => resume,
                 Err(e) => {
@@ -230,7 +264,9 @@ fn process(ctx: &WorkerContext<'_>, worker: WorkerId, pending: Pending) {
                 key,
                 task: &task,
                 interval: ctx.exec.checkpoint_interval,
+                step_interval: ctx.exec.checkpoint_interval_steps,
                 last_saved: Cell::new(Instant::now()),
+                offers_since_save: Cell::new(0),
                 resume,
                 events: &ctx.events,
             })
@@ -513,7 +549,7 @@ mod tests {
         };
         let run = store.create_run(&config)?;
         let executor = StubExecutor::new()?;
-        let exec = ExecutionConfig::new(1, 1, Duration::from_secs(1), Duration::MAX)?;
+        let exec = ExecutionConfig::new(1, 1, Duration::from_secs(1), Duration::MAX, None)?;
 
         // The stub artifact this identity commits when the state bytes reach the
         // executor: computed by calling the executor directly with the bytes.
@@ -662,10 +698,21 @@ mod tests {
         }
 
         /// Runs `process` once over the fixture task with the given chain
-        /// slot and checkpoint interval; returns the emitted events.
+        /// slot and wall-clock checkpoint interval, the step axis disabled.
         fn process(&self, chain: Option<u64>, interval: Duration) -> Result<Vec<LifecycleEvent>> {
+            self.process_with(chain, interval, None)
+        }
+
+        /// Runs `process` once with both checkpoint cadence axes set explicitly;
+        /// returns the emitted events.
+        fn process_with(
+            &self,
+            chain: Option<u64>,
+            interval: Duration,
+            step_interval: Option<NonZeroU64>,
+        ) -> Result<Vec<LifecycleEvent>> {
             let executor = StubExecutor::new()?;
-            let exec = ExecutionConfig::new(1, 1, Duration::from_secs(5), interval)?;
+            let exec = ExecutionConfig::new(1, 1, Duration::from_secs(5), interval, step_interval)?;
             let coordinator = Coordinator::new();
             let (tx, rx) = mpsc::channel();
             {
@@ -816,6 +863,64 @@ mod tests {
         );
         assert_eq!(committed_steps(&events), 3, "the task still commits");
         assert_eq!(fixture.state_artifact()?, folded_state(42, 3).to_bytes());
+        Ok(())
+    }
+
+    #[test]
+    fn the_step_axis_alone_saves_every_nth_offer() -> Result<()> {
+        // Wall-clock disabled, step cadence 2, over 5 offers (one per step). The
+        // accumulate offer runs after each step, so saves land at offers 2 and 4;
+        // offer 5 does not reach the third multiple. The slot holds step 4, not
+        // the final step 5 — proving the step axis alone drives checkpointing.
+        let fixture = AccumulateFixture::new(5)?;
+        fixture.process_with(Some(0), Duration::MAX, NonZeroU64::new(2))?;
+        let saved = fixture
+            .store
+            .checkpoint(&fixture.run, 0, &fixture.key())?
+            .expect("the step axis wrote the slot");
+        assert_eq!(saved, folded_state(42, 4).to_bytes());
+        Ok(())
+    }
+
+    #[test]
+    fn the_step_axis_fires_first_when_the_clock_is_far_off() -> Result<()> {
+        // Both axes set, but the wall-clock interval is far larger than the run
+        // takes, so only the step axis fires: the union saves at the step cadence.
+        let fixture = AccumulateFixture::new(5)?;
+        fixture.process_with(Some(0), Duration::from_secs(3600), NonZeroU64::new(2))?;
+        let saved = fixture
+            .store
+            .checkpoint(&fixture.run, 0, &fixture.key())?
+            .expect("the step axis wrote the slot");
+        assert_eq!(saved, folded_state(42, 4).to_bytes());
+        Ok(())
+    }
+
+    #[test]
+    fn the_clock_axis_fires_first_when_the_step_cadence_is_far_off() -> Result<()> {
+        // Both axes set, but the step cadence is larger than the run's offer
+        // count, so only the wall-clock axis fires: a zero interval saves every
+        // offer, and the last save carries the final step.
+        let fixture = AccumulateFixture::new(3)?;
+        fixture.process_with(Some(0), Duration::ZERO, NonZeroU64::new(1000))?;
+        let saved = fixture
+            .store
+            .checkpoint(&fixture.run, 0, &fixture.key())?
+            .expect("the clock axis wrote the slot");
+        assert_eq!(saved, folded_state(42, 3).to_bytes());
+        Ok(())
+    }
+
+    #[test]
+    fn both_axes_disabled_writes_no_slot() -> Result<()> {
+        // The default: neither axis set, so a chain task gets the inert handle
+        // and the slot is never written.
+        let fixture = AccumulateFixture::new(3)?;
+        fixture.process_with(Some(0), Duration::MAX, None)?;
+        assert_eq!(
+            fixture.store.checkpoint(&fixture.run, 0, &fixture.key())?,
+            None
+        );
         Ok(())
     }
 

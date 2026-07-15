@@ -51,7 +51,8 @@ pub fn exec(workers: usize, max_attempts: u32, timeout_ms: u64) -> ExecutionConf
 /// A validated execution config with an explicit attempt timeout, for tests
 /// that need a duration outside the millisecond range such as `Duration::MAX`.
 pub fn exec_with_timeout(workers: usize, max_attempts: u32, timeout: Duration) -> ExecutionConfig {
-    ExecutionConfig::new(workers, max_attempts, timeout, Duration::MAX).expect("execution config")
+    ExecutionConfig::new(workers, max_attempts, timeout, Duration::MAX, None)
+        .expect("execution config")
 }
 
 /// A fresh store under a temporary directory; the directory is returned so it
