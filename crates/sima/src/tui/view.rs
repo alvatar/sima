@@ -24,8 +24,19 @@ pub fn draw(frame: &mut Frame, vm: &ViewModel) {
         ])
         .split(frame.area());
 
-    let header = Paragraph::new(format!("run {}    state {}", short(&vm.run), vm.state))
-        .block(Block::default().borders(Borders::ALL).title("sima tui"));
+    // The notice — a refused key naming the run's holder — rides the header
+    // line when present.
+    let notice = vm
+        .notice
+        .as_ref()
+        .map(|notice| format!("    {notice}"))
+        .unwrap_or_default();
+    let header = Paragraph::new(format!(
+        "run {}    state {}{notice}",
+        short(&vm.run),
+        vm.state
+    ))
+    .block(Block::default().borders(Borders::ALL).title("sima tui"));
     frame.render_widget(header, chunks[0]);
 
     let workers: Vec<ListItem> = vm

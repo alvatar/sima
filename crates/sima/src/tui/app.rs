@@ -23,9 +23,11 @@ use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 
 use sima_core::Error;
-use sima_pipeline::{LifecycleEvent, LoadedConfig, RunControl, RunStatus, load, orchestrate};
+use sima_pipeline::{
+    LifecycleEvent, LoadedConfig, RunControl, RunObserver, RunStatus, load, orchestrate,
+};
 
-use super::state::{KeyAction, Msg, TuiState};
+use super::state::{KeyAction, LockView, Msg, TuiState};
 use super::view;
 
 thread_local! {
@@ -45,11 +47,20 @@ const TICK_MS: u64 = 50;
 /// tick.
 const CHANNEL_BOUND: usize = 1024;
 
+/// How many ticks between run-lock probes: with the tick at [`TICK_MS`], the
+/// observer probes about once per second, so the probe — which briefly
+/// acquires a lock it finds free to prove it free — stays rare.
+const PROBE_TICKS: u32 = 20;
+
 /// `sima tui <config>`: opens the terminal frontend over the configured run.
 ///
 /// A full-screen UI needs a terminal to draw into and read keys from; when
 /// stdout is not a TTY — piped or redirected — there is nothing to drive, so
 /// the command refuses rather than corrupt a non-terminal stream.
+///
+/// Mode selection is automatic: a run lock held by another process means a
+/// foreign orchestrator drives this run, and the session observes it; a free
+/// lock enters the drive session.
 pub fn tui_command(config: &Path) -> ExitCode {
     if !io::stdout().is_terminal() {
         eprintln!("sima tui requires a terminal");
@@ -59,21 +70,48 @@ pub fn tui_command(config: &Path) -> ExitCode {
         Ok(loaded) => loaded,
         Err(e) => return crate::report(e),
     };
+    // Probe before entering the terminal so a store fault surfaces on the
+    // normal screen, as the seed below does for the drive session.
+    match observed_holder(&loaded) {
+        Ok(Some((observer, holder))) => {
+            return finish(observe_session(loaded, observer, holder));
+        }
+        Ok(None) => {}
+        Err(e) => return crate::report(e),
+    }
     // Seed before entering the terminal so a store fault surfaces on the
     // normal screen, exactly as `sima status` would report it.
     let status = match crate::seed_status(&loaded) {
         Ok(status) => status,
         Err(e) => return crate::report(e),
     };
-    match run_session(loaded, status) {
+    finish(run_session(loaded, status))
+}
+
+/// Maps a session's return to the process exit code. The terminal guard has
+/// restored the screen by the time an error surfaces here, so the message
+/// lands on a clean screen.
+fn finish(result: io::Result<u8>) -> ExitCode {
+    match result {
         Ok(code) => ExitCode::from(code),
         Err(e) => {
-            // The guard has restored the terminal by now, so the message
-            // lands on a clean screen.
             eprintln!("sima tui: {e}");
             ExitCode::from(crate::EXIT_ERROR)
         }
     }
+}
+
+/// The run's holder when another process drives it: the opened observer and
+/// the recorded holder line, or `None` when the lock is free. A store that
+/// does not exist yet has no run to observe — and a query must not create
+/// it — so it reads as free and the drive session proceeds.
+fn observed_holder(config: &LoadedConfig) -> sima_core::Result<Option<(RunObserver, String)>> {
+    let observer = match RunObserver::new(config) {
+        Ok(observer) => observer,
+        Err(Error::Validation(_)) => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    Ok(observer.holder()?.map(|holder| (observer, holder)))
 }
 
 /// Maps a key event to its action, or `None` for an unbound key. The
@@ -98,20 +136,35 @@ fn key_action(key: KeyEvent) -> Option<KeyAction> {
     }
 }
 
-/// Runs one terminal session over `config`, returning its exit code. Sets up
-/// the terminal, applies keys and run events to the state, drives the run on a
-/// background thread, and tears the terminal down on return.
+/// Runs one drive session over `config`, returning its exit code: sets up
+/// the terminal and hands the seeded state to the drive loop.
 fn run_session(config: LoadedConfig, status: RunStatus) -> io::Result<u8> {
-    let workers = config.execution.workers;
-    let mut state = TuiState::new(status, workers);
-    let config = Arc::new(config);
-
     // Mark this as the UI thread that owns the terminal, so the panic hook
     // restores it only for a panic here and stays inert on worker and
     // orchestrate threads.
     ON_UI_THREAD.with(|flag| flag.set(true));
     install_panic_hook();
     let mut guard = TerminalGuard::enter()?;
+    drive_loop(&mut guard, config, status, false)
+}
+
+/// The drive loop: applies keys and run events to the state, drives the run
+/// on a background thread, and returns the session's exit code. The observer
+/// session enters here on take-over, reusing its live terminal; its `start`
+/// arms an immediate start, so the freed run continues without a second key
+/// press.
+fn drive_loop(
+    guard: &mut TerminalGuard,
+    config: LoadedConfig,
+    status: RunStatus,
+    start: bool,
+) -> io::Result<u8> {
+    let workers = config.execution.workers;
+    let mut state = TuiState::new(status, workers);
+    if start {
+        state.handle(Msg::Key(KeyAction::Start));
+    }
+    let config = Arc::new(config);
 
     let (tx, rx) = mpsc::sync_channel::<Msg>(CHANNEL_BOUND);
     // The interrupt flag of the run currently in flight, shared with the run
@@ -130,22 +183,7 @@ fn run_session(config: LoadedConfig, status: RunStatus) -> io::Result<u8> {
             dirty = false;
         }
 
-        // A key press is handled; releases and repeats are ignored. `read`
-        // runs only after `poll` reports an event. A bound key applies its
-        // action — which, behind the help overlay, the state consumes to close
-        // it. An unbound key is ignored, except that it too closes an open
-        // overlay.
-        if event::poll(Duration::from_millis(TICK_MS))?
-            && let Event::Key(key) = event::read()?
-            && key.kind == KeyEventKind::Press
-        {
-            if let Some(action) = key_action(key) {
-                state.handle(Msg::Key(action));
-                dirty = true;
-            } else if state.dismiss_help_if_open() {
-                dirty = true;
-            }
-        }
+        dirty |= apply_key(&mut state)?;
         // Drain everything the run thread has sent since the last tick.
         while let Ok(msg) = rx.try_recv() {
             state.handle(msg);
@@ -167,6 +205,107 @@ fn run_session(config: LoadedConfig, status: RunStatus) -> io::Result<u8> {
         }
     }
     Ok(state.exit_code())
+}
+
+/// What ends an observer loop: the session leaves with its exit code, or the
+/// user takes the freed run over into the drive session.
+enum ObserveEnd {
+    Exit(u8),
+    TakeOver,
+}
+
+/// Runs one observer session over a run another orchestrator holds: sets up
+/// the terminal and tails the run through `observer`. On take-over — `s`
+/// once the lock is free — the run continues through the normal resume path:
+/// a fresh seed (stale leases cleared, exactly as the drive session seeds),
+/// then the drive loop on the same terminal with the start armed.
+fn observe_session(config: LoadedConfig, observer: RunObserver, holder: String) -> io::Result<u8> {
+    ON_UI_THREAD.with(|flag| flag.set(true));
+    install_panic_hook();
+    let mut guard = TerminalGuard::enter()?;
+    match observe_loop(&mut guard, &config, observer, holder)? {
+        ObserveEnd::Exit(code) => Ok(code),
+        ObserveEnd::TakeOver => {
+            let status = crate::seed_status(&config).map_err(io::Error::other)?;
+            drive_loop(&mut guard, config, status, true)
+        }
+    }
+}
+
+/// The observer loop: each tick polls the journal and applies every new
+/// event through the same path drive events take — the first batch replays
+/// the run's history and seeds the display — and every [`PROBE_TICKS`] ticks
+/// probes the run lock for liveness. A terminal journal event presents the
+/// ended run; a freed lock without one presents the run as resumable.
+fn observe_loop(
+    guard: &mut TerminalGuard,
+    config: &LoadedConfig,
+    mut observer: RunObserver,
+    holder: String,
+) -> io::Result<ObserveEnd> {
+    let mut state = TuiState::new(RunStatus::new(config.run.id()), config.execution.workers);
+    let mut lock = LockView::Held(holder);
+    state.observe(lock.clone());
+    let mut dirty = true;
+    let mut ticks_to_probe = PROBE_TICKS;
+
+    loop {
+        if dirty {
+            guard
+                .terminal
+                .draw(|frame| view::draw(frame, &state.view()))?;
+            dirty = false;
+        }
+
+        dirty |= apply_key(&mut state)?;
+        // Tail the journal: every line the foreign orchestrator appended
+        // since the last poll, applied in append order. A read or parse
+        // fault ends the session as a real error.
+        for event in observer.poll().map_err(io::Error::other)? {
+            state.handle(Msg::Event(event));
+            dirty = true;
+        }
+        ticks_to_probe -= 1;
+        if ticks_to_probe == 0 {
+            ticks_to_probe = PROBE_TICKS;
+            let probed = match observer.holder().map_err(io::Error::other)? {
+                Some(holder) => LockView::Held(holder),
+                None => LockView::Free,
+            };
+            if probed != lock {
+                lock = probed;
+                state.observe(lock.clone());
+                dirty = true;
+            }
+        }
+
+        if state.take_start() {
+            return Ok(ObserveEnd::TakeOver);
+        }
+        if state.should_exit() {
+            return Ok(ObserveEnd::Exit(state.exit_code()));
+        }
+    }
+}
+
+/// Reads at most one key within the tick timeout and applies it, reporting
+/// whether the state changed. A key press is handled; releases and repeats
+/// are ignored, and `read` runs only after `poll` reports an event. A bound
+/// key applies its action — which, behind the help overlay, the state
+/// consumes to close it. An unbound key is ignored, except that it too
+/// closes an open overlay.
+fn apply_key(state: &mut TuiState) -> io::Result<bool> {
+    if event::poll(Duration::from_millis(TICK_MS))?
+        && let Event::Key(key) = event::read()?
+        && key.kind == KeyEventKind::Press
+    {
+        if let Some(action) = key_action(key) {
+            state.handle(Msg::Key(action));
+            return Ok(true);
+        }
+        return Ok(state.dismiss_help_if_open());
+    }
+    Ok(false)
 }
 
 /// Spawns the orchestrate thread for one run: its observer forwards every
