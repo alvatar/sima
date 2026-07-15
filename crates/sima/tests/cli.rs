@@ -110,6 +110,28 @@ fn report_after_a_run_prints_one_line_per_committed_task() {
 }
 
 #[test]
+fn a_rerun_of_a_finalized_run_reports_prior_commits() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config = write_config(dir.path(), r#""succeed", "succeed""#);
+    let path = config.to_str().expect("utf-8 path");
+
+    assert_eq!(sima(&["run", path]).status.code(), Some(0));
+    // The rerun re-derives an empty frontier: no task executes, and the
+    // progress must say so instead of reading as a restart from zero.
+    let rerun = sima(&["run", path]);
+    assert_eq!(rerun.status.code(), Some(0), "{rerun:?}");
+    let text = stdout(&rerun);
+    assert!(
+        text.contains("started: 2 tasks, 2 already committed"),
+        "the started line names the prior commits: {text}"
+    );
+    assert!(
+        !text.contains("committed 1/2"),
+        "no line recounts an already-committed task: {text}"
+    );
+}
+
+#[test]
 fn report_before_any_run_exits_1() {
     let dir = tempfile::tempdir().expect("temp dir");
     let config = write_config(dir.path(), r#""succeed""#);

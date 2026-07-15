@@ -19,7 +19,8 @@ use std::sync::atomic::AtomicBool;
 
 use sima_core::{Error, Result};
 use sima_pipeline::{
-    RemovalReport, ReportRow, RunControl, RunOutcome, RunStatus, load, orchestrate, status,
+    LoadedConfig, RemovalReport, ReportRow, RunControl, RunOutcome, RunStatus, load, orchestrate,
+    status,
 };
 
 /// Exit code for a definitive candidate failure.
@@ -91,8 +92,11 @@ fn drive(config: &Path) -> Result<RunOutcome> {
     signal_hook::flag::register(signal_hook::consts::SIGINT, interrupt.clone())
         .map_err(register_error)?;
 
+    // Seed the progress counter from the store's prior commits, so a resumed
+    // run counts on from where it stopped instead of appearing to restart.
+    let seed = seed_status(&loaded)?;
     println!("run {}", loaded.run.id());
-    let progress = render::Progress::new();
+    let progress = render::Progress::new(seed.committed);
     let control = RunControl {
         observer: &|event| progress.event(event),
         interrupt: &interrupt,
@@ -116,6 +120,28 @@ fn status_command(config: &Path) -> ExitCode {
 fn read_status(config: &Path) -> Result<RunStatus> {
     let loaded = load(config)?;
     status(&loaded)
+}
+
+/// Seeds a session's display from any existing journal for `config`'s run,
+/// replaying it through the same `apply` method `sima status` uses so a
+/// resumed run shows its prior progress. Shared by `run`'s progress renderer
+/// and the tui.
+/// A store that does not exist yet, or a run never driven, seeds a zeroed
+/// status; a corrupt journal or an I/O fault is a real problem `sima status`
+/// reports, so it surfaces here rather than hiding behind wrong counts.
+pub(crate) fn seed_status(config: &LoadedConfig) -> Result<RunStatus> {
+    match status(config) {
+        Ok(mut seeded) => {
+            // The counters and last state are worth seeding, but a journal
+            // ending mid-run leaves leases no live worker holds; a fresh
+            // session starts with every worker idle and repopulates occupancy
+            // from live `Leased` events.
+            seeded.occupancy.clear();
+            Ok(seeded)
+        }
+        Err(Error::Validation(_)) => Ok(RunStatus::new(config.run.id())),
+        Err(other) => Err(other),
+    }
 }
 
 /// `sima report <config.toml>`: prints one line per committed task —

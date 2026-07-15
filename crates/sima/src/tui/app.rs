@@ -61,7 +61,7 @@ pub fn tui_command(config: &Path) -> ExitCode {
     };
     // Seed before entering the terminal so a store fault surfaces on the
     // normal screen, exactly as `sima status` would report it.
-    let status = match seed_status(&loaded) {
+    let status = match crate::seed_status(&loaded) {
         Ok(status) => status,
         Err(e) => return crate::report(e),
     };
@@ -95,27 +95,6 @@ fn key_action(key: KeyEvent) -> Option<KeyAction> {
         KeyCode::Char('Q') => Some(KeyAction::ForceQuit),
         KeyCode::Char('?') => Some(KeyAction::Help),
         _ => None,
-    }
-}
-
-/// Seeds the display from any existing journal for `config`'s run, replaying
-/// it through the same `apply` method `sima status` uses so a resumed run
-/// shows its prior progress.
-/// A store that does not exist yet, or a run never driven, seeds a zeroed
-/// status; a corrupt journal or an I/O fault is a real problem `sima status`
-/// reports, so it surfaces here rather than hiding behind a blank screen.
-fn seed_status(config: &LoadedConfig) -> sima_core::Result<RunStatus> {
-    match sima_pipeline::status(config) {
-        Ok(mut status) => {
-            // The counters and last state are worth seeding, but a journal
-            // ending mid-run leaves leases no live worker holds; a fresh
-            // session starts with every worker idle and repopulates occupancy
-            // from live `Leased` events.
-            status.occupancy.clear();
-            Ok(status)
-        }
-        Err(Error::Validation(_)) => Ok(RunStatus::new(config.run.id())),
-        Err(other) => Err(other),
     }
 }
 

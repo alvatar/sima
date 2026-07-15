@@ -16,11 +16,16 @@ pub fn short(id: &str) -> &str {
 
 /// Renders `event` to the one line it warrants, or `None` for the `Queued`
 /// and `Leased` bookkeeping events. `committed`/`tasks` supply the running
-/// `committed k/n` count a commit line shows. The single source of the
+/// `committed k/n` count a commit line shows; on `RunStarted`, a nonzero
+/// `committed` is the store's prior progress and the line names it, so a
+/// resumed session does not read as a restart. The single source of the
 /// event wording: `sima run` prints these lines to stdout and the tui folds
 /// them into its event log.
 pub fn describe(event: &LifecycleEvent, committed: usize, tasks: usize) -> Option<String> {
     Some(match event {
+        LifecycleEvent::RunStarted { tasks, .. } if committed > 0 => {
+            format!("started: {tasks} tasks, {committed} already committed")
+        }
         LifecycleEvent::RunStarted { tasks, .. } => format!("started: {tasks} tasks"),
         LifecycleEvent::Committed { task, .. } => {
             format!("committed {committed}/{tasks}  {}", short(task))
@@ -64,16 +69,18 @@ pub fn describe(event: &LifecycleEvent, committed: usize, tasks: usize) -> Optio
 pub struct Progress {
     /// The run's task count, from `RunStarted`.
     tasks: AtomicUsize,
-    /// Commits seen so far.
+    /// Commits accounted for: the store's prior commits plus those seen live.
     committed: AtomicUsize,
 }
 
 impl Progress {
-    /// A progress renderer with no events seen yet.
-    pub fn new() -> Progress {
+    /// A progress renderer seeded with the run's prior commit count, so a
+    /// resumed session counts on from the store state instead of restarting
+    /// at 1. A fresh run seeds zero.
+    pub fn new(prior_committed: usize) -> Progress {
         Progress {
             tasks: AtomicUsize::new(0),
-            committed: AtomicUsize::new(0),
+            committed: AtomicUsize::new(prior_committed),
         }
     }
 
@@ -135,6 +142,25 @@ mod tests {
     fn short_truncates_long_ids_and_keeps_short_ones() {
         assert_eq!(short(&"ab".repeat(32)), "abababababab");
         assert_eq!(short("abcd"), "abcd");
+    }
+
+    #[test]
+    fn a_run_started_line_reports_prior_commits_when_resuming() {
+        // A resumed session seeds the commit counter from the journal; the
+        // started line names the prior commits so the session does not read
+        // as a restart. A fresh run keeps the bare form.
+        let event = LifecycleEvent::RunStarted {
+            run: "ab".repeat(32),
+            tasks: 200,
+        };
+        assert_eq!(
+            describe(&event, 26, 200).expect("a started line"),
+            "started: 200 tasks, 26 already committed"
+        );
+        assert_eq!(
+            describe(&event, 0, 200).expect("a started line"),
+            "started: 200 tasks"
+        );
     }
 
     #[test]

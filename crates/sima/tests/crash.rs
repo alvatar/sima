@@ -42,6 +42,16 @@ fn sima_run(config: &Path, crashpoint: Option<&str>) -> ExitStatus {
     command.status().expect("spawn sima")
 }
 
+/// Runs `sima run <config>` unarmed and captures its output, for assertions
+/// on the progress lines a resumed run prints.
+fn sima_run_output(config: &Path) -> std::process::Output {
+    let mut command = sima_command();
+    command
+        .args(["run", config.to_str().expect("utf-8 path")])
+        .output()
+        .expect("spawn sima")
+}
+
 /// Runs `sima rm <config>`, armed with `crashpoint` when given, and returns
 /// the exit status. Output is discarded — the store carries the assertions.
 fn sima_rm(config: &Path, crashpoint: Option<&str>) -> ExitStatus {
@@ -244,6 +254,44 @@ fn a_death_mid_segment_resumes_from_the_checkpoint() {
         steps[0] < 100,
         "the checkpoint must shorten re-execution, got {} steps",
         steps[0]
+    );
+}
+
+/// A resumed run's progress accounts for the commits already in the store:
+/// the started line names them and the commit counter continues from them
+/// instead of restarting at 1.
+#[test]
+fn a_resumed_run_reports_prior_commits_in_its_progress() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config = write_segmented_config(
+        dir.path(),
+        "resume-progress.toml",
+        "./store-resume-progress",
+    );
+
+    // Death 50 steps into the second segment: the first segment's task is
+    // committed and durable, the second is not.
+    let status = sima_run(&config, Some("stub.accumulate.step:150"));
+    assert_eq!(
+        status.signal(),
+        Some(9),
+        "the armed child dies by SIGKILL, got {status:?}"
+    );
+
+    let output = sima_run_output(&config);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let text = String::from_utf8(output.stdout).expect("stdout is UTF-8");
+    assert!(
+        text.contains("started: 2 tasks, 1 already committed"),
+        "the started line names the prior commit: {text}"
+    );
+    assert!(
+        text.contains("committed 2/2"),
+        "the counter continues from the store state: {text}"
+    );
+    assert!(
+        !text.contains("committed 1/2"),
+        "no line recounts the already-committed task: {text}"
     );
 }
 
