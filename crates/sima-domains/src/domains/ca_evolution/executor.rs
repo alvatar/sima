@@ -13,6 +13,7 @@ use sima_toolkit_wgsl::{Buffer, Context, Kernel};
 use super::continuation::{decode_continuation, encode_continuation};
 use super::model::CaModel;
 use super::params::decode_params;
+use super::stats::grid_stats;
 use crate::cellular::{Grid, run};
 
 /// Evaluates a candidate of the model `M` on the GPU, under format
@@ -180,12 +181,17 @@ impl<M: CaModel> Executor for CaExecutor<M> {
             Some(base) => encode_continuation(base + u64::from(shared.steps()), &last),
             None => last.to_bytes(),
         };
+        // Observational per-candidate stats over the final decoded grid (never
+        // the continuation frame): they travel the `Stats` channel to the journal
+        // and enter no record, manifest, or identity criterion.
         Ok(Outcome::Completed {
             artifacts: vec![Artifact {
                 name: STATE_ARTIFACT.to_string(),
                 bytes,
             }],
-            stats: Stats { bytes: Vec::new() },
+            stats: Stats {
+                bytes: grid_stats(&last),
+            },
         })
     }
 }

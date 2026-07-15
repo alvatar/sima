@@ -115,4 +115,66 @@ mod tests {
         );
         Ok(())
     }
+
+    /// Executor fixtures driving the real [`CaExecutor<GrayScott>`] on the GPU:
+    /// the bare-grid model commits the grid alone, and its committed stats
+    /// summarize that grid. Touches no store.
+    #[cfg(test)]
+    mod executor {
+        use sima_contracts::{
+            ExecutionContext, Executor, NoCheckpoint, Outcome, STATE_ARTIFACT, TaskInput, WorkerId,
+        };
+        use sima_core::{Codec, hash_bytes};
+        use sima_model::{EnvironmentId, FormatId, Params, Spec};
+
+        use super::super::super::super::executor::CaExecutor;
+        use super::super::super::super::params::encode_params;
+        use super::super::super::super::stats::grid_stats;
+        use super::*;
+
+        /// Requires a real Vulkan device. Run with `cargo test -- --ignored`.
+        #[test]
+        #[ignore = "requires a Vulkan device"]
+        fn stats_summarize_the_committed_grid() {
+            // A bare-grid model commits the grid alone, so its stats are
+            // `grid_stats` of the grid the committed bytes decode to. This pins the
+            // executor wiring for a non-stepped model.
+            let exec = CaExecutor::<GrayScott>::new().expect("executor");
+            let spec = Spec {
+                format: FormatId::new(GrayScott::FORMAT_ID).expect("format id"),
+                bytes: GrayScottGenome::new(0.055, 0.062, 0.16, 0.08)
+                    .expect("genome")
+                    .to_bytes(),
+            };
+            let params = Params {
+                bytes: encode_params::<GrayScott>(
+                    &CaParams::new(32, 32, 16, 1.0).expect("params"),
+                    &GrayScottIgnition::new(0.5, 0.25, 8, 0.02).expect("ignition"),
+                ),
+            };
+            let input = TaskInput {
+                spec: &spec,
+                params: &params,
+                seed: 42,
+                environment: EnvironmentId::from_hash(hash_bytes(b"env")),
+                input_state: None,
+            };
+            let ctx = ExecutionContext {
+                attempt: 0,
+                worker: WorkerId(0),
+            };
+            match exec.execute(&input, &ctx, &NoCheckpoint).expect("execute") {
+                Outcome::Completed { artifacts, stats } => {
+                    let state = artifacts
+                        .iter()
+                        .find(|a| a.name == STATE_ARTIFACT)
+                        .expect("a state artifact");
+                    let grid = Grid::from_bytes(&state.bytes).expect("grid");
+                    assert_eq!(stats.bytes, grid_stats(&grid));
+                    assert!(!stats.bytes.is_empty(), "the stats channel is filled");
+                }
+                other => panic!("expected Completed, got {other:?}"),
+            }
+        }
+    }
 }
