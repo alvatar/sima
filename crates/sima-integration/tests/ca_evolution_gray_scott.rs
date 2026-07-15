@@ -178,3 +178,16 @@ fn a_malformed_params_section_fails_at_load() -> Result<()> {
     }
     Ok(())
 }
+
+#[test]
+fn the_shipped_search_config_loads() -> Result<()> {
+    // The committed `examples/gray-scott-search.toml` parses cleanly through the
+    // full load path, device-free — a guard on the shipped file itself, so an
+    // edit that breaks it fails here rather than only at run time. The workspace
+    // root is two levels up from this integration crate.
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/gray-scott-search.toml");
+    let loaded = sima_pipeline::load(&path)?;
+    assert_eq!(loaded.run.format.as_str(), "ca_evolution.gray_scott.v1");
+    assert_eq!(loaded.execution.workers, 2);
+    Ok(())
+}
