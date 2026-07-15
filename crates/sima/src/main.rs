@@ -228,7 +228,7 @@ fn group_stats(rows: &[ReportRow]) -> Vec<(usize, &str)> {
         .collect();
     // The map iterates by stats ascending; the stable sort by count descending
     // keeps that as the order among equal counts.
-    groups.sort_by(|a, b| b.0.cmp(&a.0));
+    groups.sort_by_key(|&(count, _)| std::cmp::Reverse(count));
     groups
 }
 
