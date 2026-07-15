@@ -12,6 +12,7 @@
 mod render;
 mod tui;
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -37,14 +38,16 @@ fn main() -> ExitCode {
     match args.iter().map(String::as_str).collect::<Vec<_>>()[..] {
         ["run", config] => run_command(&resolve_config(config)),
         ["status", config] => status_command(&resolve_config(config)),
-        ["report", config] => report_command(&resolve_config(config)),
+        ["report", config] => report_command(&resolve_config(config), false),
+        ["report", "--full", config] => report_command(&resolve_config(config), true),
         ["rm", config] => rm_command(&resolve_config(config)),
         ["tui", config] => tui::tui_command(&resolve_config(config)),
         _ => {
             eprint!(
                 "usage: sima run <config>     drive the configured run\n\
                  \x20      sima status <config>  report the run's state\n\
-                 \x20      sima report <config>  print each committed task's stats\n\
+                 \x20      sima report <config>  count committed tasks per distinct stats value\n\
+                 \x20      sima report --full <config>  print each committed task's stats\n\
                  \x20      sima rm <config>      delete the run and what only it references\n\
                  \x20      sima tui <config>     drive the run in a full-screen terminal UI\n\
                  \x20      <config> is a sima.toml path; the .toml extension may be omitted\n"
@@ -144,15 +147,22 @@ pub(crate) fn seed_status(config: &LoadedConfig) -> Result<RunStatus> {
     }
 }
 
-/// `sima report <config.toml>`: prints one line per committed task —
-/// `<short task key>  <rendered stats>`. The store and run id come from the
-/// config the same way `status` derives them.
-fn report_command(config: &Path) -> ExitCode {
+/// `sima report [--full] <config.toml>`: renders the run's committed stats.
+/// The default is the compact summary — a total header, then one line per
+/// distinct rendered stats value with its count; `--full` prints one
+/// `<short task key>  <rendered stats>` line per task. The store and run id
+/// come from the config the same way `status` derives them.
+fn report_command(config: &Path, full: bool) -> ExitCode {
     match read_report(config) {
         Ok(rows) => {
             let stdout = std::io::stdout();
             let mut out = stdout.lock();
-            match write_report(&mut out, &rows) {
+            let written = if full {
+                write_report(&mut out, &rows)
+            } else {
+                write_summary(&mut out, &rows)
+            };
+            match written {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(e) => report(e),
             }
@@ -161,26 +171,65 @@ fn report_command(config: &Path) -> ExitCode {
     }
 }
 
+/// Maps one report line's write outcome: `Ok(true)` when written, `Ok(false)`
+/// when the reader closed the pipe, `Err` otherwise. Piping into a reader
+/// that closes early (`sima report ... | head`) is ordinary use, so the
+/// resulting `BrokenPipe` is that reader's normal exit — the caller stops
+/// writing and reports success. Any other write failure is an infrastructure
+/// fault against stdout.
+fn line_written(result: std::io::Result<()>) -> Result<bool> {
+    match result {
+        Ok(()) => Ok(true),
+        Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => Ok(false),
+        Err(e) => Err(Error::Io {
+            path: PathBuf::from("stdout"),
+            source: e,
+        }),
+    }
+}
+
 /// Writes one line per reported task — `<short task key>  <rendered stats>` —
-/// to `out`, taken locked once by the caller. `report` emits a line per
-/// committed task, so piping into a reader that closes early (`sima report
-/// ... | head`) is ordinary use: the resulting `BrokenPipe` is that reader's
-/// normal exit and maps to success. Any other write failure is an
-/// infrastructure fault against stdout.
+/// to `out`, taken locked once by the caller.
 fn write_report(out: &mut impl std::io::Write, rows: &[ReportRow]) -> Result<()> {
     for row in rows {
-        match writeln!(out, "{}  {}", render::short(&row.task), row.stats) {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => return Ok(()),
-            Err(e) => {
-                return Err(Error::Io {
-                    path: PathBuf::from("stdout"),
-                    source: e,
-                });
-            }
+        if !line_written(writeln!(out, "{}  {}", render::short(&row.task), row.stats))? {
+            return Ok(());
         }
     }
     Ok(())
+}
+
+/// Writes the compact summary to `out`, taken locked once by the caller: a
+/// `<total> committed tasks` header, then one `<count>  <stats>` line per
+/// distinct rendered stats value.
+fn write_summary(out: &mut impl std::io::Write, rows: &[ReportRow]) -> Result<()> {
+    if !line_written(writeln!(out, "{} committed tasks", rows.len()))? {
+        return Ok(());
+    }
+    for (count, stats) in group_stats(rows) {
+        if !line_written(writeln!(out, "{count}  {stats}"))? {
+            return Ok(());
+        }
+    }
+    Ok(())
+}
+
+/// Groups report rows by their rendered stats value: one entry per distinct
+/// value with its task count, ordered by count descending, ties by the stats
+/// string ascending — so the summary is deterministic.
+fn group_stats(rows: &[ReportRow]) -> Vec<(usize, &str)> {
+    let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
+    for row in rows {
+        *counts.entry(&row.stats).or_default() += 1;
+    }
+    let mut groups: Vec<(usize, &str)> = counts
+        .into_iter()
+        .map(|(stats, count)| (count, stats))
+        .collect();
+    // The map iterates by stats ascending; the stable sort by count descending
+    // keeps that as the order among equal counts.
+    groups.sort_by(|a, b| b.0.cmp(&a.0));
+    groups
 }
 
 /// Loads the config and renders each committed task's stats from its journal.
@@ -253,11 +302,11 @@ mod tests {
         }
     }
 
-    /// One report row to write.
-    fn a_row() -> ReportRow {
+    /// One report row over the given task key and rendered stats.
+    fn row(task: &str, stats: &str) -> ReportRow {
         ReportRow {
-            task: "aa".to_string(),
-            stats: "attempt 0".to_string(),
+            task: task.to_string(),
+            stats: stats.to_string(),
         }
     }
 
@@ -266,16 +315,50 @@ mod tests {
         // A reader closing the pipe (`sima report ... | head`) surfaces as
         // BrokenPipe; that is its normal exit, so the write reports success.
         let mut sink = FailingWriter(std::io::ErrorKind::BrokenPipe);
-        assert!(write_report(&mut sink, &[a_row()]).is_ok());
+        assert!(write_report(&mut sink, &[row("aa", "attempt 0")]).is_ok());
+        assert!(write_summary(&mut sink, &[row("aa", "attempt 0")]).is_ok());
     }
 
     #[test]
     fn any_other_stdout_write_failure_is_reported() {
         let mut sink = FailingWriter(std::io::ErrorKind::PermissionDenied);
         assert!(matches!(
-            write_report(&mut sink, &[a_row()]),
+            write_report(&mut sink, &[row("aa", "attempt 0")]),
             Err(Error::Io { .. })
         ));
+        assert!(matches!(
+            write_summary(&mut sink, &[row("aa", "attempt 0")]),
+            Err(Error::Io { .. })
+        ));
+    }
+
+    #[test]
+    fn grouping_orders_by_count_descending_then_stats_ascending() {
+        // "a" and "c" tie at two rows each: the tie breaks on the stats string,
+        // ascending, so equal counts render in a deterministic order.
+        let rows = [
+            row("1", "c"),
+            row("2", "a"),
+            row("3", "c"),
+            row("4", "b"),
+            row("5", "a"),
+        ];
+        assert_eq!(group_stats(&rows), vec![(2, "a"), (2, "c"), (1, "b")]);
+    }
+
+    #[test]
+    fn the_summary_prints_the_header_then_grouped_lines() {
+        let rows = [
+            row("aa", "attempt 1"),
+            row("bb", "attempt 0"),
+            row("cc", "attempt 0"),
+        ];
+        let mut out = Vec::new();
+        write_summary(&mut out, &rows).expect("write");
+        assert_eq!(
+            String::from_utf8(out).expect("utf-8"),
+            "3 committed tasks\n2  attempt 0\n1  attempt 1\n"
+        );
     }
 
     #[test]

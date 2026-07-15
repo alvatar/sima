@@ -87,26 +87,50 @@ fn status_before_any_run_exits_1_and_after_reports_the_counts() {
 }
 
 #[test]
-fn report_after_a_run_prints_one_line_per_committed_task() {
+fn report_defaults_to_the_compact_summary() {
     let dir = tempfile::tempdir().expect("temp dir");
-    let config = write_config(dir.path(), r#""succeed", "succeed""#);
+    // Two clean successes and one task that succeeds on its second attempt:
+    // two distinct rendered stats values, with a count each.
+    let config = write_config(dir.path(), r#""succeed", "succeed", "flaky:1""#);
     let path = config.to_str().expect("utf-8 path");
 
     assert_eq!(sima(&["run", path]).status.code(), Some(0));
     let output = sima(&["report", path]);
     assert_eq!(output.status.code(), Some(0), "{output:?}");
+    // A total header, then one line per distinct stats value with its count,
+    // ordered by count descending.
+    assert_eq!(
+        stdout(&output),
+        "3 committed tasks\n2  attempt 0\n1  attempt 1\n"
+    );
+}
+
+#[test]
+fn report_full_prints_one_line_per_committed_task() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config = write_config(dir.path(), r#""succeed", "succeed""#);
+    let path = config.to_str().expect("utf-8 path");
+
+    assert_eq!(sima(&["run", path]).status.code(), Some(0));
+    let output = sima(&["report", "--full", path]);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
     let text = stdout(&output);
-    // One line per committed task, each a stub `succeed` whose stats render the
-    // attempt.
+    // One line per committed task — `<short task key>  <rendered stats>`, each
+    // a stub `succeed` whose stats render the attempt.
     assert_eq!(
         text.lines().count(),
         2,
         "one line per committed task: {text}"
     );
-    assert!(
-        text.lines().all(|line| line.contains("attempt 0")),
-        "each line renders the stats: {text}"
-    );
+    for line in text.lines() {
+        let (key, stats) = line.split_once("  ").expect("key and stats");
+        assert_eq!(key.len(), 12, "the short task key: {line}");
+        assert!(
+            key.chars().all(|c| c.is_ascii_hexdigit()),
+            "the key is hex: {line}"
+        );
+        assert_eq!(stats, "attempt 0", "the rendered stats: {line}");
+    }
 }
 
 #[test]
