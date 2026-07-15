@@ -9,8 +9,14 @@
 //!   both endpoints share.
 //! - [`host`] — the child side: [`host::serve`] hosts a resolved executor
 //!   over the pipe for the life of the worker process.
+//! - [`link`] — the parent-side seam: the [`link::WorkerTransport`] and
+//!   [`link::WorkerLink`] traits the scheduler is written against.
+//! - [`subprocess`] — the production transport: one process per worker,
+//!   SIGKILL preemption.
 
 pub mod host;
+pub mod link;
 pub mod protocol;
+pub mod subprocess;
 
 pub(crate) mod checkpoint_cadence;

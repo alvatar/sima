@@ -1,0 +1,60 @@
+//! The parent-side transport seam: [`WorkerTransport`] spawns workers,
+//! [`WorkerLink`] converses with one.
+//!
+//! The seam exists so the scheduler's worker loop is written against traits
+//! the tests can implement without processes: the production transport spawns
+//! `sima-worker` subprocesses, the test loopback runs the same host loop and
+//! wire protocol over in-memory pipes. Everything a child does reaches the
+//! caller as a [`LinkEvent`] — including its death and the caller's deadline
+//! expiring — so outcome classification stays entirely with the caller; an
+//! `Err` from the link is a frame-protocol violation or a broken pipe, the
+//! faults the caller answers by killing the child.
+
+use std::time::Instant;
+
+use sima_contracts::Outcome;
+use sima_core::Result;
+
+use super::protocol::Assignment;
+
+/// Spawns workers. One transport serves a whole run; each worker slot holds
+/// one [`WorkerLink`] at a time and replaces it when the child dies.
+pub trait WorkerTransport: Sync {
+    /// Spawns one worker and performs the handshake. An `Err` is a spawn
+    /// failure — an infrastructure error, never a task outcome.
+    fn spawn(&self) -> Result<Box<dyn WorkerLink>>;
+}
+
+/// The parent's conversation with one live worker.
+pub trait WorkerLink: Send {
+    /// Hands the worker one task. An `Err` is a broken pipe — the child is
+    /// dead or dying; the caller classifies and replaces it.
+    fn assign(&mut self, assignment: &Assignment) -> Result<()>;
+
+    /// Waits for the worker's next event, up to `deadline` when given.
+    /// Death and deadline expiry arrive as events, not errors, so the caller
+    /// owns their classification; an `Err` is a frame violation, answered by
+    /// killing the child.
+    fn next(&mut self, deadline: Option<Instant>) -> Result<LinkEvent>;
+
+    /// Kills the worker immediately and reaps it. Best effort: a child
+    /// already dead is fine.
+    fn kill(&mut self);
+}
+
+/// What a wait on a worker link yielded.
+#[derive(Debug)]
+pub enum LinkEvent {
+    /// A due checkpoint save to persist.
+    Save(Vec<u8>),
+    /// The attempt's outcome, verbatim from the executor.
+    Done(Outcome),
+    /// The executor panicked; the rendered reason.
+    Panicked(String),
+    /// The executor returned `Err` — an infrastructure fault; the message.
+    Fault(String),
+    /// The child died without an outcome: its event stream ended.
+    Died,
+    /// The caller's deadline expired with no event; nothing was consumed.
+    DeadlineExpired,
+}
