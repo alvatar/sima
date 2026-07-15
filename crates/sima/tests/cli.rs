@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use common::{manifest_of, sima_command};
-use sima_pipeline::load;
+use sima_pipeline::{LifecycleEvent, RunObserver, load};
 
 /// Writes a `sima.toml` under `dir` whose store lives beside it.
 fn write_config(dir: &Path, behaviors: &str) -> PathBuf {
@@ -358,6 +358,84 @@ fn tui_without_a_terminal_exits_1_and_names_the_requirement() {
         stderr.contains("requires a terminal"),
         "names the terminal requirement: {stderr}"
     );
+}
+
+#[test]
+fn an_observer_follows_a_live_run_to_its_end() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    // The sleeps keep the child alive long enough that the observer sees the
+    // lock held mid-run: four tasks over two workers span about a second.
+    let config = write_config(
+        dir.path(),
+        r#""sleep:400", "sleep:400", "sleep:400", "sleep:400""#,
+    );
+    let mut child = sima_command()
+        .args(["run", config.to_str().expect("utf-8 path")])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn sima run");
+
+    let loaded = load(&config).expect("load config");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let pause = std::time::Duration::from_millis(10);
+    // The child bootstraps the store; the observer opens once it exists.
+    let mut observer = loop {
+        match RunObserver::new(&loaded) {
+            Ok(observer) => break observer,
+            Err(_) if std::time::Instant::now() < deadline => std::thread::sleep(pause),
+            Err(e) => panic!("the store never appeared: {e}"),
+        }
+    };
+
+    // Follow the run to its terminal event, noting the holder while the
+    // child lives. Every wait polls up to the deadline; no fixed sleep
+    // carries a correctness assumption.
+    let mut events = Vec::new();
+    let mut held = None;
+    loop {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the run did not end in time; events so far: {events:?}"
+        );
+        if held.is_none() {
+            held = observer.holder().expect("probe the lock");
+        }
+        events.extend(observer.poll().expect("poll the journal"));
+        if events
+            .iter()
+            .any(|event| matches!(event, LifecycleEvent::RunFinalized { .. }))
+        {
+            break;
+        }
+        std::thread::sleep(pause);
+    }
+
+    // The lock named the child while it drove the run.
+    let holder = held.expect("the run was held while in flight");
+    assert_eq!(
+        holder.split_whitespace().next(),
+        Some(child.id().to_string().as_str()),
+        "the holder line names the driving process: {holder}"
+    );
+    // The tail delivered the full lifecycle: the start and every commit,
+    // each exactly once.
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, LifecycleEvent::RunStarted { .. })),
+        "the seed replays the run start: {events:?}"
+    );
+    let committed = events
+        .iter()
+        .filter(|event| matches!(event, LifecycleEvent::Committed { .. }))
+        .count();
+    assert_eq!(committed, 4, "every commit arrives once: {events:?}");
+
+    // The child exits after finalizing; the lock frees with it.
+    let status = child.wait().expect("wait for sima run");
+    assert_eq!(status.code(), Some(0), "the child finalized");
+    assert_eq!(observer.holder().expect("probe after exit"), None);
 }
 
 #[test]

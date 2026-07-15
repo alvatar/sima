@@ -12,7 +12,7 @@
 use std::collections::VecDeque;
 
 use sima_core::Result;
-use sima_pipeline::{LifecycleEvent, Occupancy, RunOutcome, RunStatus};
+use sima_pipeline::{LifecycleEvent, Occupancy, RunOutcome, RunState, RunStatus};
 
 use crate::render::describe;
 
@@ -34,6 +34,19 @@ pub enum KeyAction {
     ForceQuit,
     /// Open the help overlay listing the key bindings.
     Help,
+}
+
+/// The observer session's view of the run's lock, set by the app loop after
+/// each probe. Liveness comes from the lock: a held lock is a live foreign
+/// orchestrator, a free one — while the journal still says in progress —
+/// is a dead or finished orchestrator whose run is resumable.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LockView {
+    /// Another process holds the run lock; the string is the holder line
+    /// its locker recorded (pid, hostname).
+    Held(String),
+    /// The lock is free: no orchestrator drives the run.
+    Free,
 }
 
 /// A message handled by the UI state: a lifecycle event from the run, a key
@@ -115,6 +128,13 @@ pub struct TuiState {
     exit: bool,
     /// Whether the help overlay is open, drawn over the frame.
     help_open: bool,
+    /// The lock state of a run another process drives, while this session
+    /// observes it; `None` in the drive session. Governs the header label,
+    /// the meaning of `s`, and the refusal of `x`.
+    observation: Option<LockView>,
+    /// A transient status message — a refused key names the holder here.
+    /// Cleared when the observed lock state changes.
+    notice: Option<String>,
     /// The most recent rendered event lines, oldest first.
     log: VecDeque<String>,
 }
@@ -135,9 +155,11 @@ pub struct WorkerRow {
 pub struct ViewModel {
     /// The run the session drives, as its id string.
     pub run: String,
-    /// The header state label: idle, running, winding down, or a terminal
-    /// state.
-    pub state: &'static str,
+    /// The header state label: idle, running, winding down, a terminal
+    /// state, or the observation line naming the run's holder.
+    pub state: String,
+    /// A transient status message shown beside the state, or `None`.
+    pub notice: Option<String>,
     /// One row per configured worker.
     pub workers: Vec<WorkerRow>,
     /// Committed task count.
@@ -174,8 +196,19 @@ impl TuiState {
             exit_on_finish: false,
             exit: false,
             help_open: false,
+            observation: None,
+            notice: None,
             log: VecDeque::new(),
         }
+    }
+
+    /// Sets the observed lock state, entering or updating observer mode. The
+    /// app loop calls this with the startup probe's holder and again on every
+    /// probed change. A change clears any refusal notice, since the notice
+    /// names the lock state it was issued under.
+    pub fn observe(&mut self, lock: LockView) {
+        self.notice = None;
+        self.observation = Some(lock);
     }
 
     /// Handles one message.
@@ -212,21 +245,38 @@ impl TuiState {
             return;
         }
         match action {
-            KeyAction::Start => {
-                // A run starts from idle or after a terminal state; while one
-                // runs the key does nothing.
-                if matches!(self.activity, Activity::Idle | Activity::Ended) {
-                    self.activity = Activity::Running;
-                    self.start_pending = true;
-                    self.exit_on_finish = false;
+            KeyAction::Start => match &self.observation {
+                // There is no channel to control another process: while the
+                // foreign orchestrator lives, `s` is refused with a notice.
+                Some(LockView::Held(holder)) => {
+                    self.notice = Some(format!("run held by {holder}"));
                 }
-            }
-            KeyAction::Stop => {
-                if matches!(self.activity, Activity::Running) {
-                    self.activity = Activity::WindingDown;
-                    self.stop_pending = true;
+                // The lock is free: the observer loop reads this request as
+                // the take-over and leaves for the drive session.
+                Some(LockView::Free) => self.start_pending = true,
+                None => {
+                    // A run starts from idle or after a terminal state; while
+                    // one runs the key does nothing.
+                    if matches!(self.activity, Activity::Idle | Activity::Ended) {
+                        self.activity = Activity::Running;
+                        self.start_pending = true;
+                        self.exit_on_finish = false;
+                    }
                 }
-            }
+            },
+            KeyAction::Stop => match &self.observation {
+                Some(LockView::Held(holder)) => {
+                    self.notice = Some(format!("run held by {holder}"));
+                }
+                // No run of this session's is in flight: nothing to stop.
+                Some(LockView::Free) => {}
+                None => {
+                    if matches!(self.activity, Activity::Running) {
+                        self.activity = Activity::WindingDown;
+                        self.stop_pending = true;
+                    }
+                }
+            },
             KeyAction::Quit => match self.activity {
                 // Running: wind down and leave once the run returns.
                 Activity::Running => {
@@ -292,13 +342,43 @@ impl TuiState {
         self.exit
     }
 
-    /// The session's exit code.
+    /// The session's exit code. An observer session derives it from the
+    /// journal's run state — the drive-session mapping over what was
+    /// observed, with a run still in progress leaving clean — so quitting
+    /// after a watched run ended reports that ending, exactly as the drive
+    /// session that produced it would.
     pub fn exit_code(&self) -> u8 {
+        if self.observation.is_some() {
+            return match self.status.state {
+                RunState::InProgress => 0,
+                RunState::Finalized => 0,
+                RunState::Failed { .. } => crate::EXIT_FAILED,
+                RunState::Interrupted => crate::EXIT_INTERRUPTED,
+            };
+        }
         self.exit_code
     }
 
-    /// The header state label for the current activity.
-    fn state_label(&self) -> &'static str {
+    /// The header state label. The drive session labels its own activity; an
+    /// observer session follows the journal's run state — a terminal event
+    /// ends the observation in the drive session's presentation — and, while
+    /// the run is in progress, the probed lock: held names the holder, free
+    /// means the orchestrator died without a terminal line and the run is
+    /// resumable.
+    fn state_label(&self) -> String {
+        if let Some(lock) = &self.observation {
+            return match (&self.status.state, lock) {
+                (RunState::Finalized, _) => "finalized".to_string(),
+                (RunState::Failed { .. }, _) => "failed".to_string(),
+                (RunState::Interrupted, _) => "interrupted".to_string(),
+                (RunState::InProgress, LockView::Held(holder)) => {
+                    format!("observing — run held by {holder}")
+                }
+                (RunState::InProgress, LockView::Free) => {
+                    "orchestrator gone — run resumable; press s to continue it".to_string()
+                }
+            };
+        }
         match self.activity {
             Activity::Idle => "idle",
             Activity::Running => "running",
@@ -311,6 +391,7 @@ impl TuiState {
                 SessionOutcome::Clean => "idle",
             },
         }
+        .to_string()
     }
 
     /// Projects the current state into a [`ViewModel`] for the view.
@@ -324,6 +405,7 @@ impl TuiState {
         ViewModel {
             run: self.status.run.to_string(),
             state: self.state_label(),
+            notice: self.notice.clone(),
             workers,
             committed: self.status.committed,
             tasks: self.status.tasks,
@@ -572,6 +654,141 @@ mod tests {
         );
         assert!(!state.view().help, "the overlay is now closed");
         assert!(!state.dismiss_help_if_open(), "a second dismiss is a no-op");
+    }
+
+    /// A state observing a run another orchestrator holds, seeded zeroed as
+    /// the observer session starts.
+    fn observing(workers: usize) -> TuiState {
+        let mut state = idle(workers);
+        state.observe(LockView::Held("4242 elsewhere".to_string()));
+        state
+    }
+
+    fn run_finalized() -> LifecycleEvent {
+        LifecycleEvent::RunFinalized {
+            run: "00".repeat(32),
+            committed: 1,
+        }
+    }
+
+    fn run_interrupted() -> LifecycleEvent {
+        LifecycleEvent::RunInterrupted {
+            run: "00".repeat(32),
+        }
+    }
+
+    #[test]
+    fn observer_counters_match_a_drive_session_over_the_same_events() {
+        // One display path: the observer feeds the same apply the drive
+        // session uses, so identical events yield identical counters.
+        let mut observer = observing(2);
+        let mut driver = idle(2);
+        let events = [started(2), leased("aa", 0, 0), committed("aa")];
+        for event in &events {
+            observer.handle(Msg::Event(event.clone()));
+            driver.handle(Msg::Event(event.clone()));
+        }
+        let (o, d) = (observer.view(), driver.view());
+        assert_eq!(o.tasks, d.tasks);
+        assert_eq!(o.committed, d.committed);
+        assert_eq!(o.workers, d.workers);
+        assert_eq!(o.log, d.log);
+    }
+
+    #[test]
+    fn the_observer_header_names_the_holder() {
+        let state = observing(1);
+        assert_eq!(state.view().state, "observing — run held by 4242 elsewhere");
+    }
+
+    #[test]
+    fn start_and_stop_while_held_set_the_notice_and_request_nothing() {
+        let mut state = observing(1);
+        state.handle(Msg::Key(KeyAction::Start));
+        assert!(!state.take_start(), "another process holds the run");
+        let notice = state.view().notice.expect("a refusal notice");
+        assert!(
+            notice.contains("4242 elsewhere"),
+            "the notice names the holder: {notice}"
+        );
+        state.handle(Msg::Key(KeyAction::Stop));
+        assert!(!state.take_stop(), "there is no run of ours to stop");
+        assert!(state.view().notice.is_some());
+    }
+
+    #[test]
+    fn a_free_lock_without_a_terminal_event_reads_resumable() {
+        let mut state = observing(1);
+        state.handle(Msg::Event(started(2)));
+        state.observe(LockView::Free);
+        assert_eq!(
+            state.view().state,
+            "orchestrator gone — run resumable; press s to continue it"
+        );
+    }
+
+    #[test]
+    fn the_lock_freeing_clears_a_stale_refusal_notice() {
+        let mut state = observing(1);
+        state.handle(Msg::Key(KeyAction::Start));
+        assert!(state.view().notice.is_some());
+        state.observe(LockView::Free);
+        assert_eq!(state.view().notice, None);
+    }
+
+    #[test]
+    fn start_once_the_lock_is_free_requests_the_take_over() {
+        let mut state = observing(1);
+        state.observe(LockView::Free);
+        state.handle(Msg::Key(KeyAction::Start));
+        assert!(state.take_start(), "s on a free lock leaves for the drive");
+    }
+
+    #[test]
+    fn a_terminal_event_ends_observation_in_the_drive_presentation() {
+        let mut finalized = observing(1);
+        finalized.handle(Msg::Event(started(1)));
+        finalized.handle(Msg::Event(run_finalized()));
+        assert_eq!(finalized.view().state, "finalized");
+        assert_eq!(finalized.exit_code(), 0);
+
+        let mut failed = observing(1);
+        failed.handle(Msg::Event(started(1)));
+        failed.handle(Msg::Event(LifecycleEvent::RunFailed {
+            run: "00".repeat(32),
+            task: "aa".to_string(),
+            reason: "rejected".to_string(),
+        }));
+        assert_eq!(failed.view().state, "failed");
+        assert_eq!(failed.exit_code(), 2);
+
+        let mut interrupted = observing(1);
+        interrupted.handle(Msg::Event(started(1)));
+        interrupted.handle(Msg::Event(run_interrupted()));
+        assert_eq!(interrupted.view().state, "interrupted");
+        assert_eq!(interrupted.exit_code(), 130);
+    }
+
+    #[test]
+    fn a_resume_segment_in_the_replay_returns_the_header_to_observing() {
+        // A replayed history may end an old segment and start a new one; the
+        // header follows the journal's last run-level event, so the seed of a
+        // resumed run reads as in progress, never as its old interruption.
+        let mut state = observing(1);
+        state.handle(Msg::Event(started(2)));
+        state.handle(Msg::Event(run_interrupted()));
+        state.handle(Msg::Event(started(2)));
+        assert_eq!(state.view().state, "observing — run held by 4242 elsewhere");
+        assert_eq!(state.exit_code(), 0, "an in-progress observation is clean");
+    }
+
+    #[test]
+    fn quitting_a_live_observation_is_clean() {
+        let mut state = observing(1);
+        state.handle(Msg::Event(started(2)));
+        state.handle(Msg::Key(KeyAction::Quit));
+        assert!(state.should_exit(), "quit leaves the observer at once");
+        assert_eq!(state.exit_code(), 0);
     }
 
     #[test]
