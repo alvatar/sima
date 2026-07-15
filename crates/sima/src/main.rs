@@ -124,13 +124,37 @@ fn read_status(config: &Path) -> Result<RunStatus> {
 fn report_command(config: &Path) -> ExitCode {
     match read_report(config) {
         Ok(rows) => {
-            for row in &rows {
-                println!("{}  {}", render::short(&row.task), row.stats);
+            let stdout = std::io::stdout();
+            let mut out = stdout.lock();
+            match write_report(&mut out, &rows) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => report(e),
             }
-            ExitCode::SUCCESS
         }
         Err(e) => report(e),
     }
+}
+
+/// Writes one line per reported task — `<short task key>  <rendered stats>` —
+/// to `out`, taken locked once by the caller. `report` emits a line per
+/// committed task, so piping into a reader that closes early (`sima report
+/// ... | head`) is ordinary use: the resulting `BrokenPipe` is that reader's
+/// normal exit and maps to success. Any other write failure is an
+/// infrastructure fault against stdout.
+fn write_report(out: &mut impl std::io::Write, rows: &[ReportRow]) -> Result<()> {
+    for row in rows {
+        match writeln!(out, "{}  {}", render::short(&row.task), row.stats) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => return Ok(()),
+            Err(e) => {
+                return Err(Error::Io {
+                    path: PathBuf::from("stdout"),
+                    source: e,
+                });
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Loads the config and renders each committed task's stats from its journal.
@@ -189,6 +213,44 @@ mod tests {
     use super::*;
     use sima_core::hash_bytes;
     use sima_model::{RunId, TaskKey};
+
+    /// A writer that fails every write with a fixed error kind, to drive
+    /// `write_report`'s error handling without a real pipe.
+    struct FailingWriter(std::io::ErrorKind);
+
+    impl std::io::Write for FailingWriter {
+        fn write(&mut self, _buf: &[u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::from(self.0))
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// One report row to write.
+    fn a_row() -> ReportRow {
+        ReportRow {
+            task: "aa".to_string(),
+            stats: "attempt 0".to_string(),
+        }
+    }
+
+    #[test]
+    fn a_broken_pipe_while_writing_the_report_is_success() {
+        // A reader closing the pipe (`sima report ... | head`) surfaces as
+        // BrokenPipe; that is its normal exit, so the write reports success.
+        let mut sink = FailingWriter(std::io::ErrorKind::BrokenPipe);
+        assert!(write_report(&mut sink, &[a_row()]).is_ok());
+    }
+
+    #[test]
+    fn any_other_stdout_write_failure_is_reported() {
+        let mut sink = FailingWriter(std::io::ErrorKind::PermissionDenied);
+        assert!(matches!(
+            write_report(&mut sink, &[a_row()]),
+            Err(Error::Io { .. })
+        ));
+    }
 
     #[test]
     fn each_outcome_maps_to_its_exit_code() {
