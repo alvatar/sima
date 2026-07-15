@@ -1,75 +1,111 @@
-//! The worker loop: it leases a task, runs the executor, classifies the
-//! outcome, and commits or retries.
+//! The worker loop: it leases a task, drives its execution on a worker
+//! process over the transport link, classifies what comes back, and commits
+//! or retries.
 //!
-//! This is the interim in-process transport: a fixed pool of threads pulling
-//! from the shared queue. It is deliberately narrow — evaluate, classify,
-//! commit — with the lease and settlement bookkeeping on [`Coordinator`], so a
-//! subprocess-based worker can replace the execution transport (the `execute`
-//! call and its panic classification) while the coordination around it stays
-//! in place. The executor trust boundary lives here: the worker holds the only
-//! store handle, so a result reaches durable state only by passing through
-//! this commit path.
+//! Each worker thread owns one long-lived child process — a transport shim
+//! over today's lease/retry/settle bookkeeping on [`Coordinator`]. The
+//! thread pulls a task, sends the child everything the attempt needs as
+//! loaded values, and waits on the link with the attempt deadline: due
+//! checkpoint saves are persisted as they arrive, an outcome is classified
+//! exactly as the in-process worker classified it, and a child death or
+//! deadline expiry becomes a transient failure with the child replaced. The
+//! executor trust boundary lives here: the parent holds the only store
+//! handle, so a result reaches durable state only by passing through this
+//! commit path — the child is never given the store.
 
 use std::sync::mpsc::Sender;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use sima_contracts::{
-    Artifact, Checkpoint, ExecutionContext, Executor, NoCheckpoint, Outcome, TaskInput, WorkerId,
-};
+use sima_contracts::{Artifact, Outcome, WorkerId};
 use sima_core::{Error, Hash, Result, to_hex};
 use sima_model::{ArtifactRef, RunConfig, RunId, TaskIdentity, TaskKey, TaskRecord};
 use sima_store::Store;
 
 use crate::config::ExecutionConfig;
-use crate::coordinator::{Coordinator, Pending};
+use crate::coordinator::{Coordinator, Pending, RunState};
 use crate::event::LifecycleEvent;
 use crate::journal_sink::emit;
 use crate::task_source::RunnableTask;
-use crate::transport::checkpoint_cadence::CheckpointCadence;
-use crate::transport::host::panic_reason;
+use crate::transport::link::{LinkEvent, WorkerLink, WorkerTransport};
+use crate::transport::protocol::Assignment;
 
 /// The run-wide context one worker borrows for its whole life: the shared
-/// coordination, the store it commits through, the run config and executor it
-/// evaluates against, the execution settings, and its own journal sender.
+/// coordination, the store it commits through, the run config, the transport
+/// it spawns its child through, the execution settings, and its own journal
+/// sender.
 pub(crate) struct WorkerContext<'a> {
     pub(crate) coordinator: &'a Coordinator,
     pub(crate) store: &'a Store,
     /// The run the worker commits under; keys the checkpoint slots.
     pub(crate) run: RunId,
     pub(crate) config: &'a RunConfig,
-    pub(crate) executor: &'a (dyn Executor + Sync),
+    pub(crate) transport: &'a dyn WorkerTransport,
     pub(crate) exec: &'a ExecutionConfig,
     pub(crate) events: Sender<LifecycleEvent>,
 }
 
-/// Runs the worker: lease a task, evaluate it, resolve the outcome, repeat
-/// until the run winds down.
+/// Runs the worker: spawn the child, then lease a task, drive it on the
+/// child, resolve the outcome, and repeat until the run winds down. The
+/// child lives as long as the worker; it is replaced only when it dies, and
+/// dropping the last link at exit is the graceful shutdown — stdin closes,
+/// the child exits on end-of-stream, and the parent reaps it.
 pub(crate) fn worker_loop(worker: WorkerId, ctx: WorkerContext<'_>) {
-    while let Some(pending) = ctx.coordinator.next_task(worker) {
-        // A panic escaping process() outside the executor's own catch_unwind —
-        // the commit path, a store read, the settle code — would leak the
-        // task's lease, and drive() would then block forever on
-        // leases.is_empty() inside thread::scope, which never reaches its join
-        // phase, so the panic would be swallowed and the process would hang.
-        // The guard releases the lease as a fault during unwind so the pool
-        // winds down; thread::scope still re-raises the panic at join, so the
-        // fault content is never observed and the panic surfaces as the bug it
-        // is. Re-raising preserves the meaning of the Err vocabulary: every Err
-        // a caller receives is an expected, describable fault it can act on,
-        // while a bug arrives as an abnormal death, so a supervising caller can
-        // distinguish retry-after-fixing-the-environment from the-code-is-wrong.
-        // Executor panics are unaffected: process()'s inner handler catches
-        // them and settles the lease, so the guard is disarmed before it drops.
+    // A worker that cannot spawn its child cannot take work: the run faults.
+    let mut link = match ctx.transport.spawn() {
+        Ok(link) => link,
+        Err(e) => return ctx.coordinator.fault_run(e),
+    };
+    while let Some(pending) = ctx.coordinator.next_task() {
+        // A panic escaping process() — the commit path, a store read, the
+        // settle code — would leak the task's lease, and drive() would then
+        // block forever on leases.is_empty() inside thread::scope, which
+        // never reaches its join phase, so the panic would be swallowed and
+        // the process would hang. The guard releases the lease as a fault
+        // during unwind so the pool winds down; thread::scope still
+        // re-raises the panic at join, so the fault content is never
+        // observed and the panic surfaces as the bug it is. Re-raising
+        // preserves the meaning of the Err vocabulary: every Err a caller
+        // receives is an expected, describable fault it can act on, while a
+        // bug arrives as an abnormal death. Executor panics are unaffected:
+        // the child catches them and reports a Panicked frame, which
+        // process() settles before the guard drops.
         let guard = PanicGuard::arm(ctx.coordinator, pending.key);
-        process(&ctx, worker, pending);
+        let child = process(&ctx, worker, pending, link.as_mut());
         guard.disarm();
+        match child {
+            ChildState::Alive => {}
+            ChildState::Dead => {
+                // Kill is idempotent: a child already dead is reaped, one
+                // still dying is finished off, before the replacement spawns.
+                link.kill();
+                link = match ctx.transport.spawn() {
+                    Ok(link) => link,
+                    Err(e) => return ctx.coordinator.fault_run(e),
+                };
+            }
+            // The run is winding down; the child was killed and no
+            // replacement is owed — next_task would return None.
+            ChildState::WindingDown => break,
+        }
     }
 }
 
+/// What `process` left behind: whether the worker's child can take another
+/// task.
+enum ChildState {
+    /// The child survives and takes the next task.
+    Alive,
+    /// The child is dead; the worker replaces it before the next task.
+    Dead,
+    /// The run is winding down; the in-flight attempt was abandoned, its
+    /// child killed, and the worker exits.
+    WindingDown,
+}
+
 /// A liveness guard over one leased task. While armed, its `Drop` releases the
-/// lease as a fault, so a panic escaping `process` outside the executor's
-/// `catch_unwind` cannot strand the lease and hang the driver. A normal
-/// `process` return disarms it, since the lease is already settled by then.
+/// lease as a fault, so a panic escaping `process` cannot strand the lease and
+/// hang the driver. A normal `process` return disarms it, since the lease is
+/// already settled by then.
 struct PanicGuard<'a> {
     coordinator: &'a Coordinator,
     key: TaskKey,
@@ -111,63 +147,29 @@ impl Drop for PanicGuard<'_> {
     }
 }
 
-/// The worker's store-side arm of the checkpoint contract for one attempt of
-/// one chain task: it owns all slot I/O, enforces the wall-clock cadence, and
-/// serves the resume bytes loaded before execution started. The executor on
-/// the other side of the seam only offers and adopts bytes — it never touches
-/// the store.
-struct SlotCheckpoint<'a> {
-    store: &'a Store,
-    run: RunId,
-    slot: u64,
-    key: TaskKey,
-    task: &'a str,
-    /// When an offer becomes a save: both cadence axes, reset on save.
-    cadence: CheckpointCadence,
-    resume: Option<Vec<u8>>,
-    events: &'a Sender<LifecycleEvent>,
-}
-
-impl Checkpoint for SlotCheckpoint<'_> {
-    fn resume(&self) -> Option<&[u8]> {
-        self.resume.as_deref()
-    }
-
-    fn offer(&self, produce: &dyn Fn() -> Vec<u8>) {
-        if !self.cadence.save_due() {
-            return;
-        }
-        // Both cadences reset before the save is attempted — chosen over
-        // retrying at the next offer, so a persistently failing slot degrades
-        // once per cadence period instead of once per offer.
-        self.cadence.reset();
-        if let Err(e) = self
-            .store
-            .save_checkpoint(&self.run, self.slot, &self.key, &produce())
-        {
-            // Checkpointing is an optimization, never a task outcome: the
-            // failure is journaled and execution continues.
-            emit(
-                self.events,
-                LifecycleEvent::CheckpointDegraded {
-                    task: self.task.to_string(),
-                    error: e.to_string(),
-                },
-            );
-        }
-    }
-}
-
-/// Whether either checkpoint cadence axis is set, so a chain task gets a slot
-/// handle. With both axes disabled the inert handle is used and no slot is
-/// touched.
+/// Whether either checkpoint cadence axis is set, so a chain task
+/// checkpoints: its slot is read for resume bytes, and the child evaluates
+/// the cadence and sends due saves. With both axes disabled the slot is
+/// never touched.
 fn checkpointing_enabled(exec: &ExecutionConfig) -> bool {
     exec.checkpoint_interval != Duration::MAX || exec.checkpoint_interval_steps.is_some()
 }
 
-/// Evaluates one leased task and resolves its outcome: commit, retry, reject,
-/// or record an infrastructure fault.
-fn process(ctx: &WorkerContext<'_>, worker: WorkerId, pending: Pending) {
+/// How long one wait on the link lasts at most, so a run winding down is
+/// observed within this bound and the in-flight attempt abandoned. The same
+/// cost trade as the driver's interrupt poll: about 20 uncontended lock
+/// acquisitions per second per worker.
+const WINDDOWN_POLL: Duration = Duration::from_millis(50);
+
+/// Drives one leased task on the worker's child and resolves its outcome:
+/// commit, retry, reject, or record an infrastructure fault. Returns whether
+/// the child survives for the next task.
+fn process(
+    ctx: &WorkerContext<'_>,
+    worker: WorkerId,
+    pending: Pending,
+    link: &mut dyn WorkerLink,
+) -> ChildState {
     let key = pending.key;
     let attempt = pending.attempt;
     let RunnableTask {
@@ -190,34 +192,115 @@ fn process(ctx: &WorkerContext<'_>, worker: WorkerId, pending: Pending) {
     sima_core::crashpoint("lease.held");
 
     // Resolve the input-state object the identity references: the key carries
-    // its digest, the executor receives its bytes. A load failure is an
+    // its digest, the child receives its bytes. A load failure is an
     // infrastructure fault.
     let input_state = match identity.input_state {
         Some(hash) => match ctx.store.get(&hash) {
             Ok(bytes) => Some(bytes),
             Err(e) => {
                 task_fault(ctx, task, attempt, key, e);
-                return;
+                return ChildState::Alive;
             }
         },
         None => None,
     };
 
-    // Select the attempt's checkpoint handle. The run keeps one checkpoint
-    // slot per chain — mutable scratch storage for the continuation state a
-    // running segment offers. A chain task under an enabled interval gets
-    // the handle that reads and writes its chain's slot, loading whatever
-    // the slot holds for this key — a slot that is missing, torn, or keyed
-    // to another segment loads as nothing. Stateless tasks and disabled
-    // checkpointing get the inert handle, and the slot is never read.
-    let slot_checkpoint = match chain {
-        Some(slot) if checkpointing_enabled(ctx.exec) => {
-            let resume = match ctx.store.checkpoint(&ctx.run, slot, &key) {
-                Ok(resume) => resume,
-                Err(e) => {
-                    // A checkpoint is disposable, so a load failure degrades
-                    // to a fresh start — chosen over faulting the attempt:
-                    // the resume is lost, the task still runs.
+    // The run keeps one checkpoint slot per chain — mutable scratch storage
+    // for the continuation state a running segment offers. A chain task
+    // under an enabled cadence resumes from whatever the slot holds for this
+    // key — a slot that is missing, torn, or keyed to another segment loads
+    // as nothing — and its due saves are persisted back as they arrive.
+    // Stateless tasks and disabled checkpointing never touch the slot.
+    let slot = if checkpointing_enabled(ctx.exec) {
+        chain
+    } else {
+        None
+    };
+    let resume = slot.and_then(|slot| {
+        match ctx.store.checkpoint(&ctx.run, slot, &key) {
+            Ok(resume) => resume,
+            Err(e) => {
+                // A checkpoint is disposable, so a load failure degrades to a
+                // fresh start — chosen over faulting the attempt: the resume
+                // is lost, the task still runs.
+                emit(
+                    &ctx.events,
+                    LifecycleEvent::CheckpointDegraded {
+                        task: task.clone(),
+                        error: e.to_string(),
+                    },
+                );
+                None
+            }
+        }
+    });
+
+    // Everything the attempt needs crosses as loaded values; the spec and
+    // params bytes are cloned so a retry can re-enqueue the task.
+    let assignment = Assignment {
+        spec: spec.bytes.clone(),
+        params: ctx.config.params.bytes.clone(),
+        seed: identity.seed,
+        environment: identity.environment,
+        input_state,
+        resume,
+        attempt,
+        worker: worker.0,
+        checkpointing: slot.is_some(),
+    };
+    let started = Instant::now();
+    // The enforced attempt deadline; a timeout too large to land on the
+    // clock (Duration::MAX) disables enforcement.
+    let deadline = started.checked_add(ctx.exec.attempt_timeout);
+
+    if let Err(e) = link.assign(&assignment) {
+        // The pipe broke mid-write: the child is dead or dying.
+        let reason = format!("worker {} died taking the task: {e}", worker.0);
+        fail_transiently(
+            ctx,
+            key,
+            task,
+            attempt,
+            retry(spec, identity, chain),
+            reason,
+        );
+        return ChildState::Dead;
+    }
+
+    // The conversation: saves persist as they arrive, one terminal frame
+    // settles the attempt. Every wait is bounded by WINDDOWN_POLL so a run
+    // winding down abandons the attempt, and by the attempt deadline so an
+    // overrunning child is preempted.
+    loop {
+        let poll = Instant::now() + WINDDOWN_POLL;
+        let event = match link.next(Some(deadline.map_or(poll, |d| d.min(poll)))) {
+            Ok(event) => event,
+            Err(e) => {
+                // Frame hygiene: a child whose bytes violate the protocol is
+                // never trusted further — kill it, fail the attempt
+                // transiently, replace it.
+                link.kill();
+                let reason = format!("worker {} violated the transport protocol: {e}", worker.0);
+                fail_transiently(
+                    ctx,
+                    key,
+                    task,
+                    attempt,
+                    retry(spec, identity, chain),
+                    reason,
+                );
+                return ChildState::Dead;
+            }
+        };
+        match event {
+            LinkEvent::Save(payload) => {
+                // The parent's persist half of the checkpoint contract; a
+                // failure degrades, execution in the child continues
+                // unaffected. A save from a task that does not checkpoint is
+                // dropped: no slot was selected for it.
+                if let Some(slot) = slot
+                    && let Err(e) = ctx.store.save_checkpoint(&ctx.run, slot, &key, &payload)
+                {
                     emit(
                         &ctx.events,
                         LifecycleEvent::CheckpointDegraded {
@@ -225,135 +308,196 @@ fn process(ctx: &WorkerContext<'_>, worker: WorkerId, pending: Pending) {
                             error: e.to_string(),
                         },
                     );
-                    None
                 }
-            };
-            Some(SlotCheckpoint {
-                store: ctx.store,
-                run: ctx.run,
-                slot,
-                key,
-                task: &task,
-                cadence: CheckpointCadence::new(
-                    ctx.exec.checkpoint_interval,
-                    ctx.exec.checkpoint_interval_steps,
-                ),
-                resume,
-                events: &ctx.events,
-            })
-        }
-        _ => None,
-    };
-    let checkpoint: &dyn Checkpoint = match &slot_checkpoint {
-        Some(slot_checkpoint) => slot_checkpoint,
-        None => &NoCheckpoint,
-    };
-
-    let exec_ctx = ExecutionContext { attempt, worker };
-    let input = TaskInput {
-        spec: &spec,
-        params: &ctx.config.params,
-        seed: identity.seed,
-        environment: identity.environment,
-        input_state: input_state.as_deref(),
-    };
-    // The panic handler wraps only the executor call: a panic escaping it was
-    // raised inside the candidate's execution, so the worker classifies it as a
-    // definitive rejection. A panic anywhere else is a scheduler bug and
-    // propagates as one. `catch_unwind` intercepts only unwinding panics:
-    // under `panic = "abort"` this handler is unreachable and an executor
-    // panic kills the process instead — a crash the store's recovery
-    // guarantee covers, so no correctness contract depends on unwinding.
-    let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        ctx.executor.execute(&input, &exec_ctx, checkpoint)
-    }));
-    // `input` (and its borrow of `spec`) is unused past this point, so the
-    // retry path below is free to move `spec` back into a re-enqueued task.
-
-    // `caught` is `Result<Result<Outcome, Error>, Box<dyn Any + Send>>`. The
-    // outer layer comes from `catch_unwind` and is `Err` exactly when the
-    // executor panicked; the inner layer is `execute`'s own result, whose
-    // `Err` is an infrastructure fault. The three `Ok(Ok(..))` arms are the
-    // normal outcomes; only the last arm is the panic path.
-    match caught {
-        Ok(Ok(Outcome::Completed { artifacts, stats })) => {
-            match commit(ctx.store, identity, artifacts) {
-                Ok(record) => {
-                    emit(
-                        &ctx.events,
-                        LifecycleEvent::Committed {
-                            task,
-                            record: record.to_string(),
-                            stats_hex: to_hex(&stats.bytes),
-                        },
-                    );
-                    ctx.coordinator.resolve(key);
-                }
-                Err(e) => task_fault(ctx, task, attempt, key, e),
             }
-        }
-        Ok(Ok(Outcome::Failed { reason, stats })) => {
-            emit(
-                &ctx.events,
-                LifecycleEvent::Failed {
-                    task: task.clone(),
-                    attempt,
-                    reason: reason.clone(),
-                    stats_hex: to_hex(&stats.bytes),
-                },
-            );
-            if attempt + 1 < ctx.exec.max_attempts {
-                if ctx.coordinator.requeue(
-                    key,
-                    RunnableTask {
-                        spec,
-                        identity,
-                        chain,
+            LinkEvent::Done(Outcome::Completed { artifacts, stats }) => {
+                match commit(ctx.store, identity, artifacts) {
+                    Ok(record) => {
+                        emit(
+                            &ctx.events,
+                            LifecycleEvent::Committed {
+                                task,
+                                record: record.to_string(),
+                                stats_hex: to_hex(&stats.bytes),
+                            },
+                        );
+                        ctx.coordinator.resolve(key);
+                    }
+                    Err(e) => task_fault(ctx, task, attempt, key, e),
+                }
+                return ChildState::Alive;
+            }
+            LinkEvent::Done(Outcome::Failed { reason, stats }) => {
+                emit(
+                    &ctx.events,
+                    LifecycleEvent::Failed {
+                        task: task.clone(),
+                        attempt,
+                        reason: reason.clone(),
+                        stats_hex: to_hex(&stats.bytes),
                     },
-                    attempt + 1,
-                ) {
-                    emit(
-                        &ctx.events,
-                        LifecycleEvent::Retried {
-                            task,
-                            next_attempt: attempt + 1,
-                        },
-                    );
-                }
-            } else {
-                // Retries exhausted: the transient failure is now definitive.
+                );
+                retry_or_terminate(
+                    ctx,
+                    key,
+                    task,
+                    attempt,
+                    retry(spec, identity, chain),
+                    reason,
+                );
+                return ChildState::Alive;
+            }
+            LinkEvent::Done(Outcome::Rejected { reason, stats }) => {
+                emit(
+                    &ctx.events,
+                    LifecycleEvent::Rejected {
+                        task,
+                        attempt,
+                        reason: reason.clone(),
+                        stats_hex: to_hex(&stats.bytes),
+                    },
+                );
                 ctx.coordinator.terminate(key, reason);
+                return ChildState::Alive;
+            }
+            LinkEvent::Panicked(reason) => {
+                // A panic raised inside the candidate's execution, caught by
+                // the child: a definitive rejection, exactly as the
+                // in-process worker classified it. The child survives.
+                emit(
+                    &ctx.events,
+                    LifecycleEvent::Rejected {
+                        task,
+                        attempt,
+                        reason: reason.clone(),
+                        stats_hex: String::new(),
+                    },
+                );
+                ctx.coordinator.terminate(key, reason);
+                return ChildState::Alive;
+            }
+            LinkEvent::Fault(message) => {
+                // An infrastructure fault from the executor (e.g. a
+                // structurally invalid spec) fails the whole run, distinct
+                // from a candidate that merely evaluated badly. The wire
+                // flattens the executor's error to its rendered message.
+                task_fault(ctx, task, attempt, key, Error::Validation(message));
+                return ChildState::Alive;
+            }
+            LinkEvent::Died(death) => {
+                // Any death without an outcome — crash, OOM kill, externally
+                // killed — classifies identically: transient, retried.
+                let reason = format!("worker {} died without an outcome: {death}", worker.0);
+                fail_transiently(
+                    ctx,
+                    key,
+                    task,
+                    attempt,
+                    retry(spec, identity, chain),
+                    reason,
+                );
+                return ChildState::Dead;
+            }
+            LinkEvent::DeadlineExpired => {
+                if !matches!(ctx.coordinator.lock().state, RunState::Running) {
+                    // The run is winding down: kill the child and abandon the
+                    // attempt. The store's crash-safety makes the abandoned
+                    // attempt free — resume re-derives it in the frontier.
+                    link.kill();
+                    ctx.coordinator.resolve(key);
+                    return ChildState::WindingDown;
+                }
+                match deadline {
+                    Some(deadline) if Instant::now() >= deadline => {
+                        // Preemption: the attempt outlived attempt_timeout.
+                        let elapsed = started.elapsed();
+                        emit(
+                            &ctx.events,
+                            LifecycleEvent::LeaseExpired {
+                                task: task.clone(),
+                                worker: worker.0,
+                                elapsed_ms: elapsed.as_millis() as u64,
+                            },
+                        );
+                        link.kill();
+                        let reason = format!(
+                            "attempt preempted after {}ms (attempt_timeout {}ms)",
+                            elapsed.as_millis(),
+                            ctx.exec.attempt_timeout.as_millis()
+                        );
+                        fail_transiently(
+                            ctx,
+                            key,
+                            task,
+                            attempt,
+                            retry(spec, identity, chain),
+                            reason,
+                        );
+                        return ChildState::Dead;
+                    }
+                    // Only the wind-down poll slice elapsed; keep waiting.
+                    _ => {}
+                }
             }
         }
-        Ok(Ok(Outcome::Rejected { reason, stats })) => {
+    }
+}
+
+/// The task, reassembled for a retry's re-enqueue.
+fn retry(spec: sima_model::Spec, identity: TaskIdentity, chain: Option<u64>) -> RunnableTask {
+    RunnableTask {
+        spec,
+        identity,
+        chain,
+    }
+}
+
+/// Journals a transient failure and applies the retry policy. One settlement
+/// for every way an attempt fails transiently without stats: a child death,
+/// a preemption, a broken pipe, a protocol violation.
+fn fail_transiently(
+    ctx: &WorkerContext<'_>,
+    key: TaskKey,
+    task: String,
+    attempt: u32,
+    task_to_retry: RunnableTask,
+    reason: String,
+) {
+    emit(
+        &ctx.events,
+        LifecycleEvent::Failed {
+            task: task.clone(),
+            attempt,
+            reason: reason.clone(),
+            stats_hex: String::new(),
+        },
+    );
+    retry_or_terminate(ctx, key, task, attempt, task_to_retry, reason);
+}
+
+/// The retry policy shared by every transient failure: re-enqueue at the
+/// next attempt while attempts remain, otherwise the transient failure is
+/// definitive and terminates the run.
+fn retry_or_terminate(
+    ctx: &WorkerContext<'_>,
+    key: TaskKey,
+    task: String,
+    attempt: u32,
+    task_to_retry: RunnableTask,
+    reason: String,
+) {
+    if attempt + 1 < ctx.exec.max_attempts {
+        if ctx.coordinator.requeue(key, task_to_retry, attempt + 1) {
             emit(
                 &ctx.events,
-                LifecycleEvent::Rejected {
+                LifecycleEvent::Retried {
                     task,
-                    attempt,
-                    reason: reason.clone(),
-                    stats_hex: to_hex(&stats.bytes),
+                    next_attempt: attempt + 1,
                 },
             );
-            ctx.coordinator.terminate(key, reason);
         }
-        // An infrastructure fault from the executor (e.g. a structurally
-        // invalid spec) fails the whole run, distinct from a candidate that
-        // merely evaluated badly.
-        Ok(Err(e)) => task_fault(ctx, task, attempt, key, e),
-        Err(payload) => {
-            let reason = panic_reason(payload);
-            emit(
-                &ctx.events,
-                LifecycleEvent::Rejected {
-                    task,
-                    attempt,
-                    reason: reason.clone(),
-                    stats_hex: String::new(),
-                },
-            );
-            ctx.coordinator.terminate(key, reason);
-        }
+    } else {
+        ctx.coordinator.terminate(key, reason);
     }
 }
 
@@ -373,7 +517,7 @@ fn commit(store: &Store, identity: TaskIdentity, artifacts: Vec<Artifact>) -> Re
 
 /// Emits the task's `Faulted` event and records the infrastructure fault, so
 /// the run surfaces the error. One classification site for every fault: the
-/// executor-error path, the commit-error path, and the input-state load path.
+/// executor-fault path, the commit-error path, and the input-state load path.
 fn task_fault(ctx: &WorkerContext<'_>, task: String, attempt: u32, key: TaskKey, err: Error) {
     emit(
         &ctx.events,
@@ -389,36 +533,39 @@ fn task_fault(ctx: &WorkerContext<'_>, task: String, attempt: u32, key: TaskKey,
 #[cfg(test)]
 mod tests {
     use std::num::NonZeroU64;
+    use std::sync::Arc;
     use std::sync::mpsc;
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
 
+    use sima_contracts::{ExecutionContext, Executor, NoCheckpoint, Outcome, TaskInput};
     use sima_core::hash_bytes;
     use sima_domains::{StubBehavior, StubExecutor, StubProgram};
     use sima_model::{EnvironmentId, FormatId, GeneratorConfig, GeneratorId, Params, Spec, SpecId};
 
     use super::*;
-    use crate::coordinator::RunState;
-    use crate::lease::Lease;
+    use crate::transport::loopback::LoopbackTransport;
 
     /// A throwaway task key.
     fn a_key() -> TaskKey {
         TaskKey::from_hash(hash_bytes(b"panic-guard task"))
     }
 
-    /// A lease held by `worker`, leased now.
-    fn a_lease(worker: u64) -> Lease {
-        Lease {
-            worker: WorkerId(worker),
-            attempt: 0,
-            leased_at: Instant::now(),
-        }
+    /// A loopback transport hosting the stub executor under `exec`'s
+    /// checkpoint cadence.
+    fn stub_transport(exec: &ExecutionConfig) -> LoopbackTransport {
+        LoopbackTransport::new(
+            FormatId::new("stub.v1").expect("format id"),
+            exec.checkpoint_interval,
+            exec.checkpoint_interval_steps,
+            Arc::new(|_| Ok(Box::new(StubExecutor::new()?) as Box<dyn Executor>)),
+        )
     }
 
     #[test]
     fn a_panicking_worker_releases_its_lease_as_a_fault() {
         let coordinator = Coordinator::new();
         let key = a_key();
-        coordinator.lock().leases.insert(key, a_lease(0));
+        coordinator.lock().leases.insert(key);
         // A panic escaping the guarded region unwinds through the guard's Drop.
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let _guard = PanicGuard::arm(&coordinator, key);
@@ -428,7 +575,7 @@ mod tests {
         let shared = coordinator.lock();
         // The lease is released and the run winds down, so drive() can observe
         // quiescence instead of blocking forever.
-        assert!(!shared.leases.contains_key(&key));
+        assert!(!shared.leases.contains(&key));
         assert!(matches!(shared.state, RunState::Fault(_)));
     }
 
@@ -436,7 +583,7 @@ mod tests {
     fn a_disarmed_guard_leaves_the_run_running() {
         let coordinator = Coordinator::new();
         let key = a_key();
-        coordinator.lock().leases.insert(key, a_lease(0));
+        coordinator.lock().leases.insert(key);
         {
             let guard = PanicGuard::arm(&coordinator, key);
             guard.disarm();
@@ -445,7 +592,7 @@ mod tests {
         // Disarm settles nothing itself — the normal process() path does — so
         // the state is untouched: no fault, and the lease still stands.
         assert!(matches!(shared.state, RunState::Running));
-        assert!(shared.leases.contains_key(&key));
+        assert!(shared.leases.contains(&key));
     }
 
     /// The outcome of running `process` once against a stub `Succeed` candidate
@@ -461,11 +608,11 @@ mod tests {
         expected_artifact: Vec<u8>,
     }
 
-    /// Builds a task whose identity references `state` and runs `process` once.
-    /// The state object is stored only when `store_state` is set, so a caller
-    /// can exercise both the resolved-state and missing-state paths. Every other
-    /// identity component is stored, so a successful commit's only open question
-    /// is the input state.
+    /// Builds a task whose identity references `state` and runs `process` once
+    /// over a loopback worker. The state object is stored only when
+    /// `store_state` is set, so a caller can exercise both the resolved-state
+    /// and missing-state paths. Every other identity component is stored, so a
+    /// successful commit's only open question is the input state.
     fn run_process(state: &[u8], store_state: bool) -> Result<ProcessRun> {
         let dir = tempfile::tempdir().expect("temp dir");
         let store = Store::open(dir.path()).expect("open store");
@@ -508,11 +655,11 @@ mod tests {
             params,
         };
         let run = store.create_run(&config)?;
-        let executor = StubExecutor::new()?;
-        let exec = ExecutionConfig::new(1, 1, Duration::from_secs(1), Duration::MAX, None)?;
+        let exec = ExecutionConfig::new(1, 1, Duration::from_secs(5), Duration::MAX, None)?;
 
         // The stub artifact this identity commits when the state bytes reach the
         // executor: computed by calling the executor directly with the bytes.
+        let executor = StubExecutor::new()?;
         let expected_artifact = match executor.execute(
             &TaskInput {
                 spec: &spec,
@@ -536,12 +683,13 @@ mod tests {
         let coordinator = Coordinator::new();
         let (tx, rx) = mpsc::channel();
         {
+            let transport = stub_transport(&exec);
             let ctx = WorkerContext {
                 coordinator: &coordinator,
                 store: &store,
                 run,
                 config: &config,
-                executor: &executor,
+                transport: &transport,
                 exec: &exec,
                 events: tx,
             };
@@ -554,7 +702,8 @@ mod tests {
                 },
                 attempt: 0,
             };
-            process(&ctx, WorkerId(0), pending);
+            let mut link = transport.spawn()?;
+            process(&ctx, WorkerId(0), pending, link.as_mut());
         }
         let events = rx.into_iter().collect();
         Ok(ProcessRun {
@@ -577,7 +726,7 @@ mod tests {
         assert_eq!(record.artifacts().len(), 1);
         let object = record.artifacts()[0].object();
         // The committed artifact is the digest that folds in the input-state
-        // bytes the worker resolved and passed to the executor.
+        // bytes the worker resolved and sent to the child.
         assert_eq!(run.store.get(object)?, run.expected_artifact);
         Ok(())
     }
@@ -671,17 +820,17 @@ mod tests {
             interval: Duration,
             step_interval: Option<NonZeroU64>,
         ) -> Result<Vec<LifecycleEvent>> {
-            let executor = StubExecutor::new()?;
             let exec = ExecutionConfig::new(1, 1, Duration::from_secs(5), interval, step_interval)?;
             let coordinator = Coordinator::new();
             let (tx, rx) = mpsc::channel();
             {
+                let transport = stub_transport(&exec);
                 let ctx = WorkerContext {
                     coordinator: &coordinator,
                     store: &self.store,
                     run: self.run,
                     config: &self.config,
-                    executor: &executor,
+                    transport: &transport,
                     exec: &exec,
                     events: tx,
                 };
@@ -694,7 +843,8 @@ mod tests {
                     },
                     attempt: 1,
                 };
-                process(&ctx, WorkerId(0), pending);
+                let mut link = transport.spawn()?;
+                process(&ctx, WorkerId(0), pending, link.as_mut());
             }
             Ok(rx.into_iter().collect())
         }
@@ -873,7 +1023,7 @@ mod tests {
 
     #[test]
     fn both_axes_disabled_writes_no_slot() -> Result<()> {
-        // The default: neither axis set, so a chain task gets the inert handle
+        // The default: neither axis set, so a chain task never checkpoints
         // and the slot is never written.
         let fixture = AccumulateFixture::new(3)?;
         fixture.process_with(Some(0), Duration::MAX, None)?;

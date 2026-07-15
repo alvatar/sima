@@ -1,22 +1,22 @@
 //! The driver: it sets up the run, drives the worker pool, and finalizes.
 //!
 //! `run` owns the whole run: it registers the run, materializes the frontier,
-//! spawns the pool inside a scope so workers borrow the store and executor
+//! spawns the pool inside a scope so workers borrow the store and transport
 //! without `Arc`, feeds the queue by polling the task source, and finalizes on
 //! success. A definitive candidate failure terminates the run without writing a
 //! manifest, leaving the store clean and resumable; an infrastructure fault
 //! returns `Err`. The two mirror the executor's own `Ok(Outcome)`/`Err` split
 //! one level up. A caller's interrupt winds the run down the same way a
-//! failure does — in-flight attempts drain and commit, queued tasks are
-//! abandoned, no manifest — but reports [`RunOutcome::Interrupted`], the
-//! resumable outcome.
+//! failure does — in-flight attempts are abandoned and their worker processes
+//! killed, queued tasks are abandoned, no manifest — but reports
+//! [`RunOutcome::Interrupted`], the resumable outcome.
 
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::Sender;
 use std::thread;
 use std::time::Duration;
 
-use sima_contracts::{Executor, Generator, WorkerId};
+use sima_contracts::{Generator, WorkerId};
 use sima_core::Result;
 use sima_model::{Environment, RunConfig, RunId, TaskKey};
 use sima_store::Store;
@@ -29,7 +29,7 @@ use crate::journal_sink::{JournalSink, emit};
 use crate::segment_chain::SegmentChain;
 use crate::static_batch::StaticBatch;
 use crate::task_source::{RunnableTask, TaskSource};
-use crate::watchdog::watchdog_loop;
+use crate::transport::link::WorkerTransport;
 use crate::worker::{WorkerContext, worker_loop};
 
 /// The result of a run.
@@ -61,20 +61,21 @@ pub enum RunOutcome {
 ///
 /// Registers the run, materializes the runnable frontier from `(config,
 /// environment, store state)`, and evaluates each task on a pool of `exec`
-/// worker threads, committing successes through `store` and retrying transient
-/// failures up to the cap. Returns [`RunOutcome::Finalized`] once every task is
-/// committed and the manifest is written, or [`RunOutcome::Failed`] when a task
-/// fails definitively, or [`RunOutcome::Interrupted`] when `control`'s
-/// interrupt flag winds the run down — in the latter two cases no manifest is
-/// written and the store stays resumable. `Err` signals an infrastructure
-/// fault. `control` also carries the caller's event observer, invoked with
-/// each lifecycle event in journal order.
+/// worker processes spawned through `transport`, committing successes through
+/// `store` and retrying transient failures up to the cap. Returns
+/// [`RunOutcome::Finalized`] once every task is committed and the manifest is
+/// written, or [`RunOutcome::Failed`] when a task fails definitively, or
+/// [`RunOutcome::Interrupted`] when `control`'s interrupt flag winds the run
+/// down — in the latter two cases no manifest is written and the store stays
+/// resumable. `Err` signals an infrastructure fault. `control` also carries
+/// the caller's event observer, invoked with each lifecycle event in journal
+/// order.
 pub fn run(
     store: &Store,
     config: &RunConfig,
     environment: &Environment,
     generator: &dyn Generator,
-    executor: &(dyn Executor + Sync),
+    transport: &dyn WorkerTransport,
     exec: &ExecutionConfig,
     control: &RunControl,
 ) -> Result<RunOutcome> {
@@ -99,9 +100,9 @@ pub fn run(
 
     // Two nested scopes: the outer one holds the journal sink — a scoped
     // thread, so it can call the caller's borrowed observer — and the inner
-    // one holds the pool, so workers borrow `&store` and the executor without
-    // `Arc` and a worker panic re-raises at the pool's join, before any
-    // finalize. The driver drives polling on this thread.
+    // one holds the pool, so workers borrow `&store` and the transport
+    // without `Arc` and a worker panic re-raises at the pool's join, before
+    // any finalize. The driver drives polling on this thread.
     let (outcome, journal) = thread::scope(|scope| {
         let sink = JournalSink::spawn(scope, writer, control.observer);
         let events = sink.sender();
@@ -120,15 +121,11 @@ pub fn run(
                     store,
                     run,
                     config,
-                    executor,
+                    transport,
                     exec,
                     events: events.clone(),
                 };
                 pool.spawn(move || worker_loop(WorkerId(w as u64), ctx));
-            }
-            {
-                let events = events.clone();
-                pool.spawn(move || watchdog_loop(coordinator, exec.attempt_timeout, &events));
             }
             drive(coordinator, source.as_mut(), &events, control)
         });
@@ -588,8 +585,8 @@ mod tests {
             let queued_during_lease = &queued_during_lease;
             scope.spawn(move || {
                 // FIFO queue: the first lease is A, the second is C.
-                let a = coordinator.next_task(WorkerId(0)).expect("task A");
-                let c = coordinator.next_task(WorkerId(0)).expect("task C");
+                let a = coordinator.next_task().expect("task A");
+                let c = coordinator.next_task().expect("task C");
                 coordinator.resolve(c.key);
                 // C's commit derives B; it must arrive while A is still held.
                 if saw_queued(&rx, &key_b, Duration::from_secs(5)) {
@@ -598,7 +595,7 @@ mod tests {
                 coordinator.resolve(a.key);
                 // Drain whatever else the driver hands out, so the run can
                 // finalize in both the passing and the failing sequence.
-                while let Some(t) = coordinator.next_task(WorkerId(0)) {
+                while let Some(t) = coordinator.next_task() {
                     coordinator.resolve(t.key);
                 }
             });
@@ -625,12 +622,12 @@ mod tests {
         let resolved = std::sync::atomic::AtomicBool::new(false);
         let outcome = thread::scope(|scope| {
             scope.spawn(|| {
-                let a = coordinator.next_task(WorkerId(0)).expect("task A");
+                let a = coordinator.next_task().expect("task A");
                 // Long enough for several empty polls under the 50 ms cadence.
                 thread::sleep(Duration::from_millis(300));
                 resolved.store(true, Ordering::Relaxed);
                 coordinator.resolve(a.key);
-                while let Some(t) = coordinator.next_task(WorkerId(0)) {
+                while let Some(t) = coordinator.next_task() {
                     coordinator.resolve(t.key);
                 }
             });
@@ -674,11 +671,11 @@ mod tests {
         let resolved = std::sync::atomic::AtomicBool::new(false);
         let outcome = thread::scope(|scope| {
             scope.spawn(|| {
-                let a = coordinator.next_task(WorkerId(0)).expect("task A");
+                let a = coordinator.next_task().expect("task A");
                 thread::sleep(Duration::from_millis(200));
                 resolved.store(true, Ordering::Relaxed);
                 coordinator.resolve(a.key);
-                while let Some(t) = coordinator.next_task(WorkerId(0)) {
+                while let Some(t) = coordinator.next_task() {
                     coordinator.resolve(t.key);
                 }
             });
@@ -710,11 +707,11 @@ mod tests {
         };
         let outcome = thread::scope(|scope| {
             scope.spawn(|| {
-                let a = coordinator.next_task(WorkerId(0)).expect("task A");
+                let a = coordinator.next_task().expect("task A");
                 control.interrupt.store(true, Ordering::Relaxed);
                 thread::sleep(Duration::from_millis(200));
                 coordinator.resolve(a.key);
-                while let Some(t) = coordinator.next_task(WorkerId(0)) {
+                while let Some(t) = coordinator.next_task() {
                     coordinator.resolve(t.key);
                 }
             });

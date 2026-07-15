@@ -1,11 +1,12 @@
-//! Crash-injection harness: a run SIGKILLed at any crashpoint and resumed
-//! yields a manifest identical to a never-interrupted run's.
+//! Crash-injection harness: a death at any planted crashpoint leaves a
+//! store that converges to the reference manifest.
 //!
-//! Each case spawns the real binary with `SIMA_CRASHPOINT` arming one
-//! point, asserts the child died by SIGKILL — an unmaskable death, no
-//! destructors, no unwinding — then re-runs unarmed over the same store
-//! and compares the manifest against an uninterrupted reference run's.
-//! The kernel-released orchestrator lock is asserted along the way.
+//! Parent-side points SIGKILL the orchestrator — each case asserts the
+//! unmaskable death, then re-runs unarmed over the same store and compares
+//! manifests, with the kernel-released orchestrator lock asserted along
+//! the way. The executor-side point fires inside a `sima-worker` child,
+//! so the orchestrator survives: those cases assert convergence through
+//! retry within the same invocation.
 
 mod common;
 
@@ -15,7 +16,7 @@ use std::process::{ExitStatus, Stdio};
 
 use common::{manifest_of, sima_command};
 use sima_pipeline::load;
-use sima_store::Store;
+use sima_store::{Manifest, Store};
 
 /// Enough tasks that mid-run hit counts land while work is still ahead:
 /// commits and leases number six, object writes a multiple of that.
@@ -135,7 +136,9 @@ fn an_unarmed_run_is_not_sigkilled() {
 
 /// A segmented, checkpointing config over one `accumulate` chain: `k`
 /// steps per segment, `segments` tasks, a zero checkpoint interval so
-/// every step boundary saves.
+/// every step boundary saves. One worker, so the chain's two segments run
+/// in the same long-lived worker process and a per-step crashpoint's hit
+/// count lands at a deterministic point of the second segment.
 fn write_segmented_config(dir: &Path, name: &str, store: &str) -> PathBuf {
     let text = r#"
         [run]
@@ -149,7 +152,7 @@ fn write_segmented_config(dir: &Path, name: &str, store: &str) -> PathBuf {
 
         [execution]
         store = "STORE"
-        workers = 2
+        workers = 1
         max_attempts = 3
         checkpoint_interval_ms = 0
     "#
@@ -159,7 +162,8 @@ fn write_segmented_config(dir: &Path, name: &str, store: &str) -> PathBuf {
 
 /// A segmented, checkpointing config over one `accumulate` chain driven by the
 /// step-count cadence alone: `checkpoint_interval_steps` saves every tenth step
-/// with no wall-clock interval set.
+/// with no wall-clock interval set. One worker, for the same deterministic
+/// hit-count reason as [`write_segmented_config`].
 fn write_step_segmented_config(dir: &Path, name: &str, store: &str) -> PathBuf {
     let text = r#"
         [run]
@@ -173,7 +177,7 @@ fn write_step_segmented_config(dir: &Path, name: &str, store: &str) -> PathBuf {
 
         [execution]
         store = "STORE"
-        workers = 2
+        workers = 1
         max_attempts = 3
         checkpoint_interval_steps = 10
     "#
@@ -181,17 +185,23 @@ fn write_step_segmented_config(dir: &Path, name: &str, store: &str) -> PathBuf {
     common::write_config_text(dir, name, &text)
 }
 
+/// The run's journal, parsed into typed events.
+fn journal_events(config_path: &Path) -> Vec<sima_pipeline::LifecycleEvent> {
+    let config = load(config_path).expect("load config");
+    let store = Store::open(&config.store).expect("open store");
+    store
+        .journal(&config.run.id())
+        .expect("read journal")
+        .iter()
+        .map(|line| sima_pipeline::LifecycleEvent::from_line(line).expect("parse journal line"))
+        .collect()
+}
+
 /// The steps each committed attempt executed after the journal's last
 /// `run_started` line — the resume segment — from the stub's stats
 /// encoding `(u32 attempt, u64 steps)`.
 fn resumed_steps(config_path: &Path) -> Vec<u64> {
-    let config = load(config_path).expect("load config");
-    let store = Store::open(&config.store).expect("open store");
-    let lines = store.journal(&config.run.id()).expect("read journal");
-    let events: Vec<sima_pipeline::LifecycleEvent> = lines
-        .iter()
-        .map(|line| sima_pipeline::LifecycleEvent::from_line(line).expect("parse journal line"))
-        .collect();
+    let events = journal_events(config_path);
     let resume_start = events
         .iter()
         .rposition(|e| matches!(e, sima_pipeline::LifecycleEvent::RunStarted { .. }))
@@ -213,12 +223,59 @@ fn resumed_steps(config_path: &Path) -> Vec<u64> {
         .collect()
 }
 
-/// A death mid-segment under a segmented, checkpointing run: the resumed
-/// run converges on the reference manifest, and its journal proves the
-/// checkpoint shortened re-execution — the resumed segment ran fewer
-/// steps than a full segment.
+/// Asserts the worker-crash convergence contract on `config` armed with
+/// `arming`: the executor-side crashpoint SIGKILLs the worker process
+/// mid-segment, and — in the same invocation — the run journals a transient
+/// failure and a retry, the retry resumes from the last checkpoint (its
+/// step count is strictly below a full segment), and the run finalizes to
+/// `reference`.
+fn assert_worker_death_converges(config: &Path, arming: &str, reference: &Manifest) {
+    let status = sima_run(config, Some(arming));
+    assert_eq!(
+        status.code(),
+        Some(0),
+        "the run survives its worker's death and finalizes, got {status:?}"
+    );
+    assert_eq!(
+        manifest_of(config).as_ref(),
+        Some(reference),
+        "the converged manifest equals the reference"
+    );
+
+    // The worker death is journaled as a transient failure and a retry.
+    let events = journal_events(config);
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, sima_pipeline::LifecycleEvent::Failed { .. })),
+        "the worker death journals a transient failure"
+    );
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, sima_pipeline::LifecycleEvent::Retried { .. })),
+        "the failed attempt is retried"
+    );
+
+    // Both segments committed in this one invocation; the first ran fully,
+    // the killed second resumed from its checkpoint and ran strictly fewer
+    // than its full 100 steps.
+    let steps = resumed_steps(config);
+    assert_eq!(steps.len(), 2, "both segments committed, got {steps:?}");
+    assert_eq!(steps[0], 100, "the first segment runs fully");
+    assert!(
+        steps[1] < 100,
+        "the checkpoint must shorten the retry, got {} steps",
+        steps[1]
+    );
+}
+
+/// A worker SIGKILLed mid-segment under the wall-clock checkpoint cadence:
+/// the per-step crashpoint fires inside the worker process — hit 150 lands
+/// 50 steps into the second segment of the single worker's hit count — and
+/// the run converges through retry in one invocation.
 #[test]
-fn a_death_mid_segment_resumes_from_the_checkpoint() {
+fn a_worker_death_mid_segment_converges_through_retry() {
     let dir = tempfile::tempdir().expect("temp dir");
 
     let reference_config =
@@ -226,34 +283,8 @@ fn a_death_mid_segment_resumes_from_the_checkpoint() {
     assert_eq!(sima_run(&reference_config, None).code(), Some(0));
     let reference = manifest_of(&reference_config).expect("reference manifest");
 
-    // Hit 150 of the per-step point lands 50 steps into the second
-    // segment; the zero interval saved a checkpoint at every prior step.
     let config = write_segmented_config(dir.path(), "armed.toml", "./store-seg-armed");
-    let status = sima_run(&config, Some("stub.accumulate.step:150"));
-    assert_eq!(
-        status.signal(),
-        Some(9),
-        "the armed child dies by SIGKILL, got {status:?}"
-    );
-    assert!(manifest_of(&config).is_none(), "no manifest survives");
-
-    let resumed = sima_run(&config, None);
-    assert_eq!(resumed.code(), Some(0), "the resumed run finalizes");
-    assert_eq!(
-        manifest_of(&config).as_ref(),
-        Some(&reference),
-        "the resumed manifest equals the reference"
-    );
-
-    // The second segment resumed from its checkpoint: strictly fewer than
-    // its full 100 steps ran on the resumed attempt.
-    let steps = resumed_steps(&config);
-    assert_eq!(steps.len(), 1, "one task ran on resume, got {steps:?}");
-    assert!(
-        steps[0] < 100,
-        "the checkpoint must shorten re-execution, got {} steps",
-        steps[0]
-    );
+    assert_worker_death_converges(&config, "stub.accumulate.step:150", &reference);
 }
 
 /// A resumed run's progress accounts for the commits already in the store:
@@ -268,9 +299,9 @@ fn a_resumed_run_reports_prior_commits_in_its_progress() {
         "./store-resume-progress",
     );
 
-    // Death 50 steps into the second segment: the first segment's task is
-    // committed and durable, the second is not.
-    let status = sima_run(&config, Some("stub.accumulate.step:150"));
+    // Death at the second lease: the first segment's task is committed and
+    // durable, the second is not.
+    let status = sima_run(&config, Some("lease.held:2"));
     assert_eq!(
         status.signal(),
         Some(9),
@@ -294,11 +325,11 @@ fn a_resumed_run_reports_prior_commits_in_its_progress() {
     );
 }
 
-/// A death mid-segment under the step-count checkpoint cadence alone: the
-/// resumed run converges on the reference manifest, and its journal proves the
-/// step-cadence checkpoint shortened re-execution.
+/// A worker SIGKILLed mid-segment under the step-count checkpoint cadence
+/// alone: the cadence saved every tenth step before the death, and the run
+/// converges through retry in one invocation.
 #[test]
-fn a_death_mid_segment_resumes_under_the_step_cadence() {
+fn a_worker_death_converges_under_the_step_cadence() {
     let dir = tempfile::tempdir().expect("temp dir");
 
     let reference_config =
@@ -306,33 +337,8 @@ fn a_death_mid_segment_resumes_under_the_step_cadence() {
     assert_eq!(sima_run(&reference_config, None).code(), Some(0));
     let reference = manifest_of(&reference_config).expect("reference manifest");
 
-    // Hit 150 lands 50 steps into the second segment; the step cadence saved a
-    // checkpoint every ten steps, so one precedes the death.
     let config = write_step_segmented_config(dir.path(), "step-armed.toml", "./store-step-armed");
-    let status = sima_run(&config, Some("stub.accumulate.step:150"));
-    assert_eq!(
-        status.signal(),
-        Some(9),
-        "the armed child dies by SIGKILL, got {status:?}"
-    );
-    assert!(manifest_of(&config).is_none(), "no manifest survives");
-
-    let resumed = sima_run(&config, None);
-    assert_eq!(resumed.code(), Some(0), "the resumed run finalizes");
-    assert_eq!(
-        manifest_of(&config).as_ref(),
-        Some(&reference),
-        "the resumed manifest equals the reference"
-    );
-
-    // The step-cadence checkpoint shortened the second segment's re-execution.
-    let steps = resumed_steps(&config);
-    assert_eq!(steps.len(), 1, "one task ran on resume, got {steps:?}");
-    assert!(
-        steps[0] < 100,
-        "the step-cadence checkpoint must shorten re-execution, got {} steps",
-        steps[0]
-    );
+    assert_worker_death_converges(&config, "stub.accumulate.step:150", &reference);
 }
 
 /// The pre-existing crashpoints re-run under a segmented, checkpointing

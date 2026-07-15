@@ -159,7 +159,12 @@ impl WorkerLink for SubprocessLink {
     }
 
     fn next(&mut self, deadline: Option<Instant>) -> Result<LinkEvent> {
-        next_event(&self.events, deadline)
+        match next_event(&self.events, deadline)? {
+            // The event stream ended: reap the child so the death carries
+            // its exit status or signal.
+            LinkEvent::Died(_) => Ok(LinkEvent::Died(self.reap())),
+            event => Ok(event),
+        }
     }
 
     fn kill(&mut self) {
@@ -173,7 +178,37 @@ impl WorkerLink for SubprocessLink {
     }
 }
 
+/// How long the graceful shutdown waits for the child to exit on the
+/// stdin-close signal before escalating to SIGKILL.
+const SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
+
 impl SubprocessLink {
+    /// Reaps the child gracefully: closing stdin is the shutdown signal, the
+    /// child exits on end-of-stream, and the parent collects it. A child
+    /// that does not exit within [`SHUTDOWN_GRACE`] is killed. Idempotent —
+    /// a reaped child's cached status is returned. The returned string
+    /// describes the death: an exit status or a signal.
+    fn reap(&mut self) -> String {
+        self.stdin = None;
+        let waited = Instant::now();
+        loop {
+            match self.child.try_wait() {
+                Ok(Some(status)) => return status.to_string(),
+                Ok(None) if waited.elapsed() < SHUTDOWN_GRACE => {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                // Out of grace, or the wait itself failed: force the exit.
+                Ok(None) | Err(_) => {
+                    let _ = self.child.kill();
+                    return match self.child.wait() {
+                        Ok(status) => status.to_string(),
+                        Err(e) => format!("unreapable: {e}"),
+                    };
+                }
+            }
+        }
+    }
+
     /// Joins the reader thread; it exits when the child's stdout ends, which
     /// a reaped child's already has.
     fn join_reader(&mut self) {
@@ -183,31 +218,11 @@ impl SubprocessLink {
     }
 }
 
-/// How long a dropped link waits for the child to exit on the stdin-close
-/// shutdown signal before escalating to SIGKILL.
-const SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
-
 impl Drop for SubprocessLink {
-    /// The graceful shutdown: closing stdin is the shutdown signal, the
-    /// child exits on EOF, and the parent reaps it. A child that does not
-    /// exit within [`SHUTDOWN_GRACE`] is killed.
+    /// The graceful shutdown at the end of the worker's life: reap the child
+    /// off the stdin-close signal, then collect the reader thread.
     fn drop(&mut self) {
-        self.stdin = None;
-        let waited = Instant::now();
-        loop {
-            match self.child.try_wait() {
-                Ok(Some(_)) => break,
-                Ok(None) if waited.elapsed() < SHUTDOWN_GRACE => {
-                    std::thread::sleep(Duration::from_millis(10));
-                }
-                // Out of grace, or the wait itself failed: force the exit.
-                Ok(None) | Err(_) => {
-                    let _ = self.child.kill();
-                    let _ = self.child.wait();
-                    break;
-                }
-            }
-        }
+        self.reap();
         self.join_reader();
     }
 }
@@ -232,6 +247,12 @@ pub(crate) fn read_events(mut reader: impl Read, events: Sender<Result<ToParent>
     }
 }
 
+/// The generic death event a closed event stream maps to. A link that can
+/// observe the actual exit status replaces the description with it.
+fn died() -> LinkEvent {
+    LinkEvent::Died("the worker's event stream ended".to_string())
+}
+
 /// Maps one received channel event to a [`LinkEvent`] for [`WorkerLink::next`]:
 /// waits up to `deadline` when given, reporting expiry and channel
 /// disconnection — the child's death — as events. A frame violation or an
@@ -248,12 +269,12 @@ pub(crate) fn next_event(
             match events.recv_timeout(timeout) {
                 Ok(message) => message,
                 Err(RecvTimeoutError::Timeout) => return Ok(LinkEvent::DeadlineExpired),
-                Err(RecvTimeoutError::Disconnected) => return Ok(LinkEvent::Died),
+                Err(RecvTimeoutError::Disconnected) => return Ok(died()),
             }
         }
         None => match events.recv() {
             Ok(message) => message,
-            Err(_) => return Ok(LinkEvent::Died),
+            Err(_) => return Ok(died()),
         },
     };
     Ok(match received? {

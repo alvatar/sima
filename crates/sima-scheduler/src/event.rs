@@ -57,7 +57,8 @@ pub enum LifecycleEvent {
         attempt: u32,
         error: String,
     },
-    /// A lease outlived `attempt_timeout`; detection only, no preemption.
+    /// A lease outlived `attempt_timeout`: the attempt's worker process is
+    /// killed and the attempt fails transiently.
     LeaseExpired {
         task: String,
         worker: u64,

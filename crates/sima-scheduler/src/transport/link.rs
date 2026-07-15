@@ -53,8 +53,10 @@ pub enum LinkEvent {
     Panicked(String),
     /// The executor returned `Err` — an infrastructure fault; the message.
     Fault(String),
-    /// The child died without an outcome: its event stream ended.
-    Died,
+    /// The child died without an outcome: its event stream ended. Carries a
+    /// description of the death — the exit status or signal where the
+    /// transport can observe it.
+    Died(String),
     /// The caller's deadline expired with no event; nothing was consumed.
     DeadlineExpired,
 }

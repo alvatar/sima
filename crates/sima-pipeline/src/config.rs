@@ -20,7 +20,7 @@
 //! store = "./store"         # resolved relative to this file's directory
 //! workers = 4
 //! max_attempts = 3
-//! attempt_timeout_ms = 5000 # optional; absent disables expiry reporting
+//! attempt_timeout_ms = 5000 # optional; absent disables the attempt deadline
 //! checkpoint_interval_ms = 30000 # optional; wall-clock checkpoint cadence
 //! checkpoint_interval_steps = 100 # optional; step-count cadence, >= 1
 //! ```
@@ -488,7 +488,7 @@ mod tests {
     }
 
     #[test]
-    fn an_absent_attempt_timeout_disables_expiry_reporting() -> Result<()> {
+    fn an_absent_attempt_timeout_disables_the_deadline() -> Result<()> {
         let text = BASE.replace("attempt_timeout_ms = 5000", "");
         let loaded = load_text(&text)?;
         assert_eq!(loaded.execution.attempt_timeout, Duration::MAX);

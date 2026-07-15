@@ -26,11 +26,11 @@ use super::protocol::{Assignment, Hello, PROTOCOL_VERSION, ToChild, ToParent, wr
 use super::subprocess::{self, next_event, read_events};
 
 /// A resolver the loopback moves into each host thread.
-pub(crate) type Resolver = Arc<dyn Fn(&FormatId) -> Result<Box<dyn Executor>> + Send + Sync>;
+pub type Resolver = Arc<dyn Fn(&FormatId) -> Result<Box<dyn Executor>> + Send + Sync>;
 
 /// Spawns in-process workers: each is a thread running the real host loop
 /// over in-memory pipes, hosting the executor the resolver supplies.
-pub(crate) struct LoopbackTransport {
+pub struct LoopbackTransport {
     hello: Hello,
     resolver: Resolver,
 }
@@ -38,7 +38,7 @@ pub(crate) struct LoopbackTransport {
 impl LoopbackTransport {
     /// A transport hosting `resolver`'s executor for `format` with the given
     /// checkpoint cadence ([`Duration::MAX`] and `None` disable an axis).
-    pub(crate) fn new(
+    pub fn new(
         format: FormatId,
         checkpoint_interval: Duration,
         checkpoint_interval_steps: Option<NonZeroU64>,
@@ -310,7 +310,7 @@ mod tests {
         // and the event stream ends — the same signal a dead process leaves.
         link.kill();
         match link.next(None)? {
-            LinkEvent::Died => {}
+            LinkEvent::Died(_) => {}
             other => panic!("expected Died, got {other:?}"),
         }
         Ok(())

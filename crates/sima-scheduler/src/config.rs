@@ -11,16 +11,16 @@ use sima_core::{Error, Result};
 /// layers.
 #[derive(Debug, Clone)]
 pub struct ExecutionConfig {
-    /// Number of worker threads; at least 1.
+    /// Number of worker processes; at least 1.
     pub workers: usize,
     /// Total attempts per task before a transient failure becomes definitive;
     /// at least 1.
     pub max_attempts: u32,
-    /// Soft per-attempt deadline the watchdog uses for lease-expiry detection.
-    /// In process, execution cannot be preempted, so this drives reporting,
-    /// not termination. A value larger than any attempt could take (for
-    /// example [`Duration::MAX`]) disables expiry reporting: no lease's age
-    /// ever exceeds it.
+    /// Enforced per-attempt deadline: on expiry the attempt's worker process
+    /// is killed, the journal records the lease expiry, and the attempt
+    /// fails transiently — retried up to `max_attempts`. A value larger than
+    /// any attempt could take (for example [`Duration::MAX`]) disables
+    /// enforcement.
     pub attempt_timeout: Duration,
     /// Wall-clock cadence between checkpoint saves during one attempt: the
     /// first save becomes due one full interval after execution starts.

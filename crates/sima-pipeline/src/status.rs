@@ -138,8 +138,8 @@ impl RunStatus {
                 self.free_task(task);
             }
             LifecycleEvent::LeaseExpired { .. } => {
-                // Detection only, no preemption: the lease stands, so
-                // occupancy is untouched.
+                // The preemption settles through its own Failed event, which
+                // frees the task; here only the counter moves.
                 self.lease_expired += 1;
             }
             LifecycleEvent::CheckpointDegraded { .. } => {
@@ -358,7 +358,7 @@ mod tests {
         assert_eq!(status.lease_expired, 1);
         assert!(
             status.occupancy.contains_key(&0),
-            "expiry is detection only, so the lease stands"
+            "the preemption settles through its own failed event"
         );
     }
 

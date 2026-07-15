@@ -6,15 +6,12 @@
 //! the only mutations: leasing the next task and the settlement methods that
 //! release a lease and apply the outcome atomically.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashSet, VecDeque};
 use std::sync::{Condvar, Mutex, MutexGuard};
-use std::time::Instant;
 
-use sima_contracts::WorkerId;
 use sima_core::Error;
 use sima_model::TaskKey;
 
-use crate::lease::Lease;
 use crate::task_source::RunnableTask;
 
 /// A task waiting in the ready queue: the runnable task and the attempt it is
@@ -60,10 +57,12 @@ pub(crate) enum RunState {
 pub(crate) struct Shared {
     /// FIFO of tasks ready to lease.
     pub(crate) queue: VecDeque<Pending>,
-    /// The in-memory lease table, keyed by task. Its size is the count of
-    /// tasks in flight: every lease insertion and removal pairs with the task
-    /// being leased or resolved under this lock.
-    pub(crate) leases: HashMap<TaskKey, Lease>,
+    /// The in-memory lease table: the set of tasks in flight. Every insertion
+    /// and removal pairs with the task being leased or settled under this
+    /// lock; the holding worker and the attempt travel in the journal events,
+    /// and leases live in memory only — a process death drops them all, and
+    /// resume re-derives the frontier from the store.
+    pub(crate) leases: HashSet<TaskKey>,
     /// The run's wind-down state.
     pub(crate) state: RunState,
     /// Monotonic count of lease releases: incremented once per settled
@@ -89,7 +88,7 @@ impl Coordinator {
         Coordinator {
             state: Mutex::new(Shared {
                 queue: VecDeque::new(),
-                leases: HashMap::new(),
+                leases: HashSet::new(),
                 state: RunState::Running,
                 settled: 0,
             }),
@@ -110,7 +109,7 @@ impl Coordinator {
     /// Leases the next ready task, inserting its lease and counting it in
     /// flight; returns `None` once the run is winding down and the calling
     /// worker should exit.
-    pub(crate) fn next_task(&self, worker: WorkerId) -> Option<Pending> {
+    pub(crate) fn next_task(&self) -> Option<Pending> {
         let mut shared = self.lock();
         loop {
             if !matches!(shared.state, RunState::Running) {
@@ -120,18 +119,7 @@ impl Coordinator {
                 return None;
             }
             if let Some(pending) = shared.queue.pop_front() {
-                let key = pending.key;
-                // The lease records when the attempt started; the watchdog
-                // derives expiry from its age, so there is no deadline
-                // arithmetic that could overflow.
-                shared.leases.insert(
-                    key,
-                    Lease {
-                        worker,
-                        attempt: pending.attempt,
-                        leased_at: Instant::now(),
-                    },
-                );
+                shared.leases.insert(pending.key);
                 return Some(pending);
             }
             // The queue is empty: wake the driver — it may have a poll or
@@ -157,7 +145,8 @@ impl Coordinator {
         result
     }
 
-    /// Clears a resolved lease, which removes its task from the in-flight set.
+    /// Clears a lease with no further state change: the task committed, or a
+    /// run winding down abandoned its in-flight attempt.
     pub(crate) fn resolve(&self, key: TaskKey) {
         self.settle(key, |_shared| {});
     }
@@ -216,6 +205,19 @@ impl Coordinator {
                 shared.state = RunState::Fault(err);
             }
         });
+    }
+
+    /// Records an infrastructure fault that holds no lease — a worker that
+    /// cannot be spawned or respawned. Same precedence as [`fault`]: the
+    /// first fault wins.
+    ///
+    /// [`fault`]: Coordinator::fault
+    pub(crate) fn fault_run(&self, err: Error) {
+        let mut shared = self.lock();
+        if !matches!(shared.state, RunState::Fault(_)) {
+            shared.state = RunState::Fault(err);
+        }
+        self.state_changed.notify_all();
     }
 }
 
@@ -297,5 +299,29 @@ mod tests {
         let coordinator = coordinator_with(RunState::Interrupted);
         coordinator.fault(a_key(), Error::Corruption("store broke".to_string()));
         assert!(matches!(coordinator.lock().state, RunState::Fault(_)));
+    }
+
+    #[test]
+    fn a_run_fault_upgrades_without_touching_leases() {
+        let coordinator = Coordinator::new();
+        coordinator.lock().leases.insert(a_key());
+        coordinator.fault_run(Error::Transport("spawn failed".to_string()));
+        let shared = coordinator.lock();
+        assert!(matches!(shared.state, RunState::Fault(_)));
+        // No lease settles: the fault holds none.
+        assert!(shared.leases.contains(&a_key()));
+        assert_eq!(shared.settled, 0);
+    }
+
+    #[test]
+    fn a_run_fault_never_displaces_an_earlier_fault() {
+        let coordinator = coordinator_with(RunState::Fault(Error::Corruption(
+            "first fault".to_string(),
+        )));
+        coordinator.fault_run(Error::Transport("respawn failed".to_string()));
+        match &coordinator.lock().state {
+            RunState::Fault(e) => assert_eq!(e.to_string(), "store corruption: first fault"),
+            _ => panic!("expected a fault run state"),
+        }
     }
 }
