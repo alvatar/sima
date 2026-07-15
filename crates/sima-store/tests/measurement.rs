@@ -1,4 +1,5 @@
-//! Manual CAS cost measurements at the M3.4 search workload shape.
+//! Manual CAS cost measurements at the search workload shape: 1000 objects
+//! of 128 KiB and 100 of 2 MiB.
 //!
 //! Two `#[ignore]` benchmarks that print timings and always pass, run on the
 //! dev machine with:
@@ -7,11 +8,11 @@
 //! cargo test -p sima-store --test measurement -- --ignored --nocapture
 //! ```
 //!
-//! They quantify the two store-cost decisions the roadmap defers to the first
-//! real volume: whether `put`'s per-object fsync needs group-commit batching,
-//! and whether `get`'s verified read (a re-hash of every object) needs a bulk
-//! unverified path for large artifacts. The measured numbers and the decision
-//! gate they feed are recorded in the roadmap, not here.
+//! They quantify two store costs: whether `put`'s per-object fsync needs
+//! group-commit batching, and whether `get`'s verified read (a re-hash of
+//! every object) needs a bulk unverified path for large artifacts. The
+//! measured numbers and the decision gate they feed are recorded in the
+//! roadmap, not here.
 
 use std::time::Instant;
 

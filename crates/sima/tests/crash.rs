@@ -1,6 +1,5 @@
-//! Crash-injection harness — acceptance criterion (b): a run SIGKILLed at
-//! any crashpoint and resumed yields a manifest identical to a
-//! never-interrupted run's.
+//! Crash-injection harness: a run SIGKILLed at any crashpoint and resumed
+//! yields a manifest identical to a never-interrupted run's.
 //!
 //! Each case spawns the real binary with `SIMA_CRASHPOINT` arming one
 //! point, asserts the child died by SIGKILL — an unmaskable death, no

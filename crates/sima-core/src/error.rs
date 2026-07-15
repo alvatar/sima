@@ -1,8 +1,7 @@
 //! Project-wide error and result types.
 //!
 //! Every fallible sima API returns [`Result`]. The error surface is a small
-//! closed enum; variants are added when a milestone introduces a new failure
-//! class.
+//! closed enum; a variant is added when a new failure class appears.
 
 use std::fmt;
 use std::path::PathBuf;
@@ -11,11 +10,11 @@ use crate::hash::Hash;
 
 /// Error type shared by all sima crates.
 ///
-/// This enum is the single place failure classes accrue: later milestones
-/// add variants here (store I/O, corruption, lease conflicts, ...) instead
-/// of defining crate-local error types. Only `Debug` is derived: variants
-/// carrying non-comparable payloads such as `io::Error` are coming, so
-/// nothing may rely on `Error` being cloneable or comparable.
+/// This enum is the single closed set of failure classes: a new failure
+/// class adds a variant here instead of a crate-local error type. Only
+/// `Debug` is derived: variants carry non-comparable payloads such as
+/// `io::Error`, so nothing may rely on `Error` being cloneable or
+/// comparable.
 #[derive(Debug)]
 pub enum Error {
     /// Canonical encoding or decoding failed: truncated input, bad framing,
