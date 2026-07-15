@@ -156,6 +156,63 @@ fn rm_before_any_run_exits_1() {
 }
 
 #[test]
+fn a_second_rm_reports_run_not_found_and_leaves_no_run_dir() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config = write_config(dir.path(), r#""succeed", "succeed""#);
+    let path = config.to_str().expect("utf-8 path");
+
+    assert_eq!(sima(&["run", path]).status.code(), Some(0));
+    assert_eq!(sima(&["rm", path]).status.code(), Some(0));
+
+    let second = sima(&["rm", path]);
+    assert_eq!(second.status.code(), Some(1), "{second:?}");
+    let stderr = String::from_utf8(second.stderr).expect("stderr is UTF-8");
+    assert!(
+        stderr.contains("run not found"),
+        "the second rm names the absent run: {stderr}"
+    );
+    // The failed rm mutated nothing: no ghost run directory survives.
+    let runs = dir.path().join("store").join("runs");
+    let run_dirs = std::fs::read_dir(&runs).expect("read runs dir").count();
+    assert_eq!(run_dirs, 0, "a failed rm left a ghost run directory");
+}
+
+#[test]
+fn rm_on_a_missing_store_exits_1_and_creates_nothing() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config = write_config(dir.path(), r#""succeed""#);
+    let output = sima(&["rm", config.to_str().expect("utf-8 path")]);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    // An rm against a store that does not exist is a query that fails: no
+    // store may appear on disk, mirroring the status contract.
+    assert!(
+        !dir.path().join("store").exists(),
+        "sima rm created the store"
+    );
+}
+
+#[test]
+fn a_failed_second_rm_does_not_block_removing_another_run() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    // Two runs sharing one store: different behaviors give distinct run ids.
+    let config_a = common::write_config(dir.path(), "a.toml", r#""succeed""#, "./store");
+    let config_b = common::write_config(dir.path(), "b.toml", r#""succeed", "succeed""#, "./store");
+    let a = config_a.to_str().expect("utf-8 path");
+    let b = config_b.to_str().expect("utf-8 path");
+
+    assert_eq!(sima(&["run", a]).status.code(), Some(0));
+    assert_eq!(sima(&["run", b]).status.code(), Some(0));
+
+    // Remove A, then attempt A again: the second attempt must fail without
+    // leaving an unfinalized ghost that would make B unremovable.
+    assert_eq!(sima(&["rm", a]).status.code(), Some(0));
+    assert_eq!(sima(&["rm", a]).status.code(), Some(1));
+
+    let rm_b = sima(&["rm", b]);
+    assert_eq!(rm_b.status.code(), Some(0), "{rm_b:?}");
+}
+
+#[test]
 fn status_on_a_missing_store_exits_1_and_creates_nothing() {
     let dir = tempfile::tempdir().expect("temp dir");
     let config = write_config(dir.path(), r#""succeed""#);
