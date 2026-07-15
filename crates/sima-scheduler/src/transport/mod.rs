@@ -7,7 +7,10 @@
 //!
 //! - [`protocol`] — the wire protocol: frame IO and the message vocabulary
 //!   both endpoints share.
+//! - [`host`] — the child side: [`host::serve`] hosts a resolved executor
+//!   over the pipe for the life of the worker process.
 
+pub mod host;
 pub mod protocol;
 
 pub(crate) mod checkpoint_cadence;

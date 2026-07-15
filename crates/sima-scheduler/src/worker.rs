@@ -10,7 +10,6 @@
 //! store handle, so a result reaches durable state only by passing through
 //! this commit path.
 
-use std::any::Any;
 use std::sync::mpsc::Sender;
 use std::time::Duration;
 
@@ -27,6 +26,7 @@ use crate::event::LifecycleEvent;
 use crate::journal_sink::emit;
 use crate::task_source::RunnableTask;
 use crate::transport::checkpoint_cadence::CheckpointCadence;
+use crate::transport::host::panic_reason;
 
 /// The run-wide context one worker borrows for its whole life: the shared
 /// coordination, the store it commits through, the run config and executor it
@@ -384,18 +384,6 @@ fn task_fault(ctx: &WorkerContext<'_>, task: String, attempt: u32, key: TaskKey,
         },
     );
     ctx.coordinator.fault(key, err);
-}
-
-/// Renders a caught panic payload as a rejection reason, recovering the common
-/// `&str` and `String` payloads.
-fn panic_reason(payload: Box<dyn Any + Send>) -> String {
-    if let Some(message) = payload.downcast_ref::<&str>() {
-        format!("panic: {message}")
-    } else if let Some(message) = payload.downcast_ref::<String>() {
-        format!("panic: {message}")
-    } else {
-        "panic: non-string payload".to_string()
-    }
 }
 
 #[cfg(test)]
