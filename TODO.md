@@ -345,6 +345,10 @@ machine.
       (1.7–1.9 GB/s) is far above the 500 MB/s floor below which hashing, not
       I/O, would bound a full-closure read. Neither the bulk unverified read
       nor group-commit fsync is warranted at this workload.
+- [x] M3.5 TUI observer mode: `sima tui` on a run another orchestrator holds
+      observes it live — journal tail seeded and followed through one offset,
+      lock probe for holder and liveness, take-over through the normal resume
+      path once the lock frees.
 
 ## P4 — Distribution
 
