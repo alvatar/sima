@@ -11,10 +11,8 @@
 //! this commit path.
 
 use std::any::Any;
-use std::cell::Cell;
-use std::num::NonZeroU64;
 use std::sync::mpsc::Sender;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use sima_contracts::{
     Artifact, Checkpoint, ExecutionContext, Executor, NoCheckpoint, Outcome, TaskInput, WorkerId,
@@ -28,6 +26,7 @@ use crate::coordinator::{Coordinator, Pending};
 use crate::event::LifecycleEvent;
 use crate::journal_sink::emit;
 use crate::task_source::RunnableTask;
+use crate::transport::checkpoint_cadence::CheckpointCadence;
 
 /// The run-wide context one worker borrows for its whole life: the shared
 /// coordination, the store it commits through, the run config and executor it
@@ -123,15 +122,8 @@ struct SlotCheckpoint<'a> {
     slot: u64,
     key: TaskKey,
     task: &'a str,
-    interval: Duration,
-    /// Step-count cadence: a save is due every `n`th offer since the last save.
-    /// `None` leaves the wall-clock `interval` as the only cadence.
-    step_interval: Option<NonZeroU64>,
-    /// When the last save happened — initialized to the attempt's start, so
-    /// the first save becomes due one full interval in.
-    last_saved: Cell<Instant>,
-    /// Offers seen since the last save, driving the step-count cadence.
-    offers_since_save: Cell<u64>,
+    /// When an offer becomes a save: both cadence axes, reset on save.
+    cadence: CheckpointCadence,
     resume: Option<Vec<u8>>,
     events: &'a Sender<LifecycleEvent>,
 }
@@ -142,14 +134,13 @@ impl Checkpoint for SlotCheckpoint<'_> {
     }
 
     fn offer(&self, produce: &dyn Fn() -> Vec<u8>) {
-        if !self.save_due() {
+        if !self.cadence.save_due() {
             return;
         }
         // Both cadences reset before the save is attempted — chosen over
         // retrying at the next offer, so a persistently failing slot degrades
         // once per cadence period instead of once per offer.
-        self.offers_since_save.set(0);
-        self.last_saved.set(Instant::now());
+        self.cadence.reset();
         if let Err(e) = self
             .store
             .save_checkpoint(&self.run, self.slot, &self.key, &produce())
@@ -172,26 +163,6 @@ impl Checkpoint for SlotCheckpoint<'_> {
 /// touched.
 fn checkpointing_enabled(exec: &ExecutionConfig) -> bool {
     exec.checkpoint_interval != Duration::MAX || exec.checkpoint_interval_steps.is_some()
-}
-
-impl SlotCheckpoint<'_> {
-    /// Whether this offer triggers a save, under either cadence axis. The
-    /// step-count axis advances its offer counter here, so every offer is
-    /// counted exactly once; the wall-clock axis reads the elapsed time since
-    /// the last save. A save is due when either axis fires.
-    fn save_due(&self) -> bool {
-        let step_due = match self.step_interval {
-            Some(n) => {
-                let count = self.offers_since_save.get() + 1;
-                self.offers_since_save.set(count);
-                count >= n.get()
-            }
-            None => false,
-        };
-        let clock_due =
-            self.interval != Duration::MAX && self.last_saved.get().elapsed() >= self.interval;
-        step_due || clock_due
-    }
 }
 
 /// Evaluates one leased task and resolves its outcome: commit, retry, reject,
@@ -263,10 +234,10 @@ fn process(ctx: &WorkerContext<'_>, worker: WorkerId, pending: Pending) {
                 slot,
                 key,
                 task: &task,
-                interval: ctx.exec.checkpoint_interval,
-                step_interval: ctx.exec.checkpoint_interval_steps,
-                last_saved: Cell::new(Instant::now()),
-                offers_since_save: Cell::new(0),
+                cadence: CheckpointCadence::new(
+                    ctx.exec.checkpoint_interval,
+                    ctx.exec.checkpoint_interval_steps,
+                ),
                 resume,
                 events: &ctx.events,
             })
@@ -429,6 +400,7 @@ fn panic_reason(payload: Box<dyn Any + Send>) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::num::NonZeroU64;
     use std::sync::mpsc;
     use std::time::{Duration, Instant};
 

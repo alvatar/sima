@@ -24,6 +24,7 @@ mod lease;
 mod segment_chain;
 mod static_batch;
 mod task_source;
+pub mod transport;
 mod watchdog;
 mod worker;
 
