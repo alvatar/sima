@@ -99,6 +99,7 @@ mod tests {
                 1,
                 std::time::Duration::MAX,
                 std::time::Duration::MAX,
+                None,
             )?,
             store,
         })

@@ -163,7 +163,13 @@ fn an_undispatchable_config_orchestrates_to_validation_without_touching_the_stor
             },
             params: Params { bytes: Vec::new() },
         },
-        execution: ExecutionConfig::new(1, 1, std::time::Duration::MAX, std::time::Duration::MAX)?,
+        execution: ExecutionConfig::new(
+            1,
+            1,
+            std::time::Duration::MAX,
+            std::time::Duration::MAX,
+            None,
+        )?,
         store: dir.path().join("store"),
     };
     assert!(matches!(

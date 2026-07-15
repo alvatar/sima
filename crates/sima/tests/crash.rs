@@ -78,6 +78,30 @@ fn write_segmented_config(dir: &Path, name: &str, store: &str) -> PathBuf {
     common::write_config_text(dir, name, &text)
 }
 
+/// A segmented, checkpointing config over one `accumulate` chain driven by the
+/// step-count cadence alone: `checkpoint_interval_steps` saves every tenth step
+/// with no wall-clock interval set.
+fn write_step_segmented_config(dir: &Path, name: &str, store: &str) -> PathBuf {
+    let text = r#"
+        [run]
+        root_seed = 11
+        format = "stub.v1"
+        segments = 2
+
+        [run.generator]
+        id = "stub.v1"
+        behaviors = ["accumulate:100"]
+
+        [execution]
+        store = "STORE"
+        workers = 2
+        max_attempts = 3
+        checkpoint_interval_steps = 10
+    "#
+    .replace("STORE", store);
+    common::write_config_text(dir, name, &text)
+}
+
 /// The steps each committed attempt executed after the journal's last
 /// `run_started` line — the resume segment — from the stub's stats
 /// encoding `(u32 attempt, u64 steps)`.
@@ -149,6 +173,47 @@ fn a_death_mid_segment_resumes_from_the_checkpoint() {
     assert!(
         steps[0] < 100,
         "the checkpoint must shorten re-execution, got {} steps",
+        steps[0]
+    );
+}
+
+/// A death mid-segment under the step-count checkpoint cadence alone: the
+/// resumed run converges on the reference manifest, and its journal proves the
+/// step-cadence checkpoint shortened re-execution.
+#[test]
+fn a_death_mid_segment_resumes_under_the_step_cadence() {
+    let dir = tempfile::tempdir().expect("temp dir");
+
+    let reference_config =
+        write_step_segmented_config(dir.path(), "step-reference.toml", "./store-step-ref");
+    assert_eq!(sima_run(&reference_config, None).code(), Some(0));
+    let reference = manifest_of(&reference_config).expect("reference manifest");
+
+    // Hit 150 lands 50 steps into the second segment; the step cadence saved a
+    // checkpoint every ten steps, so one precedes the death.
+    let config = write_step_segmented_config(dir.path(), "step-armed.toml", "./store-step-armed");
+    let status = sima_run(&config, Some("stub.accumulate.step:150"));
+    assert_eq!(
+        status.signal(),
+        Some(9),
+        "the armed child dies by SIGKILL, got {status:?}"
+    );
+    assert!(manifest_of(&config).is_none(), "no manifest survives");
+
+    let resumed = sima_run(&config, None);
+    assert_eq!(resumed.code(), Some(0), "the resumed run finalizes");
+    assert_eq!(
+        manifest_of(&config).as_ref(),
+        Some(&reference),
+        "the resumed manifest equals the reference"
+    );
+
+    // The step-cadence checkpoint shortened the second segment's re-execution.
+    let steps = resumed_steps(&config);
+    assert_eq!(steps.len(), 1, "one task ran on resume, got {steps:?}");
+    assert!(
+        steps[0] < 100,
+        "the step-cadence checkpoint must shorten re-execution, got {} steps",
         steps[0]
     );
 }
