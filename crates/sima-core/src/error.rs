@@ -46,6 +46,10 @@ pub enum Error {
     /// setup, memory allocation, or command submission. The payload names the
     /// operation and the underlying cause.
     Gpu(String),
+    /// The worker transport failed: a pipe to a worker process broke, or a
+    /// frame violated the wire protocol (torn or oversize length prefix).
+    /// The payload names the operation and the underlying cause.
+    Transport(String),
 }
 
 impl fmt::Display for Error {
@@ -57,6 +61,7 @@ impl fmt::Display for Error {
             Error::Corruption(msg) => write!(f, "store corruption: {msg}"),
             Error::MissingObject(hash) => write!(f, "missing object: {hash}"),
             Error::Gpu(msg) => write!(f, "gpu error: {msg}"),
+            Error::Transport(msg) => write!(f, "worker transport error: {msg}"),
         }
     }
 }
@@ -117,6 +122,15 @@ mod tests {
     fn display_renders_gpu_context() {
         let e = Error::Gpu("compile WGSL: unexpected token".to_string());
         assert_eq!(e.to_string(), "gpu error: compile WGSL: unexpected token");
+    }
+
+    #[test]
+    fn display_renders_transport_context() {
+        let e = Error::Transport("frame length truncated after 2 bytes".to_string());
+        assert_eq!(
+            e.to_string(),
+            "worker transport error: frame length truncated after 2 bytes"
+        );
     }
 
     #[test]
