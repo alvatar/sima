@@ -7,9 +7,9 @@ use crate::config::LoadedConfig;
 
 /// Removes the run a loaded config describes: validates the store and the run
 /// exist, acquires the run's orchestrator lock so a live orchestrator on that
-/// run is excluded, then deletes the run's exclusive closure through
-/// [`Store::remove_run`]. The run id comes from the config's identity section,
-/// as [`status`](crate::status) derives it.
+/// run is excluded, then deletes the run and everything no surviving run
+/// references through [`Store::remove_run`]. The run id comes from the
+/// config's identity section, as [`status`](crate::status) derives it.
 ///
 /// Validation precedes any mutation, matching [`status`](crate::status) and
 /// [`report`](crate::report): a store root that does not exist is

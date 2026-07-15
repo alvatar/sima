@@ -1,15 +1,21 @@
-//! Reference-guarded run removal: delete a finalized run's exclusive closure,
-//! guarded so no object another live run references is ever removed.
+//! Reference-guarded run removal: delete a run and everything no surviving
+//! run references, guarded so no object another live run references is ever
+//! removed.
 //!
 //! The removal unit is the run. A single task's artifacts are never removed
 //! alone, because the run's manifest would then reference missing objects. No
 //! public single-object delete exists; the guard is the primitive.
 //!
-//! The exclusive closure of the target run is its [`run_closure`](Store::run_closure)
-//! minus the union of every other finalized run's closure. Removal deletes
-//! references strictly before their referents — task-index entries before the
-//! record objects they name, and the manifest directory last — so at no point
-//! does a surviving reference point at a missing object.
+//! The plan is computed from the survivors, never from the target: the
+//! removal set is every CAS object outside the union of every other finalized
+//! run's [`run_closure`](Store::run_closure), and every task-index entry
+//! naming a record in that set. The target's own manifest is not consulted,
+//! so an unfinalized run — interrupted or abandoned — is removable, and
+//! orphaned objects from crashed pre-commit writes are collected in the same
+//! sweep. Removal deletes references strictly before their referents —
+//! task-index entries before the record objects they name, and the run
+//! directory last — so at no point does a surviving reference point at a
+//! missing object.
 //!
 //! Removal is durable and resumable. The plan is written to a `remove-intent`
 //! file before any deletion; a crash leaves either a manifest that can still be
@@ -75,14 +81,15 @@ impl Store {
         Ok(runs)
     }
 
-    /// Removes a finalized run's exclusive closure, guarded so no object another
-    /// finalized run references is deleted. Returns what was removed.
+    /// Removes a run and every object no other finalized run references.
+    /// Returns what was removed.
     ///
-    /// The target run must be finalized, or already carry a removal intent from
-    /// an interrupted removal; every other run in the store must be finalized,
-    /// since an unfinalized run's reachable set is not enumerable. Each
-    /// violation is [`Error::Validation`] naming the run. A missing run
-    /// directory is [`Error::Validation`] ("run not found").
+    /// The target itself need not be finalized — the plan never consults its
+    /// manifest, so an interrupted or abandoned run is removable. Every other
+    /// run in the store must be finalized, since an unfinalized survivor's
+    /// committed work is reachable through no manifest and the sweep would
+    /// collect it; that violation is [`Error::Validation`] naming the run. A
+    /// missing run directory is [`Error::Validation`] ("run not found").
     ///
     /// The plan is written to `runs/<run>/remove-intent` before any deletion,
     /// then index entries, then objects, then the run directory are removed. A
@@ -126,16 +133,11 @@ impl Store {
         })
     }
 
-    /// Computes the removal plan under the preconditions: the target and every
-    /// other run must be finalized. The object set is the target's closure minus
-    /// the union of every other run's closure; a task-index entry is dropped iff
-    /// the record object it names is in that set.
+    /// Computes the removal plan from the survivors: every CAS object outside
+    /// the union of every other run's closure, and every task-index entry
+    /// naming a record in that set. Every other run must be finalized; the
+    /// target's manifest is never consulted.
     fn compute_removal(&self, run: &RunId) -> Result<RemovalPlan> {
-        let Some(manifest) = self.manifest(run)? else {
-            return Err(Error::Validation(format!(
-                "cannot remove run {run}: it is not finalized"
-            )));
-        };
         let others: Vec<RunId> = self.runs()?.into_iter().filter(|r| r != run).collect();
         for other in &others {
             if self.manifest(other)?.is_none() {
@@ -144,22 +146,71 @@ impl Store {
                 )));
             }
         }
-        let target: BTreeSet<Hash> = self.run_closure(run)?.into_iter().collect();
         let mut kept: BTreeSet<Hash> = BTreeSet::new();
         for other in &others {
             kept.extend(self.run_closure(other)?);
         }
-        // Sorted by construction: `target` is a BTreeSet, and the filter keeps
-        // its order, so the plan is deterministic.
-        let objects: Vec<Hash> = target.difference(&kept).copied().collect();
+        // Both walks return sorted entries and the filters keep their order,
+        // so the plan is deterministic.
+        let objects: Vec<Hash> = self
+            .cas_objects()?
+            .into_iter()
+            .filter(|object| !kept.contains(object))
+            .collect();
         let removed: BTreeSet<Hash> = objects.iter().copied().collect();
-        let tasks: Vec<TaskKey> = manifest
-            .entries
-            .iter()
-            .filter(|entry| removed.contains(&entry.record))
-            .map(|entry| entry.task)
+        let tasks: Vec<TaskKey> = self
+            .task_index()?
+            .into_iter()
+            .filter(|(_, record)| removed.contains(record))
+            .map(|(key, _)| key)
             .collect();
         Ok(RemovalPlan { objects, tasks })
+    }
+
+    /// Every object hash in the CAS, sorted, from walking the fan-out
+    /// directories. A file whose name is not an object-hash hex string is
+    /// [`Error::Corruption`].
+    fn cas_objects(&self) -> Result<Vec<Hash>> {
+        let dir = layout::objects_dir(self.root());
+        let mut objects = Vec::new();
+        for fanout in fs::read_dir(&dir).map_err(|e| io_error(&dir, e))? {
+            let fanout = fanout.map_err(|e| io_error(&dir, e))?.path();
+            for entry in fs::read_dir(&fanout).map_err(|e| io_error(&fanout, e))? {
+                let name = entry.map_err(|e| io_error(&fanout, e))?.file_name();
+                let hash = name
+                    .to_str()
+                    .and_then(|name| Hash::from_hex(name).ok())
+                    .ok_or_else(|| {
+                        Error::Corruption(format!("objects/ holds a non-object entry {name:?}"))
+                    })?;
+                objects.push(hash);
+            }
+        }
+        objects.sort();
+        Ok(objects)
+    }
+
+    /// Every task-index entry as (key, record hash), sorted by key, from
+    /// walking `tasks/`. An entry whose name is not a task-key hex string is
+    /// [`Error::Corruption`]; the content parses through the catalog's one
+    /// entry reader.
+    fn task_index(&self) -> Result<Vec<(TaskKey, Hash)>> {
+        let dir = layout::tasks_dir(self.root());
+        let mut entries = Vec::new();
+        for entry in fs::read_dir(&dir).map_err(|e| io_error(&dir, e))? {
+            let name = entry.map_err(|e| io_error(&dir, e))?.file_name();
+            let key = name
+                .to_str()
+                .and_then(|name| TaskKey::from_hex(name).ok())
+                .ok_or_else(|| {
+                    Error::Corruption(format!("tasks/ holds a non-task entry {name:?}"))
+                })?;
+            if let Some(record) = self.index_entry(&key)? {
+                entries.push((key, record));
+            }
+        }
+        entries.sort();
+        Ok(entries)
     }
 
     /// Writes the removal plan to the run's intent file through the store's
@@ -343,16 +394,73 @@ mod tests {
     }
 
     #[test]
-    fn removing_an_unfinalized_target_is_validation() -> Result<()> {
-        let (_dir, store) = temp_store();
+    fn removing_an_unfinalized_target_deletes_its_committed_work() -> Result<()> {
+        // An interrupted or abandoned run: records committed, no manifest. The
+        // plan comes from the surviving manifests alone, so the target's
+        // missing manifest is no obstacle — its committed work, identity
+        // components, and config are all swept.
+        let (dir, store) = temp_store();
         store_identity_components(&store);
         let record = record_with_stored_artifact(&store, sample_identity(1));
         store.commit_record(&record)?;
         let a = store.create_run(&sample_run_config(42))?;
-        match store.remove_run(&a) {
-            Err(Error::Validation(msg)) => assert!(msg.contains("not finalized"), "{msg}"),
-            other => panic!("expected Validation, got {other:?}"),
+        let report = store.remove_run(&a)?;
+        // Spec, params, environment, record, artifact, config — six objects
+        // and the one index entry.
+        assert_eq!(
+            report,
+            RemovalReport {
+                objects_removed: 6,
+                index_entries_removed: 1,
+            }
+        );
+        assert_eq!(object_file_count(dir.path()), 0);
+        assert!(!dir.path().join("runs").join(a.to_string()).exists());
+        Ok(())
+    }
+
+    #[test]
+    fn removing_an_unfinalized_target_keeps_objects_a_finalized_run_references() -> Result<()> {
+        let (_dir, store) = temp_store();
+        let b = finalized_run(&store, 43, &[2, 3])?;
+        // The unfinalized target committed seeds {1, 2}: seed 2's objects and
+        // index entry are shared with B, seed 1's and the config are its own.
+        for seed in [1, 2] {
+            let record = record_with_stored_artifact(&store, sample_identity(seed));
+            store.commit_record(&record)?;
         }
+        let a = store.create_run(&sample_run_config(42))?;
+        let b_closure = store.run_closure(&b)?;
+
+        // A-exclusive: config(42), seed-1 record, seed-1 artifact — three
+        // objects and one index entry.
+        let report = store.remove_run(&a)?;
+        assert_eq!(
+            report,
+            RemovalReport {
+                objects_removed: 3,
+                index_entries_removed: 1,
+            }
+        );
+        assert_eq!(store.run_closure(&b)?, b_closure);
+        assert!(store.has_record(&sample_identity(2).key())?);
+        assert!(!store.has_record(&sample_identity(1).key())?);
+        Ok(())
+    }
+
+    #[test]
+    fn removal_sweeps_objects_no_surviving_manifest_reaches() -> Result<()> {
+        let (_dir, store) = temp_store();
+        let a = finalized_run(&store, 42, &[1])?;
+        finalized_run(&store, 43, &[2])?;
+        // An orphan from a crashed pre-commit write: present in the CAS,
+        // referenced by nothing. Removing any run collects it alongside the
+        // run's own objects.
+        let stray = store.put(b"orphaned bytes")?;
+        let report = store.remove_run(&a)?;
+        // Config(42), seed-1 record, seed-1 artifact, and the stray.
+        assert_eq!(report.objects_removed, 4);
+        assert!(!store.has(&stray)?);
         Ok(())
     }
 

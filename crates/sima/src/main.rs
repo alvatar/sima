@@ -45,7 +45,7 @@ fn main() -> ExitCode {
                 "usage: sima run <config>     drive the configured run\n\
                  \x20      sima status <config>  report the run's state\n\
                  \x20      sima report <config>  print each committed task's stats\n\
-                 \x20      sima rm <config>      delete the run's exclusive closure\n\
+                 \x20      sima rm <config>      delete the run and what only it references\n\
                  \x20      sima tui <config>     drive the run in a full-screen terminal UI\n\
                  \x20      <config> is a sima.toml path; the .toml extension may be omitted\n"
             );
@@ -189,9 +189,9 @@ fn read_report(config: &Path) -> Result<Vec<ReportRow>> {
     sima_pipeline::report(&loaded)
 }
 
-/// `sima rm <config.toml>`: deletes the run's exclusive closure under its run
-/// lock and prints what was removed. The run id comes from the config's
-/// identity section, as `status` derives it.
+/// `sima rm <config.toml>`: deletes the run — and everything no surviving run
+/// references — under its run lock, and prints what was removed. The run id
+/// comes from the config's identity section, as `status` derives it.
 fn rm_command(config: &Path) -> ExitCode {
     match remove_run(config) {
         Ok(report) => {

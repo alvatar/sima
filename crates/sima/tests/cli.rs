@@ -178,6 +178,28 @@ fn rm_before_any_run_exits_1() {
 }
 
 #[test]
+fn rm_removes_an_unfinalized_run() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    // A rejected candidate leaves the run unfinalized: no manifest, committed
+    // work for the succeeding task only. An abandoned run must be removable.
+    let config = write_config(dir.path(), r#""succeed", "reject""#);
+    let path = config.to_str().expect("utf-8 path");
+
+    assert_eq!(sima(&["run", path]).status.code(), Some(2));
+    let rm = sima(&["rm", path]);
+    assert_eq!(rm.status.code(), Some(0), "{rm:?}");
+    assert_eq!(sima(&["status", path]).status.code(), Some(1));
+    let objects = dir.path().join("store").join("objects");
+    let object_files: usize = std::fs::read_dir(&objects)
+        .expect("read objects dir")
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().is_dir())
+        .map(|e| std::fs::read_dir(e.path()).expect("read fan-out").count())
+        .sum();
+    assert_eq!(object_files, 0, "no object files survive the removal");
+}
+
+#[test]
 fn a_second_rm_reports_run_not_found_and_leaves_no_run_dir() {
     let dir = tempfile::tempdir().expect("temp dir");
     let config = write_config(dir.path(), r#""succeed", "succeed""#);
