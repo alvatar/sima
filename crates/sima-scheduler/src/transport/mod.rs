@@ -20,3 +20,5 @@ pub mod protocol;
 pub mod subprocess;
 
 pub(crate) mod checkpoint_cadence;
+#[cfg(test)]
+pub(crate) mod loopback;
