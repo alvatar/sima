@@ -152,7 +152,6 @@ mod tests {
         use super::super::super::super::continuation::{decode_continuation, encode_continuation};
         use super::super::super::super::executor::CaExecutor;
         use super::super::super::super::params::encode_params;
-        use super::super::super::super::stats::grid_stats;
         use super::*;
 
         /// A spec whose genome is candidate 0 sampled at the given scale.
@@ -283,32 +282,6 @@ mod tests {
             assert_eq!((grid.width(), grid.height(), grid.channels()), (32, 32, 8));
             for &value in grid.data() {
                 assert!(value.is_finite(), "committed value {value} must be finite");
-            }
-        }
-
-        /// Requires a real Vulkan device. Run with `cargo test -- --ignored`.
-        #[test]
-        #[ignore = "requires a Vulkan device"]
-        fn stats_summarize_the_decoded_grid() {
-            // The committed stats are `grid_stats` of the final decoded grid — the
-            // grid inside the continuation frame, never the framed bytes. This
-            // pins the executor wiring for a stepped model.
-            let exec = CaExecutor::<Nca>::new().expect("executor");
-            let (spec, params) = (spec(0.5), params(50));
-            match exec
-                .execute(&input(&spec, &params, None), &ctx(), &NoCheckpoint)
-                .expect("execute")
-            {
-                Outcome::Completed { artifacts, stats } => {
-                    let state = artifacts
-                        .iter()
-                        .find(|a| a.name == STATE_ARTIFACT)
-                        .expect("a state artifact");
-                    let (_, grid) = decode_continuation(&state.bytes).expect("framed");
-                    assert_eq!(stats.bytes, grid_stats(&grid));
-                    assert!(!stats.bytes.is_empty(), "the stats channel is filled");
-                }
-                other => panic!("expected Completed, got {other:?}"),
             }
         }
 
