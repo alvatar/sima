@@ -1,0 +1,20 @@
+[package]
+name = "sima-worker"
+version.workspace = true
+edition.workspace = true
+
+[features]
+# Forwards crash-injection to the domains layer so executor-side points can
+# be armed inside the worker process by a test harness.
+crash-injection = ["sima-domains/crash-injection"]
+
+[dependencies]
+sima-core = { path = "../sima-core" }
+sima-model = { path = "../sima-model" }
+sima-contracts = { path = "../sima-contracts" }
+sima-domains = { path = "../sima-domains" }
+sima-scheduler = { path = "../sima-scheduler" }
+libc.workspace = true
+
+[lints]
+workspace = true

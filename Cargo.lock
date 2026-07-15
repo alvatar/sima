@@ -839,6 +839,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "sima-worker"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "sima-contracts",
+ "sima-core",
+ "sima-domains",
+ "sima-model",
+ "sima-scheduler",
+]
+
+[[package]]
 name = "smallvec"
 version = "1.15.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
