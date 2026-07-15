@@ -53,18 +53,48 @@ impl Store {
                 Ok(RunLock { _file: file })
             }
             Err(TryLockError::WouldBlock) => {
-                // Contended: read the holder the lock owner recorded, purely
-                // to name it in the error. A failed read leaves it blank.
-                let mut holder = String::new();
-                let _ = file.read_to_string(&mut holder);
-                let holder = holder.trim();
-                let holder = if holder.is_empty() { "unknown" } else { holder };
+                // Contended: name the holder the lock owner recorded.
                 Err(Error::Validation(format!(
-                    "run {run} is already locked by another orchestrator: {holder}"
+                    "run {run} is already locked by another orchestrator: {}",
+                    recorded_holder(&mut file)
                 )))
             }
             Err(TryLockError::Error(e)) => Err(io_error(&path, e)),
         }
+    }
+
+    /// Reports who holds `run`'s orchestrator lock: `Some` with the holder
+    /// line the locker recorded (pid, hostname) while another process holds
+    /// it, `None` while it is free. A missing run directory or lock file is
+    /// a free lock. The probe never creates a file or directory — the lock
+    /// file is opened without create — and a lock the probe itself acquires
+    /// (proving it free) is released immediately when the handle drops.
+    pub fn lock_holder(&self, run: &RunId) -> Result<Option<String>> {
+        let path = layout::lock_path(self.root(), run);
+        let mut file = match OpenOptions::new().read(true).open(&path) {
+            Ok(file) => file,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(io_error(&path, e)),
+        };
+        match file.try_lock() {
+            // Free: the handle drops at return, releasing the probe's lock.
+            Ok(()) => Ok(None),
+            Err(TryLockError::WouldBlock) => Ok(Some(recorded_holder(&mut file))),
+            Err(TryLockError::Error(e)) => Err(io_error(&path, e)),
+        }
+    }
+}
+
+/// The holder line recorded in an open lock file, for diagnostics:
+/// `unknown` when the content is blank or unreadable.
+fn recorded_holder(file: &mut File) -> String {
+    let mut holder = String::new();
+    let _ = file.read_to_string(&mut holder);
+    let holder = holder.trim();
+    if holder.is_empty() {
+        "unknown".to_string()
+    } else {
+        holder.to_string()
     }
 }
 
@@ -123,6 +153,52 @@ mod tests {
         drop(store.acquire_run_lock(&run)?);
         // Released on drop: the second acquisition succeeds.
         store.acquire_run_lock(&run)?;
+        Ok(())
+    }
+
+    #[test]
+    fn lock_holder_names_the_holder_while_held_and_clears_on_release() -> Result<()> {
+        let (_dir, store, run) = store_and_run();
+        let lock = store.acquire_run_lock(&run)?;
+        let holder = store.lock_holder(&run)?.expect("a holder while locked");
+        // The probe returns the recorded diagnostic line: pid, then hostname.
+        let pid = std::process::id().to_string();
+        assert_eq!(holder.split_whitespace().next(), Some(pid.as_str()));
+        drop(lock);
+        assert_eq!(store.lock_holder(&run)?, None);
+        Ok(())
+    }
+
+    #[test]
+    fn lock_holder_probes_a_missing_run_without_creating_anything() -> Result<()> {
+        let (dir, store, run) = store_and_run();
+        assert_eq!(store.lock_holder(&run)?, None);
+        // The probe is read-only: no run directory appeared.
+        assert!(!dir.path().join("runs").join(run.to_string()).exists());
+        Ok(())
+    }
+
+    #[test]
+    fn lock_holder_on_a_run_without_a_lock_file_creates_none() -> Result<()> {
+        let (dir, store, run) = store_and_run();
+        let run_dir = dir.path().join("runs").join(run.to_string());
+        fs::create_dir_all(&run_dir).expect("create run dir");
+        assert_eq!(store.lock_holder(&run)?, None);
+        // The probe opened without create: still no lock file.
+        assert!(!run_dir.join("orchestrator.lock").exists());
+        Ok(())
+    }
+
+    #[test]
+    fn lock_holder_is_none_on_a_released_lock_file() -> Result<()> {
+        let (dir, store, run) = store_and_run();
+        // A lock file left by an exited holder: the OS released the lock
+        // with the process, so the stale content names nobody alive.
+        let run_dir = dir.path().join("runs").join(run.to_string());
+        fs::create_dir_all(&run_dir).expect("create run dir");
+        fs::write(run_dir.join("orchestrator.lock"), b"999999 elsewhere\n")
+            .expect("pre-create lock file");
+        assert_eq!(store.lock_holder(&run)?, None);
         Ok(())
     }
 

@@ -7,8 +7,8 @@
 //! and status above. Journals legitimately differ between identical runs
 //! and are excluded from every equality criterion.
 
-use std::fs::{self, File, OpenOptions};
-use std::io::{ErrorKind, Write};
+use std::fs::{File, OpenOptions};
+use std::io::{ErrorKind, Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
 use std::str;
 
@@ -51,22 +51,44 @@ impl Store {
     /// newline — bytes past it are a torn final write and are ignored;
     /// invalid UTF-8 inside the intact region is [`Error::Corruption`].
     pub fn journal(&self, run: &RunId) -> Result<Vec<String>> {
+        Ok(self.journal_from(run, 0)?.0)
+    }
+
+    /// Reads the complete lines of `run`'s journal whose bytes lie past
+    /// `offset`, returning them with the new offset — the position
+    /// immediately after the last returned line's newline. Bytes past the
+    /// last newline are a torn or in-flight final write and stay
+    /// unconsumed: a later call from the returned offset re-reads them once
+    /// their newline lands. An absent file is `(empty, 0)`; invalid UTF-8
+    /// in the returned region is [`Error::Corruption`]. Journals are
+    /// append-only and never truncated, so a returned offset stays valid
+    /// for the file's lifetime.
+    pub fn journal_from(&self, run: &RunId, offset: u64) -> Result<(Vec<String>, u64)> {
         let path = layout::journal_path(self.root(), run);
-        let bytes = match fs::read(&path) {
-            Ok(bytes) => bytes,
-            Err(e) if e.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
+        let mut file = match File::open(&path) {
+            Ok(file) => file,
+            Err(e) if e.kind() == ErrorKind::NotFound => return Ok((Vec::new(), 0)),
             Err(e) => return Err(io_error(&path, e)),
         };
+        // Read only the tail past the offset; the region before it was
+        // consumed by earlier calls.
+        file.seek(SeekFrom::Start(offset))
+            .map_err(|e| io_error(&path, e))?;
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes)
+            .map_err(|e| io_error(&path, e))?;
         let Some(last_newline) = bytes.iter().rposition(|&b| b == b'\n') else {
-            return Ok(Vec::new());
+            // No complete line past the offset: nothing is consumed.
+            return Ok((Vec::new(), offset));
         };
         let intact = &bytes[..last_newline];
+        let consumed = offset + last_newline as u64 + 1;
         if intact.is_empty() {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), consumed));
         }
         let text = str::from_utf8(intact)
             .map_err(|_| Error::Corruption(format!("journal of run {run} holds invalid UTF-8")))?;
-        Ok(text.split('\n').map(String::from).collect())
+        Ok((text.split('\n').map(String::from).collect(), consumed))
     }
 }
 
@@ -205,6 +227,94 @@ mod tests {
             Err(Error::Validation(_))
         ));
         Ok(())
+    }
+
+    #[test]
+    fn journal_from_returns_only_lines_past_the_offset() -> Result<()> {
+        let (_dir, store) = temp_store();
+        let run = created_run(&store)?;
+        let mut writer = store.journal_writer(&run)?;
+        writer.append("first")?;
+        writer.append("second")?;
+        let (lines, offset) = store.journal_from(&run, 0)?;
+        assert_eq!(lines, ["first", "second"]);
+        writer.append("third")?;
+        // Reading from the returned offset delivers only the new line.
+        let (lines, next) = store.journal_from(&run, offset)?;
+        assert_eq!(lines, ["third"]);
+        // Nothing appended since: the read is empty and the offset holds.
+        let (lines, still) = store.journal_from(&run, next)?;
+        assert_eq!(lines, Vec::<String>::new());
+        assert_eq!(still, next);
+        Ok(())
+    }
+
+    #[test]
+    fn journal_from_at_offset_zero_matches_journal() -> Result<()> {
+        let (_dir, store) = temp_store();
+        let run = created_run(&store)?;
+        let mut writer = store.journal_writer(&run)?;
+        writer.append("first")?;
+        writer.append("second")?;
+        assert_eq!(store.journal_from(&run, 0)?.0, store.journal(&run)?);
+        Ok(())
+    }
+
+    #[test]
+    fn journal_from_on_an_absent_file_is_empty_at_offset_zero() -> Result<()> {
+        let (_dir, store) = temp_store();
+        let run = created_run(&store)?;
+        assert_eq!(store.journal_from(&run, 0)?, (Vec::new(), 0));
+        Ok(())
+    }
+
+    #[test]
+    fn journal_from_leaves_a_torn_final_write_unconsumed() -> Result<()> {
+        let (dir, store) = temp_store();
+        let run = created_run(&store)?;
+        let mut writer = store.journal_writer(&run)?;
+        writer.append("complete")?;
+        let path = journal_path(dir.path(), &run);
+        // Bytes past the last newline, as a write in flight would leave them.
+        append_raw(&path, b"par");
+        let (lines, offset) = store.journal_from(&run, 0)?;
+        assert_eq!(lines, ["complete"]);
+        assert_eq!(
+            offset,
+            "complete\n".len() as u64,
+            "the torn tail stays unconsumed"
+        );
+        // Once the line's newline lands, the same offset delivers it whole.
+        append_raw(&path, b"tial line\n");
+        let (lines, _) = store.journal_from(&run, offset)?;
+        assert_eq!(lines, ["partial line"]);
+        Ok(())
+    }
+
+    #[test]
+    fn invalid_utf8_past_the_offset_is_corruption() -> Result<()> {
+        let (dir, store) = temp_store();
+        let run = created_run(&store)?;
+        let mut writer = store.journal_writer(&run)?;
+        writer.append("valid line")?;
+        let (_, offset) = store.journal_from(&run, 0)?;
+        append_raw(&journal_path(dir.path(), &run), b"\xff\xfe garbage\n");
+        assert!(matches!(
+            store.journal_from(&run, offset),
+            Err(Error::Corruption(_))
+        ));
+        Ok(())
+    }
+
+    /// Appends raw bytes to `path`, as a foreign writer's partial or
+    /// complete write would land them.
+    fn append_raw(path: &Path, bytes: &[u8]) {
+        use std::io::Write;
+        let mut file = fs::OpenOptions::new()
+            .append(true)
+            .open(path)
+            .expect("open journal for raw append");
+        file.write_all(bytes).expect("raw append");
     }
 
     #[test]
