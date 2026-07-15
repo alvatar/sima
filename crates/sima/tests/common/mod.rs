@@ -6,8 +6,9 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Once;
+use std::time::{Duration, Instant};
 
-use sima_pipeline::load;
+use sima_pipeline::{LifecycleEvent, load};
 use sima_store::{Manifest, Store};
 
 /// Writes a `sima.toml` named `name` under `dir`: the given behaviors
@@ -96,11 +97,9 @@ pub fn worker_processes(parent: u32) -> Vec<u32> {
         .filter_map(|entry| {
             let pid: u32 = entry.file_name().to_str()?.parse().ok()?;
             let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-            let open = stat.find('(')?;
             let close = stat.rfind(')')?;
-            let comm = &stat[open + 1..close];
             let ppid: u32 = stat[close + 1..].split_whitespace().nth(1)?.parse().ok()?;
-            (comm == "sima-worker" && ppid == parent).then_some(pid)
+            (comm_of(&stat) == Some("sima-worker") && ppid == parent).then_some(pid)
         })
         .collect()
 }
@@ -110,4 +109,49 @@ pub fn manifest_of(config_path: &Path) -> Option<Manifest> {
     let config = load(config_path).expect("load config");
     let store = Store::open(&config.store).expect("open store");
     store.manifest(&config.run.id()).expect("read manifest")
+}
+
+/// The journal of the run `config_path` describes, parsed into typed events.
+pub fn journal_events(config_path: &Path) -> Vec<LifecycleEvent> {
+    let config = load(config_path).expect("load config");
+    let store = Store::open(&config.store).expect("open store");
+    store
+        .journal(&config.run.id())
+        .expect("read journal")
+        .iter()
+        .map(|line| LifecycleEvent::from_line(line).expect("parse journal line"))
+        .collect()
+}
+
+/// Polls `probe` every 20 ms until it holds or `deadline` elapses; returns
+/// whether it held. Every wait in the suites goes through a deadline poll —
+/// no fixed sleep carries a correctness assumption.
+pub fn poll_until(deadline: Duration, probe: impl Fn() -> bool) -> bool {
+    let end = Instant::now() + deadline;
+    loop {
+        if probe() {
+            return true;
+        }
+        if Instant::now() >= end {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// Whether `pid` is a live `sima-worker` process. A recycled pid under
+/// another command name reads as dead, so the check never latches onto an
+/// unrelated process.
+pub fn worker_alive(pid: u32) -> bool {
+    let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
+        return false;
+    };
+    comm_of(&stat) == Some("sima-worker")
+}
+
+/// The command name framed in parentheses in a `/proc/<pid>/stat` line.
+fn comm_of(stat: &str) -> Option<&str> {
+    let open = stat.find('(')?;
+    let close = stat.rfind(')')?;
+    Some(&stat[open + 1..close])
 }

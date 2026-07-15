@@ -14,7 +14,7 @@ use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Stdio};
 
-use common::{manifest_of, sima_command};
+use common::{journal_events, manifest_of, sima_command};
 use sima_pipeline::load;
 use sima_store::{Manifest, Store};
 
@@ -183,18 +183,6 @@ fn write_step_segmented_config(dir: &Path, name: &str, store: &str) -> PathBuf {
     "#
     .replace("STORE", store);
     common::write_config_text(dir, name, &text)
-}
-
-/// The run's journal, parsed into typed events.
-fn journal_events(config_path: &Path) -> Vec<sima_pipeline::LifecycleEvent> {
-    let config = load(config_path).expect("load config");
-    let store = Store::open(&config.store).expect("open store");
-    store
-        .journal(&config.run.id())
-        .expect("read journal")
-        .iter()
-        .map(|line| sima_pipeline::LifecycleEvent::from_line(line).expect("parse journal line"))
-        .collect()
 }
 
 /// The steps each committed attempt executed after the journal's last

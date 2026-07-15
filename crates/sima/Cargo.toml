@@ -23,6 +23,7 @@ signal-hook.workspace = true
 
 [dev-dependencies]
 sima-model = { path = "../sima-model" }
+libc.workspace = true
 tempfile.workspace = true
 
 # The crash harness runs only with the injection points compiled in.

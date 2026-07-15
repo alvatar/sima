@@ -731,6 +731,7 @@ name = "sima"
 version = "0.1.0"
 dependencies = [
  "crossterm",
+ "libc",
  "ratatui",
  "signal-hook 0.4.4",
  "sima-core",
