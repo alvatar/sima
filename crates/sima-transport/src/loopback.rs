@@ -1,0 +1,331 @@
+//! The loopback transport: the scheduler's test double for the worker
+//! transport.
+//!
+//! It exercises the real wire protocol and the real host loop — every frame
+//! is encoded, framed, and decoded exactly as production does — with the
+//! process boundary replaced by in-memory pipes and a thread running
+//! [`host::serve`]. What it cannot exercise is the OS: process isolation,
+//! SIGKILL preemption, and orphan behavior are tested with the real binaries
+//! in the CLI crate's test suites.
+
+use std::collections::VecDeque;
+use std::io::{Read, Write};
+use std::num::NonZeroU64;
+use std::sync::Arc;
+use std::sync::mpsc::{Receiver, Sender, channel};
+use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
+
+use sima_contracts::Executor;
+use sima_core::{Error, Result};
+use sima_model::FormatId;
+
+use crate::host;
+use crate::link::{LinkEvent, WorkerLink, WorkerTransport};
+use crate::protocol::{Assignment, Hello, PROTOCOL_VERSION, ToChild, ToParent, write_frame};
+use crate::subprocess::{self, next_event, read_events};
+
+/// A resolver the loopback moves into each host thread.
+pub type Resolver = Arc<dyn Fn(&FormatId) -> Result<Box<dyn Executor>> + Send + Sync>;
+
+/// Spawns in-process workers: each is a thread running the real host loop
+/// over in-memory pipes, hosting the executor the resolver supplies.
+pub struct LoopbackTransport {
+    hello: Hello,
+    resolver: Resolver,
+}
+
+impl LoopbackTransport {
+    /// A transport hosting `resolver`'s executor for `format` with the given
+    /// checkpoint cadence ([`Duration::MAX`] and `None` disable an axis).
+    pub fn new(
+        format: FormatId,
+        checkpoint_interval: Duration,
+        checkpoint_interval_steps: Option<NonZeroU64>,
+        resolver: Resolver,
+    ) -> LoopbackTransport {
+        LoopbackTransport {
+            hello: subprocess::hello(format, checkpoint_interval, checkpoint_interval_steps),
+            resolver,
+        }
+    }
+}
+
+impl WorkerTransport for LoopbackTransport {
+    fn spawn(&self) -> Result<Box<dyn WorkerLink>> {
+        let (mut stdin, host_reader) = pipe();
+        let (host_writer, stdout) = pipe();
+        let resolver = self.resolver.clone();
+        // The host thread is the "child": serve's return value has no one to
+        // go to — its ending, whatever the reason, is what the link observes
+        // as the event stream closing, exactly like a process death.
+        let host = std::thread::spawn(move || {
+            let _ = host::serve(host_reader, host_writer, resolver.as_ref());
+        });
+        let (sender, events) = channel();
+        let reader = std::thread::spawn(move || read_events(stdout, sender));
+        // The handshake, over the real wire protocol.
+        write_frame(&mut stdin, &ToChild::Hello(self.hello.clone()).encode())?;
+        match events.recv() {
+            Ok(Ok(ToParent::Ready { protocol })) if protocol == PROTOCOL_VERSION => {}
+            Ok(Ok(other)) => {
+                return Err(Error::Transport(format!(
+                    "expected Ready from the loopback host, got {other:?}"
+                )));
+            }
+            Ok(Err(e)) => return Err(e),
+            Err(_) => {
+                return Err(Error::Transport(
+                    "the loopback host exited before completing the handshake".to_string(),
+                ));
+            }
+        }
+        Ok(Box::new(LoopbackLink {
+            stdin: Some(stdin),
+            events,
+            host: Some(host),
+            reader: Some(reader),
+        }))
+    }
+}
+
+/// The parent's conversation with one loopback worker thread.
+struct LoopbackLink {
+    /// The host's stdin; dropping it — the kill — is also the shutdown
+    /// signal, after which the host thread exits and the event stream ends.
+    stdin: Option<PipeWriter>,
+    events: Receiver<Result<ToParent>>,
+    host: Option<JoinHandle<()>>,
+    reader: Option<JoinHandle<()>>,
+}
+
+impl WorkerLink for LoopbackLink {
+    fn assign(&mut self, assignment: &Assignment) -> Result<()> {
+        let stdin = self.stdin.as_mut().ok_or_else(|| {
+            Error::Transport("the loopback host's stdin is already closed".to_string())
+        })?;
+        write_frame(stdin, &ToChild::Assign(assignment.clone()).encode())
+    }
+
+    fn next(&mut self, deadline: Option<Instant>) -> Result<LinkEvent> {
+        next_event(&self.events, deadline)
+    }
+
+    fn kill(&mut self) {
+        // A thread cannot be killed the way a process can; closing its stdin
+        // makes the host exit at its next frame boundary, and the event
+        // stream then ends exactly as a dead process's would.
+        self.stdin = None;
+    }
+}
+
+impl Drop for LoopbackLink {
+    fn drop(&mut self) {
+        self.stdin = None;
+        if let Some(host) = self.host.take() {
+            let _ = host.join();
+        }
+        if let Some(reader) = self.reader.take() {
+            let _ = reader.join();
+        }
+    }
+}
+
+/// An in-memory unidirectional pipe: `Write` chunks cross a channel to the
+/// `Read` side. Dropping the writer ends the stream, mirroring a closed OS
+/// pipe.
+fn pipe() -> (PipeWriter, PipeReader) {
+    let (tx, rx) = channel();
+    (
+        PipeWriter { tx },
+        PipeReader {
+            rx,
+            pending: VecDeque::new(),
+        },
+    )
+}
+
+/// The write end: each `write` sends its buffer as one chunk.
+struct PipeWriter {
+    tx: Sender<Vec<u8>>,
+}
+
+impl Write for PipeWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.tx
+            .send(buf.to_vec())
+            .map_err(|_| std::io::Error::from(std::io::ErrorKind::BrokenPipe))?;
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// The read end: chunks queue until consumed; a disconnected channel with an
+/// empty queue is end-of-stream.
+struct PipeReader {
+    rx: Receiver<Vec<u8>>,
+    pending: VecDeque<u8>,
+}
+
+impl Read for PipeReader {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        while self.pending.is_empty() {
+            match self.rx.recv() {
+                Ok(chunk) => self.pending.extend(chunk),
+                Err(_) => return Ok(0),
+            }
+        }
+        let n = buf.len().min(self.pending.len());
+        for slot in buf.iter_mut().take(n) {
+            *slot = self.pending.pop_front().expect("n is bounded by len");
+        }
+        Ok(n)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use sima_contracts::Outcome;
+    use sima_core::hash_bytes;
+    use sima_domains::{StubBehavior, StubExecutor, StubProgram, StubState};
+    use sima_model::EnvironmentId;
+
+    use super::*;
+
+    /// A loopback transport hosting the stub executor under the given step
+    /// cadence.
+    fn stub_transport(steps: Option<NonZeroU64>) -> LoopbackTransport {
+        LoopbackTransport::new(
+            FormatId::new("stub.v1").expect("format id"),
+            Duration::MAX,
+            steps,
+            Arc::new(|_| Ok(Box::new(StubExecutor::new()?))),
+        )
+    }
+
+    /// An assignment over a stub program.
+    fn assignment(behavior: StubBehavior, checkpointing: bool) -> Assignment {
+        Assignment {
+            spec: StubProgram { behavior, nonce: 7 }.to_bytes(),
+            params: vec![1, 2, 3],
+            seed: 42,
+            environment: EnvironmentId::from_hash(hash_bytes(b"env")),
+            input_state: None,
+            resume: None,
+            attempt: 0,
+            worker: 0,
+            checkpointing,
+        }
+    }
+
+    /// The stub trajectory from `{step: 0, acc: seed}` through `steps` steps.
+    fn folded_state(seed: u64, steps: u64) -> StubState {
+        let mut state = StubState { step: 0, acc: seed };
+        for _ in 0..steps {
+            state.acc = sima_core::prng::derive(state.acc, state.step);
+            state.step += 1;
+        }
+        state
+    }
+
+    #[test]
+    fn a_task_round_trips_with_saves_in_order() -> Result<()> {
+        // Three accumulate steps under a save-every-offer cadence: the link
+        // yields the three saves in step order, then the outcome.
+        let transport = stub_transport(NonZeroU64::new(1));
+        let mut link = transport.spawn()?;
+        link.assign(&assignment(StubBehavior::Accumulate(3), true))?;
+        for step in 1..=3u64 {
+            match link.next(None)? {
+                LinkEvent::Save(bytes) => {
+                    assert_eq!(bytes, folded_state(42, step).to_bytes(), "save {step}");
+                }
+                other => panic!("expected Save at step {step}, got {other:?}"),
+            }
+        }
+        match link.next(None)? {
+            LinkEvent::Done(Outcome::Completed { artifacts, .. }) => {
+                assert_eq!(artifacts[0].bytes, folded_state(42, 3).to_bytes());
+            }
+            other => panic!("expected Done(Completed), got {other:?}"),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn the_same_link_executes_a_second_task() -> Result<()> {
+        // The worker is long-lived: one link, two assignments, two outcomes.
+        let transport = stub_transport(None);
+        let mut link = transport.spawn()?;
+        for _ in 0..2 {
+            link.assign(&assignment(StubBehavior::Succeed, false))?;
+            match link.next(None)? {
+                LinkEvent::Done(Outcome::Completed { .. }) => {}
+                other => panic!("expected Done(Completed), got {other:?}"),
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_deadline_expiry_consumes_nothing_and_the_outcome_still_arrives() -> Result<()> {
+        let transport = stub_transport(None);
+        let mut link = transport.spawn()?;
+        link.assign(&assignment(StubBehavior::Sleep(300), false))?;
+        // The deadline lands mid-sleep: expiry, with nothing consumed.
+        match link.next(Some(Instant::now() + Duration::from_millis(30)))? {
+            LinkEvent::DeadlineExpired => {}
+            other => panic!("expected DeadlineExpired, got {other:?}"),
+        }
+        // The attempt is still running; an unbounded wait yields its outcome.
+        match link.next(None)? {
+            LinkEvent::Done(Outcome::Completed { .. }) => {}
+            other => panic!("expected Done(Completed), got {other:?}"),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_panicking_executor_surfaces_panicked() -> Result<()> {
+        let transport = stub_transport(None);
+        let mut link = transport.spawn()?;
+        link.assign(&assignment(StubBehavior::Panic, false))?;
+        match link.next(None)? {
+            LinkEvent::Panicked(reason) => {
+                assert!(reason.contains("programmed panic"), "{reason}");
+            }
+            other => panic!("expected Panicked, got {other:?}"),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_kill_ends_the_event_stream_with_died() -> Result<()> {
+        let transport = stub_transport(None);
+        let mut link = transport.spawn()?;
+        // The kill closes the host's stdin; the host exits, its writer drops,
+        // and the event stream ends — the same signal a dead process leaves.
+        link.kill();
+        match link.next(None)? {
+            LinkEvent::Died(_) => {}
+            other => panic!("expected Died, got {other:?}"),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn assigning_to_a_killed_worker_is_an_error() -> Result<()> {
+        let transport = stub_transport(None);
+        let mut link = transport.spawn()?;
+        link.kill();
+        assert!(
+            link.assign(&assignment(StubBehavior::Succeed, false))
+                .is_err(),
+            "an assign onto a closed pipe must error"
+        );
+        Ok(())
+    }
+}

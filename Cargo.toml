@@ -10,6 +10,8 @@ members = [
     "crates/sima-pipeline",
     "crates/sima-scheduler",
     "crates/sima-store",
+    "crates/sima-transport",
+    "crates/sima-worker",
     "crates/toolkits/sima-toolkit-wgsl",
 ]
 

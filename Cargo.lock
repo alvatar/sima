@@ -731,6 +731,7 @@ name = "sima"
 version = "0.1.0"
 dependencies = [
  "crossterm",
+ "libc",
  "ratatui",
  "signal-hook 0.4.4",
  "sima-core",
@@ -799,6 +800,7 @@ dependencies = [
  "sima-model",
  "sima-scheduler",
  "sima-store",
+ "sima-transport",
  "tempfile",
  "toml",
 ]
@@ -814,6 +816,7 @@ dependencies = [
  "sima-domains",
  "sima-model",
  "sima-store",
+ "sima-transport",
  "tempfile",
 ]
 
@@ -836,6 +839,28 @@ dependencies = [
  "bytemuck",
  "naga",
  "sima-core",
+]
+
+[[package]]
+name = "sima-transport"
+version = "0.1.0"
+dependencies = [
+ "sima-contracts",
+ "sima-core",
+ "sima-domains",
+ "sima-model",
+]
+
+[[package]]
+name = "sima-worker"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "sima-contracts",
+ "sima-core",
+ "sima-domains",
+ "sima-model",
+ "sima-transport",
 ]
 
 [[package]]

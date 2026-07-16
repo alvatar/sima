@@ -1,8 +1,9 @@
 //! Task-lifecycle acceptance: retry, definitive failure, rejection, panic
-//! isolation, resume, and lease-expiry detection.
+//! isolation, resume, and attempt-deadline preemption.
 
 mod common;
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use common::{
@@ -16,6 +17,7 @@ use sima_domains::{StubBehavior, StubExecutor, StubProgram};
 use sima_model::{FormatId, RunConfig};
 use sima_scheduler::{LifecycleEvent, RunOutcome};
 use sima_store::Store;
+use sima_transport::loopback::Resolver;
 
 /// A flaky candidate fails, is retried, and finally commits; the committed
 /// record is deterministic, so the same config into a second fresh store
@@ -179,32 +181,36 @@ fn resume_reruns_only_the_unfinished_work() -> Result<()> {
     Ok(())
 }
 
-/// A task whose lease outlives the attempt timeout is reported, not preempted:
-/// the watchdog emits `LeaseExpired`, and the task still completes and the run
-/// finalizes.
+/// `attempt_timeout` is enforced: a task outliving it is preempted — the
+/// journal records the lease expiry before each retry — and once the
+/// attempts are exhausted the run fails definitively, never committing.
 #[test]
-fn a_slow_task_is_reported_expired_without_preemption() -> Result<()> {
-    // Sleep well past a short timeout so the watchdog is sure to catch it.
-    let cfg = config(6, vec![StubBehavior::Sleep(40)]);
+fn an_overrunning_task_is_preempted_and_exhausts_its_attempts() -> Result<()> {
+    // Each attempt sleeps far past the timeout, so every one is preempted.
+    let cfg = config(6, vec![StubBehavior::Sleep(400)]);
     let key = task_keys(&cfg)[0];
 
     let (_dir, store) = temp_store();
-    assert!(matches!(
-        run_into(&store, &cfg, &exec(1, 1, 5))?,
-        RunOutcome::Finalized { .. }
-    ));
+    match run_into(&store, &cfg, &exec(1, 2, 30))? {
+        RunOutcome::Failed { task, .. } => assert_eq!(task, key),
+        other => panic!("expected Failed, got {other:?}"),
+    }
 
     let run = run_id(&cfg);
     let events = journal_events(&store, &run);
-    // Detected at least once, and the task still committed (no preemption).
-    assert!(lease_expired_count(&events, &key) >= 1);
-    assert_eq!(committed_count(&events, &key), 1);
+    // Every attempt expired and failed transiently; the first was retried,
+    // the second exhausted the cap; nothing committed.
+    assert_eq!(lease_expired_count(&events, &key), 2);
+    assert_eq!(failed_count(&events, &key), 2);
+    assert_eq!(retried_count(&events, &key), 1);
+    assert_eq!(committed_count(&events, &key), 0);
+    assert!(store.manifest(&run)?.is_none());
     Ok(())
 }
 
-/// An unbounded attempt timeout (`Duration::MAX`) disables lease-expiry
-/// reporting without breaking the run: the lease's age never exceeds it, and no
-/// deadline arithmetic overflows. The task completes and the run finalizes.
+/// An unbounded attempt timeout (`Duration::MAX`) disables preemption
+/// without breaking the run: no deadline lands on the clock, so no arithmetic
+/// overflows. The task completes and the run finalizes.
 #[test]
 fn an_unbounded_timeout_finalizes_without_expiry_reports() -> Result<()> {
     let cfg = config(9, vec![StubBehavior::Sleep(10)]);
@@ -258,12 +264,9 @@ fn queued_is_journaled_before_the_first_lease() -> Result<()> {
     Ok(())
 }
 
-/// The watchdog checks its exit condition and waits under one continuous lock,
-/// so a terminal wakeup cannot slip through an unlocked window and strand the
-/// run for a full scan interval. With a one-hour timeout (a fifteen-minute scan
-/// interval), the run must still return promptly once the work completes: the
-/// prompt return is structural, and the test finishing within the suite's
-/// normal runtime is the guard.
+/// A long attempt timeout never delays the run: the deadline bounds the wait
+/// on the worker link, and an outcome arriving early settles immediately.
+/// The test finishing within the suite's normal runtime is the guard.
 #[test]
 fn a_long_timeout_does_not_delay_the_run() -> Result<()> {
     let cfg = config(12, vec![StubBehavior::Succeed, StubBehavior::Succeed]);
@@ -297,6 +300,11 @@ impl FaultyExecutor {
     }
 }
 
+/// The loopback resolver serving a fresh [`FaultyExecutor`] per worker.
+fn faulty_resolver() -> Resolver {
+    Arc::new(|_| Ok(Box::new(FaultyExecutor::new()) as Box<dyn Executor>))
+}
+
 impl Executor for FaultyExecutor {
     fn format(&self) -> &FormatId {
         &self.format
@@ -327,7 +335,7 @@ fn an_executor_fault_fails_the_run_with_an_error() -> Result<()> {
     let cfg = config(7, vec![StubBehavior::Reject]);
     let key = task_keys(&cfg)[0];
     let (_dir, store) = temp_store();
-    match run_with(&store, &cfg, &exec(1, 3, 1_000), &FaultyExecutor::new()) {
+    match run_with(&store, &cfg, &exec(1, 3, 1_000), faulty_resolver()) {
         Err(Error::Validation(_)) => {}
         Err(other) => panic!("expected a validation fault, got {other}"),
         Ok(_) => panic!("expected an infrastructure fault, got a run outcome"),
@@ -351,7 +359,7 @@ fn a_fault_preserves_already_committed_siblings() -> Result<()> {
     let (_dir, store) = temp_store();
     // One worker in FIFO order commits the Succeed sibling before reaching the
     // faulting candidate.
-    match run_with(&store, &cfg, &exec(1, 3, 1_000), &FaultyExecutor::new()) {
+    match run_with(&store, &cfg, &exec(1, 3, 1_000), faulty_resolver()) {
         Err(Error::Validation(_)) => {}
         Err(other) => panic!("expected a validation fault, got {other}"),
         Ok(_) => panic!("expected an infrastructure fault, got a run outcome"),

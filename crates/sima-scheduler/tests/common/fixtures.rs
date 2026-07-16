@@ -4,6 +4,7 @@
 //! so the unused-in-one-binary warnings are expected and silenced here.
 #![allow(dead_code)]
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use sima_contracts::Executor;
@@ -17,6 +18,7 @@ use sima_scheduler::{
     ExecutionConfig, LifecycleEvent, RunControl, RunOutcome, StaticBatch, TaskSource, run,
 };
 use sima_store::Store;
+use sima_transport::loopback::{LoopbackTransport, Resolver};
 
 /// A one-component stub environment, standing in for real execution identity.
 pub fn environment() -> Environment {
@@ -63,26 +65,46 @@ pub fn temp_store() -> (tempfile::TempDir, Store) {
     (dir, store)
 }
 
+/// The stub-executor resolver for the loopback transport.
+pub fn stub_resolver() -> Resolver {
+    Arc::new(|_| Ok(Box::new(StubExecutor::new()?) as Box<dyn Executor>))
+}
+
+/// A loopback transport hosting `resolver`'s executor for `cfg`'s format
+/// under `exec`'s checkpoint cadence: the real wire protocol and host loop
+/// over in-memory pipes, so these tests run the full scheduler without
+/// processes.
+fn loopback(cfg: &RunConfig, exec: &ExecutionConfig, resolver: Resolver) -> LoopbackTransport {
+    LoopbackTransport::new(
+        cfg.format.clone(),
+        exec.checkpoint_interval,
+        exec.checkpoint_interval_steps,
+        resolver,
+    )
+}
+
 /// Runs `cfg` into `store` with the stub generator and executor.
 pub fn run_into(store: &Store, cfg: &RunConfig, exec: &ExecutionConfig) -> Result<RunOutcome> {
-    run_with(store, cfg, exec, &StubExecutor::new()?)
+    run_with(store, cfg, exec, stub_resolver())
 }
 
 /// Runs `cfg` into `store` with the stub generator and a caller-supplied
-/// executor, so a test can inject faulting behavior the stub does not model.
+/// executor resolver, so a test can inject faulting behavior the stub does
+/// not model.
 pub fn run_with(
     store: &Store,
     cfg: &RunConfig,
     exec: &ExecutionConfig,
-    executor: &(dyn Executor + Sync),
+    resolver: Resolver,
 ) -> Result<RunOutcome> {
     let generator = StubGenerator::new()?;
+    let transport = loopback(cfg, exec, resolver);
     run(
         store,
         cfg,
         &environment(),
         &generator,
-        executor,
+        &transport,
         exec,
         &RunControl::detached(),
     )
@@ -98,12 +120,13 @@ pub fn run_controlled(
     control: &RunControl,
 ) -> Result<RunOutcome> {
     let generator = StubGenerator::new()?;
+    let transport = loopback(cfg, exec, stub_resolver());
     run(
         store,
         cfg,
         &environment(),
         &generator,
-        &StubExecutor::new()?,
+        &transport,
         exec,
         control,
     )

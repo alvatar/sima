@@ -5,8 +5,9 @@ mod common;
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::time::{Duration, Instant};
 
-use common::{manifest_of, sima_command};
+use common::{manifest_of, sima_command, worker_processes};
 use sima_pipeline::{LifecycleEvent, RunObserver, load};
 
 /// Writes a `sima.toml` under `dir` whose store lives beside it.
@@ -37,6 +38,41 @@ fn run_finalizes_a_succeeding_config_and_writes_the_manifest() {
     assert!(text.contains(&run_id[..12]), "stdout names the run: {text}");
     assert!(text.contains("finalized"), "stdout reports the end: {text}");
     assert!(manifest_of(&config).is_some(), "the manifest exists");
+}
+
+/// The run path executes tasks in worker subprocesses: while sleep tasks
+/// run, `sima-worker` children of the run process are visible in the
+/// process table.
+#[test]
+fn run_executes_tasks_in_worker_subprocesses() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config = write_config(dir.path(), r#""sleep:3000", "sleep:3000""#);
+    let mut child = sima_command()
+        .args(["run", config.to_str().expect("utf-8 path")])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn sima");
+    // Poll the process table to a deadline; the sleeps keep the workers
+    // alive far longer than the poll needs.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut seen = false;
+    while Instant::now() < deadline {
+        if !worker_processes(child.id()).is_empty() {
+            seen = true;
+            break;
+        }
+        if child.try_wait().expect("probe the run").is_some() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    assert!(
+        seen,
+        "no sima-worker child of the run process appeared in the process table"
+    );
 }
 
 #[test]

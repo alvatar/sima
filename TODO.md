@@ -362,11 +362,14 @@ spread across processes, multiple GPUs, and one SSH remote yields identical
 manifests — determinism is transport-invariant; killing a remote worker
 mid-lease converges through retry with no manifest difference.
 
-- [ ] M4.1 Multi-process worker transport (same scheduler contract): replaces
+- [x] M4.1 Multi-process worker transport (same scheduler contract): replaces
       the M1.5 in-process thread worker outright — the two worker models never
       coexist, since mixing them would mean inconsistent execution guarantees —
       and brings real timeout preemption (kill the subprocess) that the
-      in-process watchdog can only detect, not enforce
+      in-process watchdog can only detect, not enforce. Landed: the
+      `sima-worker` executor-host binary over a framed stdin/stdout protocol,
+      enforced `attempt_timeout`, worker-death retry with checkpoint resume,
+      and PDEATHSIG orphan protection; the watchdog thread is gone.
 - [ ] M4.2 Multi-GPU on one host
 - [ ] M4.3 Remote worker over SSH: container image with Vulkan runtime, worker
       bootstrap, bidirectional store sync (have/want negotiation — results

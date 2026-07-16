@@ -31,10 +31,16 @@ Strictly downward dependencies, enforced by workspace crate edges.
 | L1    | `sima-model`     | identity vocabulary: spec, params, environment, task key, record, run config |
 | L2    | `sima-store`     | durable state: CAS, task index, run manifests, journals               |
 | L3    | `sima-contracts` | generator/executor contracts over opaque specs and params            |
-| L4    | `sima-domains`   | per-format executors, generators, codecs, environments, id dispatch, and config translation; the reference stub domain |
-| L5    | `sima-scheduler` | task sources, worker pool, leases, retry, run driver                 |
-| L6    | `sima-pipeline`  | config loading, orchestration, run status                            |
-| L7    | `sima`           | CLI: run, status, tui                                                 |
+| L4    | `sima-transport` | worker transport: wire protocol, executor host loop, subprocess and loopback links |
+| L5    | `sima-domains`   | per-format executors, generators, codecs, environments, id dispatch, and config translation; the reference stub domain |
+| L6    | `sima-scheduler` | task sources, worker pool, leases, retry, run driver                 |
+| L7    | `sima-pipeline`  | config loading, orchestration, run status                            |
+| L8    | `sima`           | CLI: run, status, tui                                                 |
+
+Beside the spine, `sima-worker` is the worker binary: it depends on
+`sima-transport` (the executor host loop) and `sima-domains` (the executor
+its format id resolves to), and nothing depends on it. The orchestrator
+spawns one `sima-worker` process per worker slot.
 
 The store is the only durable state. Queues, schedulers, and orchestrators
 are ephemeral: the runnable frontier is derived from (config, store state),
@@ -88,19 +94,23 @@ sima run  (one orchestrator process per run; OS file lock on the store)
    │
    ├─ Coordinator ······· in-memory queue + leases + release counter
    ├─ JournalSink ······· one writer thread: events → journal + observer
-   ├─ Watchdog ·········· lease-expiry detection
    │
    └─ Worker pool (N threads, stateless leaseholders)
-       └─ Worker ········ leases one task = runs one attempt
+       └─ Worker ········ leases one task = drives one attempt on its child
            │
-           ├─ Checkpoint handle   (worker-owned; all slot I/O)
-           │   ├─ SlotCheckpoint      chain task + interval enabled: loads
-           │   │                      the slot, enforces cadence, writes
-           │   │                      offers to checkpoint/<chain>
-           │   └─ NoCheckpoint        stateless task or disabled: inert
+           ├─ WorkerLink · the conversation with one sima-worker process:
+           │               assign over its stdin, events off its stdout,
+           │               the attempt deadline as the wait bound, SIGKILL
+           │               as preemption
            │
-           ├─ Executor ·· pure compute: execute(input, ctx, checkpoint);
-           │              offers continuation bytes, never touches the store
+           │      sima-worker (child process, pure compute)
+           │        └─ Executor ·· execute(input, ctx, checkpoint); offers
+           │                       continuation bytes at its own cadence,
+           │                       never touches the store — it has no path
+           │
+           ├─ checkpoint slot ··· parent-side: loads resume bytes before
+           │                      assignment, persists each received save
+           │                      to checkpoint/<chain>
            │
            └─ commit ···· artifacts → objects, then the task record
 ```
@@ -347,7 +357,7 @@ crate also fixes the state-artifact convention: a segmented executor commits
 its continuation state under the artifact name `STATE_ARTIFACT` (`"state"`),
 the name the chain source walks.
 
-## `sima-domains` (L4)
+## `sima-domains` (L5)
 
 The executable substance behind each format id. A `Domain` groups what a
 format id binds: the executor that evaluates the format's specs, the
@@ -504,14 +514,15 @@ source plus the compiler that produced it. A known-answer test pins the emitted
 SPIR-V so a `naga` change that shifts output fails the build and forces a
 deliberate compiler-id update.
 
-## `sima-scheduler` (L5)
+## `sima-scheduler` (L6)
 
 Runs a search from `(RunConfig, store state)`. It is the layer that bridges
 pure executor output into durable store state, so the executor trust boundary
 lives on its worker seam: the executor returns values, and only the worker
-writes to the store. It depends on both `sima-contracts` (to run generators and
-executors) and `sima-store` (to commit results); `sima-contracts` itself stays
-free of the store, so the boundary holds in the crate graph.
+writes to the store. It depends on `sima-contracts` (to run generators and
+executors), `sima-store` (to commit results), and `sima-transport` (the worker
+seam it drives); `sima-contracts` itself stays free of the store, so the
+boundary holds in the crate graph.
 
 ### Task source
 
@@ -582,37 +593,79 @@ instead of the segment's start.
   is missing, malformed, or keyed to another task loads as nothing, never an
   error — the previous segment's leftover state cannot leak into the next.
 - **The contract split** — the executor offers continuation bytes at step
-  boundaries and may adopt served resume bytes; the worker-owned handle
-  loads the slot before execution, enforces the wall-clock cadence (the
-  first save becomes due one full interval after the attempt starts), and
-  performs every write. A save or load failure emits a `checkpoint degraded`
-  journal event and execution continues.
+  boundaries and may adopt served resume bytes; the cadence (the first save
+  becomes due one full interval after the attempt starts) is evaluated in
+  the worker process, so offers stay in-process and only due saves cross
+  the pipe; the parent loads the slot before assignment and performs every
+  write. A save or load failure emits a `checkpoint degraded` journal event
+  and execution continues.
 - **Disposability** — checkpoint bytes enter no hash, no record, and no
   manifest; the committed result is byte-identical with checkpointing on,
   off, or resumed. Checkpoints change recovery time only, so losing one
   costs a partial re-execution and nothing else.
 
+### Worker transport
+
+Execution happens in worker processes: the parent spawns one `sima-worker`
+child per worker slot, alive until the run ends and replaced only when it
+dies. The child hosts the domain executor and nothing else — it is never
+given the store path, so the pure-compute executor invariant is OS-enforced.
+The seam is two traits the scheduler is written against: `WorkerTransport`
+spawns workers, `WorkerLink` converses with one; the production transport
+spawns subprocesses, and a loopback test transport runs the same host loop
+and wire protocol over in-memory pipes. The traits, the wire protocol, the
+executor host loop, and both transports live in `sima-transport` (L4),
+beside the contract whose vocabulary the protocol carries across the process
+boundary; the scheduler consumes the traits, and `sima-worker` the host
+loop.
+
+The wire protocol frames messages on the child's stdin and stdout (stderr is
+inherited for diagnostics): a `u32` little-endian payload length, then a
+payload built with the canonical `Enc`/`Dec` primitives — used for their
+checked framing; frames are transport encoding, never identity-bearing. The
+handshake carries the protocol version, the run's format id (the child
+resolves its executor from it, once), and the checkpoint cadence; each task
+is one `Assign` frame answered by zero or more `Save` frames and one
+terminal frame. There is no shutdown message: the parent closing the child's
+stdin is the shutdown signal. A per-child reader thread decodes stdout
+frames into a channel, so the parent's deadline wait is a plain timed
+receive and a kill never races a blocking read.
+
+Orphan protection is layered: the child sets `PR_SET_PDEATHSIG(SIGKILL)`
+first, so a parent death — even by SIGKILL — kills it; the stdin
+end-of-stream exit covers the graceful paths.
+
 ### Worker pool and the outcome classifier
 
-A fixed pool of worker threads, created once inside a scope so they borrow the
-store and executor without `Arc`, pulls tasks from a shared FIFO queue. A
-worker leases a task, builds its `TaskInput` and `ExecutionContext`, and runs
-the executor inside a panic handler wrapping only that call. It then classifies
-the outcome, the one place an outcome is turned into an action:
+A fixed pool of worker threads, created once inside a scope so they borrow
+the store and transport without `Arc`, pulls tasks from a shared FIFO queue.
+A worker leases a task, loads its input-state and resume bytes, and hands
+everything to its child as values; the child builds the `TaskInput` and
+`ExecutionContext` and runs the executor inside a panic handler wrapping
+only that call. The parent classifies what comes back, the one place an
+outcome is turned into an action:
 
-- `Completed` → commit through the store's single commit path (store each
-  artifact, then the record), and emit `Committed`.
-- `Failed` → retry: re-enqueue at the next attempt until the attempt cap, after
-  which the transient failure becomes definitive.
-- `Rejected`, or a `Failed` whose retries are exhausted, or a panic escaping
-  `execute` → a definitive failure that terminates the run. A panic is caught
-  and classified as a rejection with the payload as its reason; a panic
-  anywhere else is a scheduler bug and propagates. `Err` from the executor is
-  an infrastructure fault and fails the run with an error.
+- `Done(Completed)` → commit through the store's single commit path (store
+  each artifact, then the record), and emit `Committed`.
+- `Done(Failed)` → retry: re-enqueue at the next attempt until the attempt
+  cap, after which the transient failure becomes definitive. The child
+  stays alive and may execute the retry.
+- `Done(Rejected)`, or a `Failed` whose retries are exhausted, or a
+  `Panicked` frame → a definitive failure that terminates the run. The
+  child catches the executor's panic and reports it with the payload as its
+  reason; classification authority stays with the parent. A panic anywhere
+  in the parent's own path is a scheduler bug and propagates.
+- A `Fault` frame — the executor returned `Err` — is an infrastructure
+  fault and fails the run with an error.
+- A child death without an outcome — crash, OOM kill, externally killed —
+  is a transient failure, retried up to the attempt cap, and the worker
+  spawns a replacement child before pulling the next task. A frame that
+  violates the protocol classifies the same way, after the untrusted child
+  is killed.
 
-Nothing from the execution context reaches a committed record: the worker
-carries only identity into the `TaskRecord`, and the attempt and worker travel
-solely to the journal.
+Nothing from the execution context reaches a committed record: the parent
+carries only identity into the `TaskRecord`, and the attempt and worker
+travel solely to the journal.
 
 ### Definitive failure, clean and resumable
 
@@ -653,18 +706,19 @@ failed < fault — and each setter only upgrades: a definitive failure or an
 infrastructure fault landing during an interrupt wind-down still decides
 the run, and among faults the first wins.
 
-### Leases and the watchdog
+### Leases and preemption
 
-Leases live in memory — `task → (worker, attempt, leased_at)` — since durable
-progress is the committed records; a process death drops all leases and resume
-re-derives the frontier. The timeout is a soft target: a watchdog thread scans
-the lease table and emits one `LeaseExpired` event per lease whose age exceeds
-`attempt_timeout`, reporting only. Comparing the lease's age against the timeout
-is a duration comparison that cannot overflow, so a timeout larger than any
-attempt (for example `Duration::MAX`) simply disables expiry reporting. A
-memory-safe runtime has no safe forced thread termination, so forced preemption
-requires process isolation and is not yet built; the in-process worker delivers
-lease-expiry detection, not termination.
+Leases live in memory — the set of tasks in flight — since durable progress
+is the committed records; a process death drops all leases and resume
+re-derives the frontier. `attempt_timeout` is enforced per worker: the
+parent thread that owns the child uses it as the deadline of the wait it
+already performs on the child's messages. On expiry it journals
+`LeaseExpired`, SIGKILLs the child, reaps it, classifies the attempt as a
+transient failure — retried up to the attempt cap — and spawns a
+replacement before pulling the next task. Process isolation is what makes
+the kill safe: a memory-safe runtime has no safe forced thread termination.
+A timeout larger than any attempt (for example `Duration::MAX`) never lands
+on the clock and so disables enforcement.
 
 ### Journal events
 
@@ -682,8 +736,8 @@ to one JSON line, with ids and stats rendered as hex. The vocabulary:
 - **faulted** — an infrastructure fault (an executor error, a commit failure,
   or an input-state load failure) hit a task's attempt; the run terminates
   with an error.
-- **lease expired** — a lease's age ran past the attempt timeout; detection
-  only, no preemption.
+- **lease expired** — an attempt ran past the attempt timeout: its worker
+  process is killed and the attempt fails transiently.
 - **checkpoint degraded** — a checkpoint save or load failed; execution
   continues and the attempt's result is unaffected, so this event is the
   only trace.
@@ -695,13 +749,13 @@ to one JSON line, with ids and stats rendered as hex. The vocabulary:
   resumable.
 
 A single journal-writer thread owns the `JournalWriter` and drains an `mpsc`
-channel the workers, watchdog, and driver send to, which is the single-writer
+channel the workers and driver send to, which is the single-writer
 seam the append contract requires. Event arrival order across threads varies
 between runs; the journal is observational and excluded from every equality
 criterion, so the manifest — sorted by task key at finalize — is byte-identical
 across runs regardless.
 
-## `sima-pipeline` (L6)
+## `sima-pipeline` (L7)
 
 The layer a person's configuration enters: it loads `sima.toml`, translates
 it through the domain and generator the config names, and drives the
@@ -717,8 +771,9 @@ The config file carries the same split the model enforces:
   (its id plus the generator-owned keys), and the domain-owned run params.
 - **`[execution]`** — the operational section: the store path (resolved
   relative to the config file's directory), worker count, attempt cap, an
-  optional attempt timeout whose absence disables lease-expiry reporting,
-  and an optional checkpoint interval whose absence disables checkpointing.
+  optional attempt timeout whose absence disables the enforced attempt
+  deadline, and an optional checkpoint interval whose absence disables
+  checkpointing.
   Never hashed — a run resumed with different execution settings keeps its
   id.
 
@@ -729,7 +784,7 @@ error naming it.
 
 The pipeline parses the file's structure and routes each config section to
 the code that owns it, never interpreting the content itself: the format and
-generator ids dispatch through `sima-domains` (see L4), and the opaque
+generator ids dispatch through `sima-domains` (see L5), and the opaque
 `[run.params]` and `[run.generator]` tables pass to the domain and generator
 translations that turn them into canonical bytes. Identity-bearing bytes are
 produced only by those codecs, never hand-rolled here.
@@ -737,8 +792,11 @@ produced only by those codecs, never hand-rolled here.
 ### Orchestration
 
 `orchestrate` opens the store (creating it where missing), takes the run's
-orchestrator lock, dispatches the domain and the generator, and calls the
-scheduler; the lock is held for the whole call and releases on return.
+orchestrator lock, dispatches the domain and the generator, locates the
+worker binary (the `SIMA_WORKER` environment variable, then `sima-worker`
+beside the current executable, then in its directory's parent), and calls
+the scheduler over the subprocess transport; the lock is held for the whole
+call and releases on return.
 Resume and re-evaluation are this same call — the frontier re-derives from
 store state, so an interrupted or failed run continues where it stopped,
 and a finalized one re-finalizes idempotently without touching an executor.
@@ -752,7 +810,7 @@ sum across every resume segment, and the last run-level event decides the
 state. A journal ending mid-run reads as in progress: a dead orchestrator
 is indistinguishable from a live one by the journal alone.
 
-## `sima` (L7)
+## `sima` (L8)
 
 The CLI holds no orchestration logic — parsing, rendering, signal
 registration, exit codes, and, for `tui`, an interactive terminal
