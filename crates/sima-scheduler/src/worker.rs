@@ -20,14 +20,14 @@ use sima_contracts::{Artifact, Outcome, WorkerId};
 use sima_core::{Error, Hash, Result, to_hex};
 use sima_model::{ArtifactRef, RunConfig, RunId, TaskIdentity, TaskKey, TaskRecord};
 use sima_store::Store;
+use sima_transport::protocol::Assignment;
+use sima_transport::{LinkEvent, WorkerLink, WorkerTransport};
 
 use crate::config::ExecutionConfig;
 use crate::coordinator::{Coordinator, Pending, RunState};
 use crate::event::LifecycleEvent;
 use crate::journal_sink::emit;
 use crate::task_source::RunnableTask;
-use crate::transport::link::{LinkEvent, WorkerLink, WorkerTransport};
-use crate::transport::protocol::Assignment;
 
 /// The run-wide context one worker borrows for its whole life: the shared
 /// coordination, the store it commits through, the run config, the transport
@@ -541,9 +541,9 @@ mod tests {
     use sima_core::hash_bytes;
     use sima_domains::{StubBehavior, StubExecutor, StubProgram};
     use sima_model::{EnvironmentId, FormatId, GeneratorConfig, GeneratorId, Params, Spec, SpecId};
+    use sima_transport::loopback::LoopbackTransport;
 
     use super::*;
-    use crate::transport::loopback::LoopbackTransport;
 
     /// A throwaway task key.
     fn a_key() -> TaskKey {

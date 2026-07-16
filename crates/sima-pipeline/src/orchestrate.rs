@@ -4,9 +4,9 @@ use std::path::{Path, PathBuf};
 
 use sima_core::{Error, Result};
 use sima_domains::{domain_for, generator_for};
-use sima_scheduler::transport::SubprocessTransport;
 use sima_scheduler::{RunControl, RunOutcome};
 use sima_store::Store;
+use sima_transport::SubprocessTransport;
 
 use crate::config::LoadedConfig;
 

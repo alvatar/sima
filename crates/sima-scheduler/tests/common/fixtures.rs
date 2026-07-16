@@ -14,11 +14,11 @@ use sima_model::{
     Environment, EnvironmentComponent, EnvironmentValue, FormatId, GeneratorConfig, GeneratorId,
     Params, RunConfig, RunId, TaskKey,
 };
-use sima_scheduler::transport::loopback::{LoopbackTransport, Resolver};
 use sima_scheduler::{
     ExecutionConfig, LifecycleEvent, RunControl, RunOutcome, StaticBatch, TaskSource, run,
 };
 use sima_store::Store;
+use sima_transport::loopback::{LoopbackTransport, Resolver};
 
 /// A one-component stub environment, standing in for real execution identity.
 pub fn environment() -> Environment {

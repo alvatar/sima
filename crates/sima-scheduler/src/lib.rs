@@ -2,11 +2,12 @@
 //!
 //! A task source derives the runnable frontier — the tasks the store does not
 //! yet answer — and the driver hands each to a pool of worker processes over
-//! the [`transport`], commits successes through the store, retries transient
-//! failures, and stops on a definitive one. It is the layer that bridges pure
-//! executor output into durable store state, so the executor trust boundary
-//! lives on the worker seam: the executor returns values from its own
-//! process, and only the parent-side worker writes to the store.
+//! the transport ([`sima_transport`]), commits successes through the store,
+//! retries transient failures, and stops on a definitive one. It is the layer
+//! that bridges pure executor output into durable store state, so the
+//! executor trust boundary lives on the worker seam: the executor returns
+//! values from its own process, and only the parent-side worker writes to
+//! the store.
 //!
 //! Determinism is the correctness criterion: the same config run twice into
 //! two fresh stores yields byte-identical manifests. Worker completion order
@@ -23,7 +24,6 @@ mod journal_sink;
 mod segment_chain;
 mod static_batch;
 mod task_source;
-pub mod transport;
 mod worker;
 
 pub use config::ExecutionConfig;

@@ -1,0 +1,18 @@
+[package]
+name = "sima-transport"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+sima-core = { path = "../sima-core" }
+sima-model = { path = "../sima-model" }
+sima-contracts = { path = "../sima-contracts" }
+
+# The transport's shipped library never depends on sima-domains; the loopback
+# tests use the stub domain as a deterministic substrate through this
+# dev-dependency, a test-only edge invisible in the production artifact.
+[dev-dependencies]
+sima-domains = { path = "../sima-domains" }
+
+[lints]
+workspace = true

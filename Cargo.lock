@@ -800,6 +800,7 @@ dependencies = [
  "sima-model",
  "sima-scheduler",
  "sima-store",
+ "sima-transport",
  "tempfile",
  "toml",
 ]
@@ -815,6 +816,7 @@ dependencies = [
  "sima-domains",
  "sima-model",
  "sima-store",
+ "sima-transport",
  "tempfile",
 ]
 
@@ -840,6 +842,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "sima-transport"
+version = "0.1.0"
+dependencies = [
+ "sima-contracts",
+ "sima-core",
+ "sima-domains",
+ "sima-model",
+]
+
+[[package]]
 name = "sima-worker"
 version = "0.1.0"
 dependencies = [
@@ -848,7 +860,7 @@ dependencies = [
  "sima-core",
  "sima-domains",
  "sima-model",
- "sima-scheduler",
+ "sima-transport",
 ]
 
 [[package]]

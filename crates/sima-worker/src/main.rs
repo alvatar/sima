@@ -1,12 +1,12 @@
 //! The `sima-worker` binary: an executor host, one per worker slot.
 //!
 //! The orchestrator spawns one of these per worker and converses over its
-//! stdin/stdout in the scheduler's wire protocol; stderr is inherited for
+//! stdin/stdout in the transport's wire protocol; stderr is inherited for
 //! human-readable diagnostics. The process is pure compute by construction —
 //! it is never given a store path, so the "executors are pure compute"
-//! invariant is OS-enforced. All logic lives in
-//! [`sima_scheduler::transport::host`]; this binary only wires the streams,
-//! the domain resolver, and the exit code, plus the orphan protection.
+//! invariant is OS-enforced. All logic lives in [`sima_transport::host`];
+//! this binary only wires the streams, the domain resolver, and the exit
+//! code, plus the orphan protection.
 
 use sima_contracts::Executor;
 use sima_core::Result;
@@ -37,7 +37,7 @@ fn main() {
     }
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
-    if let Err(e) = sima_scheduler::transport::host::serve(stdin.lock(), stdout.lock(), &resolver) {
+    if let Err(e) = sima_transport::host::serve(stdin.lock(), stdout.lock(), &resolver) {
         eprintln!("sima-worker: {e}");
         std::process::exit(1);
     }

@@ -31,13 +31,14 @@ Strictly downward dependencies, enforced by workspace crate edges.
 | L1    | `sima-model`     | identity vocabulary: spec, params, environment, task key, record, run config |
 | L2    | `sima-store`     | durable state: CAS, task index, run manifests, journals               |
 | L3    | `sima-contracts` | generator/executor contracts over opaque specs and params            |
-| L4    | `sima-domains`   | per-format executors, generators, codecs, environments, id dispatch, and config translation; the reference stub domain |
-| L5    | `sima-scheduler` | task sources, worker transport, leases, retry, run driver           |
-| L6    | `sima-pipeline`  | config loading, orchestration, run status                            |
-| L7    | `sima`           | CLI: run, status, tui                                                 |
+| L4    | `sima-transport` | worker transport: wire protocol, executor host loop, subprocess and loopback links |
+| L5    | `sima-domains`   | per-format executors, generators, codecs, environments, id dispatch, and config translation; the reference stub domain |
+| L6    | `sima-scheduler` | task sources, worker pool, leases, retry, run driver                 |
+| L7    | `sima-pipeline`  | config loading, orchestration, run status                            |
+| L8    | `sima`           | CLI: run, status, tui                                                 |
 
 Beside the spine, `sima-worker` is the worker binary: it depends on
-`sima-scheduler` (the transport host loop) and `sima-domains` (the executor
+`sima-transport` (the executor host loop) and `sima-domains` (the executor
 its format id resolves to), and nothing depends on it. The orchestrator
 spawns one `sima-worker` process per worker slot.
 
@@ -356,7 +357,7 @@ crate also fixes the state-artifact convention: a segmented executor commits
 its continuation state under the artifact name `STATE_ARTIFACT` (`"state"`),
 the name the chain source walks.
 
-## `sima-domains` (L4)
+## `sima-domains` (L5)
 
 The executable substance behind each format id. A `Domain` groups what a
 format id binds: the executor that evaluates the format's specs, the
@@ -513,14 +514,15 @@ source plus the compiler that produced it. A known-answer test pins the emitted
 SPIR-V so a `naga` change that shifts output fails the build and forces a
 deliberate compiler-id update.
 
-## `sima-scheduler` (L5)
+## `sima-scheduler` (L6)
 
 Runs a search from `(RunConfig, store state)`. It is the layer that bridges
 pure executor output into durable store state, so the executor trust boundary
 lives on its worker seam: the executor returns values, and only the worker
-writes to the store. It depends on both `sima-contracts` (to run generators and
-executors) and `sima-store` (to commit results); `sima-contracts` itself stays
-free of the store, so the boundary holds in the crate graph.
+writes to the store. It depends on `sima-contracts` (to run generators and
+executors), `sima-store` (to commit results), and `sima-transport` (the worker
+seam it drives); `sima-contracts` itself stays free of the store, so the
+boundary holds in the crate graph.
 
 ### Task source
 
@@ -611,7 +613,11 @@ given the store path, so the pure-compute executor invariant is OS-enforced.
 The seam is two traits the scheduler is written against: `WorkerTransport`
 spawns workers, `WorkerLink` converses with one; the production transport
 spawns subprocesses, and a loopback test transport runs the same host loop
-and wire protocol over in-memory pipes.
+and wire protocol over in-memory pipes. The traits, the wire protocol, the
+executor host loop, and both transports live in `sima-transport` (L4),
+beside the contract whose vocabulary the protocol carries across the process
+boundary; the scheduler consumes the traits, and `sima-worker` the host
+loop.
 
 The wire protocol frames messages on the child's stdin and stdout (stderr is
 inherited for diagnostics): a `u32` little-endian payload length, then a
@@ -749,7 +755,7 @@ between runs; the journal is observational and excluded from every equality
 criterion, so the manifest — sorted by task key at finalize — is byte-identical
 across runs regardless.
 
-## `sima-pipeline` (L6)
+## `sima-pipeline` (L7)
 
 The layer a person's configuration enters: it loads `sima.toml`, translates
 it through the domain and generator the config names, and drives the
@@ -778,7 +784,7 @@ error naming it.
 
 The pipeline parses the file's structure and routes each config section to
 the code that owns it, never interpreting the content itself: the format and
-generator ids dispatch through `sima-domains` (see L4), and the opaque
+generator ids dispatch through `sima-domains` (see L5), and the opaque
 `[run.params]` and `[run.generator]` tables pass to the domain and generator
 translations that turn them into canonical bytes. Identity-bearing bytes are
 produced only by those codecs, never hand-rolled here.
@@ -804,7 +810,7 @@ sum across every resume segment, and the last run-level event decides the
 state. A journal ending mid-run reads as in progress: a dead orchestrator
 is indistinguishable from a live one by the journal alone.
 
-## `sima` (L7)
+## `sima` (L8)
 
 The CLI holds no orchestration logic — parsing, rendering, signal
 registration, exit codes, and, for `tui`, an interactive terminal

@@ -20,6 +20,7 @@ use sima_contracts::{Generator, WorkerId};
 use sima_core::Result;
 use sima_model::{Environment, RunConfig, RunId, TaskKey};
 use sima_store::Store;
+use sima_transport::WorkerTransport;
 
 use crate::config::ExecutionConfig;
 use crate::control::RunControl;
@@ -29,7 +30,6 @@ use crate::journal_sink::{JournalSink, emit};
 use crate::segment_chain::SegmentChain;
 use crate::static_batch::StaticBatch;
 use crate::task_source::{RunnableTask, TaskSource};
-use crate::transport::link::WorkerTransport;
 use crate::worker::{WorkerContext, worker_loop};
 
 /// The result of a run.

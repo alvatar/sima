@@ -22,7 +22,7 @@ pub mod loopback;
 pub mod protocol;
 pub mod subprocess;
 
-pub(crate) mod checkpoint_cadence;
+mod checkpoint_cadence;
 
 pub use link::{LinkEvent, WorkerLink, WorkerTransport};
 pub use subprocess::SubprocessTransport;

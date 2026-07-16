@@ -15,9 +15,9 @@ use sima_contracts::{Checkpoint, ExecutionContext, Executor, Outcome, TaskInput}
 use sima_core::{Error, Result};
 use sima_domains::{StubBehavior, StubExecutor, StubProgram};
 use sima_model::{FormatId, RunConfig};
-use sima_scheduler::transport::loopback::Resolver;
 use sima_scheduler::{LifecycleEvent, RunOutcome};
 use sima_store::Store;
+use sima_transport::loopback::Resolver;
 
 /// A flaky candidate fails, is retried, and finally commits; the committed
 /// record is deterministic, so the same config into a second fresh store

@@ -20,8 +20,8 @@ use std::time::{Duration, Instant};
 use sima_core::{Error, Result};
 use sima_model::FormatId;
 
-use super::link::{LinkEvent, WorkerLink, WorkerTransport};
-use super::protocol::{
+use crate::link::{LinkEvent, WorkerLink, WorkerTransport};
+use crate::protocol::{
     Assignment, Hello, PROTOCOL_VERSION, ToChild, ToParent, read_frame, write_frame,
 };
 

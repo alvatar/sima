@@ -8,7 +8,7 @@ use sima_contracts::Outcome;
 use sima_core::hash_bytes;
 use sima_domains::{StubBehavior, StubProgram};
 use sima_model::{EnvironmentId, FormatId};
-use sima_scheduler::transport::protocol::{
+use sima_transport::protocol::{
     Assignment, Hello, PROTOCOL_VERSION, ToChild, ToParent, read_frame, write_frame,
 };
 

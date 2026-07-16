@@ -15,7 +15,7 @@ use std::time::Instant;
 use sima_contracts::Outcome;
 use sima_core::Result;
 
-use super::protocol::Assignment;
+use crate::protocol::Assignment;
 
 /// Spawns workers. One transport serves a whole run; each worker slot holds
 /// one [`WorkerLink`] at a time and replaces it when the child dies.

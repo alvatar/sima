@@ -20,10 +20,10 @@ use sima_contracts::Executor;
 use sima_core::{Error, Result};
 use sima_model::FormatId;
 
-use super::host;
-use super::link::{LinkEvent, WorkerLink, WorkerTransport};
-use super::protocol::{Assignment, Hello, PROTOCOL_VERSION, ToChild, ToParent, write_frame};
-use super::subprocess::{self, next_event, read_events};
+use crate::host;
+use crate::link::{LinkEvent, WorkerLink, WorkerTransport};
+use crate::protocol::{Assignment, Hello, PROTOCOL_VERSION, ToChild, ToParent, write_frame};
+use crate::subprocess::{self, next_event, read_events};
 
 /// A resolver the loopback moves into each host thread.
 pub type Resolver = Arc<dyn Fn(&FormatId) -> Result<Box<dyn Executor>> + Send + Sync>;

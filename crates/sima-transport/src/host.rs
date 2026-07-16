@@ -18,8 +18,8 @@ use sima_contracts::{Checkpoint, ExecutionContext, Executor, NoCheckpoint, TaskI
 use sima_core::{Error, Result};
 use sima_model::{FormatId, Params, Spec};
 
-use super::checkpoint_cadence::CheckpointCadence;
-use super::protocol::{
+use crate::checkpoint_cadence::CheckpointCadence;
+use crate::protocol::{
     Assignment, Hello, PROTOCOL_VERSION, ToChild, ToParent, read_frame, write_frame,
 };
 
