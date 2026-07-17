@@ -494,6 +494,19 @@ mod tests {
     /// Requires a real Vulkan device. Run with `cargo test -- --ignored`.
     #[test]
     #[ignore = "requires a Vulkan device"]
+    fn naming_an_absent_device_fails_to_resolve() {
+        // A worker answers `Ready` with this name, so this is where a binding
+        // onto hardware the machine does not have is caught: executor
+        // construction is lazy and would not notice until the first task.
+        assert!(matches!(
+            selected_device_name(Some((0xdead, 0xbeef, 0))),
+            Err(Error::Gpu(_))
+        ));
+    }
+
+    /// Requires a real Vulkan device. Run with `cargo test -- --ignored`.
+    #[test]
+    #[ignore = "requires a Vulkan device"]
     fn enumeration_reports_compute_capable_devices() {
         let devices = enumerate_devices().expect("enumerate devices");
         assert!(!devices.is_empty(), "at least one compute-capable device");

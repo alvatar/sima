@@ -650,6 +650,22 @@ mod tests {
     }
 
     #[test]
+    fn an_invalid_device_flag_is_an_encoding_error() {
+        // A Hello whose device present-flag byte is 2.
+        let mut enc = Enc::new();
+        enc.u8(TAG_HELLO)
+            .u32(PROTOCOL_VERSION)
+            .str("stub.v1")
+            .u64(0)
+            .u64(0);
+        enc.u8(2);
+        assert!(matches!(
+            ToChild::decode(&enc.finish()),
+            Err(Error::Encoding(_))
+        ));
+    }
+
+    #[test]
     fn trailing_bytes_after_a_message_are_rejected() {
         for message in to_child_messages() {
             let mut payload = message.encode();

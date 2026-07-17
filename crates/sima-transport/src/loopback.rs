@@ -22,7 +22,7 @@ use sima_model::FormatId;
 
 use crate::host;
 use crate::link::{LinkEvent, WorkerLink, WorkerTransport};
-use crate::protocol::{Assignment, Hello, PROTOCOL_VERSION, ToChild, ToParent, write_frame};
+use crate::protocol::{Assignment, Hello, ToChild, ToParent, write_frame};
 use crate::subprocess::{self, next_event, read_events};
 
 /// A [`host::Resolver`] the loopback shares across its host threads: one
@@ -73,23 +73,7 @@ impl WorkerTransport for LoopbackTransport {
             ..self.hello.clone()
         };
         write_frame(&mut stdin, &ToChild::Hello(hello).encode())?;
-        let device_name = match events.recv() {
-            Ok(Ok(ToParent::Ready {
-                protocol,
-                device_name,
-            })) if protocol == PROTOCOL_VERSION => device_name,
-            Ok(Ok(other)) => {
-                return Err(Error::Transport(format!(
-                    "expected Ready from the loopback host, got {other:?}"
-                )));
-            }
-            Ok(Err(e)) => return Err(e),
-            Err(_) => {
-                return Err(Error::Transport(
-                    "the loopback host exited before completing the handshake".to_string(),
-                ));
-            }
-        };
+        let device_name = subprocess::ready_device("loopback host", events.recv().ok())?;
         Ok(Box::new(LoopbackLink {
             stdin: Some(stdin),
             events,
@@ -241,6 +225,29 @@ mod tests {
             worker: 0,
             checkpointing,
         }
+    }
+
+    #[test]
+    fn a_host_speaking_another_version_is_refused_as_a_mismatch() {
+        // Every transport refuses a version mismatch the same way, and says
+        // which two versions disagree rather than reporting an unexpected
+        // message.
+        let error = subprocess::ready_device(
+            "loopback host",
+            Some(Ok(ToParent::Ready {
+                protocol: crate::protocol::PROTOCOL_VERSION - 1,
+                device_name: String::new(),
+            })),
+        )
+        .expect_err("a host at another version");
+        let Error::Transport(message) = error else {
+            panic!("expected a transport error");
+        };
+        assert!(
+            message.contains("loopback host protocol version mismatch"),
+            "{message}"
+        );
+        assert!(message.contains("loopback host speaks"), "{message}");
     }
 
     #[test]

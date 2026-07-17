@@ -131,21 +131,34 @@ impl WorkerTransport for SubprocessTransport {
 /// the device the worker reported.
 fn handshake(link: &mut SubprocessLink, hello: &Hello) -> Result<String> {
     link.write(&ToChild::Hello(hello.clone()))?;
-    match link.events.recv() {
-        Ok(Ok(ToParent::Ready {
+    ready_device("worker", link.events.recv().ok())
+}
+
+/// Classifies a peer's answer to `Hello`: the device it reported, or why the
+/// handshake failed. `answer` is `None` when the event stream ended first.
+///
+/// The parent's half of the handshake, shared by every transport and pure over
+/// the answer, so each refusal is verifiable without a peer to produce it.
+/// `peer` names the far side in the diagnostics.
+pub(crate) fn ready_device(peer: &str, answer: Option<Result<ToParent>>) -> Result<String> {
+    match answer {
+        Some(Ok(ToParent::Ready {
             protocol,
             device_name,
         })) if protocol == PROTOCOL_VERSION => Ok(device_name),
-        Ok(Ok(ToParent::Ready { protocol, .. })) => Err(Error::Transport(format!(
-            "worker protocol version mismatch: parent speaks {PROTOCOL_VERSION}, worker speaks {protocol}"
+        // A Ready at another version is a version mismatch, not an unexpected
+        // message: say which two versions disagree.
+        Some(Ok(ToParent::Ready { protocol, .. })) => Err(Error::Transport(format!(
+            "{peer} protocol version mismatch: parent speaks {PROTOCOL_VERSION}, \
+             {peer} speaks {protocol}"
         ))),
-        Ok(Ok(other)) => Err(Error::Transport(format!(
-            "expected Ready from the worker, got {other:?}"
+        Some(Ok(other)) => Err(Error::Transport(format!(
+            "expected Ready from the {peer}, got {other:?}"
         ))),
-        Ok(Err(e)) => Err(e),
-        Err(_) => Err(Error::Transport(
-            "the worker exited before completing the handshake".to_string(),
-        )),
+        Some(Err(e)) => Err(e),
+        None => Err(Error::Transport(format!(
+            "the {peer} exited before completing the handshake"
+        ))),
     }
 }
 
@@ -326,6 +339,69 @@ mod tests {
             Duration::MAX,
             None,
         )
+    }
+
+    /// The device a `Ready` at `protocol` resolves to, or the refusal.
+    fn answer_ready(protocol: u32) -> Result<String> {
+        ready_device(
+            "worker",
+            Some(Ok(ToParent::Ready {
+                protocol,
+                device_name: "a device".to_string(),
+            })),
+        )
+    }
+
+    #[test]
+    fn a_ready_at_this_version_carries_the_device_through() -> Result<()> {
+        assert_eq!(answer_ready(PROTOCOL_VERSION)?, "a device");
+        Ok(())
+    }
+
+    #[test]
+    fn a_ready_at_another_version_is_refused_naming_both_versions() {
+        // The two binaries are built apart, so the mismatch is the one thing
+        // the handshake exists to catch; the message names each side.
+        let error = answer_ready(PROTOCOL_VERSION - 1).expect_err("a stale worker");
+        let Error::Transport(message) = error else {
+            panic!("expected a transport error");
+        };
+        assert!(message.contains("version mismatch"), "{message}");
+        assert!(
+            message.contains(&format!("parent speaks {PROTOCOL_VERSION}")),
+            "names the parent's version: {message}"
+        );
+        assert!(
+            message.contains(&format!("worker speaks {}", PROTOCOL_VERSION - 1)),
+            "names the worker's version: {message}"
+        );
+    }
+
+    #[test]
+    fn an_answer_that_is_not_ready_is_refused() {
+        let error = ready_device("worker", Some(Ok(ToParent::Save(vec![1]))))
+            .expect_err("the handshake takes Ready alone");
+        assert!(matches!(error, Error::Transport(_)));
+    }
+
+    #[test]
+    fn a_stream_that_ends_before_the_answer_is_refused() {
+        // The child died during its own startup: no answer is coming.
+        let error = ready_device("worker", None).expect_err("nothing answered");
+        let Error::Transport(message) = error else {
+            panic!("expected a transport error");
+        };
+        assert!(message.contains("exited before completing the handshake"));
+    }
+
+    #[test]
+    fn a_frame_violation_during_the_handshake_surfaces_verbatim() {
+        let error = ready_device(
+            "worker",
+            Some(Err(Error::Encoding("unknown tag 9".to_string()))),
+        )
+        .expect_err("the frame never decoded");
+        assert!(matches!(error, Error::Encoding(_)), "{error:?}");
     }
 
     #[test]
