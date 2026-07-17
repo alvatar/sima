@@ -17,7 +17,7 @@ use sima_domains::{StubBehavior, StubExecutor, StubProgram};
 use sima_model::{FormatId, RunConfig};
 use sima_scheduler::{LifecycleEvent, RunOutcome};
 use sima_store::Store;
-use sima_transport::loopback::Resolver;
+use sima_transport::loopback::SharedResolver;
 
 /// A flaky candidate fails, is retried, and finally commits; the committed
 /// record is deterministic, so the same config into a second fresh store
@@ -301,8 +301,11 @@ impl FaultyExecutor {
 }
 
 /// The loopback resolver serving a fresh [`FaultyExecutor`] per worker.
-fn faulty_resolver() -> Resolver {
-    Arc::new(|_| Ok(Box::new(FaultyExecutor::new()) as Box<dyn Executor>))
+fn faulty_resolver() -> SharedResolver {
+    Arc::new(|_, _| {
+        let executor: Box<dyn Executor> = Box::new(FaultyExecutor::new());
+        Ok((executor, String::new()))
+    })
 }
 
 impl Executor for FaultyExecutor {

@@ -12,7 +12,7 @@
 
 use std::time::Instant;
 
-use sima_contracts::Outcome;
+use sima_contracts::{DeviceBinding, Outcome};
 use sima_core::Result;
 
 use crate::protocol::Assignment;
@@ -20,13 +20,19 @@ use crate::protocol::Assignment;
 /// Spawns workers. One transport serves a whole run; each worker slot holds
 /// one [`WorkerLink`] at a time and replaces it when the child dies.
 pub trait WorkerTransport: Sync {
-    /// Spawns one worker and performs the handshake. An `Err` is a spawn
-    /// failure — an infrastructure error, never a task outcome.
-    fn spawn(&self) -> Result<Box<dyn WorkerLink>>;
+    /// Spawns one worker bound to `device` — or, for `None`, to the execution
+    /// backend's default selection — and performs the handshake. An `Err` is a
+    /// spawn failure — an infrastructure error, never a task outcome.
+    fn spawn(&self, device: Option<&DeviceBinding>) -> Result<Box<dyn WorkerLink>>;
 }
 
 /// The parent's conversation with one live worker.
 pub trait WorkerLink: Send {
+    /// The device the worker reported at the handshake; empty for a domain
+    /// that uses no device. Provenance for the journal: what the child
+    /// resolved, never what the parent assumed.
+    fn device_name(&self) -> &str;
+
     /// Hands the worker one task. An `Err` is a broken pipe — the child is
     /// dead or dying; the caller classifies and replaces it.
     fn assign(&mut self, assignment: &Assignment) -> Result<()>;

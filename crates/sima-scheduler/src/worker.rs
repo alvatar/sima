@@ -51,7 +51,7 @@ pub(crate) struct WorkerContext<'a> {
 /// the child exits on end-of-stream, and the parent reaps it.
 pub(crate) fn worker_loop(worker: WorkerId, ctx: WorkerContext<'_>) {
     // A worker that cannot spawn its child cannot take work: the run faults.
-    let mut link = match ctx.transport.spawn() {
+    let mut link = match ctx.transport.spawn(None) {
         Ok(link) => link,
         Err(e) => return ctx.coordinator.fault_run(e),
     };
@@ -78,7 +78,7 @@ pub(crate) fn worker_loop(worker: WorkerId, ctx: WorkerContext<'_>) {
                 // Kill is idempotent: a child already dead is reaped, one
                 // still dying is finished off, before the replacement spawns.
                 link.kill();
-                link = match ctx.transport.spawn() {
+                link = match ctx.transport.spawn(None) {
                     Ok(link) => link,
                     Err(e) => return ctx.coordinator.fault_run(e),
                 };
@@ -557,7 +557,11 @@ mod tests {
             FormatId::new("stub.v1").expect("format id"),
             exec.checkpoint_interval,
             exec.checkpoint_interval_steps,
-            Arc::new(|_| Ok(Box::new(StubExecutor::new()?) as Box<dyn Executor>)),
+            // The stub uses no device: it ignores the binding and names none.
+            Arc::new(|_, _| {
+                let executor: Box<dyn Executor> = Box::new(StubExecutor::new()?);
+                Ok((executor, String::new()))
+            }),
         )
     }
 
@@ -702,7 +706,7 @@ mod tests {
                 },
                 attempt: 0,
             };
-            let mut link = transport.spawn()?;
+            let mut link = transport.spawn(None)?;
             process(&ctx, WorkerId(0), pending, link.as_mut());
         }
         let events = rx.into_iter().collect();
@@ -843,7 +847,7 @@ mod tests {
                     },
                     attempt: 1,
                 };
-                let mut link = transport.spawn()?;
+                let mut link = transport.spawn(None)?;
                 process(&ctx, WorkerId(0), pending, link.as_mut());
             }
             Ok(rx.into_iter().collect())

@@ -18,7 +18,7 @@ use sima_scheduler::{
     ExecutionConfig, LifecycleEvent, RunControl, RunOutcome, StaticBatch, TaskSource, run,
 };
 use sima_store::Store;
-use sima_transport::loopback::{LoopbackTransport, Resolver};
+use sima_transport::loopback::{LoopbackTransport, SharedResolver};
 
 /// A one-component stub environment, standing in for real execution identity.
 pub fn environment() -> Environment {
@@ -65,16 +65,24 @@ pub fn temp_store() -> (tempfile::TempDir, Store) {
     (dir, store)
 }
 
-/// The stub-executor resolver for the loopback transport.
-pub fn stub_resolver() -> Resolver {
-    Arc::new(|_| Ok(Box::new(StubExecutor::new()?) as Box<dyn Executor>))
+/// The stub-executor resolver for the loopback transport. The stub uses no
+/// device, so it ignores the binding and names none.
+pub fn stub_resolver() -> SharedResolver {
+    Arc::new(|_, _| {
+        let executor: Box<dyn Executor> = Box::new(StubExecutor::new()?);
+        Ok((executor, String::new()))
+    })
 }
 
 /// A loopback transport hosting `resolver`'s executor for `cfg`'s format
 /// under `exec`'s checkpoint cadence: the real wire protocol and host loop
 /// over in-memory pipes, so these tests run the full scheduler without
 /// processes.
-fn loopback(cfg: &RunConfig, exec: &ExecutionConfig, resolver: Resolver) -> LoopbackTransport {
+fn loopback(
+    cfg: &RunConfig,
+    exec: &ExecutionConfig,
+    resolver: SharedResolver,
+) -> LoopbackTransport {
     LoopbackTransport::new(
         cfg.format.clone(),
         exec.checkpoint_interval,
@@ -95,7 +103,7 @@ pub fn run_with(
     store: &Store,
     cfg: &RunConfig,
     exec: &ExecutionConfig,
-    resolver: Resolver,
+    resolver: SharedResolver,
 ) -> Result<RunOutcome> {
     let generator = StubGenerator::new()?;
     let transport = loopback(cfg, exec, resolver);

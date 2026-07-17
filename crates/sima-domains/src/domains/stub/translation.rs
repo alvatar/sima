@@ -24,8 +24,10 @@ pub(crate) const ID: &str = "stub.v1";
 pub(crate) fn domain() -> Result<Domain> {
     Ok(Domain {
         format: FormatId::new(ID)?,
-        // The stub computes on the CPU, so it has no use for a device binding.
+        // The stub computes on the CPU, so it has no use for a device binding
+        // and no device to name.
         executor: |_| Ok(Box::new(StubExecutor::new()?)),
+        device_name: |_| Ok(String::new()),
         environment: Environment::new(vec![EnvironmentComponent::new(
             "stub.executor",
             EnvironmentValue::Version("v1".to_string()),

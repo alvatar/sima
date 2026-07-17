@@ -55,13 +55,15 @@ impl Worker {
     }
 }
 
-/// A `Hello` for the stub format at the given protocol version.
+/// A `Hello` for the stub format at the given protocol version, leaving the
+/// device to the domain — the stub uses none.
 fn hello(protocol: u32) -> ToChild {
     ToChild::Hello(Hello {
         protocol,
         format: FormatId::new("stub.v1").expect("format id"),
         checkpoint_interval_ms: u64::MAX,
         checkpoint_interval_steps: 0,
+        device: None,
     })
 }
 
@@ -91,7 +93,9 @@ fn the_worker_serves_a_stub_task_and_exits_cleanly_on_eof() {
     assert_eq!(
         worker.receive(),
         ToParent::Ready {
-            protocol: PROTOCOL_VERSION
+            protocol: PROTOCOL_VERSION,
+            // The stub domain uses no device, so it names none.
+            device_name: String::new(),
         }
     );
     worker.send(&assignment());
@@ -127,6 +131,7 @@ fn an_unknown_format_exits_nonzero_before_ready() {
         format: FormatId::new("no-such-domain.v1").expect("format id"),
         checkpoint_interval_ms: u64::MAX,
         checkpoint_interval_steps: 0,
+        device: None,
     }));
     let answer = read_frame(&mut worker.stdout).expect("a clean end-of-stream");
     assert_eq!(answer, None, "no frame crosses a failed resolution");

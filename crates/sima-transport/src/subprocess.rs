@@ -17,6 +17,7 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+use sima_contracts::DeviceBinding;
 use sima_core::{Error, Result};
 use sima_model::FormatId;
 
@@ -54,6 +55,9 @@ impl SubprocessTransport {
 /// large for the u64 saturates there, since a cadence beyond the address
 /// space of milliseconds is disabled in effect — and a disabled step axis
 /// is `0`.
+///
+/// The device is left unbound: it varies per worker, so each spawn sets it on
+/// its own copy of this frame.
 pub(crate) fn hello(
     format: FormatId,
     checkpoint_interval: Duration,
@@ -69,11 +73,12 @@ pub(crate) fn hello(
         format,
         checkpoint_interval_ms,
         checkpoint_interval_steps: checkpoint_interval_steps.map_or(0, NonZeroU64::get),
+        device: None,
     }
 }
 
 impl WorkerTransport for SubprocessTransport {
-    fn spawn(&self) -> Result<Box<dyn WorkerLink>> {
+    fn spawn(&self, device: Option<&DeviceBinding>) -> Result<Box<dyn WorkerLink>> {
         let mut child = Command::new(&self.program)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -101,25 +106,37 @@ impl WorkerTransport for SubprocessTransport {
             stdin: Some(stdin),
             events,
             reader: Some(reader),
+            device_name: String::new(),
         };
         // The handshake: Hello out, Ready back. Any other answer — silence
         // ended by death, a wrong version, an undecodable echo — is a spawn
         // failure, and the misbehaving child is killed and reaped before the
         // error returns.
-        if let Err(e) = handshake(&mut link, &self.hello) {
-            link.kill();
-            return Err(e);
+        let hello = Hello {
+            device: device.copied(),
+            ..self.hello.clone()
+        };
+        match handshake(&mut link, &hello) {
+            Ok(device_name) => link.device_name = device_name,
+            Err(e) => {
+                link.kill();
+                return Err(e);
+            }
         }
         Ok(Box::new(link))
     }
 }
 
-/// Performs the parent's half of the handshake over a fresh link.
-fn handshake(link: &mut SubprocessLink, hello: &Hello) -> Result<()> {
+/// Performs the parent's half of the handshake over a fresh link, returning
+/// the device the worker reported.
+fn handshake(link: &mut SubprocessLink, hello: &Hello) -> Result<String> {
     link.write(&ToChild::Hello(hello.clone()))?;
     match link.events.recv() {
-        Ok(Ok(ToParent::Ready { protocol })) if protocol == PROTOCOL_VERSION => Ok(()),
-        Ok(Ok(ToParent::Ready { protocol })) => Err(Error::Transport(format!(
+        Ok(Ok(ToParent::Ready {
+            protocol,
+            device_name,
+        })) if protocol == PROTOCOL_VERSION => Ok(device_name),
+        Ok(Ok(ToParent::Ready { protocol, .. })) => Err(Error::Transport(format!(
             "worker protocol version mismatch: parent speaks {PROTOCOL_VERSION}, worker speaks {protocol}"
         ))),
         Ok(Ok(other)) => Err(Error::Transport(format!(
@@ -140,6 +157,8 @@ struct SubprocessLink {
     stdin: Option<ChildStdin>,
     events: Receiver<Result<ToParent>>,
     reader: Option<JoinHandle<()>>,
+    /// The device the child reported, set once the handshake answers.
+    device_name: String,
 }
 
 impl SubprocessLink {
@@ -154,6 +173,10 @@ impl SubprocessLink {
 }
 
 impl WorkerLink for SubprocessLink {
+    fn device_name(&self) -> &str {
+        &self.device_name
+    }
+
     fn assign(&mut self, assignment: &Assignment) -> Result<()> {
         self.write(&ToChild::Assign(assignment.clone()))
     }
@@ -307,7 +330,7 @@ mod tests {
 
     #[test]
     fn a_missing_program_is_a_clean_spawn_error_naming_the_path() {
-        let result = transport("/nonexistent/sima-worker").spawn();
+        let result = transport("/nonexistent/sima-worker").spawn(None);
         let error = match result {
             Err(e) => e.to_string(),
             Ok(_) => panic!("spawning a missing program must fail"),
@@ -323,7 +346,7 @@ mod tests {
         // cat echoes the Hello frame back; the echoed payload decodes as a
         // malformed child message, so the handshake fails cleanly instead of
         // hanging or panicking.
-        let result = transport("/bin/cat").spawn();
+        let result = transport("/bin/cat").spawn(None);
         assert!(result.is_err(), "the handshake against cat must fail");
     }
 }

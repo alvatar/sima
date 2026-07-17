@@ -28,6 +28,13 @@ pub struct Domain {
     /// environment, params, and stats and never executes, while a worker learns
     /// its device at handshake time and builds the executor then.
     pub executor: fn(Option<&DeviceBinding>) -> Result<Box<dyn Executor + Sync>>,
+    /// Names the device the executor built from the same binding computes on,
+    /// empty for a domain that uses no device.
+    ///
+    /// Resolved without building an executor, so a worker can report its
+    /// device at handshake time while the backend's engine stays lazy. A
+    /// binding no device answers is an error here.
+    pub device_name: fn(Option<&DeviceBinding>) -> Result<String>,
     /// The environment entering every task's identity.
     pub environment: Environment,
     /// Renders the domain's executor stats bytes — the observational summary
