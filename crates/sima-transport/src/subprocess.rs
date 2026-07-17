@@ -24,25 +24,34 @@ use sima_model::FormatId;
 use crate::link::{LinkEvent, WorkerLink, WorkerTransport};
 use crate::protocol::{Assignment, Hello, PROTOCOL_VERSION, ToChild, ToParent};
 
-/// Spawns `sima-worker` processes for one run: the worker binary's path plus
-/// the handshake every child receives — the run's format id and checkpoint
-/// cadence.
+/// Spawns worker processes for one run: the command vector to run — a program
+/// and its arguments — plus the handshake every child receives, the run's
+/// format id and checkpoint cadence.
+///
+/// The command vector is `sima-worker` with no arguments for a local worker,
+/// and a wrapper that ultimately execs a worker for anything longer-lived: the
+/// arguments carry the whole invocation, so the same spawn, handshake, and
+/// kill machinery serves a bare local child and a container client alike.
 pub struct SubprocessTransport {
     program: PathBuf,
+    args: Vec<String>,
     hello: Hello,
 }
 
 impl SubprocessTransport {
-    /// A transport spawning `program` for a run over `format` with the given
-    /// checkpoint cadence ([`Duration::MAX`] and `None` disable an axis).
+    /// A transport spawning `program args...` for a run over `format` with the
+    /// given checkpoint cadence ([`Duration::MAX`] and `None` disable an axis).
+    /// A local worker passes an empty argument vector.
     pub fn new(
         program: PathBuf,
+        args: Vec<String>,
         format: FormatId,
         checkpoint_interval: Duration,
         checkpoint_interval_steps: Option<NonZeroU64>,
     ) -> SubprocessTransport {
         SubprocessTransport {
             program,
+            args,
             hello: hello(format, checkpoint_interval, checkpoint_interval_steps),
         }
     }
@@ -78,6 +87,7 @@ pub(crate) fn hello(
 impl WorkerTransport for SubprocessTransport {
     fn spawn(&self, device: Option<&DeviceBinding>) -> Result<Box<dyn WorkerLink>> {
         let mut child = Command::new(&self.program)
+            .args(&self.args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
@@ -345,6 +355,7 @@ mod tests {
     fn transport(program: &str) -> SubprocessTransport {
         SubprocessTransport::new(
             PathBuf::from(program),
+            Vec::new(),
             FormatId::new("stub.v1").expect("format id"),
             Duration::MAX,
             None,

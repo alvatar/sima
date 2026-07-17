@@ -113,6 +113,41 @@ fn the_worker_serves_a_stub_task_and_exits_cleanly_on_eof() {
 }
 
 #[test]
+fn a_command_vector_spawn_reaches_the_worker_through_a_wrapper() {
+    // The generalized command vector: program `sh`, arguments that exec the
+    // worker. This is the shape a container invocation takes — a wrapper
+    // process that ultimately execs `sima-worker` — proven here over the
+    // `WorkerLink` API without a container, so the run path is exercised by the
+    // vector form the remote transport also spawns.
+    use std::path::PathBuf;
+    use std::time::Duration;
+
+    use sima_transport::{LinkEvent, SubprocessTransport, WorkerTransport};
+
+    let worker = env!("CARGO_BIN_EXE_sima-worker");
+    let transport = SubprocessTransport::new(
+        PathBuf::from("sh"),
+        vec!["-c".to_string(), format!("exec {worker}")],
+        FormatId::new("stub.v1").expect("format id"),
+        Duration::MAX,
+        None,
+    );
+    let mut link = transport.spawn(None).expect("spawn through the wrapper");
+    // The handshake completed through the wrapper: the stub names no device.
+    assert_eq!(link.device_name(), "");
+    let ToChild::Assign(task) = assignment() else {
+        unreachable!("assignment builds an Assign");
+    };
+    link.assign(&task).expect("assign one task");
+    match link.next(None).expect("await the outcome") {
+        LinkEvent::Done(Outcome::Completed { artifacts, .. }) => {
+            assert_eq!(artifacts.len(), 1, "the stub's single output artifact");
+        }
+        other => panic!("expected a completed outcome, got {other:?}"),
+    }
+}
+
+#[test]
 fn a_protocol_version_mismatch_exits_nonzero_before_ready() {
     let mut worker = Worker::spawn();
     worker.send(&hello(PROTOCOL_VERSION + 1));

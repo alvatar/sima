@@ -28,6 +28,8 @@ pub fn orchestrate(config: &LoadedConfig, control: &RunControl) -> Result<RunOut
     let generator = generator_for(&config.run.generator.id)?;
     let transport = SubprocessTransport::new(
         worker_binary()?,
+        // A local worker runs the bare binary: no arguments.
+        Vec::new(),
         config.run.format.clone(),
         config.execution.checkpoint_interval,
         config.execution.checkpoint_interval_steps,
