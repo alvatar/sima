@@ -28,8 +28,8 @@
 //! committed artifact or a task key.
 //!
 //! The concrete implementations that satisfy these traits live in
-//! `sima-domains`, one per format; this crate holds the traits and their
-//! shared vocabulary alone.
+//! `sima-domains` — executors keyed by format, generators by generator id;
+//! this crate holds the traits and their shared vocabulary alone.
 
 mod checkpoint;
 mod device;
