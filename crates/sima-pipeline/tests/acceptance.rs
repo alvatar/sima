@@ -1,5 +1,4 @@
-//! The phase exit exam at the pipeline API level, one test per acceptance
-//! criterion:
+//! Acceptance criteria at the pipeline API level, one test per criterion:
 //!
 //! - (a) determinism — one config into two fresh stores yields identical
 //!   manifests;

@@ -15,7 +15,8 @@
 //! Field notation follows the `sima-core` encode format: `str` and `bytes`
 //! are a u64 little-endian byte length then the payload, integers are
 //! little-endian at their natural width, `hash` is 32 raw digest bytes,
-//! `opt_hash` is a flag byte (0 or 1) then the digest when present:
+//! `opt_hash` is a flag byte (0 or 1) then the digest when present, `opt_u64`
+//! is a flag byte (0 or 1) then the u64 when present:
 //!
 //! ```text
 //! sima.spec.v1         str format ‖ bytes candidate
@@ -23,8 +24,8 @@
 //! sima.environment.v1  u64 count ‖ each: str name ‖ u8 arm ‖ (str version | hash digest)
 //! sima.task.v1         hash spec ‖ hash params ‖ u64 seed ‖ hash environment ‖ opt_hash input-state
 //! sima.task-record.v1  full sima.task.v1 encoding ‖ u64 count ‖ each: str name ‖ hash object
-//! sima.run-config.v1   u64 root-seed ‖ str format ‖ str generator ‖ bytes generator-params ‖
-//!                      full sima.params.v1 encoding
+//! sima.run-config.v1   u64 root-seed ‖ opt_u64 segments ‖ str format ‖ str generator ‖
+//!                      bytes generator-params ‖ full sima.params.v1 encoding
 //! ```
 //!
 //! Embedded encodings (`sima.task.v1` inside a record, `sima.params.v1`

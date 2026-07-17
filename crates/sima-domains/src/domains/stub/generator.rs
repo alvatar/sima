@@ -111,7 +111,7 @@ mod tests {
 
     #[test]
     fn generator_config_round_trips() -> Result<()> {
-        // Pinned per §6: u64 count 2 LE, then Succeed (00), then Panic (02).
+        // Pinned: u64 count 2 LE, then Succeed (00), then Panic (02).
         let pinned = StubGeneratorConfig {
             behaviors: vec![StubBehavior::Succeed, StubBehavior::Panic],
         };

@@ -134,10 +134,9 @@ fn execute_assignment<W: Write>(
         None => &NoCheckpoint,
     };
 
-    // The panic handler wraps only the executor call, exactly as the parent's
-    // in-process worker did: a panic raised inside the candidate's execution
-    // crosses as a Panicked frame; a panic anywhere else in the host is a bug
-    // and propagates as one.
+    // The panic handler wraps only the executor call: a panic raised inside
+    // the candidate's execution crosses as a Panicked frame; a panic anywhere
+    // else in the host is a bug and propagates as one.
     let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         executor.execute(&input, &ctx, checkpoint)
     }));

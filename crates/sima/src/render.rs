@@ -14,10 +14,10 @@ pub fn short(id: &str) -> &str {
     &id[..id.len().min(SHORT)]
 }
 
-/// Renders `event` to the one line it warrants, or `None` for the `Queued`
-/// and `Leased` bookkeeping events. `committed`/`tasks` supply the running
-/// `committed k/n` count a commit line shows; on `RunStarted`, a nonzero
-/// `committed` is the store's prior progress and the line names it, so a
+/// Renders `event` to the one line it warrants, or `None` for the `Queued`,
+/// `Leased`, and `WorkerBound` bookkeeping events. `committed`/`tasks` supply
+/// the running `committed k/n` count a commit line shows; on `RunStarted`, a
+/// nonzero `committed` is the store's prior progress and the line names it, so a
 /// resumed session does not read as a restart. The single source of the
 /// event wording: `sima run` prints these lines to stdout and the tui folds
 /// them into its event log.
@@ -92,8 +92,8 @@ impl Progress {
     }
 
     /// Prints the line `event` warrants, if any, keeping the running commit
-    /// count for the `committed k/n` line. `Queued` and `Leased` yield no
-    /// line and stay silent.
+    /// count for the `committed k/n` line. `Queued`, `Leased`, and
+    /// `WorkerBound` yield no line and stay silent.
     pub fn event(&self, event: &LifecycleEvent) {
         if let LifecycleEvent::RunStarted { tasks, .. } = event {
             self.tasks.store(*tasks, Ordering::Relaxed);

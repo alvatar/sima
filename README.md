@@ -113,7 +113,7 @@ SIMA reproduces a result from its recorded identity, and it supports a spectrum
 of reproducibility rather than demanding a single standard. Which tier a domain
 belongs to is a property it declares through its environment components. Both
 tiers are first-class: neither is privileged, and SIMA's job is to record
-identity honestly at whichever tier a workload needs.
+identity faithfully at whichever tier a workload needs.
 
 **Tier 1 — reproducible by content.** The engine is code whose arithmetic SIMA
 controls end to end, with no external numerical library in the path. Its

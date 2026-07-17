@@ -23,10 +23,9 @@ pub struct RunnableTask {
 
 /// Derives the currently-runnable tasks of a run from `(config, store state)`.
 ///
-/// One interface covers both a static batch and, in a later phase, a segment
-/// chain that derives successors as predecessors commit — which is why
-/// frontier derivation belongs to this layer rather than to whatever produced
-/// the candidates.
+/// One interface covers both a static batch and a segment chain that derives
+/// successors as predecessors commit — which is why frontier derivation
+/// belongs to this layer rather than to whatever produced the candidates.
 pub trait TaskSource {
     /// Return the tasks runnable now and not yet handed out. The driver calls
     /// this repeatedly, leases outstanding or not, and the source returns each

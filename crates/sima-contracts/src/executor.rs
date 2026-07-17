@@ -41,7 +41,7 @@ pub struct TaskInput<'a> {
     pub environment: EnvironmentId,
     /// Loaded bytes of the input-state object; `None` for a stateless task.
     /// The key carries this state's digest (`TaskIdentity.input_state`); the
-    /// executor receives the bytes. Unused by the stub except as identity.
+    /// executor receives the bytes.
     pub input_state: Option<&'a [u8]>,
 }
 

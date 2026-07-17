@@ -1,11 +1,11 @@
 //! Opt-in Vulkan validation-layer support.
 //!
 //! Setting `SIMA_VULKAN_VALIDATION=1` requests `VK_LAYER_KHRONOS_validation`
-//! and a debug-utils messenger at instance creation, routing every validation
-//! message to stderr. Off by default and zero cost when off: without the
-//! environment switch no layer is requested and no messenger exists. When the
-//! switch is set but the layer is not installed, instance creation prints a
-//! marker to stderr and continues without validation.
+//! and a debug-utils messenger at instance creation, routing validation
+//! warnings and errors to stderr. Off by default and zero cost when off:
+//! without the environment switch no layer is requested and no messenger
+//! exists. When the switch is set but the layer is not installed, instance
+//! creation prints a marker to stderr and continues without validation.
 
 use std::ffi::{CStr, c_char, c_void};
 

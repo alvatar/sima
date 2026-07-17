@@ -3,12 +3,12 @@
 //! or retries.
 //!
 //! Each worker thread owns one long-lived child process — a transport shim
-//! over today's lease/retry/settle bookkeeping on [`Coordinator`]. The
+//! over the lease/retry/settle bookkeeping on [`Coordinator`]. The
 //! thread pulls a task, sends the child everything the attempt needs as
 //! loaded values, and waits on the link with the attempt deadline: due
-//! checkpoint saves are persisted as they arrive, an outcome is classified
-//! exactly as the in-process worker classified it, and a child death or
-//! deadline expiry becomes a transient failure with the child replaced. The
+//! checkpoint saves are persisted as they arrive, the parent classifies the
+//! outcome it receives, and a child death or deadline expiry becomes a
+//! transient failure with the child replaced. The
 //! executor trust boundary lives here: the parent holds the only store
 //! handle, so a result reaches durable state only by passing through this
 //! commit path — the child is never given the store.
@@ -421,8 +421,7 @@ fn process(
             }
             LinkEvent::Panicked(reason) => {
                 // A panic raised inside the candidate's execution, caught by
-                // the child: a definitive rejection, exactly as the
-                // in-process worker classified it. The child survives.
+                // the child: a definitive rejection. The child survives.
                 emit(
                     &ctx.events,
                     LifecycleEvent::Rejected {

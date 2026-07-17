@@ -193,6 +193,7 @@ One `Store` type over a root directory:
 <root>/runs/<run-id>/orchestrator.lock
 <root>/runs/<run-id>/checkpoint/<slot>   mutable resume scratch
 <root>/runs/<run-id>/placement/<chain>  the chain's device class
+<root>/runs/<run-id>/remove-intent      a removal's resumable plan
 ```
 
 ### Components
@@ -220,6 +221,10 @@ One `Store` type over a root directory:
 - **closure** — the deduplicated, sorted set of objects a finalized run
   depends on: config, records, and every object those records reference. The
   unit of run portability and store sync.
+- **removal** — deleting a run and every object no surviving run's closure
+  references, guarded so an object a live run needs is never removed. The plan
+  is recorded in the run's `remove-intent` slot before any deletion, so a
+  removal interrupted by a crash resumes to the same end state.
 
 ### Content addressing
 
@@ -833,6 +838,10 @@ to one JSON line, with ids and stats rendered as hex. The vocabulary:
 - **checkpoint degraded** — a checkpoint save or load failed; execution
   continues and the attempt's result is unaffected, so this event is the
   only trace.
+- **worker bound** — a worker's child reported the device it computes on, at
+  every spawn and respawn.
+- **chain rebound** — a chain's device class was absent from the run's
+  devices, so its work moved to a class that is present.
 - **run finalized** — every task committed and the manifest was written.
 - **run failed** — a definitive candidate failure terminated the run; no
   manifest was written.

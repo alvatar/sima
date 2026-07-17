@@ -13,6 +13,7 @@
 //! <root>/runs/<run-id-hex>/orchestrator.lock
 //! <root>/runs/<run-id-hex>/checkpoint/<slot>   mutable resume scratch
 //! <root>/runs/<run-id-hex>/placement/<chain>   mutable chain device binding
+//! <root>/runs/<run-id-hex>/remove-intent       resumable removal plan
 //! ```
 //!
 //! Every durable file is placed atomically — full content to `tmp/`,

@@ -139,7 +139,7 @@ mod tests {
         }
     }
 
-    /// An Intel iGPU and an NVIDIA dGPU, the shape of a laptop.
+    /// An Intel iGPU and an NVIDIA dGPU, a typical laptop device set.
     fn two_devices() -> Vec<DeviceInfo> {
         vec![
             info(0x8086, 0x7d51, "Intel(R) Graphics (ARL)", 0),
