@@ -34,6 +34,15 @@ pub struct RunStatus {
     pub lease_expired: usize,
     /// Degraded checkpoint saves or loads across the whole journal.
     pub checkpoint_degraded: usize,
+    /// Committed tasks per device, by the device name its worker reported.
+    /// The run's composition: which hardware actually did the work, joined
+    /// from each commit and the device its worker was bound to. A run whose
+    /// domain uses no device reports none, and so does a journal written
+    /// before workers reported theirs.
+    pub devices: BTreeMap<String, usize>,
+    /// Chains whose device class went absent and moved, across the whole
+    /// journal.
+    pub rebound_chains: usize,
     /// The run's current state.
     pub state: RunState,
     /// Workers currently holding a lease: worker id → the task it leased and
@@ -41,6 +50,10 @@ pub struct RunStatus {
     /// failed event clears it, and a segment's `RunStarted` empties the map.
     /// The tui reads this for its worker panel; `status` leaves it unprinted.
     pub occupancy: BTreeMap<u64, Occupancy>,
+    /// The device each worker reported at its last spawn: worker id → device
+    /// name. The key to reading a commit as work done on a device; the
+    /// rendered composition is [`devices`](RunStatus::devices).
+    worker_devices: BTreeMap<u64, String>,
 }
 
 /// A worker's current lease, taken from the journal: the leased task's id
@@ -87,8 +100,11 @@ impl RunStatus {
             faulted: 0,
             lease_expired: 0,
             checkpoint_degraded: 0,
+            devices: BTreeMap::new(),
+            rebound_chains: 0,
             state: RunState::InProgress,
             occupancy: BTreeMap::new(),
+            worker_devices: BTreeMap::new(),
         }
     }
 
@@ -121,7 +137,15 @@ impl RunStatus {
             }
             LifecycleEvent::Committed { task, .. } => {
                 self.committed += 1;
-                self.free_task(task);
+                // The commit's device is the one its worker reported: the
+                // journal says who leased the task, and the worker said where
+                // it computes.
+                if let Some(worker) = self.free_task(task)
+                    && let Some(device) = self.worker_devices.get(&worker)
+                    && !device.is_empty()
+                {
+                    *self.devices.entry(device.clone()).or_default() += 1;
+                }
             }
             LifecycleEvent::Failed { task, .. } => {
                 // The attempt ended and its worker is free; the retry (or a
@@ -162,22 +186,27 @@ impl RunStatus {
                 self.state = RunState::Interrupted;
                 self.occupancy.clear();
             }
-            LifecycleEvent::WorkerBound { .. } | LifecycleEvent::ChainRebound { .. } => {}
+            LifecycleEvent::WorkerBound { worker, device } => {
+                // A respawned worker restates its device; the last one is what
+                // its later commits ran on.
+                self.worker_devices.insert(*worker, device.clone());
+            }
+            LifecycleEvent::ChainRebound { .. } => self.rebound_chains += 1,
             LifecycleEvent::Queued { .. } => {}
         }
     }
 
-    /// Frees whichever worker holds `task`. A task is leased by one worker at
-    /// a time, so its terminal or failed event releases that single worker.
-    fn free_task(&mut self, task: &str) {
+    /// Frees whichever worker holds `task` and reports it. A task is leased by
+    /// one worker at a time, so its terminal or failed event releases that
+    /// single worker.
+    fn free_task(&mut self, task: &str) -> Option<u64> {
         let held = self
             .occupancy
             .iter()
             .find(|(_, occ)| occ.task == task)
-            .map(|(&worker, _)| worker);
-        if let Some(worker) = held {
-            self.occupancy.remove(&worker);
-        }
+            .map(|(&worker, _)| worker)?;
+        self.occupancy.remove(&held);
+        Some(held)
     }
 }
 
@@ -259,6 +288,22 @@ mod tests {
             reason: "flaky".to_string(),
             stats_hex: String::new(),
         }
+    }
+
+    fn worker_bound(worker: u64, device: &str) -> LifecycleEvent {
+        LifecycleEvent::WorkerBound {
+            worker,
+            device: device.to_string(),
+        }
+    }
+
+    /// The status a fresh run reaches by applying `events` in order.
+    fn folded(events: Vec<LifecycleEvent>) -> RunStatus {
+        let mut status = RunStatus::new(run_id());
+        for event in &events {
+            status.apply(event);
+        }
+        status
     }
 
     fn retried(task: &str, next_attempt: u32) -> LifecycleEvent {
@@ -459,5 +504,98 @@ mod tests {
         assert_eq!(replay.state, RunState::Finalized);
         assert_eq!(replay.committed, 2);
         Ok(())
+    }
+
+    #[test]
+    fn each_commit_counts_against_the_device_its_worker_reported() {
+        // The join the composition rests on: the journal says who leased the
+        // task, and the worker said where it computes.
+        let status = folded(vec![
+            started(3),
+            worker_bound(0, "NVIDIA RTX PRO 2000"),
+            worker_bound(1, "Intel Arc 140T"),
+            leased("aa", 0, 0),
+            leased("bb", 1, 0),
+            committed("aa"),
+            committed("bb"),
+            leased("cc", 0, 0),
+            committed("cc"),
+        ]);
+        assert_eq!(
+            status.devices,
+            [
+                ("NVIDIA RTX PRO 2000".to_string(), 2),
+                ("Intel Arc 140T".to_string(), 1),
+            ]
+            .into_iter()
+            .collect()
+        );
+        assert_eq!(status.committed, 3);
+    }
+
+    #[test]
+    fn a_respawned_workers_commits_count_against_its_current_device() {
+        // A worker's child died and its replacement reported a device again:
+        // the later commits ran on what the later child named.
+        let status = folded(vec![
+            started(2),
+            worker_bound(0, "Intel Arc 140T"),
+            leased("aa", 0, 0),
+            committed("aa"),
+            worker_bound(0, "NVIDIA RTX PRO 2000"),
+            leased("bb", 0, 0),
+            committed("bb"),
+        ]);
+        assert_eq!(
+            status.devices,
+            [
+                ("Intel Arc 140T".to_string(), 1),
+                ("NVIDIA RTX PRO 2000".to_string(), 1),
+            ]
+            .into_iter()
+            .collect()
+        );
+    }
+
+    #[test]
+    fn a_deviceless_domain_contributes_no_composition() {
+        // The stub reports an empty device: there is nothing to attribute, and
+        // nothing is invented.
+        let status = folded(vec![
+            started(1),
+            worker_bound(0, ""),
+            leased("aa", 0, 0),
+            committed("aa"),
+        ]);
+        assert!(status.devices.is_empty());
+        assert_eq!(status.committed, 1);
+    }
+
+    #[test]
+    fn a_journal_naming_no_device_yields_no_composition() {
+        // A journal written before workers reported their device: the commits
+        // count, and the composition stays empty rather than guessing.
+        let status = folded(vec![started(1), leased("aa", 0, 0), committed("aa")]);
+        assert!(status.devices.is_empty());
+        assert_eq!(status.committed, 1);
+        assert_eq!(status.rebound_chains, 0);
+    }
+
+    #[test]
+    fn rebound_chains_count_across_the_journal() {
+        let status = folded(vec![
+            started(2),
+            LifecycleEvent::ChainRebound {
+                chain: 0,
+                from: "10de:2d39".to_string(),
+                to: "8086:7d51".to_string(),
+            },
+            LifecycleEvent::ChainRebound {
+                chain: 1,
+                from: "10de:2d39".to_string(),
+                to: "8086:7d51".to_string(),
+            },
+        ]);
+        assert_eq!(status.rebound_chains, 2);
     }
 }
