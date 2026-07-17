@@ -32,6 +32,9 @@ pub fn resolve(
     enumerated: &[DeviceInfo],
 ) -> Result<Vec<DeviceEntry>> {
     let mut entries: Vec<DeviceEntry> = Vec::with_capacity(selectors.len());
+    // The selector each entry came from, so a collision can name both texts —
+    // the two lines the reader has to reconcile.
+    let mut resolved_from: Vec<&str> = Vec::with_capacity(selectors.len());
     for selector in selectors {
         let matched: Vec<&DeviceInfo> = enumerated
             .iter()
@@ -57,10 +60,11 @@ pub fn resolve(
                 render_available(enumerated),
             )));
         };
-        if let Some(other) = entries.iter().find(|entry| entry.class == *class) {
+        if let Some(position) = entries.iter().position(|entry| entry.class == *class) {
             return Err(Error::Validation(format!(
-                "device selectors {:?} and {:?} both match {} ({class}); each device takes one entry",
-                other.name, selector.select, other.name
+                "device selectors {:?} and {:?} both match {} ({class}); \
+                 each device takes one entry",
+                resolved_from[position], selector.select, entries[position].name
             )));
         }
         entries.push(DeviceEntry {
@@ -71,6 +75,7 @@ pub fn resolve(
             workers: selector.workers,
             members: matched.len() as u32,
         });
+        resolved_from.push(&selector.select);
     }
     Ok(entries)
 }
@@ -235,8 +240,17 @@ mod tests {
         let Error::Validation(message) = error else {
             panic!("expected a validation error");
         };
+        // Both selector texts, so the reader knows which two lines collided.
         assert!(
-            message.contains("10de:2d39"),
+            message.contains("\"NVIDIA\""),
+            "names the first selector: {message}"
+        );
+        assert!(
+            message.contains("\"10de:2d39\""),
+            "names the second selector: {message}"
+        );
+        assert!(
+            message.contains("NVIDIA RTX PRO 2000 Blackwell Laptop GPU (10de:2d39)"),
             "names the device both matched: {message}"
         );
     }

@@ -212,7 +212,9 @@ fn worker_slots(exec: &ExecutionConfig) -> Vec<Option<DeviceBinding>> {
             slots.push(Some(DeviceBinding {
                 vendor_id: entry.class.vendor_id,
                 device_id: entry.class.device_id,
-                member: (slot as u32) % entry.members.max(1),
+                // An entry carries at least one card, which `ExecutionConfig`
+                // validates, so the remainder is over a positive count.
+                member: (slot as u32) % entry.members,
             }));
         }
     }
@@ -425,11 +427,88 @@ mod tests {
     use std::collections::VecDeque;
     use std::sync::mpsc;
 
+    use sima_contracts::DeviceClass;
     use sima_core::{Error, hash_bytes};
     use sima_domains::{StubBehavior, StubProgram};
     use sima_model::{EnvironmentId, FormatId, Params, Spec, TaskIdentity};
 
     use super::*;
+    use crate::config::DeviceEntry;
+
+    /// A resolved entry: `workers` workers over a class of `members` cards.
+    fn entry(vendor_id: u32, workers: usize, members: u32) -> DeviceEntry {
+        DeviceEntry {
+            class: DeviceClass {
+                vendor_id,
+                device_id: 1,
+            },
+            name: format!("device {vendor_id:04x}"),
+            workers,
+            members,
+        }
+    }
+
+    /// The slots as `(vendor id, member)` pairs, the part these tests pin.
+    fn slot_shape(exec: &ExecutionConfig) -> Vec<Option<(u32, u32)>> {
+        worker_slots(exec)
+            .into_iter()
+            .map(|slot| slot.map(|binding| (binding.vendor_id, binding.member)))
+            .collect()
+    }
+
+    #[test]
+    fn slots_round_robin_over_each_class_s_cards() -> Result<()> {
+        // Three workers over a two-card class, then one worker over a
+        // single-card class: the first class's third worker wraps back to its
+        // first card, and each class counts its cards from zero.
+        let exec = ExecutionConfig::with_devices(
+            vec![entry(0x10de, 3, 2), entry(0x8086, 1, 1)],
+            1,
+            Duration::MAX,
+            Duration::MAX,
+            None,
+        )?;
+        assert_eq!(
+            slot_shape(&exec),
+            vec![
+                Some((0x10de, 0)),
+                Some((0x10de, 1)),
+                Some((0x10de, 0)),
+                Some((0x8086, 0)),
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn one_worker_per_card_shares_no_card() -> Result<()> {
+        let exec = ExecutionConfig::with_devices(
+            vec![entry(0x10de, 4, 4)],
+            1,
+            Duration::MAX,
+            Duration::MAX,
+            None,
+        )?;
+        assert_eq!(
+            slot_shape(&exec),
+            vec![
+                Some((0x10de, 0)),
+                Some((0x10de, 1)),
+                Some((0x10de, 2)),
+                Some((0x10de, 3)),
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_run_naming_no_device_leaves_every_slot_unbound() -> Result<()> {
+        // The single implicit class: every child takes the backend's own
+        // choice, and the pool is the plain worker count.
+        let exec = ExecutionConfig::new(3, 1, Duration::MAX, Duration::MAX, None)?;
+        assert_eq!(slot_shape(&exec), vec![None, None, None]);
+        Ok(())
+    }
 
     /// A task source whose poll always faults, standing in for a fallible
     /// dynamic source. Its key set is empty: it never yields runnable work.

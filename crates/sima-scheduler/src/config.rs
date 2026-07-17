@@ -107,6 +107,14 @@ impl ExecutionConfig {
                     entry.name, entry.class
                 )));
             }
+            // The slots of an entry round-robin over its cards, so a class
+            // with no card has nothing to run on.
+            if entry.members == 0 {
+                return Err(Error::Validation(format!(
+                    "device {} ({}) requires at least one card",
+                    entry.name, entry.class
+                )));
+            }
         }
         let workers = devices.iter().map(|entry| entry.workers).sum();
         let mut config = ExecutionConfig::new(
@@ -205,6 +213,27 @@ mod tests {
             panic!("expected a validation error");
         };
         assert!(message.contains("10de:0001"), "names the device: {message}");
+    }
+
+    #[test]
+    fn a_device_entry_with_no_cards_is_rejected() {
+        // The slots round-robin over an entry's cards, so a class of none has
+        // nothing to run on.
+        let error = ExecutionConfig::with_devices(
+            vec![DeviceEntry {
+                members: 0,
+                ..entry(0x10de, 1)
+            }],
+            1,
+            Duration::MAX,
+            Duration::MAX,
+            None,
+        );
+        let Err(Error::Validation(message)) = error else {
+            panic!("expected a validation error");
+        };
+        assert!(message.contains("10de:0001"), "names the device: {message}");
+        assert!(message.contains("card"), "names what is missing: {message}");
     }
 
     #[test]
