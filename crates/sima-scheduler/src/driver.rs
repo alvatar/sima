@@ -11,12 +11,13 @@
 //! killed, queued tasks are abandoned, no manifest — but reports
 //! [`RunOutcome::Interrupted`], the resumable outcome.
 
+use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::Sender;
 use std::thread;
 use std::time::Duration;
 
-use sima_contracts::{Generator, WorkerId};
+use sima_contracts::{DeviceBinding, Generator, WorkerId};
 use sima_core::Result;
 use sima_model::{Environment, RunConfig, RunId, TaskKey};
 use sima_store::Store;
@@ -27,6 +28,7 @@ use crate::control::RunControl;
 use crate::coordinator::{Coordinator, Failure, Pending, RunState, Shared};
 use crate::event::LifecycleEvent;
 use crate::journal_sink::{JournalSink, emit};
+use crate::placement;
 use crate::segment_chain::SegmentChain;
 use crate::static_batch::StaticBatch;
 use crate::task_source::{RunnableTask, TaskSource};
@@ -95,8 +97,16 @@ pub fn run(
         None => Box::new(StaticBatch::new(generator, config, environment, store)?),
     };
     let writer = store.journal_writer(&run)?;
-    let coordinator = Coordinator::new();
+    // Placement resumes from the store: a chain that already ran returns to
+    // its class, and a slot naming a class the run no longer has rebinds when
+    // a worker first pulls it.
+    let mut chains = HashMap::new();
+    for (chain, payload) in store.chain_bindings(&run)? {
+        chains.insert(chain, placement::decode_class(&payload)?);
+    }
+    let coordinator = Coordinator::with_placement(exec.classes(), chains);
     let coordinator = &coordinator;
+    let slots = worker_slots(exec);
 
     // Two nested scopes: the outer one holds the journal sink — a scoped
     // thread, so it can call the caller's borrowed observer — and the inner
@@ -115,7 +125,7 @@ pub fn run(
         );
 
         let drive_result = thread::scope(|pool| -> Result<DriveOutcome> {
-            for w in 0..exec.workers {
+            for (w, device) in slots.iter().enumerate() {
                 let ctx = WorkerContext {
                     coordinator,
                     store,
@@ -123,6 +133,7 @@ pub fn run(
                     config,
                     transport,
                     exec,
+                    device: *device,
                     events: events.clone(),
                 };
                 pool.spawn(move || worker_loop(WorkerId(w as u64), ctx));
@@ -183,6 +194,29 @@ pub fn run(
         journal?;
     }
     Ok(outcome)
+}
+
+/// The device each worker slot of the pool computes on, in worker-id order.
+///
+/// One slot per (entry, worker of that entry); a run with no device entries
+/// gets `exec.workers` unbound slots, leaving every child on the backend's
+/// default selection. Slots of one entry round-robin over the class's cards,
+/// so several workers share a card only once every card has one.
+fn worker_slots(exec: &ExecutionConfig) -> Vec<Option<DeviceBinding>> {
+    if exec.devices.is_empty() {
+        return vec![None; exec.workers];
+    }
+    let mut slots = Vec::with_capacity(exec.workers);
+    for entry in &exec.devices {
+        for slot in 0..entry.workers {
+            slots.push(Some(DeviceBinding {
+                vendor_id: entry.class.vendor_id,
+                device_id: entry.class.device_id,
+                member: (slot as u32) % entry.members.max(1),
+            }));
+        }
+    }
+    slots
 }
 
 /// What the driver decided the run should do once its gate resolved.
@@ -585,18 +619,18 @@ mod tests {
             let queued_during_lease = &queued_during_lease;
             scope.spawn(move || {
                 // FIFO queue: the first lease is A, the second is C.
-                let a = coordinator.next_task().expect("task A");
-                let c = coordinator.next_task().expect("task C");
-                coordinator.resolve(c.key);
+                let a = coordinator.next_task(None).expect("task A");
+                let c = coordinator.next_task(None).expect("task C");
+                coordinator.resolve(c.pending.key);
                 // C's commit derives B; it must arrive while A is still held.
                 if saw_queued(&rx, &key_b, Duration::from_secs(5)) {
                     queued_during_lease.store(true, Ordering::Relaxed);
                 }
-                coordinator.resolve(a.key);
+                coordinator.resolve(a.pending.key);
                 // Drain whatever else the driver hands out, so the run can
                 // finalize in both the passing and the failing sequence.
-                while let Some(t) = coordinator.next_task() {
-                    coordinator.resolve(t.key);
+                while let Some(t) = coordinator.next_task(None) {
+                    coordinator.resolve(t.pending.key);
                 }
             });
             drive(coordinator, &mut source, &events, &RunControl::detached())
@@ -622,13 +656,13 @@ mod tests {
         let resolved = std::sync::atomic::AtomicBool::new(false);
         let outcome = thread::scope(|scope| {
             scope.spawn(|| {
-                let a = coordinator.next_task().expect("task A");
+                let a = coordinator.next_task(None).expect("task A");
                 // Long enough for several empty polls under the 50 ms cadence.
                 thread::sleep(Duration::from_millis(300));
                 resolved.store(true, Ordering::Relaxed);
-                coordinator.resolve(a.key);
-                while let Some(t) = coordinator.next_task() {
-                    coordinator.resolve(t.key);
+                coordinator.resolve(a.pending.key);
+                while let Some(t) = coordinator.next_task(None) {
+                    coordinator.resolve(t.pending.key);
                 }
             });
             drive(&coordinator, &mut source, &events, &RunControl::detached())
@@ -671,12 +705,12 @@ mod tests {
         let resolved = std::sync::atomic::AtomicBool::new(false);
         let outcome = thread::scope(|scope| {
             scope.spawn(|| {
-                let a = coordinator.next_task().expect("task A");
+                let a = coordinator.next_task(None).expect("task A");
                 thread::sleep(Duration::from_millis(200));
                 resolved.store(true, Ordering::Relaxed);
-                coordinator.resolve(a.key);
-                while let Some(t) = coordinator.next_task() {
-                    coordinator.resolve(t.key);
+                coordinator.resolve(a.pending.key);
+                while let Some(t) = coordinator.next_task(None) {
+                    coordinator.resolve(t.pending.key);
                 }
             });
             drive(&coordinator, &mut source, &events, &RunControl::detached())
@@ -707,12 +741,12 @@ mod tests {
         };
         let outcome = thread::scope(|scope| {
             scope.spawn(|| {
-                let a = coordinator.next_task().expect("task A");
+                let a = coordinator.next_task(None).expect("task A");
                 control.interrupt.store(true, Ordering::Relaxed);
                 thread::sleep(Duration::from_millis(200));
-                coordinator.resolve(a.key);
-                while let Some(t) = coordinator.next_task() {
-                    coordinator.resolve(t.key);
+                coordinator.resolve(a.pending.key);
+                while let Some(t) = coordinator.next_task(None) {
+                    coordinator.resolve(t.pending.key);
                 }
             });
             drive(&coordinator, &mut source, &events, &control)

@@ -58,7 +58,14 @@ pub fn describe(event: &LifecycleEvent, committed: usize, tasks: usize) -> Optio
         LifecycleEvent::RunInterrupted { .. } => {
             "interrupted: store resumable, re-run to continue".to_string()
         }
-        LifecycleEvent::Queued { .. } | LifecycleEvent::Leased { .. } => return None,
+        // A rebind means the hardware changed under the search: the chain's
+        // device is gone and its work moved. Loud by design.
+        LifecycleEvent::ChainRebound { chain, from, to } => {
+            format!("chain {chain} rebound: {from} is absent, continuing on {to}")
+        }
+        LifecycleEvent::Queued { .. }
+        | LifecycleEvent::Leased { .. }
+        | LifecycleEvent::WorkerBound { .. } => return None,
     })
 }
 

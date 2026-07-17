@@ -162,6 +162,7 @@ impl RunStatus {
                 self.state = RunState::Interrupted;
                 self.occupancy.clear();
             }
+            LifecycleEvent::WorkerBound { .. } | LifecycleEvent::ChainRebound { .. } => {}
             LifecycleEvent::Queued { .. } => {}
         }
     }

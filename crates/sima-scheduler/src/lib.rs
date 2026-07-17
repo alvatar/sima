@@ -21,12 +21,13 @@ mod coordinator;
 mod driver;
 mod event;
 mod journal_sink;
+mod placement;
 mod segment_chain;
 mod static_batch;
 mod task_source;
 mod worker;
 
-pub use config::ExecutionConfig;
+pub use config::{DeviceEntry, ExecutionConfig};
 pub use control::RunControl;
 pub use driver::{RunOutcome, run};
 pub use event::LifecycleEvent;

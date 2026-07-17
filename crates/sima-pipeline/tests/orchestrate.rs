@@ -55,14 +55,18 @@ fn re_evaluation_finalizes_again_without_touching_an_executor() -> Result<()> {
         RunOutcome::Finalized { .. }
     ));
     let events = journal_events(&config);
-    // Only run-level events append: the frontier was empty, so nothing was
-    // queued, leased, or committed — no executor ran.
+    // Only run-level events and the pool's own arrival append: the frontier was
+    // empty, so nothing was queued, leased, or committed — no executor ran.
+    // The workers still start and report the device they would compute on,
+    // which is what `WorkerBound` records.
     assert!(events.len() > first, "the second segment appends events");
     for event in &events[first..] {
         assert!(
             matches!(
                 event,
-                LifecycleEvent::RunStarted { .. } | LifecycleEvent::RunFinalized { .. }
+                LifecycleEvent::RunStarted { .. }
+                    | LifecycleEvent::WorkerBound { .. }
+                    | LifecycleEvent::RunFinalized { .. }
             ),
             "unexpected event in the re-evaluation segment: {event:?}"
         );
