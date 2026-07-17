@@ -10,6 +10,7 @@
 //! them; it never interprets their content.
 
 mod config;
+mod devices;
 mod observe;
 mod orchestrate;
 mod remove;
@@ -17,6 +18,7 @@ mod report;
 mod status;
 
 pub use config::{LoadedConfig, load};
+pub use devices::DeviceSelector;
 pub use observe::RunObserver;
 pub use orchestrate::orchestrate;
 pub use remove::remove;

@@ -3,12 +3,14 @@
 use std::path::{Path, PathBuf};
 
 use sima_core::{Error, Result};
+use sima_domains::devices::enumerate_devices;
 use sima_domains::{domain_for, generator_for};
-use sima_scheduler::{RunControl, RunOutcome};
+use sima_scheduler::{ExecutionConfig, RunControl, RunOutcome};
 use sima_store::Store;
 use sima_transport::SubprocessTransport;
 
 use crate::config::LoadedConfig;
+use crate::devices;
 
 /// Drives the run a loaded config describes: opens the store (creating it
 /// where missing), takes the run's orchestrator lock, dispatches the domain
@@ -30,6 +32,10 @@ pub fn orchestrate(config: &LoadedConfig, control: &RunControl) -> Result<RunOut
         config.execution.checkpoint_interval,
         config.execution.checkpoint_interval_steps,
     );
+    // A device selector names hardware, so it resolves here — where the run
+    // starts and the hardware is at hand — and not at load, which must work on
+    // a machine with no device.
+    let execution = resolve_devices(config)?;
     let store = Store::open(&config.store)?;
     let run = config.run.id();
     let _lock = store.acquire_run_lock(&run)?;
@@ -39,8 +45,25 @@ pub fn orchestrate(config: &LoadedConfig, control: &RunControl) -> Result<RunOut
         &domain.environment,
         generator.as_ref(),
         &transport,
-        &config.execution,
+        &execution,
         control,
+    )
+}
+
+/// The run's execution settings with its device selectors resolved against the
+/// machine's devices. A config naming no device passes through untouched, so a
+/// run that never asked about devices never enumerates them.
+fn resolve_devices(config: &LoadedConfig) -> Result<ExecutionConfig> {
+    if config.devices.is_empty() {
+        return Ok(config.execution.clone());
+    }
+    let entries = devices::resolve(&config.devices, &enumerate_devices()?)?;
+    ExecutionConfig::with_devices(
+        entries,
+        config.execution.max_attempts,
+        config.execution.attempt_timeout,
+        config.execution.checkpoint_interval,
+        config.execution.checkpoint_interval_steps,
     )
 }
 

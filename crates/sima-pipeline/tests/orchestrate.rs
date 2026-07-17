@@ -157,6 +157,7 @@ fn an_undispatchable_config_orchestrates_to_validation_without_touching_the_stor
     // where it is observable.
     let dir = tempfile::tempdir().expect("temp dir");
     let config = LoadedConfig {
+        devices: Vec::new(),
         run: RunConfig {
             root_seed: 1,
             segments: None,

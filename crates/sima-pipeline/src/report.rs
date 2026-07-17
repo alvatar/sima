@@ -94,6 +94,7 @@ mod tests {
     fn loaded(store: std::path::PathBuf) -> Result<LoadedConfig> {
         Ok(LoadedConfig {
             run: stub_config()?,
+            devices: Vec::new(),
             execution: sima_scheduler::ExecutionConfig::new(
                 1,
                 1,
