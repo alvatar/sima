@@ -21,15 +21,23 @@
 //! write, so executors still never touch durable state and checkpoints never
 //! influence committed bytes.
 //!
+//! A [`DeviceBinding`] joins that vocabulary from the construction side: it
+//! names the compute device an executor is built for. It tells an executor
+//! where to compute and grants it nothing else, so the purity discipline holds
+//! under it; like the execution context, it is operational and never reaches a
+//! committed artifact or a task key.
+//!
 //! The concrete implementations that satisfy these traits live in
 //! `sima-domains`, one per format; this crate holds the traits and their
 //! shared vocabulary alone.
 
 mod checkpoint;
+mod device;
 mod executor;
 mod generator;
 
 pub use checkpoint::{Checkpoint, NoCheckpoint};
+pub use device::DeviceBinding;
 pub use executor::{
     Artifact, ExecutionContext, Executor, Outcome, STATE_ARTIFACT, Stats, TaskInput, WorkerId,
 };

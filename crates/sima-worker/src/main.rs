@@ -15,7 +15,8 @@ use sima_model::FormatId;
 /// Resolves the executor for the handshake's format id through the domain
 /// registry.
 fn resolver(format: &FormatId) -> Result<Box<dyn Executor>> {
-    Ok(sima_domains::domain_for(format)?.executor)
+    let executor = (sima_domains::domain_for(format)?.executor)(None)?;
+    Ok(executor)
 }
 
 /// Exit codes: 0 on the parent closing the pipe (clean end-of-stream), 1

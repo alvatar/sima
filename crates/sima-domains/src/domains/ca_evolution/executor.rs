@@ -4,7 +4,8 @@ use std::marker::PhantomData;
 use std::sync::Mutex;
 
 use sima_contracts::{
-    Artifact, Checkpoint, ExecutionContext, Executor, Outcome, STATE_ARTIFACT, Stats, TaskInput,
+    Artifact, Checkpoint, DeviceBinding, ExecutionContext, Executor, Outcome, STATE_ARTIFACT,
+    Stats, TaskInput,
 };
 use sima_core::{Codec, Error, Result};
 use sima_model::FormatId;
@@ -39,6 +40,9 @@ use crate::cellular::{Grid, run};
 /// channel cannot change committed bytes.
 pub(crate) struct CaExecutor<M: CaModel> {
     format: FormatId,
+    /// The device the engine opens, or `None` for the toolkit's default
+    /// selection. Read once, at engine initialization.
+    device: Option<DeviceBinding>,
     /// The lazily initialized engine: `None` until the first execute, then a
     /// fully constructed engine for the process's lifetime. A failed
     /// initialization leaves `None`, so a later attempt retries.
@@ -59,10 +63,12 @@ struct GpuEngine {
 }
 
 impl<M: CaModel> CaExecutor<M> {
-    /// Constructs the executor for `M::FORMAT_ID`, performing no GPU work.
-    pub(crate) fn new() -> Result<CaExecutor<M>> {
+    /// Constructs the executor for `M::FORMAT_ID` on `device` — or, for `None`,
+    /// on the toolkit's default selection — performing no GPU work.
+    pub(crate) fn new(device: Option<&DeviceBinding>) -> Result<CaExecutor<M>> {
         Ok(CaExecutor {
             format: FormatId::new(M::FORMAT_ID)?,
+            device: device.copied(),
             gpu: Mutex::new(None),
             model: PhantomData,
         })
@@ -135,7 +141,14 @@ impl<M: CaModel> Executor for CaExecutor<M> {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if gpu.is_none() {
-            let context = Context::new()?;
+            // The binding names the device to open; without one, the toolkit's
+            // default selection applies.
+            let context = match self.device {
+                Some(device) => {
+                    Context::for_device(device.vendor_id, device.device_id, device.member)?
+                }
+                None => Context::new()?,
+            };
             let kernel = context.kernel(M::KERNEL_WGSL, "main")?;
             *gpu = Some(GpuEngine { context, kernel });
         }
@@ -261,14 +274,17 @@ mod tests {
 
     #[test]
     fn format_answers_the_model_id() -> Result<()> {
-        assert_eq!(CaExecutor::<Toy>::new()?.format().as_str(), Toy::FORMAT_ID);
+        assert_eq!(
+            CaExecutor::<Toy>::new(None)?.format().as_str(),
+            Toy::FORMAT_ID
+        );
         Ok(())
     }
 
     #[test]
     fn a_malformed_spec_is_an_error() -> Result<()> {
         // The error paths stay device-free: they precede any GPU touch.
-        let exec = CaExecutor::<Toy>::new()?;
+        let exec = CaExecutor::<Toy>::new(None)?;
         let params = params();
         for bytes in [vec![0xFF], Vec::new()] {
             let spec = Spec {
@@ -290,7 +306,7 @@ mod tests {
 
     #[test]
     fn malformed_params_are_an_error() -> Result<()> {
-        let exec = CaExecutor::<Toy>::new()?;
+        let exec = CaExecutor::<Toy>::new(None)?;
         let spec = spec();
         let params = Params {
             bytes: vec![1, 2, 3],
@@ -306,7 +322,7 @@ mod tests {
     fn a_mismatched_input_state_is_an_error() -> Result<()> {
         // An 8x8 predecessor grid against 64x64 run params: the error names both
         // dimension triples. The toy model has one channel.
-        let exec = CaExecutor::<Toy>::new()?;
+        let exec = CaExecutor::<Toy>::new(None)?;
         let spec = spec();
         let params = params();
         let state = Grid::new(8, 8, 1, vec![0.0; 64])?.to_bytes();
@@ -324,7 +340,7 @@ mod tests {
 
     #[test]
     fn a_non_grid_input_state_is_an_error() -> Result<()> {
-        let exec = CaExecutor::<Toy>::new()?;
+        let exec = CaExecutor::<Toy>::new(None)?;
         let spec = spec();
         let params = params();
         assert!(matches!(
@@ -345,7 +361,7 @@ mod tests {
         // A bare-grid model commits the grid alone, so its stats are
         // `grid_stats` of the grid the committed bytes decode to. Gray-Scott,
         // the simplest bare-grid model, is the vehicle.
-        let exec = CaExecutor::<GrayScott>::new().expect("executor");
+        let exec = CaExecutor::<GrayScott>::new(None).expect("executor");
         let spec = Spec {
             format: FormatId::new(GrayScott::FORMAT_ID).expect("format id"),
             bytes: Genome::<GrayScott>::new(0.055, 0.062, 0.16, 0.08)
@@ -383,7 +399,7 @@ mod tests {
         // `grid_stats` of the final decoded grid — the grid inside the
         // continuation frame, never the framed bytes. NCA, the simplest
         // stepped model, is the vehicle.
-        let exec = CaExecutor::<Nca>::new().expect("executor");
+        let exec = CaExecutor::<Nca>::new(None).expect("executor");
         let genome = Nca::sample(&GenConfig::<Nca>::new(0.5).expect("config"), 42, 0);
         let spec = Spec {
             format: FormatId::new(Nca::FORMAT_ID).expect("format id"),

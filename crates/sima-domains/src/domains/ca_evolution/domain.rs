@@ -20,7 +20,9 @@ use crate::domain::Domain;
 pub(crate) fn build_domain<M: CaModel>() -> Result<Domain> {
     Ok(Domain {
         format: FormatId::new(M::FORMAT_ID)?,
-        executor: Box::new(CaExecutor::<M>::new()?),
+        // Captures nothing, so it coerces to the plain fn pointer the field
+        // holds; `M` rides along through monomorphization.
+        executor: |device| Ok(Box::new(CaExecutor::<M>::new(device)?)),
         environment: Environment::new(vec![
             EnvironmentComponent::new(
                 format!("{}.executor", M::NAME),

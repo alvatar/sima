@@ -9,6 +9,10 @@
 //! entries) are the crate's surface; each domain's pieces live in its own
 //! module under `domains/`.
 //!
+//! Because this crate knows which execution backends the build compiles in, it
+//! also answers what devices exist: the [`devices`] module carries the
+//! enumeration the layers above resolve device selectors against.
+//!
 //! Beside the concrete domains — the stub and `ca_evolution` — the
 //! [`cellular`] module holds the shared substrate of the cellular executor
 //! kind: the [`Grid`](cellular::Grid) state, the [`run`](cellular::run)
@@ -22,6 +26,7 @@
 //! below and holds the traits alone.
 
 pub mod cellular;
+pub mod devices;
 mod domain;
 mod domains;
 
