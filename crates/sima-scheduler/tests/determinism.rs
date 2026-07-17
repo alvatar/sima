@@ -9,7 +9,7 @@ use sima_core::Result;
 use sima_domains::StubBehavior;
 use sima_scheduler::RunOutcome;
 
-/// The phase-acceptance proof: one config, two fresh stores, identical manifest.
+/// One config run into two fresh stores yields byte-identical manifests.
 #[test]
 fn same_config_in_two_fresh_stores_yields_identical_manifests() -> Result<()> {
     let cfg = config(
