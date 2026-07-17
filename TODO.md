@@ -359,8 +359,13 @@ verification safe by construction.
 
 Phase acceptance: the same config run (i) locally single-worker and (ii)
 spread across processes, multiple GPUs, and one SSH remote yields identical
-manifests — determinism is transport-invariant; killing a remote worker
-mid-lease converges through retry with no manifest difference.
+manifests whenever every task lands on the same device class — determinism
+is transport-invariant. Heterogeneous device sets are accepted, not
+deferred: task-to-device placement is deterministic from (config, device
+set), so the same config on the same heterogeneous set reproduces its
+manifest run to run; bit-agreement across device classes stays out of scope
+until the P8 tolerance policy (M8.1). Killing a remote worker mid-lease
+converges through retry with no manifest difference.
 
 - [x] M4.1 Multi-process worker transport (same scheduler contract): replaces
       the M1.5 in-process thread worker outright — the two worker models never
