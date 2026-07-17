@@ -381,7 +381,7 @@ difference.
       `sima-worker` executor-host binary over a framed stdin/stdout protocol,
       enforced `attempt_timeout`, worker-death retry with checkpoint resume,
       and PDEATHSIG orphan protection; the watchdog thread is gone.
-- [ ] M4.2 Multi-GPU on one host. Settled at elaboration: config gains
+- [x] M4.2 Multi-GPU on one host. Settled at elaboration: config gains
       `[[execution.device]]` tables (a `select` matching a device by
       case-insensitive name substring or exact vendor:device hex pair, plus
       per-device `workers`; no tables = today's single-device selection);
@@ -394,10 +394,31 @@ difference.
       selection by (vendor id, device id, member); `sima status` shows the
       run's device composition. Device identity never enters task keys or
       the environment hash (that is M8.1).
-- [ ] M4.3 Remote worker over SSH: container image with Vulkan runtime, worker
-      bootstrap, bidirectional store sync (have/want negotiation — results
-      home, closures out; the same protocol M6.8's migrate later composes)
-      against a manually provisioned machine
+- [ ] M4.3 Remote worker over SSH, against a manually provisioned machine.
+      Settled at elaboration; split into three sequential PRs:
+      (a) the two pre-existing test flakes (orchestrator-lock race in the
+      segmented suite; resume-progress undercount in the crash suite —
+      `RunStarted` gains a store-derived committed count so the display
+      never depends on journal-flush timing);
+      (b) the have/want store sync, standalone in `sima-store` over frame
+      I/O lifted into `sima-core`: records and referenced CAS objects only
+      (checkpoints are mid-segment scratch, placement re-binds, journals
+      stay home), caller supplies the task-key set, content addressing is
+      the transfer integrity check; first production consumer is M6.8's
+      migrate;
+      (c) the remote worker: the existing framed stdio protocol runs
+      unchanged through `ssh <host> docker run -i` (the store never leaves
+      the orchestrator — task inputs and results already cross inline);
+      a multi-stage container image bakes the worker binary, Vulkan
+      loader, and Mesa ICDs, with NVIDIA user-space libraries injected at
+      start by the host's container toolkit; preemption kills the remote
+      container through a second ssh, then the local ssh; device classes
+      stay global across machines and protocol v3 makes `Ready` report
+      the driver version, journaled with the host in `WorkerBound`;
+      `[[execution.remote]]` entries carry per-remote device tables,
+      resolved at run start through a `sima-worker --enumerate` probe;
+      `sima status` shows per-host composition; acceptance runs over
+      `ssh localhost`.
 - [ ] M4.4 Distributed trace facade: a low-level structured-event interface
       usable from every crate at every layer, placed at or near `sima-core`
       so the strict downward layering holds and any layer can emit without an
