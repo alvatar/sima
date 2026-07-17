@@ -229,7 +229,15 @@ pub fn run_controlled(
         host: String::new(),
         slots: worker_slots(exec),
     }];
-    run(store, cfg, &environment(), &generator, &pools, exec, control)
+    run(
+        store,
+        cfg,
+        &environment(),
+        &generator,
+        &pools,
+        exec,
+        control,
+    )
 }
 
 /// Runs `cfg` into `store` over caller-built pools, with the stub generator, so

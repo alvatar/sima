@@ -216,7 +216,10 @@ impl ToParent {
                 device_name,
                 driver,
             } => {
-                enc.u8(TAG_READY).u32(*protocol).str(device_name).str(driver);
+                enc.u8(TAG_READY)
+                    .u32(*protocol)
+                    .str(device_name)
+                    .str(driver);
             }
             ToParent::Save(payload) => {
                 enc.u8(TAG_SAVE).bytes(payload);

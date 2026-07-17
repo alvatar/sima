@@ -348,7 +348,11 @@ mod tests {
                 format: format.clone(),
                 behavior: Behavior::Echo,
             });
-            Ok((executor, "test device".to_string(), "test driver".to_string()))
+            Ok((
+                executor,
+                "test device".to_string(),
+                "test driver".to_string(),
+            ))
         };
         let mut input = Vec::new();
         write_frame(&mut input, &hello_on(device).encode()).expect("frame the input");

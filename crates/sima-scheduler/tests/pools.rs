@@ -108,7 +108,11 @@ fn a_run_spreads_across_two_pools_and_places_by_class() -> Result<()> {
     let classes = task_classes(&events);
     for (task, ran_on) in &classes {
         let distinct: HashSet<&String> = ran_on.iter().collect();
-        assert_eq!(distinct.len(), 1, "task {task} did not split across classes");
+        assert_eq!(
+            distinct.len(),
+            1,
+            "task {task} did not split across classes"
+        );
     }
     let used: HashSet<String> = classes.values().flatten().cloned().collect();
     assert!(

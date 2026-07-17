@@ -107,7 +107,9 @@ pub(crate) fn spawn_worker(
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
         .spawn()
-        .map_err(|e| Error::Transport(format!("spawning worker {} failed: {e}", program.display())))?;
+        .map_err(|e| {
+            Error::Transport(format!("spawning worker {} failed: {e}", program.display()))
+        })?;
     // The pipes exist iff the spawn configured them; taking them cannot
     // fail past a successful spawn.
     let stdin = child

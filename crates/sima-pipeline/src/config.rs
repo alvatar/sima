@@ -372,7 +372,9 @@ fn resolve_remotes(path: &Path, sections: Vec<RemoteSection>) -> Result<Vec<Remo
             }
             _ => {}
         }
-        let runtime = section.runtime.unwrap_or_else(|| DEFAULT_RUNTIME.to_string());
+        let runtime = section
+            .runtime
+            .unwrap_or_else(|| DEFAULT_RUNTIME.to_string());
         if runtime != "docker" && runtime != "podman" {
             return Err(Error::Validation(format!(
                 "{}: remote {:?} runtime {runtime:?} is not one of docker, podman",
@@ -690,7 +692,10 @@ mod tests {
         let Err(Error::Validation(message)) = Err::<(), _>(error) else {
             panic!("expected a validation error");
         };
-        assert!(message.contains("containerd"), "names the runtime: {message}");
+        assert!(
+            message.contains("containerd"),
+            "names the runtime: {message}"
+        );
     }
 
     #[test]
