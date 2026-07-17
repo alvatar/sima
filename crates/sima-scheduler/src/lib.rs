@@ -26,11 +26,13 @@ mod segment_chain;
 mod static_batch;
 mod task_source;
 mod worker;
+mod worker_pool;
 
 pub use config::{DeviceEntry, ExecutionConfig};
 pub use control::RunControl;
-pub use driver::{RunOutcome, run};
+pub use driver::{RunOutcome, run, worker_slots};
 pub use event::LifecycleEvent;
 pub use segment_chain::SegmentChain;
 pub use static_batch::StaticBatch;
 pub use task_source::{RunnableTask, TaskSource};
+pub use worker_pool::WorkerPool;

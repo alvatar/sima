@@ -18,7 +18,7 @@ use sima_model::{
 };
 use sima_scheduler::{
     DeviceEntry, ExecutionConfig, LifecycleEvent, RunControl, RunOutcome, StaticBatch, TaskSource,
-    run,
+    WorkerPool, run, worker_slots,
 };
 use sima_store::Store;
 use sima_transport::loopback::{LoopbackTransport, SharedResolver};
@@ -197,12 +197,17 @@ pub fn run_with(
 ) -> Result<RunOutcome> {
     let generator = StubGenerator::new()?;
     let transport = loopback(cfg, exec, resolver);
+    let pools = [WorkerPool {
+        transport: &transport,
+        host: String::new(),
+        slots: worker_slots(exec),
+    }];
     run(
         store,
         cfg,
         &environment(),
         &generator,
-        &transport,
+        &pools,
         exec,
         &RunControl::detached(),
     )
@@ -219,14 +224,31 @@ pub fn run_controlled(
 ) -> Result<RunOutcome> {
     let generator = StubGenerator::new()?;
     let transport = loopback(cfg, exec, stub_resolver());
+    let pools = [WorkerPool {
+        transport: &transport,
+        host: String::new(),
+        slots: worker_slots(exec),
+    }];
+    run(store, cfg, &environment(), &generator, &pools, exec, control)
+}
+
+/// Runs `cfg` into `store` over caller-built pools, with the stub generator, so
+/// a test can spread one run across several transports on distinct hosts.
+pub fn run_pools(
+    store: &Store,
+    cfg: &RunConfig,
+    exec: &ExecutionConfig,
+    pools: &[WorkerPool<'_>],
+) -> Result<RunOutcome> {
+    let generator = StubGenerator::new()?;
     run(
         store,
         cfg,
         &environment(),
         &generator,
-        &transport,
+        pools,
         exec,
-        control,
+        &RunControl::detached(),
     )
 }
 

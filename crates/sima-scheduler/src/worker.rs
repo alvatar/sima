@@ -41,6 +41,9 @@ pub(crate) struct WorkerContext<'a> {
     pub(crate) run: RunId,
     pub(crate) config: &'a RunConfig,
     pub(crate) transport: &'a dyn WorkerTransport,
+    /// The host this slot's pool runs on; empty for a local pool. Journaled
+    /// with each `WorkerBound` as the parent's account of where the work ran.
+    pub(crate) host: String,
     pub(crate) exec: &'a ExecutionConfig,
     /// The device this slot's children compute on; `None` leaves the choice to
     /// the backend's default selection, the single-class case.
@@ -115,8 +118,9 @@ fn spawn_bound<'a>(ctx: &WorkerContext<'a>, worker: WorkerId) -> Result<Box<dyn 
             worker: worker.0,
             device: link.device_name().to_string(),
             driver: link.driver().to_string(),
-            // Empty for a local slot; a pooled run names the host it spawned on.
-            host: String::new(),
+            // The child's device and driver are its own; the host is the
+            // parent's account of the pool — empty for a local slot.
+            host: ctx.host.clone(),
         },
     );
     Ok(link)
@@ -755,6 +759,7 @@ mod tests {
                 run,
                 config: &config,
                 transport: &transport,
+                host: String::new(),
                 exec: &exec,
                 device: None,
                 events: tx,
@@ -897,6 +902,7 @@ mod tests {
                     run: self.run,
                     config: &self.config,
                     transport: &transport,
+                    host: String::new(),
                     exec: &exec,
                     device: None,
                     events: tx,

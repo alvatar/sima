@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use sima_core::{Error, Result};
 use sima_domains::devices::enumerate_devices;
 use sima_domains::{domain_for, generator_for};
-use sima_scheduler::{ExecutionConfig, RunControl, RunOutcome};
+use sima_scheduler::{ExecutionConfig, RunControl, RunOutcome, WorkerPool, worker_slots};
 use sima_store::Store;
 use sima_transport::SubprocessTransport;
 
@@ -41,12 +41,19 @@ pub fn orchestrate(config: &LoadedConfig, control: &RunControl) -> Result<RunOut
     let store = Store::open(&config.store)?;
     let run = config.run.id();
     let _lock = store.acquire_run_lock(&run)?;
+    // One local pool: the subprocess transport, no host, slots from the
+    // resolved device tables.
+    let pools = [WorkerPool {
+        transport: &transport,
+        host: String::new(),
+        slots: worker_slots(&execution),
+    }];
     sima_scheduler::run(
         &store,
         &config.run,
         &domain.environment,
         generator.as_ref(),
-        &transport,
+        &pools,
         &execution,
         control,
     )

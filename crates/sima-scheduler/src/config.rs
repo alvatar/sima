@@ -127,12 +127,6 @@ impl ExecutionConfig {
         config.devices = devices;
         Ok(config)
     }
-
-    /// The classes the run has, in entry order. Empty for the single implicit
-    /// class.
-    pub(crate) fn classes(&self) -> Vec<DeviceClass> {
-        self.devices.iter().map(|entry| entry.class).collect()
-    }
 }
 
 #[cfg(test)]
@@ -196,7 +190,7 @@ mod tests {
             None,
         )?;
         assert_eq!(config.workers, 4, "the pool is the entries' sum");
-        assert_eq!(config.classes().len(), 2);
+        assert_eq!(config.devices.len(), 2, "one entry per class");
         Ok(())
     }
 
@@ -239,8 +233,7 @@ mod tests {
     #[test]
     fn no_device_entries_is_the_single_implicit_class() -> Result<()> {
         let config = ExecutionConfig::new(4, 1, Duration::MAX, Duration::MAX, None)?;
-        assert!(config.devices.is_empty());
-        assert!(config.classes().is_empty());
+        assert!(config.devices.is_empty(), "the single implicit class");
         Ok(())
     }
 }
