@@ -111,6 +111,7 @@ mod tests {
         LifecycleEvent::RunStarted {
             run: run.to_string(),
             tasks,
+            committed: 0,
         }
     }
 

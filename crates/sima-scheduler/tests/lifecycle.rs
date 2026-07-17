@@ -181,6 +181,43 @@ fn resume_reruns_only_the_unfinished_work() -> Result<()> {
     Ok(())
 }
 
+/// A run reports the commits its store already answers, so a resumed session
+/// counts on from them instead of reading as a restart. The count comes from
+/// the frontier derivation — the same store reading that decides what to run
+/// — so it is exact even against a journal that a crash left short of the
+/// records it describes.
+#[test]
+fn a_run_reports_the_commits_its_store_already_holds() -> Result<()> {
+    let cfg = config(9, vec![StubBehavior::Succeed, StubBehavior::Succeed]);
+    let (_dir, store) = temp_store();
+    assert!(matches!(
+        run_into(&store, &cfg, &exec(2, 3, 1_000))?,
+        RunOutcome::Finalized { .. }
+    ));
+    // The same config over the same store: every task is already answered.
+    assert!(matches!(
+        run_into(&store, &cfg, &exec(2, 3, 1_000))?,
+        RunOutcome::Finalized { .. }
+    ));
+
+    // Both sessions appended to one journal, in order.
+    let started: Vec<(usize, usize)> = journal_events(&store, &run_id(&cfg))
+        .iter()
+        .filter_map(|e| match e {
+            LifecycleEvent::RunStarted {
+                tasks, committed, ..
+            } => Some((*tasks, *committed)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        started,
+        vec![(2, 0), (2, 2)],
+        "a fresh store answers nothing; the second session finds both commits"
+    );
+    Ok(())
+}
+
 /// `attempt_timeout` is enforced: a task outliving it is preempted — the
 /// journal records the lease expiry before each retry — and once the
 /// attempts are exhausted the run fails definitively, never committing.

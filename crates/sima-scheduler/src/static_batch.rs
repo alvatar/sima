@@ -20,6 +20,8 @@ pub struct StaticBatch {
     runnable: Vec<RunnableTask>,
     /// Every task key the batch comprises, committed or not.
     all_keys: Vec<TaskKey>,
+    /// The keys the store already answered at construction.
+    prior_committed: usize,
     /// Whether the runnable set has been handed out.
     polled: bool,
 }
@@ -63,6 +65,7 @@ impl StaticBatch {
             }
         }
         Ok(StaticBatch {
+            prior_committed: all_keys.len() - runnable.len(),
             runnable,
             all_keys,
             polled: false,
@@ -85,6 +88,10 @@ impl TaskSource for StaticBatch {
 
     fn task_total(&self) -> usize {
         self.all_keys.len()
+    }
+
+    fn prior_committed(&self) -> usize {
+        self.prior_committed
     }
 }
 
@@ -173,6 +180,35 @@ mod tests {
         assert_eq!(resumed.all_keys(), &[key]);
         let mut resumed = resumed;
         assert!(resumed.poll()?.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn prior_commits_are_counted_from_the_records_the_store_holds() -> Result<()> {
+        let (_dir, store) = temp_store();
+        let generator = StubGenerator::new()?;
+        let config = config(vec![StubBehavior::Succeed, StubBehavior::Succeed])?;
+        let env = environment()?;
+        // A fresh store answers nothing.
+        assert_eq!(
+            StaticBatch::new(&generator, &config, &env, &store)?.prior_committed(),
+            0
+        );
+
+        // Commit one of the two records straight to the store, which writes
+        // no journal line: the state a crash between a record write and its
+        // journal append leaves behind.
+        let mut batch = StaticBatch::new(&generator, &config, &env, &store)?;
+        let task = batch.poll()?.remove(0);
+        store.put(&config.params.to_bytes())?;
+        store.put(&env.to_bytes())?;
+        store.commit_record(&sima_model::TaskRecord::new(task.identity, Vec::new())?)?;
+
+        // The count follows the records, so it is exact where a journal
+        // replay would come up short.
+        let resumed = StaticBatch::new(&generator, &config, &env, &store)?;
+        assert_eq!(resumed.prior_committed(), 1);
+        assert_eq!(resumed.task_total(), 2);
         Ok(())
     }
 }
