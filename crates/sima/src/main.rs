@@ -95,11 +95,10 @@ fn drive(config: &Path) -> Result<RunOutcome> {
     signal_hook::flag::register(signal_hook::consts::SIGINT, interrupt.clone())
         .map_err(register_error)?;
 
-    // Seed the progress counter from the store's prior commits, so a resumed
-    // run counts on from where it stopped instead of appearing to restart.
-    let seed = seed_status(&loaded)?;
     println!("run {}", loaded.run.id());
-    let progress = render::Progress::new(seed.committed);
+    // The run's own `RunStarted` carries the prior commits, counted from the
+    // store, so a resumed run counts on from where it stopped.
+    let progress = render::Progress::new();
     let control = RunControl {
         observer: &|event| progress.event(event),
         interrupt: &interrupt,
@@ -125,10 +124,12 @@ fn read_status(config: &Path) -> Result<RunStatus> {
     status(&loaded)
 }
 
-/// Seeds a session's display from any existing journal for `config`'s run,
+/// Seeds the tui's display from any existing journal for `config`'s run,
 /// replaying it through the same `apply` method `sima status` uses so a
-/// resumed run shows its prior progress. Shared by `run`'s progress renderer
-/// and the tui.
+/// resumed run opens on its prior progress. This is the observational view:
+/// it reports what the journal says, which is the whole of what `sima status`
+/// answers too.
+///
 /// A store that does not exist yet, or a run never driven, seeds a zeroed
 /// status; a corrupt journal or an I/O fault is a real problem `sima status`
 /// reports, so it surfaces here rather than hiding behind wrong counts.

@@ -44,6 +44,11 @@ pub trait TaskSource {
     /// the run-started report; unlike [`TaskSource::all_keys`], it never
     /// grows.
     fn task_total(&self) -> usize;
+
+    /// How many of the run's tasks the store already answered when this
+    /// source derived its frontier: what earlier sessions committed. Feeds
+    /// the run-started report, whose display counts on from it.
+    fn prior_committed(&self) -> usize;
 }
 
 /// The construction prologue every task source shares: runs `generator` under

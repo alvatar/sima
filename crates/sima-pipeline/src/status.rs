@@ -262,6 +262,7 @@ mod tests {
         LifecycleEvent::RunStarted {
             run: "00".repeat(32),
             tasks,
+            committed: 0,
         }
     }
 
