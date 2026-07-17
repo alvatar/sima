@@ -735,6 +735,7 @@ dependencies = [
  "ratatui",
  "signal-hook 0.4.4",
  "sima-core",
+ "sima-domains",
  "sima-model",
  "sima-pipeline",
  "sima-scheduler",
@@ -795,6 +796,7 @@ name = "sima-pipeline"
 version = "0.1.0"
 dependencies = [
  "serde",
+ "sima-contracts",
  "sima-core",
  "sima-domains",
  "sima-model",
