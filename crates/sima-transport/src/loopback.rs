@@ -17,12 +17,12 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use sima_contracts::{DeviceBinding, Executor};
-use sima_core::{Error, Result};
+use sima_core::{Error, Result, write_frame};
 use sima_model::FormatId;
 
 use crate::host;
 use crate::link::{LinkEvent, WorkerLink, WorkerTransport};
-use crate::protocol::{Assignment, Hello, ToChild, ToParent, write_frame};
+use crate::protocol::{Assignment, Hello, ToChild, ToParent};
 use crate::subprocess::{self, next_event, read_events};
 
 /// A [`host::Resolver`] the loopback shares across its host threads: one

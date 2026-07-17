@@ -17,13 +17,11 @@ use std::time::Duration;
 use sima_contracts::{
     Checkpoint, DeviceBinding, ExecutionContext, Executor, NoCheckpoint, TaskInput, WorkerId,
 };
-use sima_core::{Error, Result};
+use sima_core::{Error, Result, read_frame, write_frame};
 use sima_model::{FormatId, Params, Spec};
 
 use crate::checkpoint_cadence::CheckpointCadence;
-use crate::protocol::{
-    Assignment, Hello, PROTOCOL_VERSION, ToChild, ToParent, read_frame, write_frame,
-};
+use crate::protocol::{Assignment, Hello, PROTOCOL_VERSION, ToChild, ToParent};
 
 /// Turns a handshake into the executor a host serves: the format id and the
 /// device binding in, the executor and the name of the device it opened out.

@@ -18,13 +18,11 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use sima_contracts::DeviceBinding;
-use sima_core::{Error, Result};
+use sima_core::{Error, Result, read_frame, write_frame};
 use sima_model::FormatId;
 
 use crate::link::{LinkEvent, WorkerLink, WorkerTransport};
-use crate::protocol::{
-    Assignment, Hello, PROTOCOL_VERSION, ToChild, ToParent, read_frame, write_frame,
-};
+use crate::protocol::{Assignment, Hello, PROTOCOL_VERSION, ToChild, ToParent};
 
 /// Spawns `sima-worker` processes for one run: the worker binary's path plus
 /// the handshake every child receives — the run's format id and checkpoint

@@ -5,12 +5,10 @@
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
 use sima_contracts::Outcome;
-use sima_core::hash_bytes;
+use sima_core::{hash_bytes, read_frame, write_frame};
 use sima_domains::{StubBehavior, StubProgram};
 use sima_model::{EnvironmentId, FormatId};
-use sima_transport::protocol::{
-    Assignment, Hello, PROTOCOL_VERSION, ToChild, ToParent, read_frame, write_frame,
-};
+use sima_transport::protocol::{Assignment, Hello, PROTOCOL_VERSION, ToChild, ToParent};
 
 /// A spawned worker with its pipes taken; stderr is inherited so a failure
 /// diagnostic lands in the test output.

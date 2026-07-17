@@ -5,8 +5,8 @@
 //! that crosses it is hashed, and a run's manifests are byte-identical
 //! whatever transport carried its attempts.
 //!
-//! - [`protocol`] — the wire protocol: frame IO and the message vocabulary
-//!   both endpoints share.
+//! - [`protocol`] — the wire protocol: the message vocabulary both endpoints
+//!   share, framed with [`sima_core::frame`].
 //! - [`host`] — the child side: [`host::serve`] hosts a resolved executor
 //!   over the pipe for the life of the worker process.
 //! - [`link`] — the parent-side seam: the [`WorkerTransport`] and
