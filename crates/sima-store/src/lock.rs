@@ -21,9 +21,25 @@ use crate::store::Store;
 /// `orchestrator.lock` file. The kernel releases it when the holder
 /// exits, however it exits. Unlocks on drop.
 pub struct RunLock {
-    /// The locked file; dropping it closes the descriptor, which releases
-    /// the OS lock.
-    _file: File,
+    /// The locked file, unlocked on drop.
+    file: File,
+}
+
+impl Drop for RunLock {
+    /// Frees the lock the moment the guard goes, by unlocking it.
+    ///
+    /// The OS lock lives on the open file description, and closing frees it
+    /// only once the last descriptor onto that description is gone. Spawning
+    /// a process copies the whole descriptor table into the child, where
+    /// close-on-exec clears the copies at exec, so a worker spawned while
+    /// this lock is held shares its description for as long as the fork takes
+    /// to reach exec. Unlocking names the lock itself, so the release is
+    /// immediate and a run resumed in that window finds the lock free.
+    fn drop(&mut self) {
+        // Nothing actionable remains if the release fails: the descriptor
+        // closes next, and process exit releases the lock regardless.
+        let _ = self.file.unlock();
+    }
 }
 
 impl Store {
@@ -50,7 +66,7 @@ impl Store {
                 file.set_len(0).map_err(|e| io_error(&path, e))?;
                 file.write_all(holder.as_bytes())
                     .map_err(|e| io_error(&path, e))?;
-                Ok(RunLock { _file: file })
+                Ok(RunLock { file })
             }
             Err(TryLockError::WouldBlock) => {
                 // Contended: name the holder the lock owner recorded.
@@ -77,8 +93,15 @@ impl Store {
             Err(e) => return Err(io_error(&path, e)),
         };
         match file.try_lock() {
-            // Free: the handle drops at return, releasing the probe's lock.
-            Ok(()) => Ok(None),
+            Ok(()) => {
+                // Free, which taking it just proved. Release it explicitly,
+                // for the reason [`RunLock`]'s drop does: closing would leave
+                // the probe's own lock standing for as long as a concurrent
+                // spawn's copy of this description lives, so a probe could
+                // lock out the orchestrator it was only asking about.
+                let _ = file.unlock();
+                Ok(None)
+            }
             Err(TryLockError::WouldBlock) => Ok(Some(recorded_holder(&mut file))),
             Err(TryLockError::Error(e)) => Err(io_error(&path, e)),
         }
@@ -153,6 +176,23 @@ mod tests {
         drop(store.acquire_run_lock(&run)?);
         // Released on drop: the second acquisition succeeds.
         store.acquire_run_lock(&run)?;
+        Ok(())
+    }
+
+    #[test]
+    fn dropping_the_lock_releases_it_while_a_copy_of_its_descriptor_lives() -> Result<()> {
+        let (_dir, store, run) = store_and_run();
+        let lock = store.acquire_run_lock(&run)?;
+        // What spawning a worker does to this descriptor: the fork hands the
+        // child a copy of every one of the parent's, and close-on-exec closes
+        // them at exec rather than at fork, so any concurrent spawn shares
+        // this lock's open file description for that window. `try_clone` is
+        // that copy, deterministically. Releasing must act on the lock
+        // itself, so it cannot wait on an unrelated child reaching exec.
+        let copy = lock.file.try_clone().expect("copy the lock's descriptor");
+        drop(lock);
+        store.acquire_run_lock(&run)?;
+        drop(copy);
         Ok(())
     }
 
