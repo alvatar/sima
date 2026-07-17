@@ -61,8 +61,11 @@ pub struct ExecutionConfig {
 
 impl ExecutionConfig {
     /// Validates the settings and wraps them, over the backend's default
-    /// device selection: `workers` and `max_attempts` must each be at least 1
-    /// ([`Error::Validation`] otherwise).
+    /// device selection. `workers` is the local pool size; `0` is a run with
+    /// no local pool, valid only when a remote pool carries the work — the
+    /// "at least one worker" requirement is a whole-run property the pool
+    /// assembly enforces, not a per-config one. `max_attempts` must be at
+    /// least 1 ([`Error::Validation`] otherwise).
     pub fn new(
         workers: usize,
         max_attempts: u32,
@@ -70,11 +73,6 @@ impl ExecutionConfig {
         checkpoint_interval: Duration,
         checkpoint_interval_steps: Option<NonZeroU64>,
     ) -> Result<Self> {
-        if workers == 0 {
-            return Err(Error::Validation(
-                "execution config requires at least one worker".to_string(),
-            ));
-        }
         if max_attempts == 0 {
             return Err(Error::Validation(
                 "execution config requires at least one attempt per task".to_string(),
@@ -152,11 +150,12 @@ mod tests {
     }
 
     #[test]
-    fn new_rejects_zero_workers() {
-        assert!(matches!(
-            ExecutionConfig::new(0, 1, Duration::from_millis(1), Duration::MAX, None),
-            Err(Error::Validation(_))
-        ));
+    fn new_accepts_zero_local_workers() -> Result<()> {
+        // A run with no local pool: the workers come from a remote pool, so the
+        // "at least one worker" requirement is enforced across pools, not here.
+        let config = ExecutionConfig::new(0, 1, Duration::from_millis(1), Duration::MAX, None)?;
+        assert_eq!(config.workers, 0);
+        Ok(())
     }
 
     #[test]

@@ -18,7 +18,7 @@ use std::thread;
 use std::time::Duration;
 
 use sima_contracts::{DeviceBinding, DeviceClass, Generator, WorkerId};
-use sima_core::Result;
+use sima_core::{Error, Result};
 use sima_model::{Environment, RunConfig, RunId, TaskKey};
 use sima_store::Store;
 
@@ -82,6 +82,14 @@ pub fn run(
     exec: &ExecutionConfig,
     control: &RunControl,
 ) -> Result<RunOutcome> {
+    // A run needs a worker somewhere: with every pool's slots empty, no one
+    // would ever pull a task and the run would hang. This is the whole-run form
+    // of the per-pool worker requirement, enforced where all pools are visible.
+    if pools.iter().all(|pool| pool.slots.is_empty()) {
+        return Err(Error::Validation(
+            "a run needs at least one worker; every pool is empty".to_string(),
+        ));
+    }
     // Register the run; its id is the config object's address.
     let run = store.create_run(config)?;
     // Every committed record references the params and environment objects, so
