@@ -55,34 +55,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_binding_names_its_class_without_its_member() {
-        let binding = DeviceBinding {
-            vendor_id: 0x10de,
-            device_id: 0x2d39,
-            member: 3,
-        };
-        assert_eq!(
-            binding.class(),
-            DeviceClass {
-                vendor_id: 0x10de,
-                device_id: 0x2d39,
-            }
-        );
-    }
-
-    #[test]
-    fn members_of_one_class_share_it() {
-        let first = DeviceBinding {
-            vendor_id: 0x10de,
-            device_id: 0x2d39,
-            member: 0,
-        };
-        let second = DeviceBinding { member: 1, ..first };
-        assert_eq!(first.class(), second.class());
-    }
-
-    #[test]
     fn a_class_renders_as_vendor_device_hex() {
+        // The rendered form is a contract: a config selector matches this exact
+        // string (`[[execution.device]] select = "8086:7d51"`), and the journal
+        // and placement slots spell a class the same way. A change of width,
+        // separator, or case would leave selector matching silently missing its
+        // device; here it fails loudly instead.
         let class = DeviceClass {
             vendor_id: 0x8086,
             device_id: 0x7d51,

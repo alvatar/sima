@@ -36,20 +36,20 @@ pub(crate) enum Eligibility {
 }
 
 /// What a worker of `class` may do with a task whose chain is bound to
-/// `bound`, given the classes `present` in the run.
+/// `bound`, given `present_classes`, the classes the run has.
 ///
 /// Pure over its inputs, so the rule is verifiable without threads, workers,
 /// or a device.
 pub(crate) fn eligibility(
     bound: Option<DeviceClass>,
     class: DeviceClass,
-    present: &[DeviceClass],
+    present_classes: &[DeviceClass],
 ) -> Eligibility {
     match bound {
         None => Eligibility::Bind,
         Some(bound) if bound == class => Eligibility::Run,
         // Another class holds it, and that class is still here to do the work.
-        Some(bound) if present.contains(&bound) => Eligibility::Skip,
+        Some(bound) if present_classes.contains(&bound) => Eligibility::Skip,
         // Its class is gone; continuity outranks stickiness.
         Some(_) => Eligibility::Rebind,
     }
