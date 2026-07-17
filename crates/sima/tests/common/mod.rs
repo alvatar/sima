@@ -3,11 +3,15 @@
 //! process-table scan, and manifest lookup through the pipeline surface.
 #![allow(dead_code)]
 
+use std::collections::HashMap;
+use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Once;
 use std::time::{Duration, Instant};
 
+use sima_domains::{domain_for, generator_for};
+use sima_model::TaskIdentity;
 use sima_pipeline::{LifecycleEvent, load};
 use sima_store::{Manifest, Store};
 
@@ -121,6 +125,91 @@ pub fn journal_events(config_path: &Path) -> Vec<LifecycleEvent> {
         .iter()
         .map(|line| LifecycleEvent::from_line(line).expect("parse journal line"))
         .collect()
+}
+
+/// The device each worker last reported, from the run's `WorkerBound` events.
+pub fn worker_devices(events: &[LifecycleEvent]) -> HashMap<u64, String> {
+    let mut devices = HashMap::new();
+    for event in events {
+        if let LifecycleEvent::WorkerBound { worker, device } = event {
+            devices.insert(*worker, device.clone());
+        }
+    }
+    devices
+}
+
+/// The devices each task's attempts ran on, in lease order: the journal's
+/// `Leased` joined with the leasing worker's reported device.
+pub fn task_devices(events: &[LifecycleEvent]) -> HashMap<String, Vec<String>> {
+    let devices = worker_devices(events);
+    let mut ran_on: HashMap<String, Vec<String>> = HashMap::new();
+    for event in events {
+        if let LifecycleEvent::Leased { task, worker, .. } = event {
+            let device = devices
+                .get(worker)
+                .expect("a worker reports its device before it leases");
+            ran_on.entry(task.clone()).or_default().push(device.clone());
+        }
+    }
+    ran_on
+}
+
+/// The task keys of each chain, in segment order: chain `i` is candidate `i`'s
+/// trajectory, walked through the state its segments committed.
+///
+/// The journal names tasks, never chains, so this is what joins a chain to the
+/// devices its work ran on. It derives the same identities the scheduler's own
+/// chain source does — candidate `i`'s seed substream, then each successor's
+/// input state from its predecessor's committed `state` artifact — and stops
+/// at the first segment the store has yet to answer.
+pub fn chain_keys(config_path: &Path) -> Vec<Vec<String>> {
+    let config = load(config_path).expect("load config");
+    let store = Store::open(&config.store).expect("open store");
+    let generator = generator_for(&config.run.generator.id).expect("dispatch the generator");
+    let environment = domain_for(&config.run.format)
+        .expect("dispatch the domain")
+        .environment
+        .id();
+    let specs = generator
+        .generate(
+            config.run.root_seed,
+            &config.run.generator.params,
+            &config.run.format,
+        )
+        .expect("generate the run's candidates");
+    let params = config.run.params.id();
+    let segments = config.run.segments.map_or(1, NonZeroU64::get);
+
+    let mut chains = Vec::with_capacity(specs.len());
+    for (i, spec) in specs.iter().enumerate() {
+        let mut identity = TaskIdentity {
+            spec: spec.id(),
+            params,
+            seed: sima_core::prng::derive(config.run.root_seed, i as u64),
+            environment,
+            input_state: None,
+        };
+        let mut keys = Vec::new();
+        for _ in 0..segments {
+            let key = identity.key();
+            keys.push(key.to_string());
+            // The next segment continues from this one's committed state; an
+            // uncommitted segment ends the chain's known trajectory.
+            let Some(record) = store.record(&key).expect("read the record") else {
+                break;
+            };
+            let Some(state) = record
+                .artifacts()
+                .iter()
+                .find(|artifact| artifact.name() == "state")
+            else {
+                break;
+            };
+            identity.input_state = Some(*state.object());
+        }
+        chains.push(keys);
+    }
+    chains
 }
 
 /// Polls `probe` every 20 ms until it holds or `deadline` elapses; returns
