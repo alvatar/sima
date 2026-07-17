@@ -360,12 +360,18 @@ verification safe by construction.
 Phase acceptance: the same config run (i) locally single-worker and (ii)
 spread across processes, multiple GPUs, and one SSH remote yields identical
 manifests whenever every task lands on the same device class — determinism
-is transport-invariant. Heterogeneous device sets are accepted, not
-deferred: task-to-device placement is deterministic from (config, device
-set), so the same config on the same heterogeneous set reproduces its
-manifest run to run; bit-agreement across device classes stays out of scope
-until the P8 tolerance policy (M8.1). Killing a remote worker mid-lease
-converges through retry with no manifest difference.
+is transport-invariant. Heterogeneous device sets are first-class and
+throughput-first: assignment is greedy (any free worker pulls the next
+unbound chain), a chain binds to the device class that first picks it up
+and stays there across segments, retries, and resumes, and a resume whose
+recorded class is absent from the current device set rebinds the chain
+loudly (journaled) and converges — a run always continues across hardware
+changes. Device binding is derived operational state, never identity: the
+run id is device-independent, and mixed-set float manifests are
+schedule-dependent by design (single-class runs remain the per-backend
+determinism mode; bit-agreement across device classes is P8, M8.1).
+Killing a remote worker mid-lease converges through retry with no manifest
+difference.
 
 - [x] M4.1 Multi-process worker transport (same scheduler contract): replaces
       the M1.5 in-process thread worker outright — the two worker models never
@@ -375,7 +381,19 @@ converges through retry with no manifest difference.
       `sima-worker` executor-host binary over a framed stdin/stdout protocol,
       enforced `attempt_timeout`, worker-death retry with checkpoint resume,
       and PDEATHSIG orphan protection; the watchdog thread is gone.
-- [ ] M4.2 Multi-GPU on one host
+- [ ] M4.2 Multi-GPU on one host. Settled at elaboration: config gains
+      `[[execution.device]]` tables (a `select` matching a device by
+      case-insensitive name substring or exact vendor:device hex pair, plus
+      per-device `workers`; no tables = today's single-device selection);
+      placement is greedy with durable chain stickiness — a chain binds to
+      the class that first pulls it, recorded in a per-run operational slot
+      beside the checkpoint slots, honored across resume, rebound with a
+      journaled event when the class is absent; the binding crosses to the
+      child in `Hello` (protocol v2) and `Ready` reports the bound device
+      name back for the journal; the toolkit gains device enumeration and
+      selection by (vendor id, device id, member); `sima status` shows the
+      run's device composition. Device identity never enters task keys or
+      the environment hash (that is M8.1).
 - [ ] M4.3 Remote worker over SSH: container image with Vulkan runtime, worker
       bootstrap, bidirectional store sync (have/want negotiation — results
       home, closures out; the same protocol M6.8's migrate later composes)
