@@ -137,6 +137,9 @@ pub struct SegmentChain<'a> {
     segments: u64,
     chains: Vec<Chain>,
     keys: KeySet,
+    /// The segments the store already answered at construction, across every
+    /// chain: what the fast-forward walked past.
+    prior_committed: usize,
 }
 
 impl<'a> SegmentChain<'a> {
@@ -188,6 +191,9 @@ impl<'a> SegmentChain<'a> {
             params,
             environment: environment_id,
             segments,
+            // Counted here, before any poll advances a chain past a segment
+            // this session ran.
+            prior_committed: chains.iter().map(|c| c.committed as usize).sum(),
             chains,
             keys,
         })
@@ -231,6 +237,10 @@ impl TaskSource for SegmentChain<'_> {
 
     fn task_total(&self) -> usize {
         self.chains.len() * self.segments as usize
+    }
+
+    fn prior_committed(&self) -> usize {
+        self.prior_committed
     }
 }
 
@@ -394,6 +404,10 @@ mod tests {
                 third.identity.key()
             ]
         );
+        // The fast-forward is what a resumed session's display counts on
+        // from: two segments' records, committed here without any journal
+        // line, are two prior commits.
+        assert_eq!(resumed.prior_committed(), 2);
         Ok(())
     }
 

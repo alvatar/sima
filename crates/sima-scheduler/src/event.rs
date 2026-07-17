@@ -17,8 +17,17 @@ use sima_core::{Error, Result};
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum LifecycleEvent {
     /// The run began, over `tasks` keys: every task key of the run, those
-    /// already committed and those still to run.
-    RunStarted { run: String, tasks: usize },
+    /// already committed and those still to run. `committed` is how many of
+    /// them the store already answered when the session started; it comes
+    /// from the records, so it holds even against this journal, which a crash
+    /// can leave short of the commits it describes. A line lacking the field
+    /// reads as zero.
+    RunStarted {
+        run: String,
+        tasks: usize,
+        #[serde(default)]
+        committed: usize,
+    },
     /// A task entered the ready queue.
     Queued { task: String },
     /// A worker leased a task for one attempt.
@@ -144,6 +153,24 @@ mod tests {
     }
 
     #[test]
+    fn a_run_started_line_without_a_commit_count_reads_as_none_committed() -> Result<()> {
+        // A journal written before the field existed. The journal is
+        // observational, so its old lines stay readable: the absent count
+        // reads as no prior commits.
+        let run = "cd".repeat(32);
+        let line = format!(r#"{{"event":"run_started","run":"{run}","tasks":3}}"#);
+        assert_eq!(
+            LifecycleEvent::from_line(&line)?,
+            LifecycleEvent::RunStarted {
+                run,
+                tasks: 3,
+                committed: 0,
+            }
+        );
+        Ok(())
+    }
+
+    #[test]
     fn line_round_trips_through_serde() -> Result<()> {
         let event = LifecycleEvent::Committed {
             task: "11".repeat(32),
@@ -163,6 +190,7 @@ mod tests {
             LifecycleEvent::RunStarted {
                 run: run.clone(),
                 tasks: 3,
+                committed: 1,
             },
             LifecycleEvent::Queued { task: task.clone() },
             LifecycleEvent::Leased {

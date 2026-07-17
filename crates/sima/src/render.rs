@@ -17,7 +17,7 @@ pub fn short(id: &str) -> &str {
 /// Renders `event` to the one line it warrants, or `None` for the `Queued`
 /// and `Leased` bookkeeping events. `committed`/`tasks` supply the running
 /// `committed k/n` count a commit line shows; on `RunStarted`, a nonzero
-/// `committed` is the store's prior progress and the line names it, so a
+/// `committed` is the run's prior progress and the line names it, so a
 /// resumed session does not read as a restart. The single source of the
 /// event wording: `sima run` prints these lines to stdout and the tui folds
 /// them into its event log.
@@ -76,18 +76,18 @@ pub fn describe(event: &LifecycleEvent, committed: usize, tasks: usize) -> Optio
 pub struct Progress {
     /// The run's task count, from `RunStarted`.
     tasks: AtomicUsize,
-    /// Commits accounted for: the store's prior commits plus those seen live.
+    /// Commits accounted for: the run's prior commits plus those seen live.
     committed: AtomicUsize,
 }
 
 impl Progress {
-    /// A progress renderer seeded with the run's prior commit count, so a
-    /// resumed session counts on from the store state instead of restarting
-    /// at 1. A fresh run seeds zero.
-    pub fn new(prior_committed: usize) -> Progress {
+    /// A progress renderer over a session's events. Both counters come from
+    /// the run's own `RunStarted`, so nothing needs to be known before the
+    /// run starts.
+    pub fn new() -> Progress {
         Progress {
             tasks: AtomicUsize::new(0),
-            committed: AtomicUsize::new(prior_committed),
+            committed: AtomicUsize::new(0),
         }
     }
 
@@ -95,8 +95,15 @@ impl Progress {
     /// count for the `committed k/n` line. `Queued` and `Leased` yield no
     /// line and stay silent.
     pub fn event(&self, event: &LifecycleEvent) {
-        if let LifecycleEvent::RunStarted { tasks, .. } = event {
+        if let LifecycleEvent::RunStarted {
+            tasks, committed, ..
+        } = event
+        {
             self.tasks.store(*tasks, Ordering::Relaxed);
+            // The run's prior commits, counted from the store's records by
+            // the source that derived the frontier. A resumed session counts
+            // on from there.
+            self.committed.store(*committed, Ordering::Relaxed);
         }
         // A commit advances the running count; every other line reads it
         // without moving it.
@@ -107,6 +114,12 @@ impl Progress {
         if let Some(line) = describe(event, committed, self.tasks.load(Ordering::Relaxed)) {
             println!("{line}");
         }
+    }
+
+    /// The commits accounted for so far.
+    #[cfg(test)]
+    fn committed(&self) -> usize {
+        self.committed.load(Ordering::Relaxed)
     }
 }
 
@@ -182,12 +195,12 @@ mod tests {
 
     #[test]
     fn a_run_started_line_reports_prior_commits_when_resuming() {
-        // A resumed session seeds the commit counter from the journal; the
-        // started line names the prior commits so the session does not read
-        // as a restart. A fresh run keeps the bare form.
+        // The started line names the prior commits so a resumed session does
+        // not read as a restart. A fresh run keeps the bare form.
         let event = LifecycleEvent::RunStarted {
             run: "ab".repeat(32),
             tasks: 200,
+            committed: 26,
         };
         assert_eq!(
             describe(&event, 26, 200).expect("a started line"),
@@ -197,6 +210,26 @@ mod tests {
             describe(&event, 0, 200).expect("a started line"),
             "started: 200 tasks"
         );
+    }
+
+    #[test]
+    fn a_session_counts_commits_on_from_the_started_event() {
+        let progress = Progress::new();
+        progress.event(&LifecycleEvent::RunStarted {
+            run: "ab".repeat(32),
+            tasks: 3,
+            committed: 2,
+        });
+        // The count is the event's, which the run derived from its store —
+        // the journal replay this once read from can lag its own records.
+        assert_eq!(progress.committed(), 2);
+
+        progress.event(&LifecycleEvent::Committed {
+            task: "cd".repeat(32),
+            record: "ef".repeat(32),
+            stats_hex: String::new(),
+        });
+        assert_eq!(progress.committed(), 3);
     }
 
     #[test]

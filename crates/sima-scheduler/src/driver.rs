@@ -121,6 +121,7 @@ pub fn run(
             LifecycleEvent::RunStarted {
                 run: run.to_string(),
                 tasks: source.task_total(),
+                committed: source.prior_committed(),
             },
         );
 
@@ -526,6 +527,10 @@ mod tests {
         fn task_total(&self) -> usize {
             0
         }
+
+        fn prior_committed(&self) -> usize {
+            0
+        }
     }
 
     /// A task source that hands out scripted batches, one per poll, and yields
@@ -545,6 +550,10 @@ mod tests {
         }
 
         fn task_total(&self) -> usize {
+            0
+        }
+
+        fn prior_committed(&self) -> usize {
             0
         }
     }
@@ -773,6 +782,9 @@ mod tests {
                 &[]
             }
             fn task_total(&self) -> usize {
+                0
+            }
+            fn prior_committed(&self) -> usize {
                 0
             }
         }
