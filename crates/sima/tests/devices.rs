@@ -15,15 +15,28 @@
 
 mod common;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::process::{Child, Stdio};
 use std::time::Duration;
 
 use common::{
-    chain_keys, journal_events, manifest_of, poll_until, sima_command, task_devices, worker_devices,
+    ChainTrail, chain_trails, devices_reported, journal_events, manifest_bytes, manifest_of,
+    poll_until, sima_command, task_devices,
 };
 use sima_pipeline::LifecycleEvent;
+
+/// The candidates and segments every multi-device test here runs.
+///
+/// Sized so both classes provably pull work: a device's first task waits on
+/// its worker's handshake, which opens a Vulkan instance, so a class that
+/// initializes faster would take every chain of a run whose tasks are quicker
+/// than that startup gap. At 128×128 over 600 steps a segment costs far more
+/// than a handshake, so the slower class's workers are still handed chains
+/// long after both are up — and 12 chains outnumber the 4 workers, so no
+/// class can hold the whole run by taking one task each.
+const CANDIDATES: u32 = 12;
+const SEGMENTS: u64 = 3;
 
 /// A Gray-Scott config over `devices` — the rendered `[[execution.device]]`
 /// entries — with `count` candidates, each divided into `segments`.
@@ -44,9 +57,9 @@ fn config_text(store: &str, count: u32, segments: u64, devices: &str) -> String 
         diffusion_v = [0.08, 0.08]
 
         [run.params]
-        width = 32
-        height = 32
-        steps = 40
+        width = 128
+        height = 128
+        steps = 600
         dt = 1.0
         base_u = 0.5
         base_v = 0.25
@@ -95,11 +108,14 @@ fn run_to_completion(config: &Path) {
     assert_eq!(status.code(), Some(0), "the run finalized");
 }
 
-/// The distinct devices the run's committed work ran on.
-fn devices_used(events: &[LifecycleEvent]) -> HashSet<String> {
-    worker_devices(events)
-        .into_values()
-        .filter(|device| !device.is_empty())
+/// The devices a chain's segments ran on, from the journal.
+fn chain_devices(trail: &ChainTrail, ran_on: &HashMap<String, Vec<String>>) -> HashSet<String> {
+    trail
+        .keys
+        .iter()
+        .filter_map(|key| ran_on.get(key))
+        .flatten()
+        .cloned()
         .collect()
 }
 
@@ -109,12 +125,8 @@ fn assert_chains_never_split(config: &Path) -> Vec<(String, usize)> {
     let events = journal_events(config);
     let ran_on = task_devices(&events);
     let mut per_device: Vec<(String, usize)> = Vec::new();
-    for (chain, keys) in chain_keys(config).iter().enumerate() {
-        let devices: HashSet<&String> = keys
-            .iter()
-            .filter_map(|key| ran_on.get(key))
-            .flatten()
-            .collect();
+    for (chain, trail) in chain_trails(config).iter().enumerate() {
+        let devices = chain_devices(trail, &ran_on);
         // A chain whose segments were all committed by an earlier session
         // contributes no lease to this journal; one that ran must have run in
         // one place.
@@ -123,13 +135,26 @@ fn assert_chains_never_split(config: &Path) -> Vec<(String, usize)> {
             "chain {chain} split across devices: {devices:?}"
         );
         if let Some(device) = devices.into_iter().next() {
-            match per_device.iter_mut().find(|(name, _)| name == device) {
+            match per_device.iter_mut().find(|(name, _)| *name == device) {
                 Some((_, count)) => *count += 1,
-                None => per_device.push((device.clone(), 1)),
+                None => per_device.push((device, 1)),
             }
         }
     }
     per_device
+}
+
+/// A chain that has run on a device whose name contains `device`, and still
+/// has segments left — the state a rebind needs to have anything to move.
+fn chain_with_work_on(config: &Path, device: &str) -> Option<usize> {
+    let events = journal_events(config);
+    let ran_on = task_devices(&events);
+    chain_trails(config).iter().position(|trail| {
+        trail.has_work_left()
+            && chain_devices(trail, &ran_on)
+                .iter()
+                .any(|name| name.to_lowercase().contains(device))
+    })
 }
 
 /// A Gray-Scott search over both of this machine's GPUs completes, uses both,
@@ -141,25 +166,25 @@ fn a_search_over_two_device_classes_uses_both_and_splits_no_chain() {
     let config = common::write_config_text(
         dir.path(),
         "both.toml",
-        &config_text("./store", 8, 2, BOTH_DEVICES),
+        &config_text("./store", CANDIDATES, SEGMENTS, BOTH_DEVICES),
     );
     run_to_completion(&config);
 
     let events = journal_events(&config);
-    let used = devices_used(&events);
+    let reported = devices_reported(&events);
     assert_eq!(
-        used.len(),
+        reported.len(),
         2,
-        "both device classes carried workers: {used:?}"
+        "both device classes carried workers: {reported:?}"
     );
     let per_device = assert_chains_never_split(&config);
     assert_eq!(
         per_device.iter().map(|(_, n)| n).sum::<usize>(),
-        8,
+        CANDIDATES as usize,
         "every chain ran"
     );
-    // Greedy placement puts work on both: neither class sat idle while the
-    // other did all eight chains.
+    // Greedy placement hands an unbound chain to whichever class is free, and
+    // at this workload's sizing neither class can absorb the run alone.
     assert_eq!(
         per_device.len(),
         2,
@@ -177,13 +202,13 @@ fn chains_keep_their_class_across_a_resume() {
     let config = common::write_config_text(
         dir.path(),
         "resume.toml",
-        &config_text("./store", 8, 3, BOTH_DEVICES),
+        &config_text("./store", CANDIDATES, SEGMENTS, BOTH_DEVICES),
     );
 
     // Kill the orchestrator once the run is under way, so some chains are
     // bound and partly walked while others are untouched.
     let mut child = spawn_run(&config);
-    let bound = poll_until(Duration::from_secs(60), || {
+    let bound = poll_until(Duration::from_secs(120), || {
         journal_events(&config)
             .iter()
             .filter(|e| matches!(e, LifecycleEvent::Committed { .. }))
@@ -194,9 +219,23 @@ fn chains_keep_their_class_across_a_resume() {
     child.kill().expect("kill the orchestrator");
     child.wait().expect("reap the orchestrator");
 
+    // The kill landed mid-run: work remains, so the second session is a real
+    // resume rather than a re-finalization that would satisfy every assertion
+    // below without running anything.
+    assert!(
+        manifest_of(&config).is_none(),
+        "the first session was killed before it finalized"
+    );
+    let first_session = journal_events(&config).len();
+
     run_to_completion(&config);
 
     let events = journal_events(&config);
+    let resumed_leases = events[first_session..]
+        .iter()
+        .filter(|e| matches!(e, LifecycleEvent::Leased { .. }))
+        .count();
+    assert!(resumed_leases > 0, "the second session ran the work left");
     assert!(
         !events
             .iter()
@@ -216,50 +255,57 @@ fn removing_a_device_rebinds_its_chains_and_the_run_converges() {
     let two = common::write_config_text(
         dir.path(),
         "two.toml",
-        &config_text("./store", 8, 3, BOTH_DEVICES),
+        &config_text("./store", CANDIDATES, SEGMENTS, BOTH_DEVICES),
     );
-    // Both classes bind chains, then the session ends mid-run.
+    // The state a rebind needs something to move: a chain bound to Intel that
+    // still has segments left. Workers reporting both devices would say only
+    // that both classes started, not that Intel holds any unfinished chain.
     let mut child = spawn_run(&two);
-    let spread = poll_until(Duration::from_secs(60), || {
-        devices_used(&journal_events(&two)).len() == 2
-            && journal_events(&two)
-                .iter()
-                .filter(|e| matches!(e, LifecycleEvent::Committed { .. }))
-                .count()
-                >= 2
+    let orphan_pending = poll_until(Duration::from_secs(180), || {
+        chain_with_work_on(&two, "intel").is_some()
     });
-    assert!(spread, "both classes took work before the deadline");
+    assert!(
+        orphan_pending,
+        "Intel held an unfinished chain before the deadline"
+    );
+    let orphan = chain_with_work_on(&two, "intel").expect("the chain the poll saw");
     child.kill().expect("kill the orchestrator");
     child.wait().expect("reap the orchestrator");
 
-    // The same run, resumed over one class: the chains bound to the other have
+    // The same run, resumed over one class: the chain bound to the other has
     // nowhere to go but here.
     let one = common::write_config_text(
         dir.path(),
         "one.toml",
-        &config_text("./store", 8, 3, NVIDIA_ONLY),
+        &config_text("./store", CANDIDATES, SEGMENTS, NVIDIA_ONLY),
     );
     run_to_completion(&one);
 
-    let rebound = journal_events(&one)
+    let rebound: Vec<u64> = journal_events(&one)
         .iter()
-        .filter(|e| matches!(e, LifecycleEvent::ChainRebound { .. }))
-        .count();
-    assert!(rebound > 0, "the orphaned chains moved, and said so");
+        .filter_map(|e| match e {
+            LifecycleEvent::ChainRebound { chain, .. } => Some(*chain),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        rebound.contains(&(orphan as u64)),
+        "chain {orphan}, bound to the device that is gone, moved and said so: {rebound:?}"
+    );
     // The manifest is valid; no equality is claimed against a single-class
     // reference, because mixed provenance is a legitimate outcome here.
     assert!(manifest_of(&one).is_some(), "the run converged");
 }
 
-/// A single-device config is byte-for-byte what it was before placement
-/// existed: one class, four workers, and a manifest equal to the same run's
-/// on any other worker count.
+/// A run that names one device commits byte-for-byte what the same run
+/// commits under a plain worker count: placement is operational, so it reaches
+/// nothing a run records.
 #[test]
 #[ignore = "requires an NVIDIA GPU"]
-fn a_single_device_run_is_unchanged_by_the_placement_machinery() {
+fn a_single_device_run_commits_the_same_manifest_as_a_plain_worker_count() {
     let dir = tempfile::tempdir().expect("temp dir");
-    // The reference: the pre-placement shape, a plain worker count over the
-    // backend's own device choice.
+    // The reference: a plain worker count over the backend's own device
+    // choice, naming no device and reading no placement state.
     let reference = common::write_config_text(
         dir.path(),
         "reference.toml",
@@ -285,8 +331,10 @@ fn a_single_device_run_is_unchanged_by_the_placement_machinery() {
     );
     run_to_completion(&placed);
 
-    let reference = manifest_of(&reference).expect("the reference finalized");
-    let placed = manifest_of(&placed).expect("the placed run finalized");
+    // The manifest file itself, byte for byte: what a run commits is the
+    // claim, so the bytes on disk are the evidence.
+    let reference = manifest_bytes(&reference).expect("the reference finalized");
+    let placed = manifest_bytes(&placed).expect("the placed run finalized");
     assert_eq!(
         reference, placed,
         "placement is operational: it never touches what a run commits"
