@@ -65,7 +65,6 @@
 - Invariants below are settled in discussion before being recorded here; new ones are added the same way.
 
 Settled invariants:
-- Layering, strictly downward, enforced by workspace crate dependency edges: `sima-core` → `sima-model` → `sima-store` → `sima-contracts` → `sima-domains` → `sima-scheduler` → `sima-pipeline` → `sima` (CLI binary). No upward imports, ever; a lower crate never depends on a higher one. `sima-domains` is imported by the pipeline; the scheduler's `[dependencies]` never include it, though its tests may take it as a dev-dependency for the reference stub domain.
 - Execution backends are implementation crates under `crates/toolkits/` (`sima-toolkit-*`), depending on `sima-core` (and `sima-contracts` when needed); `sima-domains` depends on the toolkits its domains use, and each toolkit isolates its own dependency set.
 - The store is the only durable state. Queues, schedulers, and orchestrators are ephemeral; a task source derives the currently-runnable frontier from (config, store state) — static batches and segment chains are two implementations of that one interface. Resume, crash-recovery, and re-run are one code path: re-derive the frontier, continue.
 - One orchestrator per run — the `sima run` process itself, no daemon; single-writer enforced by an OS file lock the kernel releases when the holder exits, so no staleness protocol exists; the lock file's content (pid, hostname) is diagnostic only. Workers are stateless leaseholders.
