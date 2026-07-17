@@ -123,7 +123,7 @@ mod tests {
 
     #[test]
     fn program_encoding_matches_pinned_hex() {
-        // Hand-derived per §6, nonce 0: behavior bytes then u64 nonce LE.
+        // Hand-derived, nonce 0: behavior bytes then u64 nonce LE.
         let cases = [
             (StubBehavior::Succeed, "00", "0000000000000000"),
             (
