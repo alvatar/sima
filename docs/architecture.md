@@ -33,7 +33,7 @@ Strictly downward dependencies, enforced by workspace crate edges.
 | L3    | `sima-contracts` | generator/executor contracts over opaque specs and params            |
 | L4    | `sima-transport` | worker transport: wire protocol, executor host loop, subprocess and loopback links |
 | L5    | `sima-domains`   | per-format executors, generators, codecs, environments, id dispatch, and config translation; the reference stub domain |
-| L6    | `sima-scheduler` | task sources, worker pool, leases, retry, run driver                 |
+| L6    | `sima-scheduler` | task sources, worker pool, leases, retry, device placement, run driver |
 | L7    | `sima-pipeline`  | config loading, orchestration, run status                            |
 | L8    | `sima`           | CLI: run, status, tui                                                 |
 
@@ -69,6 +69,7 @@ sima run  (one orchestrator process per run; OS file lock on the store)
 │      manifest.json          written once, at finalize
 │      journal                append-only lifecycle events
 │      checkpoint/<chain>     mutable resume scratch, one slot per chain
+│      placement/<chain>      the device class each chain's work runs on
 │
 └─ Driver ··············· polls the source on queue drain, feeds the
    │                      queue, finalizes on empty poll + idle pool
@@ -191,6 +192,7 @@ One `Store` type over a root directory:
 <root>/runs/<run-id>/journal
 <root>/runs/<run-id>/orchestrator.lock
 <root>/runs/<run-id>/checkpoint/<slot>   mutable resume scratch
+<root>/runs/<run-id>/placement/<chain>  the chain's device class
 ```
 
 ### Components
@@ -624,12 +626,21 @@ inherited for diagnostics): a `u32` little-endian payload length, then a
 payload built with the canonical `Enc`/`Dec` primitives — used for their
 checked framing; frames are transport encoding, never identity-bearing. The
 handshake carries the protocol version, the run's format id (the child
-resolves its executor from it, once), and the checkpoint cadence; each task
-is one `Assign` frame answered by zero or more `Save` frames and one
-terminal frame. There is no shutdown message: the parent closing the child's
-stdin is the shutdown signal. A per-child reader thread decodes stdout
-frames into a channel, so the parent's deadline wait is a plain timed
-receive and a kill never races a blocking read.
+resolves its executor from it, once), the checkpoint cadence, and the device
+the child computes on; each task is one `Assign` frame answered by zero or
+more `Save` frames and one terminal frame. There is no shutdown message: the
+parent closing the child's stdin is the shutdown signal. A per-child reader
+thread decodes stdout frames into a channel, so the parent's deadline wait is
+a plain timed receive and a kill never races a blocking read.
+
+The device travels as a `DeviceBinding` — a class and the member within it —
+and is absent for a run that leaves the choice to the backend. The child
+answers `Ready` with the name of the device it opened, empty for a domain
+that uses no device; the parent journals that answer as `WorkerBound`, so the
+record of where work ran is the child's own account rather than the parent's
+assumption. The child resolves its executor and its device before answering
+`Ready`, so a binding naming a device the machine does not have fails the
+handshake rather than the first task.
 
 Orphan protection is layered: the child sets `PR_SET_PDEATHSIG(SIGKILL)`
 first, so a parent death — even by SIGKILL — kills it; the stdin
@@ -666,6 +677,64 @@ outcome is turned into an action:
 Nothing from the execution context reaches a committed record: the parent
 carries only identity into the `TaskRecord`, and the attempt and worker
 travel solely to the journal.
+
+### Device placement
+
+A machine's GPUs are rarely equal, and a run spreads its pool across them.
+The `[[execution.device]]` config entries name the devices and how many
+workers each carries; the pool is their sum, and one slot per (entry, worker)
+round-robins over the class's cards. A **device class** is the `(vendor id,
+device id)` pair the backend reports — two identical cards are one class with
+two members, interchangeable by declaration, which is why a class carries no
+member and work bound to one may run on either card. A selector names a
+device by a case-insensitive substring of its name or by its exact
+`vendor:device` hex pair, and resolves against the machine's hardware when a
+run starts, never when a config is read: `sima status` and `sima report` work
+where no device exists.
+
+**The principle: device binding is derived operational state, never
+identity.** A run id never encodes devices; the store records what actually
+happened; hardware changes never strand a run.
+
+Placement is **greedy** and **sticky**:
+
+- **Greedy** — an unbound chain goes to whichever class pulls it first, so a
+  card several times faster naturally takes several times the chains. There
+  are no shares to tune, no idle tail from a mis-tuned ratio, and a card that
+  thermally throttles simply pulls less.
+- **Sticky** — once bound, every segment, retry, and resumed attempt of that
+  chain runs on the same class. One candidate is one device class, so each
+  candidate's trajectory is internally coherent and a retried attempt
+  reproduces what the failed attempt would have committed.
+- **Rebind is loud, and only on necessity** — a binding moves when its class
+  is absent from the run's devices, which means the hardware changed between
+  sessions. Run continuity outranks placement, so the work moves rather than
+  stranding, and the journal records the move as `ChainRebound`.
+
+The binding lives in a per-run operational slot beside the resume
+checkpoints — `runs/<run-id>/placement/<chain>`, keyed by the same chain id —
+holding the class as serde JSON: the human-readable operational world the
+manifest and journal live in, never the canonical identity encoding. It is
+written when a chain first binds and overwritten only by a rebind. A crash
+between binding in memory and persisting the slot simply re-binds greedily on
+resume; the binding is advisory coherence state, not correctness state, which
+is why it needs no write-ordering discipline. A chain-less task is a chain of
+length one: its retry stickiness is coordinator memory, and after it commits
+there is nothing left to place, so it gets no slot.
+
+**Starvation is bounded, and the price of coherence.** With stickiness, a
+class's workers can idle while another class finishes chains bound to it. The
+bound is (chains in flight on that class × their remaining segments); unbound
+work is always up for grabs. A run with one implicit class reads no placement
+state at all: its workers take the head of the queue exactly as they did
+before placement existed.
+
+**What this deliberately does not give:** a fresh re-run of a multi-class
+config is not bit-reproducible for float domains, because which class first
+pulls a given chain depends on scheduling timing. Single-class runs keep full
+per-backend determinism, and exact reproduction of a specific candidate means
+running it on a single-device config. This is the two-tier determinism
+philosophy applied to placement.
 
 ### Definitive failure, clean and resumable
 
@@ -776,6 +845,12 @@ The config file carries the same split the model enforces:
   checkpointing.
   Never hashed — a run resumed with different execution settings keeps its
   id.
+- **`[[execution.device]]`** — one entry per device the run spreads over:
+  `select` names it (a case-insensitive substring of its name, or its exact
+  `vendor:device` hex pair) and `workers` says how many workers it carries.
+  With entries present the pool is their sum, so the top-level `workers` key
+  must be absent; without them it is required. Absent entries leave the
+  device to the backend's own selection.
 
 The structural keys are strict: an unknown key at any level is a validation
 error naming it.
