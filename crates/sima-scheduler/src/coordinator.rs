@@ -454,7 +454,7 @@ mod tests {
 
     #[test]
     fn a_chain_bound_to_an_absent_class_moves_to_a_class_that_is_here() {
-        // A run whose device set no longer holds the chain's class: the work
+        // A run whose devices do not include the chain's class: the work
         // moves rather than stranding, and the decision comes back to be
         // journaled.
         let gone = DeviceClass {

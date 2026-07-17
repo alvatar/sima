@@ -28,8 +28,8 @@ pub(crate) enum Eligibility {
     Run,
     /// The chain is unbound: this worker takes it and binds it.
     Bind,
-    /// The chain is bound to a class the run no longer has: this worker takes
-    /// it and the binding moves.
+    /// The chain is bound to a class absent from the run's devices: this
+    /// worker takes it and the binding moves.
     Rebind,
     /// The chain belongs to another class that is present: leave it be.
     Skip,
@@ -68,7 +68,7 @@ pub(crate) enum ChainPlacement {
     Settled,
     /// The pull bound an unbound chain to the pulling worker's class.
     Bound { chain: u64, to: DeviceClass },
-    /// The pull moved a chain off a class the run no longer has.
+    /// The pull moved a chain off a class absent from the run's devices.
     Rebound {
         chain: u64,
         from: DeviceClass,
@@ -77,8 +77,9 @@ pub(crate) enum ChainPlacement {
 }
 
 /// A chain's binding as it is persisted: the class, in the human-readable
-/// operational world the journal and manifest also live in — never the
-/// canonical identity encoding, which a binding has no business carrying.
+/// operational world the journal and manifest also live in. The canonical
+/// identity encoding is reserved for values that enter a hash, which a
+/// binding never does.
 #[derive(Debug, Serialize, Deserialize)]
 struct ClassSlot {
     vendor_id: u32,

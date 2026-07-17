@@ -724,10 +724,10 @@ there is nothing left to place, so it gets no slot.
 
 **Starvation is bounded, and the price of coherence.** With stickiness, a
 class's workers can idle while another class finishes chains bound to it. The
-bound is (chains in flight on that class × their remaining segments); unbound
-work is always up for grabs. A run with one implicit class reads no placement
-state at all: its workers take the head of the queue exactly as they did
-before placement existed.
+bound is (chains in flight on that class × their remaining segments); an
+unbound chain is available to every class. A run with one implicit class reads
+no placement state at all: its workers take the head of the queue, exactly as
+a run with no placement state does.
 
 **What this deliberately does not give:** a fresh re-run of a multi-class
 config is not bit-reproducible for float domains, because which class first

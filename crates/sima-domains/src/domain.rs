@@ -33,7 +33,7 @@ pub struct Domain {
     ///
     /// Resolved without building an executor, so a worker can report its
     /// device at handshake time while the backend's engine stays lazy. A
-    /// binding no device answers is an error here.
+    /// binding naming a device the machine does not have is an error here.
     pub device_name: fn(Option<&DeviceBinding>) -> Result<String>,
     /// The environment entering every task's identity.
     pub environment: Environment,

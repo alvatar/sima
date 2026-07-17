@@ -148,9 +148,8 @@ pub fn status_block(status: &RunStatus) -> String {
 /// The run's device composition: committed tasks per device, busiest first,
 /// and the chains that moved when their device went absent.
 ///
-/// `None` when the journal names no device — a run whose domain uses none, or
-/// one journaled before workers reported theirs. Nothing is inferred: what is
-/// not in the journal is not printed.
+/// `None` when the journal names no device, as a run whose domain uses none
+/// does. Nothing is inferred: what is not in the journal is not printed.
 fn devices_line(status: &RunStatus) -> Option<String> {
     if status.devices.is_empty() {
         return None;
@@ -274,8 +273,8 @@ mod tests {
 
     #[test]
     fn a_run_that_names_no_device_renders_no_device_line() {
-        // A journal from a run whose domain uses no device, or from before
-        // workers reported theirs: there is nothing truthful to print.
+        // A journal carrying no WorkerBound events, as a run whose domain uses
+        // no device writes: there is nothing truthful to print.
         let block = status_block(&a_status());
         assert!(!block.contains("devices"), "{block}");
     }

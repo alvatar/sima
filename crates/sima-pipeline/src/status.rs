@@ -36,9 +36,9 @@ pub struct RunStatus {
     pub checkpoint_degraded: usize,
     /// Committed tasks per device, by the device name its worker reported.
     /// The run's composition: which hardware actually did the work, joined
-    /// from each commit and the device its worker was bound to. A run whose
-    /// domain uses no device reports none, and so does a journal written
-    /// before workers reported theirs.
+    /// from each commit and the device its worker was bound to. Empty for a
+    /// journal carrying no `WorkerBound` events — a run whose domain uses no
+    /// device names none.
     pub devices: BTreeMap<String, usize>,
     /// Chains whose device class went absent and moved, across the whole
     /// journal.
@@ -573,8 +573,8 @@ mod tests {
 
     #[test]
     fn a_journal_naming_no_device_yields_no_composition() {
-        // A journal written before workers reported their device: the commits
-        // count, and the composition stays empty rather than guessing.
+        // A journal carrying no WorkerBound events: the commits count, and the
+        // composition stays empty rather than guessing.
         let status = folded(vec![started(1), leased("aa", 0, 0), committed("aa")]);
         assert!(status.devices.is_empty());
         assert_eq!(status.committed, 1);
