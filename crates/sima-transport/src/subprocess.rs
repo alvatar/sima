@@ -11,7 +11,7 @@
 
 use std::io::Read;
 use std::num::NonZeroU64;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::thread::JoinHandle;
@@ -86,57 +86,66 @@ pub(crate) fn hello(
 
 impl WorkerTransport for SubprocessTransport {
     fn spawn(&self, device: Option<&DeviceBinding>) -> Result<Box<dyn WorkerLink>> {
-        let mut child = Command::new(&self.program)
-            .args(&self.args)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .spawn()
-            .map_err(|e| {
-                Error::Transport(format!(
-                    "spawning worker {} failed: {e}",
-                    self.program.display()
-                ))
-            })?;
-        // The pipes exist iff the spawn configured them; taking them cannot
-        // fail past a successful spawn.
-        let stdin = child
-            .stdin
-            .take()
-            .ok_or_else(|| Error::Transport("the spawned worker has no piped stdin".to_string()))?;
-        let stdout = child.stdout.take().ok_or_else(|| {
-            Error::Transport("the spawned worker has no piped stdout".to_string())
-        })?;
-        let (sender, events) = channel();
-        let reader = std::thread::spawn(move || read_events(stdout, sender));
-        let mut link = SubprocessLink {
-            child,
-            stdin: Some(stdin),
-            events,
-            reader: Some(reader),
-            device_name: String::new(),
-            driver: String::new(),
-        };
-        // The handshake: Hello out, Ready back. Any other answer — silence
-        // ended by death, a wrong version, an undecodable echo — is a spawn
-        // failure, and the misbehaving child is killed and reaped before the
-        // error returns.
-        let hello = Hello {
-            device: device.copied(),
-            ..self.hello.clone()
-        };
-        match handshake(&mut link, &hello) {
-            Ok((device_name, driver)) => {
-                link.device_name = device_name;
-                link.driver = driver;
-            }
-            Err(e) => {
-                link.kill();
-                return Err(e);
-            }
-        }
-        Ok(Box::new(link))
+        spawn_worker(&self.program, &self.args, &self.hello, device)
     }
+}
+
+/// Spawns `program args...` as a worker child, pipes its stdio, runs the
+/// reader thread, and performs the handshake bound to `device`. The returned
+/// link owns the child; a handshake failure kills and reaps it before the
+/// error returns. Shared by every transport that runs a worker over a local
+/// process — a bare `sima-worker` or a container client wrapping one.
+pub(crate) fn spawn_worker(
+    program: &Path,
+    args: &[String],
+    hello: &Hello,
+    device: Option<&DeviceBinding>,
+) -> Result<Box<dyn WorkerLink>> {
+    let mut child = Command::new(program)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .map_err(|e| Error::Transport(format!("spawning worker {} failed: {e}", program.display())))?;
+    // The pipes exist iff the spawn configured them; taking them cannot
+    // fail past a successful spawn.
+    let stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| Error::Transport("the spawned worker has no piped stdin".to_string()))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| Error::Transport("the spawned worker has no piped stdout".to_string()))?;
+    let (sender, events) = channel();
+    let reader = std::thread::spawn(move || read_events(stdout, sender));
+    let mut link = SubprocessLink {
+        child,
+        stdin: Some(stdin),
+        events,
+        reader: Some(reader),
+        device_name: String::new(),
+        driver: String::new(),
+    };
+    // The handshake: Hello out, Ready back. Any other answer — silence ended
+    // by death, a wrong version, an undecodable echo — is a spawn failure, and
+    // the misbehaving child is killed and reaped before the error returns.
+    let hello = Hello {
+        device: device.copied(),
+        ..hello.clone()
+    };
+    match handshake(&mut link, &hello) {
+        Ok((device_name, driver)) => {
+            link.device_name = device_name;
+            link.driver = driver;
+        }
+        Err(e) => {
+            link.kill();
+            return Err(e);
+        }
+    }
+    Ok(Box::new(link))
 }
 
 /// Performs the parent's half of the handshake over a fresh link, returning
