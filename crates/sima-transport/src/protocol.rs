@@ -18,12 +18,12 @@
 
 use std::io::{Read, Write};
 
-use sima_contracts::{Artifact, Outcome, Stats};
+use sima_contracts::{Artifact, DeviceBinding, Outcome, Stats};
 use sima_core::{Dec, Enc, Error, Result};
 use sima_model::{EnvironmentId, FormatId};
 
 /// Version of the wire protocol; the handshake refuses a mismatch.
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 
 /// Upper bound on a frame payload. A length above it is a protocol error —
 /// the guard against a corrupt length prefix allocating unboundedly.
@@ -47,7 +47,8 @@ const OUTCOME_REJECTED: u8 = 2;
 
 /// The handshake opening, sent once after spawn: the protocol version the
 /// parent speaks, the run's format id — the child resolves its executor from
-/// it, once — and the run's checkpoint cadence settings.
+/// it, once — the run's checkpoint cadence settings, and the device the child
+/// computes on.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Hello {
     /// The parent's [`PROTOCOL_VERSION`]; the child refuses a mismatch.
@@ -59,6 +60,9 @@ pub struct Hello {
     pub checkpoint_interval_ms: u64,
     /// Step-count checkpoint cadence; `0` disables the axis.
     pub checkpoint_interval_steps: u64,
+    /// The device this worker's executor is built for; `None` leaves the
+    /// choice to the execution backend's default selection.
+    pub device: Option<DeviceBinding>,
 }
 
 /// One task handed to the child: the identity-bearing inputs of the attempt
@@ -104,6 +108,11 @@ pub enum ToParent {
     Ready {
         /// The child's [`PROTOCOL_VERSION`].
         protocol: u32,
+        /// The device the child's executor opened, as the execution backend
+        /// reports it; empty for a domain that uses no device. Provenance the
+        /// parent journals verbatim: what the child resolved, never what the
+        /// parent assumed.
+        device_name: String,
     },
     /// A due checkpoint save: the continuation-state payload to persist.
     Save(Vec<u8>),
@@ -127,6 +136,7 @@ impl ToChild {
                     .str(hello.format.as_str())
                     .u64(hello.checkpoint_interval_ms)
                     .u64(hello.checkpoint_interval_steps);
+                opt_device(&mut enc, hello.device.as_ref());
             }
             ToChild::Assign(assignment) => {
                 enc.u8(TAG_ASSIGN)
@@ -154,11 +164,13 @@ impl ToChild {
                 let format = FormatId::new(dec.str()?)?;
                 let checkpoint_interval_ms = dec.u64()?;
                 let checkpoint_interval_steps = dec.u64()?;
+                let device = decode_opt_device(&mut dec)?;
                 ToChild::Hello(Hello {
                     protocol,
                     format,
                     checkpoint_interval_ms,
                     checkpoint_interval_steps,
+                    device,
                 })
             }
             TAG_ASSIGN => {
@@ -202,8 +214,11 @@ impl ToParent {
     pub fn encode(&self) -> Vec<u8> {
         let mut enc = Enc::new();
         match self {
-            ToParent::Ready { protocol } => {
-                enc.u8(TAG_READY).u32(*protocol);
+            ToParent::Ready {
+                protocol,
+                device_name,
+            } => {
+                enc.u8(TAG_READY).u32(*protocol).str(device_name);
             }
             ToParent::Save(payload) => {
                 enc.u8(TAG_SAVE).bytes(payload);
@@ -240,6 +255,7 @@ impl ToParent {
         let message = match dec.u8()? {
             TAG_READY => ToParent::Ready {
                 protocol: dec.u32()?,
+                device_name: dec.str()?.to_string(),
             },
             TAG_SAVE => ToParent::Save(dec.bytes()?.to_vec()),
             TAG_DONE => {
@@ -300,6 +316,36 @@ fn decode_opt_bytes(dec: &mut Dec<'_>) -> Result<Option<Vec<u8>>> {
         1 => Ok(Some(dec.bytes()?.to_vec())),
         flag => Err(Error::Encoding(format!(
             "invalid optional-bytes flag byte {flag}, expected 0 or 1"
+        ))),
+    }
+}
+
+/// Writes a present-flag byte, then the binding's three ids when present.
+fn opt_device(enc: &mut Enc, device: Option<&DeviceBinding>) {
+    match device {
+        None => {
+            enc.u8(0);
+        }
+        Some(device) => {
+            enc.u8(1)
+                .u32(device.vendor_id)
+                .u32(device.device_id)
+                .u32(device.member);
+        }
+    }
+}
+
+/// Reads a present-flag byte (0 or 1), then the binding's ids when present.
+fn decode_opt_device(dec: &mut Dec<'_>) -> Result<Option<DeviceBinding>> {
+    match dec.u8()? {
+        0 => Ok(None),
+        1 => Ok(Some(DeviceBinding {
+            vendor_id: dec.u32()?,
+            device_id: dec.u32()?,
+            member: dec.u32()?,
+        })),
+        flag => Err(Error::Encoding(format!(
+            "invalid optional-device flag byte {flag}, expected 0 or 1"
         ))),
     }
 }
@@ -389,6 +435,18 @@ mod tests {
                 format: FormatId::new("stub.v1").expect("format id"),
                 checkpoint_interval_ms: 250,
                 checkpoint_interval_steps: 0,
+                device: None,
+            }),
+            ToChild::Hello(Hello {
+                protocol: PROTOCOL_VERSION,
+                format: FormatId::new("stub.v1").expect("format id"),
+                checkpoint_interval_ms: u64::MAX,
+                checkpoint_interval_steps: 64,
+                device: Some(DeviceBinding {
+                    vendor_id: 0x10de,
+                    device_id: 0x2d39,
+                    member: 1,
+                }),
             }),
             ToChild::Assign(Assignment {
                 spec: vec![1, 2, 3],
@@ -420,6 +478,12 @@ mod tests {
         vec![
             ToParent::Ready {
                 protocol: PROTOCOL_VERSION,
+                device_name: "NVIDIA RTX PRO 2000 Blackwell Generation Laptop GPU".to_string(),
+            },
+            // A domain that uses no device reports no name.
+            ToParent::Ready {
+                protocol: PROTOCOL_VERSION,
+                device_name: String::new(),
             },
             ToParent::Save(vec![9, 8, 7]),
             ToParent::Save(Vec::new()),
@@ -455,7 +519,7 @@ mod tests {
     fn the_protocol_version_is_pinned() {
         // The handshake contract both binaries compile against; bumping it is
         // a deliberate act.
-        assert_eq!(PROTOCOL_VERSION, 1);
+        assert_eq!(PROTOCOL_VERSION, 2);
     }
 
     #[test]
@@ -578,6 +642,22 @@ mod tests {
             .bytes(&[2])
             .u64(0)
             .hash(&hash_bytes(b"env"));
+        enc.u8(2);
+        assert!(matches!(
+            ToChild::decode(&enc.finish()),
+            Err(Error::Encoding(_))
+        ));
+    }
+
+    #[test]
+    fn an_invalid_device_flag_is_an_encoding_error() {
+        // A Hello whose device present-flag byte is 2.
+        let mut enc = Enc::new();
+        enc.u8(TAG_HELLO)
+            .u32(PROTOCOL_VERSION)
+            .str("stub.v1")
+            .u64(0)
+            .u64(0);
         enc.u8(2);
         assert!(matches!(
             ToChild::decode(&enc.finish()),

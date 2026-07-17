@@ -145,6 +145,19 @@ to determine them and names the rest out of scope. A domain chooses its tier by
 what it puts in the path — controlled code, or a library that trades exact
 reproducibility for capability.
 
+**Device binding is derived operational state, never identity.** A search
+spreads its workers across the machine's GPUs, unequal ones included. Which
+device ran a candidate never enters its identity: the run id encodes no
+device, and the store records what actually happened. Placement is greedy —
+an unbound candidate goes to whichever device class pulls it first, so a
+faster card naturally takes more work — and sticky: once a candidate's chain
+is bound to a class, every segment, retry, and resumed attempt of it runs
+there, so its trajectory stays coherent. A binding moves only when its device
+is gone, and the journal says so; a run never strands because the hardware
+changed. Single-device runs are the per-backend determinism mode above;
+across unequal devices, agreement is the Tier 2 tolerance question, not a
+hash equality.
+
 All randomness in a result-affecting path is derived from a counter-based PRNG
 implemented identically on every substrate; no result path uses a platform RNG.
 

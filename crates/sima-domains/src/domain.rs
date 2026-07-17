@@ -8,7 +8,7 @@
 //! translation of its own `[run.generator]` keys. Both dispatches are static
 //! matches; unknown ids are [`Error::Validation`].
 
-use sima_contracts::{Executor, Generator};
+use sima_contracts::{DeviceBinding, Executor, Generator};
 use sima_core::{Error, Result};
 use sima_model::{Environment, FormatId, GeneratorId, Params};
 
@@ -20,8 +20,21 @@ use crate::domains::{ca_evolution, stub};
 pub struct Domain {
     /// The format this domain interprets.
     pub format: FormatId,
-    /// The executor for the format's specs.
-    pub executor: Box<dyn Executor + Sync>,
+    /// Builds the executor for the format's specs, bound to the given device —
+    /// or, for `None`, to the execution backend's default selection.
+    ///
+    /// A constructor rather than a built executor, because the device is known
+    /// only where execution happens: the parent side reads a domain for its
+    /// environment, params, and stats and never executes, while a worker learns
+    /// its device at handshake time and builds the executor then.
+    pub executor: fn(Option<&DeviceBinding>) -> Result<Box<dyn Executor + Sync>>,
+    /// Names the device the executor built from the same binding computes on,
+    /// empty for a domain that uses no device.
+    ///
+    /// Resolved without building an executor, so a worker can report its
+    /// device at handshake time while the backend's engine stays lazy. A
+    /// binding naming a device the machine does not have is an error here.
+    pub device_name: fn(Option<&DeviceBinding>) -> Result<String>,
     /// The environment entering every task's identity.
     pub environment: Environment,
     /// Renders the domain's executor stats bytes — the observational summary
@@ -145,7 +158,7 @@ mod tests {
         let domain = domain_for(&format("stub.v1"))?;
         assert_eq!(domain.format.as_str(), "stub.v1");
         // The executor answers for the domain's format.
-        assert_eq!(domain.executor.format().as_str(), "stub.v1");
+        assert_eq!((domain.executor)(None)?.format().as_str(), "stub.v1");
         // One environment component: the stub executor's version.
         assert_eq!(domain.environment.components().len(), 1);
         assert_eq!(domain.environment.components()[0].name(), "stub.executor");
@@ -169,7 +182,7 @@ mod tests {
         let domain = domain_for(&format("ca_evolution.gray_scott.v1"))?;
         assert_eq!(domain.format.as_str(), "ca_evolution.gray_scott.v1");
         assert_eq!(
-            domain.executor.format().as_str(),
+            (domain.executor)(None)?.format().as_str(),
             "ca_evolution.gray_scott.v1"
         );
         let names: Vec<&str> = domain
@@ -193,6 +206,42 @@ mod tests {
     fn a_ca_evolution_generator_delegates() -> Result<()> {
         let generator = generator_for(&generator("ca_evolution.gray_scott.v1"))?;
         assert_eq!(generator.id().as_str(), "ca_evolution.gray_scott.v1");
+        Ok(())
+    }
+
+    #[test]
+    fn a_bound_executor_constructs_without_touching_a_device() -> Result<()> {
+        // A GPU domain's construction stays device-free whether or not a device
+        // is named: the engine initializes lazily on the first execute, so this
+        // test — and `orchestrate`, which builds domains before any store
+        // mutation — runs on a machine with no GPU at all. The binding names a
+        // class that need not exist here; nothing resolves it until execute.
+        let binding = DeviceBinding {
+            vendor_id: 0xdead,
+            device_id: 0xbeef,
+            member: 0,
+        };
+        let domain = domain_for(&format("ca_evolution.gray_scott.v1"))?;
+        assert_eq!(
+            (domain.executor)(Some(&binding))?.format().as_str(),
+            "ca_evolution.gray_scott.v1"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn the_stub_executor_ignores_the_binding() -> Result<()> {
+        // The stub uses no device, so a binding changes nothing about it.
+        let binding = DeviceBinding {
+            vendor_id: 0x8086,
+            device_id: 0x7d51,
+            member: 0,
+        };
+        let domain = domain_for(&format("stub.v1"))?;
+        assert_eq!(
+            (domain.executor)(Some(&binding))?.format().as_str(),
+            "stub.v1"
+        );
         Ok(())
     }
 }

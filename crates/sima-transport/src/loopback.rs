@@ -16,23 +16,26 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use sima_contracts::Executor;
+use sima_contracts::{DeviceBinding, Executor};
 use sima_core::{Error, Result};
 use sima_model::FormatId;
 
 use crate::host;
 use crate::link::{LinkEvent, WorkerLink, WorkerTransport};
-use crate::protocol::{Assignment, Hello, PROTOCOL_VERSION, ToChild, ToParent, write_frame};
+use crate::protocol::{Assignment, Hello, ToChild, ToParent, write_frame};
 use crate::subprocess::{self, next_event, read_events};
 
-/// A resolver the loopback moves into each host thread.
-pub type Resolver = Arc<dyn Fn(&FormatId) -> Result<Box<dyn Executor>> + Send + Sync>;
+/// A [`host::Resolver`] the loopback shares across its host threads: one
+/// transport spawns many, each moving in a handle of its own.
+pub type SharedResolver = Arc<
+    dyn Fn(&FormatId, Option<&DeviceBinding>) -> Result<(Box<dyn Executor>, String)> + Send + Sync,
+>;
 
 /// Spawns in-process workers: each is a thread running the real host loop
 /// over in-memory pipes, hosting the executor the resolver supplies.
 pub struct LoopbackTransport {
     hello: Hello,
-    resolver: Resolver,
+    resolver: SharedResolver,
 }
 
 impl LoopbackTransport {
@@ -42,7 +45,7 @@ impl LoopbackTransport {
         format: FormatId,
         checkpoint_interval: Duration,
         checkpoint_interval_steps: Option<NonZeroU64>,
-        resolver: Resolver,
+        resolver: SharedResolver,
     ) -> LoopbackTransport {
         LoopbackTransport {
             hello: subprocess::hello(format, checkpoint_interval, checkpoint_interval_steps),
@@ -52,7 +55,7 @@ impl LoopbackTransport {
 }
 
 impl WorkerTransport for LoopbackTransport {
-    fn spawn(&self) -> Result<Box<dyn WorkerLink>> {
+    fn spawn(&self, device: Option<&DeviceBinding>) -> Result<Box<dyn WorkerLink>> {
         let (mut stdin, host_reader) = pipe();
         let (host_writer, stdout) = pipe();
         let resolver = self.resolver.clone();
@@ -65,26 +68,18 @@ impl WorkerTransport for LoopbackTransport {
         let (sender, events) = channel();
         let reader = std::thread::spawn(move || read_events(stdout, sender));
         // The handshake, over the real wire protocol.
-        write_frame(&mut stdin, &ToChild::Hello(self.hello.clone()).encode())?;
-        match events.recv() {
-            Ok(Ok(ToParent::Ready { protocol })) if protocol == PROTOCOL_VERSION => {}
-            Ok(Ok(other)) => {
-                return Err(Error::Transport(format!(
-                    "expected Ready from the loopback host, got {other:?}"
-                )));
-            }
-            Ok(Err(e)) => return Err(e),
-            Err(_) => {
-                return Err(Error::Transport(
-                    "the loopback host exited before completing the handshake".to_string(),
-                ));
-            }
-        }
+        let hello = Hello {
+            device: device.copied(),
+            ..self.hello.clone()
+        };
+        write_frame(&mut stdin, &ToChild::Hello(hello).encode())?;
+        let device_name = subprocess::ready_device("loopback host", events.recv().ok())?;
         Ok(Box::new(LoopbackLink {
             stdin: Some(stdin),
             events,
             host: Some(host),
             reader: Some(reader),
+            device_name,
         }))
     }
 }
@@ -97,9 +92,15 @@ struct LoopbackLink {
     events: Receiver<Result<ToParent>>,
     host: Option<JoinHandle<()>>,
     reader: Option<JoinHandle<()>>,
+    /// The device the host reported at the handshake.
+    device_name: String,
 }
 
 impl WorkerLink for LoopbackLink {
+    fn device_name(&self) -> &str {
+        &self.device_name
+    }
+
     fn assign(&mut self, assignment: &Assignment) -> Result<()> {
         let stdin = self.stdin.as_mut().ok_or_else(|| {
             Error::Transport("the loopback host's stdin is already closed".to_string())
@@ -188,6 +189,8 @@ impl Read for PipeReader {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
+
     use sima_contracts::Outcome;
     use sima_core::hash_bytes;
     use sima_domains::{StubBehavior, StubExecutor, StubProgram, StubState};
@@ -196,13 +199,16 @@ mod tests {
     use super::*;
 
     /// A loopback transport hosting the stub executor under the given step
-    /// cadence.
+    /// cadence. The stub uses no device, so it reports no device name.
     fn stub_transport(steps: Option<NonZeroU64>) -> LoopbackTransport {
         LoopbackTransport::new(
             FormatId::new("stub.v1").expect("format id"),
             Duration::MAX,
             steps,
-            Arc::new(|_| Ok(Box::new(StubExecutor::new()?))),
+            Arc::new(|_, _| {
+                let executor: Box<dyn Executor> = Box::new(StubExecutor::new()?);
+                Ok((executor, String::new()))
+            }),
         )
     }
 
@@ -221,6 +227,65 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_host_speaking_another_version_is_refused_as_a_mismatch() {
+        // Every transport refuses a version mismatch the same way, and says
+        // which two versions disagree rather than reporting an unexpected
+        // message.
+        let error = subprocess::ready_device(
+            "loopback host",
+            Some(Ok(ToParent::Ready {
+                protocol: crate::protocol::PROTOCOL_VERSION - 1,
+                device_name: String::new(),
+            })),
+        )
+        .expect_err("a host at another version");
+        let Error::Transport(message) = error else {
+            panic!("expected a transport error");
+        };
+        assert!(
+            message.contains("loopback host protocol version mismatch"),
+            "{message}"
+        );
+        assert!(message.contains("loopback host speaks"), "{message}");
+    }
+
+    #[test]
+    fn a_spawn_binding_reaches_the_resolver() -> Result<()> {
+        // The loopback's executors ignore the binding; what it proves is that
+        // the parameter travels the real handshake to the host's resolver.
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let recorder = Arc::clone(&seen);
+        let transport = LoopbackTransport::new(
+            FormatId::new("stub.v1")?,
+            Duration::MAX,
+            None,
+            Arc::new(move |_, device: Option<&DeviceBinding>| {
+                recorder
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(device.copied());
+                let executor: Box<dyn Executor> = Box::new(StubExecutor::new()?);
+                Ok((executor, "loopback device".to_string()))
+            }),
+        );
+        let binding = DeviceBinding {
+            vendor_id: 0x8086,
+            device_id: 0x7d51,
+            member: 0,
+        };
+        // The handshake completes inside spawn, so the resolver has already run.
+        let link = transport.spawn(Some(&binding))?;
+        assert_eq!(link.device_name(), "loopback device");
+        assert_eq!(
+            *seen
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            vec![Some(binding)]
+        );
+        Ok(())
+    }
+
     /// The stub trajectory from `{step: 0, acc: seed}` through `steps` steps.
     fn folded_state(seed: u64, steps: u64) -> StubState {
         let mut state = StubState { step: 0, acc: seed };
@@ -236,7 +301,7 @@ mod tests {
         // Three accumulate steps under a save-every-offer cadence: the link
         // yields the three saves in step order, then the outcome.
         let transport = stub_transport(NonZeroU64::new(1));
-        let mut link = transport.spawn()?;
+        let mut link = transport.spawn(None)?;
         link.assign(&assignment(StubBehavior::Accumulate(3), true))?;
         for step in 1..=3u64 {
             match link.next(None)? {
@@ -259,7 +324,7 @@ mod tests {
     fn the_same_link_executes_a_second_task() -> Result<()> {
         // The worker is long-lived: one link, two assignments, two outcomes.
         let transport = stub_transport(None);
-        let mut link = transport.spawn()?;
+        let mut link = transport.spawn(None)?;
         for _ in 0..2 {
             link.assign(&assignment(StubBehavior::Succeed, false))?;
             match link.next(None)? {
@@ -273,7 +338,7 @@ mod tests {
     #[test]
     fn a_deadline_expiry_consumes_nothing_and_the_outcome_still_arrives() -> Result<()> {
         let transport = stub_transport(None);
-        let mut link = transport.spawn()?;
+        let mut link = transport.spawn(None)?;
         link.assign(&assignment(StubBehavior::Sleep(300), false))?;
         // The deadline lands mid-sleep: expiry, with nothing consumed.
         match link.next(Some(Instant::now() + Duration::from_millis(30)))? {
@@ -291,7 +356,7 @@ mod tests {
     #[test]
     fn a_panicking_executor_surfaces_panicked() -> Result<()> {
         let transport = stub_transport(None);
-        let mut link = transport.spawn()?;
+        let mut link = transport.spawn(None)?;
         link.assign(&assignment(StubBehavior::Panic, false))?;
         match link.next(None)? {
             LinkEvent::Panicked(reason) => {
@@ -305,7 +370,7 @@ mod tests {
     #[test]
     fn a_kill_ends_the_event_stream_with_died() -> Result<()> {
         let transport = stub_transport(None);
-        let mut link = transport.spawn()?;
+        let mut link = transport.spawn(None)?;
         // The kill closes the host's stdin; the host exits, its writer drops,
         // and the event stream ends — the same signal a dead process leaves.
         link.kill();
@@ -319,7 +384,7 @@ mod tests {
     #[test]
     fn assigning_to_a_killed_worker_is_an_error() -> Result<()> {
         let transport = stub_transport(None);
-        let mut link = transport.spawn()?;
+        let mut link = transport.spawn(None)?;
         link.kill();
         assert!(
             link.assign(&assignment(StubBehavior::Succeed, false))

@@ -8,14 +8,23 @@
 //! this binary only wires the streams, the domain resolver, and the exit
 //! code, plus the orphan protection.
 
-use sima_contracts::Executor;
+use sima_contracts::{DeviceBinding, Executor};
 use sima_core::Result;
 use sima_model::FormatId;
 
 /// Resolves the executor for the handshake's format id through the domain
-/// registry.
-fn resolver(format: &FormatId) -> Result<Box<dyn Executor>> {
-    Ok(sima_domains::domain_for(format)?.executor)
+/// registry, bound to the handshake's device, and names the device it opened.
+///
+/// Both happen here, before the parent is told the worker is ready, so a
+/// binding naming a device this machine does not have fails the handshake.
+fn resolver(
+    format: &FormatId,
+    device: Option<&DeviceBinding>,
+) -> Result<(Box<dyn Executor>, String)> {
+    let domain = sima_domains::domain_for(format)?;
+    let executor = (domain.executor)(device)?;
+    let device_name = (domain.device_name)(device)?;
+    Ok((executor, device_name))
 }
 
 /// Exit codes: 0 on the parent closing the pipe (clean end-of-stream), 1

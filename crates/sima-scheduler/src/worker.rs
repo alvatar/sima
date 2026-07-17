@@ -16,7 +16,7 @@
 use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant};
 
-use sima_contracts::{Artifact, Outcome, WorkerId};
+use sima_contracts::{Artifact, DeviceBinding, Outcome, WorkerId};
 use sima_core::{Error, Hash, Result, to_hex};
 use sima_model::{ArtifactRef, RunConfig, RunId, TaskIdentity, TaskKey, TaskRecord};
 use sima_store::Store;
@@ -27,6 +27,7 @@ use crate::config::ExecutionConfig;
 use crate::coordinator::{Coordinator, Pending, RunState};
 use crate::event::LifecycleEvent;
 use crate::journal_sink::emit;
+use crate::placement::{self, ChainPlacement};
 use crate::task_source::RunnableTask;
 
 /// The run-wide context one worker borrows for its whole life: the shared
@@ -41,6 +42,9 @@ pub(crate) struct WorkerContext<'a> {
     pub(crate) config: &'a RunConfig,
     pub(crate) transport: &'a dyn WorkerTransport,
     pub(crate) exec: &'a ExecutionConfig,
+    /// The device this slot's children compute on; `None` leaves the choice to
+    /// the backend's default selection, the single-class case.
+    pub(crate) device: Option<DeviceBinding>,
     pub(crate) events: Sender<LifecycleEvent>,
 }
 
@@ -51,11 +55,19 @@ pub(crate) struct WorkerContext<'a> {
 /// the child exits on end-of-stream, and the parent reaps it.
 pub(crate) fn worker_loop(worker: WorkerId, ctx: WorkerContext<'_>) {
     // A worker that cannot spawn its child cannot take work: the run faults.
-    let mut link = match ctx.transport.spawn() {
+    let mut link = match spawn_bound(&ctx, worker) {
         Ok(link) => link,
         Err(e) => return ctx.coordinator.fault_run(e),
     };
-    while let Some(pending) = ctx.coordinator.next_task() {
+    while let Some(leased) = ctx.coordinator.next_task(ctx.device.map(|d| d.class())) {
+        // The pull's placement decision reaches the store and the journal
+        // before the assignment goes out, so a chain's binding is durable
+        // before any work runs under it.
+        if let Err(e) = record_placement(&ctx, &leased.placement) {
+            ctx.coordinator.fault(leased.pending.key, e);
+            break;
+        }
+        let pending = leased.pending;
         // A panic escaping process() — the commit path, a store read, the
         // settle code — would leak the task's lease, and drive() would then
         // block forever on leases.is_empty() inside thread::scope, which
@@ -78,7 +90,7 @@ pub(crate) fn worker_loop(worker: WorkerId, ctx: WorkerContext<'_>) {
                 // Kill is idempotent: a child already dead is reaped, one
                 // still dying is finished off, before the replacement spawns.
                 link.kill();
-                link = match ctx.transport.spawn() {
+                link = match spawn_bound(&ctx, worker) {
                     Ok(link) => link,
                     Err(e) => return ctx.coordinator.fault_run(e),
                 };
@@ -86,6 +98,53 @@ pub(crate) fn worker_loop(worker: WorkerId, ctx: WorkerContext<'_>) {
             // The run is winding down; the child was killed and no
             // replacement is owed — next_task would return None.
             ChildState::WindingDown => break,
+        }
+    }
+}
+
+/// Spawns this slot's child on its device and journals the device the child
+/// reports, at every spawn and respawn.
+///
+/// The event carries the child's own answer, so the journal records where the
+/// work actually ran rather than what the parent asked for.
+fn spawn_bound<'a>(ctx: &WorkerContext<'a>, worker: WorkerId) -> Result<Box<dyn WorkerLink + 'a>> {
+    let link = ctx.transport.spawn(ctx.device.as_ref())?;
+    emit(
+        &ctx.events,
+        LifecycleEvent::WorkerBound {
+            worker: worker.0,
+            device: link.device_name().to_string(),
+        },
+    );
+    Ok(link)
+}
+
+/// Persists and journals what a pull decided about its chain's placement.
+///
+/// A failed slot write is a store fault: the run stops on it like any other.
+/// The binding is durable before the assignment goes out, so a chain that ran
+/// on a class resumes there.
+fn record_placement(ctx: &WorkerContext<'_>, placement: &ChainPlacement) -> Result<()> {
+    match placement {
+        ChainPlacement::Settled => Ok(()),
+        ChainPlacement::Bound { chain, to } => {
+            ctx.store
+                .bind_chain(&ctx.run, *chain, &placement::encode_class(*to)?)
+        }
+        ChainPlacement::Rebound { chain, from, to } => {
+            ctx.store
+                .bind_chain(&ctx.run, *chain, &placement::encode_class(*to)?)?;
+            // The rebind is loud: the hardware changed under a running search,
+            // and the journal is where that shows.
+            emit(
+                &ctx.events,
+                LifecycleEvent::ChainRebound {
+                    chain: *chain,
+                    from: from.to_string(),
+                    to: to.to_string(),
+                },
+            );
+            Ok(())
         }
     }
 }
@@ -557,7 +616,11 @@ mod tests {
             FormatId::new("stub.v1").expect("format id"),
             exec.checkpoint_interval,
             exec.checkpoint_interval_steps,
-            Arc::new(|_| Ok(Box::new(StubExecutor::new()?) as Box<dyn Executor>)),
+            // The stub uses no device: it ignores the binding and names none.
+            Arc::new(|_, _| {
+                let executor: Box<dyn Executor> = Box::new(StubExecutor::new()?);
+                Ok((executor, String::new()))
+            }),
         )
     }
 
@@ -691,6 +754,7 @@ mod tests {
                 config: &config,
                 transport: &transport,
                 exec: &exec,
+                device: None,
                 events: tx,
             };
             let pending = Pending {
@@ -702,7 +766,7 @@ mod tests {
                 },
                 attempt: 0,
             };
-            let mut link = transport.spawn()?;
+            let mut link = transport.spawn(None)?;
             process(&ctx, WorkerId(0), pending, link.as_mut());
         }
         let events = rx.into_iter().collect();
@@ -832,6 +896,7 @@ mod tests {
                     config: &self.config,
                     transport: &transport,
                     exec: &exec,
+                    device: None,
                     events: tx,
                 };
                 let pending = Pending {
@@ -843,7 +908,7 @@ mod tests {
                     },
                     attempt: 1,
                 };
-                let mut link = transport.spawn()?;
+                let mut link = transport.spawn(None)?;
                 process(&ctx, WorkerId(0), pending, link.as_mut());
             }
             Ok(rx.into_iter().collect())

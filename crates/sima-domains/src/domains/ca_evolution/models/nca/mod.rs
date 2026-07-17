@@ -233,7 +233,7 @@ mod tests {
         fn repeated_runs_are_byte_identical() {
             // The async mask is deterministic in (seed, cell, step), so two runs
             // of the same task commit byte-identical framed states.
-            let exec = CaExecutor::<Nca>::new().expect("executor");
+            let exec = CaExecutor::<Nca>::new(None).expect("executor");
             let (spec, params) = (spec(0.5), params(50));
             let first = run_state(&exec, &spec, &params, None);
             let second = run_state(&exec, &spec, &params, None);
@@ -248,7 +248,7 @@ mod tests {
             // step makes the committed state a complete continuation, so B is
             // byte-identical to C: splitting the trajectory at a segment boundary
             // changes nothing.
-            let exec = CaExecutor::<Nca>::new().expect("executor");
+            let exec = CaExecutor::<Nca>::new(None).expect("executor");
             let spec = spec(0.5);
             let a = run_state(&exec, &spec, &params(50), None);
             let b = run_state(&exec, &spec, &params(50), Some(&a));
@@ -270,7 +270,7 @@ mod tests {
             // A small scale keeps the residual dynamics bounded over a few steps,
             // so every committed value is finite; the framed step equals the step
             // count over an 8-channel grid.
-            let exec = CaExecutor::<Nca>::new().expect("executor");
+            let exec = CaExecutor::<Nca>::new(None).expect("executor");
             let steps = 8;
             let bytes = run_state(&exec, &spec(0.02), &params(steps), None);
             let (step, grid) = framed(&bytes);
@@ -290,7 +290,7 @@ mod tests {
             // A stepped model decodes its input state as (step, grid); a buffer
             // too short for even the eight-byte step header is Validation before
             // any GPU work.
-            let exec = CaExecutor::<Nca>::new().expect("executor");
+            let exec = CaExecutor::<Nca>::new(None).expect("executor");
             let (spec, params) = (spec(0.5), params(50));
             match exec.execute(
                 &input(&spec, &params, Some(&[0u8; 4])),
@@ -310,7 +310,7 @@ mod tests {
             // A well-framed state whose grid is 8x8x8 against 32x32 run params:
             // the header decodes, the grid dimensions do not match, and the error
             // names both triples before any GPU work.
-            let exec = CaExecutor::<Nca>::new().expect("executor");
+            let exec = CaExecutor::<Nca>::new(None).expect("executor");
             let (spec, params) = (spec(0.5), params(50));
             let wrong =
                 encode_continuation(0, &Grid::new(8, 8, 8, vec![0.0; 8 * 8 * 8]).expect("grid"));

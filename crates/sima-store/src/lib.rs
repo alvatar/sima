@@ -12,6 +12,7 @@
 //! <root>/runs/<run-id-hex>/journal
 //! <root>/runs/<run-id-hex>/orchestrator.lock
 //! <root>/runs/<run-id-hex>/checkpoint/<slot>   mutable resume scratch
+//! <root>/runs/<run-id-hex>/placement/<chain>   mutable chain device binding
 //! ```
 //!
 //! Every durable file is placed atomically — full content to `tmp/`,
@@ -31,6 +32,7 @@ mod journal;
 mod layout;
 mod lock;
 mod manifest;
+mod placement;
 mod retention;
 mod store;
 #[cfg(test)]

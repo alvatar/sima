@@ -18,16 +18,29 @@
 //!
 //! [execution]               # operational — never hashed
 //! store = "./store"         # resolved relative to this file's directory
-//! workers = 4
+//! workers = 4               # required, unless [[execution.device]] is used
 //! max_attempts = 3
 //! attempt_timeout_ms = 5000 # optional; absent disables the attempt deadline
 //! checkpoint_interval_ms = 30000 # optional; wall-clock checkpoint cadence
 //! checkpoint_interval_steps = 100 # optional; step-count cadence, >= 1
+//!
+//! [[execution.device]]      # optional; absent = the backend's own choice
+//! select = "nvidia"         # case-insensitive substring of the device name,
+//! workers = 3               # or its exact "vendor:device" hex pair
+//!
+//! [[execution.device]]
+//! select = "8086:7d67"
+//! workers = 1
 //! ```
 //!
 //! The two checkpoint cadences are unioned: a save is due when either fires,
 //! and either present enables checkpointing. With both absent, no checkpoint
 //! is ever written.
+//!
+//! With `[[execution.device]]` entries the pool is their sum, so the top-level
+//! `workers` key must be absent; without them it is required. Each `select`
+//! must name exactly one device, resolved against the machine's hardware when
+//! a run starts — never at load, so reading a config needs no GPU.
 //!
 //! The `[run]` section is canonicalized into [`RunConfig`], so its fields
 //! define the run id; `[execution]` is operational and never hashed — a run
@@ -48,6 +61,8 @@ use sima_domains::{generator_params_for, params_for};
 use sima_model::{FormatId, GeneratorConfig, GeneratorId, RunConfig};
 use sima_scheduler::ExecutionConfig;
 
+use crate::devices::DeviceSelector;
+
 /// A `sima.toml`, loaded and translated: the identity-bearing
 /// [`RunConfig`], the operational [`ExecutionConfig`], and the store path
 /// resolved relative to the config file.
@@ -55,8 +70,12 @@ use sima_scheduler::ExecutionConfig;
 pub struct LoadedConfig {
     /// The identity section, canonicalized; its id is the run id.
     pub run: RunConfig,
-    /// The execution section; never hashed.
+    /// The execution section; never hashed. Its device entries are empty here:
+    /// a selector names real hardware, so it resolves where the run starts.
     pub execution: ExecutionConfig,
+    /// The devices the run asked for, unresolved. Empty means the run takes
+    /// the backend's default selection.
+    pub devices: Vec<DeviceSelector>,
     /// The store path, resolved against the config file's directory.
     pub store: PathBuf,
 }
@@ -102,11 +121,24 @@ struct GeneratorSection {
 #[serde(deny_unknown_fields)]
 struct ExecutionSection {
     store: String,
-    workers: usize,
+    /// The pool size, required unless `[[execution.device]]` entries carry it.
+    workers: Option<usize>,
     max_attempts: u32,
     attempt_timeout_ms: Option<u64>,
     checkpoint_interval_ms: Option<u64>,
     checkpoint_interval_steps: Option<u64>,
+    /// The `[[execution.device]]` entries; absent means the run takes the
+    /// backend's default device selection.
+    #[serde(default)]
+    device: Vec<DeviceSection>,
+}
+
+/// One `[[execution.device]]` entry: which device, and how many workers on it.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DeviceSection {
+    select: String,
+    workers: usize,
 }
 
 /// Loads and translates the `sima.toml` at `path`. Parse errors, unknown
@@ -183,13 +215,44 @@ pub fn load(path: &Path) -> Result<LoadedConfig> {
             })
         })
         .transpose()?;
+    // The pool size comes from one place or the other, never both: with device
+    // entries the pool is their sum, so a top-level count could only disagree
+    // with it.
+    let workers = match (file.execution.workers, file.execution.device.is_empty()) {
+        (Some(_), false) => {
+            return Err(Error::Validation(format!(
+                "{}: execution.workers and [[execution.device]] cannot both be set; \
+                 the device entries carry the workers",
+                path.display()
+            )));
+        }
+        (None, true) => {
+            return Err(Error::Validation(format!(
+                "{}: execution.workers is required without [[execution.device]] entries",
+                path.display()
+            )));
+        }
+        (Some(workers), true) => workers,
+        (None, false) => file.execution.device.iter().map(|d| d.workers).sum(),
+    };
     let execution = ExecutionConfig::new(
-        file.execution.workers,
+        workers,
         file.execution.max_attempts,
         attempt_timeout,
         checkpoint_interval,
         checkpoint_interval_steps,
     )?;
+    // The selectors stay unresolved: they name real hardware, and loading a
+    // config must work where none is present.
+    let devices: Vec<DeviceSelector> = file
+        .execution
+        .device
+        .into_iter()
+        .map(|entry| DeviceSelector {
+            select: entry.select,
+            workers: entry.workers,
+        })
+        .collect();
 
     // Relative to the config file's directory, never the working directory;
     // join leaves an absolute path as written.
@@ -199,6 +262,7 @@ pub fn load(path: &Path) -> Result<LoadedConfig> {
     Ok(LoadedConfig {
         run,
         execution,
+        devices,
         store,
     })
 }
@@ -245,6 +309,131 @@ mod tests {
     /// The run id `text` loads to.
     fn id_of(text: &str) -> RunId {
         load_text(text).expect("config loads").run.id()
+    }
+
+    /// The reference schema without a top-level `workers`, for the configs that
+    /// carry `[[execution.device]]` entries instead.
+    const DEVICE_BASE: &str = r#"
+        [run]
+        root_seed = 42
+        format = "stub.v1"
+
+        [run.generator]
+        id = "stub.v1"
+        behaviors = ["succeed"]
+
+        [execution]
+        store = "./store"
+        max_attempts = 3
+    "#;
+
+    #[test]
+    fn device_entries_load_as_unresolved_selectors() -> Result<()> {
+        let loaded = load_text(&format!(
+            r#"{DEVICE_BASE}
+            [[execution.device]]
+            select = "nvidia"
+            workers = 3
+
+            [[execution.device]]
+            select = "8086:7d67"
+            workers = 1
+            "#
+        ))?;
+        assert_eq!(
+            loaded.devices,
+            vec![
+                DeviceSelector {
+                    select: "nvidia".to_string(),
+                    workers: 3,
+                },
+                DeviceSelector {
+                    select: "8086:7d67".to_string(),
+                    workers: 1,
+                },
+            ]
+        );
+        // The pool is the entries' sum; the classes resolve at run start, so
+        // the loaded settings name no device yet.
+        assert_eq!(loaded.execution.workers, 4);
+        assert!(loaded.execution.devices.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn a_config_without_device_entries_asks_for_no_device() -> Result<()> {
+        let loaded = load_text(BASE)?;
+        assert!(loaded.devices.is_empty());
+        assert_eq!(loaded.execution.workers, 4);
+        Ok(())
+    }
+
+    #[test]
+    fn workers_and_device_entries_may_not_both_be_set() {
+        let error = load_text(&format!(
+            r#"{BASE}
+            [[execution.device]]
+            select = "nvidia"
+            workers = 3
+            "#
+        ))
+        .expect_err("the pool would have two sizes");
+        let Err(Error::Validation(message)) = Err::<(), _>(error) else {
+            panic!("expected a validation error");
+        };
+        assert!(message.contains("execution.workers"), "{message}");
+        assert!(message.contains("execution.device"), "{message}");
+    }
+
+    #[test]
+    fn workers_is_required_without_device_entries() {
+        let error = load_text(DEVICE_BASE).expect_err("no pool size anywhere");
+        let Err(Error::Validation(message)) = Err::<(), _>(error) else {
+            panic!("expected a validation error");
+        };
+        assert!(message.contains("execution.workers"), "{message}");
+    }
+
+    #[test]
+    fn a_device_entry_rejects_an_unknown_key() {
+        let error = load_text(&format!(
+            r#"{DEVICE_BASE}
+            [[execution.device]]
+            select = "nvidia"
+            workers = 3
+            member = 1
+            "#
+        ))
+        .expect_err("device entries are strict");
+        assert!(matches!(error, Error::Validation(_)));
+    }
+
+    #[test]
+    fn device_entries_never_enter_run_identity() {
+        // `[execution]` is operational: one `[run]` section is one run,
+        // whether its workers sit on one device or spread over two.
+        let one_device = id_of(&format!(
+            r#"{DEVICE_BASE}
+            [[execution.device]]
+            select = "nvidia"
+            workers = 4
+            "#
+        ));
+        let two_devices = id_of(&format!(
+            r#"{DEVICE_BASE}
+            [[execution.device]]
+            select = "nvidia"
+            workers = 3
+
+            [[execution.device]]
+            select = "intel"
+            workers = 1
+            "#
+        ));
+        assert_eq!(one_device, two_devices);
+        // And the same run with a plain worker count is still that run.
+        let no_devices = id_of(&format!("{DEVICE_BASE}\nworkers = 4\n"));
+        assert_eq!(one_device, no_devices);
     }
 
     #[test]

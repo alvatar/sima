@@ -4,10 +4,12 @@
 //! so the unused-in-one-binary warnings are expected and silenced here.
 #![allow(dead_code)]
 
+use std::collections::HashMap;
+use std::num::NonZeroU64;
 use std::sync::Arc;
 use std::time::Duration;
 
-use sima_contracts::Executor;
+use sima_contracts::{DeviceClass, Executor};
 use sima_core::Result;
 use sima_domains::{StubBehavior, StubExecutor, StubGenerator, StubGeneratorConfig};
 use sima_model::{
@@ -15,10 +17,11 @@ use sima_model::{
     Params, RunConfig, RunId, TaskKey,
 };
 use sima_scheduler::{
-    ExecutionConfig, LifecycleEvent, RunControl, RunOutcome, StaticBatch, TaskSource, run,
+    DeviceEntry, ExecutionConfig, LifecycleEvent, RunControl, RunOutcome, StaticBatch, TaskSource,
+    run,
 };
 use sima_store::Store;
-use sima_transport::loopback::{LoopbackTransport, Resolver};
+use sima_transport::loopback::{LoopbackTransport, SharedResolver};
 
 /// A one-component stub environment, standing in for real execution identity.
 pub fn environment() -> Environment {
@@ -27,6 +30,15 @@ pub fn environment() -> Environment {
             .expect("environment component"),
     ])
     .expect("environment")
+}
+
+/// A run config whose stub generator programs `behaviors`, under `root_seed`,
+/// dividing each candidate's evaluation into `segments` chained tasks.
+pub fn chained_config(root_seed: u64, behaviors: Vec<StubBehavior>, segments: u64) -> RunConfig {
+    RunConfig {
+        segments: NonZeroU64::new(segments),
+        ..config(root_seed, behaviors)
+    }
 }
 
 /// A run config whose stub generator programs `behaviors`, under `root_seed`.
@@ -50,6 +62,31 @@ pub fn exec(workers: usize, max_attempts: u32, timeout_ms: u64) -> ExecutionConf
     exec_with_timeout(workers, max_attempts, Duration::from_millis(timeout_ms))
 }
 
+/// A device class named by its vendor id; the device id is fixed, so a test
+/// names a class with one number.
+pub fn class(vendor_id: u32) -> DeviceClass {
+    DeviceClass {
+        vendor_id,
+        device_id: 0x0001,
+    }
+}
+
+/// A resolved device entry: `workers` workers on one single-card class.
+pub fn device(vendor_id: u32, workers: usize) -> DeviceEntry {
+    DeviceEntry {
+        class: class(vendor_id),
+        name: class(vendor_id).to_string(),
+        workers,
+        members: 1,
+    }
+}
+
+/// A validated execution config whose pool is spread over `devices`.
+pub fn exec_over(devices: Vec<DeviceEntry>, max_attempts: u32) -> ExecutionConfig {
+    ExecutionConfig::with_devices(devices, max_attempts, Duration::MAX, Duration::MAX, None)
+        .expect("execution config")
+}
+
 /// A validated execution config with an explicit attempt timeout, for tests
 /// that need a duration outside the millisecond range such as `Duration::MAX`.
 pub fn exec_with_timeout(workers: usize, max_attempts: u32, timeout: Duration) -> ExecutionConfig {
@@ -65,16 +102,77 @@ pub fn temp_store() -> (tempfile::TempDir, Store) {
     (dir, store)
 }
 
-/// The stub-executor resolver for the loopback transport.
-pub fn stub_resolver() -> Resolver {
-    Arc::new(|_| Ok(Box::new(StubExecutor::new()?) as Box<dyn Executor>))
+/// The stub-executor resolver for the loopback transport. The stub uses no
+/// device, so it ignores the binding and names none.
+pub fn stub_resolver() -> SharedResolver {
+    Arc::new(|_, _| {
+        let executor: Box<dyn Executor> = Box::new(StubExecutor::new()?);
+        Ok((executor, String::new()))
+    })
+}
+
+/// A stub-executor resolver that names the device it was handed, so a test can
+/// read back which class ran a task through the journal's `WorkerBound`
+/// events. The executor itself is the plain stub: the binding says where to
+/// compute, and the stub computes the same wherever it is.
+pub fn device_naming_resolver() -> SharedResolver {
+    Arc::new(|_, device| {
+        let executor: Box<dyn Executor> = Box::new(StubExecutor::new()?);
+        let name = match device {
+            Some(device) => format!("{} #{}", device.class(), device.member),
+            None => String::new(),
+        };
+        Ok((executor, name))
+    })
+}
+
+/// The class part of a name [`device_naming_resolver`] produced.
+pub fn named_class(device: &str) -> &str {
+    device
+        .split(" #")
+        .next()
+        .expect("split yields a first part")
+}
+
+/// The device each worker last reported, from the run's `WorkerBound` events.
+pub fn worker_devices(events: &[LifecycleEvent]) -> HashMap<u64, String> {
+    let mut devices = HashMap::new();
+    for event in events {
+        if let LifecycleEvent::WorkerBound { worker, device } = event {
+            devices.insert(*worker, device.clone());
+        }
+    }
+    devices
+}
+
+/// The classes that leased each task, in lease order: the join of `Leased`
+/// with the leasing worker's device.
+pub fn task_classes(events: &[LifecycleEvent]) -> HashMap<String, Vec<String>> {
+    let devices = worker_devices(events);
+    let mut classes: HashMap<String, Vec<String>> = HashMap::new();
+    for event in events {
+        if let LifecycleEvent::Leased { task, worker, .. } = event {
+            let device = devices
+                .get(worker)
+                .expect("a worker reports before it leases");
+            classes
+                .entry(task.clone())
+                .or_default()
+                .push(named_class(device).to_string());
+        }
+    }
+    classes
 }
 
 /// A loopback transport hosting `resolver`'s executor for `cfg`'s format
 /// under `exec`'s checkpoint cadence: the real wire protocol and host loop
 /// over in-memory pipes, so these tests run the full scheduler without
 /// processes.
-fn loopback(cfg: &RunConfig, exec: &ExecutionConfig, resolver: Resolver) -> LoopbackTransport {
+fn loopback(
+    cfg: &RunConfig,
+    exec: &ExecutionConfig,
+    resolver: SharedResolver,
+) -> LoopbackTransport {
     LoopbackTransport::new(
         cfg.format.clone(),
         exec.checkpoint_interval,
@@ -95,7 +193,7 @@ pub fn run_with(
     store: &Store,
     cfg: &RunConfig,
     exec: &ExecutionConfig,
-    resolver: Resolver,
+    resolver: SharedResolver,
 ) -> Result<RunOutcome> {
     let generator = StubGenerator::new()?;
     let transport = loopback(cfg, exec, resolver);

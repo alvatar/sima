@@ -4,10 +4,9 @@ use ash::vk;
 
 use sima_core::{Error, Result};
 
+use crate::instance::{self, InstanceGuard};
 use crate::selection::{self, DeviceChoice};
-use crate::validation::{
-    self, ValidationMessenger, debug_utils_extension_name, validation_layer_names,
-};
+use crate::validation::{self, ValidationMessenger};
 
 /// Owns the Vulkan instance, logical device, compute queue, and command pool
 /// for one headless compute context.
@@ -35,47 +34,43 @@ pub struct Context {
 impl Context {
     /// Creates a headless compute context on the auto-selected device.
     ///
-    /// The device is chosen by [`selection::select_physical_device`]; validation
-    /// is enabled only when [`validation::resolve_validation_request`] approves
-    /// it. Every construction step rolls back through a guard, so a mid-build
-    /// failure leaves no orphaned Vulkan object.
+    /// The device is chosen by [`selection::select_physical_device`].
     pub fn new() -> Result<Context> {
-        // SAFETY: loads the platform Vulkan loader; the returned Entry is stored
-        // in `Context::_entry`, keeping the library loaded for the whole lifetime
-        // of the instance and device derived from it.
-        let entry = unsafe { ash::Entry::load() }
-            .map_err(|e| Error::Gpu(format!("load Vulkan loader: {e}")))?;
+        Context::build(selection::select_physical_device)
+    }
 
-        let app_name = c"sima";
-        let app_info = vk::ApplicationInfo::default()
-            .application_name(app_name)
-            .application_version(vk::make_api_version(0, 1, 0, 0))
-            .engine_name(app_name)
-            .engine_version(vk::make_api_version(0, 1, 0, 0))
-            .api_version(vk::API_VERSION_1_3);
+    /// Creates a headless compute context on the given member of the given
+    /// device class.
+    ///
+    /// The class is the `(vendor_id, device_id)` pair and `member` counts within
+    /// it, ordered by Vulkan enumeration index — the numbering
+    /// [`enumerate_devices`](crate::enumerate_devices) reports. An absent class
+    /// or a member out of range is an [`Error::Gpu`] naming the request and what
+    /// exists.
+    pub fn for_device(vendor_id: u32, device_id: u32, member: u32) -> Result<Context> {
+        Context::build(|instance| {
+            selection::select_class_member(instance, vendor_id, device_id, member)
+        })
+    }
 
+    /// Builds a context around the device `select` picks.
+    ///
+    /// Validation is enabled only when [`validation::resolve_validation_request`]
+    /// approves it. Every construction step rolls back through a guard, so a
+    /// mid-build failure leaves no orphaned Vulkan object.
+    fn build(select: impl FnOnce(&ash::Instance) -> Result<DeviceChoice>) -> Result<Context> {
+        // The entry is stored in `Context::_entry`, keeping the loader resident
+        // for the whole lifetime of the instance and device derived from it.
+        let entry = instance::load_entry()?;
         let validation_enabled = validation::resolve_validation_request(&entry);
-        let layer_names = validation_layer_names();
-        let debug_extensions = [debug_utils_extension_name()];
-        let mut instance_info = vk::InstanceCreateInfo::default().application_info(&app_info);
-        if validation_enabled {
-            instance_info = instance_info
-                .enabled_layer_names(&layer_names)
-                .enabled_extension_names(&debug_extensions);
-        }
-        // SAFETY: `instance_info`, the `app_info` it references, and the optional
-        // layer/extension arrays are stack-local through this call; `entry` stays
-        // loaded above.
-        let instance = unsafe { entry.create_instance(&instance_info, None) }
-            .map_err(|e| Error::Gpu(format!("create Vulkan instance: {e}")))?;
-        let instance = InstanceGuard::new(instance);
+        let instance = InstanceGuard::new(instance::create(&entry, validation_enabled)?);
 
         let DeviceChoice {
             physical_device,
             queue_family_index,
-        } = selection::select_physical_device(instance.get()?)?;
-        // SAFETY: `physical_device` was returned by `select_physical_device`,
-        // which enumerated it from `instance`; both are alive on this frame.
+        } = select(instance.get()?)?;
+        // SAFETY: `physical_device` was returned by `select`, which enumerated
+        // it from `instance`; both are alive on this frame.
         let properties = unsafe {
             instance
                 .get()?
@@ -218,43 +213,6 @@ impl Drop for Context {
                 validation.destroy();
             }
             self.instance.destroy_instance(None);
-        }
-    }
-}
-
-/// Rolls back a created instance until construction transfers it to `Context`.
-struct InstanceGuard {
-    instance: Option<ash::Instance>,
-}
-
-impl InstanceGuard {
-    fn new(instance: ash::Instance) -> Self {
-        Self {
-            instance: Some(instance),
-        }
-    }
-
-    fn get(&self) -> Result<&ash::Instance> {
-        self.instance
-            .as_ref()
-            .ok_or_else(|| Error::Gpu("Vulkan instance guard used after finish".to_string()))
-    }
-
-    fn finish(mut self) -> Result<ash::Instance> {
-        self.instance
-            .take()
-            .ok_or_else(|| Error::Gpu("Vulkan instance guard finished twice".to_string()))
-    }
-}
-
-impl Drop for InstanceGuard {
-    fn drop(&mut self) {
-        // SAFETY: the guard owns the instance until `finish` transfers it; on a
-        // rollback path no later owner exists to destroy it.
-        unsafe {
-            if let Some(instance) = self.instance.take() {
-                instance.destroy_instance(None);
-            }
         }
     }
 }
@@ -407,5 +365,30 @@ mod tests {
         let context = Context::new().expect("create compute context");
         assert!(!context.device_name().is_empty());
         assert!(!context.driver_version().is_empty());
+    }
+
+    /// Requires a real Vulkan device. Run with `cargo test -- --ignored`.
+    #[test]
+    #[ignore = "requires a Vulkan device"]
+    fn a_context_opens_on_every_enumerated_device() {
+        let devices = crate::enumerate_devices().expect("enumerate devices");
+        assert!(!devices.is_empty(), "at least one compute-capable device");
+        for device in &devices {
+            let context = Context::for_device(device.vendor_id, device.device_id, device.member)
+                .expect("open the enumerated device");
+            // The context opened the class member that was asked for, not
+            // whichever device the default policy prefers.
+            assert_eq!(context.device_name(), device.name);
+        }
+    }
+
+    /// Requires a real Vulkan device. Run with `cargo test -- --ignored`.
+    #[test]
+    #[ignore = "requires a Vulkan device"]
+    fn opening_an_absent_device_class_fails() {
+        assert!(matches!(
+            Context::for_device(0xdead, 0xbeef, 0),
+            Err(Error::Gpu(_))
+        ));
     }
 }

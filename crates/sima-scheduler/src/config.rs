@@ -3,7 +3,27 @@
 use std::num::NonZeroU64;
 use std::time::Duration;
 
+use sima_contracts::DeviceClass;
 use sima_core::{Error, Result};
+
+/// One device class a run spreads its workers over, resolved: the class, the
+/// name the backend reports for it, how many workers it carries, and how many
+/// physical cards it has.
+///
+/// The resolved form of one configured device selector. Selectors name devices
+/// by substring or id and resolve against real hardware, so resolution happens
+/// where a run starts, never where a config is read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeviceEntry {
+    /// The class these workers compute on.
+    pub class: DeviceClass,
+    /// The device name the backend reports, for events and diagnostics.
+    pub name: String,
+    /// Worker processes on this class; at least 1.
+    pub workers: usize,
+    /// Physical cards in the class; the slots round-robin over them.
+    pub members: u32,
+}
 
 /// Operational run settings. Never hashed; not part of run identity — a run
 /// resumed with different parallelism or a different timeout keeps its run id.
@@ -11,7 +31,8 @@ use sima_core::{Error, Result};
 /// layers.
 #[derive(Debug, Clone)]
 pub struct ExecutionConfig {
-    /// Number of worker processes; at least 1.
+    /// Number of worker processes; at least 1. With device entries present it
+    /// is their sum.
     pub workers: usize,
     /// Total attempts per task before a transient failure becomes definitive;
     /// at least 1.
@@ -32,11 +53,16 @@ pub struct ExecutionConfig {
     /// either axis present enables checkpointing. With both disabled no offer
     /// is ever due, so no slot is written or read.
     pub checkpoint_interval_steps: Option<NonZeroU64>,
+    /// The device classes the pool spreads over. Empty is the single implicit
+    /// class: every worker takes the backend's default device, and placement
+    /// costs nothing.
+    pub devices: Vec<DeviceEntry>,
 }
 
 impl ExecutionConfig {
-    /// Validates the settings and wraps them: `workers` and `max_attempts`
-    /// must each be at least 1 ([`Error::Validation`] otherwise).
+    /// Validates the settings and wraps them, over the backend's default
+    /// device selection: `workers` and `max_attempts` must each be at least 1
+    /// ([`Error::Validation`] otherwise).
     pub fn new(
         workers: usize,
         max_attempts: u32,
@@ -60,7 +86,52 @@ impl ExecutionConfig {
             attempt_timeout,
             checkpoint_interval,
             checkpoint_interval_steps,
+            devices: Vec::new(),
         })
+    }
+
+    /// Validates the settings and wraps them with the pool spread over
+    /// `devices`: the entries carry the workers, so the pool size is their sum
+    /// and each entry must carry at least one worker.
+    pub fn with_devices(
+        devices: Vec<DeviceEntry>,
+        max_attempts: u32,
+        attempt_timeout: Duration,
+        checkpoint_interval: Duration,
+        checkpoint_interval_steps: Option<NonZeroU64>,
+    ) -> Result<Self> {
+        for entry in &devices {
+            if entry.workers == 0 {
+                return Err(Error::Validation(format!(
+                    "device {} ({}) requires at least one worker",
+                    entry.name, entry.class
+                )));
+            }
+            // The slots of an entry round-robin over its cards, so a class
+            // with no card has nothing to run on.
+            if entry.members == 0 {
+                return Err(Error::Validation(format!(
+                    "device {} ({}) requires at least one card",
+                    entry.name, entry.class
+                )));
+            }
+        }
+        let workers = devices.iter().map(|entry| entry.workers).sum();
+        let mut config = ExecutionConfig::new(
+            workers,
+            max_attempts,
+            attempt_timeout,
+            checkpoint_interval,
+            checkpoint_interval_steps,
+        )?;
+        config.devices = devices;
+        Ok(config)
+    }
+
+    /// The classes the run has, in entry order. Empty for the single implicit
+    /// class.
+    pub(crate) fn classes(&self) -> Vec<DeviceClass> {
+        self.devices.iter().map(|entry| entry.class).collect()
     }
 }
 
@@ -100,5 +171,76 @@ mod tests {
             ExecutionConfig::new(1, 0, Duration::from_millis(1), Duration::MAX, None),
             Err(Error::Validation(_))
         ));
+    }
+
+    /// A resolved entry for a class carrying `workers` workers.
+    fn entry(vendor_id: u32, workers: usize) -> DeviceEntry {
+        DeviceEntry {
+            class: DeviceClass {
+                vendor_id,
+                device_id: 1,
+            },
+            name: format!("device {vendor_id:04x}"),
+            workers,
+            members: 1,
+        }
+    }
+
+    #[test]
+    fn a_config_over_devices_pools_the_entries_workers() -> Result<()> {
+        let config = ExecutionConfig::with_devices(
+            vec![entry(0x10de, 3), entry(0x8086, 1)],
+            3,
+            Duration::MAX,
+            Duration::MAX,
+            None,
+        )?;
+        assert_eq!(config.workers, 4, "the pool is the entries' sum");
+        assert_eq!(config.classes().len(), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn a_device_entry_with_no_workers_is_rejected() {
+        let error = ExecutionConfig::with_devices(
+            vec![entry(0x10de, 0)],
+            1,
+            Duration::MAX,
+            Duration::MAX,
+            None,
+        );
+        let Err(Error::Validation(message)) = error else {
+            panic!("expected a validation error");
+        };
+        assert!(message.contains("10de:0001"), "names the device: {message}");
+    }
+
+    #[test]
+    fn a_device_entry_with_no_cards_is_rejected() {
+        // The slots round-robin over an entry's cards, so a class of none has
+        // nothing to run on.
+        let error = ExecutionConfig::with_devices(
+            vec![DeviceEntry {
+                members: 0,
+                ..entry(0x10de, 1)
+            }],
+            1,
+            Duration::MAX,
+            Duration::MAX,
+            None,
+        );
+        let Err(Error::Validation(message)) = error else {
+            panic!("expected a validation error");
+        };
+        assert!(message.contains("10de:0001"), "names the device: {message}");
+        assert!(message.contains("card"), "names what is missing: {message}");
+    }
+
+    #[test]
+    fn no_device_entries_is_the_single_implicit_class() -> Result<()> {
+        let config = ExecutionConfig::new(4, 1, Duration::MAX, Duration::MAX, None)?;
+        assert!(config.devices.is_empty());
+        assert!(config.classes().is_empty());
+        Ok(())
     }
 }

@@ -58,7 +58,14 @@ pub fn describe(event: &LifecycleEvent, committed: usize, tasks: usize) -> Optio
         LifecycleEvent::RunInterrupted { .. } => {
             "interrupted: store resumable, re-run to continue".to_string()
         }
-        LifecycleEvent::Queued { .. } | LifecycleEvent::Leased { .. } => return None,
+        // A rebind means the hardware changed under the search: the chain's
+        // device is gone and its work moved. Loud by design.
+        LifecycleEvent::ChainRebound { chain, from, to } => {
+            format!("chain {chain} rebound: {from} is absent, continuing on {to}")
+        }
+        LifecycleEvent::Queued { .. }
+        | LifecycleEvent::Leased { .. }
+        | LifecycleEvent::WorkerBound { .. } => return None,
     })
 }
 
@@ -113,7 +120,7 @@ pub fn status_block(status: &RunStatus) -> String {
         }
         RunState::Interrupted => "interrupted".to_string(),
     };
-    format!(
+    let block = format!(
         "run                  {}\n\
          state                {state}\n\
          tasks                {}\n\
@@ -131,7 +138,36 @@ pub fn status_block(status: &RunStatus) -> String {
         status.faulted,
         status.lease_expired,
         status.checkpoint_degraded,
-    )
+    );
+    match devices_line(status) {
+        Some(devices) => format!("{block}\ndevices              {devices}"),
+        None => block,
+    }
+}
+
+/// The run's device composition: committed tasks per device, busiest first,
+/// and the chains that moved when their device went absent.
+///
+/// `None` when the journal names no device, as a run whose domain uses none
+/// does. Nothing is inferred: what is not in the journal is not printed.
+fn devices_line(status: &RunStatus) -> Option<String> {
+    if status.devices.is_empty() {
+        return None;
+    }
+    let mut composition: Vec<(&String, &usize)> = status.devices.iter().collect();
+    // Busiest first; the name breaks ties, so one journal renders one way.
+    composition.sort_by(|(a_name, a_count), (b_name, b_count)| {
+        b_count.cmp(a_count).then(a_name.cmp(b_name))
+    });
+    let mut line = composition
+        .iter()
+        .map(|(name, count)| format!("{name} ×{count}"))
+        .collect::<Vec<String>>()
+        .join(", ");
+    if status.rebound_chains > 0 {
+        line.push_str(&format!(", rebound chains: {}", status.rebound_chains));
+    }
+    Some(line)
 }
 
 #[cfg(test)]
@@ -174,20 +210,19 @@ mod tests {
         assert!(line.contains("unwritable"), "{line}");
     }
 
+    /// A zeroed status for a throwaway run; tests set the fields they assert.
+    fn a_status() -> RunStatus {
+        RunStatus::new(sima_model::RunId::from_hash(sima_core::hash_bytes(
+            b"a run to render",
+        )))
+    }
+
     #[test]
     fn the_status_block_names_every_field() {
-        let status = RunStatus {
-            run: sima_model::RunId::from_hash(sima_core::hash_bytes(b"a run to render")),
-            tasks: 3,
-            committed: 2,
-            retried: 1,
-            rejected: 0,
-            faulted: 0,
-            lease_expired: 0,
-            checkpoint_degraded: 0,
-            state: RunState::InProgress,
-            occupancy: std::collections::BTreeMap::new(),
-        };
+        let mut status = a_status();
+        status.tasks = 3;
+        status.committed = 2;
+        status.retried = 1;
         let block = status_block(&status);
         for field in [
             "run",
@@ -203,5 +238,44 @@ mod tests {
             assert!(block.contains(field), "missing {field}: {block}");
         }
         assert!(block.contains("in progress"));
+    }
+
+    #[test]
+    fn the_status_block_reports_the_run_s_device_composition() {
+        let mut status = a_status();
+        status.committed = 1000;
+        status.devices = [
+            ("Intel Arc 140T".to_string(), 388),
+            ("NVIDIA RTX PRO 2000".to_string(), 612),
+        ]
+        .into_iter()
+        .collect();
+        status.rebound_chains = 2;
+        let block = status_block(&status);
+        // Busiest device first, whatever order the map holds.
+        assert!(
+            block.contains("devices              NVIDIA RTX PRO 2000 ×612, Intel Arc 140T ×388, rebound chains: 2"),
+            "{block}"
+        );
+    }
+
+    #[test]
+    fn a_run_that_moved_no_chain_reports_no_rebinds() {
+        let mut status = a_status();
+        status.devices = [("Intel Arc 140T".to_string(), 4)].into_iter().collect();
+        let block = status_block(&status);
+        assert!(
+            block.contains("devices              Intel Arc 140T ×4"),
+            "{block}"
+        );
+        assert!(!block.contains("rebound"), "{block}");
+    }
+
+    #[test]
+    fn a_run_that_names_no_device_renders_no_device_line() {
+        // A journal carrying no WorkerBound events, as a run whose domain uses
+        // no device writes: there is nothing truthful to print.
+        let block = status_block(&a_status());
+        assert!(!block.contains("devices"), "{block}");
     }
 }

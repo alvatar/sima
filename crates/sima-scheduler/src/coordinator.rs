@@ -6,12 +6,14 @@
 //! the only mutations: leasing the next task and the settlement methods that
 //! release a lease and apply the outcome atomically.
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Condvar, Mutex, MutexGuard};
 
+use sima_contracts::DeviceClass;
 use sima_core::Error;
 use sima_model::TaskKey;
 
+use crate::placement::{ChainPlacement, Eligibility, eligibility};
 use crate::task_source::RunnableTask;
 
 /// A task waiting in the ready queue: the runnable task and the attempt it is
@@ -22,6 +24,13 @@ pub(crate) struct Pending {
     /// `Pending` is built so no lifecycle step recomputes it under the lock.
     pub(crate) key: TaskKey,
     pub(crate) attempt: u32,
+}
+
+/// A leased task and what the pull decided about its chain's placement. The
+/// decision leaves the lock so its slot write and journal event happen off it.
+pub(crate) struct Leased {
+    pub(crate) pending: Pending,
+    pub(crate) placement: ChainPlacement,
 }
 
 /// A definitive candidate failure: the task that could not produce a result,
@@ -73,26 +82,100 @@ pub(crate) struct Shared {
     /// worker commits before releasing its lease — so an unchanged count
     /// means a re-poll would derive the same frontier.
     pub(crate) settled: u64,
+    /// The device class each chain's work runs on, seeded at run start from
+    /// the store's placement slots and extended as chains bind. Empty and
+    /// unread when the run has one implicit class.
+    chains: HashMap<u64, DeviceClass>,
+    /// The class each chain-less task's attempts run on. A stateless task is a
+    /// chain of length one: its retries stick within the run, and once it
+    /// commits there is nothing left to place — so this stays in memory and
+    /// no slot is ever written for it.
+    stateless: HashMap<TaskKey, DeviceClass>,
+}
+
+impl Shared {
+    /// The class a pending task's work is bound to, if any. A chained task
+    /// reads the run's durable placement; a chain-less one reads the in-memory
+    /// retry stickiness.
+    fn binding(&self, pending: &Pending) -> Option<DeviceClass> {
+        match pending.task.chain {
+            Some(chain) => self.chains.get(&chain).copied(),
+            None => self.stateless.get(&pending.key).copied(),
+        }
+    }
+
+    /// Applies what a pull of `pending` by a worker of `class` decides, given
+    /// the class the task was `bound` to, and reports it for the caller to
+    /// persist and journal.
+    fn bind(
+        &mut self,
+        pending: &Pending,
+        bound: Option<DeviceClass>,
+        class: DeviceClass,
+    ) -> ChainPlacement {
+        match pending.task.chain {
+            // A chain-less task places in memory alone: it is a chain of
+            // length one, so nothing outlives the run to be coherent with.
+            None => {
+                self.stateless.insert(pending.key, class);
+                ChainPlacement::Settled
+            }
+            Some(chain) => match bound {
+                Some(bound) if bound == class => ChainPlacement::Settled,
+                Some(from) => {
+                    self.chains.insert(chain, class);
+                    ChainPlacement::Rebound {
+                        chain,
+                        from,
+                        to: class,
+                    }
+                }
+                None => {
+                    self.chains.insert(chain, class);
+                    ChainPlacement::Bound { chain, to: class }
+                }
+            },
+        }
+    }
 }
 
 /// The shared state plus the condition every thread waits on.
 pub(crate) struct Coordinator {
     pub(crate) state: Mutex<Shared>,
     pub(crate) state_changed: Condvar,
+    /// The classes the run has. Empty for the single implicit class, which is
+    /// what makes [`Coordinator::next_task`] short-circuit placement entirely.
+    classes: Vec<DeviceClass>,
 }
 
 impl Coordinator {
     /// A fresh coordinator in the steady `Running` state: empty queue, no
-    /// leases.
+    /// leases, one implicit device class — the shape every test that does not
+    /// exercise placement wants. The driver builds its own through
+    /// [`Coordinator::with_placement`].
+    #[cfg(test)]
     pub(crate) fn new() -> Coordinator {
+        Coordinator::with_placement(Vec::new(), HashMap::new())
+    }
+
+    /// A fresh coordinator for a run over `classes`, its chain placements
+    /// seeded from `chains` — the bindings the store already holds, so a
+    /// resumed chain returns to the class it ran on.
+    pub(crate) fn with_placement(
+        classes: Vec<DeviceClass>,
+        chains: HashMap<u64, DeviceClass>,
+    ) -> Coordinator {
         Coordinator {
             state: Mutex::new(Shared {
                 queue: VecDeque::new(),
                 leases: HashSet::new(),
                 state: RunState::Running,
                 settled: 0,
+                chains,
+                stateless: HashMap::new(),
             }),
             state_changed: Condvar::new(),
+            classes,
         }
     }
 
@@ -106,10 +189,20 @@ impl Coordinator {
             .unwrap_or_else(|poison| poison.into_inner())
     }
 
-    /// Leases the next ready task, inserting its lease and counting it in
-    /// flight; returns `None` once the run is winding down and the calling
-    /// worker should exit.
-    pub(crate) fn next_task(&self) -> Option<Pending> {
+    /// Leases the next task the calling worker's `class` may run, inserting
+    /// its lease and counting it in flight; returns `None` once the run is
+    /// winding down and the calling worker should exit.
+    ///
+    /// A worker of a class takes the first queued task its class is eligible
+    /// for, so an unbound chain goes to whichever class reaches it first and a
+    /// bound one waits for its own. A run with one implicit class passes
+    /// `None` and takes the head of the queue, exactly as a run with no
+    /// placement does.
+    ///
+    /// The park is unconditional: a worker whose class has nothing eligible
+    /// waits for the next state change rather than spinning, and settles,
+    /// polls, and wind-down all wake it.
+    pub(crate) fn next_task(&self, class: Option<DeviceClass>) -> Option<Leased> {
         let mut shared = self.lock();
         loop {
             if !matches!(shared.state, RunState::Running) {
@@ -118,18 +211,42 @@ impl Coordinator {
                 self.state_changed.notify_all();
                 return None;
             }
-            if let Some(pending) = shared.queue.pop_front() {
-                shared.leases.insert(pending.key);
-                return Some(pending);
+            if let Some(leased) = self.take_eligible(&mut shared, class) {
+                shared.leases.insert(leased.pending.key);
+                return Some(leased);
             }
-            // The queue is empty: wake the driver — it may have a poll or
-            // a wind-down decision pending on this — before parking.
+            // Nothing to take: wake the driver — it may have a poll or a
+            // wind-down decision pending on this — before parking.
             self.state_changed.notify_all();
             shared = self
                 .state_changed
                 .wait(shared)
                 .unwrap_or_else(|p| p.into_inner());
         }
+    }
+
+    /// Removes the first queued task `class` may run and records what that
+    /// pull decided about its placement, or `None` when the queue holds
+    /// nothing for this class.
+    fn take_eligible(&self, shared: &mut Shared, class: Option<DeviceClass>) -> Option<Leased> {
+        // The single implicit class: every task is eligible, so the head of
+        // the queue wins and no placement state is touched at all.
+        let Some(class) = class else {
+            return shared.queue.pop_front().map(|pending| Leased {
+                pending,
+                placement: ChainPlacement::Settled,
+            });
+        };
+        let position = shared.queue.iter().position(|pending| {
+            !matches!(
+                eligibility(shared.binding(pending), class, &self.classes),
+                Eligibility::Skip
+            )
+        })?;
+        let pending = shared.queue.remove(position).expect("position is in range");
+        let bound = shared.binding(&pending);
+        let placement = shared.bind(&pending, bound, class);
+        Some(Leased { pending, placement })
     }
 
     /// Releases `key`'s lease, applies the outcome-specific update to the
@@ -224,6 +341,7 @@ impl Coordinator {
 #[cfg(test)]
 mod tests {
     use sima_core::hash_bytes;
+    use sima_model::{EnvironmentId, ParamsId, SpecId, TaskIdentity};
 
     use super::*;
 
@@ -237,6 +355,167 @@ mod tests {
     /// A throwaway task key.
     fn a_key() -> TaskKey {
         TaskKey::from_hash(hash_bytes(b"fault-upgrade task"))
+    }
+
+    const INTEL: DeviceClass = DeviceClass {
+        vendor_id: 0x8086,
+        device_id: 0x7d51,
+    };
+    const NVIDIA: DeviceClass = DeviceClass {
+        vendor_id: 0x10de,
+        device_id: 0x2d39,
+    };
+
+    /// A queued task of `chain`, distinguishable by `seed`.
+    fn pending(chain: Option<u64>, seed: u64) -> Pending {
+        let identity = TaskIdentity {
+            spec: SpecId::from_hash(hash_bytes(b"spec")),
+            params: ParamsId::from_hash(hash_bytes(b"params")),
+            seed,
+            environment: EnvironmentId::from_hash(hash_bytes(b"env")),
+            input_state: None,
+        };
+        Pending {
+            key: identity.key(),
+            task: RunnableTask {
+                spec: sima_model::Spec {
+                    format: sima_model::FormatId::new("stub.v1").expect("format id"),
+                    bytes: Vec::new(),
+                },
+                identity,
+                chain,
+            },
+            attempt: 0,
+        }
+    }
+
+    /// A coordinator over both classes, holding `queue`.
+    fn placed(queue: Vec<Pending>, chains: HashMap<u64, DeviceClass>) -> Coordinator {
+        let coordinator = Coordinator::with_placement(vec![NVIDIA, INTEL], chains);
+        coordinator.lock().queue = queue.into();
+        coordinator
+    }
+
+    /// What `class` would take from `coordinator`'s queue right now.
+    fn take(coordinator: &Coordinator, class: DeviceClass) -> Option<Leased> {
+        let mut shared = coordinator.lock();
+        coordinator.take_eligible(&mut shared, Some(class))
+    }
+
+    #[test]
+    fn a_worker_runs_a_chain_bound_to_its_own_class() {
+        let task = pending(Some(0), 1);
+        let key = task.key;
+        let coordinator = placed(vec![task], HashMap::from([(0, NVIDIA)]));
+        let leased = take(&coordinator, NVIDIA).expect("its own chain");
+        assert_eq!(leased.pending.key, key);
+        // Already bound: nothing to persist or journal.
+        assert_eq!(leased.placement, ChainPlacement::Settled);
+    }
+
+    #[test]
+    fn a_worker_never_takes_a_chain_bound_to_another_present_class() {
+        // The invariant stickiness rests on: an idle worker of the wrong class
+        // leaves the work for the class that owns it, however long that waits.
+        let coordinator = placed(vec![pending(Some(0), 1)], HashMap::from([(0, NVIDIA)]));
+        assert!(take(&coordinator, INTEL).is_none());
+        // The task is still queued for the class that owns it.
+        assert_eq!(coordinator.lock().queue.len(), 1);
+        assert!(take(&coordinator, NVIDIA).is_some());
+    }
+
+    #[test]
+    fn a_worker_passes_over_an_ineligible_task_to_a_later_eligible_one() {
+        // The queue is FIFO, but a worker takes the first task it may run, so
+        // one class's bound chain never blocks another class's work.
+        let theirs = pending(Some(0), 1);
+        let mine = pending(Some(1), 2);
+        let mine_key = mine.key;
+        let coordinator = placed(vec![theirs, mine], HashMap::from([(0, NVIDIA), (1, INTEL)]));
+        let leased = take(&coordinator, INTEL).expect("its own chain, behind another's");
+        assert_eq!(leased.pending.key, mine_key);
+        assert_eq!(coordinator.lock().queue.len(), 1, "the other's chain stays");
+    }
+
+    #[test]
+    fn an_unbound_chain_binds_to_whichever_class_pulls_it() {
+        let coordinator = placed(vec![pending(Some(3), 1)], HashMap::new());
+        let leased = take(&coordinator, INTEL).expect("an unbound chain is anyone's");
+        assert_eq!(
+            leased.placement,
+            ChainPlacement::Bound {
+                chain: 3,
+                to: INTEL
+            }
+        );
+        // The binding is in the map before the task leaves the pull.
+        assert_eq!(coordinator.lock().chains.get(&3), Some(&INTEL));
+    }
+
+    #[test]
+    fn a_chain_bound_to_an_absent_class_moves_to_a_class_that_is_here() {
+        // A run whose devices do not include the chain's class: the work
+        // moves rather than stranding, and the decision comes back to be
+        // journaled.
+        let gone = DeviceClass {
+            vendor_id: 0x1002,
+            device_id: 0x1234,
+        };
+        let coordinator = placed(vec![pending(Some(0), 1)], HashMap::from([(0, gone)]));
+        let leased = take(&coordinator, NVIDIA).expect("the run continues");
+        assert_eq!(
+            leased.placement,
+            ChainPlacement::Rebound {
+                chain: 0,
+                from: gone,
+                to: NVIDIA
+            }
+        );
+        assert_eq!(coordinator.lock().chains.get(&0), Some(&NVIDIA));
+    }
+
+    #[test]
+    fn a_chain_less_tasks_retry_stays_on_the_class_that_first_ran_it() {
+        // A stateless task is a chain of length one: its attempts stick within
+        // the run, and nothing about it is persisted.
+        let task = pending(None, 1);
+        let key = task.key;
+        let coordinator = placed(vec![task], HashMap::new());
+        let leased = take(&coordinator, INTEL).expect("unbound");
+        assert_eq!(
+            leased.placement,
+            ChainPlacement::Settled,
+            "no slot to write"
+        );
+
+        // The attempt failed and requeued; only Intel may retry it.
+        coordinator.lock().queue.push_back(pending(None, 1));
+        assert!(take(&coordinator, NVIDIA).is_none());
+        assert_eq!(
+            take(&coordinator, INTEL)
+                .expect("its own retry")
+                .pending
+                .key,
+            key
+        );
+        assert!(coordinator.lock().chains.is_empty(), "no chain, no binding");
+    }
+
+    #[test]
+    fn one_implicit_class_takes_the_head_of_the_queue_untouched() {
+        // The single-device run: no class, no placement state read or written,
+        // and the queue stays strictly FIFO.
+        let first = pending(Some(0), 1);
+        let first_key = first.key;
+        let coordinator = Coordinator::new();
+        coordinator.lock().queue = vec![first, pending(Some(1), 2)].into();
+        let mut shared = coordinator.lock();
+        let leased = coordinator
+            .take_eligible(&mut shared, None)
+            .expect("the head");
+        assert_eq!(leased.pending.key, first_key);
+        assert_eq!(leased.placement, ChainPlacement::Settled);
+        assert!(shared.chains.is_empty());
     }
 
     #[test]

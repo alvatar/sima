@@ -3,7 +3,7 @@
 //!
 //! `serve` is what a worker process runs for its whole life: read the
 //! [`Hello`](super::protocol::Hello), resolve the executor for the announced
-//! format, reply [`ToParent::Ready`], then execute one
+//! format and device, reply [`ToParent::Ready`], then execute one
 //! [`Assignment`](super::protocol::Assignment) after another until the parent
 //! closes the pipe — end-of-stream at a frame boundary is the shutdown
 //! signal, and `serve` returns `Ok`. The child never touches a store: inputs
@@ -14,7 +14,9 @@ use std::io::{Read, Write};
 use std::num::NonZeroU64;
 use std::time::Duration;
 
-use sima_contracts::{Checkpoint, ExecutionContext, Executor, NoCheckpoint, TaskInput, WorkerId};
+use sima_contracts::{
+    Checkpoint, DeviceBinding, ExecutionContext, Executor, NoCheckpoint, TaskInput, WorkerId,
+};
 use sima_core::{Error, Result};
 use sima_model::{FormatId, Params, Spec};
 
@@ -23,18 +25,22 @@ use crate::protocol::{
     Assignment, Hello, PROTOCOL_VERSION, ToChild, ToParent, read_frame, write_frame,
 };
 
+/// Turns a handshake into the executor a host serves: the format id and the
+/// device binding in, the executor and the name of the device it opened out.
+///
+/// The name is what the host answers `Ready` with, so it is the child's own
+/// account of where it computes. A domain that uses no device names none.
+pub type Resolver<'a> =
+    dyn Fn(&FormatId, Option<&DeviceBinding>) -> Result<(Box<dyn Executor>, String)> + 'a;
+
 /// Hosts an executor over the transport: handshake, then the assign loop.
 ///
-/// `resolve` maps the [`Hello`]'s format id to the executor this process
-/// hosts; the scheduler never names a domain. Returns `Ok` when the parent
-/// closes the pipe at a frame boundary; a protocol-version mismatch, a
-/// resolver failure, a frame violation, or a broken pipe is `Err` — the
-/// caller maps it to a nonzero exit with a stderr diagnostic.
-pub fn serve<R: Read, W: Write>(
-    mut reader: R,
-    writer: W,
-    resolve: &dyn Fn(&FormatId) -> Result<Box<dyn Executor>>,
-) -> Result<()> {
+/// `resolve` maps the [`Hello`]'s format id and device binding to the executor
+/// this process hosts; the scheduler never names a domain. Returns `Ok` when
+/// the parent closes the pipe at a frame boundary; a protocol-version
+/// mismatch, a resolver failure, a frame violation, or a broken pipe is `Err`
+/// — the caller maps it to a nonzero exit with a stderr diagnostic.
+pub fn serve<R: Read, W: Write>(mut reader: R, writer: W, resolve: &Resolver<'_>) -> Result<()> {
     // The handshake: the first frame must be a Hello at this protocol
     // version. Refusal happens before Ready, so the parent's missing Ready is
     // its spawn-failure signal.
@@ -54,7 +60,9 @@ pub fn serve<R: Read, W: Write>(
             hello.protocol
         )));
     }
-    let executor = resolve(&hello.format)?;
+    // Resolving here, before Ready, is what makes a binding that names an
+    // absent device fail the handshake rather than the first task.
+    let (executor, device_name) = resolve(&hello.format, hello.device.as_ref())?;
 
     // The executor's offer channel borrows the writer during execute while
     // serve writes the outcome after it; the RefCell arbitrates the two
@@ -64,6 +72,7 @@ pub fn serve<R: Read, W: Write>(
         &mut *writer.borrow_mut(),
         &ToParent::Ready {
             protocol: PROTOCOL_VERSION,
+            device_name,
         }
         .encode(),
     )?;
@@ -300,28 +309,85 @@ mod tests {
 
     /// A resolver serving `TestExecutor` for the given behavior, counting
     /// invocations.
-    fn resolver(
-        behavior: Behavior,
-        calls: &Cell<u32>,
-    ) -> impl Fn(&FormatId) -> Result<Box<dyn Executor>> + '_ {
-        move |format| {
+    fn resolver(behavior: Behavior, calls: &Cell<u32>) -> Box<Resolver<'_>> {
+        Box::new(move |format, _| {
             calls.set(calls.get() + 1);
-            Ok(Box::new(TestExecutor {
+            let executor: Box<dyn Executor> = Box::new(TestExecutor {
                 format: format.clone(),
                 behavior,
-            }))
-        }
+            });
+            Ok((executor, String::new()))
+        })
     }
 
     /// A `Hello` at the current protocol version for the `host-test.v1`
-    /// format, with the given cadence settings.
+    /// format, with the given cadence settings and no device binding.
     fn hello(interval_ms: u64, steps: u64) -> ToChild {
         ToChild::Hello(Hello {
             protocol: PROTOCOL_VERSION,
             format: FormatId::new("host-test.v1").expect("format id"),
             checkpoint_interval_ms: interval_ms,
             checkpoint_interval_steps: steps,
+            device: None,
         })
+    }
+
+    /// A `Hello` binding the child to `device`.
+    fn hello_on(device: Option<DeviceBinding>) -> ToChild {
+        let ToChild::Hello(hello) = hello(u64::MAX, 0) else {
+            unreachable!("hello builds a Hello");
+        };
+        ToChild::Hello(Hello { device, ..hello })
+    }
+
+    /// Serves one `Hello` and reports what the resolver saw and answered.
+    fn handshake(device: Option<DeviceBinding>) -> (Option<DeviceBinding>, Vec<ToParent>) {
+        let seen = Cell::new(None);
+        let resolve = |format: &FormatId, device: Option<&DeviceBinding>| {
+            seen.set(device.copied());
+            let executor: Box<dyn Executor> = Box::new(TestExecutor {
+                format: format.clone(),
+                behavior: Behavior::Echo,
+            });
+            Ok((executor, "test device".to_string()))
+        };
+        let mut input = Vec::new();
+        write_frame(&mut input, &hello_on(device).encode()).expect("frame the input");
+        let mut output = Vec::new();
+        serve(input.as_slice(), &mut output, &resolve).expect("serve to end of stream");
+        let mut frames = Vec::new();
+        let mut reader = output.as_slice();
+        while let Some(payload) = read_frame(&mut reader).expect("well-formed output") {
+            frames.push(ToParent::decode(&payload).expect("decodable output"));
+        }
+        (seen.get(), frames)
+    }
+
+    #[test]
+    fn the_resolver_receives_the_handshake_binding() {
+        let binding = DeviceBinding {
+            vendor_id: 0x10de,
+            device_id: 0x2d39,
+            member: 1,
+        };
+        let (seen, frames) = handshake(Some(binding));
+        assert_eq!(seen, Some(binding), "the binding reaches the resolver");
+        // Ready reports the device the executor construction named, so the
+        // parent journals what the child resolved rather than what it assumed.
+        assert!(matches!(
+            frames.as_slice(),
+            [ToParent::Ready { device_name, .. }] if device_name == "test device"
+        ));
+    }
+
+    #[test]
+    fn an_unbound_handshake_leaves_the_device_to_the_resolver() {
+        let (seen, frames) = handshake(None);
+        assert_eq!(seen, None);
+        assert!(matches!(
+            frames.as_slice(),
+            [ToParent::Ready { device_name, .. }] if device_name == "test device"
+        ));
     }
 
     /// A default assignment; tests override fields as needed.
@@ -365,7 +431,8 @@ mod tests {
         assert_eq!(
             frames,
             vec![ToParent::Ready {
-                protocol: PROTOCOL_VERSION
+                protocol: PROTOCOL_VERSION,
+                device_name: String::new(),
             }]
         );
     }
@@ -377,6 +444,7 @@ mod tests {
             format: FormatId::new("host-test.v1").expect("format id"),
             checkpoint_interval_ms: u64::MAX,
             checkpoint_interval_steps: 0,
+            device: None,
         });
         let (result, frames) = drive(Behavior::Echo, &[opening]);
         assert!(matches!(result, Err(Error::Transport(_))));
@@ -388,7 +456,7 @@ mod tests {
         let mut input = Vec::new();
         write_frame(&mut input, &hello(u64::MAX, 0).encode()).expect("frame the input");
         let mut output = Vec::new();
-        let result = serve(input.as_slice(), &mut output, &|format| {
+        let result = serve(input.as_slice(), &mut output, &|format, _| {
             Err(Error::Validation(format!(
                 "unknown format id {:?}",
                 format.as_str()

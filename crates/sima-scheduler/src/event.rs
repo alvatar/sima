@@ -68,6 +68,17 @@ pub enum LifecycleEvent {
     /// never a task outcome: execution continues and the attempt's result is
     /// unaffected, so this event is the only trace.
     CheckpointDegraded { task: String, error: String },
+    /// A worker's child reported the device it computes on, at every spawn and
+    /// respawn. The name is the child's own, verbatim; a domain that uses no
+    /// device reports an empty one.
+    WorkerBound { worker: u64, device: String },
+    /// A chain's device class was absent from the run's devices, so its work
+    /// moved to a class that is present. Classes render `vendor:device`.
+    ChainRebound {
+        chain: u64,
+        from: String,
+        to: String,
+    },
     /// Every task committed and the manifest was written.
     RunFinalized { run: String, committed: usize },
     /// A definitive failure terminated the run; no manifest was written.
