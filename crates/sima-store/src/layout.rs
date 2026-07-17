@@ -11,6 +11,7 @@
 //! <root>/runs/<run-id-hex>/journal
 //! <root>/runs/<run-id-hex>/orchestrator.lock
 //! <root>/runs/<run-id-hex>/checkpoint/<slot>   mutable resume scratch
+//! <root>/runs/<run-id-hex>/placement/<chain>   mutable chain device binding
 //! <root>/runs/<run-id-hex>/remove-intent       resumable removal plan
 //! ```
 
@@ -84,6 +85,16 @@ pub(crate) fn checkpoint_dir(root: &Path, run: &RunId) -> PathBuf {
 /// A chain's checkpoint-slot path: `runs/<run-id-hex>/checkpoint/<slot>`.
 pub(crate) fn checkpoint_path(root: &Path, run: &RunId, slot: u64) -> PathBuf {
     checkpoint_dir(root, run).join(slot.to_string())
+}
+
+/// A run's placement directory: `runs/<run-id-hex>/placement/`.
+pub(crate) fn placement_dir(root: &Path, run: &RunId) -> PathBuf {
+    run_dir(root, run).join("placement")
+}
+
+/// A chain's placement-slot path: `runs/<run-id-hex>/placement/<chain>`.
+pub(crate) fn placement_path(root: &Path, run: &RunId, chain: u64) -> PathBuf {
+    placement_dir(root, run).join(chain.to_string())
 }
 
 /// A run's removal-intent path: `runs/<run-id-hex>/remove-intent`.
