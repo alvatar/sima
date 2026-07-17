@@ -692,6 +692,29 @@ device by a case-insensitive substring of its name or by its exact
 run starts, never when a config is read: `sima status` and `sima report` work
 where no device exists.
 
+**What a class identity is.** The `(vendor id, device id)` pair is PCI
+vocabulary, and the shape's reach is exactly the reach of PCI:
+
+- **Scope.** The pair is what PCI-enumerating GPU APIs report, so it is
+  neutral across them: two backends looking at the same physical card mint the
+  same class. The identity belongs to the hardware, not to the API that found
+  it.
+- **Limit.** The shape assumes PCI-identified hardware. A backend whose
+  devices carry no PCI ids — integrated Apple devices, virtual or remote
+  device abstractions — falls outside it.
+- **Why holding it is safe.** The two integers are interpreted only at the
+  execution-backend seam. Above it, the scheduler compares and hashes classes,
+  the pipeline matches the rendered `vendor:device` string, the store holds
+  opaque bytes, and the transport encodes the fields.
+
+A backend without PCI ids turns class identity into an opaque token the
+backend mints, with today's classes remaining valid tokens in their rendered
+hex form. That costs a protocol version bump (both binaries ship together, so
+a bump is free), invalidation of the advisory per-run placement slots (an
+unbound chain binds again), and the config selector's exact-id form matching
+tokens. Nothing identity-bearing carries the shape, so the change migrates no
+durable state.
+
 **The principle: device binding is derived operational state, never
 identity.** A run id never encodes devices; the store records what actually
 happened; hardware changes never strand a run.

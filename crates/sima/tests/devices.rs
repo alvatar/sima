@@ -29,7 +29,7 @@ use sima_pipeline::LifecycleEvent;
 /// The candidates and segments every multi-device test here runs.
 ///
 /// Sized so both classes provably pull work: a device's first task waits on
-/// its worker's handshake, which opens a Vulkan instance, so a class that
+/// its worker's handshake, which initializes its GPU backend, so a class that
 /// initializes faster would take every chain of a run whose tasks are quicker
 /// than that startup gap. At 128×128 over 600 steps a segment costs far more
 /// than a handshake, so the slower class's workers are still handed chains
