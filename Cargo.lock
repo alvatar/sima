@@ -764,6 +764,7 @@ name = "sima-domains"
 version = "0.1.0"
 dependencies = [
  "bytemuck",
+ "serde",
  "sima-contracts",
  "sima-core",
  "sima-model",
@@ -796,6 +797,7 @@ name = "sima-pipeline"
 version = "0.1.0"
 dependencies = [
  "serde",
+ "serde_json",
  "sima-contracts",
  "sima-core",
  "sima-domains",
@@ -858,6 +860,7 @@ name = "sima-worker"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "serde_json",
  "sima-contracts",
  "sima-core",
  "sima-domains",

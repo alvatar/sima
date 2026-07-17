@@ -183,6 +183,46 @@ pub(crate) fn kill_argv(host: Option<&str>, runtime: &str, container: &str) -> V
     argv
 }
 
+/// The argv that runs the one-shot enumeration probe in a throwaway container,
+/// ssh-wrapped when `host` is set: `[ssh …] <runtime> run --rm -i <run_args>
+/// <image> sima-worker --enumerate`. It carries the pool's `run_args` so the
+/// probe sees the same devices the workers will. The orchestrator runs it at
+/// run start to resolve a remote's device selectors.
+pub fn probe_argv(
+    host: Option<&str>,
+    runtime: &str,
+    image: &str,
+    run_args: &[String],
+) -> Vec<String> {
+    let mut argv = ssh_prefix(host);
+    argv.extend([
+        runtime.to_string(),
+        "run".to_string(),
+        "--rm".to_string(),
+        "-i".to_string(),
+    ]);
+    argv.extend(run_args.iter().cloned());
+    argv.push(image.to_string());
+    argv.push(WORKER_ENTRYPOINT.to_string());
+    argv.push("--enumerate".to_string());
+    argv
+}
+
+/// The argv that checks a worker image is present, ssh-wrapped when `host` is
+/// set: `[ssh …] <runtime> image inspect <image>`. The orchestrator runs it
+/// before spawning a remote pool, so a missing image is a clean error rather
+/// than a hanging handshake.
+pub fn image_inspect_argv(host: Option<&str>, runtime: &str, image: &str) -> Vec<String> {
+    let mut argv = ssh_prefix(host);
+    argv.extend([
+        runtime.to_string(),
+        "image".to_string(),
+        "inspect".to_string(),
+        image.to_string(),
+    ]);
+    argv
+}
+
 /// The ssh wrapper prefixing a remote command, or an empty vector for a local
 /// runtime. `BatchMode=yes` never prompts, so an unauthenticated host is a
 /// clean spawn error rather than a hang; `--` ends ssh's own options.
@@ -308,6 +348,74 @@ mod tests {
                 "kill",
                 "sima-w-run-3",
             ]
+        );
+    }
+
+    #[test]
+    fn the_probe_command_appends_enumerate_after_the_run_args() {
+        let argv = probe_argv(
+            Some("gpubox"),
+            "docker",
+            "sima-worker:latest",
+            &["--gpus".to_string(), "all".to_string()],
+        );
+        assert_eq!(
+            argv,
+            [
+                "ssh",
+                "-o",
+                "BatchMode=yes",
+                "gpubox",
+                "--",
+                "docker",
+                "run",
+                "--rm",
+                "-i",
+                "--gpus",
+                "all",
+                "sima-worker:latest",
+                "sima-worker",
+                "--enumerate",
+            ]
+        );
+    }
+
+    #[test]
+    fn the_probe_command_omits_the_ssh_prefix_when_local() {
+        let argv = probe_argv(None, "podman", "img", &[]);
+        assert_eq!(
+            argv,
+            [
+                "podman",
+                "run",
+                "--rm",
+                "-i",
+                "img",
+                "sima-worker",
+                "--enumerate"
+            ]
+        );
+    }
+
+    #[test]
+    fn the_image_inspect_command_wraps_in_ssh_when_remote() {
+        assert_eq!(
+            image_inspect_argv(Some("gpubox"), "docker", "img:tag"),
+            [
+                "ssh",
+                "-o",
+                "BatchMode=yes",
+                "gpubox",
+                "--",
+                "docker",
+                "image",
+                "inspect",
+                "img:tag",
+            ]
+        );
+        assert_eq!(
+            image_inspect_argv(None, "podman", "img:tag"),
+            ["podman", "image", "inspect", "img:tag"]
         );
     }
 

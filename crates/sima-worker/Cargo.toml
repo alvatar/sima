@@ -13,6 +13,7 @@ sima-core = { path = "../sima-core" }
 sima-model = { path = "../sima-model" }
 sima-contracts = { path = "../sima-contracts" }
 sima-domains = { path = "../sima-domains" }
+serde_json.workspace = true
 sima-transport = { path = "../sima-transport" }
 libc.workspace = true
 

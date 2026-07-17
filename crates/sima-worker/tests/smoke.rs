@@ -147,6 +147,33 @@ fn a_command_vector_spawn_reaches_the_worker_through_a_wrapper() {
     }
 }
 
+/// Requires a Vulkan device. Run with `cargo test -- --ignored`.
+#[test]
+#[ignore = "requires a Vulkan device"]
+fn the_enumerate_probe_prints_one_json_device_per_line() {
+    // The remote-resolution probe: `--enumerate` prints the machine's devices
+    // as JSON, one per line, and exits zero. Each line parses as a device.
+    let output = Command::new(env!("CARGO_BIN_EXE_sima-worker"))
+        .arg("--enumerate")
+        .output()
+        .expect("run the probe");
+    assert!(output.status.success(), "the probe exits zero");
+    let text = String::from_utf8(output.stdout).expect("probe output is UTF-8");
+    let devices: Vec<serde_json::Value> = text
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| serde_json::from_str(line).expect("each line is a JSON device"))
+        .collect();
+    assert!(!devices.is_empty(), "this machine has a compute device");
+    for device in &devices {
+        assert!(
+            device.get("vendor_id").is_some(),
+            "a device names its vendor"
+        );
+        assert!(device.get("device_id").is_some(), "a device names its id");
+    }
+}
+
 #[test]
 fn a_protocol_version_mismatch_exits_nonzero_before_ready() {
     let mut worker = Worker::spawn();

@@ -9,6 +9,7 @@
 //! [`enumerate_devices`]'s body — enumerate both, concatenate — while its
 //! callers keep holding these types.
 
+use serde::{Deserialize, Serialize};
 use sima_core::Result;
 
 /// A compute-capable device as enumerated: what it is, what it is called, and
@@ -17,7 +18,10 @@ use sima_core::Result;
 /// A device class is the `(vendor_id, device_id)` pair — two identical cards
 /// are one class with two members — and `member` is the position within the
 /// class, ordered by the backend's enumeration order.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// The serde form is the `sima-worker --enumerate` probe's wire shape: a
+/// human-readable device list, never identity-bearing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeviceInfo {
     pub vendor_id: u32,
     pub device_id: u32,
@@ -27,7 +31,8 @@ pub struct DeviceInfo {
 }
 
 /// The categories a device falls into.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum DeviceType {
     Discrete,
     Integrated,
