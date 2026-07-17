@@ -78,9 +78,19 @@ pub enum LifecycleEvent {
     /// unaffected, so this event is the only trace.
     CheckpointDegraded { task: String, error: String },
     /// A worker's child reported the device it computes on, at every spawn and
-    /// respawn. The name is the child's own, verbatim; a domain that uses no
-    /// device reports an empty one.
-    WorkerBound { worker: u64, device: String },
+    /// respawn. The device name and driver version are the child's own,
+    /// verbatim; a domain that uses no device reports both empty. The host is
+    /// the parent's account of where the worker's pool runs — empty for a local
+    /// slot, the configured destination for a remote one. A line lacking driver
+    /// or host reads each absent field as empty.
+    WorkerBound {
+        worker: u64,
+        device: String,
+        #[serde(default)]
+        driver: String,
+        #[serde(default)]
+        host: String,
+    },
     /// A chain's device class was absent from the run's devices, so its work
     /// moved to a class that is present. Classes render `vendor:device`.
     ChainRebound {
@@ -167,6 +177,36 @@ mod tests {
                 committed: 0,
             }
         );
+        Ok(())
+    }
+
+    #[test]
+    fn a_worker_bound_line_without_driver_or_host_reads_them_as_empty() -> Result<()> {
+        // A journal written before the driver and host fields existed. The
+        // absent fields read as empty, so an old journal's device attribution
+        // stays intact.
+        let line = r#"{"event":"worker_bound","worker":2,"device":"NVIDIA RTX PRO 2000"}"#;
+        assert_eq!(
+            LifecycleEvent::from_line(line)?,
+            LifecycleEvent::WorkerBound {
+                worker: 2,
+                device: "NVIDIA RTX PRO 2000".to_string(),
+                driver: String::new(),
+                host: String::new(),
+            }
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_worker_bound_line_round_trips_driver_and_host() -> Result<()> {
+        let event = LifecycleEvent::WorkerBound {
+            worker: 4,
+            device: "NVIDIA RTX PRO 2000".to_string(),
+            driver: "580.65.6".to_string(),
+            host: "gpubox".to_string(),
+        };
+        assert_eq!(LifecycleEvent::from_line(&event.to_line()?)?, event);
         Ok(())
     }
 

@@ -114,6 +114,9 @@ fn spawn_bound<'a>(ctx: &WorkerContext<'a>, worker: WorkerId) -> Result<Box<dyn 
         LifecycleEvent::WorkerBound {
             worker: worker.0,
             device: link.device_name().to_string(),
+            driver: link.driver().to_string(),
+            // Empty for a local slot; a pooled run names the host it spawned on.
+            host: String::new(),
         },
     );
     Ok(link)
@@ -618,7 +621,7 @@ mod tests {
             // The stub uses no device: it ignores the binding and names none.
             Arc::new(|_, _| {
                 let executor: Box<dyn Executor> = Box::new(StubExecutor::new()?);
-                Ok((executor, String::new()))
+                Ok((executor, String::new(), String::new()))
             }),
         )
     }

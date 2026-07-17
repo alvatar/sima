@@ -107,7 +107,7 @@ pub fn temp_store() -> (tempfile::TempDir, Store) {
 pub fn stub_resolver() -> SharedResolver {
     Arc::new(|_, _| {
         let executor: Box<dyn Executor> = Box::new(StubExecutor::new()?);
-        Ok((executor, String::new()))
+        Ok((executor, String::new(), String::new()))
     })
 }
 
@@ -122,7 +122,7 @@ pub fn device_naming_resolver() -> SharedResolver {
             Some(device) => format!("{} #{}", device.class(), device.member),
             None => String::new(),
         };
-        Ok((executor, name))
+        Ok((executor, name, String::new()))
     })
 }
 
@@ -138,7 +138,7 @@ pub fn named_class(device: &str) -> &str {
 pub fn worker_devices(events: &[LifecycleEvent]) -> HashMap<u64, String> {
     let mut devices = HashMap::new();
     for event in events {
-        if let LifecycleEvent::WorkerBound { worker, device } = event {
+        if let LifecycleEvent::WorkerBound { worker, device, .. } = event {
             devices.insert(*worker, device.clone());
         }
     }

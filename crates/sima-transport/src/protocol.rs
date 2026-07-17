@@ -19,7 +19,7 @@ use sima_core::{Dec, Enc, Error, Result};
 use sima_model::{EnvironmentId, FormatId};
 
 /// Version of the wire protocol; the handshake refuses a mismatch.
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 3;
 
 // Parent → child message tags.
 const TAG_HELLO: u8 = 0;
@@ -105,6 +105,11 @@ pub enum ToParent {
         /// parent journals verbatim: what the child resolved, never what the
         /// parent assumed.
         device_name: String,
+        /// The driver version of that device, as the backend reports it; empty
+        /// for a domain that uses no device. The one variable an environment
+        /// hash cannot see across machines of one class, carried so the journal
+        /// makes a cross-machine divergence diagnosable.
+        driver: String,
     },
     /// A due checkpoint save: the continuation-state payload to persist.
     Save(Vec<u8>),
@@ -209,8 +214,9 @@ impl ToParent {
             ToParent::Ready {
                 protocol,
                 device_name,
+                driver,
             } => {
-                enc.u8(TAG_READY).u32(*protocol).str(device_name);
+                enc.u8(TAG_READY).u32(*protocol).str(device_name).str(driver);
             }
             ToParent::Save(payload) => {
                 enc.u8(TAG_SAVE).bytes(payload);
@@ -248,6 +254,7 @@ impl ToParent {
             TAG_READY => ToParent::Ready {
                 protocol: dec.u32()?,
                 device_name: dec.str()?.to_string(),
+                driver: dec.str()?.to_string(),
             },
             TAG_SAVE => ToParent::Save(dec.bytes()?.to_vec()),
             TAG_DONE => {
@@ -412,11 +419,13 @@ mod tests {
             ToParent::Ready {
                 protocol: PROTOCOL_VERSION,
                 device_name: "NVIDIA RTX PRO 2000 Blackwell Generation Laptop GPU".to_string(),
+                driver: "580.65.6".to_string(),
             },
-            // A domain that uses no device reports no name.
+            // A domain that uses no device reports neither name nor driver.
             ToParent::Ready {
                 protocol: PROTOCOL_VERSION,
                 device_name: String::new(),
+                driver: String::new(),
             },
             ToParent::Save(vec![9, 8, 7]),
             ToParent::Save(Vec::new()),
@@ -452,7 +461,7 @@ mod tests {
     fn the_protocol_version_is_pinned() {
         // The handshake contract both binaries compile against; bumping it is
         // a deliberate act.
-        assert_eq!(PROTOCOL_VERSION, 2);
+        assert_eq!(PROTOCOL_VERSION, 3);
     }
 
     #[test]

@@ -105,6 +105,7 @@ impl WorkerTransport for SubprocessTransport {
             events,
             reader: Some(reader),
             device_name: String::new(),
+            driver: String::new(),
         };
         // The handshake: Hello out, Ready back. Any other answer — silence
         // ended by death, a wrong version, an undecodable echo — is a spawn
@@ -115,7 +116,10 @@ impl WorkerTransport for SubprocessTransport {
             ..self.hello.clone()
         };
         match handshake(&mut link, &hello) {
-            Ok(device_name) => link.device_name = device_name,
+            Ok((device_name, driver)) => {
+                link.device_name = device_name;
+                link.driver = driver;
+            }
             Err(e) => {
                 link.kill();
                 return Err(e);
@@ -126,24 +130,26 @@ impl WorkerTransport for SubprocessTransport {
 }
 
 /// Performs the parent's half of the handshake over a fresh link, returning
-/// the device the worker reported.
-fn handshake(link: &mut SubprocessLink, hello: &Hello) -> Result<String> {
+/// the device name and driver version the worker reported.
+fn handshake(link: &mut SubprocessLink, hello: &Hello) -> Result<(String, String)> {
     link.write(&ToChild::Hello(hello.clone()))?;
-    ready_device("worker", link.events.recv().ok())
+    ready_desc("worker", link.events.recv().ok())
 }
 
-/// Classifies a peer's answer to `Hello`: the device it reported, or why the
-/// handshake failed. `answer` is `None` when the event stream ended first.
+/// Classifies a peer's answer to `Hello`: the device name and driver version
+/// it reported, or why the handshake failed. `answer` is `None` when the event
+/// stream ended first.
 ///
 /// The parent's half of the handshake, shared by every transport and pure over
 /// the answer, so each refusal is verifiable without a peer to produce it.
 /// `peer` names the far side in the diagnostics.
-pub(crate) fn ready_device(peer: &str, answer: Option<Result<ToParent>>) -> Result<String> {
+pub(crate) fn ready_desc(peer: &str, answer: Option<Result<ToParent>>) -> Result<(String, String)> {
     match answer {
         Some(Ok(ToParent::Ready {
             protocol,
             device_name,
-        })) if protocol == PROTOCOL_VERSION => Ok(device_name),
+            driver,
+        })) if protocol == PROTOCOL_VERSION => Ok((device_name, driver)),
         // A Ready at another version is a version mismatch, not an unexpected
         // message: say which two versions disagree.
         Some(Ok(ToParent::Ready { protocol, .. })) => Err(Error::Transport(format!(
@@ -170,6 +176,8 @@ struct SubprocessLink {
     reader: Option<JoinHandle<()>>,
     /// The device the child reported, set once the handshake answers.
     device_name: String,
+    /// The driver version the child reported, set once the handshake answers.
+    driver: String,
 }
 
 impl SubprocessLink {
@@ -186,6 +194,10 @@ impl SubprocessLink {
 impl WorkerLink for SubprocessLink {
     fn device_name(&self) -> &str {
         &self.device_name
+    }
+
+    fn driver(&self) -> &str {
+        &self.driver
     }
 
     fn assign(&mut self, assignment: &Assignment) -> Result<()> {
@@ -339,20 +351,25 @@ mod tests {
         )
     }
 
-    /// The device a `Ready` at `protocol` resolves to, or the refusal.
-    fn answer_ready(protocol: u32) -> Result<String> {
-        ready_device(
+    /// The device name and driver a `Ready` at `protocol` resolves to, or the
+    /// refusal.
+    fn answer_ready(protocol: u32) -> Result<(String, String)> {
+        ready_desc(
             "worker",
             Some(Ok(ToParent::Ready {
                 protocol,
                 device_name: "a device".to_string(),
+                driver: "a driver".to_string(),
             })),
         )
     }
 
     #[test]
     fn a_ready_at_this_version_carries_the_device_through() -> Result<()> {
-        assert_eq!(answer_ready(PROTOCOL_VERSION)?, "a device");
+        assert_eq!(
+            answer_ready(PROTOCOL_VERSION)?,
+            ("a device".to_string(), "a driver".to_string())
+        );
         Ok(())
     }
 
@@ -377,7 +394,7 @@ mod tests {
 
     #[test]
     fn an_answer_that_is_not_ready_is_refused() {
-        let error = ready_device("worker", Some(Ok(ToParent::Save(vec![1]))))
+        let error = ready_desc("worker", Some(Ok(ToParent::Save(vec![1]))))
             .expect_err("the handshake takes Ready alone");
         assert!(matches!(error, Error::Transport(_)));
     }
@@ -385,7 +402,7 @@ mod tests {
     #[test]
     fn a_stream_that_ends_before_the_answer_is_refused() {
         // The child died during its own startup: no answer is coming.
-        let error = ready_device("worker", None).expect_err("nothing answered");
+        let error = ready_desc("worker", None).expect_err("nothing answered");
         let Error::Transport(message) = error else {
             panic!("expected a transport error");
         };
@@ -394,7 +411,7 @@ mod tests {
 
     #[test]
     fn a_frame_violation_during_the_handshake_surfaces_verbatim() {
-        let error = ready_device(
+        let error = ready_desc(
             "worker",
             Some(Err(Error::Encoding("unknown tag 9".to_string()))),
         )

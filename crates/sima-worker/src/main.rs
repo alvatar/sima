@@ -13,18 +13,19 @@ use sima_core::Result;
 use sima_model::FormatId;
 
 /// Resolves the executor for the handshake's format id through the domain
-/// registry, bound to the handshake's device, and names the device it opened.
+/// registry, bound to the handshake's device, and describes the device it
+/// opened as `(name, driver version)`.
 ///
-/// Both happen here, before the parent is told the worker is ready, so a
+/// All three happen here, before the parent is told the worker is ready, so a
 /// binding naming a device this machine does not have fails the handshake.
 fn resolver(
     format: &FormatId,
     device: Option<&DeviceBinding>,
-) -> Result<(Box<dyn Executor>, String)> {
+) -> Result<(Box<dyn Executor>, String, String)> {
     let domain = sima_domains::domain_for(format)?;
     let executor = (domain.executor)(device)?;
-    let device_name = (domain.device_name)(device)?;
-    Ok((executor, device_name))
+    let (device_name, driver) = (domain.device_desc)(device)?;
+    Ok((executor, device_name, driver))
 }
 
 /// Exit codes: 0 on the parent closing the pipe (clean end-of-stream), 1

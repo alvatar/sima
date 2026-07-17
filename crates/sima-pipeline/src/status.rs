@@ -186,7 +186,7 @@ impl RunStatus {
                 self.state = RunState::Interrupted;
                 self.occupancy.clear();
             }
-            LifecycleEvent::WorkerBound { worker, device } => {
+            LifecycleEvent::WorkerBound { worker, device, .. } => {
                 // A respawned worker restates its device; the last one is what
                 // its later commits ran on.
                 self.worker_devices.insert(*worker, device.clone());
@@ -295,6 +295,8 @@ mod tests {
         LifecycleEvent::WorkerBound {
             worker,
             device: device.to_string(),
+            driver: String::new(),
+            host: String::new(),
         }
     }
 

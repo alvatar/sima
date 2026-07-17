@@ -26,10 +26,11 @@ use crate::protocol::{Assignment, Hello, PROTOCOL_VERSION, ToChild, ToParent};
 /// Turns a handshake into the executor a host serves: the format id and the
 /// device binding in, the executor and the name of the device it opened out.
 ///
-/// The name is what the host answers `Ready` with, so it is the child's own
-/// account of where it computes. A domain that uses no device names none.
+/// The name and driver version are what the host answers `Ready` with, so they
+/// are the child's own account of where it computes. A domain that uses no
+/// device names neither.
 pub type Resolver<'a> =
-    dyn Fn(&FormatId, Option<&DeviceBinding>) -> Result<(Box<dyn Executor>, String)> + 'a;
+    dyn Fn(&FormatId, Option<&DeviceBinding>) -> Result<(Box<dyn Executor>, String, String)> + 'a;
 
 /// Hosts an executor over the transport: handshake, then the assign loop.
 ///
@@ -60,7 +61,7 @@ pub fn serve<R: Read, W: Write>(mut reader: R, writer: W, resolve: &Resolver<'_>
     }
     // Resolving here, before Ready, is what makes a binding that names an
     // absent device fail the handshake rather than the first task.
-    let (executor, device_name) = resolve(&hello.format, hello.device.as_ref())?;
+    let (executor, device_name, driver) = resolve(&hello.format, hello.device.as_ref())?;
 
     // The executor's offer channel borrows the writer during execute while
     // serve writes the outcome after it; the RefCell arbitrates the two
@@ -71,6 +72,7 @@ pub fn serve<R: Read, W: Write>(mut reader: R, writer: W, resolve: &Resolver<'_>
         &ToParent::Ready {
             protocol: PROTOCOL_VERSION,
             device_name,
+            driver,
         }
         .encode(),
     )?;
@@ -313,7 +315,7 @@ mod tests {
                 format: format.clone(),
                 behavior,
             });
-            Ok((executor, String::new()))
+            Ok((executor, String::new(), String::new()))
         })
     }
 
@@ -346,7 +348,7 @@ mod tests {
                 format: format.clone(),
                 behavior: Behavior::Echo,
             });
-            Ok((executor, "test device".to_string()))
+            Ok((executor, "test device".to_string(), "test driver".to_string()))
         };
         let mut input = Vec::new();
         write_frame(&mut input, &hello_on(device).encode()).expect("frame the input");
@@ -369,11 +371,12 @@ mod tests {
         };
         let (seen, frames) = handshake(Some(binding));
         assert_eq!(seen, Some(binding), "the binding reaches the resolver");
-        // Ready reports the device the executor construction named, so the
-        // parent journals what the child resolved rather than what it assumed.
+        // Ready reports the device and driver the resolver named, so the parent
+        // journals what the child resolved rather than what it assumed.
         assert!(matches!(
             frames.as_slice(),
-            [ToParent::Ready { device_name, .. }] if device_name == "test device"
+            [ToParent::Ready { device_name, driver, .. }]
+                if device_name == "test device" && driver == "test driver"
         ));
     }
 
@@ -430,6 +433,7 @@ mod tests {
             vec![ToParent::Ready {
                 protocol: PROTOCOL_VERSION,
                 device_name: String::new(),
+                driver: String::new(),
             }]
         );
     }

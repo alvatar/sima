@@ -92,8 +92,10 @@ fn the_worker_serves_a_stub_task_and_exits_cleanly_on_eof() {
         worker.receive(),
         ToParent::Ready {
             protocol: PROTOCOL_VERSION,
-            // The stub domain uses no device, so it names none.
+            // The stub domain uses no device, so it names neither device nor
+            // driver.
             device_name: String::new(),
+            driver: String::new(),
         }
     );
     worker.send(&assignment());

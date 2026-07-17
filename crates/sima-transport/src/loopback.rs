@@ -28,7 +28,9 @@ use crate::subprocess::{self, next_event, read_events};
 /// A [`host::Resolver`] the loopback shares across its host threads: one
 /// transport spawns many, each moving in a handle of its own.
 pub type SharedResolver = Arc<
-    dyn Fn(&FormatId, Option<&DeviceBinding>) -> Result<(Box<dyn Executor>, String)> + Send + Sync,
+    dyn Fn(&FormatId, Option<&DeviceBinding>) -> Result<(Box<dyn Executor>, String, String)>
+        + Send
+        + Sync,
 >;
 
 /// Spawns in-process workers: each is a thread running the real host loop
@@ -73,13 +75,14 @@ impl WorkerTransport for LoopbackTransport {
             ..self.hello.clone()
         };
         write_frame(&mut stdin, &ToChild::Hello(hello).encode())?;
-        let device_name = subprocess::ready_device("loopback host", events.recv().ok())?;
+        let (device_name, driver) = subprocess::ready_desc("loopback host", events.recv().ok())?;
         Ok(Box::new(LoopbackLink {
             stdin: Some(stdin),
             events,
             host: Some(host),
             reader: Some(reader),
             device_name,
+            driver,
         }))
     }
 }
@@ -94,11 +97,17 @@ struct LoopbackLink {
     reader: Option<JoinHandle<()>>,
     /// The device the host reported at the handshake.
     device_name: String,
+    /// The driver version the host reported at the handshake.
+    driver: String,
 }
 
 impl WorkerLink for LoopbackLink {
     fn device_name(&self) -> &str {
         &self.device_name
+    }
+
+    fn driver(&self) -> &str {
+        &self.driver
     }
 
     fn assign(&mut self, assignment: &Assignment) -> Result<()> {
@@ -207,7 +216,7 @@ mod tests {
             steps,
             Arc::new(|_, _| {
                 let executor: Box<dyn Executor> = Box::new(StubExecutor::new()?);
-                Ok((executor, String::new()))
+                Ok((executor, String::new(), String::new()))
             }),
         )
     }
@@ -232,11 +241,12 @@ mod tests {
         // Every transport refuses a version mismatch the same way, and says
         // which two versions disagree rather than reporting an unexpected
         // message.
-        let error = subprocess::ready_device(
+        let error = subprocess::ready_desc(
             "loopback host",
             Some(Ok(ToParent::Ready {
                 protocol: crate::protocol::PROTOCOL_VERSION - 1,
                 device_name: String::new(),
+                driver: String::new(),
             })),
         )
         .expect_err("a host at another version");
@@ -266,7 +276,7 @@ mod tests {
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .push(device.copied());
                 let executor: Box<dyn Executor> = Box::new(StubExecutor::new()?);
-                Ok((executor, "loopback device".to_string()))
+                Ok((executor, "loopback device".to_string(), String::new()))
             }),
         );
         let binding = DeviceBinding {

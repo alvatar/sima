@@ -33,6 +33,11 @@ pub trait WorkerLink: Send {
     /// resolved, never what the parent assumed.
     fn device_name(&self) -> &str;
 
+    /// The driver version the worker reported at the handshake; empty for a
+    /// domain that uses no device. Journaled beside the device name so a
+    /// cross-machine divergence within one class is diagnosable.
+    fn driver(&self) -> &str;
+
     /// Hands the worker one task. An `Err` is a broken pipe — the child is
     /// dead or dying; the caller classifies and replaces it.
     fn assign(&mut self, assignment: &Assignment) -> Result<()>;
