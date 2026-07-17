@@ -243,7 +243,7 @@ fn decode_record(bytes: &[u8], record_hash: &Hash, key: &TaskKey) -> Result<Task
 
 /// Every object a record references: the identity components (spec,
 /// params, environment, input state when present) and the artifacts.
-fn referenced_objects(record: &TaskRecord) -> impl Iterator<Item = Hash> + '_ {
+pub(crate) fn referenced_objects(record: &TaskRecord) -> impl Iterator<Item = Hash> + '_ {
     let identity = &record.identity;
     [
         *identity.spec.as_hash(),
