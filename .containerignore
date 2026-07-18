@@ -1,0 +1,5 @@
+# The build context is the workspace root; keep the large and irrelevant
+# directories out so the image build ships only source.
+target/
+work/
+.git/
