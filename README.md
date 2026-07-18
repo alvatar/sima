@@ -1,10 +1,8 @@
 <div align="center">
 
-# SIMA
+# SIMA<br/><sub><sup><sub><sup><sub><em>Search In the Manifold of Automata</em></sub></sup></sub></sup></sub>
 
-**Distributed GPU Program Search and Execution**
-
-<sub><em>Search In the Manifold of Automata</em></sub>
+**Heterogeneous Distributed Program Search on GPUs**
 
 [![ci](https://github.com/alvatar/sima/actions/workflows/ci.yml/badge.svg)](https://github.com/alvatar/sima/actions/workflows/ci.yml)
 
