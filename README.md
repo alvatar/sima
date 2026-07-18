@@ -2,17 +2,23 @@
 
 # SIMA<br/><sub><sup><sub><sup><sub><em>Search In the Manifold of Automata</em></sub></sup></sub></sup></sub>
 
-**Heterogeneous Distributed Program Search on GPUs**
+**Distributed Program Search on Heterogeneous GPUs**
 
 [![ci](https://github.com/alvatar/sima/actions/workflows/ci.yml/badge.svg)](https://github.com/alvatar/sima/actions/workflows/ci.yml)
 
 </div>
 
-SIMA generates candidate programs in volume, executes them deterministically on
-GPUs, and evaluates them through a staged, cost-aware funnel — recording every
-result with complete provenance. A candidate is data, not code: a spec (a
-network's weights, a cellular-automaton genome) interpreted by a fixed engine,
-so there is nothing to sandbox and execution cost is bounded by construction.
+*Code in this project is AI-generated under rigorous human review and
+engineering discipline.*
+
+SIMA generates candidate programs in volume — procedurally, evolutionarily, or
+proposed by LLMs — executes them deterministically on GPUs, and evaluates them
+through a staged, cost-aware funnel — recording every result with complete
+provenance. It targets workloads where models produce and judge candidates at
+scale: neural networks, LLM-driven autoresearch loops, and evolved program
+families. A candidate is data, not code: a spec (a network's weights, a
+genome) interpreted by a fixed engine, so there is nothing to sandbox and
+execution cost is bounded by construction.
 
 Systems in this space (FunSearch, AlphaEvolve) assume a homogeneous, trusted,
 effectively unbounded cluster. SIMA assumes a laptop, and treats everything
@@ -20,11 +26,14 @@ beyond it as an elastic, heterogeneous extension.
 
 ## What you can do
 
-- **Search a family of automata.** Declare a run in one `sima.toml`: a
-  generator seeds a population of genomes, the scheduler fans candidates out
-  across your GPUs, and every result lands in a content-addressed store.
-  Gray-Scott reaction-diffusion and asynchronous neural cellular automata are
-  in-tree; domains are pluggable.
+- **Search a space of programs.** Declare a run in one `sima.toml`: a
+  generator produces candidate specs — procedural, evolutionary, or an LLM
+  proposing edits against high-scoring parents — the scheduler fans them out
+  across your GPUs, and every result lands in a content-addressed store. The
+  primary workloads are neural networks and LLM-driven autoresearch loops; a
+  domain binds a spec format to its executor and generator, and
+  cellular-automata evolution (Gray-Scott, asynchronous neural CA) is the
+  first domain in-tree.
 - **Reproduce any result.** A task is identified by content — spec, run
   parameters, seed, environment, input state — so a recorded result can be
   regenerated from its identity alone, and any backend that returns a result
@@ -44,11 +53,6 @@ beyond it as an elastic, heterogeneous extension.
   migrate`, wiring it over ssh, is on the roadmap.
 - **Watch it run.** `sima tui` drives a run in a full-screen live view;
   `sima status` and `sima report` print run state and per-candidate stats.
-
-The roadmap (`TODO.md`) continues with provisioned backends (Vast.ai, Hetzner,
-AWS), budget guards, trust-tiered scheduling — redundant execution and quorum
-validation for cheap untrusted spot hardware — and a staged evaluation funnel
-with verdict classification.
 
 ## Quick start
 
