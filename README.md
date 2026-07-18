@@ -34,14 +34,6 @@ beyond it as an elastic, heterogeneous extension.
   domain binds a spec format to its executor and generator, and
   cellular-automata evolution (Gray-Scott, asynchronous neural CA) is the
   first domain in-tree.
-- **Reproduce any result.** A task is identified by content — spec, run
-  parameters, seed, environment, input state — so a recorded result can be
-  regenerated from its identity alone, and any backend that returns a result
-  for a given key is interchangeable with any other. This is the model of
-  Bazel's Remote Execution API, applied to program search.
-- **Stop and continue.** The store is the only durable state; resume, crash
-  recovery, and re-run are one code path that re-derives the runnable frontier
-  from the store. Kill `sima run` at any point and run it again.
 - **Scale from one GPU to many machines.** Multi-GPU on one host through
   device classes; remote workers run in containers over ssh from a
   `[[execution.remote]]` entry, speaking the same wire protocol — task inputs
@@ -53,6 +45,13 @@ beyond it as an elastic, heterogeneous extension.
   migrate`, wiring it over ssh, is on the roadmap.
 - **Watch it run.** `sima tui` drives a run in a full-screen live view;
   `sima status` and `sima report` print run state and per-candidate stats.
+- **Reproduce any result.** A task is identified by content — spec, run
+  parameters, seed, environment, input state — so a recorded result can be
+  regenerated from its identity alone, and any backend that returns a result
+  for a given key is interchangeable with any other.
+- **Stop and continue.** The store is the only durable state; resume, crash
+  recovery, and re-run are one code path that re-derives the runnable frontier
+  from the store. Kill `sima run` at any point and run it again.
 
 ## Quick start
 
