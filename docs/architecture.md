@@ -683,6 +683,83 @@ Nothing from the execution context reaches a committed record: the parent
 carries only identity into the `TaskRecord`, and the attempt and worker
 travel solely to the journal.
 
+### Remote workers
+
+A run's worker pool extends to manually provisioned remote machines over SSH.
+The wire protocol already ships every task input and output inline — the store
+never leaves the orchestrator — so a remote worker is the subprocess transport
+with a longer command line. The subprocess transport takes a command vector, a
+program and its arguments: a local worker runs the bare `sima-worker`, and a
+remote worker runs
+
+```
+ssh -o BatchMode=yes <host> -- <runtime> run --rm -i --name <container>
+  <run_args> <image> sima-worker
+```
+
+The same framed stdio protocol flows through `ssh → sshd → the container
+runtime → the worker`, unchanged. `BatchMode=yes` turns an unauthenticated
+host into a clean spawn error rather than a hang; the system `ssh` binary
+carries authentication, so there is no ssh library dependency. A local
+container pool omits the ssh prefix and runs the runtime directly.
+
+- **Worker pools.** A run drives a slice of pools: the local pool first, then
+  one pool per remote in config order. Each pool pairs a transport with the
+  host its workers run on and the device slots to spawn against it; worker ids
+  stay global and sequential across pools. Placement is untouched — a device
+  class is `(vendor_id, device_id)` regardless of machine, so a chain bound to
+  a class runs on whichever pool holds it, exactly as within one pool.
+
+- **Preemption is two-stage.** Closing the pipe alone would let a mid-compute
+  container run until its next write, so `kill` first fires
+  `<runtime> kill <container>` (ssh-wrapped when remote, best-effort and never
+  awaited so a dead connection cannot block the scheduler), then kills the
+  local client. The container's `--rm` reaps it, the fallback even if the
+  second-channel kill never lands.
+
+- **Cross-machine provenance.** The one variable an environment hash cannot see
+  across machines of one class is the driver version. Protocol v3's `Ready`
+  reports it, and `WorkerBound` records the host and driver alongside the
+  device, so a cross-machine divergence within a class is diagnosable from the
+  journal alone. `sima status` composes the device line by `(device, host)`,
+  rendering `device @ host` for a remote pool. Driver parity within a class is
+  the operator's responsibility, as it is across a driver upgrade on one
+  machine.
+
+- **Remote device selection.** `[[execution.remote]]` entries carry the same
+  device tables as a local pool. Resolving them needs the remote's device
+  list, so `sima-worker` doubles as the probe: `sima-worker --enumerate` prints
+  the enumerated devices as JSON and exits. At run start the orchestrator
+  verifies each remote's image is present, then runs the probe through the
+  remote's container and reuses the local selector resolution unchanged.
+
+- **The image.** A multi-stage `Containerfile` builds `sima-worker` in a
+  `rust:<pinned>-bookworm` stage whose glibc matches the `debian:bookworm-slim`
+  runtime stage — the development host's glibc is newer than any stable base,
+  so the binary is built inside. The runtime stage bakes the Vulkan loader and
+  the Mesa ICDs; NVIDIA user-space libraries are not baked, since they must
+  match the host kernel driver, and the host's nvidia-container-toolkit injects
+  them at container start through CDI. Delivery to a manual remote is
+  `podman save | ssh <host> docker load`.
+
+**Store synchronization** is a separate, standalone piece built here for M6.8's
+`sima migrate` to compose: a have/want protocol over any byte pipe, living in
+`sima-store` over `sima-core`'s framing. Each side advertises what it holds,
+computes `want = theirs − mine`, and streams the difference; received objects
+are re-hashed against their advertised digest (content addressing is the
+integrity check), and a record held on both sides under one key must be
+byte-identical or the sync fails naming the key. Its scope is deliberately
+narrow:
+
+| Data              | Synced? | Why                                              |
+|-------------------|---------|--------------------------------------------------|
+| task records      | yes     | the run's durable results and closure            |
+| CAS objects       | yes     | the artifact bytes records reference             |
+| checkpoint slots  | no      | mid-segment scratch; segments are the resume point |
+| placement slots   | no      | advisory; re-binds greedily on the other side    |
+| journal           | no      | observational; stays with its orchestrator       |
+| manifest          | no      | finalize re-derives it from records              |
+
 ### Device placement
 
 A machine's GPUs are rarely equal, and a run spreads its pool across them.

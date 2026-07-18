@@ -394,7 +394,7 @@ difference.
       selection by (vendor id, device id, member); `sima status` shows the
       run's device composition. Device identity never enters task keys or
       the environment hash (that is M8.1).
-- [ ] M4.3 Remote worker over SSH, against a manually provisioned machine.
+- [x] M4.3 Remote worker over SSH, against a manually provisioned machine.
       Settled at elaboration; split into three sequential PRs:
       (a) the two pre-existing test flakes (orchestrator-lock race in the
       segmented suite; resume-progress undercount in the crash suite —
@@ -418,7 +418,12 @@ difference.
       `[[execution.remote]]` entries carry per-remote device tables,
       resolved at run start through a `sima-worker --enumerate` probe;
       `sima status` shows per-host composition; acceptance runs over
-      `ssh localhost`.
+      `ssh localhost`. The ssh acceptance suite is written and gated on a
+      `SIMA_TEST_REMOTE` destination, pending the first SSH-reachable host;
+      the container image build was not exercised in the build environment
+      (rootless podman is unavailable there — nosuid mount, read-only
+      cgroups), so the image and its `--enumerate` device checks await a
+      host with a working container runtime.
 - [ ] M4.4 Distributed trace facade: a low-level structured-event interface
       usable from every crate at every layer, placed at or near `sima-core`
       so the strict downward layering holds and any layer can emit without an
@@ -483,7 +488,10 @@ leaked instances are leaked money.
 - [ ] M6.8 End-to-end slingshot consolidation (phase acceptance): start a
       search locally; interrupt it mid-simulation (inside a segment chain);
       `sima migrate` to a freshly provisioned instance — sync closure, resume
-      remotely, follow events live; sync results home; teardown verified.
+      remotely, follow events live; sync results home; teardown verified. The
+      have/want store sync `sima migrate` composes already exists in
+      `sima-store` (built and tested standalone in M4.3); this milestone wires
+      it into the migrate command.
       Assert the final manifest and segment states are identical to an
       uninterrupted local reference run
 
