@@ -116,11 +116,11 @@ fn build_remote_pools(
         };
         // A deterministic per-run, per-pool container-name stem; the transport
         // adds a spawn suffix. The run id prefix keeps names distinct across
-        // concurrent runs on one remote.
+        // concurrent runs on one machine.
         let stem = run.to_string();
         let prefix = format!("sima-w-{}-{index}", &stem[..stem.len().min(12)]);
         let transport = RemoteTransport::new(
-            Some(remote.host.clone()),
+            remote.host.clone(),
             remote.runtime.clone(),
             remote.image.clone(),
             remote.run_args.clone(),
@@ -131,24 +131,43 @@ fn build_remote_pools(
         );
         built.push(RemoteBuilt {
             transport,
-            host: remote.host.clone(),
+            // A container on this machine (no host) binds as local in the
+            // journal — it is the local machine.
+            host: remote.host.clone().unwrap_or_default(),
             slots,
         });
     }
     Ok(built)
 }
 
-/// Verifies a remote's worker image is present, failing with the command that
-/// loads it. A missing image must be a clean error, not a hanging handshake.
+/// Verifies a pool's worker image is present, failing with the command that
+/// puts it there. A missing image must be a clean error, not a hanging
+/// handshake. The fix differs by where the container runs: build it locally, or
+/// ship the local build to the remote.
 fn bootstrap_image(remote: &RemoteConfig) -> Result<()> {
-    let argv = image_inspect_argv(Some(&remote.host), &remote.runtime, &remote.image);
+    let argv = image_inspect_argv(remote.host.as_deref(), &remote.runtime, &remote.image);
     if command_succeeds(&argv)? {
         return Ok(());
     }
+    let (place, fix) = match &remote.host {
+        Some(host) => (
+            format!("on {host:?}"),
+            format!(
+                "podman save {} | ssh {host} {} load",
+                remote.image, remote.runtime
+            ),
+        ),
+        None => (
+            "locally".to_string(),
+            format!(
+                "podman build -t {} -f containers/worker/Containerfile .",
+                remote.image
+            ),
+        ),
+    };
     Err(Error::Validation(format!(
-        "remote {:?}: worker image {:?} is not present; load it with: \
-         podman save {} | ssh {} {} load",
-        remote.host, remote.image, remote.image, remote.host, remote.runtime
+        "worker image {:?} is not present {place}; put it there with: {fix}",
+        remote.image
     )))
 }
 
@@ -156,7 +175,7 @@ fn bootstrap_image(remote: &RemoteConfig) -> Result<()> {
 /// it reports.
 fn probe_remote_devices(remote: &RemoteConfig) -> Result<Vec<DeviceInfo>> {
     let argv = probe_argv(
-        Some(&remote.host),
+        remote.host.as_deref(),
         &remote.runtime,
         &remote.image,
         &remote.run_args,

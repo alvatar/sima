@@ -98,7 +98,9 @@ machines: an `[[execution.remote]]` entry names an ssh destination, and the
 orchestrator runs the worker inside a container there — `ssh <host> docker run
 -i <image> sima-worker` — with the same framed stdio protocol flowing through
 unchanged, since task inputs and results already cross inline and the store
-never leaves the orchestrator. A multi-stage container image bakes the worker
+never leaves the orchestrator. The same entry with no `host` runs its container
+on this machine, no ssh hop — the identical mechanism for isolating a worker in
+the shipped image locally. A multi-stage container image bakes the worker
 binary and the Vulkan loader; the host's container toolkit injects the NVIDIA
 user-space libraries at start. Device classes stay global across machines, and
 the journal records each worker's host and driver version so a run spread

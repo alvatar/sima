@@ -700,8 +700,10 @@ ssh -o BatchMode=yes <host> -- <runtime> run --rm -i --name <container>
 The same framed stdio protocol flows through `ssh → sshd → the container
 runtime → the worker`, unchanged. `BatchMode=yes` turns an unauthenticated
 host into a clean spawn error rather than a hang; the system `ssh` binary
-carries authentication, so there is no ssh library dependency. A local
-container pool omits the ssh prefix and runs the runtime directly.
+carries authentication, so there is no ssh library dependency. A
+`[[execution.remote]]` entry with no `host` runs its container on this machine:
+the transport omits the ssh prefix and runs the runtime directly, the same
+mechanism minus the ssh hop.
 
 - **Worker pools.** A run drives a slice of pools: the local pool first, then
   one pool per remote in config order. Each pool pairs a transport with the
