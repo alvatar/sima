@@ -6,6 +6,10 @@ orchestrator drives it exactly as a local worker — `docker run --rm -i` (or
 `podman run --rm -i`) is the whole invocation. The image carries no store and
 no run state; every task input and output crosses the pipe.
 
+`podman` and `docker` accept the same arguments here, so every single-runtime
+example below runs verbatim under either — read `podman` as `docker` throughout.
+Delivery names both together, one per machine.
+
 ## Build
 
 From the workspace root:
@@ -39,10 +43,14 @@ orchestrator runs to resolve a remote's device selectors.
 
 ## Delivery to a manually provisioned host
 
-Save the image locally and load it on the remote over ssh:
+Save the image with the local machine's runtime and load it with the remote's,
+over ssh:
 
 ```
 podman save sima-worker | ssh <host> docker load
 ```
 
-The same image pushes to a registry when automatic provisioning arrives.
+Each verb runs where its runtime lives: `podman save` on this machine writes the
+image to the pipe, `docker load` on `<host>` reads it — each name is that
+machine's own runtime. The same image pushes to a registry when automatic
+provisioning arrives.
