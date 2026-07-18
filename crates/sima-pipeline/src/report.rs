@@ -95,6 +95,7 @@ mod tests {
         Ok(LoadedConfig {
             run: stub_config()?,
             devices: Vec::new(),
+            remotes: Vec::new(),
             execution: sima_scheduler::ExecutionConfig::new(
                 1,
                 1,

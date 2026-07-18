@@ -80,6 +80,28 @@ pub fn resolve(
     Ok(entries)
 }
 
+/// Parses the `sima-worker --enumerate` probe's stdout — one JSON
+/// [`DeviceInfo`] per line — into the device list to resolve a remote's
+/// selectors against. Blank lines are ignored; a line that is not a valid
+/// device object is [`Error::Validation`]. Empty output is a machine with no
+/// compute device, an empty list, not an error.
+pub fn parse_enumeration(text: &str) -> Result<Vec<DeviceInfo>> {
+    let mut devices = Vec::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let device: DeviceInfo = serde_json::from_str(line).map_err(|e| {
+            Error::Validation(format!(
+                "device enumeration line {line:?} is not a device: {e}"
+            ))
+        })?;
+        devices.push(device);
+    }
+    Ok(devices)
+}
+
 /// Whether `select` names `device`: its exact `vendor:device` hex pair, or a
 /// case-insensitive substring of its name.
 fn matches(select: &str, device: &DeviceInfo) -> bool {
@@ -283,5 +305,37 @@ mod tests {
         assert_eq!(entries[0].workers, 3);
         assert_eq!(entries[1].workers, 1);
         Ok(())
+    }
+
+    #[test]
+    fn a_probe_output_round_trips_through_the_parser() -> Result<()> {
+        // The probe writes one JSON device per line; the parser reads exactly
+        // what `sima-worker --enumerate` serializes.
+        let devices = two_devices();
+        let text = devices
+            .iter()
+            .map(|d| serde_json::to_string(d).expect("device to JSON"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(parse_enumeration(&text)?, devices);
+        Ok(())
+    }
+
+    #[test]
+    fn probe_output_with_no_devices_parses_as_an_empty_list() -> Result<()> {
+        // A remote with no compute device: empty output is an empty list, not
+        // an error. Blank lines and trailing whitespace are ignored.
+        assert!(parse_enumeration("")?.is_empty());
+        assert!(parse_enumeration("\n  \n")?.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn a_malformed_probe_line_is_rejected() {
+        let error = parse_enumeration("{not valid json").expect_err("not a device");
+        let Error::Validation(message) = error else {
+            panic!("expected a validation error");
+        };
+        assert!(message.contains("is not a device"), "{message}");
     }
 }

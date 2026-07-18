@@ -341,7 +341,7 @@ impl FaultyExecutor {
 fn faulty_resolver() -> SharedResolver {
     Arc::new(|_, _| {
         let executor: Box<dyn Executor> = Box::new(FaultyExecutor::new());
-        Ok((executor, String::new()))
+        Ok((executor, String::new(), String::new()))
     })
 }
 

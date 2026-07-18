@@ -13,23 +13,49 @@ use sima_core::Result;
 use sima_model::FormatId;
 
 /// Resolves the executor for the handshake's format id through the domain
-/// registry, bound to the handshake's device, and names the device it opened.
+/// registry, bound to the handshake's device, and describes the device it
+/// opened as `(name, driver version)`.
 ///
-/// Both happen here, before the parent is told the worker is ready, so a
+/// All three happen here, before the parent is told the worker is ready, so a
 /// binding naming a device this machine does not have fails the handshake.
 fn resolver(
     format: &FormatId,
     device: Option<&DeviceBinding>,
-) -> Result<(Box<dyn Executor>, String)> {
+) -> Result<(Box<dyn Executor>, String, String)> {
     let domain = sima_domains::domain_for(format)?;
     let executor = (domain.executor)(device)?;
-    let device_name = (domain.device_name)(device)?;
-    Ok((executor, device_name))
+    let (device_name, driver) = (domain.device_desc)(device)?;
+    Ok((executor, device_name, driver))
+}
+
+/// Enumerates this machine's compute devices and prints one JSON object per
+/// device to stdout, one per line, then exits. The remote-resolution probe:
+/// the orchestrator runs this over ssh at run start to resolve a remote's
+/// device selectors against its actual hardware. The output is the serde form
+/// of [`sima_domains::devices::DeviceInfo`] — human-readable, never
+/// identity-bearing.
+fn enumerate() -> Result<()> {
+    for device in sima_domains::devices::enumerate_devices()? {
+        let line = serde_json::to_string(&device)
+            .map_err(|e| sima_core::Error::Encoding(format!("device to JSON: {e}")))?;
+        println!("{line}");
+    }
+    Ok(())
 }
 
 /// Exit codes: 0 on the parent closing the pipe (clean end-of-stream), 1
 /// with a stderr line on a protocol refusal or a serve error.
 fn main() {
+    // The one-shot enumeration probe: no protocol, no store, no orphan
+    // protection — enumerate, print, exit. It runs before anything else so a
+    // probe never spawns the handshake machinery.
+    if std::env::args().any(|arg| arg == "--enumerate") {
+        if let Err(e) = enumerate() {
+            eprintln!("sima-worker: {e}");
+            std::process::exit(1);
+        }
+        return;
+    }
     // Orphan protection, before anything else: if the orchestrator dies
     // without closing this process's stdin — SIGKILL, OOM kill — the kernel
     // delivers SIGKILL here. The stdin end-of-stream exit is the second,

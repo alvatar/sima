@@ -11,40 +11,47 @@
 
 use std::io::Read;
 use std::num::NonZeroU64;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use sima_contracts::DeviceBinding;
-use sima_core::{Error, Result};
+use sima_core::{Error, Result, read_frame, write_frame};
 use sima_model::FormatId;
 
 use crate::link::{LinkEvent, WorkerLink, WorkerTransport};
-use crate::protocol::{
-    Assignment, Hello, PROTOCOL_VERSION, ToChild, ToParent, read_frame, write_frame,
-};
+use crate::protocol::{Assignment, Hello, PROTOCOL_VERSION, ToChild, ToParent};
 
-/// Spawns `sima-worker` processes for one run: the worker binary's path plus
-/// the handshake every child receives — the run's format id and checkpoint
-/// cadence.
+/// Spawns worker processes for one run: the command vector to run — a program
+/// and its arguments — plus the handshake every child receives, the run's
+/// format id and checkpoint cadence.
+///
+/// The command vector is `sima-worker` with no arguments for a local worker,
+/// and a wrapper that ultimately execs a worker for anything longer-lived: the
+/// arguments carry the whole invocation, so the same spawn, handshake, and
+/// kill machinery serves a bare local child and a container client alike.
 pub struct SubprocessTransport {
     program: PathBuf,
+    args: Vec<String>,
     hello: Hello,
 }
 
 impl SubprocessTransport {
-    /// A transport spawning `program` for a run over `format` with the given
-    /// checkpoint cadence ([`Duration::MAX`] and `None` disable an axis).
+    /// A transport spawning `program args...` for a run over `format` with the
+    /// given checkpoint cadence ([`Duration::MAX`] and `None` disable an axis).
+    /// A local worker passes an empty argument vector.
     pub fn new(
         program: PathBuf,
+        args: Vec<String>,
         format: FormatId,
         checkpoint_interval: Duration,
         checkpoint_interval_steps: Option<NonZeroU64>,
     ) -> SubprocessTransport {
         SubprocessTransport {
             program,
+            args,
             hello: hello(format, checkpoint_interval, checkpoint_interval_steps),
         }
     }
@@ -79,73 +86,91 @@ pub(crate) fn hello(
 
 impl WorkerTransport for SubprocessTransport {
     fn spawn(&self, device: Option<&DeviceBinding>) -> Result<Box<dyn WorkerLink>> {
-        let mut child = Command::new(&self.program)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .spawn()
-            .map_err(|e| {
-                Error::Transport(format!(
-                    "spawning worker {} failed: {e}",
-                    self.program.display()
-                ))
-            })?;
-        // The pipes exist iff the spawn configured them; taking them cannot
-        // fail past a successful spawn.
-        let stdin = child
-            .stdin
-            .take()
-            .ok_or_else(|| Error::Transport("the spawned worker has no piped stdin".to_string()))?;
-        let stdout = child.stdout.take().ok_or_else(|| {
-            Error::Transport("the spawned worker has no piped stdout".to_string())
-        })?;
-        let (sender, events) = channel();
-        let reader = std::thread::spawn(move || read_events(stdout, sender));
-        let mut link = SubprocessLink {
-            child,
-            stdin: Some(stdin),
-            events,
-            reader: Some(reader),
-            device_name: String::new(),
-        };
-        // The handshake: Hello out, Ready back. Any other answer — silence
-        // ended by death, a wrong version, an undecodable echo — is a spawn
-        // failure, and the misbehaving child is killed and reaped before the
-        // error returns.
-        let hello = Hello {
-            device: device.copied(),
-            ..self.hello.clone()
-        };
-        match handshake(&mut link, &hello) {
-            Ok(device_name) => link.device_name = device_name,
-            Err(e) => {
-                link.kill();
-                return Err(e);
-            }
-        }
-        Ok(Box::new(link))
+        spawn_worker(&self.program, &self.args, &self.hello, device)
     }
 }
 
-/// Performs the parent's half of the handshake over a fresh link, returning
-/// the device the worker reported.
-fn handshake(link: &mut SubprocessLink, hello: &Hello) -> Result<String> {
-    link.write(&ToChild::Hello(hello.clone()))?;
-    ready_device("worker", link.events.recv().ok())
+/// Spawns `program args...` as a worker child, pipes its stdio, runs the
+/// reader thread, and performs the handshake bound to `device`. The returned
+/// link owns the child; a handshake failure kills and reaps it before the
+/// error returns. Shared by every transport that runs a worker over a local
+/// process — a bare `sima-worker` or a container client wrapping one.
+pub(crate) fn spawn_worker(
+    program: &Path,
+    args: &[String],
+    hello: &Hello,
+    device: Option<&DeviceBinding>,
+) -> Result<Box<dyn WorkerLink>> {
+    let mut child = Command::new(program)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .map_err(|e| {
+            Error::Transport(format!("spawning worker {} failed: {e}", program.display()))
+        })?;
+    // The pipes exist iff the spawn configured them; taking them cannot
+    // fail past a successful spawn.
+    let stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| Error::Transport("the spawned worker has no piped stdin".to_string()))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| Error::Transport("the spawned worker has no piped stdout".to_string()))?;
+    let (sender, events) = channel();
+    let reader = std::thread::spawn(move || read_events(stdout, sender));
+    let mut link = SubprocessLink {
+        child,
+        stdin: Some(stdin),
+        events,
+        reader: Some(reader),
+        device_name: String::new(),
+        driver: String::new(),
+    };
+    // The handshake: Hello out, Ready back. Any other answer — silence ended
+    // by death, a wrong version, an undecodable echo — is a spawn failure, and
+    // the misbehaving child is killed and reaped before the error returns.
+    let hello = Hello {
+        device: device.copied(),
+        ..hello.clone()
+    };
+    match handshake(&mut link, &hello) {
+        Ok((device_name, driver)) => {
+            link.device_name = device_name;
+            link.driver = driver;
+        }
+        Err(e) => {
+            link.kill();
+            return Err(e);
+        }
+    }
+    Ok(Box::new(link))
 }
 
-/// Classifies a peer's answer to `Hello`: the device it reported, or why the
-/// handshake failed. `answer` is `None` when the event stream ended first.
+/// Performs the parent's half of the handshake over a fresh link, returning
+/// the device name and driver version the worker reported.
+fn handshake(link: &mut SubprocessLink, hello: &Hello) -> Result<(String, String)> {
+    link.write(&ToChild::Hello(hello.clone()))?;
+    ready_desc("worker", link.events.recv().ok())
+}
+
+/// Classifies a peer's answer to `Hello`: the device name and driver version
+/// it reported, or why the handshake failed. `answer` is `None` when the event
+/// stream ended first.
 ///
 /// The parent's half of the handshake, shared by every transport and pure over
 /// the answer, so each refusal is verifiable without a peer to produce it.
 /// `peer` names the far side in the diagnostics.
-pub(crate) fn ready_device(peer: &str, answer: Option<Result<ToParent>>) -> Result<String> {
+pub(crate) fn ready_desc(peer: &str, answer: Option<Result<ToParent>>) -> Result<(String, String)> {
     match answer {
         Some(Ok(ToParent::Ready {
             protocol,
             device_name,
-        })) if protocol == PROTOCOL_VERSION => Ok(device_name),
+            driver,
+        })) if protocol == PROTOCOL_VERSION => Ok((device_name, driver)),
         // A Ready at another version is a version mismatch, not an unexpected
         // message: say which two versions disagree.
         Some(Ok(ToParent::Ready { protocol, .. })) => Err(Error::Transport(format!(
@@ -172,6 +197,8 @@ struct SubprocessLink {
     reader: Option<JoinHandle<()>>,
     /// The device the child reported, set once the handshake answers.
     device_name: String,
+    /// The driver version the child reported, set once the handshake answers.
+    driver: String,
 }
 
 impl SubprocessLink {
@@ -188,6 +215,10 @@ impl SubprocessLink {
 impl WorkerLink for SubprocessLink {
     fn device_name(&self) -> &str {
         &self.device_name
+    }
+
+    fn driver(&self) -> &str {
+        &self.driver
     }
 
     fn assign(&mut self, assignment: &Assignment) -> Result<()> {
@@ -335,26 +366,32 @@ mod tests {
     fn transport(program: &str) -> SubprocessTransport {
         SubprocessTransport::new(
             PathBuf::from(program),
+            Vec::new(),
             FormatId::new("stub.v1").expect("format id"),
             Duration::MAX,
             None,
         )
     }
 
-    /// The device a `Ready` at `protocol` resolves to, or the refusal.
-    fn answer_ready(protocol: u32) -> Result<String> {
-        ready_device(
+    /// The device name and driver a `Ready` at `protocol` resolves to, or the
+    /// refusal.
+    fn answer_ready(protocol: u32) -> Result<(String, String)> {
+        ready_desc(
             "worker",
             Some(Ok(ToParent::Ready {
                 protocol,
                 device_name: "a device".to_string(),
+                driver: "a driver".to_string(),
             })),
         )
     }
 
     #[test]
     fn a_ready_at_this_version_carries_the_device_through() -> Result<()> {
-        assert_eq!(answer_ready(PROTOCOL_VERSION)?, "a device");
+        assert_eq!(
+            answer_ready(PROTOCOL_VERSION)?,
+            ("a device".to_string(), "a driver".to_string())
+        );
         Ok(())
     }
 
@@ -379,7 +416,7 @@ mod tests {
 
     #[test]
     fn an_answer_that_is_not_ready_is_refused() {
-        let error = ready_device("worker", Some(Ok(ToParent::Save(vec![1]))))
+        let error = ready_desc("worker", Some(Ok(ToParent::Save(vec![1]))))
             .expect_err("the handshake takes Ready alone");
         assert!(matches!(error, Error::Transport(_)));
     }
@@ -387,7 +424,7 @@ mod tests {
     #[test]
     fn a_stream_that_ends_before_the_answer_is_refused() {
         // The child died during its own startup: no answer is coming.
-        let error = ready_device("worker", None).expect_err("nothing answered");
+        let error = ready_desc("worker", None).expect_err("nothing answered");
         let Error::Transport(message) = error else {
             panic!("expected a transport error");
         };
@@ -396,7 +433,7 @@ mod tests {
 
     #[test]
     fn a_frame_violation_during_the_handshake_surfaces_verbatim() {
-        let error = ready_device(
+        let error = ready_desc(
             "worker",
             Some(Err(Error::Encoding("unknown tag 9".to_string()))),
         )

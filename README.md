@@ -93,6 +93,19 @@ machines, another box on the LAN — are declared in the run configuration and
 differ in cost, reliability, and trust. The scheduler places work according to
 those parameters rather than treating the pool as uniform.
 
+**Remote workers run over SSH.** A run's pool extends to manually provisioned
+machines: an `[[execution.remote]]` entry names an ssh destination, and the
+orchestrator runs the worker inside a container there — `ssh <host> docker run
+-i <image> sima-worker` — with the same framed stdio protocol flowing through
+unchanged, since task inputs and results already cross inline and the store
+never leaves the orchestrator. The same entry with no `host` runs its container
+on this machine, no ssh hop — the identical mechanism for isolating a worker in
+the shipped image locally. A multi-stage container image bakes the worker
+binary and the Vulkan loader; the host's container toolkit injects the NVIDIA
+user-space libraries at start. Device classes stay global across machines, and
+the journal records each worker's host and driver version so a run spread
+across a laptop and a rented GPU box stays diagnosable.
+
 **Determinism survives heterogeneity.** Candidates are specs — data interpreted
 by fixed engines — so determinism is a property of the engines, established once,
 per family (see Determinism below). Execution cost is a deterministic function of

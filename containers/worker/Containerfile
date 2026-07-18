@@ -1,0 +1,22 @@
+# The sima-worker container image: a stateless executor host that speaks the
+# framed stdio protocol over the container's stdin/stdout.
+#
+# Two stages. The build stage compiles the worker against bookworm's glibc so
+# the binary runs on the matching runtime stage — the development host's glibc
+# is newer than any stable base, so the binary is built inside. The runtime
+# stage carries the Vulkan loader and the Mesa ICDs (Intel and AMD), baked.
+# NVIDIA user-space libraries are not baked: they must match the host kernel
+# driver, and the host's nvidia-container-toolkit injects them at container
+# start (--gpus all, or CDI).
+
+FROM rust:1.92-bookworm AS build
+WORKDIR /src
+COPY . .
+RUN cargo build --release -p sima-worker
+
+FROM debian:bookworm-slim AS runtime
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libvulkan1 mesa-vulkan-drivers \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=build /src/target/release/sima-worker /usr/local/bin/sima-worker
+ENTRYPOINT ["sima-worker"]

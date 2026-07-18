@@ -293,6 +293,27 @@ mod tests {
     }
 
     #[test]
+    fn the_composition_shows_the_host_for_remote_pools() {
+        // One device name on a local pool and a remote one: the remote entry
+        // reads `device @ host`, the local one the plain name, busiest first.
+        let mut status = a_status();
+        status.committed = 1000;
+        status.devices = [
+            ("NVIDIA RTX PRO 2000".to_string(), 612),
+            ("NVIDIA RTX PRO 2000 @ gpubox".to_string(), 388),
+        ]
+        .into_iter()
+        .collect();
+        let block = status_block(&status);
+        assert!(
+            block.contains(
+                "devices              NVIDIA RTX PRO 2000 ×612, NVIDIA RTX PRO 2000 @ gpubox ×388"
+            ),
+            "{block}"
+        );
+    }
+
+    #[test]
     fn a_run_that_moved_no_chain_reports_no_rebinds() {
         let mut status = a_status();
         status.devices = [("Intel Arc 140T".to_string(), 4)].into_iter().collect();

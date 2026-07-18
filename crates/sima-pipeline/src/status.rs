@@ -34,11 +34,14 @@ pub struct RunStatus {
     pub lease_expired: usize,
     /// Degraded checkpoint saves or loads across the whole journal.
     pub checkpoint_degraded: usize,
-    /// Committed tasks per device, by the device name its worker reported.
-    /// The run's composition: which hardware actually did the work, joined
-    /// from each commit and the device its worker was bound to. Empty for a
-    /// journal carrying no `WorkerBound` events — a run whose domain uses no
-    /// device names none.
+    /// Committed tasks per device, keyed by the composition label: the device
+    /// name for a local pool, or `device @ host` when a remote pool ran it, so
+    /// one device name on two machines counts separately. The run's
+    /// composition: which hardware, on which machine, actually did the work,
+    /// joined from each commit and the device its worker was bound to. Empty
+    /// for a journal carrying no `WorkerBound` events — a run whose domain uses
+    /// no device names none. An old journal without host fields renders the
+    /// plain device name, exactly as before.
     pub devices: BTreeMap<String, usize>,
     /// Chains whose device class went absent and moved, across the whole
     /// journal.
@@ -50,10 +53,11 @@ pub struct RunStatus {
     /// failed event clears it, and a segment's `RunStarted` empties the map.
     /// The tui reads this for its worker panel; `status` leaves it unprinted.
     pub occupancy: BTreeMap<u64, Occupancy>,
-    /// The device each worker reported at its last spawn: worker id → device
-    /// name. The key to reading a commit as work done on a device; the
-    /// rendered composition is [`devices`](RunStatus::devices).
-    worker_devices: BTreeMap<u64, String>,
+    /// The device and host each worker reported at its last spawn: worker id →
+    /// `(device, host)`. The key to reading a commit as work done on a device
+    /// of a machine; the rendered composition is
+    /// [`devices`](RunStatus::devices).
+    worker_devices: BTreeMap<u64, (String, String)>,
 }
 
 /// A worker's current lease, taken from the journal: the leased task's id
@@ -141,10 +145,13 @@ impl RunStatus {
                 // journal says who leased the task, and the worker said where
                 // it computes.
                 if let Some(worker) = self.free_task(task)
-                    && let Some(device) = self.worker_devices.get(&worker)
+                    && let Some((device, host)) = self.worker_devices.get(&worker)
                     && !device.is_empty()
                 {
-                    *self.devices.entry(device.clone()).or_default() += 1;
+                    *self
+                        .devices
+                        .entry(composition_label(device, host))
+                        .or_default() += 1;
                 }
             }
             LifecycleEvent::Failed { task, .. } => {
@@ -186,10 +193,17 @@ impl RunStatus {
                 self.state = RunState::Interrupted;
                 self.occupancy.clear();
             }
-            LifecycleEvent::WorkerBound { worker, device } => {
+            LifecycleEvent::WorkerBound {
+                worker,
+                device,
+                host,
+                ..
+            } => {
                 // A respawned worker restates its device; the last one is what
-                // its later commits ran on.
-                self.worker_devices.insert(*worker, device.clone());
+                // its later commits ran on. The host travels with it, so a
+                // commit is attributed to the machine that produced it.
+                self.worker_devices
+                    .insert(*worker, (device.clone(), host.clone()));
             }
             LifecycleEvent::ChainRebound { .. } => self.rebound_chains += 1,
             LifecycleEvent::Queued { .. } => {}
@@ -207,6 +221,18 @@ impl RunStatus {
             .map(|(&worker, _)| worker)?;
         self.occupancy.remove(&held);
         Some(held)
+    }
+}
+
+/// The composition key for a commit on `device` at `host`: the plain device
+/// name for a local pool (empty host), or `device @ host` for a remote one, so
+/// one device name on several machines counts separately. An old journal
+/// without a host renders the plain form.
+fn composition_label(device: &str, host: &str) -> String {
+    if host.is_empty() {
+        device.to_string()
+    } else {
+        format!("{device} @ {host}")
     }
 }
 
@@ -292,9 +318,15 @@ mod tests {
     }
 
     fn worker_bound(worker: u64, device: &str) -> LifecycleEvent {
+        worker_bound_on(worker, device, "")
+    }
+
+    fn worker_bound_on(worker: u64, device: &str, host: &str) -> LifecycleEvent {
         LifecycleEvent::WorkerBound {
             worker,
             device: device.to_string(),
+            driver: String::new(),
+            host: host.to_string(),
         }
     }
 
@@ -552,6 +584,32 @@ mod tests {
             [
                 ("Intel Arc 140T".to_string(), 1),
                 ("NVIDIA RTX PRO 2000".to_string(), 1),
+            ]
+            .into_iter()
+            .collect()
+        );
+    }
+
+    #[test]
+    fn one_device_name_on_two_hosts_composes_separately() {
+        // The same device name on a local pool and a remote one: each machine's
+        // commits count under their own label, keyed by (device, host).
+        let status = folded(vec![
+            started(3),
+            worker_bound(0, "NVIDIA RTX PRO 2000"),
+            worker_bound_on(1, "NVIDIA RTX PRO 2000", "gpubox"),
+            leased("aa", 0, 0),
+            leased("bb", 1, 0),
+            committed("aa"),
+            committed("bb"),
+            leased("cc", 0, 0),
+            committed("cc"),
+        ]);
+        assert_eq!(
+            status.devices,
+            [
+                ("NVIDIA RTX PRO 2000".to_string(), 2),
+                ("NVIDIA RTX PRO 2000 @ gpubox".to_string(), 1),
             ]
             .into_iter()
             .collect()

@@ -17,7 +17,7 @@ mod remove;
 mod report;
 mod status;
 
-pub use config::{LoadedConfig, load};
+pub use config::{LoadedConfig, RemoteConfig, load};
 pub use devices::DeviceSelector;
 pub use observe::RunObserver;
 pub use orchestrate::orchestrate;

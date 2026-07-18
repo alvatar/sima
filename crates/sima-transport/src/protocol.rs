@@ -2,12 +2,10 @@
 //!
 //! Frames travel on the child's stdin (parent → child) and stdout (child →
 //! parent); stderr is inherited from the parent for human-readable
-//! diagnostics. A frame is a `u32` little-endian payload length followed by
-//! the payload; the payload is built with the canonical
-//! [`Enc`]/[`Dec`] primitives and starts with a `u8` message tag. The
-//! canonical primitives are used for their checked, versioned framing —
-//! frames are transport encoding, never identity-bearing, and no frame is
-//! ever hashed.
+//! diagnostics. Framing is [`sima_core::frame`]: a `u32` little-endian payload
+//! length followed by the payload. Each payload is built with the canonical
+//! [`Enc`]/[`Dec`] primitives and starts with a `u8` message tag. Frames are
+//! transport encoding, never identity-bearing, and no frame is ever hashed.
 //!
 //! The conversation: the parent opens with [`Hello`] and the child answers
 //! [`ToParent::Ready`] (or refuses a protocol-version mismatch). Each task is
@@ -16,18 +14,12 @@
 //! [`ToParent::Fault`]. There is no shutdown message: the parent closing the
 //! child's stdin is the shutdown signal.
 
-use std::io::{Read, Write};
-
 use sima_contracts::{Artifact, DeviceBinding, Outcome, Stats};
 use sima_core::{Dec, Enc, Error, Result};
 use sima_model::{EnvironmentId, FormatId};
 
 /// Version of the wire protocol; the handshake refuses a mismatch.
-pub const PROTOCOL_VERSION: u32 = 2;
-
-/// Upper bound on a frame payload. A length above it is a protocol error —
-/// the guard against a corrupt length prefix allocating unboundedly.
-pub const MAX_PAYLOAD: u32 = 256 * 1024 * 1024;
+pub const PROTOCOL_VERSION: u32 = 3;
 
 // Parent → child message tags.
 const TAG_HELLO: u8 = 0;
@@ -113,6 +105,11 @@ pub enum ToParent {
         /// parent journals verbatim: what the child resolved, never what the
         /// parent assumed.
         device_name: String,
+        /// The driver version of that device, as the backend reports it; empty
+        /// for a domain that uses no device. The one variable an environment
+        /// hash cannot see across machines of one class, carried so the journal
+        /// makes a cross-machine divergence diagnosable.
+        driver: String,
     },
     /// A due checkpoint save: the continuation-state payload to persist.
     Save(Vec<u8>),
@@ -217,8 +214,12 @@ impl ToParent {
             ToParent::Ready {
                 protocol,
                 device_name,
+                driver,
             } => {
-                enc.u8(TAG_READY).u32(*protocol).str(device_name);
+                enc.u8(TAG_READY)
+                    .u32(*protocol)
+                    .str(device_name)
+                    .str(driver);
             }
             ToParent::Save(payload) => {
                 enc.u8(TAG_SAVE).bytes(payload);
@@ -256,6 +257,7 @@ impl ToParent {
             TAG_READY => ToParent::Ready {
                 protocol: dec.u32()?,
                 device_name: dec.str()?.to_string(),
+                driver: dec.str()?.to_string(),
             },
             TAG_SAVE => ToParent::Save(dec.bytes()?.to_vec()),
             TAG_DONE => {
@@ -361,68 +363,9 @@ fn decode_flag(dec: &mut Dec<'_>) -> Result<bool> {
     }
 }
 
-/// Writes one frame: the payload's `u32` little-endian length, the payload,
-/// and a flush, so the frame reaches the peer immediately. A payload above
-/// [`MAX_PAYLOAD`] is refused before anything is written — the encoder honors
-/// the same cap the decoder enforces.
-pub fn write_frame(writer: &mut dyn Write, payload: &[u8]) -> Result<()> {
-    let len = u32::try_from(payload.len())
-        .ok()
-        .filter(|len| *len <= MAX_PAYLOAD)
-        .ok_or_else(|| {
-            Error::Transport(format!(
-                "frame payload of {} bytes exceeds the {MAX_PAYLOAD} byte cap",
-                payload.len()
-            ))
-        })?;
-    let write = |result: std::io::Result<()>| {
-        result.map_err(|e| Error::Transport(format!("frame write failed: {e}")))
-    };
-    write(writer.write_all(&len.to_le_bytes()))?;
-    write(writer.write_all(payload))?;
-    write(writer.flush())
-}
-
-/// Reads one frame's payload. `Ok(None)` is end-of-stream at a frame
-/// boundary — the peer closed the pipe cleanly; a stream ending inside a
-/// frame, a length above [`MAX_PAYLOAD`], and any read failure are
-/// [`Error::Transport`].
-pub fn read_frame(reader: &mut dyn Read) -> Result<Option<Vec<u8>>> {
-    // The length prefix is read byte-wise so end-of-stream before the first
-    // byte — the clean shutdown — is distinguishable from a torn prefix.
-    let mut prefix = [0u8; 4];
-    let mut filled = 0;
-    while filled < prefix.len() {
-        match reader.read(&mut prefix[filled..]) {
-            Ok(0) if filled == 0 => return Ok(None),
-            Ok(0) => {
-                return Err(Error::Transport(format!(
-                    "frame length truncated after {filled} bytes"
-                )));
-            }
-            Ok(n) => filled += n,
-            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
-            Err(e) => {
-                return Err(Error::Transport(format!("frame read failed: {e}")));
-            }
-        }
-    }
-    let len = u32::from_le_bytes(prefix);
-    if len > MAX_PAYLOAD {
-        return Err(Error::Transport(format!(
-            "frame length {len} exceeds the {MAX_PAYLOAD} byte cap"
-        )));
-    }
-    let mut payload = vec![0u8; len as usize];
-    reader
-        .read_exact(&mut payload)
-        .map_err(|e| Error::Transport(format!("frame payload read failed: {e}")))?;
-    Ok(Some(payload))
-}
-
 #[cfg(test)]
 mod tests {
-    use sima_core::hash_bytes;
+    use sima_core::{hash_bytes, read_frame, write_frame};
 
     use super::*;
 
@@ -479,11 +422,13 @@ mod tests {
             ToParent::Ready {
                 protocol: PROTOCOL_VERSION,
                 device_name: "NVIDIA RTX PRO 2000 Blackwell Generation Laptop GPU".to_string(),
+                driver: "580.65.6".to_string(),
             },
-            // A domain that uses no device reports no name.
+            // A domain that uses no device reports neither name nor driver.
             ToParent::Ready {
                 protocol: PROTOCOL_VERSION,
                 device_name: String::new(),
+                driver: String::new(),
             },
             ToParent::Save(vec![9, 8, 7]),
             ToParent::Save(Vec::new()),
@@ -519,7 +464,7 @@ mod tests {
     fn the_protocol_version_is_pinned() {
         // The handshake contract both binaries compile against; bumping it is
         // a deliberate act.
-        assert_eq!(PROTOCOL_VERSION, 2);
+        assert_eq!(PROTOCOL_VERSION, 3);
     }
 
     #[test]
@@ -553,64 +498,6 @@ mod tests {
             assert_eq!(ToChild::decode(&payload)?, message);
         }
         assert_eq!(read_frame(&mut reader)?, None, "the stream ends cleanly");
-        Ok(())
-    }
-
-    #[test]
-    fn eof_at_a_frame_boundary_is_a_clean_end() -> Result<()> {
-        assert_eq!(read_frame(&mut [].as_slice())?, None);
-        Ok(())
-    }
-
-    #[test]
-    fn a_truncated_length_prefix_is_a_transport_error() {
-        // Two of the four length bytes: the stream died inside a frame.
-        let mut reader = [0x10u8, 0x00].as_slice();
-        assert!(matches!(read_frame(&mut reader), Err(Error::Transport(_))));
-    }
-
-    #[test]
-    fn a_truncated_payload_is_a_transport_error() -> Result<()> {
-        let mut pipe = Vec::new();
-        write_frame(&mut pipe, &[1, 2, 3, 4])?;
-        pipe.truncate(pipe.len() - 1);
-        let mut reader = pipe.as_slice();
-        assert!(matches!(read_frame(&mut reader), Err(Error::Transport(_))));
-        Ok(())
-    }
-
-    #[test]
-    fn an_oversize_length_prefix_is_rejected_before_allocating() {
-        // A corrupt prefix claiming just past the cap: the reader must refuse
-        // it from the four length bytes alone.
-        let over = (MAX_PAYLOAD + 1).to_le_bytes();
-        let mut reader = over.as_slice();
-        assert!(matches!(read_frame(&mut reader), Err(Error::Transport(_))));
-        // An absurd prefix likewise.
-        let absurd = u32::MAX.to_le_bytes();
-        let mut reader = absurd.as_slice();
-        assert!(matches!(read_frame(&mut reader), Err(Error::Transport(_))));
-    }
-
-    #[test]
-    fn a_payload_at_the_cap_boundary_frames_and_reads_back() -> Result<()> {
-        // The cap is inclusive: a payload of exactly MAX_PAYLOAD bytes passes
-        // both endpoints; one byte more is refused by the writer.
-        let payload = vec![0u8; MAX_PAYLOAD as usize];
-        let mut pipe = Vec::new();
-        write_frame(&mut pipe, &payload)?;
-        let mut reader = pipe.as_slice();
-        assert_eq!(
-            read_frame(&mut reader)?.expect("a frame").len(),
-            payload.len()
-        );
-        let oversize = vec![0u8; MAX_PAYLOAD as usize + 1];
-        let mut sink = Vec::new();
-        assert!(matches!(
-            write_frame(&mut sink, &oversize),
-            Err(Error::Transport(_))
-        ));
-        assert!(sink.is_empty(), "a refused frame writes nothing");
         Ok(())
     }
 

@@ -36,6 +36,7 @@ mod manifest;
 mod placement;
 mod retention;
 mod store;
+mod sync;
 #[cfg(test)]
 mod testutil;
 
@@ -44,3 +45,4 @@ pub use lock::RunLock;
 pub use manifest::{Manifest, ManifestEntry};
 pub use retention::RemovalReport;
 pub use store::Store;
+pub use sync::{SYNC_PROTOCOL_VERSION, SyncReport, SyncRole};

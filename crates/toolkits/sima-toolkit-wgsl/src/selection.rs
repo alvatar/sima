@@ -107,12 +107,13 @@ pub fn enumerate_devices() -> Result<Vec<DeviceInfo>> {
     })
 }
 
-/// The name of the device that `device` — or, for `None`, the default selection
-/// policy — would open.
+/// The name and driver version of the device that `device` — or, for `None`,
+/// the default selection policy — would open, in that order.
 ///
 /// Resolved over an instance of its own, so a caller can report the device it is
-/// bound to before any GPU engine is initialized.
-pub fn selected_device_name(device: Option<(u32, u32, u32)>) -> Result<String> {
+/// bound to before any GPU engine is initialized. Name and driver resolve
+/// together over the one short-lived instance the query opens.
+pub fn selected_device_desc(device: Option<(u32, u32, u32)>) -> Result<(String, String)> {
     instance::with_query_instance(|instance| {
         let choice = match device {
             Some((vendor_id, device_id, member)) => {
@@ -123,7 +124,10 @@ pub fn selected_device_name(device: Option<(u32, u32, u32)>) -> Result<String> {
         // SAFETY: `choice.physical_device` was enumerated from `instance` inside
         // this closure; both are alive here.
         let properties = unsafe { instance.get_physical_device_properties(choice.physical_device) };
-        Ok(device_name(&properties))
+        Ok((
+            device_name(&properties),
+            driver_version(properties.driver_version),
+        ))
     })
 }
 
@@ -499,7 +503,7 @@ mod tests {
         // onto hardware the machine does not have is caught: executor
         // construction is lazy and would not notice until the first task.
         assert!(matches!(
-            selected_device_name(Some((0xdead, 0xbeef, 0))),
+            selected_device_desc(Some((0xdead, 0xbeef, 0))),
             Err(Error::Gpu(_))
         ));
     }
@@ -512,10 +516,13 @@ mod tests {
         assert!(!devices.is_empty(), "at least one compute-capable device");
         for device in &devices {
             assert!(!device.name.is_empty());
-            let name =
-                selected_device_name(Some((device.vendor_id, device.device_id, device.member)))
-                    .expect("resolve the device name");
+            let (name, driver) =
+                selected_device_desc(Some((device.vendor_id, device.device_id, device.member)))
+                    .expect("resolve the device description");
             assert_eq!(name, device.name);
+            // The driver version is operational provenance; it decodes to the
+            // standard three-part layout and is never empty for a real device.
+            assert!(!driver.is_empty(), "driver version reported");
         }
     }
 }

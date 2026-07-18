@@ -31,16 +31,35 @@
 //! [[execution.device]]
 //! select = "8086:7d67"
 //! workers = 1
+//!
+//! [[execution.remote]]      # optional; a worker pool running inside a
+//! host     = "gpubox"       # container. host is optional: an ssh destination
+//! workers  = 4              # runs the container there; absent runs it on this
+//! image    = "localhost/sima-worker:latest"   # machine with no ssh hop.
+//! runtime  = "docker"       # optional; docker | podman
+//! run_args = ["--gpus", "all"]                # optional; verbatim run flags
+//!                           # workers XOR [[execution.remote.device]] tables
+//! [[execution.remote.device]]  # optional; same semantics as local
+//! select  = "nvidia"
+//! workers = 4
 //! ```
 //!
 //! The two checkpoint cadences are unioned: a save is due when either fires,
 //! and either present enables checkpointing. With both absent, no checkpoint
 //! is ever written.
 //!
-//! With `[[execution.device]]` entries the pool is their sum, so the top-level
-//! `workers` key must be absent; without them it is required. Each `select`
-//! must name exactly one device, resolved against the machine's hardware when
-//! a run starts — never at load, so reading a config needs no GPU.
+//! With `[[execution.device]]` entries the local pool is their sum, so the
+//! top-level `workers` key must be absent; without either, there is no local
+//! pool — valid only when an `[[execution.remote]]` pool carries the run. Each
+//! `select` must name exactly one device, resolved against the machine's
+//! hardware when a run starts — never at load, so reading a config needs no
+//! GPU.
+//!
+//! Each `[[execution.remote]]` pool sets `workers` or its own device tables but
+//! never both nor neither, its `runtime` is `docker` or `podman`, and no two
+//! entries name one machine — each a validation error naming the machine. A
+//! pool's device selectors resolve at run start, over the machine its container
+//! runs on (the `host`, or this one when `host` is absent).
 //!
 //! The `[run]` section is canonicalized into [`RunConfig`], so its fields
 //! define the run id; `[execution]` is operational and never hashed — a run
@@ -63,6 +82,11 @@ use sima_scheduler::ExecutionConfig;
 
 use crate::devices::DeviceSelector;
 
+/// The image a remote pool runs when its config names none.
+const DEFAULT_IMAGE: &str = "localhost/sima-worker:latest";
+/// The container runtime a remote pool uses when its config names none.
+const DEFAULT_RUNTIME: &str = "docker";
+
 /// A `sima.toml`, loaded and translated: the identity-bearing
 /// [`RunConfig`], the operational [`ExecutionConfig`], and the store path
 /// resolved relative to the config file.
@@ -70,14 +94,38 @@ use crate::devices::DeviceSelector;
 pub struct LoadedConfig {
     /// The identity section, canonicalized; its id is the run id.
     pub run: RunConfig,
-    /// The execution section; never hashed. Its device entries are empty here:
-    /// a selector names real hardware, so it resolves where the run starts.
+    /// The execution section; never hashed. Its `workers` is the local pool
+    /// size — `0` for a run with no local pool — and its device entries are
+    /// empty here: a selector names real hardware, so it resolves where the
+    /// run starts.
     pub execution: ExecutionConfig,
-    /// The devices the run asked for, unresolved. Empty means the run takes
-    /// the backend's default selection.
+    /// The local pool's devices, unresolved. Empty means the local pool takes
+    /// the backend's default selection, or that there is no local pool.
     pub devices: Vec<DeviceSelector>,
+    /// The remote pools, in config order. Empty means a local-only run.
+    pub remotes: Vec<RemoteConfig>,
     /// The store path, resolved against the config file's directory.
     pub store: PathBuf,
+}
+
+/// One resolved `[[execution.remote]]` pool: where its container runs and the
+/// container settings, with the device selectors left unresolved until the run
+/// starts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteConfig {
+    /// The ssh destination (an alias or `user@host`) the container runs on, or
+    /// `None` for a container on this machine with no ssh hop.
+    pub host: Option<String>,
+    /// The worker image to run.
+    pub image: String,
+    /// The container runtime: `docker` or `podman`.
+    pub runtime: String,
+    /// Verbatim flags for the container-run command — GPU access and the like.
+    pub run_args: Vec<String>,
+    /// The plain worker count, when the pool uses no device tables.
+    pub workers: Option<usize>,
+    /// The device selectors, unresolved; empty when `workers` is set.
+    pub devices: Vec<DeviceSelector>,
 }
 
 /// The raw file structure `toml` parses into. Strict on the structural
@@ -131,6 +179,9 @@ struct ExecutionSection {
     /// backend's default device selection.
     #[serde(default)]
     device: Vec<DeviceSection>,
+    /// The `[[execution.remote]]` pools; absent means a local-only run.
+    #[serde(default)]
+    remote: Vec<RemoteSection>,
 }
 
 /// One `[[execution.device]]` entry: which device, and how many workers on it.
@@ -139,6 +190,22 @@ struct ExecutionSection {
 struct DeviceSection {
     select: String,
     workers: usize,
+}
+
+/// One `[[execution.remote]]` pool: workers inside a container, on an ssh
+/// destination or — when `host` is absent — on this machine. `workers` and
+/// `[[execution.remote.device]]` are exclusive, as they are locally.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RemoteSection {
+    host: Option<String>,
+    workers: Option<usize>,
+    image: Option<String>,
+    runtime: Option<String>,
+    #[serde(default)]
+    run_args: Vec<String>,
+    #[serde(default)]
+    device: Vec<DeviceSection>,
 }
 
 /// Loads and translates the `sima.toml` at `path`. Parse errors, unknown
@@ -215,9 +282,11 @@ pub fn load(path: &Path) -> Result<LoadedConfig> {
             })
         })
         .transpose()?;
-    // The pool size comes from one place or the other, never both: with device
-    // entries the pool is their sum, so a top-level count could only disagree
-    // with it.
+    let remotes = resolve_remotes(path, file.execution.remote)?;
+    // The local pool size comes from one place or the other, never both: with
+    // device entries the pool is their sum, so a top-level count could only
+    // disagree with it. With neither, there is no local pool — valid only when
+    // a remote pool carries the work.
     let workers = match (file.execution.workers, file.execution.device.is_empty()) {
         (Some(_), false) => {
             return Err(Error::Validation(format!(
@@ -226,14 +295,17 @@ pub fn load(path: &Path) -> Result<LoadedConfig> {
                 path.display()
             )));
         }
-        (None, true) => {
+        (None, true) if remotes.is_empty() => {
             return Err(Error::Validation(format!(
-                "{}: execution.workers is required without [[execution.device]] entries",
+                "{}: execution.workers is required without [[execution.device]] entries \
+                 or an [[execution.remote]] pool",
                 path.display()
             )));
         }
         (Some(workers), true) => workers,
         (None, false) => file.execution.device.iter().map(|d| d.workers).sum(),
+        // No local pool: the remotes carry the run.
+        (None, true) => 0,
     };
     let execution = ExecutionConfig::new(
         workers,
@@ -263,8 +335,77 @@ pub fn load(path: &Path) -> Result<LoadedConfig> {
         run,
         execution,
         devices,
+        remotes,
         store,
     })
+}
+
+/// Validates the `[[execution.remote]]` entries and resolves each into a
+/// [`RemoteConfig`], its device selectors left unresolved. Each entry sets
+/// `workers` or `[[execution.remote.device]]` but never both nor neither, its
+/// `runtime` is `docker` or `podman`, and no two entries name one machine — each
+/// a [`Error::Validation`] naming the machine, so the fix is one line. A missing
+/// `host` names this machine, so at most one entry may omit it.
+fn resolve_remotes(path: &Path, sections: Vec<RemoteSection>) -> Result<Vec<RemoteConfig>> {
+    let mut remotes: Vec<RemoteConfig> = Vec::with_capacity(sections.len());
+    for section in sections {
+        // The machine an entry names, for error messages: the ssh destination,
+        // or this machine when the container runs locally.
+        let machine = match &section.host {
+            Some(host) => format!("host {host:?}"),
+            None => "the local machine".to_string(),
+        };
+        if remotes.iter().any(|r| r.host == section.host) {
+            return Err(Error::Validation(format!(
+                "{}: two [[execution.remote]] entries name {machine}; one entry per machine",
+                path.display(),
+            )));
+        }
+        // Workers XOR device tables, exactly as locally.
+        match (section.workers, section.device.is_empty()) {
+            (Some(_), false) => {
+                return Err(Error::Validation(format!(
+                    "{}: remote {machine} sets both workers and [[execution.remote.device]]; \
+                     the device entries carry the workers",
+                    path.display(),
+                )));
+            }
+            (None, true) => {
+                return Err(Error::Validation(format!(
+                    "{}: remote {machine} sets neither workers nor [[execution.remote.device]]; \
+                     one is required",
+                    path.display(),
+                )));
+            }
+            _ => {}
+        }
+        let runtime = section
+            .runtime
+            .unwrap_or_else(|| DEFAULT_RUNTIME.to_string());
+        if runtime != "docker" && runtime != "podman" {
+            return Err(Error::Validation(format!(
+                "{}: remote {machine} runtime {runtime:?} is not one of docker, podman",
+                path.display(),
+            )));
+        }
+        let devices = section
+            .device
+            .into_iter()
+            .map(|entry| DeviceSelector {
+                select: entry.select,
+                workers: entry.workers,
+            })
+            .collect();
+        remotes.push(RemoteConfig {
+            host: section.host,
+            image: section.image.unwrap_or_else(|| DEFAULT_IMAGE.to_string()),
+            runtime,
+            run_args: section.run_args,
+            workers: section.workers,
+            devices,
+        });
+    }
+    Ok(remotes)
 }
 
 #[cfg(test)]
@@ -434,6 +575,232 @@ mod tests {
         // And the same run with a plain worker count is still that run.
         let no_devices = id_of(&format!("{DEVICE_BASE}\nworkers = 4\n"));
         assert_eq!(one_device, no_devices);
+    }
+
+    #[test]
+    fn a_remote_pool_loads_with_its_defaults() -> Result<()> {
+        let loaded = load_text(&format!(
+            "{BASE}\n[[execution.remote]]\nhost = \"gpubox\"\nworkers = 4\n"
+        ))?;
+        assert_eq!(loaded.remotes.len(), 1);
+        let remote = &loaded.remotes[0];
+        assert_eq!(remote.host.as_deref(), Some("gpubox"));
+        assert_eq!(remote.image, "localhost/sima-worker:latest");
+        assert_eq!(remote.runtime, "docker");
+        assert!(remote.run_args.is_empty());
+        assert_eq!(remote.workers, Some(4));
+        assert!(remote.devices.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn a_remote_pool_takes_explicit_image_runtime_and_run_args() -> Result<()> {
+        let loaded = load_text(&format!(
+            r#"{BASE}
+            [[execution.remote]]
+            host = "gpubox"
+            workers = 2
+            image = "sima-worker:pinned"
+            runtime = "podman"
+            run_args = ["--gpus", "all"]
+            "#
+        ))?;
+        let remote = &loaded.remotes[0];
+        assert_eq!(remote.image, "sima-worker:pinned");
+        assert_eq!(remote.runtime, "podman");
+        assert_eq!(remote.run_args, vec!["--gpus", "all"]);
+        Ok(())
+    }
+
+    #[test]
+    fn a_remote_pool_with_device_tables_loads_unresolved() -> Result<()> {
+        let loaded = load_text(&format!(
+            r#"{BASE}
+            [[execution.remote]]
+            host = "gpubox"
+
+            [[execution.remote.device]]
+            select = "nvidia"
+            workers = 4
+            "#
+        ))?;
+        let remote = &loaded.remotes[0];
+        assert_eq!(remote.workers, None);
+        assert_eq!(remote.devices.len(), 1);
+        assert_eq!(remote.devices[0].select, "nvidia");
+        assert_eq!(remote.devices[0].workers, 4);
+        Ok(())
+    }
+
+    #[test]
+    fn a_remote_with_both_workers_and_devices_is_rejected() {
+        let error = load_text(&format!(
+            r#"{BASE}
+            [[execution.remote]]
+            host = "gpubox"
+            workers = 2
+
+            [[execution.remote.device]]
+            select = "nvidia"
+            workers = 4
+            "#
+        ))
+        .expect_err("the remote pool would have two sizes");
+        let Err(Error::Validation(message)) = Err::<(), _>(error) else {
+            panic!("expected a validation error");
+        };
+        assert!(message.contains("gpubox"), "names the host: {message}");
+    }
+
+    #[test]
+    fn a_remote_with_neither_workers_nor_devices_is_rejected() {
+        let error = load_text(&format!(
+            "{BASE}\n[[execution.remote]]\nhost = \"gpubox\"\n"
+        ))
+        .expect_err("the remote pool has no size");
+        let Err(Error::Validation(message)) = Err::<(), _>(error) else {
+            panic!("expected a validation error");
+        };
+        assert!(message.contains("gpubox"), "names the host: {message}");
+    }
+
+    #[test]
+    fn duplicate_remote_hosts_are_rejected() {
+        let error = load_text(&format!(
+            r#"{BASE}
+            [[execution.remote]]
+            host = "gpubox"
+            workers = 2
+
+            [[execution.remote]]
+            host = "gpubox"
+            workers = 3
+            "#
+        ))
+        .expect_err("one entry per machine");
+        let Err(Error::Validation(message)) = Err::<(), _>(error) else {
+            panic!("expected a validation error");
+        };
+        assert!(message.contains("gpubox"), "names the host: {message}");
+    }
+
+    #[test]
+    fn a_host_less_remote_loads_as_a_local_container_pool() -> Result<()> {
+        // No `host`: the container runs on this machine, no ssh hop. The rest of
+        // the pool's settings are unchanged.
+        let loaded = load_text(&format!(
+            r#"{BASE}
+            [[execution.remote]]
+            runtime = "podman"
+            run_args = ["--device", "/dev/dri"]
+
+            [[execution.remote.device]]
+            select = "nvidia"
+            workers = 2
+            "#
+        ))?;
+        let remote = &loaded.remotes[0];
+        assert_eq!(remote.host, None, "a container pool on this machine");
+        assert_eq!(remote.runtime, "podman");
+        assert_eq!(remote.run_args, vec!["--device", "/dev/dri"]);
+        assert_eq!(remote.devices.len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn two_host_less_remotes_are_rejected() {
+        // A missing host names this machine, so two such entries collide the
+        // same way two entries naming one ssh destination do.
+        let error = load_text(&format!(
+            r#"{BASE}
+            [[execution.remote]]
+            workers = 2
+
+            [[execution.remote]]
+            workers = 3
+            "#
+        ))
+        .expect_err("one entry per machine, and the local machine is one");
+        let Err(Error::Validation(message)) = Err::<(), _>(error) else {
+            panic!("expected a validation error");
+        };
+        assert!(
+            message.contains("the local machine"),
+            "names the machine: {message}"
+        );
+    }
+
+    #[test]
+    fn a_local_container_pool_coexists_with_a_local_bare_pool() -> Result<()> {
+        // The bare local pool and a host-less container pool are two distinct
+        // pools on one machine; both load.
+        let loaded = load_text(&format!(
+            r#"{BASE}
+            [[execution.remote]]
+            workers = 2
+            "#
+        ))?;
+        assert_eq!(loaded.execution.workers, 4, "the bare local pool");
+        assert_eq!(loaded.remotes.len(), 1);
+        assert_eq!(loaded.remotes[0].host, None);
+        Ok(())
+    }
+
+    #[test]
+    fn an_unknown_remote_runtime_is_rejected() {
+        let error = load_text(&format!(
+            r#"{BASE}
+            [[execution.remote]]
+            host = "gpubox"
+            workers = 2
+            runtime = "containerd"
+            "#
+        ))
+        .expect_err("the runtime must be docker or podman");
+        let Err(Error::Validation(message)) = Err::<(), _>(error) else {
+            panic!("expected a validation error");
+        };
+        assert!(
+            message.contains("containerd"),
+            "names the runtime: {message}"
+        );
+    }
+
+    #[test]
+    fn a_run_may_have_no_local_pool_when_a_remote_carries_it() -> Result<()> {
+        // No top-level workers and no local device tables: the remote pool is
+        // the whole run, so the local pool size is zero.
+        let loaded = load_text(&format!(
+            "{DEVICE_BASE}\n[[execution.remote]]\nhost = \"gpubox\"\nworkers = 4\n"
+        ))?;
+        assert_eq!(loaded.execution.workers, 0, "no local pool");
+        assert_eq!(loaded.remotes.len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn a_remote_section_rejects_an_unknown_key() {
+        let error = load_text(&format!(
+            r#"{BASE}
+            [[execution.remote]]
+            host = "gpubox"
+            workers = 2
+            user = "root"
+            "#
+        ))
+        .expect_err("remote entries are strict");
+        assert!(matches!(error, Error::Validation(_)));
+    }
+
+    #[test]
+    fn remotes_never_enter_run_identity() {
+        // `[execution]` is operational: adding a remote pool does not change
+        // which run the `[run]` section names.
+        let local_only = id_of(BASE);
+        let with_remote = id_of(&format!(
+            "{BASE}\n[[execution.remote]]\nhost = \"gpubox\"\nworkers = 4\n"
+        ));
+        assert_eq!(local_only, with_remote);
     }
 
     #[test]

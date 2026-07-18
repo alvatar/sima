@@ -2,7 +2,7 @@
 
 use sima_core::Result;
 use sima_model::{Environment, EnvironmentComponent, EnvironmentValue, FormatId};
-use sima_toolkit_wgsl::{COMPILER_ID, selected_device_name, source_digest};
+use sima_toolkit_wgsl::{COMPILER_ID, selected_device_desc, source_digest};
 
 use super::executor::CaExecutor;
 use super::model::CaModel;
@@ -25,8 +25,8 @@ pub(crate) fn build_domain<M: CaModel>() -> Result<Domain> {
         executor: |device| Ok(Box::new(CaExecutor::<M>::new(device)?)),
         // The toolkit speaks plain device ids; this is where the binding maps
         // to them.
-        device_name: |device| {
-            selected_device_name(device.map(|d| (d.vendor_id, d.device_id, d.member)))
+        device_desc: |device| {
+            selected_device_desc(device.map(|d| (d.vendor_id, d.device_id, d.member)))
         },
         environment: Environment::new(vec![
             EnvironmentComponent::new(

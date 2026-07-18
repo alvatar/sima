@@ -152,7 +152,7 @@ pub fn task_devices(events: &[LifecycleEvent]) -> HashMap<String, Vec<String>> {
     let mut ran_on: HashMap<String, Vec<String>> = HashMap::new();
     for event in events {
         match event {
-            LifecycleEvent::WorkerBound { worker, device } => {
+            LifecycleEvent::WorkerBound { worker, device, .. } => {
                 current.insert(*worker, device.clone());
             }
             LifecycleEvent::Leased { task, worker, .. } => {

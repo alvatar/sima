@@ -17,11 +17,10 @@ use std::sync::mpsc::Sender;
 use std::thread;
 use std::time::Duration;
 
-use sima_contracts::{DeviceBinding, Generator, WorkerId};
-use sima_core::Result;
+use sima_contracts::{DeviceBinding, DeviceClass, Generator, WorkerId};
+use sima_core::{Error, Result};
 use sima_model::{Environment, RunConfig, RunId, TaskKey};
 use sima_store::Store;
-use sima_transport::WorkerTransport;
 
 use crate::config::ExecutionConfig;
 use crate::control::RunControl;
@@ -33,6 +32,7 @@ use crate::segment_chain::SegmentChain;
 use crate::static_batch::StaticBatch;
 use crate::task_source::{RunnableTask, TaskSource};
 use crate::worker::{WorkerContext, worker_loop};
+use crate::worker_pool::WorkerPool;
 
 /// The result of a run.
 #[derive(Debug)]
@@ -62,25 +62,34 @@ pub enum RunOutcome {
 /// Runs a search to completion.
 ///
 /// Registers the run, materializes the runnable frontier from `(config,
-/// environment, store state)`, and evaluates each task on a pool of `exec`
-/// worker processes spawned through `transport`, committing successes through
-/// `store` and retrying transient failures up to the cap. Returns
-/// [`RunOutcome::Finalized`] once every task is committed and the manifest is
-/// written, or [`RunOutcome::Failed`] when a task fails definitively, or
-/// [`RunOutcome::Interrupted`] when `control`'s interrupt flag winds the run
-/// down — in the latter two cases no manifest is written and the store stays
-/// resumable. `Err` signals an infrastructure fault. `control` also carries
-/// the caller's event observer, invoked with each lifecycle event in journal
-/// order.
+/// environment, store state)`, and evaluates each task on the `pools`' worker
+/// processes, committing successes through `store` and retrying transient
+/// failures up to the cap. Each pool spawns its own slots through its own
+/// transport; worker ids are global and sequential across pools, local first.
+/// Returns [`RunOutcome::Finalized`] once every task is committed and the
+/// manifest is written, or [`RunOutcome::Failed`] when a task fails
+/// definitively, or [`RunOutcome::Interrupted`] when `control`'s interrupt flag
+/// winds the run down — in the latter two cases no manifest is written and the
+/// store stays resumable. `Err` signals an infrastructure fault. `control` also
+/// carries the caller's event observer, invoked with each lifecycle event in
+/// journal order.
 pub fn run(
     store: &Store,
     config: &RunConfig,
     environment: &Environment,
     generator: &dyn Generator,
-    transport: &dyn WorkerTransport,
+    pools: &[WorkerPool<'_>],
     exec: &ExecutionConfig,
     control: &RunControl,
 ) -> Result<RunOutcome> {
+    // A run needs a worker somewhere: with every pool's slots empty, no one
+    // would ever pull a task and the run would hang. This is the whole-run form
+    // of the per-pool worker requirement, enforced where all pools are visible.
+    if pools.iter().all(|pool| pool.slots.is_empty()) {
+        return Err(Error::Validation(
+            "a run needs at least one worker; every pool is empty".to_string(),
+        ));
+    }
     // Register the run; its id is the config object's address.
     let run = store.create_run(config)?;
     // Every committed record references the params and environment objects, so
@@ -104,9 +113,8 @@ pub fn run(
     for (chain, payload) in store.chain_bindings(&run)? {
         chains.insert(chain, placement::decode_class(&payload)?);
     }
-    let coordinator = Coordinator::with_placement(exec.classes(), chains);
+    let coordinator = Coordinator::with_placement(eligible_classes(pools), chains);
     let coordinator = &coordinator;
-    let slots = worker_slots(exec);
 
     // Two nested scopes: the outer one holds the journal sink — a scoped
     // thread, so it can call the caller's borrowed observer — and the inner
@@ -125,19 +133,26 @@ pub fn run(
             },
         );
 
-        let drive_result = thread::scope(|pool| -> Result<DriveOutcome> {
-            for (w, device) in slots.iter().enumerate() {
-                let ctx = WorkerContext {
-                    coordinator,
-                    store,
-                    run,
-                    config,
-                    transport,
-                    exec,
-                    device: *device,
-                    events: events.clone(),
-                };
-                pool.spawn(move || worker_loop(WorkerId(w as u64), ctx));
+        let drive_result = thread::scope(|scope| -> Result<DriveOutcome> {
+            // Worker ids run global and sequential across pools, local first,
+            // so every slot of every pool has a distinct id in the journal.
+            let mut worker = 0u64;
+            for pool in pools {
+                for device in &pool.slots {
+                    let ctx = WorkerContext {
+                        coordinator,
+                        store,
+                        run,
+                        config,
+                        transport: pool.transport,
+                        host: pool.host.clone(),
+                        exec,
+                        device: *device,
+                        events: events.clone(),
+                    };
+                    scope.spawn(move || worker_loop(WorkerId(worker), ctx));
+                    worker += 1;
+                }
             }
             drive(coordinator, source.as_mut(), &events, control)
         });
@@ -197,13 +212,14 @@ pub fn run(
     Ok(outcome)
 }
 
-/// The device each worker slot of the pool computes on, in worker-id order.
+/// The device each slot of one pool computes on, in slot order — the pool
+/// assembly the pipeline calls per execution entry, local or remote.
 ///
-/// One slot per (entry, worker of that entry); a run with no device entries
-/// gets `exec.workers` unbound slots, leaving every child on the backend's
-/// default selection. Slots of one entry round-robin over the class's cards,
-/// so several workers share a card only once every card has one.
-fn worker_slots(exec: &ExecutionConfig) -> Vec<Option<DeviceBinding>> {
+/// One slot per (entry, worker of that entry); an entry set with no device
+/// entries gets `exec.workers` unbound slots, leaving every child on the
+/// backend's default selection. Slots of one entry round-robin over the class's
+/// cards, so several workers share a card only once every card has one.
+pub fn worker_slots(exec: &ExecutionConfig) -> Vec<Option<DeviceBinding>> {
     if exec.devices.is_empty() {
         return vec![None; exec.workers];
     }
@@ -220,6 +236,24 @@ fn worker_slots(exec: &ExecutionConfig) -> Vec<Option<DeviceBinding>> {
         }
     }
     slots
+}
+
+/// The device classes the run's pools carry, distinct, in pool-then-slot
+/// order. This is placement's eligibility set: a class is global (decision
+/// C3), so a class present on any pool is a class the run has, and a chain
+/// bound to it runs on whichever pool holds it. For a single pool this is
+/// exactly that pool's classes in slot order.
+fn eligible_classes(pools: &[WorkerPool<'_>]) -> Vec<DeviceClass> {
+    let mut classes = Vec::new();
+    for pool in pools {
+        for slot in pool.slots.iter().flatten() {
+            let class = slot.class();
+            if !classes.contains(&class) {
+                classes.push(class);
+            }
+        }
+    }
+    classes
 }
 
 /// What the driver decided the run should do once its gate resolved.
