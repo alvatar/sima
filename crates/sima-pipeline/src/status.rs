@@ -650,6 +650,103 @@ mod tests {
     }
 
     #[test]
+    fn a_diagnostic_changes_nothing() {
+        let base = folded(vec![started(2), leased("aa", 0, 0)]);
+        let with_diagnostic = folded(vec![
+            started(2),
+            leased("aa", 0, 0),
+            rec(Event::Diagnostic {
+                level: sima_scheduler::Level::Error,
+                source: "panic".to_string(),
+                message: "worker panicked".to_string(),
+                worker: Some(0),
+                host: None,
+                task: Some("aa".to_string()),
+            }),
+        ]);
+        assert_eq!(with_diagnostic, base);
+    }
+
+    /// Journal lines copied from a real stub run, in the format written
+    /// before `ts_ms` existed: what every journal already on disk holds.
+    /// One task retried once; all three committed; the run finalized.
+    const OLD_FORMAT_LINES: &[&str] = &[
+        r#"{"event":"run_started","run":"df27656c67e534f3d6de64173da73efae9e41809734a5c0b647fffa452da920b","tasks":3,"committed":0}"#,
+        r#"{"event":"queued","task":"c543cde6cbedd1edb2d3b323fd31b269682e8c75a206eb0ff2557bcae7f31ea8"}"#,
+        r#"{"event":"queued","task":"98099e55fa22dc94c02d9bd3ec732e7b27cb17503bb4da0613691f6c1480fc3a"}"#,
+        r#"{"event":"queued","task":"b10a30f53cf23913eb37f79c71851587719df963e803f5967765070f3981d625"}"#,
+        r#"{"event":"worker_bound","worker":0,"device":"","driver":"","host":""}"#,
+        r#"{"event":"leased","task":"c543cde6cbedd1edb2d3b323fd31b269682e8c75a206eb0ff2557bcae7f31ea8","worker":0,"attempt":0}"#,
+        r#"{"event":"worker_bound","worker":1,"device":"","driver":"","host":""}"#,
+        r#"{"event":"leased","task":"98099e55fa22dc94c02d9bd3ec732e7b27cb17503bb4da0613691f6c1480fc3a","worker":1,"attempt":0}"#,
+        r#"{"event":"failed","task":"98099e55fa22dc94c02d9bd3ec732e7b27cb17503bb4da0613691f6c1480fc3a","attempt":0,"reason":"programmed failure: attempt 0 of 1","stats_hex":"00000000"}"#,
+        r#"{"event":"retried","task":"98099e55fa22dc94c02d9bd3ec732e7b27cb17503bb4da0613691f6c1480fc3a","next_attempt":1}"#,
+        r#"{"event":"leased","task":"b10a30f53cf23913eb37f79c71851587719df963e803f5967765070f3981d625","worker":1,"attempt":0}"#,
+        r#"{"event":"committed","task":"c543cde6cbedd1edb2d3b323fd31b269682e8c75a206eb0ff2557bcae7f31ea8","record":"62e29c69cbeb106a03499e64158fa6a83115eb0aacec5d69eb5617a4468956a7","stats_hex":"00000000"}"#,
+        r#"{"event":"leased","task":"98099e55fa22dc94c02d9bd3ec732e7b27cb17503bb4da0613691f6c1480fc3a","worker":0,"attempt":1}"#,
+        r#"{"event":"committed","task":"b10a30f53cf23913eb37f79c71851587719df963e803f5967765070f3981d625","record":"15a083e519d05e2dab09bd9a4e347b664bd9d8f0e0396ed94c98a1cd32acb9ac","stats_hex":"00000000"}"#,
+        r#"{"event":"committed","task":"98099e55fa22dc94c02d9bd3ec732e7b27cb17503bb4da0613691f6c1480fc3a","record":"5087167e14e7f401b5724edeb5a7368b98cf2c972eca980bcf884857f9a55471","stats_hex":"01000000"}"#,
+        r#"{"event":"run_finalized","run":"df27656c67e534f3d6de64173da73efae9e41809734a5c0b647fffa452da920b","committed":3}"#,
+    ];
+
+    /// Writes raw journal lines for the parity-test run and returns the
+    /// store, keeping the temp dir alive for the caller.
+    fn store_with_raw_journal(lines: &[&str]) -> Result<(tempfile::TempDir, Store, RunId)> {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let store = Store::open(dir.path())?;
+        let config = parity_test_config()?;
+        let run = config.id();
+        store.create_run(&config)?;
+        let mut writer = store.journal_writer(&run)?;
+        for line in lines {
+            writer.append(line)?;
+        }
+        Ok((dir, store, run))
+    }
+
+    #[test]
+    fn a_pre_existing_format_journal_replays_to_the_same_status() -> Result<()> {
+        let (_dir, store, run) = store_with_raw_journal(OLD_FORMAT_LINES)?;
+        let status = from_journal(&store, &run)?;
+        // The status the run reached when it wrote this journal.
+        assert_eq!(status.tasks, 3);
+        assert_eq!(status.committed, 3);
+        assert_eq!(status.retried, 1);
+        assert_eq!(status.rejected, 0);
+        assert_eq!(status.faulted, 0);
+        assert_eq!(status.state, RunState::Finalized);
+        assert!(status.occupancy.is_empty());
+        // The stub names no device, so nothing is attributed.
+        assert!(status.devices.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn a_mixed_format_journal_replays_correctly() -> Result<()> {
+        // The shape a resumed run produces: an old-format session that a
+        // crash ended before finalize, then a new session whose lines carry
+        // `ts_ms`, finding every commit already answered and finalizing.
+        let old_session = &OLD_FORMAT_LINES[..OLD_FORMAT_LINES.len() - 1];
+        let new_session = [
+            r#"{"ts_ms":1700000000000,"event":"run_started","run":"df27656c67e534f3d6de64173da73efae9e41809734a5c0b647fffa452da920b","tasks":3,"committed":3}"#,
+            r#"{"ts_ms":1700000000001,"event":"run_finalized","run":"df27656c67e534f3d6de64173da73efae9e41809734a5c0b647fffa452da920b","committed":3}"#,
+        ];
+        let lines: Vec<&str> = old_session
+            .iter()
+            .chain(new_session.iter())
+            .copied()
+            .collect();
+        let (_dir, store, run) = store_with_raw_journal(&lines)?;
+        let status = from_journal(&store, &run)?;
+        assert_eq!(status.tasks, 3);
+        assert_eq!(status.committed, 3, "commits sum across both sessions");
+        assert_eq!(status.retried, 1);
+        assert_eq!(status.state, RunState::Finalized);
+        assert!(status.occupancy.is_empty());
+        Ok(())
+    }
+
+    #[test]
     fn rebound_chains_count_across_the_journal() {
         let status = folded(vec![
             started(2),

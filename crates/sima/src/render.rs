@@ -63,10 +63,27 @@ pub fn describe(event: &Event, committed: usize, tasks: usize) -> Option<String>
         Event::ChainRebound { chain, from, to } => {
             format!("chain {chain} rebound: {from} is absent, continuing on {to}")
         }
-        Event::Queued { .. }
-        | Event::Leased { .. }
-        | Event::WorkerBound { .. }
-        | Event::Diagnostic { .. } => return None,
+        // A warn or error diagnostic is worth a console line; info-level
+        // diagnostics (worker stderr) are journaled, not echoed, so the
+        // run's console output stays clean.
+        Event::Diagnostic {
+            level,
+            source,
+            message,
+            worker,
+            ..
+        } => {
+            let level = match level {
+                sima_pipeline::Level::Warn => "warn",
+                sima_pipeline::Level::Error => "error",
+                sima_pipeline::Level::Info => return None,
+            };
+            match worker {
+                Some(worker) => format!("{level} {source} worker {worker}: {message}"),
+                None => format!("{level} {source}: {message}"),
+            }
+        }
+        Event::Queued { .. } | Event::Leased { .. } | Event::WorkerBound { .. } => return None,
     })
 }
 
@@ -248,6 +265,44 @@ mod tests {
         let line = describe(&event, 0, 0).expect("a degraded checkpoint warrants a line");
         assert!(line.contains("checkpoint degraded"), "{line}");
         assert!(line.contains("unwritable"), "{line}");
+    }
+
+    /// A diagnostic event over `level`, attributed to worker 3.
+    fn diagnostic(level: sima_pipeline::Level, source: &str, message: &str) -> Event {
+        Event::Diagnostic {
+            level,
+            source: source.to_string(),
+            message: message.to_string(),
+            worker: Some(3),
+            host: None,
+            task: None,
+        }
+    }
+
+    #[test]
+    fn a_warn_or_error_diagnostic_renders_level_source_and_worker() {
+        let warn = diagnostic(
+            sima_pipeline::Level::Warn,
+            "transport",
+            "undecodable event frame",
+        );
+        let line = describe(&warn, 0, 0).expect("a warn diagnostic warrants a line");
+        for part in ["warn", "transport", "worker 3", "undecodable event frame"] {
+            assert!(line.contains(part), "missing {part}: {line}");
+        }
+        let error = diagnostic(sima_pipeline::Level::Error, "panic", "thread panicked");
+        let line = describe(&error, 0, 0).expect("an error diagnostic warrants a line");
+        for part in ["error", "panic", "worker 3"] {
+            assert!(line.contains(part), "missing {part}: {line}");
+        }
+    }
+
+    #[test]
+    fn an_info_diagnostic_renders_nothing() {
+        // Worker stderr is journaled, not echoed: the run's console output
+        // stays clean.
+        let info = diagnostic(sima_pipeline::Level::Info, "worker stderr", "starting up");
+        assert!(describe(&info, 0, 0).is_none());
     }
 
     /// A zeroed status for a throwaway run; tests set the fields they assert.
