@@ -41,6 +41,16 @@ impl Emitter {
     }
 }
 
+/// An emitter over a caller-owned channel, for a consumer that drains the
+/// events itself — a test observing raw emissions, or an in-process pipeline
+/// that is not the collector. The fire-and-forget contract is unchanged: a
+/// dropped receiver drops the event silently.
+impl From<Sender<Event>> for Emitter {
+    fn from(events: Sender<Event>) -> Emitter {
+        Emitter { events }
+    }
+}
+
 /// A running collector: the event channel plus the collector thread's join
 /// handle. Dropping every emitter ends the channel; the thread then drains
 /// the remaining events and returns.
@@ -239,6 +249,16 @@ mod tests {
         let line = entries[0].strip_prefix("append ").expect("an append entry");
         assert_eq!(Record::from_line(line)?, records[0]);
         Ok(())
+    }
+
+    #[test]
+    fn an_emitter_over_a_caller_owned_channel_delivers_to_its_receiver() {
+        let (tx, rx) = mpsc::channel();
+        let emitter = Emitter::from(tx);
+        emitter.emit(queued("ab"));
+        drop(emitter);
+        let received: Vec<Event> = rx.into_iter().collect();
+        assert_eq!(received, [queued("ab")]);
     }
 
     #[test]

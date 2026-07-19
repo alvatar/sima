@@ -820,6 +820,7 @@ dependencies = [
  "sima-domains",
  "sima-model",
  "sima-store",
+ "sima-trace",
  "sima-transport",
  "tempfile",
 ]
@@ -832,6 +833,7 @@ dependencies = [
  "serde_json",
  "sima-core",
  "sima-model",
+ "sima-trace",
  "tempfile",
 ]
 
