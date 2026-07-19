@@ -860,10 +860,12 @@ dependencies = [
 name = "sima-transport"
 version = "0.1.0"
 dependencies = [
+ "serde_json",
  "sima-contracts",
  "sima-core",
  "sima-domains",
  "sima-model",
+ "sima-trace",
 ]
 
 [[package]]

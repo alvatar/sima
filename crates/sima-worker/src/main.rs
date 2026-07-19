@@ -70,6 +70,9 @@ fn main() {
         eprintln!("sima-worker: orphaned before startup");
         std::process::exit(1);
     }
+    // Latch panic messages and backtraces for the serve loop's correlated
+    // diagnostics; the default hook still prints to stderr after the capture.
+    sima_transport::host::capture_panics();
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
     if let Err(e) = sima_transport::host::serve(stdin.lock(), stdout.lock(), &resolver) {

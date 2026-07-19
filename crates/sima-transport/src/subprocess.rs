@@ -305,7 +305,13 @@ impl Drop for SubprocessLink {
 pub(crate) fn read_events(mut reader: impl Read, events: Sender<Result<ToParent>>) {
     loop {
         let message = match read_frame(&mut reader) {
-            Ok(Some(payload)) => ToParent::decode(&payload),
+            Ok(Some(payload)) => match ToParent::decode(&payload) {
+                // Event frames belong to the collector, never to the lease
+                // loop; until the transport is wired to an emitter they are
+                // dropped here.
+                Ok(ToParent::Event(_)) => continue,
+                message => message,
+            },
             Ok(None) => return,
             Err(e) => Err(e),
         };

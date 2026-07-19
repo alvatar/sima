@@ -7,6 +7,8 @@ edition.workspace = true
 sima-core = { path = "../sima-core" }
 sima-model = { path = "../sima-model" }
 sima-contracts = { path = "../sima-contracts" }
+sima-trace = { path = "../sima-trace" }
+serde_json.workspace = true
 
 # The transport's shipped library never depends on sima-domains; the loopback
 # tests use the stub domain as a deterministic substrate through this
