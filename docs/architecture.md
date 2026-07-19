@@ -95,7 +95,7 @@ sima run  (one orchestrator process per run; OS file lock on the store)
    │                             committed "state" artifact
    │
    ├─ Coordinator ······· in-memory queue + leases + release counter
-   ├─ Collector ········· one thread: events → stamp → journal → subscribers
+   ├─ Collector ········· one thread: events → stamp → journal → observer
    │
    └─ Worker pool (N threads, stateless leaseholders)
        └─ Worker ········ leases one task = drives one attempt on its child
@@ -151,8 +151,8 @@ The foundation every crate shares:
 ## `sima-trace` (L0.5)
 
 The structured-event facade: one typed vocabulary any layer can emit,
-funneled through one collector into the run's journal and out to live
-subscribers. The crate sits directly above `sima-core`, so scheduler,
+funneled through one collector into the run's journal and out to the
+run's live observer. The crate sits directly above `sima-core`, so scheduler,
 transport, and worker host all emit without an upward edge. Events are
 observational — they record what happened, never run identity — so their
 serialization world is serde, and the stream is excluded from every
@@ -177,10 +177,10 @@ equality criterion.
 - **`Collector`** — one scoped thread drains the channel; for each event
   it stamps `ts_ms` (a single clock, read at append time — remote events
   are stamped on arrival), appends the record's line through a
-  **`DurableSink`**, then hands the record to each subscriber in
-  declaration order. The ordering guarantee: the journal write for an
-  event happens before any subscriber sees it, and subscribers see records
-  in journal order, from one calling thread. The first append or encoding
+  **`DurableSink`**, then hands the record to the run's observer. The
+  ordering guarantee: the journal write for an event happens before the
+  observer sees it, and the observer sees records in journal order, from
+  one calling thread. The first append or encoding
   failure stops the collector and surfaces when it is joined.
 
 `DurableSink` is the seam that keeps the crate below the store:
@@ -943,8 +943,8 @@ journal fault resurfaces on the next run that finalizes over the same store.
 The driver takes a `RunControl` — the caller's handles into a running
 search:
 
-- **observer** — a collector subscriber: invoked with each typed record on
-  the collector thread, immediately after the record's line is appended —
+- **observer** — the collector's record consumer: invoked with each typed
+  record on the collector thread, immediately after its line is appended —
   typed records, journal order, one calling thread. Progress rendering
   consumes this seam.
 - **interrupt** — a level-triggered flag the driver polls within a bounded
@@ -1011,8 +1011,8 @@ The vocabulary:
   and keeps info journaled, never echoed.
 
 The driver spawns the trace collector over the run's journal writer, with
-the caller's observer as its subscriber; the driver, the workers, and the
-transports' reader threads emit through cloned emitters, and the one
+the caller's observer as its record consumer; the driver, the workers, and
+the transports' reader threads emit through cloned emitters, and the one
 collector thread is the single-writer seam the append contract requires.
 The journal write for an event happens before the observer sees it, and the
 observer sees records in journal order. Event arrival order across threads

@@ -9,7 +9,7 @@
 //!   collector applied at append time.
 //! - [`Collector`] / [`Emitter`] — the funnel: emitters send events over an
 //!   `mpsc` channel; one collector thread stamps each event, appends its
-//!   line through a [`DurableSink`], and fans the record out to subscribers.
+//!   line through a [`DurableSink`], and hands the record to the observer.
 //!
 //! Events are observational — they record what happened, never run identity —
 //! so the stream is excluded from every equality criterion, and its
@@ -21,6 +21,6 @@ mod collector;
 mod event;
 mod record;
 
-pub use collector::{Collector, DurableSink, Emitter};
+pub use collector::{Collector, DurableSink, Emitter, Subscriber};
 pub use event::{Event, Level};
 pub use record::Record;

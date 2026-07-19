@@ -20,7 +20,7 @@ use sima_contracts::{DeviceBinding, DeviceClass, Generator, WorkerId};
 use sima_core::{Error, Result};
 use sima_model::{Environment, RunConfig, RunId, TaskKey};
 use sima_store::Store;
-use sima_trace::{Collector, Emitter, Event, Record};
+use sima_trace::{Collector, Emitter, Event};
 
 use crate::config::ExecutionConfig;
 use crate::control::RunControl;
@@ -119,9 +119,8 @@ pub fn run(
     // one holds the pool, so workers borrow `&store` and the transport
     // without `Arc` and a worker panic re-raises at the pool's join, before
     // any finalize. The driver drives polling on this thread.
-    let subscribers: [&(dyn Fn(&Record) + Sync); 1] = [control.observer];
     let (outcome, journal) = thread::scope(|scope| {
-        let collector = Collector::spawn(scope, writer, &subscribers);
+        let collector = Collector::spawn(scope, writer, control.observer);
         let events = collector.emitter();
         events.emit(Event::RunStarted {
             run: run.to_string(),
