@@ -133,7 +133,13 @@ fn a_command_vector_spawn_reaches_the_worker_through_a_wrapper() {
         Duration::MAX,
         None,
     );
-    let mut link = transport.spawn(0, None).expect("spawn through the wrapper");
+    let mut link = transport
+        .spawn(
+            0,
+            None,
+            sima_trace::Emitter::from(std::sync::mpsc::channel().0),
+        )
+        .expect("spawn through the wrapper");
     // The handshake completed through the wrapper: the stub names no device.
     assert_eq!(link.device_name(), "");
     let ToChild::Assign(task) = assignment() else {
@@ -146,6 +152,162 @@ fn a_command_vector_spawn_reaches_the_worker_through_a_wrapper() {
         }
         other => panic!("expected a completed outcome, got {other:?}"),
     }
+}
+
+#[test]
+fn worker_stderr_lines_arrive_as_correlated_diagnostics() {
+    // A wrapper that writes one stderr line before becoming the worker: the
+    // transport captures it and emits an info diagnostic attributed to the
+    // worker id, with no host key for a local pool.
+    use std::path::PathBuf;
+    use std::time::Duration;
+
+    use sima_trace::{Emitter, Event, Level};
+    use sima_transport::{SubprocessTransport, WorkerTransport};
+
+    let worker = env!("CARGO_BIN_EXE_sima-worker");
+    let transport = SubprocessTransport::new(
+        PathBuf::from("sh"),
+        vec![
+            "-c".to_string(),
+            format!("echo 'a stderr line' >&2; exec {worker}"),
+        ],
+        FormatId::new("stub.v1").expect("format id"),
+        Duration::MAX,
+        None,
+    );
+    let (tx, rx) = std::sync::mpsc::channel();
+    let _link = transport
+        .spawn(3, None, Emitter::from(tx))
+        .expect("spawn through the wrapper");
+    let event = rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("a captured stderr diagnostic");
+    assert_eq!(
+        event,
+        Event::Diagnostic {
+            level: Level::Info,
+            source: "worker stderr".to_string(),
+            message: "a stderr line".to_string(),
+            worker: Some(3),
+            host: None,
+            task: None,
+        }
+    );
+}
+
+#[test]
+fn an_overlong_stderr_line_is_truncated_with_a_marker() {
+    use std::path::PathBuf;
+    use std::time::Duration;
+
+    use sima_trace::{Emitter, Event};
+    use sima_transport::{SubprocessTransport, WorkerTransport};
+
+    let worker = env!("CARGO_BIN_EXE_sima-worker");
+    let transport = SubprocessTransport::new(
+        PathBuf::from("sh"),
+        vec![
+            "-c".to_string(),
+            // 5000 x's on one stderr line, then the worker.
+            format!("printf 'x%.0s' $(seq 1 5000) >&2; echo >&2; exec {worker}"),
+        ],
+        FormatId::new("stub.v1").expect("format id"),
+        Duration::MAX,
+        None,
+    );
+    let (tx, rx) = std::sync::mpsc::channel();
+    let _link = transport
+        .spawn(0, None, Emitter::from(tx))
+        .expect("spawn through the wrapper");
+    let event = rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("a captured stderr diagnostic");
+    let Event::Diagnostic { message, .. } = event else {
+        panic!("expected a diagnostic, got {event:?}");
+    };
+    assert!(message.ends_with("[truncated]"), "{message}");
+    assert!(
+        message.starts_with("xxxx"),
+        "the capped prefix survives: {message}"
+    );
+    let payload = message.strip_suffix(" [truncated]").expect("the marker");
+    assert_eq!(payload.len(), 4096, "the line is capped at 4096 bytes");
+}
+
+#[test]
+fn an_executor_panic_crosses_as_a_correlated_diagnostic_event() {
+    // The full child-to-parent leg over the real binary: the worker's panic
+    // hook captures the backtrace, the host emits the Event frame, and the
+    // transport's reader forwards it to the emitter before the Panicked
+    // frame settles the attempt.
+    use std::path::PathBuf;
+    use std::time::Duration;
+
+    use sima_trace::{Emitter, Event, Level};
+    use sima_transport::{LinkEvent, SubprocessTransport, WorkerTransport};
+
+    let transport = SubprocessTransport::new(
+        PathBuf::from(env!("CARGO_BIN_EXE_sima-worker")),
+        Vec::new(),
+        FormatId::new("stub.v1").expect("format id"),
+        Duration::MAX,
+        None,
+    );
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut link = transport
+        .spawn(5, None, Emitter::from(tx))
+        .expect("spawn the worker");
+    let task = ToChild::Assign(Assignment {
+        spec: StubProgram {
+            behavior: StubBehavior::Panic,
+            nonce: 7,
+        }
+        .to_bytes(),
+        params: vec![1, 2, 3],
+        seed: 42,
+        environment: EnvironmentId::from_hash(hash_bytes(b"env")),
+        input_state: None,
+        resume: None,
+        attempt: 0,
+        worker: 5,
+        checkpointing: false,
+    });
+    let ToChild::Assign(task) = task else {
+        unreachable!("built as Assign");
+    };
+    link.assign(&task).expect("assign the panicking task");
+    match link.next(None).expect("await the outcome") {
+        LinkEvent::Panicked(reason) => {
+            assert!(reason.contains("programmed panic"), "{reason}");
+        }
+        other => panic!("expected Panicked, got {other:?}"),
+    }
+    // The stdout reader forwards frames in order, so the structured
+    // diagnostic preceded the Panicked frame the link just returned. The
+    // captured stderr of the default panic hook races it on its own thread,
+    // so the panic-source diagnostic is selected, not assumed first.
+    let mut panic_diagnostic = None;
+    while let Ok(event) = rx.try_recv() {
+        if matches!(&event, Event::Diagnostic { source, .. } if source == "panic") {
+            panic_diagnostic = Some(event);
+            break;
+        }
+    }
+    let Some(Event::Diagnostic {
+        level,
+        message,
+        worker,
+        task: task_key,
+        ..
+    }) = panic_diagnostic
+    else {
+        panic!("no panic-source diagnostic arrived");
+    };
+    assert_eq!(level, Level::Error);
+    assert!(message.contains("programmed panic"), "{message}");
+    assert_eq!(worker, Some(5), "the handshake's worker id");
+    assert!(task_key.is_some(), "the diagnostic names the task");
 }
 
 /// Requires a Vulkan device. Run with `cargo test -- --ignored`.

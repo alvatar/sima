@@ -1,8 +1,9 @@
 //! The `sima-worker` binary: an executor host, one per worker slot.
 //!
 //! The orchestrator spawns one of these per worker and converses over its
-//! stdin/stdout in the transport's wire protocol; stderr is inherited for
-//! human-readable diagnostics. The process is pure compute by construction —
+//! stdin/stdout in the transport's wire protocol; stderr is captured by the
+//! parent and journaled as correlated diagnostics. The process is pure
+//! compute by construction —
 //! it is never given a store path, so the "executors are pure compute"
 //! invariant is OS-enforced. All logic lives in [`sima_transport::host`];
 //! this binary only wires the streams, the domain resolver, and the exit

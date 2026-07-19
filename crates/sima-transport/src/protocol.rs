@@ -1,8 +1,9 @@
 //! The wire protocol between the orchestrator and a worker process.
 //!
 //! Frames travel on the child's stdin (parent → child) and stdout (child →
-//! parent); stderr is inherited from the parent for human-readable
-//! diagnostics. Framing is [`sima_core::frame`]: a `u32` little-endian payload
+//! parent); stderr carries no frames — the parent captures it line by line
+//! and journals each line as a correlated diagnostic. Framing is
+//! [`sima_core::frame`]: a `u32` little-endian payload
 //! length followed by the payload. Each payload is built with the canonical
 //! [`Enc`]/[`Dec`] primitives and starts with a `u8` message tag. Frames are
 //! transport encoding, never identity-bearing, and no frame is ever hashed.

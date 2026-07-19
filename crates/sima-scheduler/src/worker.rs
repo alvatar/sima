@@ -109,7 +109,9 @@ pub(crate) fn worker_loop(worker: WorkerId, ctx: WorkerContext<'_>) {
 /// The event carries the child's own answer, so the journal records where the
 /// work actually ran rather than what the parent asked for.
 fn spawn_bound<'a>(ctx: &WorkerContext<'a>, worker: WorkerId) -> Result<Box<dyn WorkerLink + 'a>> {
-    let link = ctx.transport.spawn(worker.0, ctx.device.as_ref())?;
+    let link = ctx
+        .transport
+        .spawn(worker.0, ctx.device.as_ref(), ctx.events.clone())?;
     ctx.events.emit(Event::WorkerBound {
         worker: worker.0,
         device: link.device_name().to_string(),
@@ -732,7 +734,7 @@ mod tests {
                 },
                 attempt: 0,
             };
-            let mut link = transport.spawn(0, None)?;
+            let mut link = transport.spawn(0, None, ctx.events.clone())?;
             process(&ctx, WorkerId(0), pending, link.as_mut());
         }
         let events = rx.into_iter().collect();
@@ -875,7 +877,7 @@ mod tests {
                     },
                     attempt: 1,
                 };
-                let mut link = transport.spawn(0, None)?;
+                let mut link = transport.spawn(0, None, ctx.events.clone())?;
                 process(&ctx, WorkerId(0), pending, link.as_mut());
             }
             Ok(rx.into_iter().collect())

@@ -878,6 +878,7 @@ dependencies = [
  "sima-core",
  "sima-domains",
  "sima-model",
+ "sima-trace",
  "sima-transport",
 ]
 

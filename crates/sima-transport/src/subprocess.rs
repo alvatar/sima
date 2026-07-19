@@ -1,10 +1,13 @@
 //! [`SubprocessTransport`]: the production transport — one OS process per
 //! worker.
 //!
-//! Each spawn pipes the child's stdin and stdout, inherits stderr for
-//! human-readable diagnostics, and performs the handshake. A reader thread
-//! per child decodes stdout frames into a channel, so the caller's deadline
-//! wait is a plain `recv_timeout` and a kill never races a blocking read.
+//! Each spawn pipes the child's stdin, stdout, and stderr, and performs the
+//! handshake. A reader thread per child decodes stdout frames into a
+//! channel, so the caller's deadline wait is a plain `recv_timeout` and a
+//! kill never races a blocking read; Event frames fork off to the run's
+//! emitter on that thread. A second thread per child captures stderr line by
+//! line and emits each line as an info diagnostic attributed to the worker
+//! and host, so nothing a child prints lands uncorrelated.
 //! Process isolation is what makes preemption enforceable: `kill` is SIGKILL
 //! plus reap, and a child's death — for any reason — surfaces as the channel
 //! closing, which [`WorkerLink::next`] reports as [`LinkEvent::Died`].
@@ -20,6 +23,7 @@ use std::time::{Duration, Instant};
 use sima_contracts::DeviceBinding;
 use sima_core::{Error, Result, read_frame, write_frame};
 use sima_model::FormatId;
+use sima_trace::{Emitter, Event, Level};
 
 use crate::link::{LinkEvent, WorkerLink, WorkerTransport};
 use crate::protocol::{Assignment, Hello, PROTOCOL_VERSION, ToChild, ToParent};
@@ -86,9 +90,38 @@ pub(crate) fn hello(
 }
 
 impl WorkerTransport for SubprocessTransport {
-    fn spawn(&self, worker: u64, device: Option<&DeviceBinding>) -> Result<Box<dyn WorkerLink>> {
-        spawn_worker(&self.program, &self.args, &self.hello, worker, device)
+    fn spawn(
+        &self,
+        worker: u64,
+        device: Option<&DeviceBinding>,
+        events: Emitter,
+    ) -> Result<Box<dyn WorkerLink>> {
+        // The subprocess transport runs on this machine, so its diagnostics
+        // carry the local pool's empty host label.
+        let context = EventContext {
+            events,
+            worker,
+            host: String::new(),
+        };
+        spawn_worker(
+            &self.program,
+            &self.args,
+            &self.hello,
+            worker,
+            device,
+            context,
+        )
     }
+}
+
+/// Attribution for one child's reader threads: the run's emitter plus the
+/// identity the parent knows about the child — its slot's worker id and the
+/// pool's host label (empty for a local pool).
+#[derive(Clone)]
+pub(crate) struct EventContext {
+    pub(crate) events: Emitter,
+    pub(crate) worker: u64,
+    pub(crate) host: String,
 }
 
 /// Spawns `program args...` as a worker child, pipes its stdio, runs the
@@ -102,12 +135,13 @@ pub(crate) fn spawn_worker(
     hello: &Hello,
     worker: u64,
     device: Option<&DeviceBinding>,
+    context: EventContext,
 ) -> Result<Box<dyn WorkerLink>> {
     let mut child = Command::new(program)
         .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
+        .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| {
             Error::Transport(format!("spawning worker {} failed: {e}", program.display()))
@@ -122,13 +156,20 @@ pub(crate) fn spawn_worker(
         .stdout
         .take()
         .ok_or_else(|| Error::Transport("the spawned worker has no piped stdout".to_string()))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| Error::Transport("the spawned worker has no piped stderr".to_string()))?;
     let (sender, events) = channel();
-    let reader = std::thread::spawn(move || read_events(stdout, sender));
+    let stdout_context = context.clone();
+    let reader = std::thread::spawn(move || read_events(stdout, sender, Some(stdout_context)));
+    let stderr_reader = std::thread::spawn(move || read_stderr(stderr, context));
     let mut link = SubprocessLink {
         child,
         stdin: Some(stdin),
         events,
         reader: Some(reader),
+        stderr_reader: Some(stderr_reader),
         device_name: String::new(),
         driver: String::new(),
     };
@@ -198,6 +239,9 @@ struct SubprocessLink {
     stdin: Option<ChildStdin>,
     events: Receiver<Result<ToParent>>,
     reader: Option<JoinHandle<()>>,
+    /// The stderr capture thread; it exits on the pipe's EOF, which the
+    /// child's death closes.
+    stderr_reader: Option<JoinHandle<()>>,
     /// The device the child reported, set once the handshake answers.
     device_name: String,
     /// The driver version the child reported, set once the handshake answers.
@@ -279,10 +323,13 @@ impl SubprocessLink {
         }
     }
 
-    /// Joins the reader thread; it exits when the child's stdout ends, which
-    /// a reaped child's already has.
+    /// Joins the reader threads; they exit when the child's stdout and
+    /// stderr end, which a reaped child's already have.
     fn join_reader(&mut self) {
         if let Some(reader) = self.reader.take() {
+            let _ = reader.join();
+        }
+        if let Some(reader) = self.stderr_reader.take() {
             let _ = reader.join();
         }
     }
@@ -302,14 +349,22 @@ impl Drop for SubprocessLink {
 /// thread — the dropped sender is the death signal the link observes — and
 /// a torn frame or an undecodable payload is sent as the stream's final
 /// `Err` before the thread ends.
-pub(crate) fn read_events(mut reader: impl Read, events: Sender<Result<ToParent>>) {
+pub(crate) fn read_events(
+    mut reader: impl Read,
+    events: Sender<Result<ToParent>>,
+    context: Option<EventContext>,
+) {
     loop {
         let message = match read_frame(&mut reader) {
             Ok(Some(payload)) => match ToParent::decode(&payload) {
                 // Event frames belong to the collector, never to the lease
-                // loop; until the transport is wired to an emitter they are
-                // dropped here.
-                Ok(ToParent::Event(_)) => continue,
+                // loop: forward them to the run's emitter and keep reading.
+                Ok(ToParent::Event(bytes)) => {
+                    if let Some(context) = &context {
+                        forward_event(context, &bytes);
+                    }
+                    continue;
+                }
                 message => message,
             },
             Ok(None) => return,
@@ -320,6 +375,85 @@ pub(crate) fn read_events(mut reader: impl Read, events: Sender<Result<ToParent>
         if events.send(message).is_err() || failed {
             return;
         }
+    }
+}
+
+/// Parses one Event frame's bytes and emits the event, filling a
+/// diagnostic's worker and host attribution where the child left them unset
+/// — the child knows its worker id from the handshake but never the pool's
+/// host label. Malformed bytes never kill the worker: they degrade to a
+/// warning diagnostic naming the decode failure.
+fn forward_event(context: &EventContext, bytes: &[u8]) {
+    match serde_json::from_slice::<Event>(bytes) {
+        Ok(mut event) => {
+            if let Event::Diagnostic { worker, host, .. } = &mut event {
+                if worker.is_none() {
+                    *worker = Some(context.worker);
+                }
+                if host.is_none() {
+                    *host = pool_host(context);
+                }
+            }
+            context.events.emit(event);
+        }
+        Err(e) => context.events.emit(Event::Diagnostic {
+            level: Level::Warn,
+            source: "transport".to_string(),
+            message: format!("undecodable event frame: {e}"),
+            worker: Some(context.worker),
+            host: pool_host(context),
+            task: None,
+        }),
+    }
+}
+
+/// The host key of a diagnostic under `context`: the pool's label, or `None`
+/// for a local pool, matching the journal's empty-host convention.
+fn pool_host(context: &EventContext) -> Option<String> {
+    (!context.host.is_empty()).then(|| context.host.clone())
+}
+
+/// How many bytes of one captured stderr line a diagnostic carries; the rest
+/// is dropped, with the truncation noted by a trailing marker.
+const STDERR_LINE_CAP: usize = 4096;
+
+/// Consumes a child's stderr line by line until EOF — the child's death
+/// closes the pipe — emitting each line as an info diagnostic attributed to
+/// the worker and host. Runs on its own thread per child; a read error ends
+/// the capture the same way EOF does. Blank lines carry nothing and are
+/// skipped; invalid UTF-8 is replaced, not refused — this is capture, and
+/// capture never fails the worker.
+fn read_stderr(stderr: impl Read, context: EventContext) {
+    let mut reader = std::io::BufReader::new(stderr);
+    let mut line = Vec::new();
+    loop {
+        line.clear();
+        match std::io::BufRead::read_until(&mut reader, b'\n', &mut line) {
+            Ok(0) | Err(_) => return,
+            Ok(_) => {}
+        }
+        while line.last().is_some_and(|b| *b == b'\n' || *b == b'\r') {
+            line.pop();
+        }
+        if line.is_empty() {
+            continue;
+        }
+        let truncated = line.len() > STDERR_LINE_CAP;
+        if truncated {
+            line.truncate(STDERR_LINE_CAP);
+        }
+        let mut message = String::from_utf8_lossy(&line).into_owned();
+        if truncated {
+            message.push_str(" [truncated]");
+        }
+        context.events.emit(Event::Diagnostic {
+            level: Level::Info,
+            source: "worker stderr".to_string(),
+            message,
+            worker: Some(context.worker),
+            host: pool_host(&context),
+            task: None,
+        });
     }
 }
 
@@ -390,6 +524,12 @@ mod tests {
         )
     }
 
+    /// An emitter whose receiver is dropped: emissions vanish, which these
+    /// spawn-failure tests do not observe.
+    fn drop_emitter() -> Emitter {
+        Emitter::from(channel().0)
+    }
+
     /// The device name and driver a `Ready` at `protocol` resolves to, or the
     /// refusal.
     fn answer_ready(protocol: u32) -> Result<(String, String)> {
@@ -458,9 +598,93 @@ mod tests {
         assert!(matches!(error, Error::Encoding(_)), "{error:?}");
     }
 
+    /// Runs `read_events` over pre-framed input, returning what reached the
+    /// link channel; the caller observes emissions through its own receiver
+    /// behind the context's emitter.
+    fn read_framed(frames: &[ToParent], context: EventContext) -> Vec<Result<ToParent>> {
+        let mut pipe = Vec::new();
+        for frame in frames {
+            write_frame(&mut pipe, &frame.encode()).expect("frame the input");
+        }
+        let (sender, link_events) = channel();
+        read_events(pipe.as_slice(), sender, Some(context));
+        link_events.into_iter().collect()
+    }
+
+    #[test]
+    fn a_malformed_event_frame_degrades_to_a_warning_and_the_stream_continues() {
+        let (tx, emitted) = channel();
+        let context = EventContext {
+            events: Emitter::from(tx),
+            worker: 9,
+            host: "gpubox".to_string(),
+        };
+        let link_events = read_framed(
+            &[
+                ToParent::Event(b"not json".to_vec()),
+                ToParent::Save(vec![1]),
+            ],
+            context,
+        );
+        // The malformed frame degraded to a warning naming the failure...
+        let events: Vec<Event> = emitted.into_iter().collect();
+        assert_eq!(events.len(), 1, "{events:?}");
+        let Event::Diagnostic {
+            level,
+            source,
+            message,
+            worker,
+            host,
+            task,
+        } = &events[0]
+        else {
+            panic!("expected a diagnostic, got {:?}", events[0]);
+        };
+        assert_eq!(*level, Level::Warn);
+        assert_eq!(source, "transport");
+        assert!(message.contains("undecodable event frame"), "{message}");
+        assert_eq!(*worker, Some(9));
+        assert_eq!(host.as_deref(), Some("gpubox"));
+        assert_eq!(*task, None);
+        // ...and the following frame still reached the lease loop: the
+        // worker is never killed over an observational line.
+        assert!(
+            matches!(link_events.as_slice(), [Ok(ToParent::Save(bytes))] if bytes == &[1]),
+            "{link_events:?}"
+        );
+    }
+
+    #[test]
+    fn a_forwarded_diagnostic_gains_the_attribution_the_child_left_unset() {
+        let unattributed = Event::Diagnostic {
+            level: Level::Info,
+            source: "worker stderr".to_string(),
+            message: "from the child".to_string(),
+            worker: None,
+            host: None,
+            task: None,
+        };
+        let bytes = serde_json::to_vec(&unattributed).expect("serialize the event");
+        let (tx, emitted) = channel();
+        let context = EventContext {
+            events: Emitter::from(tx),
+            worker: 4,
+            host: "gpubox".to_string(),
+        };
+        read_framed(&[ToParent::Event(bytes)], context);
+        let events: Vec<Event> = emitted.into_iter().collect();
+        assert!(
+            matches!(
+                events.as_slice(),
+                [Event::Diagnostic { worker: Some(4), host: Some(host), .. }] if host == "gpubox"
+            ),
+            "{events:?}"
+        );
+    }
+
     #[test]
     fn a_missing_program_is_a_clean_spawn_error_naming_the_path() {
-        let result = transport("/nonexistent/sima-worker").spawn(0, None);
+        let result = transport("/nonexistent/sima-worker").spawn(0, None, drop_emitter());
         let error = match result {
             Err(e) => e.to_string(),
             Ok(_) => panic!("spawning a missing program must fail"),
@@ -476,7 +700,7 @@ mod tests {
         // cat echoes the Hello frame back; the echoed payload decodes as a
         // malformed child message, so the handshake fails cleanly instead of
         // hanging or panicking.
-        let result = transport("/bin/cat").spawn(0, None);
+        let result = transport("/bin/cat").spawn(0, None, drop_emitter());
         assert!(result.is_err(), "the handshake against cat must fail");
     }
 }
