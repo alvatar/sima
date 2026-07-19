@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use sima_domains::{domain_for, generator_for};
 use sima_model::TaskIdentity;
-use sima_pipeline::{LifecycleEvent, load};
+use sima_pipeline::{Event, Record, load};
 use sima_store::{Manifest, Store};
 
 /// Writes a `sima.toml` named `name` under `dir`: the given behaviors
@@ -116,25 +116,23 @@ pub fn manifest_of(config_path: &Path) -> Option<Manifest> {
 }
 
 /// The journal of the run `config_path` describes, parsed into typed events.
-pub fn journal_events(config_path: &Path) -> Vec<LifecycleEvent> {
+pub fn journal_events(config_path: &Path) -> Vec<Event> {
     let config = load(config_path).expect("load config");
     let store = Store::open(&config.store).expect("open store");
     store
         .journal(&config.run.id())
         .expect("read journal")
         .iter()
-        .map(|line| LifecycleEvent::from_line(line).expect("parse journal line"))
+        .map(|line| Record::from_line(line).expect("parse journal line").event)
         .collect()
 }
 
 /// Every device the run's workers reported, across the whole journal.
-pub fn devices_reported(events: &[LifecycleEvent]) -> HashSet<String> {
+pub fn devices_reported(events: &[Event]) -> HashSet<String> {
     events
         .iter()
         .filter_map(|event| match event {
-            LifecycleEvent::WorkerBound { device, .. } if !device.is_empty() => {
-                Some(device.clone())
-            }
+            Event::WorkerBound { device, .. } if !device.is_empty() => Some(device.clone()),
             _ => None,
         })
         .collect()
@@ -147,15 +145,15 @@ pub fn devices_reported(events: &[LifecycleEvent]) -> HashSet<String> {
 /// each worker's device is *at that point* in the journal and attributes each
 /// lease to it. Reading the whole journal first and taking each worker's last
 /// device would credit a resumed session's work to the wrong hardware.
-pub fn task_devices(events: &[LifecycleEvent]) -> HashMap<String, Vec<String>> {
+pub fn task_devices(events: &[Event]) -> HashMap<String, Vec<String>> {
     let mut current: HashMap<u64, String> = HashMap::new();
     let mut ran_on: HashMap<String, Vec<String>> = HashMap::new();
     for event in events {
         match event {
-            LifecycleEvent::WorkerBound { worker, device, .. } => {
+            Event::WorkerBound { worker, device, .. } => {
                 current.insert(*worker, device.clone());
             }
-            LifecycleEvent::Leased { task, worker, .. } => {
+            Event::Leased { task, worker, .. } => {
                 let device = current
                     .get(worker)
                     .expect("a worker reports its device before it leases");

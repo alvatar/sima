@@ -2,16 +2,16 @@
 
 use std::sync::atomic::AtomicBool;
 
-use crate::event::LifecycleEvent;
+use sima_trace::Record;
 
 /// The caller's handles into a running search: an observer invoked with
-/// each lifecycle event and an interrupt flag the driver polls to wind
+/// each journal record and an interrupt flag the driver polls to wind
 /// the run down.
 pub struct RunControl<'a> {
-    /// Invoked with each event on the journal-sink thread, immediately
-    /// after the event's line is appended: typed events, in journal
+    /// Invoked with each record on the collector thread, immediately
+    /// after the record's line is appended: typed records, in journal
     /// order, from one calling thread.
-    pub observer: &'a (dyn Fn(&LifecycleEvent) + Sync),
+    pub observer: &'a (dyn Fn(&Record) + Sync),
     /// Level-triggered wind-down request. Once set, the driver stops
     /// handing out tasks; in-flight attempts finish and commit, and the
     /// run returns [`RunOutcome::Interrupted`](crate::RunOutcome::Interrupted)
@@ -20,7 +20,7 @@ pub struct RunControl<'a> {
 }
 
 impl RunControl<'_> {
-    /// A control nobody holds: the observer ignores every event and the
+    /// A control nobody holds: the observer ignores every record and the
     /// interrupt flag is never set. The handle for callers that drive a
     /// run without live observation.
     pub fn detached() -> RunControl<'static> {
@@ -36,15 +36,20 @@ impl RunControl<'_> {
 mod tests {
     use std::sync::atomic::Ordering;
 
+    use sima_trace::Event;
+
     use super::*;
 
     #[test]
     fn detached_is_inert() {
         let control = RunControl::detached();
-        // The observer accepts events without effect, and the flag never
+        // The observer accepts records without effect, and the flag never
         // requests a wind-down.
-        (control.observer)(&LifecycleEvent::Queued {
-            task: "00".repeat(32),
+        (control.observer)(&Record {
+            ts_ms: Some(0),
+            event: Event::Queued {
+                task: "00".repeat(32),
+            },
         });
         assert!(!control.interrupt.load(Ordering::Relaxed));
     }

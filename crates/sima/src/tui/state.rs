@@ -1,7 +1,7 @@
 //! The tui state machine: [`TuiState`] handles a [`Msg`] and projects a
 //! [`ViewModel`] the view draws.
 //!
-//! `TuiState` owns a [`RunStatus`] and applies every lifecycle event to it,
+//! `TuiState` owns a [`RunStatus`] and applies every journal record to it,
 //! so `sima status` and the tui update the same `RunStatus` type through the
 //! same `apply` method and derive identical state from the same events. Only
 //! UI concerns live here: which run the session is driving, whether a start or
@@ -12,7 +12,7 @@
 use std::collections::VecDeque;
 
 use sima_core::Result;
-use sima_pipeline::{LifecycleEvent, Occupancy, RunOutcome, RunState, RunStatus};
+use sima_pipeline::{Occupancy, Record, RunOutcome, RunState, RunStatus};
 
 use crate::render::describe;
 
@@ -49,12 +49,12 @@ pub enum LockView {
     Free,
 }
 
-/// A message handled by the UI state: a lifecycle event from the run, a key
+/// A message handled by the UI state: a journal record from the run, a key
 /// press, or the run thread's terminal result.
 #[derive(Debug)]
 pub enum Msg {
-    /// One lifecycle event from the observer stream.
-    Event(LifecycleEvent),
+    /// One journal record from the observer stream.
+    Event(Record),
     /// A key press, already mapped to its action.
     Key(KeyAction),
     /// The orchestrate thread returned this outcome.
@@ -214,19 +214,19 @@ impl TuiState {
     /// Handles one message.
     pub fn handle(&mut self, msg: Msg) {
         match msg {
-            Msg::Event(event) => self.on_event(event),
+            Msg::Event(record) => self.on_event(record),
             Msg::Key(action) => self.on_key(action),
             Msg::Finished(result) => self.on_finished(&result),
         }
     }
 
-    /// Applies one lifecycle event to the status and appends its line to the
+    /// Applies one journal record to the status and appends its line to the
     /// log, sharing the wording of `sima run` through [`describe`]. The
-    /// commit count is read after the event is applied so a commit line shows
-    /// the count that includes it.
-    fn on_event(&mut self, event: LifecycleEvent) {
-        self.status.apply(&event);
-        if let Some(line) = describe(&event, self.status.committed, self.status.tasks) {
+    /// commit count is read after the record is applied so a commit line
+    /// shows the count that includes it.
+    fn on_event(&mut self, record: Record) {
+        self.status.apply(&record);
+        if let Some(line) = describe(&record.event, self.status.committed, self.status.tasks) {
             if self.log.len() == LOG_CAPACITY {
                 self.log.pop_front();
             }
@@ -424,6 +424,7 @@ mod tests {
     use super::*;
     use sima_core::{Error, hash_bytes};
     use sima_model::{RunId, TaskKey};
+    use sima_pipeline::Event;
 
     fn run_id() -> RunId {
         RunId::from_hash(hash_bytes(b"tui state run"))
@@ -433,28 +434,33 @@ mod tests {
         TuiState::new(RunStatus::new(run_id()), workers)
     }
 
-    fn started(tasks: usize) -> LifecycleEvent {
-        LifecycleEvent::RunStarted {
+    /// Wraps an event as the unstamped record the tests feed the state.
+    fn rec(event: Event) -> Record {
+        Record { ts_ms: None, event }
+    }
+
+    fn started(tasks: usize) -> Record {
+        rec(Event::RunStarted {
             run: "00".repeat(32),
             tasks,
             committed: 0,
-        }
+        })
     }
 
-    fn leased(task: &str, worker: u64, attempt: u32) -> LifecycleEvent {
-        LifecycleEvent::Leased {
+    fn leased(task: &str, worker: u64, attempt: u32) -> Record {
+        rec(Event::Leased {
             task: task.to_string(),
             worker,
             attempt,
-        }
+        })
     }
 
-    fn committed(task: &str) -> LifecycleEvent {
-        LifecycleEvent::Committed {
+    fn committed(task: &str) -> Record {
+        rec(Event::Committed {
             task: task.to_string(),
             record: "11".repeat(32),
             stats_hex: String::new(),
-        }
+        })
     }
 
     fn finalized() -> Result<RunOutcome> {
@@ -665,17 +671,17 @@ mod tests {
         state
     }
 
-    fn run_finalized() -> LifecycleEvent {
-        LifecycleEvent::RunFinalized {
+    fn run_finalized() -> Record {
+        rec(Event::RunFinalized {
             run: "00".repeat(32),
             committed: 1,
-        }
+        })
     }
 
-    fn run_interrupted() -> LifecycleEvent {
-        LifecycleEvent::RunInterrupted {
+    fn run_interrupted() -> Record {
+        rec(Event::RunInterrupted {
             run: "00".repeat(32),
-        }
+        })
     }
 
     #[test]
@@ -755,11 +761,11 @@ mod tests {
 
         let mut failed = observing(1);
         failed.handle(Msg::Event(started(1)));
-        failed.handle(Msg::Event(LifecycleEvent::RunFailed {
+        failed.handle(Msg::Event(rec(Event::RunFailed {
             run: "00".repeat(32),
             task: "aa".to_string(),
             reason: "rejected".to_string(),
-        }));
+        })));
         assert_eq!(failed.view().state, "failed");
         assert_eq!(failed.exit_code(), 2);
 

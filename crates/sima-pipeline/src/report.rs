@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 
 use sima_core::{Error, Result, from_hex};
 use sima_domains::domain_for;
-use sima_scheduler::LifecycleEvent;
+use sima_scheduler::{Event, Record};
 use sima_store::Store;
 
 use crate::config::LoadedConfig;
@@ -51,11 +51,11 @@ pub fn report(config: &LoadedConfig) -> Result<Vec<ReportRow>> {
     // `BTreeMap` orders the rows by task key.
     let mut latest: BTreeMap<String, String> = BTreeMap::new();
     for line in &lines {
-        let event = LifecycleEvent::from_line(line)
+        let record = Record::from_line(line)
             .map_err(|e| Error::Corruption(format!("journal of run {run}: {e}")))?;
-        if let LifecycleEvent::Committed {
+        if let Event::Committed {
             task, stats_hex, ..
-        } = event
+        } = record.event
         {
             latest.insert(task, stats_hex);
         }
@@ -107,35 +107,40 @@ mod tests {
         })
     }
 
+    /// Wraps an event as the unstamped record the tests journal.
+    fn rec(event: Event) -> Record {
+        Record { ts_ms: None, event }
+    }
+
     /// A `RunStarted` line for the run.
-    fn started(run: &sima_model::RunId, tasks: usize) -> LifecycleEvent {
-        LifecycleEvent::RunStarted {
+    fn started(run: &sima_model::RunId, tasks: usize) -> Record {
+        rec(Event::RunStarted {
             run: run.to_string(),
             tasks,
             committed: 0,
-        }
+        })
     }
 
     /// A `Committed` line for `task` carrying `stats_hex`.
-    fn committed(task: &str, stats_hex: &str) -> LifecycleEvent {
-        LifecycleEvent::Committed {
+    fn committed(task: &str, stats_hex: &str) -> Record {
+        rec(Event::Committed {
             task: task.to_string(),
             record: "11".repeat(32),
             stats_hex: stats_hex.to_string(),
-        }
+        })
     }
 
-    /// Writes `events` to the run's journal in a fresh store, returning the
+    /// Writes `records` to the run's journal in a fresh store, returning the
     /// temp dir (kept alive by the caller) and the loaded config over it.
-    fn journal_with(events: &[LifecycleEvent]) -> Result<(tempfile::TempDir, LoadedConfig)> {
+    fn journal_with(records: &[Record]) -> Result<(tempfile::TempDir, LoadedConfig)> {
         let dir = tempfile::tempdir().expect("temp dir");
         let store = Store::open(dir.path())?;
         let config = stub_config()?;
         store.create_run(&config)?;
         let run = config.id();
         let mut writer = store.journal_writer(&run)?;
-        for event in events {
-            writer.append(&event.to_line()?)?;
+        for record in records {
+            writer.append(&record.to_line()?)?;
         }
         let loaded = loaded(dir.path().to_path_buf())?;
         Ok((dir, loaded))

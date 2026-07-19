@@ -15,7 +15,7 @@ use sima_contracts::{Checkpoint, ExecutionContext, Executor, Outcome, TaskInput}
 use sima_core::{Error, Result};
 use sima_domains::{StubBehavior, StubExecutor, StubProgram};
 use sima_model::{FormatId, RunConfig};
-use sima_scheduler::{LifecycleEvent, RunOutcome};
+use sima_scheduler::{Event, RunOutcome};
 use sima_store::Store;
 use sima_transport::loopback::SharedResolver;
 
@@ -120,7 +120,7 @@ fn a_panic_is_isolated_and_classified_as_a_rejection() -> Result<()> {
     let reason = events
         .iter()
         .find_map(|e| match e {
-            LifecycleEvent::Rejected { task, reason, .. } if *task == panic_key.to_string() => {
+            Event::Rejected { task, reason, .. } if *task == panic_key.to_string() => {
                 Some(reason.clone())
             }
             _ => None,
@@ -204,7 +204,7 @@ fn a_run_reports_the_commits_its_store_already_holds() -> Result<()> {
     let started: Vec<(usize, usize)> = journal_events(&store, &run_id(&cfg))
         .iter()
         .filter_map(|e| match e {
-            LifecycleEvent::RunStarted {
+            Event::RunStarted {
                 tasks, committed, ..
             } => Some((*tasks, *committed)),
             _ => None,
@@ -286,17 +286,34 @@ fn queued_is_journaled_before_the_first_lease() -> Result<()> {
             let task = key.to_string();
             let queued = events
                 .iter()
-                .position(|e| matches!(e, LifecycleEvent::Queued { task: t } if *t == task))
+                .position(|e| matches!(e, Event::Queued { task: t } if *t == task))
                 .expect("a Queued event for each task");
             let leased = events
                 .iter()
-                .position(|e| matches!(e, LifecycleEvent::Leased { task: t, .. } if *t == task))
+                .position(|e| matches!(e, Event::Leased { task: t, .. } if *t == task))
                 .expect("a Leased event for each task");
             assert!(
                 queued < leased,
                 "Queued must precede Leased for task {task}"
             );
         }
+    }
+    Ok(())
+}
+
+/// Every journal line the run writes is a parseable record carrying the
+/// collector's wall-clock stamp.
+#[test]
+fn every_journal_line_carries_a_timestamp() -> Result<()> {
+    let cfg = config(14, vec![StubBehavior::Succeed, StubBehavior::Succeed]);
+    let (_dir, store) = temp_store();
+    assert!(matches!(
+        run_into(&store, &cfg, &exec(2, 3, 1_000))?,
+        RunOutcome::Finalized { .. }
+    ));
+    for line in store.journal(&run_id(&cfg))? {
+        let record = sima_trace::Record::from_line(&line)?;
+        assert!(record.ts_ms.is_some(), "unstamped line: {line}");
     }
     Ok(())
 }

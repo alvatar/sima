@@ -18,7 +18,7 @@ use common::{
 };
 use sima_core::Result;
 use sima_domains::StubBehavior;
-use sima_scheduler::{LifecycleEvent, RunOutcome, WorkerPool, worker_slots};
+use sima_scheduler::{Event, RunOutcome, WorkerPool, worker_slots};
 use sima_transport::loopback::LoopbackTransport;
 
 /// Two fictitious classes, one per pool.
@@ -84,7 +84,7 @@ fn a_run_spreads_across_two_pools_and_places_by_class() -> Result<()> {
     let mut bound: Vec<(String, String)> = events
         .iter()
         .filter_map(|event| match event {
-            LifecycleEvent::WorkerBound { host, device, .. } if !device.is_empty() => {
+            Event::WorkerBound { host, device, .. } if !device.is_empty() => {
                 Some((host.clone(), named_class(device).to_string()))
             }
             _ => None,

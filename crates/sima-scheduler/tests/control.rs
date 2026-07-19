@@ -10,10 +10,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use common::{config, exec, journal_events, run_controlled, run_id, run_into, temp_store};
 use sima_core::Result;
 use sima_domains::StubBehavior;
-use sima_scheduler::{LifecycleEvent, RunControl, RunOutcome};
+use sima_scheduler::{Event, Record, RunControl, RunOutcome};
 
-/// The observer receives every event, typed, in exactly the order the
-/// journal records: the sink thread appends each line and then invokes
+/// The observer receives every record, typed, in exactly the order the
+/// journal records: the collector thread appends each line and then invokes
 /// the observer, so the two sequences are the same by construction.
 #[test]
 fn the_observer_mirrors_the_journal() -> Result<()> {
@@ -25,11 +25,13 @@ fn the_observer_mirrors_the_journal() -> Result<()> {
             StubBehavior::Succeed,
         ],
     );
-    let seen: Mutex<Vec<LifecycleEvent>> = Mutex::new(Vec::new());
+    let seen: Mutex<Vec<Event>> = Mutex::new(Vec::new());
     let interrupt = AtomicBool::new(false);
     let control = RunControl {
-        observer: &|event: &LifecycleEvent| {
-            seen.lock().expect("observer mutex").push(event.clone());
+        observer: &|record: &Record| {
+            seen.lock()
+                .expect("observer mutex")
+                .push(record.event.clone());
         },
         interrupt: &interrupt,
     };
@@ -65,8 +67,8 @@ fn an_interrupt_mid_run_drains_and_stays_resumable() -> Result<()> {
     );
     let interrupt = AtomicBool::new(false);
     let control = RunControl {
-        observer: &|event: &LifecycleEvent| {
-            if matches!(event, LifecycleEvent::Committed { .. }) {
+        observer: &|record: &Record| {
+            if matches!(record.event, Event::Committed { .. }) {
                 interrupt.store(true, Ordering::Relaxed);
             }
         },
@@ -85,13 +87,13 @@ fn an_interrupt_mid_run_drains_and_stays_resumable() -> Result<()> {
     assert!(store.manifest(&run)?.is_none());
     let events = journal_events(&store, &run);
     assert!(
-        matches!(events.last(), Some(LifecycleEvent::RunInterrupted { .. })),
+        matches!(events.last(), Some(Event::RunInterrupted { .. })),
         "the journal closes with run_interrupted"
     );
     // In-flight attempts finished and committed; their records survive.
     let committed = events
         .iter()
-        .filter(|e| matches!(e, LifecycleEvent::Committed { .. }))
+        .filter(|e| matches!(e, Event::Committed { .. }))
         .count();
     assert!(committed >= 1, "at least the first commit survives");
 
@@ -121,7 +123,7 @@ fn an_interrupt_before_any_task_starts_commits_nothing() -> Result<()> {
     let cfg = config(22, vec![StubBehavior::Succeed, StubBehavior::Succeed]);
     let interrupt = AtomicBool::new(true);
     let control = RunControl {
-        observer: &|_: &LifecycleEvent| {},
+        observer: &|_: &Record| {},
         interrupt: &interrupt,
     };
 
@@ -138,7 +140,7 @@ fn an_interrupt_before_any_task_starts_commits_nothing() -> Result<()> {
     assert_eq!(
         events
             .iter()
-            .filter(|e| matches!(e, LifecycleEvent::Committed { .. }))
+            .filter(|e| matches!(e, Event::Committed { .. }))
             .count(),
         0,
         "nothing ran, so nothing committed"

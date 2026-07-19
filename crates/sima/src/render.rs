@@ -4,7 +4,7 @@
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use sima_pipeline::{LifecycleEvent, RunState, RunStatus};
+use sima_pipeline::{Event, Record, RunState, RunStatus};
 
 /// How many hex characters of an id a progress line shows.
 const SHORT: usize = 12;
@@ -21,56 +21,57 @@ pub fn short(id: &str) -> &str {
 /// resumed session does not read as a restart. The single source of the
 /// event wording: `sima run` prints these lines to stdout and the tui folds
 /// them into its event log.
-pub fn describe(event: &LifecycleEvent, committed: usize, tasks: usize) -> Option<String> {
+pub fn describe(event: &Event, committed: usize, tasks: usize) -> Option<String> {
     Some(match event {
-        LifecycleEvent::RunStarted { tasks, .. } if committed > 0 => {
+        Event::RunStarted { tasks, .. } if committed > 0 => {
             format!("started: {tasks} tasks, {committed} already committed")
         }
-        LifecycleEvent::RunStarted { tasks, .. } => format!("started: {tasks} tasks"),
-        LifecycleEvent::Committed { task, .. } => {
+        Event::RunStarted { tasks, .. } => format!("started: {tasks} tasks"),
+        Event::Committed { task, .. } => {
             format!("committed {committed}/{tasks}  {}", short(task))
         }
-        LifecycleEvent::Retried { task, next_attempt } => {
+        Event::Retried { task, next_attempt } => {
             format!("retrying {} (attempt {next_attempt})", short(task))
         }
-        LifecycleEvent::Rejected { task, reason, .. } => {
+        Event::Rejected { task, reason, .. } => {
             format!("rejected {}: {reason}", short(task))
         }
-        LifecycleEvent::Failed {
+        Event::Failed {
             task,
             attempt,
             reason,
             ..
         } => format!("failed {} (attempt {attempt}): {reason}", short(task)),
-        LifecycleEvent::Faulted { task, error, .. } => format!("fault {}: {error}", short(task)),
-        LifecycleEvent::LeaseExpired {
+        Event::Faulted { task, error, .. } => format!("fault {}: {error}", short(task)),
+        Event::LeaseExpired {
             task, elapsed_ms, ..
         } => format!("lease expired {} ({elapsed_ms} ms)", short(task)),
-        LifecycleEvent::CheckpointDegraded { task, error } => {
+        Event::CheckpointDegraded { task, error } => {
             format!("checkpoint degraded {}: {error}", short(task))
         }
-        LifecycleEvent::RunFinalized { committed, .. } => {
+        Event::RunFinalized { committed, .. } => {
             format!("finalized: {committed} tasks committed")
         }
-        LifecycleEvent::RunFailed { task, reason, .. } => {
+        Event::RunFailed { task, reason, .. } => {
             format!("run failed on {}: {reason}", short(task))
         }
-        LifecycleEvent::RunInterrupted { .. } => {
+        Event::RunInterrupted { .. } => {
             "interrupted: store resumable, re-run to continue".to_string()
         }
         // A rebind means the hardware changed under the search: the chain's
         // device is gone and its work moved. Loud by design.
-        LifecycleEvent::ChainRebound { chain, from, to } => {
+        Event::ChainRebound { chain, from, to } => {
             format!("chain {chain} rebound: {from} is absent, continuing on {to}")
         }
-        LifecycleEvent::Queued { .. }
-        | LifecycleEvent::Leased { .. }
-        | LifecycleEvent::WorkerBound { .. } => return None,
+        Event::Queued { .. }
+        | Event::Leased { .. }
+        | Event::WorkerBound { .. }
+        | Event::Diagnostic { .. } => return None,
     })
 }
 
 /// Progress rendering over a run's event stream: prints one line per
-/// meaningful event. Called from the journal-sink thread, one event at a
+/// meaningful event. Called from the collector thread, one record at a
 /// time, in journal order; the counters give the `committed k/n` running
 /// count.
 pub struct Progress {
@@ -91,11 +92,12 @@ impl Progress {
         }
     }
 
-    /// Prints the line `event` warrants, if any, keeping the running commit
-    /// count for the `committed k/n` line. `Queued`, `Leased`, and
-    /// `WorkerBound` yield no line and stay silent.
-    pub fn event(&self, event: &LifecycleEvent) {
-        if let LifecycleEvent::RunStarted {
+    /// Prints the line the record's event warrants, if any, keeping the
+    /// running commit count for the `committed k/n` line. `Queued`, `Leased`,
+    /// and `WorkerBound` yield no line and stay silent.
+    pub fn event(&self, record: &Record) {
+        let event = &record.event;
+        if let Event::RunStarted {
             tasks, committed, ..
         } = event
         {
@@ -108,7 +110,7 @@ impl Progress {
         // A commit advances the running count; every other line reads it
         // without moving it.
         let committed = match event {
-            LifecycleEvent::Committed { .. } => self.committed.fetch_add(1, Ordering::Relaxed) + 1,
+            Event::Committed { .. } => self.committed.fetch_add(1, Ordering::Relaxed) + 1,
             _ => self.committed.load(Ordering::Relaxed),
         };
         if let Some(line) = describe(event, committed, self.tasks.load(Ordering::Relaxed)) {
@@ -197,7 +199,7 @@ mod tests {
     fn a_run_started_line_reports_prior_commits_when_resuming() {
         // The started line names the prior commits so a resumed session does
         // not read as a restart. A fresh run keeps the bare form.
-        let event = LifecycleEvent::RunStarted {
+        let event = Event::RunStarted {
             run: "ab".repeat(32),
             tasks: 200,
             committed: 26,
@@ -212,29 +214,34 @@ mod tests {
         );
     }
 
+    /// Wraps an event as the unstamped record the tests feed the renderer.
+    fn rec(event: Event) -> Record {
+        Record { ts_ms: None, event }
+    }
+
     #[test]
     fn a_session_counts_commits_on_from_the_started_event() {
         let progress = Progress::new();
-        progress.event(&LifecycleEvent::RunStarted {
+        progress.event(&rec(Event::RunStarted {
             run: "ab".repeat(32),
             tasks: 3,
             committed: 2,
-        });
+        }));
         // The count is the event's, which the run derived from its store —
         // the journal replay this once read from can lag its own records.
         assert_eq!(progress.committed(), 2);
 
-        progress.event(&LifecycleEvent::Committed {
+        progress.event(&rec(Event::Committed {
             task: "cd".repeat(32),
             record: "ef".repeat(32),
             stats_hex: String::new(),
-        });
+        }));
         assert_eq!(progress.committed(), 3);
     }
 
     #[test]
     fn a_degraded_checkpoint_renders_a_line() {
-        let event = LifecycleEvent::CheckpointDegraded {
+        let event = Event::CheckpointDegraded {
             task: "ab".repeat(32),
             error: "checkpoint dir is unwritable".to_string(),
         };

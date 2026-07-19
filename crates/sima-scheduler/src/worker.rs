@@ -13,27 +13,25 @@
 //! handle, so a result reaches durable state only by passing through this
 //! commit path — the child is never given the store.
 
-use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant};
 
 use sima_contracts::{Artifact, DeviceBinding, Outcome, WorkerId};
 use sima_core::{Error, Hash, Result, to_hex};
 use sima_model::{ArtifactRef, RunConfig, RunId, TaskIdentity, TaskKey, TaskRecord};
 use sima_store::Store;
+use sima_trace::{Emitter, Event};
 use sima_transport::protocol::Assignment;
 use sima_transport::{LinkEvent, WorkerLink, WorkerTransport};
 
 use crate::config::ExecutionConfig;
 use crate::coordinator::{Coordinator, Pending, RunState};
-use crate::event::LifecycleEvent;
-use crate::journal_sink::emit;
 use crate::placement::{self, ChainPlacement};
 use crate::task_source::RunnableTask;
 
 /// The run-wide context one worker borrows for its whole life: the shared
 /// coordination, the store it commits through, the run config, the transport
-/// it spawns its child through, the execution settings, and its own journal
-/// sender.
+/// it spawns its child through, the execution settings, and its own event
+/// emitter.
 pub(crate) struct WorkerContext<'a> {
     pub(crate) coordinator: &'a Coordinator,
     pub(crate) store: &'a Store,
@@ -48,7 +46,7 @@ pub(crate) struct WorkerContext<'a> {
     /// The device this slot's children compute on; `None` leaves the choice to
     /// the backend's default selection, the single-class case.
     pub(crate) device: Option<DeviceBinding>,
-    pub(crate) events: Sender<LifecycleEvent>,
+    pub(crate) events: Emitter,
 }
 
 /// Runs the worker: spawn the child, then lease a task, drive it on the
@@ -112,17 +110,14 @@ pub(crate) fn worker_loop(worker: WorkerId, ctx: WorkerContext<'_>) {
 /// work actually ran rather than what the parent asked for.
 fn spawn_bound<'a>(ctx: &WorkerContext<'a>, worker: WorkerId) -> Result<Box<dyn WorkerLink + 'a>> {
     let link = ctx.transport.spawn(ctx.device.as_ref())?;
-    emit(
-        &ctx.events,
-        LifecycleEvent::WorkerBound {
-            worker: worker.0,
-            device: link.device_name().to_string(),
-            driver: link.driver().to_string(),
-            // The child's device and driver are its own; the host is the
-            // parent's account of the pool — empty for a local slot.
-            host: ctx.host.clone(),
-        },
-    );
+    ctx.events.emit(Event::WorkerBound {
+        worker: worker.0,
+        device: link.device_name().to_string(),
+        driver: link.driver().to_string(),
+        // The child's device and driver are its own; the host is the
+        // parent's account of the pool — empty for a local slot.
+        host: ctx.host.clone(),
+    });
     Ok(link)
 }
 
@@ -143,14 +138,11 @@ fn record_placement(ctx: &WorkerContext<'_>, placement: &ChainPlacement) -> Resu
                 .bind_chain(&ctx.run, *chain, &placement::encode_class(*to)?)?;
             // The rebind is loud: the hardware changed under a running search,
             // and the journal is where that shows.
-            emit(
-                &ctx.events,
-                LifecycleEvent::ChainRebound {
-                    chain: *chain,
-                    from: from.to_string(),
-                    to: to.to_string(),
-                },
-            );
+            ctx.events.emit(Event::ChainRebound {
+                chain: *chain,
+                from: from.to_string(),
+                to: to.to_string(),
+            });
             Ok(())
         }
     }
@@ -244,14 +236,11 @@ fn process(
         chain,
     } = pending.task;
     let task = key.to_string();
-    emit(
-        &ctx.events,
-        LifecycleEvent::Leased {
-            task: task.clone(),
-            worker: worker.0,
-            attempt,
-        },
-    );
+    ctx.events.emit(Event::Leased {
+        task: task.clone(),
+        worker: worker.0,
+        attempt,
+    });
     // A death here strands nothing: the lease is in-memory only, and the
     // kernel releases the orchestrator lock with the process, so a resumed
     // run re-derives the task in its frontier.
@@ -289,13 +278,10 @@ fn process(
                 // A checkpoint is disposable, so a load failure degrades to a
                 // fresh start — chosen over faulting the attempt: the resume
                 // is lost, the task still runs.
-                emit(
-                    &ctx.events,
-                    LifecycleEvent::CheckpointDegraded {
-                        task: task.clone(),
-                        error: e.to_string(),
-                    },
-                );
+                ctx.events.emit(Event::CheckpointDegraded {
+                    task: task.clone(),
+                    error: e.to_string(),
+                });
                 None
             }
         }
@@ -367,26 +353,20 @@ fn process(
                 if let Some(slot) = slot
                     && let Err(e) = ctx.store.save_checkpoint(&ctx.run, slot, &key, &payload)
                 {
-                    emit(
-                        &ctx.events,
-                        LifecycleEvent::CheckpointDegraded {
-                            task: task.clone(),
-                            error: e.to_string(),
-                        },
-                    );
+                    ctx.events.emit(Event::CheckpointDegraded {
+                        task: task.clone(),
+                        error: e.to_string(),
+                    });
                 }
             }
             LinkEvent::Done(Outcome::Completed { artifacts, stats }) => {
                 match commit(ctx.store, identity, artifacts) {
                     Ok(record) => {
-                        emit(
-                            &ctx.events,
-                            LifecycleEvent::Committed {
-                                task,
-                                record: record.to_string(),
-                                stats_hex: to_hex(&stats.bytes),
-                            },
-                        );
+                        ctx.events.emit(Event::Committed {
+                            task,
+                            record: record.to_string(),
+                            stats_hex: to_hex(&stats.bytes),
+                        });
                         ctx.coordinator.resolve(key);
                     }
                     Err(e) => task_fault(ctx, task, attempt, key, e),
@@ -394,15 +374,12 @@ fn process(
                 return ChildState::Alive;
             }
             LinkEvent::Done(Outcome::Failed { reason, stats }) => {
-                emit(
-                    &ctx.events,
-                    LifecycleEvent::Failed {
-                        task: task.clone(),
-                        attempt,
-                        reason: reason.clone(),
-                        stats_hex: to_hex(&stats.bytes),
-                    },
-                );
+                ctx.events.emit(Event::Failed {
+                    task: task.clone(),
+                    attempt,
+                    reason: reason.clone(),
+                    stats_hex: to_hex(&stats.bytes),
+                });
                 retry_or_terminate(
                     ctx,
                     key,
@@ -414,30 +391,24 @@ fn process(
                 return ChildState::Alive;
             }
             LinkEvent::Done(Outcome::Rejected { reason, stats }) => {
-                emit(
-                    &ctx.events,
-                    LifecycleEvent::Rejected {
-                        task,
-                        attempt,
-                        reason: reason.clone(),
-                        stats_hex: to_hex(&stats.bytes),
-                    },
-                );
+                ctx.events.emit(Event::Rejected {
+                    task,
+                    attempt,
+                    reason: reason.clone(),
+                    stats_hex: to_hex(&stats.bytes),
+                });
                 ctx.coordinator.terminate(key, reason);
                 return ChildState::Alive;
             }
             LinkEvent::Panicked(reason) => {
                 // A panic raised inside the candidate's execution, caught by
                 // the child: a definitive rejection. The child survives.
-                emit(
-                    &ctx.events,
-                    LifecycleEvent::Rejected {
-                        task,
-                        attempt,
-                        reason: reason.clone(),
-                        stats_hex: String::new(),
-                    },
-                );
+                ctx.events.emit(Event::Rejected {
+                    task,
+                    attempt,
+                    reason: reason.clone(),
+                    stats_hex: String::new(),
+                });
                 ctx.coordinator.terminate(key, reason);
                 return ChildState::Alive;
             }
@@ -476,14 +447,11 @@ fn process(
                     Some(deadline) if Instant::now() >= deadline => {
                         // Preemption: the attempt outlived attempt_timeout.
                         let elapsed = started.elapsed();
-                        emit(
-                            &ctx.events,
-                            LifecycleEvent::LeaseExpired {
-                                task: task.clone(),
-                                worker: worker.0,
-                                elapsed_ms: elapsed.as_millis() as u64,
-                            },
-                        );
+                        ctx.events.emit(Event::LeaseExpired {
+                            task: task.clone(),
+                            worker: worker.0,
+                            elapsed_ms: elapsed.as_millis() as u64,
+                        });
                         link.kill();
                         let reason = format!(
                             "attempt preempted after {}ms (attempt_timeout {}ms)",
@@ -528,15 +496,12 @@ fn fail_transiently(
     task_to_retry: RunnableTask,
     reason: String,
 ) {
-    emit(
-        &ctx.events,
-        LifecycleEvent::Failed {
-            task: task.clone(),
-            attempt,
-            reason: reason.clone(),
-            stats_hex: String::new(),
-        },
-    );
+    ctx.events.emit(Event::Failed {
+        task: task.clone(),
+        attempt,
+        reason: reason.clone(),
+        stats_hex: String::new(),
+    });
     retry_or_terminate(ctx, key, task, attempt, task_to_retry, reason);
 }
 
@@ -553,13 +518,10 @@ fn retry_or_terminate(
 ) {
     if attempt + 1 < ctx.exec.max_attempts {
         if ctx.coordinator.requeue(key, task_to_retry, attempt + 1) {
-            emit(
-                &ctx.events,
-                LifecycleEvent::Retried {
-                    task,
-                    next_attempt: attempt + 1,
-                },
-            );
+            ctx.events.emit(Event::Retried {
+                task,
+                next_attempt: attempt + 1,
+            });
         }
     } else {
         ctx.coordinator.terminate(key, reason);
@@ -584,14 +546,11 @@ fn commit(store: &Store, identity: TaskIdentity, artifacts: Vec<Artifact>) -> Re
 /// the run surfaces the error. One classification site for every fault: the
 /// executor-fault path, the commit-error path, and the input-state load path.
 fn task_fault(ctx: &WorkerContext<'_>, task: String, attempt: u32, key: TaskKey, err: Error) {
-    emit(
-        &ctx.events,
-        LifecycleEvent::Faulted {
-            task,
-            attempt,
-            error: err.to_string(),
-        },
-    );
+    ctx.events.emit(Event::Faulted {
+        task,
+        attempt,
+        error: err.to_string(),
+    });
     ctx.coordinator.fault(key, err);
 }
 
@@ -671,7 +630,7 @@ mod tests {
         store: Store,
         identity: TaskIdentity,
         coordinator: Coordinator,
-        events: Vec<LifecycleEvent>,
+        events: Vec<Event>,
         /// The artifact bytes the stub executor produces for this identity when
         /// it receives `state`'s bytes directly.
         expected_artifact: Vec<u8>,
@@ -762,7 +721,7 @@ mod tests {
                 host: String::new(),
                 exec: &exec,
                 device: None,
-                events: tx,
+                events: Emitter::from(tx),
             };
             let pending = Pending {
                 key: identity.key(),
@@ -810,7 +769,7 @@ mod tests {
         assert!(
             run.events
                 .iter()
-                .any(|e| matches!(e, LifecycleEvent::Faulted { .. })),
+                .any(|e| matches!(e, Event::Faulted { .. })),
             "the load failure emits a Faulted event"
         );
         Ok(())
@@ -879,7 +838,7 @@ mod tests {
 
         /// Runs `process` once over the fixture task with the given chain
         /// slot and wall-clock checkpoint interval, the step axis disabled.
-        fn process(&self, chain: Option<u64>, interval: Duration) -> Result<Vec<LifecycleEvent>> {
+        fn process(&self, chain: Option<u64>, interval: Duration) -> Result<Vec<Event>> {
             self.process_with(chain, interval, None)
         }
 
@@ -890,7 +849,7 @@ mod tests {
             chain: Option<u64>,
             interval: Duration,
             step_interval: Option<NonZeroU64>,
-        ) -> Result<Vec<LifecycleEvent>> {
+        ) -> Result<Vec<Event>> {
             let exec = ExecutionConfig::new(1, 1, Duration::from_secs(5), interval, step_interval)?;
             let coordinator = Coordinator::new();
             let (tx, rx) = mpsc::channel();
@@ -905,7 +864,7 @@ mod tests {
                     host: String::new(),
                     exec: &exec,
                     device: None,
-                    events: tx,
+                    events: Emitter::from(tx),
                 };
                 let pending = Pending {
                     key: self.key(),
@@ -935,11 +894,11 @@ mod tests {
 
     /// The steps the committed attempt executed, from the stub's stats in
     /// the `Committed` event: `(u32 attempt, u64 steps)`.
-    fn committed_steps(events: &[LifecycleEvent]) -> u64 {
+    fn committed_steps(events: &[Event]) -> u64 {
         let stats_hex = events
             .iter()
             .find_map(|e| match e {
-                LifecycleEvent::Committed { stats_hex, .. } => Some(stats_hex.clone()),
+                Event::Committed { stats_hex, .. } => Some(stats_hex.clone()),
                 _ => None,
             })
             .expect("a Committed event");
@@ -1041,7 +1000,7 @@ mod tests {
         assert!(
             events
                 .iter()
-                .any(|e| matches!(e, LifecycleEvent::CheckpointDegraded { .. })),
+                .any(|e| matches!(e, Event::CheckpointDegraded { .. })),
             "a save failure emits CheckpointDegraded"
         );
         assert_eq!(committed_steps(&events), 3, "the task still commits");

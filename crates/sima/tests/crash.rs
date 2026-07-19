@@ -192,12 +192,12 @@ fn resumed_steps(config_path: &Path) -> Vec<u64> {
     let events = journal_events(config_path);
     let resume_start = events
         .iter()
-        .rposition(|e| matches!(e, sima_pipeline::LifecycleEvent::RunStarted { .. }))
+        .rposition(|e| matches!(e, sima_pipeline::Event::RunStarted { .. }))
         .expect("a run_started line");
     events[resume_start..]
         .iter()
         .filter_map(|e| match e {
-            sima_pipeline::LifecycleEvent::Committed { stats_hex, .. } => {
+            sima_pipeline::Event::Committed { stats_hex, .. } => {
                 let bytes: Vec<u8> = (0..stats_hex.len())
                     .step_by(2)
                     .map(|i| u8::from_str_radix(&stats_hex[i..i + 2], 16).expect("hex"))
@@ -235,13 +235,13 @@ fn assert_worker_death_converges(config: &Path, arming: &str, reference: &Manife
     assert!(
         events
             .iter()
-            .any(|e| matches!(e, sima_pipeline::LifecycleEvent::Failed { .. })),
+            .any(|e| matches!(e, sima_pipeline::Event::Failed { .. })),
         "the worker death journals a transient failure"
     );
     assert!(
         events
             .iter()
-            .any(|e| matches!(e, sima_pipeline::LifecycleEvent::Retried { .. })),
+            .any(|e| matches!(e, sima_pipeline::Event::Retried { .. })),
         "the failed attempt is retried"
     );
 

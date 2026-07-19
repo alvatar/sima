@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use common::{journal_events, loaded_text};
 use sima_core::{Error, Result};
 use sima_domains::StubState;
-use sima_pipeline::{LifecycleEvent, LoadedConfig, RunControl, RunOutcome, orchestrate};
+use sima_pipeline::{Event, LoadedConfig, Record, RunControl, RunOutcome, orchestrate};
 use sima_store::Store;
 
 /// A segmented `accumulate` config: `chains` candidates, `k` steps per
@@ -143,8 +143,8 @@ fn an_interrupted_chain_resumes_to_the_reference_manifest() -> Result<()> {
     // Interrupt after the first commit: mid-chain, segments remain.
     let interrupt = AtomicBool::new(false);
     let control = RunControl {
-        observer: &|event: &LifecycleEvent| {
-            if matches!(event, LifecycleEvent::Committed { .. }) {
+        observer: &|record: &Record| {
+            if matches!(record.event, Event::Committed { .. }) {
                 interrupt.store(true, Ordering::Relaxed);
             }
         },
@@ -206,7 +206,7 @@ fn a_longer_chain_reuses_the_shared_prefix_of_a_shorter_run() -> Result<()> {
     ));
     let leases = journal_events(&ten)
         .iter()
-        .filter(|e| matches!(e, LifecycleEvent::Leased { .. }))
+        .filter(|e| matches!(e, Event::Leased { .. }))
         .count();
     assert_eq!(leases, 5, "exactly the unanswered segments run");
 

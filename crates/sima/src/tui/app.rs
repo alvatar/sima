@@ -23,9 +23,7 @@ use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 
 use sima_core::Error;
-use sima_pipeline::{
-    LifecycleEvent, LoadedConfig, RunControl, RunObserver, RunStatus, load, orchestrate,
-};
+use sima_pipeline::{LoadedConfig, Record, RunControl, RunObserver, RunStatus, load, orchestrate};
 
 use super::state::{KeyAction, LockView, Msg, TuiState};
 use super::view;
@@ -261,8 +259,8 @@ fn observe_loop(
         // Tail the journal: every line the foreign orchestrator appended
         // since the last poll, applied in append order. A read or parse
         // fault ends the session as a real error.
-        for event in observer.poll().map_err(io::Error::other)? {
-            state.handle(Msg::Event(event));
+        for record in observer.poll().map_err(io::Error::other)? {
+            state.handle(Msg::Event(record));
             dirty = true;
         }
         ticks_to_probe -= 1;
@@ -309,16 +307,16 @@ fn apply_key(state: &mut TuiState) -> io::Result<bool> {
 }
 
 /// Spawns the orchestrate thread for one run: its observer forwards every
-/// lifecycle event into the channel, the shared flag carries interrupts in,
+/// journal record into the channel, the shared flag carries interrupts in,
 /// and its return arrives as [`Msg::Finished`].
 fn spawn_run(config: Arc<LoadedConfig>, tx: SyncSender<Msg>, interrupt: Arc<AtomicBool>) {
     thread::spawn(move || {
         let events = tx.clone();
-        let observer = move |event: &LifecycleEvent| {
-            let _ = events.send(Msg::Event(event.clone()));
+        let observer = move |record: &Record| {
+            let _ = events.send(Msg::Event(record.clone()));
         };
         // `orchestrate` can unwind rather than return `Err` — the scheduler
-        // re-raises a worker or journal-sink panic at its scope join. Catch it
+        // re-raises a worker or collector panic at its scope join. Catch it
         // so the UI loop always receives a return: an unwinding orchestrate
         // thread would otherwise never send `Finished` and leave the session
         // hung. The panic hook is inert off the UI thread, so it does not touch

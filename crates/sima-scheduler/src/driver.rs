@@ -13,7 +13,6 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::Ordering;
-use std::sync::mpsc::Sender;
 use std::thread;
 use std::time::Duration;
 
@@ -21,12 +20,11 @@ use sima_contracts::{DeviceBinding, DeviceClass, Generator, WorkerId};
 use sima_core::{Error, Result};
 use sima_model::{Environment, RunConfig, RunId, TaskKey};
 use sima_store::Store;
+use sima_trace::{Collector, Emitter, Event, Record};
 
 use crate::config::ExecutionConfig;
 use crate::control::RunControl;
 use crate::coordinator::{Coordinator, Failure, Pending, RunState, Shared};
-use crate::event::LifecycleEvent;
-use crate::journal_sink::{JournalSink, emit};
 use crate::placement;
 use crate::segment_chain::SegmentChain;
 use crate::static_batch::StaticBatch;
@@ -116,22 +114,20 @@ pub fn run(
     let coordinator = Coordinator::with_placement(eligible_classes(pools), chains);
     let coordinator = &coordinator;
 
-    // Two nested scopes: the outer one holds the journal sink — a scoped
+    // Two nested scopes: the outer one holds the trace collector — a scoped
     // thread, so it can call the caller's borrowed observer — and the inner
     // one holds the pool, so workers borrow `&store` and the transport
     // without `Arc` and a worker panic re-raises at the pool's join, before
     // any finalize. The driver drives polling on this thread.
+    let subscribers: [&(dyn Fn(&Record) + Sync); 1] = [control.observer];
     let (outcome, journal) = thread::scope(|scope| {
-        let sink = JournalSink::spawn(scope, writer, control.observer);
-        let events = sink.sender();
-        emit(
-            &events,
-            LifecycleEvent::RunStarted {
-                run: run.to_string(),
-                tasks: source.task_total(),
-                committed: source.prior_committed(),
-            },
-        );
+        let collector = Collector::spawn(scope, writer, &subscribers);
+        let events = collector.emitter();
+        events.emit(Event::RunStarted {
+            run: run.to_string(),
+            tasks: source.task_total(),
+            committed: source.prior_committed(),
+        });
 
         let drive_result = thread::scope(|scope| -> Result<DriveOutcome> {
             // Worker ids run global and sequential across pools, local first,
@@ -161,43 +157,34 @@ pub fn run(
         // and join the journal.
         let outcome = match drive_result {
             Ok(DriveOutcome::Finalize) => store.finalize_run(&run, source.all_keys()).map(|()| {
-                emit(
-                    &events,
-                    LifecycleEvent::RunFinalized {
-                        run: run.to_string(),
-                        committed: source.all_keys().len(),
-                    },
-                );
+                events.emit(Event::RunFinalized {
+                    run: run.to_string(),
+                    committed: source.all_keys().len(),
+                });
                 RunOutcome::Finalized { run }
             }),
             Ok(DriveOutcome::Fail(failure)) => {
-                emit(
-                    &events,
-                    LifecycleEvent::RunFailed {
-                        run: run.to_string(),
-                        task: failure.task.to_string(),
-                        reason: failure.reason.clone(),
-                    },
-                );
+                events.emit(Event::RunFailed {
+                    run: run.to_string(),
+                    task: failure.task.to_string(),
+                    reason: failure.reason.clone(),
+                });
                 Ok(RunOutcome::Failed {
                     task: failure.task,
                     reason: failure.reason,
                 })
             }
             Ok(DriveOutcome::Interrupt) => {
-                emit(
-                    &events,
-                    LifecycleEvent::RunInterrupted {
-                        run: run.to_string(),
-                    },
-                );
+                events.emit(Event::RunInterrupted {
+                    run: run.to_string(),
+                });
                 Ok(RunOutcome::Interrupted { run })
             }
             Err(fault) => Err(fault),
         };
 
         drop(events);
-        (outcome, sink.shutdown())
+        (outcome, collector.shutdown())
     });
 
     // The domain outcome wins: a definitive candidate failure or an interrupt
@@ -317,7 +304,7 @@ enum Gate {
 fn drive(
     coordinator: &Coordinator,
     source: &mut dyn TaskSource,
-    events: &Sender<LifecycleEvent>,
+    events: &Emitter,
     control: &RunControl,
 ) -> Result<DriveOutcome> {
     // The release count the last poll was current as of; `None` before the
@@ -432,7 +419,7 @@ fn poll_source(
 /// are journaled before the tasks become visible, so each task's events appear
 /// in lifecycle order: a worker cannot lease a task before it is pushed, which
 /// happens after the emits.
-fn enqueue(coordinator: &Coordinator, events: &Sender<LifecycleEvent>, tasks: Vec<RunnableTask>) {
+fn enqueue(coordinator: &Coordinator, events: &Emitter, tasks: Vec<RunnableTask>) {
     if tasks.is_empty() {
         return;
     }
@@ -445,12 +432,9 @@ fn enqueue(coordinator: &Coordinator, events: &Sender<LifecycleEvent>, tasks: Ve
         })
         .collect();
     for p in &pending {
-        emit(
-            events,
-            LifecycleEvent::Queued {
-                task: p.key.to_string(),
-            },
-        );
+        events.emit(Event::Queued {
+            task: p.key.to_string(),
+        });
     }
     let mut shared = coordinator.lock();
     shared.queue.extend(pending);
@@ -627,7 +611,8 @@ mod tests {
     #[test]
     fn a_poll_error_winds_the_run_down_instead_of_hanging() {
         let coordinator = Coordinator::new();
-        let (events, _rx) = mpsc::channel();
+        let (tx, _rx) = mpsc::channel();
+        let events = Emitter::from(tx);
         // With no live workers, the first poll faults immediately.
         let result = drive(
             &coordinator,
@@ -644,7 +629,8 @@ mod tests {
     #[test]
     fn an_empty_source_finalizes_immediately() {
         let coordinator = Coordinator::new();
-        let (events, _rx) = mpsc::channel();
+        let (tx, _rx) = mpsc::channel();
+        let events = Emitter::from(tx);
         // Nothing has been polled yet, so the first poll fires immediately;
         // it comes back empty at an idle pool, which is the whole run:
         // one poll, then finalize.
@@ -665,7 +651,8 @@ mod tests {
             task: a_key(),
             reason: "candidate rejected".to_string(),
         });
-        let (events, _rx) = mpsc::channel();
+        let (tx, _rx) = mpsc::channel();
+        let events = Emitter::from(tx);
         let result = drive(
             &coordinator,
             &mut ScriptedSource::default(),
@@ -687,7 +674,8 @@ mod tests {
     fn a_preset_fault_is_returned_as_the_run_error() {
         let coordinator = Coordinator::new();
         coordinator.lock().state = RunState::Fault(Error::Corruption("store broke".to_string()));
-        let (events, _rx) = mpsc::channel();
+        let (tx, _rx) = mpsc::channel();
+        let events = Emitter::from(tx);
         let result = drive(
             &coordinator,
             &mut ScriptedSource::default(),
@@ -703,14 +691,14 @@ mod tests {
 
     /// Drains `rx` until a `Queued` event for `key` arrives, bounded by
     /// `deadline`; returns whether it arrived.
-    fn saw_queued(rx: &mpsc::Receiver<LifecycleEvent>, key: &TaskKey, deadline: Duration) -> bool {
+    fn saw_queued(rx: &mpsc::Receiver<Event>, key: &TaskKey, deadline: Duration) -> bool {
         let end = std::time::Instant::now() + deadline;
         loop {
             let Some(remaining) = end.checked_duration_since(std::time::Instant::now()) else {
                 return false;
             };
             match rx.recv_timeout(remaining) {
-                Ok(LifecycleEvent::Queued { task }) if task == key.to_string() => return true,
+                Ok(Event::Queued { task }) if task == key.to_string() => return true,
                 Ok(_) => {}
                 Err(_) => return false,
             }
@@ -726,7 +714,8 @@ mod tests {
         // C while holding A's lease; B must be queued before A releases,
         // which only a poll gate that runs with leases outstanding can do.
         let coordinator = Coordinator::new();
-        let (events, rx) = mpsc::channel();
+        let (tx, rx) = mpsc::channel();
+        let events = Emitter::from(tx);
         let task_a = runnable(1);
         let task_c = runnable(3);
         let task_b = runnable(2);
@@ -770,7 +759,8 @@ mod tests {
         // holds the sole task's lease across an empty poll; drive must wait
         // for the release instead of finalizing under the lease.
         let coordinator = Coordinator::new();
-        let (events, _rx) = mpsc::channel();
+        let (tx, _rx) = mpsc::channel();
+        let events = Emitter::from(tx);
         let task_a = runnable(1);
         let mut source = ScriptedSource {
             polls: VecDeque::from([vec![task_a]]),
@@ -823,7 +813,8 @@ mod tests {
             }
         }
         let coordinator = Coordinator::new();
-        let (events, _rx) = mpsc::channel();
+        let (tx, _rx) = mpsc::channel();
+        let events = Emitter::from(tx);
         let mut source = FaultAfterFirst {
             first: Some(vec![runnable(1)]),
         };
@@ -853,7 +844,8 @@ mod tests {
         // remains scripted. The in-flight attempt drains; the pending
         // successor is never handed out; the run reports Interrupted.
         let coordinator = Coordinator::new();
-        let (events, _rx) = mpsc::channel();
+        let (tx, _rx) = mpsc::channel();
+        let events = Emitter::from(tx);
         // A local flag: `detached()`'s flag is a process-wide static shared
         // by every detached control, so setting it would poison other tests.
         let interrupt = std::sync::atomic::AtomicBool::new(false);
@@ -882,17 +874,18 @@ mod tests {
     #[test]
     fn enqueue_journals_each_task_and_publishes_it() {
         let coordinator = Coordinator::new();
-        let (events, rx) = mpsc::channel();
+        let (tx, rx) = mpsc::channel();
+        let events = Emitter::from(tx);
         let tasks = vec![runnable(1), runnable(2)];
         let keys: Vec<TaskKey> = tasks.iter().map(|t| t.identity.key()).collect();
         enqueue(&coordinator, &events, tasks);
         drop(events);
         // Exactly one Queued event per task, in queue order.
-        let queued: Vec<LifecycleEvent> = rx.into_iter().collect();
+        let queued: Vec<Event> = rx.into_iter().collect();
         assert_eq!(queued.len(), 2);
         for (event, key) in queued.iter().zip(&keys) {
             assert!(
-                matches!(event, LifecycleEvent::Queued { task } if *task == key.to_string()),
+                matches!(event, Event::Queued { task } if *task == key.to_string()),
                 "expected a Queued event for {key}"
             );
         }
@@ -909,7 +902,8 @@ mod tests {
     #[test]
     fn enqueue_with_nothing_is_a_no_op() {
         let coordinator = Coordinator::new();
-        let (events, rx) = mpsc::channel();
+        let (tx, rx) = mpsc::channel();
+        let events = Emitter::from(tx);
         enqueue(&coordinator, &events, Vec::new());
         drop(events);
         assert_eq!(rx.into_iter().count(), 0);

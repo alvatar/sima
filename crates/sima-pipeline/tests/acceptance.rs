@@ -16,7 +16,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use common::{journal_events, loaded, loaded_with};
 use sima_core::Result;
-use sima_pipeline::{LifecycleEvent, RunControl, RunOutcome, orchestrate};
+use sima_pipeline::{Event, Record, RunControl, RunOutcome, orchestrate};
 use sima_store::Store;
 
 /// A behavior mix covering retry and timing variance alongside plain
@@ -72,9 +72,7 @@ fn c_re_evaluation_of_a_finalized_run_touches_no_executor() -> Result<()> {
         assert!(
             !matches!(
                 event,
-                LifecycleEvent::Queued { .. }
-                    | LifecycleEvent::Leased { .. }
-                    | LifecycleEvent::Committed { .. }
+                Event::Queued { .. } | Event::Leased { .. } | Event::Committed { .. }
             ),
             "re-evaluation queued or executed work: {event:?}"
         );
@@ -107,8 +105,8 @@ fn d_a_copied_store_resumes_elsewhere_to_the_identical_manifest() -> Result<()> 
 
     let interrupt = AtomicBool::new(false);
     let control = RunControl {
-        observer: &|event: &LifecycleEvent| {
-            if matches!(event, LifecycleEvent::Committed { .. }) {
+        observer: &|record: &Record| {
+            if matches!(record.event, Event::Committed { .. }) {
                 interrupt.store(true, Ordering::Relaxed);
             }
         },
