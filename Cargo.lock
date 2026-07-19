@@ -820,6 +820,7 @@ dependencies = [
  "sima-domains",
  "sima-model",
  "sima-store",
+ "sima-trace",
  "sima-transport",
  "tempfile",
 ]
@@ -832,6 +833,7 @@ dependencies = [
  "serde_json",
  "sima-core",
  "sima-model",
+ "sima-trace",
  "tempfile",
 ]
 
@@ -846,13 +848,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "sima-trace"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sima-core",
+]
+
+[[package]]
 name = "sima-transport"
 version = "0.1.0"
 dependencies = [
+ "serde_json",
  "sima-contracts",
  "sima-core",
  "sima-domains",
  "sima-model",
+ "sima-trace",
 ]
 
 [[package]]
@@ -865,6 +878,7 @@ dependencies = [
  "sima-core",
  "sima-domains",
  "sima-model",
+ "sima-trace",
  "sima-transport",
 ]
 

@@ -100,7 +100,7 @@ fn drive(config: &Path) -> Result<RunOutcome> {
     // store, so a resumed run counts on from where it stopped.
     let progress = render::Progress::new();
     let control = RunControl {
-        observer: &|event| progress.event(event),
+        observer: &|record| progress.event(record),
         interrupt: &interrupt,
     };
     orchestrate(&loaded, &control)

@@ -8,6 +8,9 @@ edition.workspace = true
 # be armed inside the worker process by a test harness.
 crash-injection = ["sima-domains/crash-injection"]
 
+[dev-dependencies]
+sima-trace = { path = "../sima-trace" }
+
 [dependencies]
 sima-core = { path = "../sima-core" }
 sima-model = { path = "../sima-model" }

@@ -4,7 +4,7 @@
 use std::path::{Path, PathBuf};
 
 use sima_core::Result;
-use sima_pipeline::{LifecycleEvent, LoadedConfig, load};
+use sima_pipeline::{Event, LoadedConfig, Record, load};
 use sima_store::Store;
 
 /// Writes a `sima.toml` named `name` under `dir` and loads it. `behaviors`
@@ -54,12 +54,12 @@ pub fn loaded_text(dir: &Path, name: &str, text: &str) -> Result<LoadedConfig> {
 }
 
 /// The typed journal of `config`'s run in its store.
-pub fn journal_events(config: &LoadedConfig) -> Vec<LifecycleEvent> {
+pub fn journal_events(config: &LoadedConfig) -> Vec<Event> {
     let store = Store::open(&config.store).expect("open store");
     store
         .journal(&config.run.id())
         .expect("read journal")
         .iter()
-        .map(|line| LifecycleEvent::from_line(line).expect("parse journal line"))
+        .map(|line| Record::from_line(line).expect("parse journal line").event)
         .collect()
 }

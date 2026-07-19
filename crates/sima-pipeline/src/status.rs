@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use sima_core::{Error, Result};
 use sima_model::RunId;
-use sima_scheduler::LifecycleEvent;
+use sima_scheduler::{Event, Record};
 use sima_store::Store;
 
 use crate::config::LoadedConfig;
@@ -40,8 +40,7 @@ pub struct RunStatus {
     /// composition: which hardware, on which machine, actually did the work,
     /// joined from each commit and the device its worker was bound to. Empty
     /// for a journal carrying no `WorkerBound` events — a run whose domain uses
-    /// no device names none. An old journal without host fields renders the
-    /// plain device name, exactly as before.
+    /// no device names none.
     pub devices: BTreeMap<String, usize>,
     /// Chains whose device class went absent and moved, across the whole
     /// journal.
@@ -112,21 +111,22 @@ impl RunStatus {
         }
     }
 
-    /// Applies one lifecycle event to the status — the total function over
+    /// Applies one journal record to the status — the total function over
     /// the event vocabulary that `status`'s journal replay and the tui's
     /// live stream both use. Counters sum across resume segments; the
     /// run-level events overwrite the state so the last one decides; and
-    /// worker occupancy tracks the in-flight leases.
-    pub fn apply(&mut self, event: &LifecycleEvent) {
-        match event {
-            LifecycleEvent::RunStarted { tasks, .. } => {
+    /// worker occupancy tracks the in-flight leases. The record's timestamp
+    /// carries no state: only the event acts.
+    pub fn apply(&mut self, record: &Record) {
+        match &record.event {
+            Event::RunStarted { tasks, .. } => {
                 // A fresh segment: restate the count and drop any leases the
                 // previous segment held.
                 self.tasks = *tasks;
                 self.state = RunState::InProgress;
                 self.occupancy.clear();
             }
-            LifecycleEvent::Leased {
+            Event::Leased {
                 task,
                 worker,
                 attempt,
@@ -139,7 +139,7 @@ impl RunStatus {
                     },
                 );
             }
-            LifecycleEvent::Committed { task, .. } => {
+            Event::Committed { task, .. } => {
                 self.committed += 1;
                 // The commit's device is the one its worker reported: the
                 // journal says who leased the task, and the worker said where
@@ -154,46 +154,46 @@ impl RunStatus {
                         .or_default() += 1;
                 }
             }
-            LifecycleEvent::Failed { task, .. } => {
+            Event::Failed { task, .. } => {
                 // The attempt ended and its worker is free; the retry (or a
                 // definitive outcome) follows as its own event.
                 self.free_task(task);
             }
-            LifecycleEvent::Retried { .. } => self.retried += 1,
-            LifecycleEvent::Rejected { task, .. } => {
+            Event::Retried { .. } => self.retried += 1,
+            Event::Rejected { task, .. } => {
                 self.rejected += 1;
                 self.free_task(task);
             }
-            LifecycleEvent::Faulted { task, .. } => {
+            Event::Faulted { task, .. } => {
                 self.faulted += 1;
                 self.free_task(task);
             }
-            LifecycleEvent::LeaseExpired { .. } => {
+            Event::LeaseExpired { .. } => {
                 // The preemption settles through its own Failed event, which
                 // frees the task; here only the counter moves.
                 self.lease_expired += 1;
             }
-            LifecycleEvent::CheckpointDegraded { .. } => {
+            Event::CheckpointDegraded { .. } => {
                 // An optimization failed; the attempt's result is unaffected,
                 // so only the counter moves.
                 self.checkpoint_degraded += 1;
             }
-            LifecycleEvent::RunFinalized { .. } => {
+            Event::RunFinalized { .. } => {
                 self.state = RunState::Finalized;
                 self.occupancy.clear();
             }
-            LifecycleEvent::RunFailed { task, reason, .. } => {
+            Event::RunFailed { task, reason, .. } => {
                 self.state = RunState::Failed {
                     task: task.clone(),
                     reason: reason.clone(),
                 };
                 self.occupancy.clear();
             }
-            LifecycleEvent::RunInterrupted { .. } => {
+            Event::RunInterrupted { .. } => {
                 self.state = RunState::Interrupted;
                 self.occupancy.clear();
             }
-            LifecycleEvent::WorkerBound {
+            Event::WorkerBound {
                 worker,
                 device,
                 host,
@@ -205,8 +205,11 @@ impl RunStatus {
                 self.worker_devices
                     .insert(*worker, (device.clone(), host.clone()));
             }
-            LifecycleEvent::ChainRebound { .. } => self.rebound_chains += 1,
-            LifecycleEvent::Queued { .. } => {}
+            Event::ChainRebound { .. } => self.rebound_chains += 1,
+            Event::Queued { .. } => {}
+            // Diagnostics are observational text: no counter, no state
+            // change.
+            Event::Diagnostic { .. } => {}
         }
     }
 
@@ -226,8 +229,7 @@ impl RunStatus {
 
 /// The composition key for a commit on `device` at `host`: the plain device
 /// name for a local pool (empty host), or `device @ host` for a remote one, so
-/// one device name on several machines counts separately. An old journal
-/// without a host renders the plain form.
+/// one device name on several machines counts separately.
 fn composition_label(device: &str, host: &str) -> String {
     if host.is_empty() {
         device.to_string()
@@ -267,9 +269,9 @@ fn from_journal(store: &Store, run: &RunId) -> Result<RunStatus> {
     }
     let mut report = RunStatus::new(*run);
     for line in &lines {
-        let event = LifecycleEvent::from_line(line)
+        let record = Record::from_line(line)
             .map_err(|e| Error::Corruption(format!("journal of run {run}: {e}")))?;
-        report.apply(&event);
+        report.apply(&record);
     }
     Ok(report)
 }
@@ -284,83 +286,89 @@ mod tests {
         RunId::from_hash(hash_bytes(b"status test run"))
     }
 
-    fn started(tasks: usize) -> LifecycleEvent {
-        LifecycleEvent::RunStarted {
+    /// Wraps an event as a record the tests apply. The stamp is irrelevant
+    /// here, so every record carries the same one.
+    fn rec(event: Event) -> Record {
+        Record { ts_ms: 0, event }
+    }
+
+    fn started(tasks: usize) -> Record {
+        rec(Event::RunStarted {
             run: "00".repeat(32),
             tasks,
             committed: 0,
-        }
+        })
     }
 
-    fn leased(task: &str, worker: u64, attempt: u32) -> LifecycleEvent {
-        LifecycleEvent::Leased {
+    fn leased(task: &str, worker: u64, attempt: u32) -> Record {
+        rec(Event::Leased {
             task: task.to_string(),
             worker,
             attempt,
-        }
+        })
     }
 
-    fn committed(task: &str) -> LifecycleEvent {
-        LifecycleEvent::Committed {
+    fn committed(task: &str) -> Record {
+        rec(Event::Committed {
             task: task.to_string(),
             record: "11".repeat(32),
             stats_hex: String::new(),
-        }
+        })
     }
 
-    fn failed(task: &str, attempt: u32) -> LifecycleEvent {
-        LifecycleEvent::Failed {
+    fn failed(task: &str, attempt: u32) -> Record {
+        rec(Event::Failed {
             task: task.to_string(),
             attempt,
             reason: "flaky".to_string(),
             stats_hex: String::new(),
-        }
+        })
     }
 
-    fn worker_bound(worker: u64, device: &str) -> LifecycleEvent {
+    fn worker_bound(worker: u64, device: &str) -> Record {
         worker_bound_on(worker, device, "")
     }
 
-    fn worker_bound_on(worker: u64, device: &str, host: &str) -> LifecycleEvent {
-        LifecycleEvent::WorkerBound {
+    fn worker_bound_on(worker: u64, device: &str, host: &str) -> Record {
+        rec(Event::WorkerBound {
             worker,
             device: device.to_string(),
             driver: String::new(),
             host: host.to_string(),
-        }
+        })
     }
 
-    /// The status a fresh run reaches by applying `events` in order.
-    fn folded(events: Vec<LifecycleEvent>) -> RunStatus {
+    /// The status a fresh run reaches by applying `records` in order.
+    fn folded(records: Vec<Record>) -> RunStatus {
         let mut status = RunStatus::new(run_id());
-        for event in &events {
-            status.apply(event);
+        for record in &records {
+            status.apply(record);
         }
         status
     }
 
-    fn retried(task: &str, next_attempt: u32) -> LifecycleEvent {
-        LifecycleEvent::Retried {
+    fn retried(task: &str, next_attempt: u32) -> Record {
+        rec(Event::Retried {
             task: task.to_string(),
             next_attempt,
-        }
+        })
     }
 
-    fn rejected(task: &str, attempt: u32) -> LifecycleEvent {
-        LifecycleEvent::Rejected {
+    fn rejected(task: &str, attempt: u32) -> Record {
+        rec(Event::Rejected {
             task: task.to_string(),
             attempt,
             reason: "rejected".to_string(),
             stats_hex: String::new(),
-        }
+        })
     }
 
-    fn faulted(task: &str, attempt: u32) -> LifecycleEvent {
-        LifecycleEvent::Faulted {
+    fn faulted(task: &str, attempt: u32) -> Record {
+        rec(Event::Faulted {
             task: task.to_string(),
             attempt,
             error: "io error".to_string(),
-        }
+        })
     }
 
     fn occupancy(task: &str, attempt: u32) -> Occupancy {
@@ -414,10 +422,10 @@ mod tests {
         let mut status = RunStatus::new(run_id());
         status.apply(&started(1));
         status.apply(&leased("aa", 0, 0));
-        status.apply(&LifecycleEvent::CheckpointDegraded {
+        status.apply(&rec(Event::CheckpointDegraded {
             task: "aa".to_string(),
             error: "checkpoint dir is unwritable".to_string(),
-        });
+        }));
         assert_eq!(status.checkpoint_degraded, 1);
         // The attempt continues: the worker still holds its lease.
         assert_eq!(status.occupancy.get(&0), Some(&occupancy("aa", 0)));
@@ -429,11 +437,11 @@ mod tests {
         let mut status = RunStatus::new(run_id());
         status.apply(&started(1));
         status.apply(&leased("aa", 0, 0));
-        status.apply(&LifecycleEvent::LeaseExpired {
+        status.apply(&rec(Event::LeaseExpired {
             task: "aa".to_string(),
             worker: 0,
             elapsed_ms: 5,
-        });
+        }));
         assert_eq!(status.lease_expired, 1);
         assert!(
             status.occupancy.contains_key(&0),
@@ -455,18 +463,18 @@ mod tests {
     #[test]
     fn run_level_events_set_the_terminal_state() {
         let mut finalized = RunStatus::new(run_id());
-        finalized.apply(&LifecycleEvent::RunFinalized {
+        finalized.apply(&rec(Event::RunFinalized {
             run: "00".repeat(32),
             committed: 3,
-        });
+        }));
         assert_eq!(finalized.state, RunState::Finalized);
 
         let mut failed = RunStatus::new(run_id());
-        failed.apply(&LifecycleEvent::RunFailed {
+        failed.apply(&rec(Event::RunFailed {
             run: "00".repeat(32),
             task: "aa".to_string(),
             reason: "rejected".to_string(),
-        });
+        }));
         assert_eq!(
             failed.state,
             RunState::Failed {
@@ -476,9 +484,9 @@ mod tests {
         );
 
         let mut interrupted = RunStatus::new(run_id());
-        interrupted.apply(&LifecycleEvent::RunInterrupted {
+        interrupted.apply(&rec(Event::RunInterrupted {
             run: "00".repeat(32),
-        });
+        }));
         assert_eq!(interrupted.state, RunState::Interrupted);
     }
 
@@ -506,7 +514,7 @@ mod tests {
 
         // A journal exercising counters, occupancy churn, a retry, and the
         // finalize that decides the state.
-        let events = vec![
+        let records = vec![
             started(2),
             leased("aa", 0, 0),
             leased("bb", 1, 0),
@@ -515,19 +523,19 @@ mod tests {
             retried("bb", 1),
             leased("bb", 1, 1),
             committed("bb"),
-            LifecycleEvent::RunFinalized {
+            rec(Event::RunFinalized {
                 run: run.to_string(),
                 committed: 2,
-            },
+            }),
         ];
         let mut writer = store.journal_writer(&run)?;
-        for event in &events {
-            writer.append(&event.to_line()?)?;
+        for record in &records {
+            writer.append(&record.to_line()?)?;
         }
 
         let mut replay = RunStatus::new(run);
-        for event in &events {
-            replay.apply(event);
+        for record in &records {
+            replay.apply(record);
         }
         assert_eq!(
             from_journal(&store, &run)?,
@@ -641,19 +649,37 @@ mod tests {
     }
 
     #[test]
+    fn a_diagnostic_changes_nothing() {
+        let base = folded(vec![started(2), leased("aa", 0, 0)]);
+        let with_diagnostic = folded(vec![
+            started(2),
+            leased("aa", 0, 0),
+            rec(Event::Diagnostic {
+                level: sima_scheduler::Level::Error,
+                source: "panic".to_string(),
+                message: "worker panicked".to_string(),
+                worker: Some(0),
+                host: None,
+                task: Some("aa".to_string()),
+            }),
+        ]);
+        assert_eq!(with_diagnostic, base);
+    }
+
+    #[test]
     fn rebound_chains_count_across_the_journal() {
         let status = folded(vec![
             started(2),
-            LifecycleEvent::ChainRebound {
+            rec(Event::ChainRebound {
                 chain: 0,
                 from: "10de:2d39".to_string(),
                 to: "8086:7d51".to_string(),
-            },
-            LifecycleEvent::ChainRebound {
+            }),
+            rec(Event::ChainRebound {
                 chain: 1,
                 from: "10de:2d39".to_string(),
                 to: "8086:7d51".to_string(),
-            },
+            }),
         ]);
         assert_eq!(status.rebound_chains, 2);
     }

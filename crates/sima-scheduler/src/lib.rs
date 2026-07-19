@@ -19,8 +19,6 @@ mod config;
 mod control;
 mod coordinator;
 mod driver;
-mod event;
-mod journal_sink;
 mod placement;
 mod segment_chain;
 mod static_batch;
@@ -31,8 +29,10 @@ mod worker_pool;
 pub use config::{DeviceEntry, ExecutionConfig};
 pub use control::RunControl;
 pub use driver::{RunOutcome, run, worker_slots};
-pub use event::LifecycleEvent;
 pub use segment_chain::SegmentChain;
+// The event vocabulary and journal line type are the trace facade's; the
+// scheduler re-exports them as the emitting layer consumers import from.
+pub use sima_trace::{Event, Level, Record};
 pub use static_batch::StaticBatch;
 pub use task_source::{RunnableTask, TaskSource};
 pub use worker_pool::WorkerPool;

@@ -11,6 +11,7 @@ crash-injection = ["sima-core/crash-injection"]
 [dependencies]
 sima-core = { path = "../sima-core" }
 sima-model = { path = "../sima-model" }
+sima-trace = { path = "../sima-trace" }
 serde.workspace = true
 serde_json.workspace = true
 

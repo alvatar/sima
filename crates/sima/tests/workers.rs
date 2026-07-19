@@ -12,7 +12,7 @@ use std::time::Duration;
 use common::{
     journal_events, manifest_of, poll_until, sima_command, worker_alive, worker_processes,
 };
-use sima_pipeline::{LifecycleEvent, load};
+use sima_pipeline::{Event, load};
 use sima_store::Store;
 
 /// Spawns `sima run` over `config` with its output discarded — the store
@@ -54,29 +54,29 @@ fn preemption_kills_an_overrunning_attempt_and_exhausts_the_run() {
     assert_eq!(status.code(), Some(2), "a definitive failure exits 2");
 
     let events = journal_events(&config);
-    let count = |probe: fn(&LifecycleEvent) -> bool| events.iter().filter(|e| probe(e)).count();
+    let count = |probe: fn(&Event) -> bool| events.iter().filter(|e| probe(e)).count();
     // Both attempts expired and failed transiently; the first was retried,
     // the second exhausted the cap; nothing committed and the run failed.
     assert_eq!(
-        count(|e| matches!(e, LifecycleEvent::LeaseExpired { .. })),
+        count(|e| matches!(e, Event::LeaseExpired { .. })),
         2,
         "each attempt journals its expiry: {events:?}"
     );
-    assert_eq!(count(|e| matches!(e, LifecycleEvent::Failed { .. })), 2);
-    assert_eq!(count(|e| matches!(e, LifecycleEvent::Retried { .. })), 1);
-    assert_eq!(count(|e| matches!(e, LifecycleEvent::Committed { .. })), 0);
+    assert_eq!(count(|e| matches!(e, Event::Failed { .. })), 2);
+    assert_eq!(count(|e| matches!(e, Event::Retried { .. })), 1);
+    assert_eq!(count(|e| matches!(e, Event::Committed { .. })), 0);
     assert!(
-        matches!(events.last(), Some(LifecycleEvent::RunFailed { .. })),
+        matches!(events.last(), Some(Event::RunFailed { .. })),
         "the journal closes with run_failed: {events:?}"
     );
     // The expiry precedes the retry, per the journal's lifecycle order.
     let expired = events
         .iter()
-        .position(|e| matches!(e, LifecycleEvent::LeaseExpired { .. }))
+        .position(|e| matches!(e, Event::LeaseExpired { .. }))
         .expect("an expiry");
     let retried = events
         .iter()
-        .position(|e| matches!(e, LifecycleEvent::Retried { .. }))
+        .position(|e| matches!(e, Event::Retried { .. }))
         .expect("a retry");
     assert!(expired < retried, "LeaseExpired precedes Retried");
     assert!(manifest_of(&config).is_none(), "no manifest is written");
@@ -88,7 +88,7 @@ fn preemption_kills_an_overrunning_attempt_and_exhausts_the_run() {
 fn leased(config: &Path) -> usize {
     journal_events(config)
         .iter()
-        .filter(|e| matches!(e, LifecycleEvent::Leased { .. }))
+        .filter(|e| matches!(e, Event::Leased { .. }))
         .count()
 }
 
@@ -166,15 +166,11 @@ fn an_externally_killed_worker_converges_to_the_reference_manifest() {
     // that missed its window.
     let events = journal_events(&config);
     assert!(
-        events
-            .iter()
-            .any(|e| matches!(e, LifecycleEvent::Failed { .. })),
+        events.iter().any(|e| matches!(e, Event::Failed { .. })),
         "the worker death journals a transient failure: {events:?}"
     );
     assert!(
-        events
-            .iter()
-            .any(|e| matches!(e, LifecycleEvent::Retried { .. })),
+        events.iter().any(|e| matches!(e, Event::Retried { .. })),
         "the lost attempt is retried: {events:?}"
     );
 }

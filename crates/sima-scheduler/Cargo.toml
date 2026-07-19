@@ -13,6 +13,7 @@ sima-core = { path = "../sima-core" }
 sima-model = { path = "../sima-model" }
 sima-store = { path = "../sima-store" }
 sima-contracts = { path = "../sima-contracts" }
+sima-trace = { path = "../sima-trace" }
 sima-transport = { path = "../sima-transport" }
 serde.workspace = true
 serde_json.workspace = true

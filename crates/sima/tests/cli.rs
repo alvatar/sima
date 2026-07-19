@@ -8,7 +8,7 @@ use std::process::{Command, Output};
 use std::time::{Duration, Instant};
 
 use common::{manifest_of, sima_command, worker_processes};
-use sima_pipeline::{LifecycleEvent, RunObserver, load};
+use sima_pipeline::{Event, RunObserver, load};
 
 /// Writes a `sima.toml` under `dir` whose store lives beside it.
 fn write_config(dir: &Path, behaviors: &str) -> PathBuf {
@@ -440,7 +440,7 @@ fn an_observer_follows_a_live_run_to_its_end() {
         events.extend(observer.poll().expect("poll the journal"));
         if events
             .iter()
-            .any(|event| matches!(event, LifecycleEvent::RunFinalized { .. }))
+            .any(|record| matches!(record.event, Event::RunFinalized { .. }))
         {
             break;
         }
@@ -459,12 +459,12 @@ fn an_observer_follows_a_live_run_to_its_end() {
     assert!(
         events
             .iter()
-            .any(|event| matches!(event, LifecycleEvent::RunStarted { .. })),
+            .any(|record| matches!(record.event, Event::RunStarted { .. })),
         "the seed replays the run start: {events:?}"
     );
     let committed = events
         .iter()
-        .filter(|event| matches!(event, LifecycleEvent::Committed { .. }))
+        .filter(|record| matches!(record.event, Event::Committed { .. }))
         .count();
     assert_eq!(committed, 4, "every commit arrives once: {events:?}");
 

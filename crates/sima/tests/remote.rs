@@ -50,7 +50,7 @@ use common::{
     devices_reported, journal_events, manifest_bytes, manifest_of, poll_until, sima_command,
     task_devices, write_config_text,
 };
-use sima_pipeline::LifecycleEvent;
+use sima_pipeline::Event;
 
 /// The candidates and segments every remote test runs. Sized like the device
 /// suite so several chains outnumber the workers and both pools pull work.
@@ -229,18 +229,18 @@ fn run_to_completion(config: &Path) {
 }
 
 /// The hosts the journal's `WorkerBound` events name.
-fn bound_hosts(events: &[LifecycleEvent]) -> HashSet<String> {
+fn bound_hosts(events: &[Event]) -> HashSet<String> {
     events
         .iter()
         .filter_map(|event| match event {
-            LifecycleEvent::WorkerBound { host, .. } => Some(host.clone()),
+            Event::WorkerBound { host, .. } => Some(host.clone()),
             _ => None,
         })
         .collect()
 }
 
 /// Asserts no chain's segments ran across two device classes.
-fn assert_no_chain_split(events: &[LifecycleEvent]) {
+fn assert_no_chain_split(events: &[Event]) {
     for (task, classes) in task_devices(events) {
         let distinct: HashSet<&String> = classes.iter().collect();
         assert!(distinct.len() <= 1, "task {task} split across classes");
@@ -363,7 +363,7 @@ fn a_resume_without_the_container_pool_rebinds_loudly() {
     let bound = poll_until(Duration::from_secs(120), || {
         journal_events(&full)
             .iter()
-            .filter(|e| matches!(e, LifecycleEvent::WorkerBound { .. }))
+            .filter(|e| matches!(e, Event::WorkerBound { .. }))
             .count()
             >= 4
     });
@@ -388,7 +388,7 @@ fn a_resume_without_the_container_pool_rebinds_loudly() {
     assert!(
         events
             .iter()
-            .any(|e| matches!(e, LifecycleEvent::ChainRebound { .. })),
+            .any(|e| matches!(e, Event::ChainRebound { .. })),
         "a chain whose class was gone rebound loudly"
     );
     assert!(
@@ -517,7 +517,7 @@ fn converges_after_a_mid_lease_kill(env: &ContainerEnv, config_name: &str) {
     let events = journal_events(&config);
     let retried = events
         .iter()
-        .any(|event| matches!(event, LifecycleEvent::Retried { .. }));
+        .any(|event| matches!(event, Event::Retried { .. }));
     assert!(retried, "the killed attempt was retried");
     assert!(manifest_of(&config).is_some(), "the run finalized");
 }

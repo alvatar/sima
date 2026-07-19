@@ -3,7 +3,7 @@
 
 use sima_core::{Error, Result};
 use sima_model::RunId;
-use sima_scheduler::LifecycleEvent;
+use sima_scheduler::Record;
 use sima_store::Store;
 
 use crate::config::LoadedConfig;
@@ -42,23 +42,23 @@ impl RunObserver {
         })
     }
 
-    /// The lifecycle events appended since the previous poll, in append
+    /// The journal records appended since the previous poll, in append
     /// order; the first poll returns the run's full history. A line that
     /// fails to parse is [`Error::Corruption`] naming the run, matching
     /// [`report`](crate::report); the failed region stays unconsumed, so the
     /// next poll reports it again.
-    pub fn poll(&mut self) -> Result<Vec<LifecycleEvent>> {
+    pub fn poll(&mut self) -> Result<Vec<Record>> {
         let (lines, offset) = self.store.journal_from(&self.run, self.offset)?;
-        let events = lines
+        let records = lines
             .iter()
             .map(|line| {
-                LifecycleEvent::from_line(line)
+                Record::from_line(line)
                     .map_err(|e| Error::Corruption(format!("journal of run {}: {e}", self.run)))
             })
             .collect::<Result<Vec<_>>>()?;
         // Consume the region only once every line in it parsed.
         self.offset = offset;
-        Ok(events)
+        Ok(records)
     }
 
     /// Who holds the run's orchestrator lock: `Some` with the recorded
@@ -117,30 +117,36 @@ mod tests {
         Ok((dir, store, run, loaded))
     }
 
-    /// A `RunStarted` event for `run`.
-    fn started(run: &RunId, tasks: usize) -> LifecycleEvent {
-        LifecycleEvent::RunStarted {
+    /// Wraps an event as a record the tests journal. The stamp is irrelevant
+    /// here, so every record carries the same one.
+    fn rec(event: sima_scheduler::Event) -> Record {
+        Record { ts_ms: 0, event }
+    }
+
+    /// A `RunStarted` record for `run`.
+    fn started(run: &RunId, tasks: usize) -> Record {
+        rec(sima_scheduler::Event::RunStarted {
             run: run.to_string(),
             tasks,
             committed: 0,
-        }
+        })
     }
 
-    /// A `Committed` event for `task`.
-    fn committed(task: &str) -> LifecycleEvent {
-        LifecycleEvent::Committed {
+    /// A `Committed` record for `task`.
+    fn committed(task: &str) -> Record {
+        rec(sima_scheduler::Event::Committed {
             task: task.to_string(),
             record: "11".repeat(32),
             stats_hex: String::new(),
-        }
+        })
     }
 
-    /// Appends `events` to the run's journal, as the driving orchestrator
+    /// Appends `records` to the run's journal, as the driving orchestrator
     /// would.
-    fn append(store: &Store, run: &RunId, events: &[LifecycleEvent]) -> Result<()> {
+    fn append(store: &Store, run: &RunId, records: &[Record]) -> Result<()> {
         let mut writer = store.journal_writer(run)?;
-        for event in events {
-            writer.append(&event.to_line()?)?;
+        for record in records {
+            writer.append(&record.to_line()?)?;
         }
         Ok(())
     }
@@ -157,7 +163,7 @@ mod tests {
         append(&store, &run, &[committed("bb")])?;
         assert_eq!(observer.poll()?, [committed("bb")]);
         // Nothing appended: the poll is empty.
-        assert_eq!(observer.poll()?, Vec::<LifecycleEvent>::new());
+        assert_eq!(observer.poll()?, Vec::<Record>::new());
         Ok(())
     }
 

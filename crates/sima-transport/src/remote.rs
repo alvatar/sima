@@ -23,10 +23,11 @@ use std::time::{Duration, Instant};
 use sima_contracts::DeviceBinding;
 use sima_core::Result;
 use sima_model::FormatId;
+use sima_trace::Emitter;
 
 use crate::link::{LinkEvent, WorkerLink, WorkerTransport};
 use crate::protocol::{Assignment, Hello};
-use crate::subprocess::{hello, spawn_worker};
+use crate::subprocess::{EventContext, hello, spawn_worker};
 
 /// The container command the worker runs as; the runtime execs it as the
 /// container's entrypoint argument.
@@ -83,7 +84,12 @@ impl RemoteTransport {
 }
 
 impl WorkerTransport for RemoteTransport {
-    fn spawn(&self, device: Option<&DeviceBinding>) -> Result<Box<dyn WorkerLink>> {
+    fn spawn(
+        &self,
+        worker: u64,
+        device: Option<&DeviceBinding>,
+        events: Emitter,
+    ) -> Result<Box<dyn WorkerLink>> {
         let n = self.counter.fetch_add(1, Ordering::Relaxed);
         let container = container_name(&self.container_prefix, n);
         let run = run_argv(
@@ -96,7 +102,23 @@ impl WorkerTransport for RemoteTransport {
         // `run_argv` never yields an empty vector: the runtime or `ssh` is
         // always the first element.
         let (program, args) = run.split_first().expect("a non-empty command vector");
-        let inner = spawn_worker(Path::new(program), args, &self.hello, device)?;
+        // The pool's host label: the ssh destination, or empty for a container
+        // on this machine — the same value the pool journals in WorkerBound.
+        // ssh carries the container's stderr to the client's stderr pipe, so
+        // the capture and Event forwarding are the subprocess machinery's.
+        let context = EventContext {
+            events,
+            worker,
+            host: self.host.clone().unwrap_or_default(),
+        };
+        let inner = spawn_worker(
+            Path::new(program),
+            args,
+            &self.hello,
+            worker,
+            device,
+            context,
+        )?;
         let kill_command = kill_argv(self.host.as_deref(), &self.runtime, &container);
         Ok(Box::new(RemoteLink {
             inner,

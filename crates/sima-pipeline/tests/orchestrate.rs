@@ -10,7 +10,7 @@ use common::{journal_events, loaded};
 use sima_core::{Error, Result};
 use sima_model::{FormatId, GeneratorConfig, GeneratorId, Params, RunConfig};
 use sima_pipeline::{
-    LifecycleEvent, LoadedConfig, RunControl, RunOutcome, RunState, orchestrate, status,
+    Event, LoadedConfig, Record, RunControl, RunOutcome, RunState, orchestrate, status,
 };
 use sima_scheduler::ExecutionConfig;
 use sima_store::Store;
@@ -64,9 +64,7 @@ fn re_evaluation_finalizes_again_without_touching_an_executor() -> Result<()> {
         assert!(
             matches!(
                 event,
-                LifecycleEvent::RunStarted { .. }
-                    | LifecycleEvent::WorkerBound { .. }
-                    | LifecycleEvent::RunFinalized { .. }
+                Event::RunStarted { .. } | Event::WorkerBound { .. } | Event::RunFinalized { .. }
             ),
             "unexpected event in the re-evaluation segment: {event:?}"
         );
@@ -122,8 +120,8 @@ fn an_interrupt_through_the_pipeline_stays_resumable() -> Result<()> {
 
     let interrupt = AtomicBool::new(false);
     let control = RunControl {
-        observer: &|event: &LifecycleEvent| {
-            if matches!(event, LifecycleEvent::Committed { .. }) {
+        observer: &|record: &Record| {
+            if matches!(record.event, Event::Committed { .. }) {
                 interrupt.store(true, Ordering::Relaxed);
             }
         },

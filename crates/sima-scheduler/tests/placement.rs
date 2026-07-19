@@ -17,7 +17,7 @@ use common::{
 };
 use sima_core::Result;
 use sima_domains::StubBehavior;
-use sima_scheduler::{LifecycleEvent, RunOutcome};
+use sima_scheduler::{Event, RunOutcome};
 
 /// Two fictitious classes, two workers each.
 const INTEL: u32 = 0x8086;
@@ -111,14 +111,14 @@ fn a_chain_whose_class_is_gone_rebinds_and_the_run_completes() -> Result<()> {
     assert!(matches!(outcome, RunOutcome::Finalized { .. }));
 
     let events = journal_events(&store, &run);
-    let rebinds: Vec<&LifecycleEvent> = events
+    let rebinds: Vec<&Event> = events
         .iter()
-        .filter(|e| matches!(e, LifecycleEvent::ChainRebound { .. }))
+        .filter(|e| matches!(e, Event::ChainRebound { .. }))
         .collect();
     assert_eq!(rebinds.len(), 1, "the orphaned chain rebound once, loudly");
     assert!(matches!(
         rebinds[0],
-        LifecycleEvent::ChainRebound { chain: 0, from, to }
+        Event::ChainRebound { chain: 0, from, to }
             if from == "1002:0001" && to == &format!("{NVIDIA:04x}:0001")
     ));
     // The slot now names the class the work actually moved to.
@@ -204,8 +204,8 @@ fn every_worker_reports_the_device_it_computes_on() -> Result<()> {
 }
 
 /// Whether any chain moved class during the run.
-fn events_contain_rebind(events: &[LifecycleEvent]) -> bool {
+fn events_contain_rebind(events: &[Event]) -> bool {
     events
         .iter()
-        .any(|e| matches!(e, LifecycleEvent::ChainRebound { .. }))
+        .any(|e| matches!(e, Event::ChainRebound { .. }))
 }

@@ -17,7 +17,7 @@ use sima_model::{
     Params, RunConfig, RunId, TaskKey,
 };
 use sima_scheduler::{
-    DeviceEntry, ExecutionConfig, LifecycleEvent, RunControl, RunOutcome, StaticBatch, TaskSource,
+    DeviceEntry, Event, ExecutionConfig, Record, RunControl, RunOutcome, StaticBatch, TaskSource,
     WorkerPool, run, worker_slots,
 };
 use sima_store::Store;
@@ -135,10 +135,10 @@ pub fn named_class(device: &str) -> &str {
 }
 
 /// The device each worker last reported, from the run's `WorkerBound` events.
-pub fn worker_devices(events: &[LifecycleEvent]) -> HashMap<u64, String> {
+pub fn worker_devices(events: &[Event]) -> HashMap<u64, String> {
     let mut devices = HashMap::new();
     for event in events {
-        if let LifecycleEvent::WorkerBound { worker, device, .. } = event {
+        if let Event::WorkerBound { worker, device, .. } = event {
             devices.insert(*worker, device.clone());
         }
     }
@@ -147,11 +147,11 @@ pub fn worker_devices(events: &[LifecycleEvent]) -> HashMap<u64, String> {
 
 /// The classes that leased each task, in lease order: the join of `Leased`
 /// with the leasing worker's device.
-pub fn task_classes(events: &[LifecycleEvent]) -> HashMap<String, Vec<String>> {
+pub fn task_classes(events: &[Event]) -> HashMap<String, Vec<String>> {
     let devices = worker_devices(events);
     let mut classes: HashMap<String, Vec<String>> = HashMap::new();
     for event in events {
-        if let LifecycleEvent::Leased { task, worker, .. } = event {
+        if let Event::Leased { task, worker, .. } = event {
             let device = devices
                 .get(worker)
                 .expect("a worker reports before it leases");
@@ -278,20 +278,20 @@ pub fn task_keys(cfg: &RunConfig) -> Vec<TaskKey> {
 }
 
 /// The run's journal, parsed into typed events.
-pub fn journal_events(store: &Store, run: &RunId) -> Vec<LifecycleEvent> {
+pub fn journal_events(store: &Store, run: &RunId) -> Vec<Event> {
     store
         .journal(run)
         .expect("read journal")
         .iter()
-        .map(|line| LifecycleEvent::from_line(line).expect("parse journal line"))
+        .map(|line| Record::from_line(line).expect("parse journal line").event)
         .collect()
 }
 
 /// Counts the events whose task field, extracted by `task_of`, names `task`.
 pub fn count_events(
-    events: &[LifecycleEvent],
+    events: &[Event],
     task: &TaskKey,
-    task_of: impl Fn(&LifecycleEvent) -> Option<&str>,
+    task_of: impl Fn(&Event) -> Option<&str>,
 ) -> usize {
     let task = task.to_string();
     events
@@ -301,57 +301,57 @@ pub fn count_events(
 }
 
 /// How many `Leased` events name `task`.
-pub fn leased_count(events: &[LifecycleEvent], task: &TaskKey) -> usize {
+pub fn leased_count(events: &[Event], task: &TaskKey) -> usize {
     count_events(events, task, |e| match e {
-        LifecycleEvent::Leased { task, .. } => Some(task.as_str()),
+        Event::Leased { task, .. } => Some(task.as_str()),
         _ => None,
     })
 }
 
 /// How many `Failed` events name `task`.
-pub fn failed_count(events: &[LifecycleEvent], task: &TaskKey) -> usize {
+pub fn failed_count(events: &[Event], task: &TaskKey) -> usize {
     count_events(events, task, |e| match e {
-        LifecycleEvent::Failed { task, .. } => Some(task.as_str()),
+        Event::Failed { task, .. } => Some(task.as_str()),
         _ => None,
     })
 }
 
 /// How many `Retried` events name `task`.
-pub fn retried_count(events: &[LifecycleEvent], task: &TaskKey) -> usize {
+pub fn retried_count(events: &[Event], task: &TaskKey) -> usize {
     count_events(events, task, |e| match e {
-        LifecycleEvent::Retried { task, .. } => Some(task.as_str()),
+        Event::Retried { task, .. } => Some(task.as_str()),
         _ => None,
     })
 }
 
 /// How many `Rejected` events name `task`.
-pub fn rejected_count(events: &[LifecycleEvent], task: &TaskKey) -> usize {
+pub fn rejected_count(events: &[Event], task: &TaskKey) -> usize {
     count_events(events, task, |e| match e {
-        LifecycleEvent::Rejected { task, .. } => Some(task.as_str()),
+        Event::Rejected { task, .. } => Some(task.as_str()),
         _ => None,
     })
 }
 
 /// How many `Committed` events name `task`.
-pub fn committed_count(events: &[LifecycleEvent], task: &TaskKey) -> usize {
+pub fn committed_count(events: &[Event], task: &TaskKey) -> usize {
     count_events(events, task, |e| match e {
-        LifecycleEvent::Committed { task, .. } => Some(task.as_str()),
+        Event::Committed { task, .. } => Some(task.as_str()),
         _ => None,
     })
 }
 
 /// How many `Faulted` events name `task`.
-pub fn faulted_count(events: &[LifecycleEvent], task: &TaskKey) -> usize {
+pub fn faulted_count(events: &[Event], task: &TaskKey) -> usize {
     count_events(events, task, |e| match e {
-        LifecycleEvent::Faulted { task, .. } => Some(task.as_str()),
+        Event::Faulted { task, .. } => Some(task.as_str()),
         _ => None,
     })
 }
 
 /// How many `LeaseExpired` events name `task`.
-pub fn lease_expired_count(events: &[LifecycleEvent], task: &TaskKey) -> usize {
+pub fn lease_expired_count(events: &[Event], task: &TaskKey) -> usize {
     count_events(events, task, |e| match e {
-        LifecycleEvent::LeaseExpired { task, .. } => Some(task.as_str()),
+        Event::LeaseExpired { task, .. } => Some(task.as_str()),
         _ => None,
     })
 }

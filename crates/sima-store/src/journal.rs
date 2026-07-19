@@ -92,6 +92,15 @@ impl Store {
     }
 }
 
+/// The trace collector's durable seam: a journal writer is exactly an
+/// append-one-line sink, so the collector funnels every record through the
+/// same crash-safe append as any other journal line.
+impl sima_trace::DurableSink for JournalWriter {
+    fn append_line(&mut self, line: &str) -> Result<()> {
+        self.append(line)
+    }
+}
+
 impl JournalWriter {
     /// Appends one event line: the payload plus a terminating newline in
     /// a single write, fsynced before returning. The payload must be
@@ -161,6 +170,17 @@ mod tests {
         }
         // Nothing was written by the rejected appends.
         assert_eq!(store.journal(&run)?, Vec::<String>::new());
+        Ok(())
+    }
+
+    #[test]
+    fn the_durable_sink_seam_appends_like_the_writer() -> Result<()> {
+        let (_dir, store) = temp_store();
+        let run = created_run(&store)?;
+        let mut writer = store.journal_writer(&run)?;
+        let sink: &mut dyn sima_trace::DurableSink = &mut writer;
+        sink.append_line("a collector record")?;
+        assert_eq!(store.journal(&run)?, ["a collector record"]);
         Ok(())
     }
 

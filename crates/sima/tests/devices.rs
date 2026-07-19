@@ -24,7 +24,7 @@ use common::{
     ChainTrail, chain_trails, devices_reported, journal_events, manifest_bytes, manifest_of,
     poll_until, sima_command, task_devices,
 };
-use sima_pipeline::LifecycleEvent;
+use sima_pipeline::Event;
 
 /// The candidates and segments every multi-device test here runs.
 ///
@@ -211,7 +211,7 @@ fn chains_keep_their_class_across_a_resume() {
     let bound = poll_until(Duration::from_secs(120), || {
         journal_events(&config)
             .iter()
-            .filter(|e| matches!(e, LifecycleEvent::Committed { .. }))
+            .filter(|e| matches!(e, Event::Committed { .. }))
             .count()
             >= 2
     });
@@ -233,13 +233,13 @@ fn chains_keep_their_class_across_a_resume() {
     let events = journal_events(&config);
     let resumed_leases = events[first_session..]
         .iter()
-        .filter(|e| matches!(e, LifecycleEvent::Leased { .. }))
+        .filter(|e| matches!(e, Event::Leased { .. }))
         .count();
     assert!(resumed_leases > 0, "the second session ran the work left");
     assert!(
         !events
             .iter()
-            .any(|e| matches!(e, LifecycleEvent::ChainRebound { .. })),
+            .any(|e| matches!(e, Event::ChainRebound { .. })),
         "every class was still present, so nothing moved"
     );
     assert_chains_never_split(&config);
@@ -284,7 +284,7 @@ fn removing_a_device_rebinds_its_chains_and_the_run_converges() {
     let rebound: Vec<u64> = journal_events(&one)
         .iter()
         .filter_map(|e| match e {
-            LifecycleEvent::ChainRebound { chain, .. } => Some(*chain),
+            Event::ChainRebound { chain, .. } => Some(*chain),
             _ => None,
         })
         .collect();

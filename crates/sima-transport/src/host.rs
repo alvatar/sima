@@ -12,16 +12,58 @@
 use std::cell::RefCell;
 use std::io::{Read, Write};
 use std::num::NonZeroU64;
+use std::sync::Mutex;
 use std::time::Duration;
 
 use sima_contracts::{
     Checkpoint, DeviceBinding, ExecutionContext, Executor, NoCheckpoint, TaskInput, WorkerId,
 };
-use sima_core::{Error, Result, read_frame, write_frame};
-use sima_model::{FormatId, Params, Spec};
+use sima_core::{Error, Result, hash_bytes, read_frame, write_frame};
+use sima_model::{FormatId, Params, Spec, TaskIdentity};
+use sima_trace::{Event, Level};
 
 use crate::checkpoint_cadence::CheckpointCadence;
 use crate::protocol::{Assignment, Hello, PROTOCOL_VERSION, ToChild, ToParent};
+
+/// The most recent panic's message and backtrace, latched by the hook
+/// [`capture_panics`] installs. The executor catch in [`serve`] takes it, so
+/// the correlated diagnostic carries the backtrace the default hook would
+/// only print to stderr.
+static CAPTURED_PANIC: Mutex<Option<String>> = Mutex::new(None);
+
+/// Installs a process-global panic hook that latches each panic's message and
+/// backtrace into a slot the serve loop reads, then delegates to the
+/// previously installed hook, so stderr output is unchanged. The worker
+/// binary installs it at startup; an in-process host (the loopback) does not,
+/// leaving the test harness's hook alone — its diagnostics then carry the
+/// panic message without a backtrace.
+pub fn capture_panics() {
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let message = if let Some(text) = info.payload().downcast_ref::<&str>() {
+            (*text).to_string()
+        } else if let Some(text) = info.payload().downcast_ref::<String>() {
+            text.clone()
+        } else {
+            "non-string payload".to_string()
+        };
+        let backtrace = std::backtrace::Backtrace::force_capture();
+        *CAPTURED_PANIC
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Some(format!("panic: {message}\n{backtrace}"));
+        previous(info);
+    }));
+}
+
+/// Takes the panic message-and-backtrace the hook latched, if the capture
+/// hook is installed and a panic happened since the last take.
+fn take_captured_panic() -> Option<String> {
+    CAPTURED_PANIC
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take()
+}
 
 /// Turns a handshake into the executor a host serves: the format id and the
 /// device binding in, the executor and the name of the device it opened out.
@@ -151,9 +193,56 @@ fn execute_assignment<W: Write>(
     let reply = match caught {
         Ok(Ok(outcome)) => ToParent::Done(outcome),
         Ok(Err(e)) => ToParent::Fault(e.to_string()),
-        Err(payload) => ToParent::Panicked(panic_reason(payload)),
+        Err(payload) => {
+            let reason = panic_reason(payload);
+            // The correlated backtrace crosses first, as a structured event
+            // tied to the task and this slot's worker id, then the Panicked
+            // frame settles the attempt exactly as before. The hook's
+            // capture carries the backtrace; without the hook installed the
+            // rendered reason stands in.
+            let message = take_captured_panic().unwrap_or_else(|| reason.clone());
+            let diagnostic = Event::Diagnostic {
+                level: Level::Error,
+                source: "panic".to_string(),
+                message,
+                worker: Some(hello.worker),
+                host: None,
+                task: Some(task_key(&input).to_string()),
+            };
+            write_event(writer, &diagnostic)?;
+            ToParent::Panicked(reason)
+        }
     };
     write_frame(&mut *writer.borrow_mut(), &reply.encode())
+}
+
+/// The task key of an attempt, rebuilt from its identity inputs: every
+/// component of [`TaskIdentity`] crosses the wire as loaded values, so the
+/// child derives the same key the parent leased — the spec and params hash to
+/// their content ids, and the input-state bytes hash back to the store
+/// address the identity referenced.
+fn task_key(input: &TaskInput<'_>) -> sima_model::TaskKey {
+    TaskIdentity {
+        spec: input.spec.id(),
+        params: input.params.id(),
+        seed: input.seed,
+        environment: input.environment,
+        input_state: input.input_state.map(hash_bytes),
+    }
+    .key()
+}
+
+/// Frames one structured event onto the parent pipe. Written from the serve
+/// thread under the same `RefCell` discipline as every other frame — the
+/// serve loop is single-threaded, and the checkpoint `Save` callback writes
+/// only inside `execute`, never concurrently with this. An event that fails
+/// to serialize is dropped: observational data never decides the
+/// conversation's fate. A broken pipe still surfaces.
+fn write_event<W: Write>(writer: &RefCell<W>, event: &Event) -> Result<()> {
+    let Ok(bytes) = serde_json::to_vec(event) else {
+        return Ok(());
+    };
+    write_frame(&mut *writer.borrow_mut(), &ToParent::Event(bytes).encode())
 }
 
 /// The run's checkpoint cadence, decoded from the handshake's settings:
@@ -324,6 +413,7 @@ mod tests {
     fn hello(interval_ms: u64, steps: u64) -> ToChild {
         ToChild::Hello(Hello {
             protocol: PROTOCOL_VERSION,
+            worker: 7,
             format: FormatId::new("host-test.v1").expect("format id"),
             checkpoint_interval_ms: interval_ms,
             checkpoint_interval_steps: steps,
@@ -446,6 +536,7 @@ mod tests {
     fn a_version_mismatch_is_refused_before_ready() {
         let opening = ToChild::Hello(Hello {
             protocol: PROTOCOL_VERSION + 1,
+            worker: 0,
             format: FormatId::new("host-test.v1").expect("format id"),
             checkpoint_interval_ms: u64::MAX,
             checkpoint_interval_steps: 0,
@@ -603,6 +694,56 @@ mod tests {
     }
 
     #[test]
+    fn an_executor_panic_emits_a_correlated_diagnostic_before_panicked() {
+        let assign = assignment();
+        let (result, frames) = drive(
+            Behavior::Panic,
+            &[hello(u64::MAX, 0), ToChild::Assign(assign.clone())],
+        );
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(frames.len(), 3, "Ready, Event, Panicked: {frames:?}");
+        // The diagnostic frame precedes the Panicked frame and carries the
+        // panic's message, the worker id from the handshake, and the task
+        // key derived from the assignment's identity inputs.
+        let ToParent::Event(bytes) = &frames[1] else {
+            panic!("expected an Event frame, got {:?}", frames[1]);
+        };
+        let event: sima_trace::Event = serde_json::from_slice(bytes).expect("event bytes parse");
+        let sima_trace::Event::Diagnostic {
+            level,
+            source,
+            message,
+            worker,
+            task,
+            ..
+        } = event
+        else {
+            panic!("expected a Diagnostic, got another event");
+        };
+        assert_eq!(level, sima_trace::Level::Error);
+        assert_eq!(source, "panic");
+        assert!(message.contains("programmed panic"), "{message}");
+        assert_eq!(worker, Some(7), "the handshake's worker id");
+        let expected = sima_model::TaskIdentity {
+            spec: sima_model::Spec {
+                format: FormatId::new("host-test.v1").expect("format id"),
+                bytes: assign.spec.clone(),
+            }
+            .id(),
+            params: sima_model::Params {
+                bytes: assign.params.clone(),
+            }
+            .id(),
+            seed: assign.seed,
+            environment: assign.environment,
+            input_state: None,
+        }
+        .key();
+        assert_eq!(task, Some(expected.to_string()));
+        assert!(matches!(frames[2], ToParent::Panicked(_)), "{frames:?}");
+    }
+
+    #[test]
     fn a_panicking_executor_reports_panicked_and_serve_continues() {
         // The panic crosses as a frame, and the child survives to take the
         // next assignment: two panicking tasks, two Panicked frames.
@@ -624,11 +765,17 @@ mod tests {
         while let Some(payload) = read_frame(&mut reader).expect("well-formed output") {
             frames.push(ToParent::decode(&payload).expect("decodable output"));
         }
+        // Each panic crosses as its correlated diagnostic then the Panicked
+        // frame, and the child survives to take the next assignment.
+        let panicked: Vec<&ToParent> = frames
+            .iter()
+            .filter(|f| matches!(f, ToParent::Panicked(_)))
+            .collect();
         assert_eq!(
-            &frames[1..],
-            &[
-                ToParent::Panicked("panic: programmed panic".to_string()),
-                ToParent::Panicked("panic: programmed panic".to_string()),
+            panicked,
+            [
+                &ToParent::Panicked("panic: programmed panic".to_string()),
+                &ToParent::Panicked("panic: programmed panic".to_string()),
             ]
         );
     }
