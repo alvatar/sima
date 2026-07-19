@@ -20,8 +20,8 @@ use std::sync::atomic::AtomicBool;
 
 use sima_core::{Error, Result};
 use sima_pipeline::{
-    LoadedConfig, RemovalReport, ReportRow, RunControl, RunOutcome, RunStatus, load, orchestrate,
-    status,
+    LoadedConfig, RemovalReport, ReportRow, RunControl, RunOutcome, RunStatus, TaskHistory, load,
+    orchestrate, status,
 };
 
 /// Exit code for a definitive candidate failure.
@@ -38,6 +38,7 @@ fn main() -> ExitCode {
     match args.iter().map(String::as_str).collect::<Vec<_>>()[..] {
         ["run", config] => run_command(&resolve_config(config)),
         ["status", config] => status_command(&resolve_config(config)),
+        ["status", config, "--task", key] => status_task_command(&resolve_config(config), key),
         ["report", config] => report_command(&resolve_config(config), false),
         ["report", "--full", config] => report_command(&resolve_config(config), true),
         ["rm", config] => rm_command(&resolve_config(config)),
@@ -122,6 +123,25 @@ fn status_command(config: &Path) -> ExitCode {
 fn read_status(config: &Path) -> Result<RunStatus> {
     let loaded = load(config)?;
     status(&loaded)
+}
+
+/// `sima status <config.toml> --task <key>`: one task's attempt timeline,
+/// addressed by a prefix of its key. The store and run id come from the
+/// config the same way the aggregate status derives them.
+fn status_task_command(config: &Path, prefix: &str) -> ExitCode {
+    match read_task_history(config, prefix) {
+        Ok(history) => {
+            println!("{}", render::task_block(&history));
+            ExitCode::SUCCESS
+        }
+        Err(e) => report(e),
+    }
+}
+
+/// Loads the config and projects one task's lifecycle from its journal.
+fn read_task_history(config: &Path, prefix: &str) -> Result<TaskHistory> {
+    let loaded = load(config)?;
+    sima_pipeline::task_history(&loaded, prefix)
 }
 
 /// Seeds the tui's display from any existing journal for `config`'s run,
