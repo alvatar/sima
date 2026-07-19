@@ -417,32 +417,88 @@ fn pool_host(context: &EventContext) -> Option<String> {
 /// is dropped, with the truncation noted by a trailing marker.
 const STDERR_LINE_CAP: usize = 4096;
 
+/// Assembles a stderr byte stream into lines, retaining at most
+/// [`STDERR_LINE_CAP`] bytes of any one line: the bytes of an overlong line
+/// past the cap are discarded as they arrive, so a child that streams without
+/// newlines costs a bounded buffer, never one that grows for the life of the
+/// run.
+struct LineCapture {
+    /// The retained prefix of the line being assembled; never past the cap.
+    retained: Vec<u8>,
+    /// Whether the current line overflowed the cap and lost bytes.
+    truncated: bool,
+}
+
+impl LineCapture {
+    fn new() -> LineCapture {
+        LineCapture {
+            retained: Vec::new(),
+            truncated: false,
+        }
+    }
+
+    /// Feeds one chunk of the stream, calling `emit(line, truncated)` for
+    /// each line the chunk completes.
+    ///
+    /// Only `\n` — or the end of the stream, via [`finish`](Self::finish) —
+    /// terminates a line. A lone `\r` does not: carriage returns are how a
+    /// progress bar repaints one logical line, and journaling every repaint
+    /// would flood the journal with near-duplicates; the cap bounds what one
+    /// such line retains instead.
+    fn feed(&mut self, mut chunk: &[u8], emit: &mut impl FnMut(&[u8], bool)) {
+        while let Some(newline) = chunk.iter().position(|byte| *byte == b'\n') {
+            self.retain(&chunk[..newline]);
+            self.complete(emit);
+            chunk = &chunk[newline + 1..];
+        }
+        self.retain(chunk);
+    }
+
+    /// Flushes an unterminated final line at the end of the stream.
+    fn finish(mut self, emit: &mut impl FnMut(&[u8], bool)) {
+        self.complete(emit);
+    }
+
+    /// Keeps `bytes` up to the room left under the cap, marking the line
+    /// truncated when anything is discarded.
+    fn retain(&mut self, bytes: &[u8]) {
+        let room = STDERR_LINE_CAP - self.retained.len();
+        if bytes.len() > room {
+            self.truncated = true;
+        }
+        self.retained
+            .extend_from_slice(&bytes[..room.min(bytes.len())]);
+    }
+
+    /// Emits the assembled line and resets for the next one. A trailing `\r`
+    /// run is part of the terminator (CRLF), stripped when the line fit —
+    /// past the cap every retained byte is content. A line empty after
+    /// stripping carries nothing and is skipped.
+    fn complete(&mut self, emit: &mut impl FnMut(&[u8], bool)) {
+        if !self.truncated {
+            while self.retained.last() == Some(&b'\r') {
+                self.retained.pop();
+            }
+        }
+        if self.truncated || !self.retained.is_empty() {
+            emit(&self.retained, self.truncated);
+        }
+        self.retained.clear();
+        self.truncated = false;
+    }
+}
+
 /// Consumes a child's stderr line by line until EOF — the child's death
 /// closes the pipe — emitting each line as an info diagnostic attributed to
 /// the worker and host. Runs on its own thread per child; a read error ends
-/// the capture the same way EOF does. Blank lines carry nothing and are
-/// skipped; invalid UTF-8 is replaced, not refused — this is capture, and
-/// capture never fails the worker.
+/// the capture the same way EOF does, flushing what was retained. Invalid
+/// UTF-8 is replaced with the Unicode replacement character — this is
+/// capture, and capture never fails the worker.
 fn read_stderr(stderr: impl Read, context: EventContext) {
     let mut reader = std::io::BufReader::new(stderr);
-    let mut line = Vec::new();
-    loop {
-        line.clear();
-        match std::io::BufRead::read_until(&mut reader, b'\n', &mut line) {
-            Ok(0) | Err(_) => return,
-            Ok(_) => {}
-        }
-        while line.last().is_some_and(|b| *b == b'\n' || *b == b'\r') {
-            line.pop();
-        }
-        if line.is_empty() {
-            continue;
-        }
-        let truncated = line.len() > STDERR_LINE_CAP;
-        if truncated {
-            line.truncate(STDERR_LINE_CAP);
-        }
-        let mut message = String::from_utf8_lossy(&line).into_owned();
+    let mut lines = LineCapture::new();
+    let mut emit = |line: &[u8], truncated: bool| {
+        let mut message = String::from_utf8_lossy(line).into_owned();
         if truncated {
             message.push_str(" [truncated]");
         }
@@ -454,7 +510,17 @@ fn read_stderr(stderr: impl Read, context: EventContext) {
             host: pool_host(&context),
             task: None,
         });
+    };
+    loop {
+        let chunk = match std::io::BufRead::fill_buf(&mut reader) {
+            Ok([]) | Err(_) => break,
+            Ok(chunk) => chunk,
+        };
+        let consumed = chunk.len();
+        lines.feed(chunk, &mut emit);
+        std::io::BufRead::consume(&mut reader, consumed);
     }
+    lines.finish(&mut emit);
 }
 
 /// The generic death event a closed event stream maps to. A link that can
@@ -680,6 +746,95 @@ mod tests {
             ),
             "{events:?}"
         );
+    }
+
+    /// Feeds `input` through `read_stderr` as one child's whole stderr
+    /// stream, returning the emitted events.
+    fn capture_stderr(input: &[u8]) -> Vec<Event> {
+        let (tx, emitted) = channel();
+        let context = EventContext {
+            events: Emitter::from(tx),
+            worker: 7,
+            host: String::new(),
+        };
+        read_stderr(input, context);
+        emitted.into_iter().collect()
+    }
+
+    /// The messages of `events`, all of which must be diagnostics.
+    fn messages(events: &[Event]) -> Vec<&str> {
+        events
+            .iter()
+            .map(|event| match event {
+                Event::Diagnostic { message, .. } => message.as_str(),
+                other => panic!("expected a diagnostic, got {other:?}"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn an_unterminated_stream_past_the_cap_retains_at_most_the_cap() {
+        let mut lines: Vec<(Vec<u8>, bool)> = Vec::new();
+        let mut emit = |line: &[u8], truncated: bool| lines.push((line.to_vec(), truncated));
+        let mut capture = LineCapture::new();
+        // A newline-free stream many times the cap, arriving chunk by chunk:
+        // the retained prefix stays at the cap while the rest is discarded.
+        for _ in 0..8 {
+            capture.feed(&[b'y'; STDERR_LINE_CAP], &mut emit);
+            assert!(
+                capture.retained.len() <= STDERR_LINE_CAP,
+                "retained {} bytes",
+                capture.retained.len()
+            );
+        }
+        capture.finish(&mut emit);
+        assert_eq!(lines.len(), 1, "{}", lines.len());
+        assert_eq!(lines[0].0, [b'y'; STDERR_LINE_CAP]);
+        assert!(lines[0].1, "the discarded tail is marked");
+    }
+
+    #[test]
+    fn an_unterminated_stream_past_the_cap_yields_one_truncated_diagnostic() {
+        let input = vec![b'x'; STDERR_LINE_CAP * 8];
+        let events = capture_stderr(&input);
+        assert_eq!(events.len(), 1, "{events:?}");
+        let Event::Diagnostic {
+            level,
+            source,
+            message,
+            worker,
+            host,
+            task,
+        } = &events[0]
+        else {
+            panic!("expected a diagnostic, got {:?}", events[0]);
+        };
+        assert_eq!(*level, Level::Info);
+        assert_eq!(source, "worker stderr");
+        assert_eq!(message.len(), STDERR_LINE_CAP + " [truncated]".len());
+        assert!(message.ends_with(" [truncated]"), "{message}");
+        assert_eq!(*worker, Some(7));
+        assert_eq!(*host, None);
+        assert_eq!(*task, None);
+    }
+
+    #[test]
+    fn the_discarded_tail_of_an_overlong_line_ends_at_its_newline() {
+        let mut input = vec![b'x'; STDERR_LINE_CAP * 2];
+        input.extend_from_slice(b"\nsecond line\n");
+        let events = capture_stderr(&input);
+        let messages = messages(&events);
+        assert_eq!(messages.len(), 2, "{messages:?}");
+        assert!(messages[0].ends_with(" [truncated]"), "{}", messages[0]);
+        assert_eq!(messages[1], "second line");
+    }
+
+    #[test]
+    fn carriage_return_repaints_stay_one_line() {
+        // A progress bar repaints with lone `\r`: one logical line, with the
+        // terminating CRLF stripped and the interior returns kept verbatim.
+        let events = capture_stderr(b"step 1\rstep 2\rstep 3\r\n");
+        assert_eq!(messages(&events), ["step 1\rstep 2\rstep 3"]);
     }
 
     #[test]

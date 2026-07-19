@@ -703,7 +703,11 @@ identity inputs — before the `Panicked` frame settles the attempt.
 The child's stderr is captured: a second per-child thread consumes it line
 by line and emits each line as an info diagnostic
 attributed to the worker and the pool's host label, capped at 4096 bytes
-with a trailing truncation marker. Everything a child prints — toolkit
+with a trailing truncation marker. The cap bounds the assembly buffer
+itself — bytes past it are discarded as they arrive — so a child that
+streams without newlines (a progress bar repainting with carriage returns)
+costs a constant buffer for the life of the run. Everything a child prints
+— toolkit
 validation messages, pre-handshake errors, the default panic hook's output
 — lands in the journal correlated to the worker and host that produced it.
 The thread exits when the child's death closes the pipe. The remote
