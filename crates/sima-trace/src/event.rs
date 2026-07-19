@@ -30,12 +30,10 @@ pub enum Event {
     /// already committed and those still to run. `committed` is how many of
     /// them the store already answered when the session started; it comes
     /// from the records, so it holds even against this journal, which a crash
-    /// can leave short of the commits it describes. A line lacking the field
-    /// reads as zero.
+    /// can leave short of the commits it describes.
     RunStarted {
         run: String,
         tasks: usize,
-        #[serde(default)]
         committed: usize,
     },
     /// A task entered the ready queue.
@@ -91,14 +89,11 @@ pub enum Event {
     /// respawn. The device name and driver version are the child's own,
     /// verbatim; a domain that uses no device reports both empty. The host is
     /// the parent's account of where the worker's pool runs — empty for a local
-    /// slot, the configured destination for a remote one. A line lacking driver
-    /// or host reads each absent field as empty.
+    /// slot, the configured destination for a remote one.
     WorkerBound {
         worker: u64,
         device: String,
-        #[serde(default)]
         driver: String,
-        #[serde(default)]
         host: String,
     },
     /// A chain's device class was absent from the run's devices, so its work

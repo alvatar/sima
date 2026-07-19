@@ -92,38 +92,17 @@ mod tests {
     }
 
     #[test]
-    fn a_run_started_line_without_a_commit_count_reads_as_none_committed() -> Result<()> {
-        // The commit count carries a serde default, so a line omitting it
-        // reads as no prior commits.
+    fn a_run_started_line_without_a_commit_count_is_rejected() {
         let run = "cd".repeat(32);
         let line = format!(r#"{{"ts_ms":1234,"event":"run_started","run":"{run}","tasks":3}}"#);
-        assert_eq!(
-            Record::from_line(&line)?.event,
-            Event::RunStarted {
-                run,
-                tasks: 3,
-                committed: 0,
-            }
-        );
-        Ok(())
+        assert!(matches!(Record::from_line(&line), Err(Error::Encoding(_))));
     }
 
     #[test]
-    fn a_worker_bound_line_without_driver_or_host_reads_them_as_empty() -> Result<()> {
-        // The driver and host carry serde defaults, so a line omitting them
-        // reads them as empty while keeping its device attribution.
+    fn a_worker_bound_line_without_driver_or_host_is_rejected() {
         let line =
             r#"{"ts_ms":1234,"event":"worker_bound","worker":2,"device":"NVIDIA RTX PRO 2000"}"#;
-        assert_eq!(
-            Record::from_line(line)?.event,
-            Event::WorkerBound {
-                worker: 2,
-                device: "NVIDIA RTX PRO 2000".to_string(),
-                driver: String::new(),
-                host: String::new(),
-            }
-        );
-        Ok(())
+        assert!(matches!(Record::from_line(line), Err(Error::Encoding(_))));
     }
 
     #[test]
