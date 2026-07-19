@@ -28,6 +28,7 @@ Strictly downward dependencies, enforced by workspace crate edges.
 | Layer | Crate            | Responsibility                                                        |
 |-------|------------------|-----------------------------------------------------------------------|
 | L0    | `sima-core`      | error type, canonical encoding, content hash, PRNG                    |
+| L0.5  | `sima-trace`     | structured events: the typed vocabulary, journal records, emitters, the collector |
 | L1    | `sima-model`     | identity vocabulary: spec, params, environment, task key, record, run config |
 | L2    | `sima-store`     | durable state: CAS, task index, run manifests, journals               |
 | L3    | `sima-contracts` | generator/executor contracts over opaque specs and params            |
@@ -94,7 +95,7 @@ sima run  (one orchestrator process per run; OS file lock on the store)
    │                             committed "state" artifact
    │
    ├─ Coordinator ······· in-memory queue + leases + release counter
-   ├─ JournalSink ······· one writer thread: events → journal + observer
+   ├─ Collector ········· one thread: events → stamp → journal → subscribers
    │
    └─ Worker pool (N threads, stateless leaseholders)
        └─ Worker ········ leases one task = drives one attempt on its child
@@ -146,6 +147,45 @@ The foundation every crate shares:
 - A CPU/GPU-stable PRNG: counter-based, specified for identical results on
   CPU and GPU, pinned by known-answer tests. The `rand` crate is barred from
   result-affecting paths.
+
+## `sima-trace` (L0.5)
+
+The structured-event facade: one typed vocabulary any layer can emit,
+funneled through one collector into the run's journal and out to live
+subscribers. The crate sits directly above `sima-core`, so scheduler,
+transport, and worker host all emit without an upward edge. Events are
+observational — they record what happened, never run identity — so their
+serialization world is serde, and the stream is excluded from every
+equality criterion.
+
+- **`Event`** — the vocabulary: the run-lifecycle variants (see
+  [Journal events](#journal-events)) plus `Diagnostic`, a correlated line
+  of observational text: a level (`info`/`warn`/`error`), a source (for
+  example `worker stderr`, `panic`, `transport`), the message, and optional
+  `worker`/`host`/`task` context keys — optional because a diagnostic may
+  precede any lease or follow the run's end.
+- **`Record`** — the journal line type: an optional `ts_ms` wall-clock
+  stamp plus the event, flattened, so a lifecycle line keeps the exact
+  shape it always had with `ts_ms` as one more top-level key. A line
+  written before the field existed parses with no stamp.
+- **`Emitter`** — a cloneable channel handle; `emit` is fire-and-forget,
+  and a closed channel drops the event silently. Components that emit
+  receive an emitter explicitly at construction — there is no process
+  global and no thread-local propagation. Causality context is the natural
+  keys: events carry `run`, `task`, `attempt`, `worker`, and `host`
+  directly as fields.
+- **`Collector`** — one scoped thread drains the channel; for each event
+  it stamps `ts_ms` (a single clock, read at append time — remote events
+  are stamped on arrival), appends the record's line through a
+  **`DurableSink`**, then hands the record to each subscriber in
+  declaration order. The ordering guarantee: the journal write for an
+  event happens before any subscriber sees it, and subscribers see records
+  in journal order, from one calling thread. The first append or encoding
+  failure stops the collector and surfaces when it is joined.
+
+`DurableSink` is the seam that keeps the crate below the store:
+`sima-store` implements it for its journal writer, so the collector appends
+through the same crash-safe path as any other journal line.
 
 ## `sima-model` (L1)
 
@@ -297,12 +337,19 @@ the definition of every run it holds.
 ### Journal
 
 A run's observational history: append-only, one event per line, its meaning
-owned by the layers that emit events (scheduler and above). A payload is one
-nonempty line free of embedded line breaks; appends are single-write,
-newline-terminated, fsynced. On read, a torn final line (bytes past the last
-newline) is ignored; invalid UTF-8 inside the intact region is corruption.
-Journals legitimately differ between identical runs and are excluded from
-every equality criterion.
+owned by the emitting layers above the trace facade. The store owns the
+framing only: a payload is one nonempty line free of embedded line breaks;
+appends are single-write, newline-terminated, fsynced. On read, a torn
+final line (bytes past the last newline) is ignored; invalid UTF-8 inside
+the intact region is corruption. Journals legitimately differ between
+identical runs and are excluded from every equality criterion.
+
+Each line is a `sima-trace` `Record`: the collector's `ts_ms` wall-clock
+stamp plus one event — a lifecycle event or a `diagnostic` line. A line
+without `ts_ms` parses with no stamp, so every journal written before the
+field existed stays readable, and a resumed run's journal mixes both
+shapes. The store implements the collector's `DurableSink` seam on its
+journal writer, which is how records reach this framing.
 
 ### Concurrency
 
@@ -626,17 +673,42 @@ beside the contract whose vocabulary the protocol carries across the process
 boundary; the scheduler consumes the traits, and `sima-worker` the host
 loop.
 
-The wire protocol frames messages on the child's stdin and stdout (stderr is
-inherited for diagnostics): a `u32` little-endian payload length, then a
-payload built with the canonical `Enc`/`Dec` primitives — used for their
-checked framing; frames are transport encoding, never identity-bearing. The
-handshake carries the protocol version, the run's format id (the child
-resolves its executor from it, once), the checkpoint cadence, and the device
-the child computes on; each task is one `Assign` frame answered by zero or
-more `Save` frames and one terminal frame. There is no shutdown message: the
-parent closing the child's stdin is the shutdown signal. A per-child reader
-thread decodes stdout frames into a channel, so the parent's deadline wait is
-a plain timed receive and a kill never races a blocking read.
+The wire protocol frames messages on the child's stdin and stdout: a `u32`
+little-endian payload length, then a payload built with the canonical
+`Enc`/`Dec` primitives — used for their checked framing; frames are
+transport encoding, never identity-bearing. The handshake carries the
+protocol version, the slot's worker id (so the child can attribute events
+without a side channel), the run's format id (the child resolves its
+executor from it, once), the checkpoint cadence, and the device the child
+computes on; each task is one `Assign` frame answered by zero or more
+`Save` frames and one terminal frame, and `Event` frames may interleave
+anywhere after `Ready`. There is no shutdown message: the parent closing
+the child's stdin is the shutdown signal. A per-child reader thread decodes
+stdout frames into a channel, so the parent's deadline wait is a plain
+timed receive and a kill never races a blocking read.
+
+An `Event` frame carries the serde_json bytes of a `sima-trace` event,
+opaquely inside the canonical frame — observational serde-world data
+traveling the same way spec and params bytes travel opaquely elsewhere. The
+reader thread parses each one and emits it to the run's collector, filling
+a diagnostic's worker and host attribution where the child left them unset;
+the frames never reach the lease loop, so diagnostics cannot perturb
+outcome classification. Malformed event bytes never kill the worker: they
+degrade to a warning diagnostic naming the decode failure. The first
+producer is the executor panic path: the worker's panic hook latches the
+message and backtrace, and the host emits an error diagnostic — source
+`panic`, the worker id, and the task key rebuilt from the assignment's
+identity inputs — before the `Panicked` frame settles the attempt.
+
+The child's stderr is captured: a second per-child thread consumes it line
+by line and emits each line as an info diagnostic
+attributed to the worker and the pool's host label, capped at 4096 bytes
+with a trailing truncation marker. Everything a child prints — toolkit
+validation messages, pre-handshake errors, the default panic hook's output
+— lands in the journal correlated to the worker and host that produced it.
+The thread exits when the child's death closes the pipe. The remote
+transport inherits the capture through the shared spawn machinery: ssh
+carries the container's stderr to the local client's stderr pipe.
 
 The device travels as a `DeviceBinding` — a class and the member within it —
 and is absent for a run that leaves the choice to the backend. The child
@@ -720,7 +792,7 @@ mechanism minus the ssh hop.
   second-channel kill never lands.
 
 - **Cross-machine provenance.** The one variable an environment hash cannot see
-  across machines of one class is the driver version. Protocol v3's `Ready`
+  across machines of one class is the driver version. The `Ready` answer
   reports it, and `WorkerBound` records the host and driver alongside the
   device, so a cross-machine divergence within a class is diagnosable from the
   journal alone. `sima status` composes the device line by `(device, host)`,
@@ -868,9 +940,10 @@ journal fault resurfaces on the next run that finalizes over the same store.
 The driver takes a `RunControl` — the caller's handles into a running
 search:
 
-- **observer** — invoked with each typed event on the journal-sink thread,
-  immediately after the event's line is appended: typed events, journal
-  order, one calling thread. Progress rendering consumes this seam.
+- **observer** — a collector subscriber: invoked with each typed record on
+  the collector thread, immediately after the record's line is appended —
+  typed records, journal order, one calling thread. Progress rendering
+  consumes this seam.
 - **interrupt** — a level-triggered flag the driver polls within a bounded
   wait. Once set, the run winds down gracefully: no more tasks are handed
   out, in-flight attempts finish and commit, queued tasks are abandoned,
@@ -898,8 +971,9 @@ on the clock and so disables enforcement.
 
 ### Journal events
 
-The scheduler owns the journal's meaning. A typed `LifecycleEvent` serializes
-to one JSON line, with ids and stats rendered as hex. The vocabulary:
+The scheduler is the journal's principal emitter. A typed `sima-trace`
+`Event` serializes to one JSON line, with ids and stats rendered as hex.
+The vocabulary:
 
 - **run started** — the run began; carries the planned task total, those
   already committed and those still to run.
@@ -927,13 +1001,21 @@ to one JSON line, with ids and stats rendered as hex. The vocabulary:
 - **run interrupted** — the caller interrupted the run: in-flight attempts
   drained and committed, no manifest was written, and the store is
   resumable.
+- **diagnostic** — a correlated line of observational text: captured worker
+  stderr (info), a transport degradation (warn), or an executor panic's
+  backtrace (error), attributed to its source, worker, host, and task where
+  known. Status ignores it entirely; the CLI renders warn and error lines
+  and keeps info journaled, never echoed.
 
-A single journal-writer thread owns the `JournalWriter` and drains an `mpsc`
-channel the workers and driver send to, which is the single-writer
-seam the append contract requires. Event arrival order across threads varies
-between runs; the journal is observational and excluded from every equality
-criterion, so the manifest — sorted by task key at finalize — is byte-identical
-across runs regardless.
+The driver spawns the trace collector over the run's journal writer, with
+the caller's observer as its subscriber; the driver, the workers, and the
+transports' reader threads emit through cloned emitters, and the one
+collector thread is the single-writer seam the append contract requires.
+The journal write for an event happens before the observer sees it, and the
+observer sees records in journal order. Event arrival order across threads
+varies between runs; the journal is observational and excluded from every
+equality criterion, so the manifest — sorted by task key at finalize — is
+byte-identical across runs regardless.
 
 ## `sima-pipeline` (L7)
 
