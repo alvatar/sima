@@ -81,39 +81,9 @@ fn row(task: String, stats_hex: &str, domain: &Domain) -> Result<ReportRow> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sima_model::{FormatId, GeneratorConfig, GeneratorId, Params, RunConfig};
     use sima_store::Store;
 
-    /// A minimal stub run config; its id addresses the test's run.
-    fn stub_config() -> Result<RunConfig> {
-        Ok(RunConfig {
-            root_seed: 1,
-            segments: None,
-            format: FormatId::new("stub.v1")?,
-            generator: GeneratorConfig {
-                id: GeneratorId::new("stub.v1")?,
-                params: Vec::new(),
-            },
-            params: Params { bytes: Vec::new() },
-        })
-    }
-
-    /// A loaded config over `store` for the stub run.
-    fn loaded(store: std::path::PathBuf) -> Result<LoadedConfig> {
-        Ok(LoadedConfig {
-            run: stub_config()?,
-            devices: Vec::new(),
-            remotes: Vec::new(),
-            execution: sima_scheduler::ExecutionConfig::new(
-                1,
-                1,
-                std::time::Duration::MAX,
-                std::time::Duration::MAX,
-                None,
-            )?,
-            store,
-        })
-    }
+    use crate::fixtures::{journal_with, loaded, stub_config};
 
     /// Wraps an event as a record the tests journal. The stamp is irrelevant
     /// here, so every record carries the same one.
@@ -137,22 +107,6 @@ mod tests {
             record: "11".repeat(32),
             stats_hex: stats_hex.to_string(),
         })
-    }
-
-    /// Writes `records` to the run's journal in a fresh store, returning the
-    /// temp dir (kept alive by the caller) and the loaded config over it.
-    fn journal_with(records: &[Record]) -> Result<(tempfile::TempDir, LoadedConfig)> {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let store = Store::open(dir.path())?;
-        let config = stub_config()?;
-        store.create_run(&config)?;
-        let run = config.id();
-        let mut writer = store.journal_writer(&run)?;
-        for record in records {
-            writer.append(&record.to_line()?)?;
-        }
-        let loaded = loaded(dir.path().to_path_buf())?;
-        Ok((dir, loaded))
     }
 
     #[test]

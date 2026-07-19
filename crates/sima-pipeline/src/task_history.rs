@@ -356,59 +356,14 @@ pub fn failures(config: &LoadedConfig) -> Result<Vec<TaskHistory>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sima_model::FormatId;
     use sima_store::Store;
 
-    use sima_model::{FormatId, GeneratorConfig, GeneratorId, Params, RunConfig};
+    use crate::fixtures::{journal_with, loaded};
 
     /// The stub domain the synthetic journals render their stats through.
     fn stub_domain() -> Result<Domain> {
         domain_for(&FormatId::new("stub.v1")?)
-    }
-
-    /// A minimal stub run config; its id addresses the test's run.
-    fn stub_config() -> Result<RunConfig> {
-        Ok(RunConfig {
-            root_seed: 1,
-            segments: None,
-            format: FormatId::new("stub.v1")?,
-            generator: GeneratorConfig {
-                id: GeneratorId::new("stub.v1")?,
-                params: Vec::new(),
-            },
-            params: Params { bytes: Vec::new() },
-        })
-    }
-
-    /// A loaded config over `store` for the stub run.
-    fn loaded(store: std::path::PathBuf) -> Result<LoadedConfig> {
-        Ok(LoadedConfig {
-            run: stub_config()?,
-            devices: Vec::new(),
-            remotes: Vec::new(),
-            execution: sima_scheduler::ExecutionConfig::new(
-                1,
-                1,
-                std::time::Duration::MAX,
-                std::time::Duration::MAX,
-                None,
-            )?,
-            store,
-        })
-    }
-
-    /// Writes `records` to the run's journal in a fresh store, returning the
-    /// temp dir (kept alive by the caller) and the loaded config over it.
-    fn journal_with(records: &[Record]) -> Result<(tempfile::TempDir, LoadedConfig)> {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let store = Store::open(dir.path())?;
-        let config = stub_config()?;
-        store.create_run(&config)?;
-        let mut writer = store.journal_writer(&config.id())?;
-        for record in records {
-            writer.append(&record.to_line()?)?;
-        }
-        let config = loaded(dir.path().to_path_buf())?;
-        Ok((dir, config))
     }
 
     /// Wraps an event as a record stamped `ts_ms`.

@@ -18,6 +18,8 @@
 
 mod config;
 mod devices;
+#[cfg(test)]
+mod fixtures;
 mod journal;
 mod observe;
 mod orchestrate;
