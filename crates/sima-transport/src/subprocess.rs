@@ -590,9 +590,11 @@ mod tests {
         )
     }
 
-    /// An emitter whose receiver is dropped: emissions vanish, which these
-    /// spawn-failure tests do not observe.
-    fn drop_emitter() -> Emitter {
+    /// An emitter that discards every event, for these spawn-failure tests,
+    /// which observe the spawn's error rather than its emissions.
+    fn discarding_emitter() -> Emitter {
+        // The channel's receiver is dropped at the end of this expression, so
+        // the emitter holds a sender with no receiver and each send is a no-op.
         Emitter::from(channel().0)
     }
 
@@ -839,7 +841,7 @@ mod tests {
 
     #[test]
     fn a_missing_program_is_a_clean_spawn_error_naming_the_path() {
-        let result = transport("/nonexistent/sima-worker").spawn(0, None, drop_emitter());
+        let result = transport("/nonexistent/sima-worker").spawn(0, None, discarding_emitter());
         let error = match result {
             Err(e) => e.to_string(),
             Ok(_) => panic!("spawning a missing program must fail"),
@@ -855,7 +857,7 @@ mod tests {
         // cat echoes the Hello frame back; the echoed payload decodes as a
         // malformed child message, so the handshake fails cleanly instead of
         // hanging or panicking.
-        let result = transport("/bin/cat").spawn(0, None, drop_emitter());
+        let result = transport("/bin/cat").spawn(0, None, discarding_emitter());
         assert!(result.is_err(), "the handshake against cat must fail");
     }
 }

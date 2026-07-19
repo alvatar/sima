@@ -237,9 +237,11 @@ mod tests {
         )
     }
 
-    /// An emitter whose receiver is dropped: emissions vanish, which these
-    /// link-level tests do not observe.
-    fn drop_emitter() -> Emitter {
+    /// An emitter that discards every event, for these link-level tests,
+    /// which observe the link's frames rather than its emissions.
+    fn discarding_emitter() -> Emitter {
+        // The channel's receiver is dropped at the end of this expression, so
+        // the emitter holds a sender with no receiver and each send is a no-op.
         Emitter::from(channel().0)
     }
 
@@ -307,7 +309,7 @@ mod tests {
             member: 0,
         };
         // The handshake completes inside spawn, so the resolver has already run.
-        let link = transport.spawn(0, Some(&binding), drop_emitter())?;
+        let link = transport.spawn(0, Some(&binding), discarding_emitter())?;
         assert_eq!(link.device_name(), "loopback device");
         assert_eq!(
             *seen
@@ -333,7 +335,7 @@ mod tests {
         // Three accumulate steps under a save-every-offer cadence: the link
         // yields the three saves in step order, then the outcome.
         let transport = stub_transport(NonZeroU64::new(1));
-        let mut link = transport.spawn(0, None, drop_emitter())?;
+        let mut link = transport.spawn(0, None, discarding_emitter())?;
         link.assign(&assignment(StubBehavior::Accumulate(3), true))?;
         for step in 1..=3u64 {
             match link.next(None)? {
@@ -356,7 +358,7 @@ mod tests {
     fn the_same_link_executes_a_second_task() -> Result<()> {
         // The worker is long-lived: one link, two assignments, two outcomes.
         let transport = stub_transport(None);
-        let mut link = transport.spawn(0, None, drop_emitter())?;
+        let mut link = transport.spawn(0, None, discarding_emitter())?;
         for _ in 0..2 {
             link.assign(&assignment(StubBehavior::Succeed, false))?;
             match link.next(None)? {
@@ -370,7 +372,7 @@ mod tests {
     #[test]
     fn a_deadline_expiry_consumes_nothing_and_the_outcome_still_arrives() -> Result<()> {
         let transport = stub_transport(None);
-        let mut link = transport.spawn(0, None, drop_emitter())?;
+        let mut link = transport.spawn(0, None, discarding_emitter())?;
         link.assign(&assignment(StubBehavior::Sleep(300), false))?;
         // The deadline lands mid-sleep: expiry, with nothing consumed.
         match link.next(Some(Instant::now() + Duration::from_millis(30)))? {
@@ -388,7 +390,7 @@ mod tests {
     #[test]
     fn a_panicking_executor_surfaces_panicked() -> Result<()> {
         let transport = stub_transport(None);
-        let mut link = transport.spawn(0, None, drop_emitter())?;
+        let mut link = transport.spawn(0, None, discarding_emitter())?;
         link.assign(&assignment(StubBehavior::Panic, false))?;
         match link.next(None)? {
             LinkEvent::Panicked(reason) => {
@@ -402,7 +404,7 @@ mod tests {
     #[test]
     fn a_kill_ends_the_event_stream_with_died() -> Result<()> {
         let transport = stub_transport(None);
-        let mut link = transport.spawn(0, None, drop_emitter())?;
+        let mut link = transport.spawn(0, None, discarding_emitter())?;
         // The kill closes the host's stdin; the host exits, its writer drops,
         // and the event stream ends — the same signal a dead process leaves.
         link.kill();
@@ -416,7 +418,7 @@ mod tests {
     #[test]
     fn assigning_to_a_killed_worker_is_an_error() -> Result<()> {
         let transport = stub_transport(None);
-        let mut link = transport.spawn(0, None, drop_emitter())?;
+        let mut link = transport.spawn(0, None, discarding_emitter())?;
         link.kill();
         assert!(
             link.assign(&assignment(StubBehavior::Succeed, false))
