@@ -20,8 +20,8 @@ use std::sync::atomic::AtomicBool;
 
 use sima_core::{Error, Result};
 use sima_pipeline::{
-    LoadedConfig, RemovalReport, ReportRow, RunControl, RunOutcome, RunStatus, TaskHistory, load,
-    orchestrate, status,
+    LoadedConfig, RemovalReport, ReportRow, RunControl, RunId, RunOutcome, RunStatus, TaskHistory,
+    load, orchestrate, status,
 };
 
 /// Exit code for a definitive candidate failure.
@@ -38,6 +38,7 @@ fn main() -> ExitCode {
     match args.iter().map(String::as_str).collect::<Vec<_>>()[..] {
         ["run", config] => run_command(&resolve_config(config)),
         ["status", config] => status_command(&resolve_config(config)),
+        ["status", config, "--failed"] => status_failed_command(&resolve_config(config)),
         ["status", config, "--task", key] => status_task_command(&resolve_config(config), key),
         ["report", config] => report_command(&resolve_config(config), false),
         ["report", "--full", config] => report_command(&resolve_config(config), true),
@@ -142,6 +143,27 @@ fn status_task_command(config: &Path, prefix: &str) -> ExitCode {
 fn read_task_history(config: &Path, prefix: &str) -> Result<TaskHistory> {
     let loaded = load(config)?;
     sima_pipeline::task_history(&loaded, prefix)
+}
+
+/// `sima status <config.toml> --failed`: the tasks the run did not commit,
+/// one line each. The query answers whatever the run's own outcome was, so a
+/// digest over a failed run still exits 0.
+fn status_failed_command(config: &Path) -> ExitCode {
+    match read_failures(config) {
+        Ok((run, failures)) => {
+            println!("{}", render::failures_block(&run, &failures));
+            ExitCode::SUCCESS
+        }
+        Err(e) => report(e),
+    }
+}
+
+/// Loads the config and projects the tasks its run did not commit, with the
+/// run the digest names.
+fn read_failures(config: &Path) -> Result<(RunId, Vec<TaskHistory>)> {
+    let loaded = load(config)?;
+    let failures = sima_pipeline::failures(&loaded)?;
+    Ok((loaded.run.id(), failures))
 }
 
 /// Seeds the tui's display from any existing journal for `config`'s run,

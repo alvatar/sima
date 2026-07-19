@@ -5,7 +5,7 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use sima_pipeline::{
-    Attempt, AttemptResult, Event, Record, RunState, RunStatus, TaskHistory, TaskOutcome,
+    Attempt, AttemptResult, Event, Record, RunId, RunState, RunStatus, TaskHistory, TaskOutcome,
 };
 
 /// How many hex characters of an id a progress line shows.
@@ -167,6 +167,49 @@ pub fn task_block(history: &TaskHistory) -> String {
     block
 }
 
+/// The failure digest's column headers, in render order.
+const FAILURE_COLUMNS: [&str; 5] = ["task", "final", "attempts", "worker", "reason"];
+
+/// Renders the failure digest: a header counting the tasks the run did not
+/// commit, then one row each naming how the task ended and why. An empty
+/// digest is the header alone.
+pub fn failures_block(run: &RunId, failures: &[TaskHistory]) -> String {
+    let tasks = if failures.len() == 1 { "task" } else { "tasks" };
+    let header = format!(
+        "run {}   {} {tasks} did not commit",
+        short(&run.to_string()),
+        failures.len()
+    );
+    if failures.is_empty() {
+        return header;
+    }
+    let rows: Vec<Vec<String>> = failures.iter().map(failure_cells).collect();
+    format!("{header}\n\n{}", table(&FAILURE_COLUMNS, &rows, false))
+}
+
+/// One failed task's cells, in [`FAILURE_COLUMNS`] order: the worker is the
+/// one that ran the deciding attempt, which is the last the task took.
+fn failure_cells(history: &TaskHistory) -> Vec<String> {
+    let (outcome, reason) = match &history.outcome {
+        TaskOutcome::Rejected { reason, .. } => ("rejected", reason.clone()),
+        TaskOutcome::Faulted { error, .. } => ("faulted", error.clone()),
+        TaskOutcome::Queued | TaskOutcome::InProgress | TaskOutcome::Committed { .. } => {
+            ("open", String::new())
+        }
+    };
+    let worker = history
+        .attempts
+        .last()
+        .map_or_else(|| "—".to_string(), |attempt| format!("w{}", attempt.worker));
+    vec![
+        short(&history.task).to_string(),
+        outcome.to_string(),
+        history.attempts.len().to_string(),
+        worker,
+        reason,
+    ]
+}
+
 /// The state line for a task's outcome: the terminal ones carry the attempt
 /// that decided them and why.
 fn task_state(outcome: &TaskOutcome) -> String {
@@ -183,46 +226,63 @@ fn task_state(outcome: &TaskOutcome) -> String {
     }
 }
 
-/// Renders the attempt rows under their headers, each column widened to its
-/// longest cell so one task's table aligns whatever its devices are named.
-/// The failure text of an attempt that has one trails its row.
+/// Renders the attempt rows under their headers. The failure text of an
+/// attempt that has one trails its row, in a column the headers leave unnamed
+/// since it reads as the row's note rather than a field.
 fn attempt_table(attempts: &[Attempt]) -> String {
-    let rows: Vec<[String; 6]> = attempts.iter().map(attempt_cells).collect();
-    let widths: Vec<usize> = ATTEMPT_COLUMNS
+    let mut headers: Vec<&str> = ATTEMPT_COLUMNS.to_vec();
+    headers.push("");
+    let rows: Vec<Vec<String>> = attempts
+        .iter()
+        .map(|attempt| {
+            let mut cells = attempt_cells(attempt).to_vec();
+            cells.push(attempt_note(attempt));
+            cells
+        })
+        .collect();
+    table(&headers, &rows, true)
+}
+
+/// Renders `rows` under `headers`, indented two spaces, with every column
+/// widened to its longest cell so the table aligns whatever it holds.
+/// `number_first` right-aligns the leading column, for a table whose first
+/// field is a count rather than a name.
+fn table(headers: &[&str], rows: &[Vec<String>], number_first: bool) -> String {
+    let widths: Vec<usize> = headers
         .iter()
         .enumerate()
         .map(|(column, header)| {
             rows.iter()
-                .map(|row| row[column].chars().count())
+                .filter_map(|row| row.get(column))
+                .map(|cell| cell.chars().count())
                 .chain([header.chars().count()])
                 .max()
                 .unwrap_or_default()
         })
         .collect();
-    let mut table = padded_row(&ATTEMPT_COLUMNS.map(String::from), &widths, "");
-    for (row, attempt) in rows.iter().zip(attempts) {
+    let header_cells: Vec<String> = headers.iter().map(|header| header.to_string()).collect();
+    let mut table = padded_row(&header_cells, &widths, number_first);
+    for row in rows {
         table.push('\n');
-        table.push_str(&padded_row(row, &widths, &attempt_note(attempt)));
+        table.push_str(&padded_row(row, &widths, number_first));
     }
     table
 }
 
-/// One table line: the attempt number right-aligned under its header, every
-/// other cell left-aligned, and `note` trailing. Trailing padding is dropped,
+/// One table line, indented and column-padded. Trailing padding is dropped,
 /// so no line carries whitespace past its last word.
-fn padded_row(cells: &[String; 6], widths: &[usize], note: &str) -> String {
+fn padded_row(cells: &[String], widths: &[usize], number_first: bool) -> String {
     let mut line = String::from(" ");
     for (column, cell) in cells.iter().enumerate() {
         let width = widths[column];
         line.push(' ');
-        if column == 0 {
+        if column == 0 && number_first {
             line.push_str(&format!("{cell:>width$}"));
         } else {
             line.push_str(&format!("{cell:<width$}"));
         }
         line.push(' ');
     }
-    line.push_str(note);
     line.trim_end().to_string()
 }
 
@@ -455,9 +515,7 @@ mod tests {
 
     /// A zeroed status for a throwaway run; tests set the fields they assert.
     fn a_status() -> RunStatus {
-        RunStatus::new(sima_model::RunId::from_hash(sima_core::hash_bytes(
-            b"a run to render",
-        )))
+        RunStatus::new(a_run())
     }
 
     #[test]
@@ -693,6 +751,86 @@ mod tests {
         let block = task_block(&history);
         assert!(block.contains("gpubox"), "{block}");
         assert!(block.contains("NVIDIA RTX PRO 2000"), "{block}");
+    }
+
+    /// The run the digest tests render against.
+    fn a_run() -> RunId {
+        RunId::from_hash(sima_core::hash_bytes(b"a run to render"))
+    }
+
+    /// One task the run ended on a rejection.
+    fn a_rejected_history() -> TaskHistory {
+        TaskHistory {
+            task: "7f".repeat(32),
+            queued_ms: Some(0),
+            attempts: vec![attempt(
+                0,
+                1,
+                AttemptResult::Rejected {
+                    reason: "programmed rejection".to_string(),
+                },
+                Some(1_500),
+            )],
+            outcome: TaskOutcome::Rejected {
+                attempt: 0,
+                reason: "programmed rejection".to_string(),
+            },
+        }
+    }
+
+    #[test]
+    fn the_failure_digest_names_each_task_its_outcome_and_its_reason() {
+        let block = failures_block(&a_run(), &[a_rejected_history()]);
+        let squeezed = squeezed(&block);
+        assert!(squeezed.contains("1 task did not commit"), "{block}");
+        assert!(
+            squeezed.contains("task final attempts worker reason"),
+            "{block}"
+        );
+        assert!(
+            squeezed.contains("7f7f7f7f7f7f rejected 1 w1 programmed rejection"),
+            "{block}"
+        );
+    }
+
+    #[test]
+    fn a_faulted_task_is_named_by_its_error() {
+        let history = TaskHistory {
+            task: "aa".repeat(32),
+            queued_ms: None,
+            attempts: vec![attempt(
+                3,
+                0,
+                AttemptResult::Faulted {
+                    error: "executor died".to_string(),
+                },
+                Some(2_000),
+            )],
+            outcome: TaskOutcome::Faulted {
+                attempt: 3,
+                error: "executor died".to_string(),
+            },
+        };
+        let block = squeezed(&failures_block(&a_run(), &[history]));
+        assert!(block.contains("faulted"), "{block}");
+        assert!(block.contains("executor died"), "{block}");
+    }
+
+    #[test]
+    fn a_digest_of_no_failures_is_the_header_alone() {
+        let block = failures_block(&a_run(), &[]);
+        assert!(block.contains("0 tasks did not commit"), "{block}");
+        assert!(!block.contains("reason"), "no table: {block}");
+        assert_eq!(block.lines().count(), 1, "{block}");
+    }
+
+    #[test]
+    fn the_digest_header_pluralizes_its_count() {
+        let two = [a_rejected_history(), a_rejected_history()];
+        assert!(
+            failures_block(&a_run(), &two).contains("2 tasks did not commit"),
+            "two failures read as tasks"
+        );
     }
 
     #[test]

@@ -206,6 +206,39 @@ fn status_task_rejects_an_ambiguous_or_unmatched_prefix() {
 }
 
 #[test]
+fn status_failed_names_the_tasks_a_failed_run_did_not_commit() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config = write_config(dir.path(), r#""succeed", "reject""#);
+    let path = config.to_str().expect("utf-8 path");
+    assert_eq!(sima(&["run", path]).status.code(), Some(2));
+
+    // The run failed; the query over its journal answers, so it exits 0.
+    let output = sima(&["status", path, "--failed"]);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let text = stdout(&output);
+    assert!(text.contains("1 task did not commit"), "{text}");
+    let rejected = rejected_task(&config);
+    assert!(text.contains(&rejected[..12]), "names the task: {text}");
+    assert!(text.contains("rejected"), "names the outcome: {text}");
+    assert!(text.contains("programmed rejection"), "the reason: {text}");
+}
+
+#[test]
+fn status_failed_over_an_all_committed_run_names_no_task() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config = write_config(dir.path(), r#""succeed", "flaky:1""#);
+    let path = config.to_str().expect("utf-8 path");
+    assert_eq!(sima(&["run", path]).status.code(), Some(0));
+
+    let output = sima(&["status", path, "--failed"]);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let text = stdout(&output);
+    assert!(text.contains("0 tasks did not commit"), "{text}");
+    // A retried task committed in the end, so no row names it.
+    assert_eq!(text.lines().count(), 1, "the header alone: {text}");
+}
+
+#[test]
 fn report_defaults_to_the_compact_summary() {
     let dir = tempfile::tempdir().expect("temp dir");
     // Two clean successes and one task that succeeds on its second attempt:
