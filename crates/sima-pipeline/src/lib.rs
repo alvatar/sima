@@ -11,6 +11,7 @@
 
 mod config;
 mod devices;
+mod journal;
 mod observe;
 mod orchestrate;
 mod remove;
@@ -23,7 +24,7 @@ pub use devices::DeviceSelector;
 pub use observe::RunObserver;
 pub use orchestrate::orchestrate;
 pub use remove::remove;
-pub use report::{ReportRow, report};
+pub use report::{ReportRow, report, report_task};
 // The run identity a query names, re-exported with the rest of the surface a
 // caller reads a run through.
 pub use sima_model::RunId;

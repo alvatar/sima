@@ -4,11 +4,12 @@
 use std::collections::BTreeMap;
 
 use sima_core::{Error, Result, from_hex};
-use sima_domains::domain_for;
+use sima_domains::{Domain, domain_for};
 use sima_scheduler::{Event, Record};
-use sima_store::Store;
 
 use crate::config::LoadedConfig;
+use crate::journal;
+use crate::task_history::resolve_task_key;
 
 /// One reported task: its journaled key and the domain-rendered stats line.
 #[derive(Debug, PartialEq, Eq)]
@@ -25,49 +26,56 @@ pub struct ReportRow {
 /// key.
 ///
 /// The format's domain renders the observational stats bytes each `Committed`
-/// event carries; a task commits at most once, so each contributes one row. A
-/// store root that does not exist, or a run never started there, is
-/// [`Error::Validation`], matching [`status`](crate::status). A journal line
-/// that fails to parse is [`Error::Corruption`]; stats bytes the domain does
-/// not recognize are [`Error::Validation`] from the renderer.
+/// event carries; a task commits at most once, so each contributes one row.
+/// Stats bytes the domain does not recognize are [`Error::Validation`] from
+/// the renderer; the journal's own guards are
+/// [`journal::records`](crate::journal)'s.
 pub fn report(config: &LoadedConfig) -> Result<Vec<ReportRow>> {
-    if !config.store.is_dir() {
-        return Err(Error::Validation(format!(
-            "store {} does not exist: no run was ever driven there",
-            config.store.display()
-        )));
-    }
     let domain = domain_for(&config.run.format)?;
-    let store = Store::open(&config.store)?;
-    let run = config.run.id();
-    let lines = store.journal(&run)?;
-    if lines.is_empty() {
-        return Err(Error::Validation(format!(
-            "run {run} was never started in this store"
-        )));
-    }
-    // The latest committed stats per task. A task commits once, but a resume
-    // segment re-journals prior commits, so the last `Committed` line wins. The
-    // `BTreeMap` orders the rows by task key.
-    let mut latest: BTreeMap<String, String> = BTreeMap::new();
-    for line in &lines {
-        let record = Record::from_line(line)
-            .map_err(|e| Error::Corruption(format!("journal of run {run}: {e}")))?;
+    let records = journal::records(config)?;
+    committed_stats(&records)
+        .into_iter()
+        .map(|(task, stats_hex)| row(task, &stats_hex, &domain))
+        .collect()
+}
+
+/// Renders one committed task's per-candidate stats, addressed by a prefix of
+/// its key. A task the run journaled but never committed is
+/// [`Error::Validation`]: this is the view of what the run produced, and a
+/// task's execution history is what [`task_history`](crate::task_history)
+/// answers.
+pub fn report_task(config: &LoadedConfig, prefix: &str) -> Result<ReportRow> {
+    let domain = domain_for(&config.run.format)?;
+    let records = journal::records(config)?;
+    let task = resolve_task_key(&records, prefix)?;
+    let stats_hex = committed_stats(&records).remove(&task).ok_or_else(|| {
+        Error::Validation(format!(
+            "task {task} has no committed result; see `sima status --task {prefix}`"
+        ))
+    })?;
+    row(task, &stats_hex, &domain)
+}
+
+/// The latest committed stats per task, ordered by task key. A task commits
+/// once, but a resume segment re-journals prior commits, so the last
+/// `Committed` line wins.
+fn committed_stats(records: &[Record]) -> BTreeMap<String, String> {
+    let mut latest = BTreeMap::new();
+    for record in records {
         if let Event::Committed {
             task, stats_hex, ..
-        } = record.event
+        } = &record.event
         {
-            latest.insert(task, stats_hex);
+            latest.insert(task.clone(), stats_hex.clone());
         }
     }
     latest
-        .into_iter()
-        .map(|(task, stats_hex)| {
-            let bytes = from_hex(&stats_hex)?;
-            let stats = (domain.stats)(&bytes)?;
-            Ok(ReportRow { task, stats })
-        })
-        .collect()
+}
+
+/// One row for `task`, its stats bytes rendered through the format's domain.
+fn row(task: String, stats_hex: &str, domain: &Domain) -> Result<ReportRow> {
+    let stats = (domain.stats)(&from_hex(stats_hex)?)?;
+    Ok(ReportRow { task, stats })
 }
 
 #[cfg(test)]
@@ -194,6 +202,53 @@ mod tests {
             committed("aa", "0000000099"),
         ])?;
         assert!(matches!(report(&config), Err(Error::Validation(_))));
+        Ok(())
+    }
+
+    #[test]
+    fn a_task_report_resolves_a_prefix_and_renders_that_task_alone() -> Result<()> {
+        let (_dir, config) = journal_with(&[
+            started(&stub_config()?.id(), 2),
+            committed("abcd", "00000000"),
+            committed("bcde", "01000000"),
+        ])?;
+        assert_eq!(
+            report_task(&config, "ab")?,
+            ReportRow {
+                task: "abcd".to_string(),
+                stats: "attempt 0".to_string(),
+            }
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_task_that_never_committed_has_no_report() -> Result<()> {
+        // The task has a history — it was leased and rejected — so the prefix
+        // resolves; it produced no result to report.
+        let (_dir, config) = journal_with(&[
+            started(&stub_config()?.id(), 1),
+            rec(Event::Leased {
+                task: "abcd".to_string(),
+                worker: 0,
+                attempt: 0,
+            }),
+            rec(Event::Rejected {
+                task: "abcd".to_string(),
+                attempt: 0,
+                reason: "programmed rejection".to_string(),
+                stats_hex: String::new(),
+            }),
+        ])?;
+        let reported = report_task(&config, "ab");
+        assert!(
+            matches!(reported, Err(Error::Validation(_))),
+            "{reported:?}"
+        );
+        assert!(
+            format!("{}", reported.expect_err("no committed result"))
+                .contains("has no committed result")
+        );
         Ok(())
     }
 

@@ -40,8 +40,9 @@ fn main() -> ExitCode {
         ["status", config] => status_command(&resolve_config(config)),
         ["status", config, "--failed"] => status_failed_command(&resolve_config(config)),
         ["status", config, "--task", key] => status_task_command(&resolve_config(config), key),
-        ["report", config] => report_command(&resolve_config(config), false),
-        ["report", "--full", config] => report_command(&resolve_config(config), true),
+        ["report", config] => report_command(&resolve_config(config), Report::Summary),
+        ["report", config, "--all"] => report_command(&resolve_config(config), Report::All),
+        ["report", config, "--task", key] => report_task_command(&resolve_config(config), key),
         ["rm", config] => rm_command(&resolve_config(config)),
         ["tui", config] => tui::tui_command(&resolve_config(config)),
         _ => {
@@ -190,26 +191,44 @@ pub(crate) fn seed_status(config: &LoadedConfig) -> Result<RunStatus> {
     }
 }
 
-/// `sima report [--full] <config.toml>`: renders the run's committed stats.
-/// The default is the compact summary — a total header, then one line per
-/// distinct rendered stats value with its count; `--full` prints one
-/// `<short task key>  <rendered stats>` line per task. The store and run id
-/// come from the config the same way `status` derives them.
-fn report_command(config: &Path, full: bool) -> ExitCode {
+/// How much of a run's committed stats `sima report` prints.
+enum Report {
+    /// A total header, then one line per distinct rendered stats value with
+    /// its count.
+    Summary,
+    /// One `<short task key>  <rendered stats>` line per committed task.
+    All,
+}
+
+/// `sima report [--all] <config.toml>`: renders the run's committed stats,
+/// compactly by default. The store and run id come from the config the same
+/// way `status` derives them.
+fn report_command(config: &Path, scope: Report) -> ExitCode {
     match read_report(config) {
-        Ok(rows) => {
-            let stdout = std::io::stdout();
-            let mut out = stdout.lock();
-            let written = if full {
-                write_report(&mut out, &rows)
-            } else {
-                write_summary(&mut out, &rows)
-            };
-            match written {
-                Ok(()) => ExitCode::SUCCESS,
-                Err(e) => report(e),
-            }
-        }
+        Ok(rows) => write_rows(&rows, scope),
+        Err(e) => report(e),
+    }
+}
+
+/// `sima report <config.toml> --task <key>`: one committed task's stats,
+/// addressed by a prefix of its key.
+fn report_task_command(config: &Path, prefix: &str) -> ExitCode {
+    match read_report_task(config, prefix) {
+        Ok(row) => write_rows(&[row], Report::All),
+        Err(e) => report(e),
+    }
+}
+
+/// Writes `rows` to stdout, taken locked once, in the form `scope` names.
+fn write_rows(rows: &[ReportRow], scope: Report) -> ExitCode {
+    let stdout = std::io::stdout();
+    let mut out = stdout.lock();
+    let written = match scope {
+        Report::Summary => write_summary(&mut out, rows),
+        Report::All => write_report(&mut out, rows),
+    };
+    match written {
+        Ok(()) => ExitCode::SUCCESS,
         Err(e) => report(e),
     }
 }
@@ -279,6 +298,12 @@ fn group_stats(rows: &[ReportRow]) -> Vec<(usize, &str)> {
 fn read_report(config: &Path) -> Result<Vec<ReportRow>> {
     let loaded = load(config)?;
     sima_pipeline::report(&loaded)
+}
+
+/// Loads the config and renders one committed task's stats from its journal.
+fn read_report_task(config: &Path, prefix: &str) -> Result<ReportRow> {
+    let loaded = load(config)?;
+    sima_pipeline::report_task(&loaded, prefix)
 }
 
 /// `sima rm <config.toml>`: deletes the run — and everything no surviving run

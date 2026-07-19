@@ -7,12 +7,11 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::config::LoadedConfig;
+use crate::journal;
 use sima_core::{Error, Result, from_hex};
 use sima_domains::{Domain, domain_for};
 use sima_scheduler::{Event, Record};
-use sima_store::Store;
-
-use crate::config::LoadedConfig;
 
 /// One task's lifecycle, folded from the run journal.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -321,41 +320,11 @@ pub(crate) fn resolve_task_key(records: &[Record], prefix: &str) -> Result<Strin
     }
 }
 
-/// Reads the run's journal into parsed records, under the guards every
-/// journal query applies: a store root that does not exist is
-/// [`Error::Validation`] before anything touches the disk, since opening a
-/// store creates its skeleton and a query must not; a run never started there
-/// is [`Error::Validation`]; a line that fails to parse is
-/// [`Error::Corruption`].
-fn journal_records(config: &LoadedConfig) -> Result<Vec<Record>> {
-    if !config.store.is_dir() {
-        return Err(Error::Validation(format!(
-            "store {} does not exist: no run was ever driven there",
-            config.store.display()
-        )));
-    }
-    let store = Store::open(&config.store)?;
-    let run = config.run.id();
-    let lines = store.journal(&run)?;
-    if lines.is_empty() {
-        return Err(Error::Validation(format!(
-            "run {run} was never started in this store"
-        )));
-    }
-    lines
-        .iter()
-        .map(|line| {
-            Record::from_line(line)
-                .map_err(|e| Error::Corruption(format!("journal of run {run}: {e}")))
-        })
-        .collect()
-}
-
 /// One task's lifecycle in the run a loaded config describes, addressed by a
 /// prefix of its key. The committed outcome carries the stats its domain
 /// renders, the same rendering [`report`](crate::report) prints.
 pub fn task_history(config: &LoadedConfig, prefix: &str) -> Result<TaskHistory> {
-    let records = journal_records(config)?;
+    let records = journal::records(config)?;
     let task = resolve_task_key(&records, prefix)?;
     let domain = domain_for(&config.run.format)?;
     ledger(&records, &domain)?
@@ -366,7 +335,7 @@ pub fn task_history(config: &LoadedConfig, prefix: &str) -> Result<TaskHistory> 
 /// Every task the run ended on a definitive failure, ordered by key: the
 /// tasks a finished run did not commit, and why.
 pub fn failures(config: &LoadedConfig) -> Result<Vec<TaskHistory>> {
-    let records = journal_records(config)?;
+    let records = journal::records(config)?;
     let domain = domain_for(&config.run.format)?;
     Ok(ledger(&records, &domain)?
         .into_values()
@@ -377,6 +346,8 @@ pub fn failures(config: &LoadedConfig) -> Result<Vec<TaskHistory>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sima_store::Store;
+
     use sima_model::{FormatId, GeneratorConfig, GeneratorId, Params, RunConfig};
 
     /// The stub domain the synthetic journals render their stats through.
