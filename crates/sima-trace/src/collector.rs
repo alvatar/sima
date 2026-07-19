@@ -54,7 +54,7 @@ impl From<Sender<Event>> for Emitter {
 /// A record consumer the collector thread calls: the run's observer, borrowed
 /// for the scope the collector runs in. `Sync` because the collector thread
 /// calls it while the caller's thread holds the same reference.
-pub type Subscriber<'a> = &'a (dyn Fn(&Record) + Sync);
+pub type Observer<'a> = &'a (dyn Fn(&Record) + Sync);
 
 /// A running collector: the event channel plus the collector thread's join
 /// handle. Dropping every emitter ends the channel; the thread then drains
@@ -78,7 +78,7 @@ impl<'scope> Collector<'scope> {
     pub fn spawn<'env, S>(
         scope: &'scope Scope<'scope, 'env>,
         sink: S,
-        observer: Subscriber<'env>,
+        observer: Observer<'env>,
     ) -> Collector<'scope>
     where
         S: DurableSink + 'scope,
@@ -118,7 +118,7 @@ impl<'scope> Collector<'scope> {
 /// observer, until the channel closes. Stops at the first append or encoding
 /// failure, returning it; remaining events are dropped — unappended events
 /// never reach the observer — and their emitters' sends become no-ops.
-fn drain<S: DurableSink>(mut sink: S, rx: Receiver<Event>, observer: Subscriber) -> Result<()> {
+fn drain<S: DurableSink>(mut sink: S, rx: Receiver<Event>, observer: Observer) -> Result<()> {
     for event in rx {
         // One clock, read on this thread at append time — remote events are
         // stamped on arrival. A clock before the epoch stamps zero.

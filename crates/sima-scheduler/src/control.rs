@@ -2,7 +2,7 @@
 
 use std::sync::atomic::AtomicBool;
 
-use sima_trace::Record;
+use sima_trace::Observer;
 
 /// The caller's handles into a running search: an observer invoked with
 /// each journal record and an interrupt flag the driver polls to wind
@@ -11,7 +11,7 @@ pub struct RunControl<'a> {
     /// Invoked with each record on the collector thread, immediately
     /// after the record's line is appended: typed records, in journal
     /// order, from one calling thread.
-    pub observer: &'a (dyn Fn(&Record) + Sync),
+    pub observer: Observer<'a>,
     /// Level-triggered wind-down request. Once set, the driver stops
     /// handing out tasks; in-flight attempts finish and commit, and the
     /// run returns [`RunOutcome::Interrupted`](crate::RunOutcome::Interrupted)
@@ -36,7 +36,7 @@ impl RunControl<'_> {
 mod tests {
     use std::sync::atomic::Ordering;
 
-    use sima_trace::Event;
+    use sima_trace::{Event, Record};
 
     use super::*;
 
