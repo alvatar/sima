@@ -58,6 +58,7 @@ impl Worker {
 fn hello(protocol: u32) -> ToChild {
     ToChild::Hello(Hello {
         protocol,
+        worker: 0,
         format: FormatId::new("stub.v1").expect("format id"),
         checkpoint_interval_ms: u64::MAX,
         checkpoint_interval_steps: 0,
@@ -132,7 +133,7 @@ fn a_command_vector_spawn_reaches_the_worker_through_a_wrapper() {
         Duration::MAX,
         None,
     );
-    let mut link = transport.spawn(None).expect("spawn through the wrapper");
+    let mut link = transport.spawn(0, None).expect("spawn through the wrapper");
     // The handshake completed through the wrapper: the stub names no device.
     assert_eq!(link.device_name(), "");
     let ToChild::Assign(task) = assignment() else {
@@ -190,6 +191,7 @@ fn an_unknown_format_exits_nonzero_before_ready() {
     let mut worker = Worker::spawn();
     worker.send(&ToChild::Hello(Hello {
         protocol: PROTOCOL_VERSION,
+        worker: 0,
         format: FormatId::new("no-such-domain.v1").expect("format id"),
         checkpoint_interval_ms: u64::MAX,
         checkpoint_interval_steps: 0,

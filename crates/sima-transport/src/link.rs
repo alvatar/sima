@@ -20,10 +20,12 @@ use crate::protocol::Assignment;
 /// Spawns workers. One transport serves a whole run; each worker slot holds
 /// one [`WorkerLink`] at a time and replaces it when the child dies.
 pub trait WorkerTransport: Sync {
-    /// Spawns one worker bound to `device` — or, for `None`, to the execution
-    /// backend's default selection — and performs the handshake. An `Err` is a
-    /// spawn failure — an infrastructure error, never a task outcome.
-    fn spawn(&self, device: Option<&DeviceBinding>) -> Result<Box<dyn WorkerLink>>;
+    /// Spawns one worker as slot `worker`, bound to `device` — or, for
+    /// `None`, to the execution backend's default selection — and performs
+    /// the handshake; the worker id travels in the `Hello` so the child can
+    /// attribute events. An `Err` is a spawn failure — an infrastructure
+    /// error, never a task outcome.
+    fn spawn(&self, worker: u64, device: Option<&DeviceBinding>) -> Result<Box<dyn WorkerLink>>;
 }
 
 /// The parent's conversation with one live worker.

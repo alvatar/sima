@@ -57,7 +57,7 @@ impl LoopbackTransport {
 }
 
 impl WorkerTransport for LoopbackTransport {
-    fn spawn(&self, device: Option<&DeviceBinding>) -> Result<Box<dyn WorkerLink>> {
+    fn spawn(&self, worker: u64, device: Option<&DeviceBinding>) -> Result<Box<dyn WorkerLink>> {
         let (mut stdin, host_reader) = pipe();
         let (host_writer, stdout) = pipe();
         let resolver = self.resolver.clone();
@@ -71,6 +71,7 @@ impl WorkerTransport for LoopbackTransport {
         let reader = std::thread::spawn(move || read_events(stdout, sender));
         // The handshake, over the real wire protocol.
         let hello = Hello {
+            worker,
             device: device.copied(),
             ..self.hello.clone()
         };
@@ -285,7 +286,7 @@ mod tests {
             member: 0,
         };
         // The handshake completes inside spawn, so the resolver has already run.
-        let link = transport.spawn(Some(&binding))?;
+        let link = transport.spawn(0, Some(&binding))?;
         assert_eq!(link.device_name(), "loopback device");
         assert_eq!(
             *seen
@@ -311,7 +312,7 @@ mod tests {
         // Three accumulate steps under a save-every-offer cadence: the link
         // yields the three saves in step order, then the outcome.
         let transport = stub_transport(NonZeroU64::new(1));
-        let mut link = transport.spawn(None)?;
+        let mut link = transport.spawn(0, None)?;
         link.assign(&assignment(StubBehavior::Accumulate(3), true))?;
         for step in 1..=3u64 {
             match link.next(None)? {
@@ -334,7 +335,7 @@ mod tests {
     fn the_same_link_executes_a_second_task() -> Result<()> {
         // The worker is long-lived: one link, two assignments, two outcomes.
         let transport = stub_transport(None);
-        let mut link = transport.spawn(None)?;
+        let mut link = transport.spawn(0, None)?;
         for _ in 0..2 {
             link.assign(&assignment(StubBehavior::Succeed, false))?;
             match link.next(None)? {
@@ -348,7 +349,7 @@ mod tests {
     #[test]
     fn a_deadline_expiry_consumes_nothing_and_the_outcome_still_arrives() -> Result<()> {
         let transport = stub_transport(None);
-        let mut link = transport.spawn(None)?;
+        let mut link = transport.spawn(0, None)?;
         link.assign(&assignment(StubBehavior::Sleep(300), false))?;
         // The deadline lands mid-sleep: expiry, with nothing consumed.
         match link.next(Some(Instant::now() + Duration::from_millis(30)))? {
@@ -366,7 +367,7 @@ mod tests {
     #[test]
     fn a_panicking_executor_surfaces_panicked() -> Result<()> {
         let transport = stub_transport(None);
-        let mut link = transport.spawn(None)?;
+        let mut link = transport.spawn(0, None)?;
         link.assign(&assignment(StubBehavior::Panic, false))?;
         match link.next(None)? {
             LinkEvent::Panicked(reason) => {
@@ -380,7 +381,7 @@ mod tests {
     #[test]
     fn a_kill_ends_the_event_stream_with_died() -> Result<()> {
         let transport = stub_transport(None);
-        let mut link = transport.spawn(None)?;
+        let mut link = transport.spawn(0, None)?;
         // The kill closes the host's stdin; the host exits, its writer drops,
         // and the event stream ends — the same signal a dead process leaves.
         link.kill();
@@ -394,7 +395,7 @@ mod tests {
     #[test]
     fn assigning_to_a_killed_worker_is_an_error() -> Result<()> {
         let transport = stub_transport(None);
-        let mut link = transport.spawn(None)?;
+        let mut link = transport.spawn(0, None)?;
         link.kill();
         assert!(
             link.assign(&assignment(StubBehavior::Succeed, false))

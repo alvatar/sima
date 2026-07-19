@@ -83,7 +83,7 @@ impl RemoteTransport {
 }
 
 impl WorkerTransport for RemoteTransport {
-    fn spawn(&self, device: Option<&DeviceBinding>) -> Result<Box<dyn WorkerLink>> {
+    fn spawn(&self, worker: u64, device: Option<&DeviceBinding>) -> Result<Box<dyn WorkerLink>> {
         let n = self.counter.fetch_add(1, Ordering::Relaxed);
         let container = container_name(&self.container_prefix, n);
         let run = run_argv(
@@ -96,7 +96,7 @@ impl WorkerTransport for RemoteTransport {
         // `run_argv` never yields an empty vector: the runtime or `ssh` is
         // always the first element.
         let (program, args) = run.split_first().expect("a non-empty command vector");
-        let inner = spawn_worker(Path::new(program), args, &self.hello, device)?;
+        let inner = spawn_worker(Path::new(program), args, &self.hello, worker, device)?;
         let kill_command = kill_argv(self.host.as_deref(), &self.runtime, &container);
         Ok(Box::new(RemoteLink {
             inner,

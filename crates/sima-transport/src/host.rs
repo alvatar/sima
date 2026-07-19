@@ -324,6 +324,7 @@ mod tests {
     fn hello(interval_ms: u64, steps: u64) -> ToChild {
         ToChild::Hello(Hello {
             protocol: PROTOCOL_VERSION,
+            worker: 7,
             format: FormatId::new("host-test.v1").expect("format id"),
             checkpoint_interval_ms: interval_ms,
             checkpoint_interval_steps: steps,
@@ -446,6 +447,7 @@ mod tests {
     fn a_version_mismatch_is_refused_before_ready() {
         let opening = ToChild::Hello(Hello {
             protocol: PROTOCOL_VERSION + 1,
+            worker: 0,
             format: FormatId::new("host-test.v1").expect("format id"),
             checkpoint_interval_ms: u64::MAX,
             checkpoint_interval_steps: 0,

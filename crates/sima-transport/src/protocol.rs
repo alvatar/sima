@@ -11,15 +11,17 @@
 //! [`ToParent::Ready`] (or refuses a protocol-version mismatch). Each task is
 //! one [`Assignment`], answered by zero or more [`ToParent::Save`] frames and
 //! exactly one of [`ToParent::Done`], [`ToParent::Panicked`], or
-//! [`ToParent::Fault`]. There is no shutdown message: the parent closing the
-//! child's stdin is the shutdown signal.
+//! [`ToParent::Fault`]; [`ToParent::Event`] frames may interleave anywhere
+//! after `Ready`, carrying structured events for the run's collector. There
+//! is no shutdown message: the parent closing the child's stdin is the
+//! shutdown signal.
 
 use sima_contracts::{Artifact, DeviceBinding, Outcome, Stats};
 use sima_core::{Dec, Enc, Error, Result};
 use sima_model::{EnvironmentId, FormatId};
 
 /// Version of the wire protocol; the handshake refuses a mismatch.
-pub const PROTOCOL_VERSION: u32 = 3;
+pub const PROTOCOL_VERSION: u32 = 4;
 
 // Parent → child message tags.
 const TAG_HELLO: u8 = 0;
@@ -31,6 +33,7 @@ const TAG_SAVE: u8 = 1;
 const TAG_DONE: u8 = 2;
 const TAG_PANICKED: u8 = 3;
 const TAG_FAULT: u8 = 4;
+const TAG_EVENT: u8 = 5;
 
 // Outcome tags inside a `Done` payload.
 const OUTCOME_COMPLETED: u8 = 0;
@@ -45,6 +48,10 @@ const OUTCOME_REJECTED: u8 = 2;
 pub struct Hello {
     /// The parent's [`PROTOCOL_VERSION`]; the child refuses a mismatch.
     pub protocol: u32,
+    /// The scheduler-assigned worker id of this child's slot, so the child
+    /// and the transport's reader threads can attribute events without a
+    /// side channel.
+    pub worker: u64,
     /// The run's format id; every assignment's spec bytes are of this format.
     pub format: FormatId,
     /// Wall-clock checkpoint cadence in milliseconds; `u64::MAX` disables
@@ -120,6 +127,12 @@ pub enum ToParent {
     Panicked(String),
     /// The executor returned `Err` — an infrastructure fault; the message.
     Fault(String),
+    /// A structured event from the child: the serde_json serialization of a
+    /// `sima_trace::Event`, carried opaquely — observational serde-world
+    /// bytes inside the canonical frame, the same way spec and params bytes
+    /// travel opaquely elsewhere. The parent's reader thread parses and
+    /// forwards it to the run's collector; it never reaches the lease loop.
+    Event(Vec<u8>),
 }
 
 impl ToChild {
@@ -130,6 +143,7 @@ impl ToChild {
             ToChild::Hello(hello) => {
                 enc.u8(TAG_HELLO)
                     .u32(hello.protocol)
+                    .u64(hello.worker)
                     .str(hello.format.as_str())
                     .u64(hello.checkpoint_interval_ms)
                     .u64(hello.checkpoint_interval_steps);
@@ -158,12 +172,14 @@ impl ToChild {
         let message = match dec.u8()? {
             TAG_HELLO => {
                 let protocol = dec.u32()?;
+                let worker = dec.u64()?;
                 let format = FormatId::new(dec.str()?)?;
                 let checkpoint_interval_ms = dec.u64()?;
                 let checkpoint_interval_steps = dec.u64()?;
                 let device = decode_opt_device(&mut dec)?;
                 ToChild::Hello(Hello {
                     protocol,
+                    worker,
                     format,
                     checkpoint_interval_ms,
                     checkpoint_interval_steps,
@@ -245,6 +261,9 @@ impl ToParent {
             ToParent::Fault(message) => {
                 enc.u8(TAG_FAULT).str(message);
             }
+            ToParent::Event(payload) => {
+                enc.u8(TAG_EVENT).bytes(payload);
+            }
         }
         enc.finish()
     }
@@ -288,6 +307,7 @@ impl ToParent {
             }
             TAG_PANICKED => ToParent::Panicked(dec.str()?.to_string()),
             TAG_FAULT => ToParent::Fault(dec.str()?.to_string()),
+            TAG_EVENT => ToParent::Event(dec.bytes()?.to_vec()),
             tag => {
                 return Err(Error::Encoding(format!(
                     "unknown child-to-parent message tag {tag}"
@@ -375,6 +395,7 @@ mod tests {
         vec![
             ToChild::Hello(Hello {
                 protocol: PROTOCOL_VERSION,
+                worker: 0,
                 format: FormatId::new("stub.v1").expect("format id"),
                 checkpoint_interval_ms: 250,
                 checkpoint_interval_steps: 0,
@@ -382,6 +403,7 @@ mod tests {
             }),
             ToChild::Hello(Hello {
                 protocol: PROTOCOL_VERSION,
+                worker: 7,
                 format: FormatId::new("stub.v1").expect("format id"),
                 checkpoint_interval_ms: u64::MAX,
                 checkpoint_interval_steps: 64,
@@ -457,6 +479,12 @@ mod tests {
             }),
             ToParent::Panicked("panic: boom".to_string()),
             ToParent::Fault("spec is malformed".to_string()),
+            // The bytes are opaque here: any payload must survive the frame.
+            ToParent::Event(
+                br#"{"event":"diagnostic","level":"error","source":"panic","message":"boom"}"#
+                    .to_vec(),
+            ),
+            ToParent::Event(Vec::new()),
         ]
     }
 
@@ -464,7 +492,7 @@ mod tests {
     fn the_protocol_version_is_pinned() {
         // The handshake contract both binaries compile against; bumping it is
         // a deliberate act.
-        assert_eq!(PROTOCOL_VERSION, 3);
+        assert_eq!(PROTOCOL_VERSION, 4);
     }
 
     #[test]
@@ -542,6 +570,7 @@ mod tests {
         let mut enc = Enc::new();
         enc.u8(TAG_HELLO)
             .u32(PROTOCOL_VERSION)
+            .u64(0)
             .str("stub.v1")
             .u64(0)
             .u64(0);
@@ -600,6 +629,7 @@ mod tests {
         let mut enc = Enc::new();
         enc.u8(TAG_HELLO)
             .u32(PROTOCOL_VERSION)
+            .u64(0)
             .str("Bad Name")
             .u64(u64::MAX)
             .u64(0);

@@ -63,8 +63,8 @@ impl SubprocessTransport {
 /// space of milliseconds is disabled in effect — and a disabled step axis
 /// is `0`.
 ///
-/// The device is left unbound: it varies per worker, so each spawn sets it on
-/// its own copy of this frame.
+/// The worker id and device are left unbound: they vary per worker, so each
+/// spawn sets them on its own copy of this frame.
 pub(crate) fn hello(
     format: FormatId,
     checkpoint_interval: Duration,
@@ -77,6 +77,7 @@ pub(crate) fn hello(
     };
     Hello {
         protocol: PROTOCOL_VERSION,
+        worker: 0,
         format,
         checkpoint_interval_ms,
         checkpoint_interval_steps: checkpoint_interval_steps.map_or(0, NonZeroU64::get),
@@ -85,8 +86,8 @@ pub(crate) fn hello(
 }
 
 impl WorkerTransport for SubprocessTransport {
-    fn spawn(&self, device: Option<&DeviceBinding>) -> Result<Box<dyn WorkerLink>> {
-        spawn_worker(&self.program, &self.args, &self.hello, device)
+    fn spawn(&self, worker: u64, device: Option<&DeviceBinding>) -> Result<Box<dyn WorkerLink>> {
+        spawn_worker(&self.program, &self.args, &self.hello, worker, device)
     }
 }
 
@@ -99,6 +100,7 @@ pub(crate) fn spawn_worker(
     program: &Path,
     args: &[String],
     hello: &Hello,
+    worker: u64,
     device: Option<&DeviceBinding>,
 ) -> Result<Box<dyn WorkerLink>> {
     let mut child = Command::new(program)
@@ -134,6 +136,7 @@ pub(crate) fn spawn_worker(
     // by death, a wrong version, an undecodable echo — is a spawn failure, and
     // the misbehaving child is killed and reaped before the error returns.
     let hello = Hello {
+        worker,
         device: device.copied(),
         ..hello.clone()
     };
@@ -354,6 +357,14 @@ pub(crate) fn next_event(
                 "unexpected Ready after the handshake".to_string(),
             ));
         }
+        // Event frames belong to the transport's reader thread, which
+        // forwards them to the run's collector; one on the lease loop is a
+        // routing violation.
+        ToParent::Event(_) => {
+            return Err(Error::Transport(
+                "unexpected Event frame on the lease loop".to_string(),
+            ));
+        }
     })
 }
 
@@ -443,7 +454,7 @@ mod tests {
 
     #[test]
     fn a_missing_program_is_a_clean_spawn_error_naming_the_path() {
-        let result = transport("/nonexistent/sima-worker").spawn(None);
+        let result = transport("/nonexistent/sima-worker").spawn(0, None);
         let error = match result {
             Err(e) => e.to_string(),
             Ok(_) => panic!("spawning a missing program must fail"),
@@ -459,7 +470,7 @@ mod tests {
         // cat echoes the Hello frame back; the echoed payload decodes as a
         // malformed child message, so the handshake fails cleanly instead of
         // hanging or panicking.
-        let result = transport("/bin/cat").spawn(None);
+        let result = transport("/bin/cat").spawn(0, None);
         assert!(result.is_err(), "the handshake against cat must fail");
     }
 }
