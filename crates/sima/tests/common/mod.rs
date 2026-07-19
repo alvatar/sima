@@ -117,13 +117,22 @@ pub fn manifest_of(config_path: &Path) -> Option<Manifest> {
 
 /// The journal of the run `config_path` describes, parsed into typed events.
 pub fn journal_events(config_path: &Path) -> Vec<Event> {
+    journal_records(config_path)
+        .into_iter()
+        .map(|record| record.event)
+        .collect()
+}
+
+/// The journal of the run `config_path` describes, parsed into full records
+/// — for the suites that assert on the collector's timestamp stamp.
+pub fn journal_records(config_path: &Path) -> Vec<Record> {
     let config = load(config_path).expect("load config");
     let store = Store::open(&config.store).expect("open store");
     store
         .journal(&config.run.id())
         .expect("read journal")
         .iter()
-        .map(|line| Record::from_line(line).expect("parse journal line").event)
+        .map(|line| Record::from_line(line).expect("parse journal line"))
         .collect()
 }
 
