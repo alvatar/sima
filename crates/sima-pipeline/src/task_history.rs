@@ -211,7 +211,16 @@ impl TaskHistory {
             }
             // A retry is answered by the lease that follows it, and a degraded
             // checkpoint leaves the attempt's result untouched.
-            _ => {}
+            Event::Retried { .. } | Event::CheckpointDegraded { .. } => {}
+            // The run-level frame and the bookkeeping events name no task, so
+            // the fold routes none of them here.
+            Event::RunStarted { .. }
+            | Event::RunFinalized { .. }
+            | Event::RunFailed { .. }
+            | Event::RunInterrupted { .. }
+            | Event::WorkerBound { .. }
+            | Event::ChainRebound { .. }
+            | Event::Diagnostic { .. } => {}
         }
         Ok(())
     }
@@ -280,8 +289,8 @@ fn worker_bindings(records: &[Record]) -> BTreeMap<u64, (String, String)> {
 
 /// Folds the journal into every task's history, keyed by task and ordered by
 /// key. One pass reads the worker bindings, a second drives each task's
-/// history through the events naming it, so the whole ledger costs one walk
-/// per pass and one map.
+/// history through the events naming it: two walks of the journal, and one
+/// entry per task.
 fn ledger(records: &[Record], domain: &Domain) -> Result<BTreeMap<String, TaskHistory>> {
     let workers = worker_bindings(records);
     let mut ledger: BTreeMap<String, TaskHistory> = BTreeMap::new();
@@ -298,9 +307,10 @@ fn ledger(records: &[Record], domain: &Domain) -> Result<BTreeMap<String, TaskHi
 }
 
 /// Resolves a task-key prefix against the keys the journal names in a
-/// lifecycle event — the tasks with a history to show. Any non-empty prefix
-/// is accepted; ambiguity is the guard, not a minimum length. A prefix
-/// matching no task, or more than one, is [`Error::Validation`].
+/// lifecycle event — the tasks with a history to show. Ambiguity is the
+/// guard rather than a minimum length, so a prefix of any length resolves
+/// where it names one task; matching no task, or more than one, is
+/// [`Error::Validation`].
 pub(crate) fn resolve_task_key(records: &[Record], prefix: &str) -> Result<String> {
     let matched: BTreeSet<&str> = records
         .iter()
