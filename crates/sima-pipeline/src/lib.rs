@@ -16,6 +16,7 @@ mod orchestrate;
 mod remove;
 mod report;
 mod status;
+mod task_history;
 
 pub use config::{LoadedConfig, RemoteConfig, load};
 pub use devices::DeviceSelector;
@@ -28,3 +29,4 @@ pub use sima_store::RemovalReport;
 // so the CLI consumes one coherent surface.
 pub use sima_scheduler::{Event, Level, Record, RunControl, RunOutcome};
 pub use status::{Occupancy, RunState, RunStatus, status};
+pub use task_history::{Attempt, AttemptResult, TaskHistory, TaskOutcome, failures, task_history};
