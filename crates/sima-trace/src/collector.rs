@@ -176,11 +176,10 @@ mod tests {
         let trace: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
         let trace_for_observer = Arc::clone(&trace);
         let observer = move |record: &Record| {
-            let event = record.event.clone();
             trace_for_observer
                 .lock()
                 .expect("lock trace")
-                .push(format!("observed {event:?}"));
+                .push(format!("observed {:?}", record.event));
         };
         thread::scope(|scope| -> Result<()> {
             let sink = LogSink {
