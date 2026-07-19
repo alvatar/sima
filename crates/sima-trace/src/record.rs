@@ -7,16 +7,15 @@ use crate::event::Event;
 
 /// One journal line: the event plus the wall-clock stamp the collector
 /// thread applied when the line was appended. The event's fields flatten
-/// into the line, so a lifecycle line keeps the exact shape it always had,
-/// with `ts_ms` as one more top-level key:
+/// into the line, so the line is flat: the event's own keys sit beside
+/// `ts_ms` at the top level:
 /// `{"ts_ms":1234,"event":"leased","task":"ab…","worker":3,"attempt":1}`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Record {
     /// Wall-clock milliseconds since the Unix epoch, stamped by the
-    /// collector thread when the line is appended. Absent on lines
-    /// written before the field existed.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ts_ms: Option<u64>,
+    /// collector thread when the line is appended.
+    pub ts_ms: u64,
+    // The event's fields sit at the top level of the line beside `ts_ms`.
     #[serde(flatten)]
     pub event: Event,
 }
@@ -32,8 +31,8 @@ impl Record {
     }
 
     /// Parses a journal line written by [`to_line`](Self::to_line) back into a
-    /// record. A line predating `ts_ms` parses with `ts_ms: None`. A line that
-    /// does not parse is [`Error::Encoding`].
+    /// record. Every line carries `ts_ms`; a line lacking it, like any line
+    /// that does not parse, is [`Error::Encoding`].
     pub fn from_line(line: &str) -> Result<Record> {
         serde_json::from_str(line)
             .map_err(|e| Error::Encoding(format!("journal record does not parse: {e}")))
@@ -48,7 +47,7 @@ mod tests {
     /// A record as the collector writes it: stamped.
     fn stamped(event: Event) -> Record {
         Record {
-            ts_ms: Some(1_234),
+            ts_ms: 1_234,
             event,
         }
     }
@@ -84,45 +83,20 @@ mod tests {
     }
 
     #[test]
-    fn a_line_without_a_timestamp_parses_with_none() -> Result<()> {
-        // Every journal written before `ts_ms` existed. The journal is
-        // observational, so its old lines stay readable.
+    fn a_line_without_a_timestamp_is_rejected() {
+        // Every line the collector writes is stamped, so a line missing the
+        // stamp is a malformed line, not a shape to accommodate.
         let task = "ab".repeat(32);
         let line = format!(r#"{{"event":"queued","task":"{task}"}}"#);
-        assert_eq!(
-            Record::from_line(&line)?,
-            Record {
-                ts_ms: None,
-                event: Event::Queued { task },
-            }
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn an_unstamped_record_serializes_as_the_bare_event() -> Result<()> {
-        // With no timestamp the record's line is byte-identical to the
-        // event's own serialization: `ts_ms` is skipped, the event flattens.
-        let event = Event::Queued {
-            task: "ab".repeat(32),
-        };
-        let record = Record {
-            ts_ms: None,
-            event: event.clone(),
-        };
-        let event_json = serde_json::to_string(&event)
-            .map_err(|e| Error::Encoding(format!("event does not serialize: {e}")))?;
-        assert_eq!(record.to_line()?, event_json);
-        Ok(())
+        assert!(matches!(Record::from_line(&line), Err(Error::Encoding(_))));
     }
 
     #[test]
     fn a_run_started_line_without_a_commit_count_reads_as_none_committed() -> Result<()> {
-        // A journal written before the field existed. The journal is
-        // observational, so its old lines stay readable: the absent count
+        // The commit count carries a serde default, so a line omitting it
         // reads as no prior commits.
         let run = "cd".repeat(32);
-        let line = format!(r#"{{"event":"run_started","run":"{run}","tasks":3}}"#);
+        let line = format!(r#"{{"ts_ms":1234,"event":"run_started","run":"{run}","tasks":3}}"#);
         assert_eq!(
             Record::from_line(&line)?.event,
             Event::RunStarted {
@@ -136,10 +110,10 @@ mod tests {
 
     #[test]
     fn a_worker_bound_line_without_driver_or_host_reads_them_as_empty() -> Result<()> {
-        // A journal written before the driver and host fields existed. The
-        // absent fields read as empty, so an old journal's device attribution
-        // stays intact.
-        let line = r#"{"event":"worker_bound","worker":2,"device":"NVIDIA RTX PRO 2000"}"#;
+        // The driver and host carry serde defaults, so a line omitting them
+        // reads them as empty while keeping its device attribution.
+        let line =
+            r#"{"ts_ms":1234,"event":"worker_bound","worker":2,"device":"NVIDIA RTX PRO 2000"}"#;
         assert_eq!(
             Record::from_line(line)?.event,
             Event::WorkerBound {

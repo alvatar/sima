@@ -46,7 +46,7 @@ mod tests {
         // The observer accepts records without effect, and the flag never
         // requests a wind-down.
         (control.observer)(&Record {
-            ts_ms: Some(0),
+            ts_ms: 0,
             event: Event::Queued {
                 task: "00".repeat(32),
             },

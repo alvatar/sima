@@ -124,10 +124,7 @@ fn drain<S: DurableSink>(
         let ts_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_or(0, |since_epoch| since_epoch.as_millis() as u64);
-        let record = Record {
-            ts_ms: Some(ts_ms),
-            event,
-        };
+        let record = Record { ts_ms, event };
         sink.append_line(&record.to_line()?)?;
         for subscriber in subscribers {
             subscriber(&record);
@@ -243,7 +240,7 @@ mod tests {
         // The subscriber saw the stamped record.
         let records = seen.lock().expect("lock records").clone();
         assert_eq!(records.len(), 1);
-        assert!(records[0].ts_ms.is_some(), "{records:?}");
+        assert!(records[0].ts_ms > 0, "{records:?}");
         // The journal line carries the same stamp.
         let entries = trace.lock().expect("lock trace").clone();
         let line = entries[0].strip_prefix("append ").expect("an append entry");

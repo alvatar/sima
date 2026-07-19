@@ -117,9 +117,10 @@ mod tests {
         Ok((dir, store, run, loaded))
     }
 
-    /// Wraps an event as the unstamped record the tests journal.
+    /// Wraps an event as a record the tests journal. The stamp is irrelevant
+    /// here, so every record carries the same one.
     fn rec(event: sima_scheduler::Event) -> Record {
-        Record { ts_ms: None, event }
+        Record { ts_ms: 0, event }
     }
 
     /// A `RunStarted` record for `run`.
@@ -163,34 +164,6 @@ mod tests {
         assert_eq!(observer.poll()?, [committed("bb")]);
         // Nothing appended: the poll is empty.
         assert_eq!(observer.poll()?, Vec::<Record>::new());
-        Ok(())
-    }
-
-    #[test]
-    fn tailing_parses_old_and_new_format_lines_alike() -> Result<()> {
-        // The shape a resumed run's tail can hold: a line written before
-        // `ts_ms` existed followed by a stamped one.
-        let (_dir, store, run, loaded) = created_store()?;
-        let mut writer = store.journal_writer(&run)?;
-        writer.append(&format!(
-            r#"{{"event":"run_started","run":"{run}","tasks":2}}"#
-        ))?;
-        writer.append(&format!(
-            r#"{{"ts_ms":1700000000000,"event":"run_finalized","run":"{run}","committed":2}}"#
-        ))?;
-        let mut observer = RunObserver::new(&loaded)?;
-        let records = observer.poll()?;
-        assert_eq!(records.len(), 2);
-        assert_eq!(records[0].ts_ms, None);
-        assert!(matches!(
-            records[0].event,
-            sima_scheduler::Event::RunStarted { tasks: 2, .. }
-        ));
-        assert_eq!(records[1].ts_ms, Some(1_700_000_000_000));
-        assert!(matches!(
-            records[1].event,
-            sima_scheduler::Event::RunFinalized { committed: 2, .. }
-        ));
         Ok(())
     }
 

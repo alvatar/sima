@@ -434,9 +434,10 @@ mod tests {
         TuiState::new(RunStatus::new(run_id()), workers)
     }
 
-    /// Wraps an event as the unstamped record the tests feed the state.
+    /// Wraps an event as a record the tests feed the state. The stamp is
+    /// irrelevant here, so every record carries the same one.
     fn rec(event: Event) -> Record {
-        Record { ts_ms: None, event }
+        Record { ts_ms: 0, event }
     }
 
     fn started(tasks: usize) -> Record {

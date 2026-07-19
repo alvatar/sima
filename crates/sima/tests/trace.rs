@@ -94,7 +94,7 @@ fn every_journal_line_of_a_subprocess_run_is_a_stamped_record() {
     let records = journal_records(&config);
     assert!(!records.is_empty(), "the run journaled its lifecycle");
     for record in &records {
-        assert!(record.ts_ms.is_some(), "unstamped record: {record:?}");
+        assert!(record.ts_ms > 0, "unstamped record: {record:?}");
     }
 }
 

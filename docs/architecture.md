@@ -164,10 +164,10 @@ equality criterion.
   example `worker stderr`, `panic`, `transport`), the message, and optional
   `worker`/`host`/`task` context keys — optional because a diagnostic may
   precede any lease or follow the run's end.
-- **`Record`** — the journal line type: an optional `ts_ms` wall-clock
-  stamp plus the event, flattened, so a lifecycle line keeps the exact
-  shape it always had with `ts_ms` as one more top-level key. A line
-  written before the field existed parses with no stamp.
+- **`Record`** — the journal line type: a `ts_ms` wall-clock stamp plus
+  the event, flattened, so the line is flat — the event's own keys sit
+  beside `ts_ms` at the top level. The stamp is required: a line lacking
+  it is a parse error.
 - **`Emitter`** — a cloneable channel handle; `emit` is fire-and-forget,
   and a closed channel drops the event silently. Components that emit
   receive an emitter explicitly at construction — there is no process
@@ -345,10 +345,9 @@ the intact region is corruption. Journals legitimately differ between
 identical runs and are excluded from every equality criterion.
 
 Each line is a `sima-trace` `Record`: the collector's `ts_ms` wall-clock
-stamp plus one event — a lifecycle event or a `diagnostic` line. A line
-without `ts_ms` parses with no stamp, so every journal written before the
-field existed stays readable, and a resumed run's journal mixes both
-shapes. The store implements the collector's `DurableSink` seam on its
+stamp plus one event — a lifecycle event or a `diagnostic` line. The
+collector stamps every line it writes, so a line lacking `ts_ms` is
+corruption. The store implements the collector's `DurableSink` seam on its
 journal writer, which is how records reach this framing.
 
 ### Concurrency

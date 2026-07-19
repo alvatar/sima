@@ -231,9 +231,10 @@ mod tests {
         );
     }
 
-    /// Wraps an event as the unstamped record the tests feed the renderer.
+    /// Wraps an event as a record the tests feed the renderer. The stamp is
+    /// irrelevant here, so every record carries the same one.
     fn rec(event: Event) -> Record {
-        Record { ts_ms: None, event }
+        Record { ts_ms: 0, event }
     }
 
     #[test]

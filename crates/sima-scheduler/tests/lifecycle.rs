@@ -313,7 +313,7 @@ fn every_journal_line_carries_a_timestamp() -> Result<()> {
     ));
     for line in store.journal(&run_id(&cfg))? {
         let record = sima_trace::Record::from_line(&line)?;
-        assert!(record.ts_ms.is_some(), "unstamped line: {line}");
+        assert!(record.ts_ms > 0, "unstamped line: {line}");
     }
     Ok(())
 }
