@@ -424,7 +424,7 @@ difference.
       (rootless podman is unavailable there — nosuid mount, read-only
       cgroups), so the image and its `--enumerate` device checks await a
       host with a working container runtime.
-- [ ] M4.4 Distributed trace facade: a low-level structured-event interface
+- [x] M4.4 Distributed trace facade: a low-level structured-event interface
       usable from every crate at every layer, placed at or near `sima-core`
       so the strict downward layering holds and any layer can emit without an
       upward edge. It carries the typed lifecycle events M1.5 defines plus
@@ -432,7 +432,18 @@ difference.
       stays one sink; a live-aggregation collector is the second. This is the
       deferred half of the M1.5 logging split: the concept is separated at
       M1.5 (typed events vs. journal sink), and the cross-crate facade lands
-      here, where distribution is the real second consumer that justifies it
+      here, where distribution is the real second consumer that justifies it.
+      Landed: the `sima-trace` crate at L0.5 (directly above `sima-core`) — the
+      typed `Event` vocabulary (the lifecycle variants plus a `Diagnostic`),
+      a `Record` carrying a required `ts_ms` stamp, cloneable `Emitter`s, and
+      one `Collector` thread that stamps each event, appends the journal line
+      through the `DurableSink` the store implements, then hands the record to
+      the run's single observer. Causality rides the events as natural keys
+      (run, task, attempt, worker, host), not synthetic spans. Protocol v4
+      adds a `ToParent::Event` frame carrying a child-produced event; the first
+      producers are executor-panic diagnostics and captured worker stderr, each
+      correlated to its task. Diagnostics are excluded from run identity — a
+      run with diagnostics commits a manifest byte-identical to a silent one.
 
 Expected to be re-split when reached; remote transport hides surprises.
 
