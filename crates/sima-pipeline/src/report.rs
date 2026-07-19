@@ -28,8 +28,8 @@ pub struct ReportRow {
 /// The format's domain renders the observational stats bytes each `Committed`
 /// event carries; a task commits at most once, so each contributes one row.
 /// Stats bytes the domain does not recognize are [`Error::Validation`] from
-/// the renderer; the journal's own guards are
-/// [`journal::records`](crate::journal)'s.
+/// the renderer; a missing store, a run never started there, and an
+/// unparseable line carry the errors every journal query reports.
 pub fn report(config: &LoadedConfig) -> Result<Vec<ReportRow>> {
     let domain = domain_for(&config.run.format)?;
     let records = journal::records(config)?;

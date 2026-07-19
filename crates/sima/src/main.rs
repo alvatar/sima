@@ -1,8 +1,18 @@
-//! `sima` command-line binary: `run` drives a config to its outcome with
-//! live progress and graceful Ctrl-C; `status` reports a run's journal
-//! state. All orchestration lives in `sima-pipeline` — this binary parses
-//! arguments, renders output, registers the interrupt flag, and maps
-//! outcomes to exit codes:
+//! `sima` command-line binary. `run` drives a config to its outcome with
+//! live progress and graceful Ctrl-C; the query commands read the run's
+//! journal along two axes — what the command reports, and how much of the
+//! run it covers:
+//!
+//! - `status` reports execution: the run's state and counters, one task's
+//!   attempt timeline under `--task <key>`, or the tasks that did not commit
+//!   under `--failed`.
+//! - `report` reports results: the committed stats, grouped by default, one
+//!   line per task under `--all`, or one task's under `--task <key>`.
+//!
+//! A `<key>` is any prefix of a task key that names one task. All
+//! orchestration lives in `sima-pipeline` — this binary parses arguments,
+//! renders output, registers the interrupt flag, and maps outcomes to exit
+//! codes:
 //!
 //! - 0 — the run finalized (or `status` answered);
 //! - 2 — a definitive candidate failure;
@@ -47,13 +57,17 @@ fn main() -> ExitCode {
         ["tui", config] => tui::tui_command(&resolve_config(config)),
         _ => {
             eprint!(
-                "usage: sima run <config>     drive the configured run\n\
-                 \x20      sima status <config>  report the run's state\n\
-                 \x20      sima report <config>  count committed tasks per distinct stats value\n\
-                 \x20      sima report --full <config>  print each committed task's stats\n\
-                 \x20      sima rm <config>      delete the run and what only it references\n\
-                 \x20      sima tui <config>     drive the run in a full-screen terminal UI\n\
-                 \x20      <config> is a sima.toml path; the .toml extension may be omitted\n"
+                "usage: sima run <config>                  drive the configured run\n\
+                 \x20      sima status <config>               report the run's state\n\
+                 \x20      sima status <config> --task <key>  print one task's attempt timeline\n\
+                 \x20      sima status <config> --failed      digest the tasks that did not commit\n\
+                 \x20      sima report <config>               count committed tasks per distinct stats value\n\
+                 \x20      sima report <config> --all         print each committed task's stats\n\
+                 \x20      sima report <config> --task <key>  print one committed task's stats\n\
+                 \x20      sima rm <config>                   delete the run and what only it references\n\
+                 \x20      sima tui <config>                  drive the run in a full-screen terminal UI\n\
+                 \x20      <config> is a sima.toml path; the .toml extension may be omitted\n\
+                 \x20      <key> is any prefix of a task key that names one task\n"
             );
             ExitCode::from(EXIT_ERROR)
         }

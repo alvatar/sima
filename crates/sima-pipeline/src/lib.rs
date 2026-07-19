@@ -8,6 +8,13 @@
 //! id dispatches to a generator with its own config translation. The pipeline
 //! routes configuration sections to the domain and generator code that owns
 //! them; it never interprets their content.
+//!
+//! Beside the driven run sit the read-only queries over what a run left
+//! behind. Each folds the run's journal and touches no store object:
+//! [`status`] and [`task_history`] project execution — the run's state, and
+//! one task's attempts — [`failures`] names the tasks that did not commit,
+//! and [`report`] and [`report_task`] render the results committed tasks
+//! produced. The queries return data; rendering it is the caller's.
 
 mod config;
 mod devices;

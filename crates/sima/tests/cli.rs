@@ -538,16 +538,26 @@ fn an_unknown_subcommand_exits_1_with_usage_on_stderr() {
 }
 
 #[test]
-fn the_usage_text_names_the_tui_subcommand() {
+fn the_usage_text_names_every_command_form() {
     let output = sima(&[]);
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let stderr = String::from_utf8(output.stderr).expect("stderr is UTF-8");
-    assert!(stderr.contains("sima tui"), "usage names tui: {stderr}");
+    for form in [
+        "sima run",
+        "sima status",
+        "--failed",
+        "--task",
+        "sima report",
+        "--all",
+        "sima rm",
+        "sima tui",
+    ] {
+        assert!(stderr.contains(form), "usage names {form}: {stderr}");
+    }
     assert!(
-        stderr.contains("sima report"),
-        "usage names report: {stderr}"
+        !stderr.contains("--full"),
+        "the renamed flag is gone: {stderr}"
     );
-    assert!(stderr.contains("sima rm"), "usage names rm: {stderr}");
 }
 
 #[test]

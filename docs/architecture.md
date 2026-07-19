@@ -35,8 +35,8 @@ Strictly downward dependencies, enforced by workspace crate edges.
 | L4    | `sima-transport` | worker transport: wire protocol, executor host loop, subprocess and loopback links |
 | L5    | `sima-domains`   | per-format executors, generators, codecs, environments, id dispatch, and config translation; the reference stub domain |
 | L6    | `sima-scheduler` | task sources, worker pool, leases, retry, device placement, run driver |
-| L7    | `sima-pipeline`  | config loading, orchestration, run status                            |
-| L8    | `sima`           | CLI: run, status, tui                                                 |
+| L7    | `sima-pipeline`  | config loading, orchestration, run and per-task queries               |
+| L8    | `sima`           | CLI: run, status, report, rm, tui                                     |
 
 Beside the spine, `sima-worker` is the worker binary: it depends on
 `sima-transport` (the executor host loop) and `sima-domains` (the executor
@@ -1092,9 +1092,27 @@ frontend over the observer seam:
   interrupt flag for a graceful wind-down; a second SIGINT falls through
   to default death, which is exactly the crash the recovery guarantees
   cover.
-- **`sima status <config.toml>`** — prints the status block. The config
-  file is the one argument: its execution section names the store and its
-  identity section derives the run id.
+- **`sima status <config.toml>`** — reports execution. The config file is
+  the one argument: its execution section names the store and its identity
+  section derives the run id. `--task <key>` prints one task's attempt
+  timeline instead — every lease it took, the worker, device and host that
+  ran it, how each attempt ended, and the span the collector observed over
+  it. `--failed` digests the tasks that did not commit, naming the terminal
+  outcome and reason of each.
+- **`sima report <config.toml>`** — reports results: the stats each
+  committed task's domain renders, grouped by distinct value with a count.
+  `--all` prints one line per committed task instead, and `--task <key>`
+  one task's line. A task that never committed has no report; its
+  execution history is what `status --task` answers.
+
+`status` and `report` split along what they report — how the run is
+running against what it produced — and each covers the whole run by
+default or one task under `--task <key>`. A `<key>` is any prefix of a task
+key that names exactly one of the tasks the journal carries a lifecycle
+event for; a prefix matching none, or more than one, is an error. Every
+query reads the journal alone and never perturbs a run, so it answers over
+a live run, a finished one, and a failed one alike, and a query exits 0
+whenever it answered — independently of the run's own outcome.
 - **`sima tui <config.toml>`** — drives the same run inside a full-screen
   terminal UI: an idle screen lists the configured workers, a keypress
   starts the run, and the tui applies each observer event as it arrives, so
