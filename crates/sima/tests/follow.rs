@@ -2,7 +2,7 @@
 //!
 //! **Tier A — the whole mechanism, no ssh.** The near side spawns an `ssh`
 //! found on `PATH`; these tests put one there that drops the ssh arguments and
-//! runs the built binary on this machine. Everything the milestone adds is
+//! runs the built binary on this machine. Every part of remote observation is
 //! exercised: the invocation, the far side loading the config and serving its
 //! journal, the frame stream, the near side folding records and rendering
 //! them. What is absent is the network hop, which the stream cannot
