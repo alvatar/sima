@@ -8,6 +8,8 @@
 //!   under `--failed`.
 //! - `report` reports results: the committed stats, grouped by default, one
 //!   line per task under `--all`, or one task's under `--task <key>`.
+//! - `timeline` reports efficiency: the run's throughput, retry rates, and
+//!   per-worker utilization, over a chart of commits and worker occupancy.
 //!
 //! A `<key>` is any prefix of a task key that names one task. All
 //! orchestration lives in `sima-pipeline` — this binary parses arguments,
@@ -80,10 +82,12 @@ fn main() -> ExitCode {
                  \x20      sima rm <config>                   delete the run and what only it references\n\
                  \x20      sima tui <config>                  drive the run in a full-screen terminal UI\n\
                  \x20      sima follow <config>               stream the run's events until it ends\n\
+                 \x20      sima timeline <config>             report the run's metrics and its timeline\n\
                  \x20      <config> is a sima.toml path; the .toml extension may be omitted\n\
                  \x20      <key> is any prefix of a task key that names one task\n\
                  \x20      --on <host> observes a run on an ssh destination: status, report,\n\
-                 \x20      tui, and follow accept it, and <config> is then a path on that host\n"
+                 \x20      timeline, tui, and follow accept it, and <config> is then a path\n\
+                 \x20      on that host\n"
             );
             ExitCode::from(EXIT_ERROR)
         }

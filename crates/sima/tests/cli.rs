@@ -176,11 +176,34 @@ fn timeline_over_a_local_run_names_no_host_and_no_device() {
     assert_eq!(sima(&["run", path]).status.code(), Some(0));
 
     // Local workers bind as the pool launches and the stub domain names no
-    // device, so both columns state the placeholder and no worker respawned.
+    // device, so both columns state the placeholder, the spawn latency is a
+    // fraction of a second, and no worker respawned.
     let text = stdout(&sima(&["timeline", path]));
-    let squeezed = text.split_whitespace().collect::<Vec<&str>>().join(" ");
-    assert!(squeezed.contains("w0 — — 0.00s 0"), "{text}");
-    assert!(squeezed.contains("w1 — — 0.00s 0"), "{text}");
+    for worker in ["w0", "w1"] {
+        let row = worker_row(&text, worker);
+        assert_eq!(row[1], "—", "the stub domain names no device: {text}");
+        assert_eq!(row[2], "—", "a local worker names no host: {text}");
+        let spawn: f64 = row[3]
+            .trim_end_matches('s')
+            .parse()
+            .unwrap_or_else(|_| panic!("{worker} states a spawn latency in seconds: {text}"));
+        assert!(spawn < 1.0, "{worker} bound as the pool launched: {text}");
+        assert_eq!(row[4], "0", "{worker} did not respawn: {text}");
+    }
+}
+
+/// The cells of `worker`'s row in a rendered timeline's per-worker table. The
+/// table's rows are the lines carrying one cell per column, which tells them
+/// from the worker's occupancy bar further down.
+fn worker_row(text: &str, worker: &str) -> Vec<String> {
+    text.lines()
+        .map(|line| {
+            line.split_whitespace()
+                .map(str::to_string)
+                .collect::<Vec<String>>()
+        })
+        .find(|cells| cells.len() == 8 && cells[0] == worker)
+        .unwrap_or_else(|| panic!("a table row for {worker}: {text}"))
 }
 
 #[test]
@@ -638,9 +661,20 @@ fn the_usage_text_names_every_command_form() {
         "sima rm",
         "sima tui",
         "sima follow",
+        "sima timeline",
         "--on",
     ] {
         assert!(stderr.contains(form), "usage names {form}: {stderr}");
+    }
+    // Every read view takes a host, and the note that says so must name them
+    // all: a verb missing from it reads as local-only.
+    let on = stderr
+        .lines()
+        .skip_while(|line| !line.contains("--on <host>"))
+        .collect::<Vec<&str>>()
+        .join(" ");
+    for view in ["status", "report", "timeline", "tui", "follow"] {
+        assert!(on.contains(view), "the host note names {view}: {stderr}");
     }
     // The far half of the follow transport is internal, not a verb a user
     // invokes, so the usage text does not offer it.
