@@ -1187,12 +1187,15 @@ hardware is, so `tui --on <host>` never offers the take-over affordance, and
 
 Authentication is the user's SSH configuration. Keys, agents, `~/.ssh/config`
 aliases, and jump hosts are configured exactly as for remote worker pools;
-`BatchMode=yes` turns an unreachable or unauthenticated host into a prompt,
-named failure rather than a password prompt or a hang.
+`BatchMode=yes` scopes interactive authentication out: a host that is
+unreachable, or that would ask for a password, fails promptly with a named
+cause. A host that authenticates and then stalls before its first frame is a
+live connection, and the near side waits on it.
 
 Exit codes (shared across `run`, `tui`, and `follow`):
 
-- **0** — the run finalized (or `status` answered);
+- **0** — the run finalized, `status` answered, or `follow` reached the end of
+  a run nobody is driving, which is resumable rather than failed;
 - **2** — a definitive candidate failure;
 - **130** — interrupted, store resumable;
 - **1** — everything else: infrastructure fault, config error, usage error.

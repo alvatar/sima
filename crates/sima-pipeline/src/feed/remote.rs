@@ -6,12 +6,13 @@
 //! here beyond the journal lines the far side forwards: the run id, the store
 //! path, and the lock all belong to that host, and this side renders.
 //!
-//! Every failure mode is prompt and named. `BatchMode=yes` turns an
-//! unreachable or unauthenticated host into a non-zero exit rather than a
-//! password prompt or a hang; a far side that speaks another protocol version
-//! is refused rather than decoded; and whatever the child wrote to stderr is
-//! folded into the error, so a missing `sima` on the far side reads as what it
-//! is.
+//! Failures are named where they are detectable. `BatchMode=yes` scopes
+//! interactive authentication out, so an unreachable host or one that would
+//! ask for a password exits instead of prompting; a far side that speaks
+//! another protocol version is refused rather than decoded; and whatever the
+//! child wrote to stderr is folded into the error, so a missing `sima` on the
+//! far side reads as what it is. A far side that connects and then stalls
+//! before its first frame is a live connection, and the open waits on it.
 
 use std::io::Read;
 use std::process::{Child, ChildStderr, Command, Stdio};
