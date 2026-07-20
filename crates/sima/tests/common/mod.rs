@@ -302,6 +302,25 @@ pub fn poll_until_started(config_path: &Path) -> bool {
     })
 }
 
+/// Spawns `sima run` over `config_path`, waits until it has journaled its
+/// start, and ends it with SIGKILL. What is left behind is the state a
+/// crashed orchestrator leaves: a journal that stops mid-run with no terminal
+/// event, and a run lock the kernel released when its holder died.
+pub fn abandon_run(config_path: &Path) {
+    let mut child = sima_command()
+        .args(["run", config_path.to_str().expect("utf-8 path")])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn sima run");
+    assert!(
+        poll_until_started(config_path),
+        "the run takes its lock and journals its start"
+    );
+    child.kill().expect("kill the orchestrator");
+    child.wait().expect("reap the orchestrator");
+}
+
 /// Whether `pid` is a live `sima-worker` process. A recycled pid under
 /// another command name reads as dead, so the check never latches onto an
 /// unrelated process.

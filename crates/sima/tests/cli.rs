@@ -790,6 +790,23 @@ fn follow_prints_a_finished_run_s_events_and_exits_on_its_outcome() {
 }
 
 #[test]
+fn follow_over_an_abandoned_run_prints_its_history_and_exits_0() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config = write_config(dir.path(), r#""sleep:4000", "sleep:4000""#);
+    let path = config.to_str().expect("utf-8 path");
+    common::abandon_run(&config);
+
+    // The journal stops mid-run and nothing holds the lock: such a run is
+    // resumable, so the follow renders what was recorded and leaves
+    // successfully rather than reporting a failure that did not happen.
+    let output = sima(&["follow", path]);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let text = stdout(&output);
+    assert!(text.contains("started: 2 tasks"), "{text}");
+    assert!(!text.contains("finalized"), "{text}");
+}
+
+#[test]
 fn follow_over_a_failed_run_exits_2() {
     let dir = tempfile::tempdir().expect("temp dir");
     let config = write_config(dir.path(), r#""succeed", "reject""#);

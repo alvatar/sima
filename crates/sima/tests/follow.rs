@@ -250,6 +250,24 @@ fn a_far_side_fault_reaches_the_near_side_as_its_own_error() {
     );
 }
 
+#[test]
+fn a_remote_follow_over_an_abandoned_run_exits_0() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let bin = ssh_shim(dir.path());
+    let config = write_config(dir.path(), r#""sleep:4000", "sleep:4000""#);
+    let path = config.to_str().expect("utf-8 path");
+    common::abandon_run(&config);
+
+    // The far side reports a free lock over a journal that stopped mid-run,
+    // and the near side ends on it the way the local follow does: a resumable
+    // run, rendered and left successfully.
+    let output = sima_shimmed(&bin, &["follow", path, "--on", "gpubox"]);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let text = stdout(&output);
+    assert!(text.contains("started: 2 tasks"), "{text}");
+    assert!(!text.contains("finalized"), "{text}");
+}
+
 /// Writes an `ssh` into its own directory under `dir` that greets the near
 /// side at `protocol` and then stays alive without serving anything. It is the
 /// far side a refusal has to cope with: still running, still holding the pipe
