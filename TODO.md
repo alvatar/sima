@@ -458,8 +458,12 @@ inspect, follow, timeline) from another terminal; observation is read-only
 over journal and store and never perturbs the run — proven by manifest
 equality between an observed and an unobserved run.
 
-- [ ] M5.1 `sima status` / `sima inspect <task>`: run and task state, attempt
-      history, durations, failure summaries — local and remote runs alike
+- [x] M5.1 Per-task inspection folded into `sima status` along a content/scope
+      axis: `status --task <key>` (attempt timeline), `status --failed`
+      (failure digest), `report --task <key>`, `report --all` — run and task
+      state, attempt history, durations, failure summaries over the journal.
+      Worker host attribution is journaled; reading a remote run's journal
+      lands in M5.2
 - [ ] M5.2 Live follow: workers emit events over their transport, the
       orchestrator journals them; follow tails the journal into one
       aggregated view (works from another terminal against a running
