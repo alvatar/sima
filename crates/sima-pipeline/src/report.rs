@@ -65,11 +65,9 @@ pub fn report_task_records(
 ) -> Result<ReportRow> {
     let domain = domain_for(format)?;
     let task = resolve_task_key(records, prefix)?;
-    let stats_hex = committed_stats(records).remove(&task).ok_or_else(|| {
-        Error::Validation(format!(
-            "task {task} has no committed result; see `sima status --task {prefix}`"
-        ))
-    })?;
+    let stats_hex = committed_stats(records)
+        .remove(&task)
+        .ok_or_else(|| Error::Validation(format!("task {task} has no committed result")))?;
     row(task, &stats_hex, &domain)
 }
 
@@ -216,10 +214,13 @@ mod tests {
             matches!(reported, Err(Error::Validation(_))),
             "{reported:?}"
         );
-        assert!(
-            format!("{}", reported.expect_err("no committed result"))
-                .contains("has no committed result")
-        );
+        // The fold runs over records from any source, local or streamed from
+        // another host, so its message states the fact and suggests no command
+        // — a command naming a path resolves against the wrong machine half
+        // the time it is read.
+        let message = format!("{}", reported.expect_err("no committed result"));
+        assert!(message.contains("has no committed result"), "{message}");
+        assert!(!message.contains("sima "), "{message}");
         Ok(())
     }
 
