@@ -230,6 +230,12 @@ fn a_remote_follow_over_an_abandoned_run_exits_0() {
 /// side at `protocol` and then stays alive without serving anything. It is the
 /// far side a refusal has to cope with: still running, still holding the pipe
 /// open, at the moment the near side decides it cannot be spoken to.
+///
+/// The stall is `exec`ed so it takes over the shell's pid rather than running
+/// beneath it. The near side kills the pid it spawned and then reads the
+/// child's stderr to end; a stall in a separate process would survive that kill
+/// still holding the stderr pipe, and the read would block on a process nothing
+/// tracks.
 fn stalling_ssh_shim(dir: &Path, protocol: u32) -> PathBuf {
     let bin = dir.join("stalling");
     std::fs::create_dir_all(&bin).expect("the shim directory");
@@ -251,7 +257,7 @@ fn stalling_ssh_shim(dir: &Path, protocol: u32) -> PathBuf {
     let path = bin.join("ssh");
     std::fs::write(
         &path,
-        format!("#!/bin/sh\ncat {}\nsleep 600\n", greeting.display()),
+        format!("#!/bin/sh\ncat {}\nexec sleep 600\n", greeting.display()),
     )
     .expect("write the ssh shim");
     #[cfg(unix)]
