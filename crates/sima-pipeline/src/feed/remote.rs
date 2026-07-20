@@ -47,7 +47,7 @@ impl RemoteFeed {
     }
 
     /// The feed over an open stream, once its `Hello` is read and accepted.
-    /// The seam the protocol tests drive without a subprocess.
+    /// The boundary the protocol tests drive without a subprocess.
     fn over(mut stream: Stream) -> Result<RemoteFeed> {
         let (info, holder) = hello(&mut stream)?;
         // Waiting here is what makes a later empty poll mean the stream is
@@ -113,7 +113,7 @@ pub fn remote_snapshot(host: &str, config: &str) -> Result<(FeedInfo, Vec<Record
     snapshot_over(Stream::spawn(host, config, true)?)
 }
 
-/// The snapshot over an open stream, read to its `Complete`. The seam the
+/// The snapshot over an open stream, read to its `Complete`. The boundary the
 /// protocol tests drive without a subprocess.
 fn snapshot_over(mut stream: Stream) -> Result<(FeedInfo, Vec<Record>)> {
     let (info, _) = hello(&mut stream)?;
