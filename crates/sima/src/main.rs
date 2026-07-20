@@ -32,9 +32,9 @@ use std::sync::atomic::AtomicBool;
 use sima_core::{Error, Result};
 use sima_pipeline::{
     FeedInfo, LoadedConfig, LocalFeed, Record, RemoteFeed, RemovalReport, ReportRow, RunControl,
-    RunFeed, RunId, RunOutcome, RunStatus, TaskHistory, failures_records, follow_serve, load,
-    local_snapshot, orchestrate, remote_snapshot, report_records, report_task_records, status,
-    status_records, task_history_records,
+    RunFeed, RunId, RunOutcome, RunStatus, RunTimeline, TaskHistory, failures_records,
+    follow_serve, load, local_snapshot, orchestrate, remote_snapshot, report_records,
+    report_task_records, status, status_records, task_history_records, timeline_records,
 };
 
 /// Exit code for a definitive candidate failure.
@@ -65,6 +65,7 @@ fn main() -> ExitCode {
         ["report", config] => report_command(&Target::new(config, host), Report::Summary),
         ["report", config, "--all"] => report_command(&Target::new(config, host), Report::All),
         ["report", config, "--task", key] => report_task_command(&Target::new(config, host), key),
+        ["timeline", config] => timeline_command(&Target::new(config, host)),
         ["tui", config] => tui::tui_command(&Target::new(config, host)),
         ["follow", config] => follow::follow_command(&Target::new(config, host)),
         _ => {
@@ -232,6 +233,25 @@ fn status_command(target: &Target) -> ExitCode {
 fn read_status(target: &Target) -> Result<RunStatus> {
     let (info, records) = snapshot(target)?;
     Ok(status_records(info.run, &records))
+}
+
+/// `sima timeline <config.toml>`: the run's execution metrics and the
+/// temporal shape of the session behind them. The query answers whatever the
+/// run's own outcome was, so a report over a failed run still exits 0.
+fn timeline_command(target: &Target) -> ExitCode {
+    match read_timeline(target) {
+        Ok(timeline) => {
+            println!("{}", render::timeline_block(&timeline));
+            ExitCode::SUCCESS
+        }
+        Err(e) => report(e),
+    }
+}
+
+/// Computes the target run's metrics from the records it journaled.
+fn read_timeline(target: &Target) -> Result<RunTimeline> {
+    let (info, records) = snapshot(target)?;
+    Ok(timeline_records(info.run, &records))
 }
 
 /// `sima status <config.toml> --task <key>`: one task's attempt timeline,

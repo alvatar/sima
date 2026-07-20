@@ -122,6 +122,89 @@ fn status_before_any_run_exits_1_and_after_reports_the_counts() {
     );
 }
 
+#[test]
+fn timeline_reports_the_throughput_utilization_and_temporal_shape_of_a_run() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    // Tasks that occupy their worker for a measurable span, so the utilization
+    // figures and the occupancy bars have something to draw.
+    let config = write_config(
+        dir.path(),
+        r#""sleep:200", "sleep:200", "sleep:200", "sleep:200""#,
+    );
+    let path = config.to_str().expect("utf-8 path");
+
+    let before = sima(&["timeline", path]);
+    assert_eq!(before.status.code(), Some(1), "{before:?}");
+
+    assert_eq!(sima(&["run", path]).status.code(), Some(0));
+    let output = sima(&["timeline", path]);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let text = stdout(&output);
+    for field in [
+        "run",
+        "wall-clock",
+        "committed",
+        "throughput",
+        "task/s",
+        "retries / tasks",
+        "tasks retried / tasks",
+        "failed attempts / attempts",
+        "each column spans",
+        "commits",
+    ] {
+        assert!(text.contains(field), "the report states {field}: {text}");
+    }
+    // The per-worker table, and an occupancy bar for every worker in it.
+    let squeezed = text.split_whitespace().collect::<Vec<&str>>().join(" ");
+    assert!(
+        squeezed.contains("worker device host spawn respawns util commits attempts"),
+        "{text}"
+    );
+    for worker in ["w0", "w1"] {
+        assert!(
+            text.lines().filter(|line| line.contains(worker)).count() >= 2,
+            "{worker} has a table row and a bar: {text}"
+        );
+    }
+}
+
+#[test]
+fn timeline_over_a_local_run_names_no_host_and_no_device() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config = write_config(dir.path(), r#""succeed", "succeed""#);
+    let path = config.to_str().expect("utf-8 path");
+    assert_eq!(sima(&["run", path]).status.code(), Some(0));
+
+    // Local workers bind as the pool launches and the stub domain names no
+    // device, so both columns state the placeholder and no worker respawned.
+    let text = stdout(&sima(&["timeline", path]));
+    let squeezed = text.split_whitespace().collect::<Vec<&str>>().join(" ");
+    assert!(squeezed.contains("w0 — — 0.00s 0"), "{text}");
+    assert!(squeezed.contains("w1 — — 0.00s 0"), "{text}");
+}
+
+#[test]
+fn timeline_over_a_failed_run_answers_and_exits_0() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config = write_config(dir.path(), r#""succeed", "reject""#);
+    let path = config.to_str().expect("utf-8 path");
+    assert_eq!(sima(&["run", path]).status.code(), Some(2));
+
+    // The query reports what the run did, whatever the run's own outcome was.
+    let output = sima(&["timeline", path]);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let text = stdout(&output);
+    assert!(text.contains("throughput"), "{text}");
+    // The rejection is the attempt the run wasted. How many attempts it took
+    // in total is a race with the definitive failure that ends the run, so the
+    // assertion names the numerator alone.
+    let squeezed = text.split_whitespace().collect::<Vec<&str>>().join(" ");
+    assert!(
+        squeezed.contains("failed attempts / attempts 1 /"),
+        "{text}"
+    );
+}
+
 /// The key of the run's task that ended on `outcome`, from its journal.
 fn task_ending_in(config: &Path, outcome: fn(&Event) -> Option<&String>) -> String {
     common::journal_events(config)
