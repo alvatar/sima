@@ -11,6 +11,7 @@ use crate::config::LoadedConfig;
 use crate::journal;
 use sima_core::{Error, Result, from_hex};
 use sima_domains::{Domain, domain_for};
+use sima_model::FormatId;
 use sima_scheduler::{Event, Record};
 
 /// One task's lifecycle, folded from the run journal.
@@ -334,10 +335,20 @@ pub(crate) fn resolve_task_key(records: &[Record], prefix: &str) -> Result<Strin
 /// prefix of its key. The committed outcome carries the stats its domain
 /// renders, the same rendering [`report`](crate::report) prints.
 pub fn task_history(config: &LoadedConfig, prefix: &str) -> Result<TaskHistory> {
-    let records = journal::records(config)?;
-    let task = resolve_task_key(&records, prefix)?;
-    let domain = domain_for(&config.run.format)?;
-    ledger(&records, &domain)?
+    task_history_records(&config.run.format, &journal::records(config)?, prefix)
+}
+
+/// Projects one task's lifecycle from `records` — a run's lifecycle events in
+/// append order — rendering its committed stats through `format`'s domain.
+/// The fold half of [`task_history`], over records from any source.
+pub fn task_history_records(
+    format: &FormatId,
+    records: &[Record],
+    prefix: &str,
+) -> Result<TaskHistory> {
+    let task = resolve_task_key(records, prefix)?;
+    let domain = domain_for(format)?;
+    ledger(records, &domain)?
         .remove(&task)
         .ok_or_else(|| Error::Corruption(format!("task {task} resolved to no history")))
 }
@@ -345,9 +356,14 @@ pub fn task_history(config: &LoadedConfig, prefix: &str) -> Result<TaskHistory> 
 /// Every task the run ended on a definitive failure, ordered by key: the
 /// tasks a finished run did not commit, and why.
 pub fn failures(config: &LoadedConfig) -> Result<Vec<TaskHistory>> {
-    let records = journal::records(config)?;
-    let domain = domain_for(&config.run.format)?;
-    Ok(ledger(&records, &domain)?
+    failures_records(&config.run.format, &journal::records(config)?)
+}
+
+/// The histories of the tasks `records` shows the run did not commit, ordered
+/// by key. The fold half of [`failures`], over records from any source.
+pub fn failures_records(format: &FormatId, records: &[Record]) -> Result<Vec<TaskHistory>> {
+    let domain = domain_for(format)?;
+    Ok(ledger(records, &domain)?
         .into_values()
         .filter(TaskHistory::failed)
         .collect())
@@ -356,7 +372,6 @@ pub fn failures(config: &LoadedConfig) -> Result<Vec<TaskHistory>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sima_model::FormatId;
     use sima_store::Store;
 
     use crate::fixtures::{journal_with, loaded};
@@ -803,6 +818,26 @@ mod tests {
             Err(Error::Validation(_))
         ));
         assert!(matches!(failures(&config), Err(Error::Validation(_))));
+        Ok(())
+    }
+
+    #[test]
+    fn the_record_folds_equal_the_histories_read_from_the_journal() -> Result<()> {
+        let format = FormatId::new("stub.v1")?;
+        let records = vec![
+            queued("abcd", 1),
+            leased("abcd", 0, 0, 2),
+            committed("abcd", 3),
+            queued("bcde", 1),
+            leased("bcde", 1, 0, 2),
+            rejected("bcde", 0, 3),
+        ];
+        let (_dir, config) = journal_with(&records)?;
+        assert_eq!(
+            task_history_records(&format, &records, "ab")?,
+            task_history(&config, "ab")?
+        );
+        assert_eq!(failures_records(&format, &records)?, failures(&config)?);
         Ok(())
     }
 }
