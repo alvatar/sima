@@ -50,6 +50,12 @@ pub enum Error {
     /// frame violated the wire protocol (torn or oversize length prefix).
     /// The payload names the operation and the underlying cause.
     Transport(String),
+    /// A failure another machine reported, already rendered there and carried
+    /// verbatim. The classification belongs to the machine that failed, which
+    /// is the one holding the store and the process; re-classifying it here
+    /// would report a local judgement of a remote fact. It renders as the
+    /// payload alone, so a fault reads exactly as it reads on its own host.
+    Reported(String),
 }
 
 impl fmt::Display for Error {
@@ -62,6 +68,7 @@ impl fmt::Display for Error {
             Error::MissingObject(hash) => write!(f, "missing object: {hash}"),
             Error::Gpu(msg) => write!(f, "gpu error: {msg}"),
             Error::Transport(msg) => write!(f, "worker transport error: {msg}"),
+            Error::Reported(msg) => write!(f, "{msg}"),
         }
     }
 }
@@ -107,6 +114,14 @@ mod tests {
             source: std::io::Error::other("disk gone"),
         };
         assert_eq!(e.to_string(), "io error: /store/objects: disk gone");
+    }
+
+    #[test]
+    fn a_reported_failure_renders_as_the_far_side_rendered_it() {
+        // The far side already named the failure class; rendering it again
+        // here would prefix one classification with another.
+        let e = Error::Reported("validation error: run was never started".to_string());
+        assert_eq!(e.to_string(), "validation error: run was never started");
     }
 
     #[test]

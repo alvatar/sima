@@ -70,7 +70,7 @@ impl RunFeed for RemoteFeed {
                 }
                 Pending::Frame(FollowFrame::Holder(holder)) => self.holder = holder,
                 Pending::Frame(FollowFrame::Fault(message)) => {
-                    return Err(Error::Validation(message));
+                    return Err(Error::Reported(message));
                 }
                 Pending::Frame(frame) => {
                     return Err(self
@@ -109,7 +109,7 @@ fn snapshot_over(mut stream: Stream) -> Result<(FeedInfo, Vec<Record>)> {
             // A holder update is meaningless to a snapshot, which reports what
             // the run produced rather than whether it is running.
             Some(FollowFrame::Holder(_)) => {}
-            Some(FollowFrame::Fault(message)) => return Err(Error::Validation(message)),
+            Some(FollowFrame::Fault(message)) => return Err(Error::Reported(message)),
             Some(frame) => {
                 return Err(stream.failure(&format!("unexpected {frame:?} in a snapshot stream")));
             }
@@ -144,7 +144,7 @@ fn hello(stream: &mut Stream) -> Result<(FeedInfo, Option<String>)> {
             "remote sima speaks follow protocol v{protocol}; this build expects \
              v{FOLLOW_PROTOCOL_VERSION}; run matching builds on both machines"
         ))),
-        Some(FollowFrame::Fault(message)) => Err(Error::Validation(message)),
+        Some(FollowFrame::Fault(message)) => Err(Error::Reported(message)),
         Some(frame) => Err(stream.failure(&format!(
             "the remote follow stream opened with {frame:?} instead of a handshake"
         ))),
