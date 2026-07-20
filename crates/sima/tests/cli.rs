@@ -856,12 +856,7 @@ fn follow_streams_a_live_run_to_its_end() {
     // Wait for the run to journal its start, so the follow attaches to a run
     // in flight rather than one that does not exist yet.
     assert!(
-        common::poll_until(Duration::from_secs(30), || {
-            RunObserver::new(&load(&config).expect("load config"))
-                .ok()
-                .and_then(|observer| observer.holder().ok().flatten())
-                .is_some()
-        }),
+        common::poll_until_started(&config),
         "the run takes its lock and journals its start"
     );
 

@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use sima_domains::{domain_for, generator_for};
 use sima_model::TaskIdentity;
-use sima_pipeline::{Event, Record, load};
+use sima_pipeline::{Event, Record, RunObserver, load};
 use sima_store::{Manifest, Store};
 
 /// Writes a `sima.toml` named `name` under `dir`: the given behaviors
@@ -283,6 +283,23 @@ pub fn poll_until(deadline: Duration, probe: impl Fn() -> bool) -> bool {
         }
         std::thread::sleep(Duration::from_millis(20));
     }
+}
+
+/// Waits until the run `config_path` describes has journaled its start,
+/// returning whether it did within the deadline. A live view opens against
+/// the journal, so it needs the journal to have content — and a run takes its
+/// lock before its first line is durable, which leaves a window in which the
+/// lock names a holder and a reader still sees a run never started. Waiting on
+/// the journal closes that window, and implies the lock, since the run locks
+/// before it journals.
+pub fn poll_until_started(config_path: &Path) -> bool {
+    poll_until(Duration::from_secs(30), || {
+        load(config_path)
+            .ok()
+            .and_then(|config| RunObserver::new(&config).ok())
+            .and_then(|mut observer| observer.poll().ok())
+            .is_some_and(|records| !records.is_empty())
+    })
 }
 
 /// Whether `pid` is a live `sima-worker` process. A recycled pid under

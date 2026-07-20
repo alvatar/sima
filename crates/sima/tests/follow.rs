@@ -33,7 +33,6 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use common::{manifest_of, poll_until, sima_command, worker_binary};
-use sima_pipeline::{RunObserver, load};
 
 /// The ssh destination Tier B runs against, or `None` to skip it.
 fn follow_host() -> Option<String> {
@@ -95,8 +94,8 @@ fn sima_shimmed(bin: &Path, args: &[&str]) -> Output {
         .expect("spawn sima")
 }
 
-/// Spawns `sima run` over `config` and waits until it holds the run's lock,
-/// so a follow attaches to a run in flight.
+/// Spawns `sima run` over `config` and waits until it has journaled its
+/// start, so a follow attaches to a run in flight.
 fn driving(config: &Path) -> std::process::Child {
     let child = Command::new(env!("CARGO_BIN_EXE_sima"))
         .args(["run", config.to_str().expect("utf-8 path")])
@@ -105,12 +104,7 @@ fn driving(config: &Path) -> std::process::Child {
         .spawn()
         .expect("spawn sima run");
     assert!(
-        poll_until(Duration::from_secs(30), || {
-            RunObserver::new(&load(config).expect("load config"))
-                .ok()
-                .and_then(|observer| observer.holder().ok().flatten())
-                .is_some()
-        }),
+        common::poll_until_started(config),
         "the run takes its lock and journals its start"
     );
     child
