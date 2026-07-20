@@ -551,11 +551,12 @@ fn percent(n: usize, of: usize) -> String {
 /// cost the worker's first binding past the session's start states, which is
 /// the ssh and container startup for a remote pool and near zero for a local
 /// one; utilization is over the worker's own lifespan, so provisioning time
-/// is not charged as idleness.
+/// is not charged as idleness. A local worker's host and a deviceless domain's
+/// device render as the same placeholders the attempt table uses.
 fn worker_cells(worker: &WorkerMetrics, session_start_ms: u64) -> [String; 8] {
     [
         format!("w{}", worker.worker),
-        placeholder(&worker.device, UNDEFINED),
+        placeholder(&worker.device, "(none)"),
         placeholder(&worker.host, UNDEFINED),
         duration(worker.first_bind_ms.saturating_sub(session_start_ms)),
         worker.respawns.to_string(),
@@ -1187,11 +1188,14 @@ mod tests {
         );
         // A local worker bound as the pool launched, and its device is one the
         // journal never named: both render as placeholders.
-        assert!(squeezed.contains("w0 — — 0.00s 0 75% 340 351"), "{block}");
+        assert!(
+            squeezed.contains("w0 (none) — 0.00s 0 75% 340 351"),
+            "{block}"
+        );
         // The remote worker was provisioned forty seconds in, so it was alive
         // for less of the run and its utilization is over that lifespan.
         assert!(
-            squeezed.contains("w2 — gpubox 41.20s 0 65% 340 351"),
+            squeezed.contains("w2 (none) gpubox 41.20s 0 65% 340 351"),
             "{block}"
         );
     }

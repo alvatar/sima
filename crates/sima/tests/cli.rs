@@ -176,12 +176,12 @@ fn timeline_over_a_local_run_names_no_host_and_no_device() {
     assert_eq!(sima(&["run", path]).status.code(), Some(0));
 
     // Local workers bind as the pool launches and the stub domain names no
-    // device, so both columns state the placeholder, the spawn latency is a
+    // device, so both columns state their placeholder, the spawn latency is a
     // fraction of a second, and no worker respawned.
     let text = stdout(&sima(&["timeline", path]));
     for worker in ["w0", "w1"] {
         let row = worker_row(&text, worker);
-        assert_eq!(row[1], "—", "the stub domain names no device: {text}");
+        assert_eq!(row[1], "(none)", "the stub domain names no device: {text}");
         assert_eq!(row[2], "—", "a local worker names no host: {text}");
         let spawn: f64 = row[3]
             .trim_end_matches('s')
