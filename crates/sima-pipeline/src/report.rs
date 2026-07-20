@@ -215,9 +215,9 @@ mod tests {
             "{reported:?}"
         );
         // The fold runs over records from any source, local or streamed from
-        // another host, so its message states the fact and suggests no command
-        // — a command naming a path resolves against the wrong machine half
-        // the time it is read.
+        // another host, so its message states the fact and suggests no
+        // command: a command naming a config path resolves on the machine that
+        // reads it, which is where the records came from only half the time.
         let message = format!("{}", reported.expect_err("no committed result"));
         assert!(message.contains("has no committed result"), "{message}");
         assert!(!message.contains("sima "), "{message}");
