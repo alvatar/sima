@@ -280,9 +280,14 @@ impl Stream {
     /// An error reporting `message`, naming the host and folding in what the
     /// far side wrote to stderr. The child is reaped first so its output is
     /// complete: without it, the reason a remote refused would be lost to a
-    /// race with the capture thread.
+    /// race with the capture thread. Reaping ends it the way [`Drop`] does —
+    /// a live `follow-serve` exits only when its stdout pipe closes, which a
+    /// refusal taken mid-stream has not yet done, so waiting alone would wait
+    /// on a process the refusal itself keeps alive. Killing an already-exited
+    /// child is a no-op the reap absorbs.
     fn failure(&mut self, message: &str) -> Error {
         if let Some(child) = &mut self.child {
+            let _ = child.kill();
             let _ = child.wait();
         }
         let said = self

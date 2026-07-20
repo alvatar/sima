@@ -86,12 +86,48 @@ fn ssh_shim(dir: &Path) -> PathBuf {
 /// Runs the sima binary with `args` against the shimmed `ssh` in `bin`, so a
 /// `--on` command reaches the far side over a pipe instead of a connection.
 fn sima_shimmed(bin: &Path, args: &[&str]) -> Output {
+    spawn_shimmed(bin, args, Stdio::piped())
+        .wait_with_output()
+        .expect("collect sima")
+}
+
+/// Spawns the sima binary with `args` against the shimmed `ssh` in `bin`,
+/// leaving the caller to decide when to collect it — for the tests that assert
+/// a command ends on its own rather than what it printed.
+fn spawn_shimmed(bin: &Path, args: &[&str], stdout: Stdio) -> std::process::Child {
     let path = std::env::var("PATH").unwrap_or_default();
     sima_command()
         .env("PATH", format!("{}:{path}", bin.display()))
         .args(args)
-        .output()
+        .stdout(stdout)
+        .stderr(Stdio::piped())
+        .spawn()
         .expect("spawn sima")
+}
+
+/// Waits up to `deadline` for `child` to exit and returns what it wrote. A
+/// child still running at the deadline is killed and the test fails, so a
+/// command that hangs where it should refuse ends the suite instead of it.
+fn refusal(child: std::process::Child, deadline: Duration) -> Output {
+    let child = Mutex::new(child);
+    let exited = poll_until(deadline, || {
+        child
+            .lock()
+            .expect("the probe holds the child")
+            .try_wait()
+            .expect("probe the command")
+            .is_some()
+    });
+    let mut child = child.into_inner().expect("the probe released the child");
+    if !exited {
+        let _ = child.kill();
+    }
+    let output = child.wait_with_output().expect("collect the refusal");
+    assert!(
+        exited,
+        "the command must refuse rather than hang: {output:?}"
+    );
+    output
 }
 
 /// Spawns `sima run` over `config` and waits until it has journaled its
@@ -214,6 +250,66 @@ fn a_far_side_fault_reaches_the_near_side_as_its_own_error() {
     );
 }
 
+/// Writes an `ssh` into its own directory under `dir` that greets the near
+/// side at `protocol` and then stays alive without serving anything. It is the
+/// far side a refusal has to cope with: still running, still holding the pipe
+/// open, at the moment the near side decides it cannot be spoken to.
+fn stalling_ssh_shim(dir: &Path, protocol: u32) -> PathBuf {
+    let bin = dir.join("stalling");
+    std::fs::create_dir_all(&bin).expect("the shim directory");
+    let greeting = bin.join("hello.frame");
+    let mut bytes = Vec::new();
+    sima_core::write_frame(
+        &mut bytes,
+        &sima_pipeline::FollowFrame::Hello {
+            protocol,
+            run: sima_model::RunId::from_hash(sima_core::hash_bytes(b"a stalling far side")),
+            format: sima_model::FormatId::new("stub.v1").expect("format id"),
+            workers: 1,
+            holder: None,
+        }
+        .encode(),
+    )
+    .expect("frame the greeting");
+    std::fs::write(&greeting, bytes).expect("write the greeting");
+    let path = bin.join("ssh");
+    std::fs::write(
+        &path,
+        format!("#!/bin/sh\ncat {}\nsleep 600\n", greeting.display()),
+    )
+    .expect("write the ssh shim");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+            .expect("make the ssh shim executable");
+    }
+    bin
+}
+
+#[test]
+fn a_far_side_at_another_protocol_version_is_refused_while_it_still_runs() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let bin = stalling_ssh_shim(dir.path(), sima_pipeline::FOLLOW_PROTOCOL_VERSION + 1);
+    let config = write_config(dir.path(), r#""succeed""#);
+    let path = config.to_str().expect("utf-8 path");
+
+    // Reporting the refusal collects what the far side said, which means
+    // reaping it — so the refusal has to end that process rather than wait on
+    // one that will outlive the follow.
+    let output = refusal(
+        spawn_shimmed(&bin, &["follow", path, "--on", "gpubox"], Stdio::null()),
+        Duration::from_secs(30),
+    );
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).expect("stderr is UTF-8");
+    assert!(
+        stderr.contains(&sima_pipeline::FOLLOW_PROTOCOL_VERSION.to_string())
+            && stderr.contains(&(sima_pipeline::FOLLOW_PROTOCOL_VERSION + 1).to_string()),
+        "{stderr}"
+    );
+}
+
 #[test]
 fn a_followed_run_finalizes_to_the_manifest_an_unobserved_run_produces() {
     // Observation is read-only by construction — the far side takes no lock
@@ -321,30 +417,15 @@ fn an_unreachable_host_fails_promptly_and_names_it() {
 
     // BatchMode refuses rather than prompting, so an unresolvable destination
     // is a prompt refusal instead of a hang on a password prompt.
-    let child = Mutex::new(
+    let output = refusal(
         sima_command()
             .args(["status", path, "--on", "sima.invalid.test"])
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
             .spawn()
             .expect("spawn sima"),
+        Duration::from_secs(60),
     );
-    assert!(
-        poll_until(Duration::from_secs(60), || {
-            child
-                .lock()
-                .expect("the probe holds the child")
-                .try_wait()
-                .expect("probe the query")
-                .is_some()
-        }),
-        "an unreachable host must refuse rather than hang"
-    );
-    let output = child
-        .into_inner()
-        .expect("the probe released the child")
-        .wait_with_output()
-        .expect("collect the refusal");
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let stderr = String::from_utf8(output.stderr).expect("stderr is UTF-8");
     assert!(stderr.contains("sima.invalid.test"), "{stderr}");
