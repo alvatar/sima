@@ -861,6 +861,25 @@ fn follow_before_any_run_reports_what_status_reports() {
 }
 
 #[test]
+fn the_start_gate_surfaces_a_broken_config_instead_of_waiting_it_out() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config = common::write_config_text(dir.path(), "sima.toml", "this is not a config");
+    // The gate absorbs one transient — a store root the orchestrator has yet
+    // to create. A config that will never load is a fault of the test setup,
+    // and reporting it at the first tick beats a deadline that names the
+    // wrong cause.
+    let opened = Instant::now();
+    let panic = std::panic::catch_unwind(|| common::poll_until_started(&config))
+        .expect_err("a config that does not load cannot gate a run");
+    assert!(opened.elapsed() < Duration::from_secs(5), "the gate waited");
+    let message = panic
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .unwrap_or_default();
+    assert!(message.contains("load the config"), "{message}");
+}
+
+#[test]
 fn follow_ends_successfully_when_its_reader_closes_the_pipe() {
     let dir = tempfile::tempdir().expect("temp dir");
     let config = write_config(dir.path(), r#""sleep:400", "sleep:400", "sleep:400""#);

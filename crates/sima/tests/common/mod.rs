@@ -10,6 +10,7 @@ use std::process::Command;
 use std::sync::Once;
 use std::time::{Duration, Instant};
 
+use sima_core::Error;
 use sima_domains::{domain_for, generator_for};
 use sima_model::TaskIdentity;
 use sima_pipeline::{Event, Record, RunObserver, load};
@@ -294,11 +295,17 @@ pub fn poll_until(deadline: Duration, probe: impl Fn() -> bool) -> bool {
 /// before it journals.
 pub fn poll_until_started(config_path: &Path) -> bool {
     poll_until(Duration::from_secs(30), || {
-        load(config_path)
-            .ok()
-            .and_then(|config| RunObserver::new(&config).ok())
-            .and_then(|mut observer| observer.poll().ok())
-            .is_some_and(|records| !records.is_empty())
+        let config = load(config_path).expect("load the config");
+        // One error is the transient this gate exists to wait out: the
+        // orchestrator has yet to create the store root. Any other is a fault
+        // of the setup, and reporting it here beats spending the deadline and
+        // then naming the wrong cause.
+        let mut observer = match RunObserver::new(&config) {
+            Ok(observer) => observer,
+            Err(Error::Validation(_)) => return false,
+            Err(e) => panic!("open an observer over {}: {e}", config_path.display()),
+        };
+        !observer.poll().expect("read the journal").is_empty()
     })
 }
 
