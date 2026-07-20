@@ -31,7 +31,7 @@ mod task_history;
 
 pub use config::{LoadedConfig, RemoteConfig, load};
 pub use devices::DeviceSelector;
-pub use feed::{FOLLOW_PROTOCOL_VERSION, FollowFrame};
+pub use feed::{FOLLOW_PROTOCOL_VERSION, FeedInfo, FollowFrame, LocalFeed, RunFeed};
 pub use observe::RunObserver;
 pub use orchestrate::orchestrate;
 pub use remove::remove;
