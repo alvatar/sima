@@ -61,6 +61,18 @@ impl RunObserver {
         Ok(records)
     }
 
+    /// The raw journal lines appended since the previous poll, in append
+    /// order; the first poll returns the run's full history. The unparsed
+    /// counterpart of [`poll`](RunObserver::poll), for the follow stream,
+    /// which forwards lines verbatim so the far side stays the only place
+    /// that parses them. Nothing can fail past the read, so the region is
+    /// consumed unconditionally.
+    pub fn poll_lines(&mut self) -> Result<Vec<String>> {
+        let (lines, offset) = self.store.journal_from(&self.run, self.offset)?;
+        self.offset = offset;
+        Ok(lines)
+    }
+
     /// Who holds the run's orchestrator lock: `Some` with the recorded
     /// holder line (pid, hostname) while another process drives the run,
     /// `None` while the lock is free.

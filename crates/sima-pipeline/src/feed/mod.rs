@@ -7,9 +7,11 @@
 
 mod local;
 mod protocol;
+mod serve;
 
 pub use local::LocalFeed;
 pub use protocol::{FOLLOW_PROTOCOL_VERSION, FollowFrame};
+pub use serve::follow_serve;
 
 use sima_core::Result;
 use sima_model::{FormatId, RunId};
