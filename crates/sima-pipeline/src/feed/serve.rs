@@ -31,9 +31,9 @@ const PROBE_POLLS: u32 = 10;
 ///
 /// The config is loaded on this host, so the run id, the store path, and the
 /// lock are all this host's. The stream opens with a `Hello` carrying the run
-/// metadata the reader renders through; `once` then serves the journal's
-/// current contents and a `Complete`, and a live stream tails the journal
-/// until the reader closes the pipe.
+/// metadata the reader renders through, then a `Records` frame carrying the
+/// journal's current contents. `once` closes there with a `Complete`; a live
+/// stream tails the journal until the reader closes the pipe.
 ///
 /// Everything that goes wrong on this host — a config that does not load, a
 /// run never started, a corrupt journal — is written as a single `Fault`
@@ -64,8 +64,12 @@ fn serve(config: &Path, once: bool, out: &mut impl Write) -> Result<()> {
             holder: holder.clone(),
         },
     )?;
+    // The first `Records` frame carries the run's history and is always sent,
+    // empty or not. A reader cannot distinguish "nothing journalled yet" from
+    // "the history has not arrived yet" by waiting, so the frame itself marks
+    // the point the history is complete, and the reader blocks for it.
+    frame(out, &FollowFrame::Records(observer.poll_lines()?))?;
     if once {
-        frame(out, &FollowFrame::Records(observer.poll_lines()?))?;
         return frame(out, &FollowFrame::Complete);
     }
     let mut polls_to_probe = PROBE_POLLS;

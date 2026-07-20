@@ -32,6 +32,9 @@ pub struct RemoteFeed {
     /// The lock holder as the far side last reported it, from the opening
     /// `Hello` and every `Holder` frame since.
     holder: Option<String>,
+    /// The run's history, read at open and returned by the first poll — so a
+    /// feed opens already holding what the run has done, as a local one does.
+    history: Vec<Record>,
     stream: Stream,
 }
 
@@ -47,9 +50,22 @@ impl RemoteFeed {
     /// The seam the protocol tests drive without a subprocess.
     fn over(mut stream: Stream) -> Result<RemoteFeed> {
         let (info, holder) = hello(&mut stream)?;
+        // Waiting here is what makes a later empty poll mean the stream is
+        // caught up rather than merely slow: without the history in hand, a
+        // poll that arrives before the first frame reads as a run that did
+        // nothing, and a caller that ends on a drained feed would end at once.
+        let history = match stream.next()? {
+            Some(FollowFrame::Records(lines)) => parse(&info.run, &lines)?,
+            Some(FollowFrame::Fault(message)) => return Err(Error::Reported(message)),
+            Some(frame) => {
+                return Err(stream.failure(&format!("unexpected {frame:?} after the handshake")));
+            }
+            None => return Err(stream.failure("the remote stream ended before the run's history")),
+        };
         Ok(RemoteFeed {
             info,
             holder,
+            history,
             stream,
         })
     }
@@ -61,7 +77,7 @@ impl RunFeed for RemoteFeed {
     }
 
     fn poll(&mut self) -> Result<Vec<Record>> {
-        let mut records = Vec::new();
+        let mut records = std::mem::take(&mut self.history);
         loop {
             match self.stream.pending()? {
                 Pending::Empty => return Ok(records),
@@ -496,6 +512,7 @@ mod tests {
     fn a_live_feed_yields_records_and_tracks_the_holder_across_polls() -> Result<()> {
         let (sender, reader) = staged();
         send(&sender, &hello_at(FOLLOW_PROTOCOL_VERSION));
+        send(&sender, &FollowFrame::Records(Vec::new()));
         let mut feed = RemoteFeed::over(Stream::over(reader))?;
         assert_eq!(feed.holder()?.as_deref(), Some("11 gpubox"));
 
@@ -536,6 +553,34 @@ mod tests {
     }
 
     #[test]
+    fn a_feed_opens_holding_the_run_s_history_however_late_it_arrives() -> Result<()> {
+        // A poll cannot tell a run that has done nothing from a first frame
+        // that has not arrived, so the open waits for the history frame. Were
+        // it not to, a caller that ends on a drained feed — `sima follow` over
+        // a run nothing holds — would end before rendering anything.
+        let (sender, reader) = staged();
+        send(&sender, &hello_at(FOLLOW_PROTOCOL_VERSION));
+        let staging = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(200));
+            send(&sender, &records_of("aa"));
+            sender
+        });
+        // The poll follows the open with nothing in between: only an open that
+        // waited for the history can answer it with the record.
+        let mut feed = RemoteFeed::over(Stream::over(reader))?;
+        assert_eq!(feed.poll()?.len(), 1, "the first poll yields the history");
+        drop(staging.join().expect("the staging thread"));
+        Ok(())
+    }
+
+    #[test]
+    fn a_stream_that_ends_after_the_handshake_is_an_error() {
+        // The far side greeted and went away without serving the journal.
+        let bytes = stream_of(&[hello_at(FOLLOW_PROTOCOL_VERSION)]);
+        assert!(RemoteFeed::over(Stream::over(std::io::Cursor::new(bytes))).is_err());
+    }
+
+    #[test]
     fn a_stream_that_opens_with_nothing_is_an_error() {
         // An older `sima` without the verb, or a host that printed nothing.
         assert!(RemoteFeed::over(Stream::over(std::io::Cursor::new(Vec::new()))).is_err());
@@ -553,6 +598,7 @@ mod tests {
         // And mid-stream, a fault surfaces through the poll that reads it.
         let (sender, reader) = staged();
         send(&sender, &hello_at(FOLLOW_PROTOCOL_VERSION));
+        send(&sender, &FollowFrame::Records(Vec::new()));
         let mut feed = RemoteFeed::over(Stream::over(reader)).expect("the stream opens");
         send(&sender, &fault);
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -572,6 +618,7 @@ mod tests {
     fn a_stream_that_drops_mid_follow_fails_the_poll() -> Result<()> {
         let (sender, reader) = staged();
         send(&sender, &hello_at(FOLLOW_PROTOCOL_VERSION));
+        send(&sender, &FollowFrame::Records(Vec::new()));
         let mut feed = RemoteFeed::over(Stream::over(reader))?;
         // The far side went away without a terminal frame.
         drop(sender);
