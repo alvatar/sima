@@ -65,7 +65,7 @@ fn main() -> ExitCode {
         ["report", config] => report_command(&Target::new(config, host), Report::Summary),
         ["report", config, "--all"] => report_command(&Target::new(config, host), Report::All),
         ["report", config, "--task", key] => report_task_command(&Target::new(config, host), key),
-        ["tui", config] if host.is_none() => tui::tui_command(&resolve_config(config)),
+        ["tui", config] => tui::tui_command(&Target::new(config, host)),
         ["follow", config] => follow::follow_command(&Target::new(config, host)),
         _ => {
             eprint!(
