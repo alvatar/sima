@@ -203,13 +203,8 @@ pub fn timeline_records(run: RunId, records: &[Record]) -> RunTimeline {
     // A lease the journal never closed held its worker up to the last thing
     // the journal saw: an attempt still in flight, or one a dead orchestrator
     // left open.
-    let still_open: Vec<(u64, u64)> = open.into_values().collect();
-    for (worker, started_ms) in still_open {
-        workers
-            .entry(worker)
-            .or_default()
-            .spans
-            .push((started_ms, session_end_ms.max(started_ms)));
+    for (worker, started_ms) in open.into_values() {
+        push_span(&mut workers, worker, started_ms, session_end_ms);
     }
 
     RunTimeline {
@@ -258,12 +253,24 @@ fn close<'a>(
     ended_ms: u64,
 ) -> Option<u64> {
     let (worker, started_ms) = open.remove(task)?;
+    push_span(workers, worker, started_ms, ended_ms);
+    Some(worker)
+}
+
+/// Credits `worker` with a lease span. An end before the start would be a
+/// journal whose stamps run backwards, and the span is empty rather than
+/// negative.
+fn push_span(
+    workers: &mut BTreeMap<u64, WorkerAccumulator>,
+    worker: u64,
+    started_ms: u64,
+    ended_ms: u64,
+) {
     workers
         .entry(worker)
         .or_default()
         .spans
         .push((started_ms, ended_ms.max(started_ms)));
-    Some(worker)
 }
 
 /// One worker's metrics from what the session accumulated, joined to the

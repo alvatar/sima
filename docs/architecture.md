@@ -1158,10 +1158,10 @@ whenever it answered — independently of the run's own outcome.
 
 ### Following a run over SSH
 
-`status`, `report`, `timeline`, `tui`, and `follow` each accept `--on
-<ssh-dest>`, which
-names the host the run's orchestrator runs on. Three properties of the system
-decide the shape, and none of them is a choice:
+`status`, `report`, `timeline`, `tui`, and `follow` each accept
+`--on <ssh-dest>`, which names the host the run's orchestrator runs on.
+Three properties of the system decide the shape, and none of them is a
+choice:
 
 - **A run's identity is the hash of its config**, and its store path resolves
   relative to the config file's directory. A local copy of the config would
