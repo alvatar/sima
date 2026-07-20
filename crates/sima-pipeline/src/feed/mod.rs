@@ -7,10 +7,12 @@
 
 mod local;
 mod protocol;
+mod remote;
 mod serve;
 
 pub use local::LocalFeed;
 pub use protocol::{FOLLOW_PROTOCOL_VERSION, FollowFrame};
+pub use remote::{RemoteFeed, remote_snapshot};
 pub use serve::follow_serve;
 
 use sima_core::Result;
