@@ -14,7 +14,8 @@
 //! [`status`] and [`task_history`] project execution — the run's state, and
 //! one task's attempts — [`failures`] names the tasks that did not commit,
 //! and [`report`] and [`report_task`] render the results committed tasks
-//! produced. The queries return data; rendering it is the caller's.
+//! produced, while [`timeline`] measures how efficiently the run executed.
+//! The queries return data; rendering it is the caller's.
 
 mod config;
 mod devices;
@@ -28,6 +29,7 @@ mod remove;
 mod report;
 mod status;
 mod task_history;
+mod timeline;
 
 pub use config::{LoadedConfig, RemoteConfig, load};
 pub use devices::DeviceSelector;
@@ -51,3 +53,4 @@ pub use task_history::{
     Attempt, AttemptResult, TaskHistory, TaskOutcome, failures, failures_records, task_history,
     task_history_records,
 };
+pub use timeline::{RetryStats, RunTimeline, WorkerMetrics, timeline, timeline_records};
