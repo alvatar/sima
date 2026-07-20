@@ -80,7 +80,9 @@ fn main() -> ExitCode {
                  \x20      sima tui <config>                  drive the run in a full-screen terminal UI\n\
                  \x20      sima follow <config>               stream the run's events until it ends\n\
                  \x20      <config> is a sima.toml path; the .toml extension may be omitted\n\
-                 \x20      <key> is any prefix of a task key that names one task\n"
+                 \x20      <key> is any prefix of a task key that names one task\n\
+                 \x20      --on <host> observes a run on an ssh destination: status, report,\n\
+                 \x20      tui, and follow accept it, and <config> is then a path on that host\n"
             );
             ExitCode::from(EXIT_ERROR)
         }

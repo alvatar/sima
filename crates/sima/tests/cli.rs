@@ -554,9 +554,17 @@ fn the_usage_text_names_every_command_form() {
         "--all",
         "sima rm",
         "sima tui",
+        "sima follow",
+        "--on",
     ] {
         assert!(stderr.contains(form), "usage names {form}: {stderr}");
     }
+    // The far half of the follow transport is internal, not a verb a user
+    // invokes, so the usage text does not offer it.
+    assert!(
+        !stderr.contains("follow-serve"),
+        "the internal verb stays unlisted: {stderr}"
+    );
     assert!(
         !stderr.contains("--full"),
         "the renamed flag is gone: {stderr}"
