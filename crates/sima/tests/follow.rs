@@ -28,11 +28,10 @@
 mod common;
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output, Stdio};
-use std::sync::Mutex;
+use std::process::{Output, Stdio};
 use std::time::Duration;
 
-use common::{manifest_of, poll_until, sima_command, worker_binary};
+use common::{manifest_of, sima_command};
 
 /// The ssh destination Tier B runs against, or `None` to skip it.
 fn follow_host() -> Option<String> {
@@ -105,47 +104,6 @@ fn spawn_shimmed(bin: &Path, args: &[&str], stdout: Stdio) -> std::process::Chil
         .expect("spawn sima")
 }
 
-/// Waits up to `deadline` for `child` to exit and returns what it wrote. A
-/// child still running at the deadline is killed and the test fails, so a
-/// command that hangs where it should refuse ends the suite instead of it.
-fn refusal(child: std::process::Child, deadline: Duration) -> Output {
-    let child = Mutex::new(child);
-    let exited = poll_until(deadline, || {
-        child
-            .lock()
-            .expect("the probe holds the child")
-            .try_wait()
-            .expect("probe the command")
-            .is_some()
-    });
-    let mut child = child.into_inner().expect("the probe released the child");
-    if !exited {
-        let _ = child.kill();
-    }
-    let output = child.wait_with_output().expect("collect the refusal");
-    assert!(
-        exited,
-        "the command must refuse rather than hang: {output:?}"
-    );
-    output
-}
-
-/// Spawns `sima run` over `config` and waits until it has journaled its
-/// start, so a follow attaches to a run in flight.
-fn driving(config: &Path) -> std::process::Child {
-    let child = Command::new(env!("CARGO_BIN_EXE_sima"))
-        .args(["run", config.to_str().expect("utf-8 path")])
-        .env("SIMA_WORKER", worker_binary())
-        .stdout(Stdio::null())
-        .spawn()
-        .expect("spawn sima run");
-    assert!(
-        common::poll_until_started(config),
-        "the run takes its lock and journals its start"
-    );
-    child
-}
-
 /// The read-only views a remote target must render identically to a local
 /// one, as argument lists over a config path.
 fn views(path: &str) -> Vec<Vec<&str>> {
@@ -211,7 +169,7 @@ fn a_remote_follow_streams_a_live_run_to_its_end() {
     let bin = ssh_shim(dir.path());
     let config = write_config(dir.path(), r#""sleep:800", "sleep:800", "sleep:800""#);
     let path = config.to_str().expect("utf-8 path");
-    let mut run = driving(&config);
+    let mut run = common::driving(&config);
 
     let output = sima_shimmed(&bin, &["follow", path, "--on", "gpubox"]);
     assert_eq!(output.status.code(), Some(0), "{output:?}");
@@ -315,7 +273,7 @@ fn a_far_side_at_another_protocol_version_is_refused_while_it_still_runs() {
     // Reporting the refusal collects what the far side said, which means
     // reaping it — so the refusal has to end that process rather than wait on
     // one that will outlive the follow.
-    let output = refusal(
+    let output = common::wait_within(
         spawn_shimmed(&bin, &["follow", path, "--on", "gpubox"], Stdio::null()),
         Duration::from_secs(30),
     );
@@ -338,7 +296,7 @@ fn a_followed_run_finalizes_to_the_manifest_an_unobserved_run_produces() {
     let bin = ssh_shim(dir.path());
     let config = write_config(dir.path(), behaviors);
     let path = config.to_str().expect("utf-8 path");
-    let mut run = driving(&config);
+    let mut run = common::driving(&config);
     let followed = sima_shimmed(&bin, &["follow", path, "--on", "gpubox"]);
     assert_eq!(followed.status.code(), Some(0), "{followed:?}");
     assert_eq!(run.wait().expect("wait for sima run").code(), Some(0));
@@ -385,7 +343,7 @@ fn a_remote_follow_over_ssh_streams_a_live_run_to_its_end() {
     let dir = tempfile::tempdir().expect("temp dir");
     let config = write_config(dir.path(), r#""sleep:800", "sleep:800", "sleep:800""#);
     let path = config.to_str().expect("utf-8 path");
-    let mut run = driving(&config);
+    let mut run = common::driving(&config);
 
     let output = sima(&["follow", path, "--on", &host]);
     assert_eq!(output.status.code(), Some(0), "{output:?}");
@@ -403,7 +361,7 @@ fn a_followed_run_over_ssh_finalizes_to_the_unobserved_manifest() {
     let dir = tempfile::tempdir().expect("temp dir");
     let config = write_config(dir.path(), behaviors);
     let path = config.to_str().expect("utf-8 path");
-    let mut run = driving(&config);
+    let mut run = common::driving(&config);
     let followed = sima(&["follow", path, "--on", &host]);
     assert_eq!(followed.status.code(), Some(0), "{followed:?}");
     assert_eq!(run.wait().expect("wait for sima run").code(), Some(0));
@@ -435,7 +393,7 @@ fn an_unreachable_host_fails_promptly_and_names_it() {
 
     // BatchMode refuses rather than prompting, so an unresolvable destination
     // is a prompt refusal instead of a hang on a password prompt.
-    let output = refusal(
+    let output = common::wait_within(
         sima_command()
             .args(["status", path, "--on", "sima.invalid.test"])
             .stdout(Stdio::null())

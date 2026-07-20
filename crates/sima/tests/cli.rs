@@ -5,7 +5,6 @@ mod common;
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
-use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use common::{manifest_of, sima_command, worker_processes};
@@ -884,16 +883,7 @@ fn follow_ends_successfully_when_its_reader_closes_the_pipe() {
     let dir = tempfile::tempdir().expect("temp dir");
     let config = write_config(dir.path(), r#""sleep:400", "sleep:400", "sleep:400""#);
     let path = config.to_str().expect("utf-8 path");
-    let mut run = Command::new(env!("CARGO_BIN_EXE_sima"))
-        .args(["run", path])
-        .env("SIMA_WORKER", common::worker_binary())
-        .stdout(std::process::Stdio::null())
-        .spawn()
-        .expect("spawn sima run");
-    assert!(
-        common::poll_until_started(&config),
-        "the run takes its lock and journals its start"
-    );
+    let mut run = common::driving(&config);
 
     let mut followed = sima_command()
         .args(["follow", path])
@@ -909,24 +899,8 @@ fn follow_ends_successfully_when_its_reader_closes_the_pipe() {
     assert!(line.starts_with("started:"), "{line}");
     drop(out);
 
-    let followed = Mutex::new(followed);
-    assert!(
-        common::poll_until(Duration::from_secs(30), || {
-            followed
-                .lock()
-                .expect("the probe holds the child")
-                .try_wait()
-                .expect("probe the follow")
-                .is_some()
-        }),
-        "a closed pipe ends the follow"
-    );
-    let status = followed
-        .into_inner()
-        .expect("the probe released the child")
-        .wait()
-        .expect("reap the follow");
-    assert_eq!(status.code(), Some(0), "{status:?}");
+    let ended = common::wait_within(followed, Duration::from_secs(30));
+    assert_eq!(ended.status.code(), Some(0), "{ended:?}");
     assert_eq!(run.wait().expect("wait for sima run").code(), Some(0));
 }
 
@@ -935,18 +909,7 @@ fn follow_streams_a_live_run_to_its_end() {
     let dir = tempfile::tempdir().expect("temp dir");
     let config = write_config(dir.path(), r#""sleep:800", "sleep:800", "sleep:800""#);
     let path = config.to_str().expect("utf-8 path");
-    let mut run = Command::new(env!("CARGO_BIN_EXE_sima"))
-        .args(["run", path])
-        .env("SIMA_WORKER", common::worker_binary())
-        .stdout(std::process::Stdio::null())
-        .spawn()
-        .expect("spawn sima run");
-    // Wait for the run to journal its start, so the follow attaches to a run
-    // in flight rather than one that does not exist yet.
-    assert!(
-        common::poll_until_started(&config),
-        "the run takes its lock and journals its start"
-    );
+    let mut run = common::driving(&config);
 
     let output = sima(&["follow", path]);
     assert_eq!(output.status.code(), Some(0), "{output:?}");
