@@ -6,13 +6,14 @@
 use std::collections::{HashMap, HashSet};
 use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::sync::Once;
+use std::process::{Child, Command, Output, Stdio};
+use std::sync::{Mutex, Once};
 use std::time::{Duration, Instant};
 
+use sima_core::Error;
 use sima_domains::{domain_for, generator_for};
 use sima_model::TaskIdentity;
-use sima_pipeline::{Event, Record, load};
+use sima_pipeline::{Event, Record, RunObserver, load};
 use sima_store::{Manifest, Store};
 
 /// Writes a `sima.toml` named `name` under `dir`: the given behaviors
@@ -283,6 +284,76 @@ pub fn poll_until(deadline: Duration, probe: impl Fn() -> bool) -> bool {
         }
         std::thread::sleep(Duration::from_millis(20));
     }
+}
+
+/// Waits until the run `config_path` describes has journaled its start,
+/// returning whether it did within the deadline. A live view opens against
+/// the journal, so it needs the journal to have content — and a run takes its
+/// lock before its first line is durable, which leaves a window in which the
+/// lock names a holder and a reader still sees a run never started. Waiting on
+/// the journal closes that window, and implies the lock, since the run locks
+/// before it journals.
+pub fn poll_until_started(config_path: &Path) -> bool {
+    poll_until(Duration::from_secs(30), || {
+        let config = load(config_path).expect("load the config");
+        // One error is the transient this gate exists to wait out: the
+        // orchestrator has yet to create the store root. Any other is a fault
+        // of the setup, and reporting it here beats spending the deadline and
+        // then naming the wrong cause.
+        let mut observer = match RunObserver::new(&config) {
+            Ok(observer) => observer,
+            Err(Error::Validation(_)) => return false,
+            Err(e) => panic!("open an observer over {}: {e}", config_path.display()),
+        };
+        !observer.poll().expect("read the journal").is_empty()
+    })
+}
+
+/// Spawns `sima run` over `config_path` and waits until it has journaled its
+/// start, so a view opened next attaches to a run in flight.
+pub fn driving(config_path: &Path) -> Child {
+    let child = sima_command()
+        .args(["run", config_path.to_str().expect("utf-8 path")])
+        .stdout(Stdio::null())
+        .spawn()
+        .expect("spawn sima run");
+    assert!(
+        poll_until_started(config_path),
+        "the run takes its lock and journals its start"
+    );
+    child
+}
+
+/// Spawns `sima run` over `config_path`, waits until it has journaled its
+/// start, and ends it with SIGKILL. What is left behind is the state a
+/// crashed orchestrator leaves: a journal that stops mid-run with no terminal
+/// event, and a run lock the kernel released when its holder died.
+pub fn abandon_run(config_path: &Path) {
+    let mut child = driving(config_path);
+    child.kill().expect("kill the orchestrator");
+    child.wait().expect("reap the orchestrator");
+}
+
+/// Waits up to `deadline` for `child` to exit and returns what it wrote. A
+/// child still running at the deadline is killed and the test fails, so a
+/// command that hangs where it should end ends the suite instead of it.
+pub fn wait_within(child: Child, deadline: Duration) -> Output {
+    let child = Mutex::new(child);
+    let exited = poll_until(deadline, || {
+        child
+            .lock()
+            .expect("the probe holds the child")
+            .try_wait()
+            .expect("probe the command")
+            .is_some()
+    });
+    let mut child = child.into_inner().expect("the probe released the child");
+    if !exited {
+        let _ = child.kill();
+    }
+    let output = child.wait_with_output().expect("collect the command");
+    assert!(exited, "the command must end rather than hang: {output:?}");
+    output
 }
 
 /// Whether `pid` is a live `sima-worker` process. A recycled pid under

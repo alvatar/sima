@@ -18,6 +18,7 @@
 
 mod config;
 mod devices;
+mod feed;
 #[cfg(test)]
 mod fixtures;
 mod journal;
@@ -30,10 +31,14 @@ mod task_history;
 
 pub use config::{LoadedConfig, RemoteConfig, load};
 pub use devices::DeviceSelector;
+pub use feed::{
+    FOLLOW_PROTOCOL_VERSION, FeedInfo, FollowFrame, LocalFeed, RemoteFeed, RunFeed, follow_serve,
+    local_snapshot, remote_snapshot,
+};
 pub use observe::RunObserver;
 pub use orchestrate::orchestrate;
 pub use remove::remove;
-pub use report::{ReportRow, report, report_task};
+pub use report::{ReportRow, report, report_records, report_task, report_task_records};
 // The run identity a query names, re-exported with the rest of the surface a
 // caller reads a run through.
 pub use sima_model::RunId;
@@ -41,5 +46,8 @@ pub use sima_store::RemovalReport;
 // The scheduler types a caller drives and observes runs through, re-exported
 // so the CLI consumes one coherent surface.
 pub use sima_scheduler::{Event, Level, Record, RunControl, RunOutcome};
-pub use status::{Occupancy, RunState, RunStatus, status};
-pub use task_history::{Attempt, AttemptResult, TaskHistory, TaskOutcome, failures, task_history};
+pub use status::{Occupancy, RunState, RunStatus, status, status_records};
+pub use task_history::{
+    Attempt, AttemptResult, TaskHistory, TaskOutcome, failures, failures_records, task_history,
+    task_history_records,
+};

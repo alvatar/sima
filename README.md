@@ -43,8 +43,13 @@ beyond it as an elastic, heterogeneous extension.
   GPU machines: a have/want store-sync protocol transfers exactly the missing
   records and objects over any byte pipe. The sync engine is built; `sima
   migrate`, wiring it over ssh, is on the roadmap.
-- **Watch it run.** `sima tui` drives a run in a full-screen live view;
-  `sima status` and `sima report` print run state and per-candidate stats.
+- **Watch it run, from anywhere.** `sima tui` drives a run in a full-screen
+  live view and `sima follow` streams its events to a pipe; `sima status` and
+  `sima report` print run state and per-candidate stats. Every one of them
+  takes `--on <ssh-host>` to observe a run driven on another machine — the
+  config is interpreted there, where the store and the orchestrator are, and
+  the view renders here. Observation takes no lock and writes nothing, so
+  watching a run cannot perturb it.
 - **Reproduce any result.** A task is identified by content — spec, run
   parameters, seed, environment, input state — so a recorded result can be
   regenerated from its identity alone, and any backend that returns a result
@@ -62,6 +67,7 @@ cargo build --release
 target/release/sima run examples/gray-scott-search    # drive the run
 target/release/sima tui examples/gray-scott-search    # or watch it live
 target/release/sima report examples/gray-scott-search # per-candidate stats
+target/release/sima status examples/gray-scott-search --on gpubox # or a run elsewhere
 ```
 
 ## How it works

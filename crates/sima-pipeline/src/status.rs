@@ -248,11 +248,20 @@ fn composition_label(device: &str, host: &str) -> String {
 /// [`Error::Validation`](sima_core::Error::Validation), and a line that fails
 /// to parse is [`Error::Corruption`](sima_core::Error::Corruption).
 pub fn status(config: &LoadedConfig) -> Result<RunStatus> {
-    let mut status = RunStatus::new(config.run.id());
-    for record in journal::records(config)? {
-        status.apply(&record);
+    Ok(status_records(config.run.id(), &journal::records(config)?))
+}
+
+/// Folds `records` — a run's lifecycle events in append order — into the
+/// status of `run`. The fold half of [`status`], over records from any
+/// source: a journal read locally, or a stream from the host that drives the
+/// run. It renders nothing through a domain, so it needs no format and cannot
+/// fail.
+pub fn status_records(run: RunId, records: &[Record]) -> RunStatus {
+    let mut status = RunStatus::new(run);
+    for record in records {
+        status.apply(record);
     }
-    Ok(status)
+    status
 }
 
 #[cfg(test)]
@@ -641,5 +650,22 @@ mod tests {
             }),
         ]);
         assert_eq!(status.rebound_chains, 2);
+    }
+
+    #[test]
+    fn the_record_fold_equals_the_status_read_from_the_journal() -> Result<()> {
+        let records = vec![
+            started(2),
+            leased("aa", 0, 0),
+            committed("aa"),
+            failed("bb", 0),
+        ];
+        let (_dir, config) = journal_with(&records)?;
+        assert_eq!(
+            status_records(config.run.id(), &records),
+            status(&config)?,
+            "the fold over records is the status the journal path computes"
+        );
+        Ok(())
     }
 }

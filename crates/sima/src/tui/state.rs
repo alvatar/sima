@@ -132,6 +132,11 @@ pub struct TuiState {
     /// observes it; `None` in the drive session. Governs the header label,
     /// the meaning of `s`, and the refusal of `x`.
     observation: Option<LockView>,
+
+    /// Whether this session may take a freed run over. A run is driven where
+    /// its hardware is, so a session watching another host's run never can.
+    takeover: bool,
+
     /// A transient status message — a refused key names the holder here.
     /// Cleared when the observed lock state changes.
     notice: Option<String>,
@@ -197,6 +202,7 @@ impl TuiState {
             exit: false,
             help_open: false,
             observation: None,
+            takeover: true,
             notice: None,
             log: VecDeque::new(),
         }
@@ -209,6 +215,13 @@ impl TuiState {
     pub fn observe(&mut self, lock: LockView) {
         self.notice = None;
         self.observation = Some(lock);
+    }
+
+    /// Marks the session unable to take the run over, for an observation of a
+    /// run on another host: the take-over affordance is absent from the
+    /// header, and `s` over a freed lock reports why instead of leaving.
+    pub fn observe_only(&mut self) {
+        self.takeover = false;
     }
 
     /// Handles one message.
@@ -252,8 +265,12 @@ impl TuiState {
                     self.notice = Some(format!("run held by {holder}"));
                 }
                 // The lock is free: the observer loop reads this request as
-                // the take-over and leaves for the drive session.
-                Some(LockView::Free) => self.start_pending = true,
+                // the take-over and leaves for the drive session — unless the
+                // run is on another host, where this session cannot drive.
+                Some(LockView::Free) if self.takeover => self.start_pending = true,
+                Some(LockView::Free) => {
+                    self.notice = Some("cannot take over a run on another host".to_string());
+                }
                 None => {
                     // A run starts from idle or after a terminal state; while
                     // one runs the key does nothing.
@@ -374,8 +391,11 @@ impl TuiState {
                 (RunState::InProgress, LockView::Held(holder)) => {
                     format!("observing — run held by {holder}")
                 }
-                (RunState::InProgress, LockView::Free) => {
+                (RunState::InProgress, LockView::Free) if self.takeover => {
                     "orchestrator gone — run resumable; press s to continue it".to_string()
+                }
+                (RunState::InProgress, LockView::Free) => {
+                    "orchestrator gone — run resumable".to_string()
                 }
             };
         }
@@ -750,6 +770,29 @@ mod tests {
         state.observe(LockView::Free);
         state.handle(Msg::Key(KeyAction::Start));
         assert!(state.take_start(), "s on a free lock leaves for the drive");
+    }
+
+    #[test]
+    fn an_observe_only_session_neither_offers_nor_performs_a_take_over() {
+        // A run is driven where its hardware is, so a session watching
+        // another host's run never takes it over: the affordance is absent
+        // from the header and `s` over a freed lock says why.
+        let mut state = observing(1);
+        state.observe_only();
+        state.handle(Msg::Event(started(2)));
+        state.observe(LockView::Free);
+        assert_eq!(state.view().state, "orchestrator gone — run resumable");
+
+        state.handle(Msg::Key(KeyAction::Start));
+        assert!(!state.take_start(), "s takes over nothing from here");
+        assert!(
+            state
+                .view()
+                .notice
+                .is_some_and(|notice| notice.contains("another host")),
+            "the refusal names why: {:?}",
+            state.view().notice
+        );
     }
 
     #[test]

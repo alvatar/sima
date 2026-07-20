@@ -1081,11 +1081,20 @@ sum across every resume segment, and the last run-level event decides the
 state. A journal ending mid-run reads as in progress: a dead orchestrator
 is indistinguishable from a live one by the journal alone.
 
+Every read-only query is a fold over records: one half reads a run's journal,
+the other projects the view. The two are separate functions, so the same fold
+serves records read from a local store and records streamed from the host that
+drives the run. The folds that render stats take the run's format id, which is
+all they need a config for.
+
 ## `sima` (L8)
 
 The CLI holds no orchestration logic — parsing, rendering, signal
 registration, exit codes, and, for `tui`, an interactive terminal
-frontend over the observer seam:
+frontend over the observer seam. The read-only commands additionally take
+`--on <ssh-dest>`, which addresses a run on the host its orchestrator runs on;
+the flag is split out of the arguments before the command match, so every
+command form keeps its shape whether or not a host is named:
 
 - **`sima run <config.toml>`** — drives the configured run, printing one
   plain line per meaningful event from the observer seam. SIGINT sets the
@@ -1113,6 +1122,13 @@ event for; a prefix matching none, or more than one, is an error. Every
 query reads the journal alone and never perturbs a run, so it answers over
 a live run, a finished one, and a failed one alike, and a query exits 0
 whenever it answered — independently of the run's own outcome.
+- **`sima follow <config.toml>`** — streams the run's events to stdout, one
+  line per event through the same renderer the tui's log uses, and exits when
+  the run reaches a terminal state, carrying that outcome's exit code. It is
+  the pipeable counterpart of `tui`: no terminal, no raw mode, no keys. A
+  finished run prints what it recorded and leaves; a run nobody drives prints
+  its history and leaves successfully, since such a run is resumable and
+  `status` is where that state is read.
 - **`sima tui <config.toml>`** — drives the same run inside a full-screen
   terminal UI: an idle screen lists the configured workers, a keypress
   starts the run, and the tui applies each observer event as it arrives, so
@@ -1122,9 +1138,64 @@ whenever it answered — independently of the run's own outcome.
   and its `crossterm` backend are the terminal-UI dependencies, and they
   enter the workspace at this layer alone.
 
-Exit codes (shared across `run` and `tui`):
+### Following a run over SSH
 
-- **0** — the run finalized (or `status` answered);
+`status`, `report`, `tui`, and `follow` each accept `--on <ssh-dest>`, which
+names the host the run's orchestrator runs on. Three properties of the system
+decide the shape, and none of them is a choice:
+
+- **A run's identity is the hash of its config**, and its store path resolves
+  relative to the config file's directory. A local copy of the config would
+  resolve the store to a path that does not exist here.
+- **A journal lives with its orchestrator.** It is observational and never
+  travels in a store sync, so following a run means reading that file, on that
+  machine.
+- **Liveness is an advisory lock**, meaningful only to the kernel holding it.
+  Probed across a network filesystem it does not reflect the real holder.
+
+So the config path travels unresolved and the far side interprets it. `sima
+follow-serve <config> [--once]`, spawned there over
+`ssh -o BatchMode=yes`, computes the identical run id, resolves its own store,
+tails its own journal, and probes its own kernel lock, writing frames to
+stdout; this side folds and renders them. `follow-serve` is the far half of a
+transport rather than a verb a user invokes, so it stays out of the usage
+text, and its stdout carries frames alone — every diagnostic goes to stderr,
+which ssh keeps on its own channel.
+
+**One seam, two implementations.** Every live view consumes a `RunFeed`: the
+records a run gains, its lock holder, and the `FeedInfo` a renderer needs but
+cannot derive from records — the run id, the format whose domain renders
+stats, and the worker count. `LocalFeed` pairs a `RunObserver` with the
+metadata its loaded config carries; `RemoteFeed` reads them off the stream.
+The one-shot views take the same records in one call and fold them the same
+way, so a remote view renders byte for byte what the local view renders.
+
+**The wire.** Framing is `sima-core`'s length-prefixed carrier, payloads are
+canonical `Enc`/`Dec` with a leading tag, mirroring the worker protocol. The
+opening frame is a version-carrying handshake; a mismatch is refused by name
+rather than decoded, so two builds that disagree never interpret each other's
+bytes. Records travel as raw journal lines, so one parser and one torn-write
+rule serve both ends. A failure on the far side crosses as a fault frame
+carrying the text that machine rendered, and surfaces here unchanged: the
+machine that failed owns the classification.
+
+**Observation is read-only, and remote observation is observe-only.** The far
+side takes no lock and writes nothing to the store, so a followed run reaches
+a manifest byte-identical to an unobserved one. A run is driven where its
+hardware is, so `tui --on <host>` never offers the take-over affordance, and
+`run` and `rm` — which drive and mutate — take no `--on` at all.
+
+Authentication is the user's SSH configuration. Keys, agents, `~/.ssh/config`
+aliases, and jump hosts are configured exactly as for remote worker pools;
+`BatchMode=yes` scopes interactive authentication out: a host that is
+unreachable, or that would ask for a password, fails promptly with a named
+cause. A host that authenticates and then stalls before its first frame is a
+live connection, and the near side waits on it.
+
+Exit codes (shared across `run`, `tui`, and `follow`):
+
+- **0** — the run finalized, `status` answered, or `follow` reached the end of
+  a run nobody is driving, which is resumable rather than failed;
 - **2** — a definitive candidate failure;
 - **130** — interrupted, store resumable;
 - **1** — everything else: infrastructure fault, config error, usage error.

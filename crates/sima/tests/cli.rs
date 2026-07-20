@@ -554,9 +554,17 @@ fn the_usage_text_names_every_command_form() {
         "--all",
         "sima rm",
         "sima tui",
+        "sima follow",
+        "--on",
     ] {
         assert!(stderr.contains(form), "usage names {form}: {stderr}");
     }
+    // The far half of the follow transport is internal, not a verb a user
+    // invokes, so the usage text does not offer it.
+    assert!(
+        !stderr.contains("follow-serve"),
+        "the internal verb stays unlisted: {stderr}"
+    );
     assert!(
         !stderr.contains("--full"),
         "the renamed flag is gone: {stderr}"
@@ -697,4 +705,214 @@ fn sigint_interrupts_gracefully_and_a_rerun_matches_an_uninterrupted_store() {
         manifest_of(&config).expect("resumed manifest"),
         manifest_of(&reference).expect("reference manifest"),
     );
+}
+
+#[test]
+fn the_write_commands_refuse_a_remote_host() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config = write_config(dir.path(), r#""succeed""#);
+    let path = config.to_str().expect("utf-8 path");
+    // Driving a run happens where the hardware is, and removing a run mutates
+    // a store; neither observes, so neither takes `--on`.
+    for args in [
+        vec!["run", path, "--on", "gpubox"],
+        vec!["rm", path, "--on", "gpubox"],
+    ] {
+        let output = sima(&args);
+        assert_eq!(output.status.code(), Some(1), "{args:?}: {output:?}");
+        let stderr = String::from_utf8(output.stderr).expect("stderr is UTF-8");
+        assert!(stderr.contains("usage"), "{args:?}: {stderr}");
+    }
+    // The refusal is the flag, not the command: the run itself still drives.
+    assert_eq!(sima(&["run", path]).status.code(), Some(0));
+}
+
+#[test]
+fn a_host_flag_without_a_host_is_a_usage_error() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config = write_config(dir.path(), r#""succeed""#);
+    let path = config.to_str().expect("utf-8 path");
+    assert_eq!(sima(&["run", path]).status.code(), Some(0));
+
+    let output = sima(&["status", path, "--on"]);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).expect("stderr is UTF-8");
+    assert!(stderr.contains("usage"), "{stderr}");
+}
+
+#[test]
+fn follow_serve_writes_a_frame_stream_opening_with_a_handshake() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config = write_config(dir.path(), r#""succeed", "succeed""#);
+    let path = config.to_str().expect("utf-8 path");
+    assert_eq!(sima(&["run", path]).status.code(), Some(0));
+
+    let output = sima(&["follow-serve", path, "--once"]);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let mut stream = output.stdout.as_slice();
+    let payload = sima_core::read_frame(&mut stream)
+        .expect("a readable stream")
+        .expect("an opening frame");
+    let loaded = load(&config).expect("load config");
+    assert_eq!(
+        sima_pipeline::FollowFrame::decode(&payload).expect("the opening frame decodes"),
+        sima_pipeline::FollowFrame::Hello {
+            protocol: sima_pipeline::FOLLOW_PROTOCOL_VERSION,
+            run: loaded.run.id(),
+            format: loaded.run.format.clone(),
+            workers: loaded.execution.workers as u32,
+            holder: None,
+        }
+    );
+}
+
+#[test]
+fn follow_prints_a_finished_run_s_events_and_exits_on_its_outcome() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config = write_config(dir.path(), r#""succeed", "succeed""#);
+    let path = config.to_str().expect("utf-8 path");
+    assert_eq!(sima(&["run", path]).status.code(), Some(0));
+
+    // The run is over and nothing holds it: follow replays what it recorded
+    // and leaves with the run's own outcome code.
+    let output = sima(&["follow", path]);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let text = stdout(&output);
+    assert!(text.contains("started: 2 tasks"), "{text}");
+    assert_eq!(
+        text.lines()
+            .filter(|line| line.starts_with("committed"))
+            .count(),
+        2,
+        "one line per commit: {text}"
+    );
+    assert!(text.contains("finalized"), "{text}");
+}
+
+#[test]
+fn follow_over_an_abandoned_run_prints_its_history_and_exits_0() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config = write_config(dir.path(), r#""sleep:4000", "sleep:4000""#);
+    let path = config.to_str().expect("utf-8 path");
+    common::abandon_run(&config);
+
+    // The journal stops mid-run and nothing holds the lock: such a run is
+    // resumable, so the follow renders what was recorded and leaves
+    // successfully rather than reporting a failure that did not happen.
+    let output = sima(&["follow", path]);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let text = stdout(&output);
+    assert!(text.contains("started: 2 tasks"), "{text}");
+    assert!(!text.contains("finalized"), "{text}");
+}
+
+#[test]
+fn follow_over_a_failed_run_exits_2() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config = write_config(dir.path(), r#""succeed", "reject""#);
+    let path = config.to_str().expect("utf-8 path");
+    assert_eq!(sima(&["run", path]).status.code(), Some(2));
+
+    let output = sima(&["follow", path]);
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    assert!(stdout(&output).contains("rejected"), "{output:?}");
+}
+
+#[test]
+fn follow_over_an_interrupted_run_exits_130() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config = write_config(dir.path(), r#""sleep:1500", "sleep:1500", "sleep:1500""#);
+    let path = config.to_str().expect("utf-8 path");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_sima"))
+        .args(["run", path])
+        .env("SIMA_WORKER", common::worker_binary())
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn sima run");
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(
+        Command::new("kill")
+            .args(["-INT", &child.id().to_string()])
+            .status()
+            .expect("send SIGINT")
+            .success()
+    );
+    assert_eq!(child.wait().expect("wait for sima").code(), Some(130));
+
+    let output = sima(&["follow", path]);
+    assert_eq!(output.status.code(), Some(130), "{output:?}");
+}
+
+#[test]
+fn follow_before_any_run_reports_what_status_reports() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config = write_config(dir.path(), r#""succeed""#);
+    let path = config.to_str().expect("utf-8 path");
+
+    let followed = sima(&["follow", path]);
+    let reported = sima(&["status", path]);
+    assert_eq!(followed.status.code(), Some(1), "{followed:?}");
+    assert_eq!(reported.status.code(), Some(1), "{reported:?}");
+    assert_eq!(
+        String::from_utf8(followed.stderr).expect("stderr is UTF-8"),
+        String::from_utf8(reported.stderr).expect("stderr is UTF-8"),
+    );
+}
+
+#[test]
+fn the_start_gate_surfaces_a_broken_config_instead_of_waiting_it_out() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config = common::write_config_text(dir.path(), "sima.toml", "this is not a config");
+    // The gate absorbs one transient — a store root the orchestrator has yet
+    // to create. A config that will never load is a fault of the test setup,
+    // and reporting it at the first tick beats a deadline that names the
+    // wrong cause.
+    let opened = Instant::now();
+    let panic = std::panic::catch_unwind(|| common::poll_until_started(&config))
+        .expect_err("a config that does not load cannot gate a run");
+    assert!(opened.elapsed() < Duration::from_secs(5), "the gate waited");
+    let message = panic
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .unwrap_or_default();
+    assert!(message.contains("load the config"), "{message}");
+}
+
+#[test]
+fn follow_ends_successfully_when_its_reader_closes_the_pipe() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config = write_config(dir.path(), r#""sleep:400", "sleep:400", "sleep:400""#);
+    let path = config.to_str().expect("utf-8 path");
+    let mut run = common::driving(&config);
+
+    let mut followed = sima_command()
+        .args(["follow", path])
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn sima follow");
+    // `sima follow <config> | head -1`: one line read, then the reader is
+    // gone. The next write finds a closed pipe, which ends the follow on the
+    // state the run had reached — in progress, so successfully.
+    let mut out = std::io::BufReader::new(followed.stdout.take().expect("a piped stdout"));
+    let mut line = String::new();
+    std::io::BufRead::read_line(&mut out, &mut line).expect("read the first line");
+    assert!(line.starts_with("started:"), "{line}");
+    drop(out);
+
+    let ended = common::wait_within(followed, Duration::from_secs(30));
+    assert_eq!(ended.status.code(), Some(0), "{ended:?}");
+    assert_eq!(run.wait().expect("wait for sima run").code(), Some(0));
+}
+
+#[test]
+fn follow_streams_a_live_run_to_its_end() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config = write_config(dir.path(), r#""sleep:800", "sleep:800", "sleep:800""#);
+    let path = config.to_str().expect("utf-8 path");
+    let mut run = common::driving(&config);
+
+    let output = sima(&["follow", path]);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert!(stdout(&output).contains("finalized"), "{output:?}");
+    assert_eq!(run.wait().expect("wait for sima run").code(), Some(0));
 }

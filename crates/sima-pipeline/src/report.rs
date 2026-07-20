@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 
 use sima_core::{Error, Result, from_hex};
 use sima_domains::{Domain, domain_for};
+use sima_model::FormatId;
 use sima_scheduler::{Event, Record};
 
 use crate::config::LoadedConfig;
@@ -31,9 +32,15 @@ pub struct ReportRow {
 /// the renderer; a missing store, a run never started there, and an
 /// unparseable line carry the errors every journal query reports.
 pub fn report(config: &LoadedConfig) -> Result<Vec<ReportRow>> {
-    let domain = domain_for(&config.run.format)?;
-    let records = journal::records(config)?;
-    committed_stats(&records)
+    report_records(&config.run.format, &journal::records(config)?)
+}
+
+/// Renders each committed task's stats from `records` — a run's lifecycle
+/// events in append order — through `format`'s domain. The fold half of
+/// [`report`], over records from any source.
+pub fn report_records(format: &FormatId, records: &[Record]) -> Result<Vec<ReportRow>> {
+    let domain = domain_for(format)?;
+    committed_stats(records)
         .into_iter()
         .map(|(task, stats_hex)| row(task, &stats_hex, &domain))
         .collect()
@@ -45,14 +52,22 @@ pub fn report(config: &LoadedConfig) -> Result<Vec<ReportRow>> {
 /// task's execution history is what [`task_history`](crate::task_history)
 /// answers.
 pub fn report_task(config: &LoadedConfig, prefix: &str) -> Result<ReportRow> {
-    let domain = domain_for(&config.run.format)?;
-    let records = journal::records(config)?;
-    let task = resolve_task_key(&records, prefix)?;
-    let stats_hex = committed_stats(&records).remove(&task).ok_or_else(|| {
-        Error::Validation(format!(
-            "task {task} has no committed result; see `sima status --task {prefix}`"
-        ))
-    })?;
+    report_task_records(&config.run.format, &journal::records(config)?, prefix)
+}
+
+/// Renders one committed task's stats from `records`, addressed by a prefix
+/// of its key. The fold half of [`report_task`], over records from any
+/// source.
+pub fn report_task_records(
+    format: &FormatId,
+    records: &[Record],
+    prefix: &str,
+) -> Result<ReportRow> {
+    let domain = domain_for(format)?;
+    let task = resolve_task_key(records, prefix)?;
+    let stats_hex = committed_stats(records)
+        .remove(&task)
+        .ok_or_else(|| Error::Validation(format!("task {task} has no committed result")))?;
     row(task, &stats_hex, &domain)
 }
 
@@ -199,9 +214,29 @@ mod tests {
             matches!(reported, Err(Error::Validation(_))),
             "{reported:?}"
         );
-        assert!(
-            format!("{}", reported.expect_err("no committed result"))
-                .contains("has no committed result")
+        // The fold runs over records from any source, local or streamed from
+        // another host, so its message states the fact and suggests no
+        // command: a command naming a config path resolves on the machine that
+        // reads it, which is where the records came from only half the time.
+        let message = format!("{}", reported.expect_err("no committed result"));
+        assert!(message.contains("has no committed result"), "{message}");
+        assert!(!message.contains("sima "), "{message}");
+        Ok(())
+    }
+
+    #[test]
+    fn the_record_folds_equal_the_reports_read_from_the_journal() -> Result<()> {
+        let format = sima_model::FormatId::new("stub.v1")?;
+        let records = vec![
+            started(&stub_config()?.id(), 2),
+            committed("abcd", "00000000"),
+            committed("bcde", "01000000"),
+        ];
+        let (_dir, config) = journal_with(&records)?;
+        assert_eq!(report_records(&format, &records)?, report(&config)?);
+        assert_eq!(
+            report_task_records(&format, &records, "ab")?,
+            report_task(&config, "ab")?
         );
         Ok(())
     }

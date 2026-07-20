@@ -23,7 +23,11 @@ use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 
 use sima_core::Error;
-use sima_pipeline::{LoadedConfig, Record, RunControl, RunObserver, RunStatus, load, orchestrate};
+use sima_pipeline::{
+    LoadedConfig, LocalFeed, Record, RemoteFeed, RunControl, RunFeed, RunStatus, load, orchestrate,
+};
+
+use crate::Target;
 
 use super::state::{KeyAction, LockView, Msg, TuiState};
 use super::view;
@@ -58,12 +62,22 @@ const PROBE_TICKS: u32 = 20;
 ///
 /// Mode selection is automatic: a run lock held by another process means a
 /// foreign orchestrator drives this run, and the session observes it; a free
-/// lock enters the drive session.
-pub fn tui_command(config: &Path) -> ExitCode {
+/// lock enters the drive session. A run on another host is observed and never
+/// driven — driving happens where the hardware is.
+pub fn tui_command(target: &Target) -> ExitCode {
     if !io::stdout().is_terminal() {
         eprintln!("sima tui requires a terminal");
         return ExitCode::from(crate::EXIT_ERROR);
     }
+    match target {
+        Target::Local(config) => local_command(config),
+        Target::Remote { host, config } => remote_command(host, config),
+    }
+}
+
+/// The session over a run on this machine: observe while a foreign
+/// orchestrator holds it, otherwise drive it.
+fn local_command(config: &Path) -> ExitCode {
     let loaded = match load(config) {
         Ok(loaded) => loaded,
         Err(e) => return crate::report(e),
@@ -71,8 +85,8 @@ pub fn tui_command(config: &Path) -> ExitCode {
     // Probe before entering the terminal so a store fault surfaces on the
     // normal screen, as the seed below does for the drive session.
     match observed_holder(&loaded) {
-        Ok(Some((observer, holder))) => {
-            return finish(observe_session(loaded, observer, holder));
+        Ok(Some((feed, holder))) => {
+            return finish(observe_session(Box::new(feed), Some(holder), Some(loaded)));
         }
         Ok(None) => {}
         Err(e) => return crate::report(e),
@@ -84,6 +98,22 @@ pub fn tui_command(config: &Path) -> ExitCode {
         Err(e) => return crate::report(e),
     };
     finish(run_session(loaded, status))
+}
+
+/// The session over a run on another host: always an observation, whatever
+/// its lock says, since this machine cannot drive it.
+fn remote_command(host: &str, config: &str) -> ExitCode {
+    // Open before entering the terminal so an unreachable host, a version
+    // gap, or a run never started there surfaces on the normal screen.
+    let feed = match RemoteFeed::open(host, config) {
+        Ok(feed) => feed,
+        Err(e) => return crate::report(e),
+    };
+    let holder = match feed.holder() {
+        Ok(holder) => holder,
+        Err(e) => return crate::report(e),
+    };
+    finish(observe_session(Box::new(feed), holder, None))
 }
 
 /// Maps a session's return to the process exit code. The terminal guard has
@@ -99,17 +129,18 @@ fn finish(result: io::Result<u8>) -> ExitCode {
     }
 }
 
-/// The run's holder when another process drives it: the opened observer and
-/// the recorded holder line, or `None` when the lock is free. A store that
-/// does not exist yet has no run to observe — and a query must not create
-/// it — so it reads as free and the drive session proceeds.
-fn observed_holder(config: &LoadedConfig) -> sima_core::Result<Option<(RunObserver, String)>> {
-    let observer = match RunObserver::new(config) {
-        Ok(observer) => observer,
+/// The run's holder when another process drives it: the opened feed and the
+/// recorded holder line, or `None` when the lock is free. A store that does
+/// not exist yet, and a run never started in it, have nothing to observe —
+/// and a query must not create the store — so both read as free and the drive
+/// session proceeds.
+fn observed_holder(config: &LoadedConfig) -> sima_core::Result<Option<(LocalFeed, String)>> {
+    let feed = match LocalFeed::open(config) {
+        Ok(feed) => feed,
         Err(Error::Validation(_)) => return Ok(None),
         Err(e) => return Err(e),
     };
-    Ok(observer.holder()?.map(|holder| (observer, holder)))
+    Ok(feed.holder()?.map(|holder| (feed, holder)))
 }
 
 /// Maps a key event to its action, or `None` for an unbound key. The
@@ -206,10 +237,11 @@ fn drive_loop(
 }
 
 /// What ends an observer loop: the session leaves with its exit code, or the
-/// user takes the freed run over into the drive session.
+/// user takes the freed run over into the drive session, carrying the config
+/// to drive it from — which only a session over a local run holds.
 enum ObserveEnd {
     Exit(u8),
-    TakeOver,
+    TakeOver(Box<LoadedConfig>),
 }
 
 /// Runs one observer session over a run another orchestrator holds: sets up
@@ -217,15 +249,19 @@ enum ObserveEnd {
 /// once the lock is free — the run continues through the normal resume path:
 /// a fresh seed (stale leases cleared, exactly as the drive session seeds),
 /// then the drive loop on the same terminal with the start armed.
-fn observe_session(config: LoadedConfig, observer: RunObserver, holder: String) -> io::Result<u8> {
+fn observe_session(
+    feed: Box<dyn RunFeed>,
+    holder: Option<String>,
+    takeover: Option<LoadedConfig>,
+) -> io::Result<u8> {
     ON_UI_THREAD.with(|flag| flag.set(true));
     install_panic_hook();
     let mut guard = TerminalGuard::enter()?;
-    match observe_loop(&mut guard, &config, observer, holder)? {
+    match observe_loop(&mut guard, feed, holder, takeover)? {
         ObserveEnd::Exit(code) => Ok(code),
-        ObserveEnd::TakeOver => {
+        ObserveEnd::TakeOver(config) => {
             let status = crate::seed_status(&config).map_err(io::Error::other)?;
-            drive_loop(&mut guard, config, status, true)
+            drive_loop(&mut guard, *config, status, true)
         }
     }
 }
@@ -237,12 +273,15 @@ fn observe_session(config: LoadedConfig, observer: RunObserver, holder: String) 
 /// ended run; a freed lock without one presents the run as resumable.
 fn observe_loop(
     guard: &mut TerminalGuard,
-    config: &LoadedConfig,
-    mut observer: RunObserver,
-    holder: String,
+    mut feed: Box<dyn RunFeed>,
+    holder: Option<String>,
+    mut takeover: Option<LoadedConfig>,
 ) -> io::Result<ObserveEnd> {
-    let mut state = TuiState::new(RunStatus::new(config.run.id()), config.execution.workers);
-    let mut lock = LockView::Held(holder);
+    let mut state = TuiState::new(RunStatus::new(feed.info().run), feed.info().workers);
+    if takeover.is_none() {
+        state.observe_only();
+    }
+    let mut lock = lock_view(holder);
     state.observe(lock.clone());
     let mut dirty = true;
     let mut ticks_to_probe = PROBE_TICKS;
@@ -259,17 +298,14 @@ fn observe_loop(
         // Tail the journal: every line the foreign orchestrator appended
         // since the last poll, applied in append order. A read or parse
         // fault ends the session as a real error.
-        for record in observer.poll().map_err(io::Error::other)? {
+        for record in feed.poll().map_err(io::Error::other)? {
             state.handle(Msg::Event(record));
             dirty = true;
         }
         ticks_to_probe -= 1;
         if ticks_to_probe == 0 {
             ticks_to_probe = PROBE_TICKS;
-            let probed = match observer.holder().map_err(io::Error::other)? {
-                Some(holder) => LockView::Held(holder),
-                None => LockView::Free,
-            };
+            let probed = lock_view(feed.holder().map_err(io::Error::other)?);
             if probed != lock {
                 lock = probed;
                 state.observe(lock.clone());
@@ -277,12 +313,24 @@ fn observe_loop(
             }
         }
 
-        if state.take_start() {
-            return Ok(ObserveEnd::TakeOver);
+        // The state requests a start only in a session that may take over,
+        // which is exactly a session holding the config to drive from.
+        if state.take_start()
+            && let Some(config) = takeover.take()
+        {
+            return Ok(ObserveEnd::TakeOver(Box::new(config)));
         }
         if state.should_exit() {
             return Ok(ObserveEnd::Exit(state.exit_code()));
         }
+    }
+}
+
+/// The lock state a probed holder reads as.
+fn lock_view(holder: Option<String>) -> LockView {
+    match holder {
+        Some(holder) => LockView::Held(holder),
+        None => LockView::Free,
     }
 }
 
