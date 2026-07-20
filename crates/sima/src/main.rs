@@ -19,6 +19,7 @@
 //! - 130 — interrupted by Ctrl-C, store resumable;
 //! - 1 — everything else: infrastructure fault, config error, usage error.
 
+mod follow;
 mod render;
 mod tui;
 
@@ -30,10 +31,10 @@ use std::sync::atomic::AtomicBool;
 
 use sima_core::{Error, Result};
 use sima_pipeline::{
-    FeedInfo, LoadedConfig, Record, RemovalReport, ReportRow, RunControl, RunId, RunOutcome,
-    RunStatus, TaskHistory, failures_records, follow_serve, load, local_snapshot, orchestrate,
-    remote_snapshot, report_records, report_task_records, status, status_records,
-    task_history_records,
+    FeedInfo, LoadedConfig, LocalFeed, Record, RemoteFeed, RemovalReport, ReportRow, RunControl,
+    RunFeed, RunId, RunOutcome, RunStatus, TaskHistory, failures_records, follow_serve, load,
+    local_snapshot, orchestrate, remote_snapshot, report_records, report_task_records, status,
+    status_records, task_history_records,
 };
 
 /// Exit code for a definitive candidate failure.
@@ -65,6 +66,7 @@ fn main() -> ExitCode {
         ["report", config, "--all"] => report_command(&Target::new(config, host), Report::All),
         ["report", config, "--task", key] => report_task_command(&Target::new(config, host), key),
         ["tui", config] if host.is_none() => tui::tui_command(&resolve_config(config)),
+        ["follow", config] => follow::follow_command(&Target::new(config, host)),
         _ => {
             eprint!(
                 "usage: sima run <config>                  drive the configured run\n\
@@ -76,6 +78,7 @@ fn main() -> ExitCode {
                  \x20      sima report <config> --task <key>  print one committed task's stats\n\
                  \x20      sima rm <config>                   delete the run and what only it references\n\
                  \x20      sima tui <config>                  drive the run in a full-screen terminal UI\n\
+                 \x20      sima follow <config>               stream the run's events until it ends\n\
                  \x20      <config> is a sima.toml path; the .toml extension may be omitted\n\
                  \x20      <key> is any prefix of a task key that names one task\n"
             );
@@ -139,6 +142,16 @@ impl Target {
                 config: config.to_string(),
             },
         }
+    }
+}
+
+/// Opens a live feed over the target's run: the journal on this machine, or
+/// one follow stream from the host the orchestrator runs on. The views that
+/// tail a run consume the feed and never learn which it is.
+fn feed(target: &Target) -> Result<Box<dyn RunFeed>> {
+    match target {
+        Target::Local(path) => Ok(Box::new(LocalFeed::open(&load(path)?)?)),
+        Target::Remote { host, config } => Ok(Box::new(RemoteFeed::open(host, config)?)),
     }
 }
 

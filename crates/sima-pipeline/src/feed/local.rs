@@ -17,9 +17,12 @@ pub struct LocalFeed {
 
 impl LocalFeed {
     /// Opens a feed over the run the loaded config describes. A store root
-    /// that does not exist is [`Error::Validation`](sima_core::Error::Validation),
-    /// as it is for every read-only query.
+    /// that does not exist and a run never started there are both
+    /// [`Error::Validation`](sima_core::Error::Validation), as they are for
+    /// every read-only query — a run with no journal has nothing to follow,
+    /// and the remote feed reports the same.
     pub fn open(config: &LoadedConfig) -> Result<LocalFeed> {
+        journal::followable(config)?;
         Ok(LocalFeed {
             info: info(config),
             observer: RunObserver::new(config)?,

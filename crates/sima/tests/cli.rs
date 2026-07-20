@@ -757,3 +757,108 @@ fn follow_serve_writes_a_frame_stream_opening_with_a_handshake() {
         }
     );
 }
+
+#[test]
+fn follow_prints_a_finished_run_s_events_and_exits_on_its_outcome() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config = write_config(dir.path(), r#""succeed", "succeed""#);
+    let path = config.to_str().expect("utf-8 path");
+    assert_eq!(sima(&["run", path]).status.code(), Some(0));
+
+    // The run is over and nothing holds it: follow replays what it recorded
+    // and leaves with the run's own outcome code.
+    let output = sima(&["follow", path]);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let text = stdout(&output);
+    assert!(text.contains("started: 2 tasks"), "{text}");
+    assert_eq!(
+        text.lines()
+            .filter(|line| line.starts_with("committed"))
+            .count(),
+        2,
+        "one line per commit: {text}"
+    );
+    assert!(text.contains("finalized"), "{text}");
+}
+
+#[test]
+fn follow_over_a_failed_run_exits_2() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config = write_config(dir.path(), r#""succeed", "reject""#);
+    let path = config.to_str().expect("utf-8 path");
+    assert_eq!(sima(&["run", path]).status.code(), Some(2));
+
+    let output = sima(&["follow", path]);
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    assert!(stdout(&output).contains("rejected"), "{output:?}");
+}
+
+#[test]
+fn follow_over_an_interrupted_run_exits_130() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config = write_config(dir.path(), r#""sleep:1500", "sleep:1500", "sleep:1500""#);
+    let path = config.to_str().expect("utf-8 path");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_sima"))
+        .args(["run", path])
+        .env("SIMA_WORKER", common::worker_binary())
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn sima run");
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(
+        Command::new("kill")
+            .args(["-INT", &child.id().to_string()])
+            .status()
+            .expect("send SIGINT")
+            .success()
+    );
+    assert_eq!(child.wait().expect("wait for sima").code(), Some(130));
+
+    let output = sima(&["follow", path]);
+    assert_eq!(output.status.code(), Some(130), "{output:?}");
+}
+
+#[test]
+fn follow_before_any_run_reports_what_status_reports() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config = write_config(dir.path(), r#""succeed""#);
+    let path = config.to_str().expect("utf-8 path");
+
+    let followed = sima(&["follow", path]);
+    let reported = sima(&["status", path]);
+    assert_eq!(followed.status.code(), Some(1), "{followed:?}");
+    assert_eq!(reported.status.code(), Some(1), "{reported:?}");
+    assert_eq!(
+        String::from_utf8(followed.stderr).expect("stderr is UTF-8"),
+        String::from_utf8(reported.stderr).expect("stderr is UTF-8"),
+    );
+}
+
+#[test]
+fn follow_streams_a_live_run_to_its_end() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config = write_config(dir.path(), r#""sleep:800", "sleep:800", "sleep:800""#);
+    let path = config.to_str().expect("utf-8 path");
+    let mut run = Command::new(env!("CARGO_BIN_EXE_sima"))
+        .args(["run", path])
+        .env("SIMA_WORKER", common::worker_binary())
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn sima run");
+    // Wait for the run to journal its start, so the follow attaches to a run
+    // in flight rather than one that does not exist yet.
+    assert!(
+        common::poll_until(Duration::from_secs(30), || {
+            RunObserver::new(&load(&config).expect("load config"))
+                .ok()
+                .and_then(|observer| observer.holder().ok().flatten())
+                .is_some()
+        }),
+        "the run takes its lock and journals its start"
+    );
+
+    let output = sima(&["follow", path]);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert!(stdout(&output).contains("finalized"), "{output:?}");
+    assert_eq!(run.wait().expect("wait for sima run").code(), Some(0));
+}
