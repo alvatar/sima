@@ -131,7 +131,8 @@ fn task_ending_in(config: &Path, outcome: fn(&Event) -> Option<&String>) -> Stri
         .clone()
 }
 
-/// The key of a task the run committed.
+/// The key of the first task the run committed. Commit order across workers is
+/// a race, so callers use a config in which exactly one task commits.
 fn committed_task(config: &Path) -> String {
     task_ending_in(config, |event| match event {
         Event::Committed { task, .. } => Some(task),
@@ -296,9 +297,11 @@ fn report_all_prints_one_line_per_committed_task() {
 #[test]
 fn report_task_prints_one_committed_task_s_stats() {
     let dir = tempfile::tempdir().expect("temp dir");
-    let config = write_config(dir.path(), r#""succeed", "flaky:1""#);
+    // Exactly one task commits, so the task the report addresses and the
+    // attempt it committed on are both fixed regardless of worker ordering.
+    let config = write_config(dir.path(), r#""succeed", "reject""#);
     let path = config.to_str().expect("utf-8 path");
-    assert_eq!(sima(&["run", path]).status.code(), Some(0));
+    assert_eq!(sima(&["run", path]).status.code(), Some(2));
 
     let task = committed_task(&config);
     let output = sima(&["report", path, "--task", &task[..8]]);
