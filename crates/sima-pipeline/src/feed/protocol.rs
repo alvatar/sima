@@ -194,6 +194,14 @@ mod tests {
     }
 
     #[test]
+    fn the_follow_protocol_version_is_pinned() {
+        // The handshake contract both machines compile against; bumping it is
+        // a deliberate act, and the mismatch tests derive their foreign
+        // version from this one.
+        assert_eq!(FOLLOW_PROTOCOL_VERSION, 1);
+    }
+
+    #[test]
     fn every_frame_round_trips_through_its_payload() -> Result<()> {
         for frame in every_variant()? {
             assert_eq!(FollowFrame::decode(&frame.encode())?, frame);
