@@ -44,5 +44,11 @@ pub trait RunFeed {
     fn poll(&mut self) -> Result<Vec<Record>>;
 
     /// Who holds the run's orchestrator lock, or `None` while it is free.
+    ///
+    /// How fresh the answer is follows from where the lock is. A local feed
+    /// probes it directly, so the answer holds as of the call. A remote feed
+    /// reports what the far side last observed, whose age is bounded by the
+    /// far side's probe interval plus the stream's latency — a caller that
+    /// acts on a free lock acts on an observation within that bound.
     fn holder(&self) -> Result<Option<String>>;
 }
