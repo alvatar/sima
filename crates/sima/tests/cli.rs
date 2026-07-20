@@ -698,3 +698,62 @@ fn sigint_interrupts_gracefully_and_a_rerun_matches_an_uninterrupted_store() {
         manifest_of(&reference).expect("reference manifest"),
     );
 }
+
+#[test]
+fn the_write_commands_refuse_a_remote_host() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config = write_config(dir.path(), r#""succeed""#);
+    let path = config.to_str().expect("utf-8 path");
+    // Driving a run happens where the hardware is, and removing a run mutates
+    // a store; neither observes, so neither takes `--on`.
+    for args in [
+        vec!["run", path, "--on", "gpubox"],
+        vec!["rm", path, "--on", "gpubox"],
+    ] {
+        let output = sima(&args);
+        assert_eq!(output.status.code(), Some(1), "{args:?}: {output:?}");
+        let stderr = String::from_utf8(output.stderr).expect("stderr is UTF-8");
+        assert!(stderr.contains("usage"), "{args:?}: {stderr}");
+    }
+    // The refusal is the flag, not the command: the run itself still drives.
+    assert_eq!(sima(&["run", path]).status.code(), Some(0));
+}
+
+#[test]
+fn a_host_flag_without_a_host_is_a_usage_error() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config = write_config(dir.path(), r#""succeed""#);
+    let path = config.to_str().expect("utf-8 path");
+    assert_eq!(sima(&["run", path]).status.code(), Some(0));
+
+    let output = sima(&["status", path, "--on"]);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).expect("stderr is UTF-8");
+    assert!(stderr.contains("usage"), "{stderr}");
+}
+
+#[test]
+fn follow_serve_writes_a_frame_stream_opening_with_a_handshake() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config = write_config(dir.path(), r#""succeed", "succeed""#);
+    let path = config.to_str().expect("utf-8 path");
+    assert_eq!(sima(&["run", path]).status.code(), Some(0));
+
+    let output = sima(&["follow-serve", path, "--once"]);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let mut stream = output.stdout.as_slice();
+    let payload = sima_core::read_frame(&mut stream)
+        .expect("a readable stream")
+        .expect("an opening frame");
+    let loaded = load(&config).expect("load config");
+    assert_eq!(
+        sima_pipeline::FollowFrame::decode(&payload).expect("the opening frame decodes"),
+        sima_pipeline::FollowFrame::Hello {
+            protocol: sima_pipeline::FOLLOW_PROTOCOL_VERSION,
+            run: loaded.run.id(),
+            format: loaded.run.format.clone(),
+            workers: loaded.execution.workers as u32,
+            holder: None,
+        }
+    );
+}

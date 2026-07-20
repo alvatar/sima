@@ -30,8 +30,10 @@ use std::sync::atomic::AtomicBool;
 
 use sima_core::{Error, Result};
 use sima_pipeline::{
-    LoadedConfig, RemovalReport, ReportRow, RunControl, RunId, RunOutcome, RunStatus, TaskHistory,
-    load, orchestrate, status,
+    FeedInfo, LoadedConfig, Record, RemovalReport, ReportRow, RunControl, RunId, RunOutcome,
+    RunStatus, TaskHistory, failures_records, follow_serve, load, local_snapshot, orchestrate,
+    remote_snapshot, report_records, report_task_records, status, status_records,
+    task_history_records,
 };
 
 /// Exit code for a definitive candidate failure.
@@ -45,16 +47,24 @@ pub(crate) const EXIT_ERROR: u8 = 1;
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    match args.iter().map(String::as_str).collect::<Vec<_>>()[..] {
-        ["run", config] => run_command(&resolve_config(config)),
-        ["status", config] => status_command(&resolve_config(config)),
-        ["status", config, "--failed"] => status_failed_command(&resolve_config(config)),
-        ["status", config, "--task", key] => status_task_command(&resolve_config(config), key),
-        ["report", config] => report_command(&resolve_config(config), Report::Summary),
-        ["report", config, "--all"] => report_command(&resolve_config(config), Report::All),
-        ["report", config, "--task", key] => report_task_command(&resolve_config(config), key),
-        ["rm", config] => rm_command(&resolve_config(config)),
-        ["tui", config] => tui::tui_command(&resolve_config(config)),
+    let (args, host) = split_target(&args);
+    match args[..] {
+        // The write commands never observe: `run` drives a run, which happens
+        // where the hardware is, and `rm` mutates a store. A host on either
+        // falls through to the usage error.
+        ["run", config] if host.is_none() => run_command(&resolve_config(config)),
+        ["rm", config] if host.is_none() => rm_command(&resolve_config(config)),
+        // The far half of the follow transport, invoked over ssh by another
+        // machine's read command. It is not a user-facing verb.
+        ["follow-serve", config] if host.is_none() => serve_command(config, false),
+        ["follow-serve", config, "--once"] if host.is_none() => serve_command(config, true),
+        ["status", config] => status_command(&Target::new(config, host)),
+        ["status", config, "--failed"] => status_failed_command(&Target::new(config, host)),
+        ["status", config, "--task", key] => status_task_command(&Target::new(config, host), key),
+        ["report", config] => report_command(&Target::new(config, host), Report::Summary),
+        ["report", config, "--all"] => report_command(&Target::new(config, host), Report::All),
+        ["report", config, "--task", key] => report_task_command(&Target::new(config, host), key),
+        ["tui", config] if host.is_none() => tui::tui_command(&resolve_config(config)),
         _ => {
             eprint!(
                 "usage: sima run <config>                  drive the configured run\n\
@@ -71,6 +81,74 @@ fn main() -> ExitCode {
             );
             ExitCode::from(EXIT_ERROR)
         }
+    }
+}
+
+/// Splits `--on <host>` out of the arguments, wherever in them it appears,
+/// returning the rest and the host it named. The commands match on the rest,
+/// so every command form keeps its exact shape whether or not a host is set.
+///
+/// A trailing `--on` with nothing after it names no host and stays in the
+/// remaining arguments, where it matches no command form and falls to the
+/// usage error. A repeated `--on` takes the last host given.
+fn split_target(args: &[String]) -> (Vec<&str>, Option<&str>) {
+    let mut rest = Vec::new();
+    let mut host = None;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--on" if index + 1 < args.len() => {
+                host = Some(args[index + 1].as_str());
+                index += 2;
+            }
+            arg => {
+                rest.push(arg);
+                index += 1;
+            }
+        }
+    }
+    (rest, host)
+}
+
+/// The run a read command addresses: one on this machine, or one on the host
+/// its orchestrator runs on.
+///
+/// A run's identity is the hash of its config, and its store path resolves
+/// relative to the config file's directory, so a remote target carries the
+/// config argument unresolved: it names a path on the far side, and the far
+/// side is what interprets it.
+enum Target {
+    /// A config file on this machine, resolved as written.
+    Local(PathBuf),
+    /// A config file on `host`, as typed.
+    Remote {
+        /// The ssh destination the local ssh client resolves.
+        host: String,
+        /// The config argument, passed through to that host verbatim.
+        config: String,
+    },
+}
+
+impl Target {
+    /// The target a command's config argument and optional host name.
+    fn new(config: &str, host: Option<&str>) -> Target {
+        match host {
+            None => Target::Local(resolve_config(config)),
+            Some(host) => Target::Remote {
+                host: host.to_string(),
+                config: config.to_string(),
+            },
+        }
+    }
+}
+
+/// Reads everything the target's run journaled, with the metadata the views
+/// render through: locally through the store, remotely over one follow
+/// stream. The fold that renders it is the same either way.
+fn snapshot(target: &Target) -> Result<(FeedInfo, Vec<Record>)> {
+    match target {
+        Target::Local(path) => local_snapshot(&load(path)?),
+        Target::Remote { host, config } => remote_snapshot(host, config),
     }
 }
 
@@ -125,8 +203,8 @@ fn drive(config: &Path) -> Result<RunOutcome> {
 
 /// `sima status <config.toml>`: the config's execution section names the
 /// store, its identity section derives the run id.
-fn status_command(config: &Path) -> ExitCode {
-    match read_status(config) {
+fn status_command(target: &Target) -> ExitCode {
+    match read_status(target) {
         Ok(report) => {
             println!("{}", render::status_block(&report));
             ExitCode::SUCCESS
@@ -135,17 +213,17 @@ fn status_command(config: &Path) -> ExitCode {
     }
 }
 
-/// Loads the config and computes the run's status from its journal.
-fn read_status(config: &Path) -> Result<RunStatus> {
-    let loaded = load(config)?;
-    status(&loaded)
+/// Computes the target run's status from the records it journaled.
+fn read_status(target: &Target) -> Result<RunStatus> {
+    let (info, records) = snapshot(target)?;
+    Ok(status_records(info.run, &records))
 }
 
 /// `sima status <config.toml> --task <key>`: one task's attempt timeline,
 /// addressed by a prefix of its key. The store and run id come from the
 /// config the same way the aggregate status derives them.
-fn status_task_command(config: &Path, prefix: &str) -> ExitCode {
-    match read_task_history(config, prefix) {
+fn status_task_command(target: &Target, prefix: &str) -> ExitCode {
+    match read_task_history(target, prefix) {
         Ok(history) => {
             println!("{}", render::task_block(&history));
             ExitCode::SUCCESS
@@ -154,17 +232,17 @@ fn status_task_command(config: &Path, prefix: &str) -> ExitCode {
     }
 }
 
-/// Loads the config and projects one task's lifecycle from its journal.
-fn read_task_history(config: &Path, prefix: &str) -> Result<TaskHistory> {
-    let loaded = load(config)?;
-    sima_pipeline::task_history(&loaded, prefix)
+/// Projects one task's lifecycle from the records the target run journaled.
+fn read_task_history(target: &Target, prefix: &str) -> Result<TaskHistory> {
+    let (info, records) = snapshot(target)?;
+    task_history_records(&info.format, &records, prefix)
 }
 
 /// `sima status <config.toml> --failed`: the tasks the run did not commit,
 /// one line each. The query answers whatever the run's own outcome was, so a
 /// digest over a failed run still exits 0.
-fn status_failed_command(config: &Path) -> ExitCode {
-    match read_failures(config) {
+fn status_failed_command(target: &Target) -> ExitCode {
+    match read_failures(target) {
         Ok((run, failures)) => {
             println!("{}", render::failures_block(&run, &failures));
             ExitCode::SUCCESS
@@ -173,12 +251,11 @@ fn status_failed_command(config: &Path) -> ExitCode {
     }
 }
 
-/// Loads the config and projects the tasks its run did not commit, with the
-/// run the digest names.
-fn read_failures(config: &Path) -> Result<(RunId, Vec<TaskHistory>)> {
-    let loaded = load(config)?;
-    let failures = sima_pipeline::failures(&loaded)?;
-    Ok((loaded.run.id(), failures))
+/// Projects the tasks the target run did not commit, with the run the digest
+/// names.
+fn read_failures(target: &Target) -> Result<(RunId, Vec<TaskHistory>)> {
+    let (info, records) = snapshot(target)?;
+    Ok((info.run, failures_records(&info.format, &records)?))
 }
 
 /// Seeds the tui's display from any existing journal for `config`'s run,
@@ -217,8 +294,8 @@ enum Report {
 /// `sima report [--all] <config.toml>`: renders the run's committed stats,
 /// compactly by default. The store and run id come from the config the same
 /// way `status` derives them.
-fn report_command(config: &Path, scope: Report) -> ExitCode {
-    match read_report(config) {
+fn report_command(target: &Target, scope: Report) -> ExitCode {
+    match read_report(target) {
         Ok(rows) => write_rows(&rows, scope),
         Err(e) => report(e),
     }
@@ -226,8 +303,8 @@ fn report_command(config: &Path, scope: Report) -> ExitCode {
 
 /// `sima report <config.toml> --task <key>`: one committed task's stats,
 /// addressed by a prefix of its key.
-fn report_task_command(config: &Path, prefix: &str) -> ExitCode {
-    match read_report_task(config, prefix) {
+fn report_task_command(target: &Target, prefix: &str) -> ExitCode {
+    match read_report_task(target, prefix) {
         Ok(row) => write_rows(&[row], Report::All),
         Err(e) => report(e),
     }
@@ -308,16 +385,32 @@ fn group_stats(rows: &[ReportRow]) -> Vec<(usize, &str)> {
     groups
 }
 
-/// Loads the config and renders each committed task's stats from its journal.
-fn read_report(config: &Path) -> Result<Vec<ReportRow>> {
-    let loaded = load(config)?;
-    sima_pipeline::report(&loaded)
+/// Renders each committed task's stats from the records the target run
+/// journaled.
+fn read_report(target: &Target) -> Result<Vec<ReportRow>> {
+    let (info, records) = snapshot(target)?;
+    report_records(&info.format, &records)
 }
 
-/// Loads the config and renders one committed task's stats from its journal.
-fn read_report_task(config: &Path, prefix: &str) -> Result<ReportRow> {
-    let loaded = load(config)?;
-    sima_pipeline::report_task(&loaded, prefix)
+/// Renders one committed task's stats from the records the target run
+/// journaled.
+fn read_report_task(target: &Target, prefix: &str) -> Result<ReportRow> {
+    let (info, records) = snapshot(target)?;
+    report_task_records(&info.format, &records, prefix)
+}
+
+/// `sima follow-serve <config> [--once]`: writes the run's follow stream to
+/// stdout, which carries frames and nothing else — every diagnostic goes to
+/// stderr, which ssh keeps on its own channel. The near half of the transport
+/// spawns this over ssh; it is not a user-facing verb and stays out of the
+/// usage text.
+fn serve_command(config: &str, once: bool) -> ExitCode {
+    let stdout = std::io::stdout();
+    let mut out = stdout.lock();
+    match follow_serve(&resolve_config(config), once, &mut out) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => report(e),
+    }
 }
 
 /// `sima rm <config.toml>`: deletes the run — and everything no surviving run
@@ -441,6 +534,52 @@ mod tests {
             String::from_utf8(out).expect("utf-8"),
             "3 committed tasks\n2  attempt 0\n1  attempt 1\n"
         );
+    }
+
+    /// Splits an argument list given as string slices.
+    fn split(args: &[&str]) -> (Vec<String>, Option<String>) {
+        let args: Vec<String> = args.iter().map(|arg| (*arg).to_string()).collect();
+        let (rest, host) = split_target(&args);
+        (
+            rest.into_iter().map(str::to_string).collect(),
+            host.map(str::to_string),
+        )
+    }
+
+    #[test]
+    fn a_host_leaves_every_command_form_intact() {
+        // The commands match on the rest, so extracting the pair — from any
+        // position — must leave exactly the argument list they already match.
+        let (rest, host) = split(&["status", "exp.toml", "--task", "ab", "--on", "gpubox"]);
+        assert_eq!(rest, ["status", "exp.toml", "--task", "ab"]);
+        assert_eq!(host.as_deref(), Some("gpubox"));
+
+        let (rest, host) = split(&["status", "--on", "gpubox", "exp.toml", "--failed"]);
+        assert_eq!(rest, ["status", "exp.toml", "--failed"]);
+        assert_eq!(host.as_deref(), Some("gpubox"));
+    }
+
+    #[test]
+    fn arguments_without_a_host_pass_through_unchanged() {
+        let (rest, host) = split(&["report", "exp.toml", "--all"]);
+        assert_eq!(rest, ["report", "exp.toml", "--all"]);
+        assert_eq!(host, None);
+    }
+
+    #[test]
+    fn a_trailing_host_flag_names_no_host_and_stays_in_the_arguments() {
+        // Left in place, it matches no command form and falls to the usage
+        // error, rather than silently reading as a local command.
+        let (rest, host) = split(&["status", "exp.toml", "--on"]);
+        assert_eq!(rest, ["status", "exp.toml", "--on"]);
+        assert_eq!(host, None);
+    }
+
+    #[test]
+    fn a_repeated_host_flag_takes_the_last_host() {
+        let (rest, host) = split(&["status", "exp.toml", "--on", "a", "--on", "b"]);
+        assert_eq!(rest, ["status", "exp.toml"]);
+        assert_eq!(host.as_deref(), Some("b"));
     }
 
     #[test]

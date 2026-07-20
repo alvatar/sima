@@ -10,7 +10,7 @@ mod protocol;
 mod remote;
 mod serve;
 
-pub use local::LocalFeed;
+pub use local::{LocalFeed, local_snapshot};
 pub use protocol::{FOLLOW_PROTOCOL_VERSION, FollowFrame};
 pub use remote::{RemoteFeed, remote_snapshot};
 pub use serve::follow_serve;

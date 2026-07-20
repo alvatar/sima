@@ -33,7 +33,7 @@ pub use config::{LoadedConfig, RemoteConfig, load};
 pub use devices::DeviceSelector;
 pub use feed::{
     FOLLOW_PROTOCOL_VERSION, FeedInfo, FollowFrame, LocalFeed, RemoteFeed, RunFeed, follow_serve,
-    remote_snapshot,
+    local_snapshot, remote_snapshot,
 };
 pub use observe::RunObserver;
 pub use orchestrate::orchestrate;

@@ -5,6 +5,7 @@ use sima_scheduler::Record;
 
 use crate::config::LoadedConfig;
 use crate::feed::{FeedInfo, RunFeed};
+use crate::journal;
 use crate::observe::RunObserver;
 
 /// Follows a run through the store on this machine: a [`RunObserver`] paired
@@ -20,13 +21,26 @@ impl LocalFeed {
     /// as it is for every read-only query.
     pub fn open(config: &LoadedConfig) -> Result<LocalFeed> {
         Ok(LocalFeed {
-            info: FeedInfo {
-                run: config.run.id(),
-                format: config.run.format.clone(),
-                workers: config.execution.workers,
-            },
+            info: info(config),
             observer: RunObserver::new(config)?,
         })
+    }
+}
+
+/// Reads the whole journal of the run a loaded config describes, with the
+/// metadata a view renders through — the local counterpart of
+/// [`remote_snapshot`](crate::remote_snapshot), for the one-shot views that
+/// render once and exit.
+pub fn local_snapshot(config: &LoadedConfig) -> Result<(FeedInfo, Vec<Record>)> {
+    Ok((info(config), journal::records(config)?))
+}
+
+/// The metadata a loaded config carries about its run.
+fn info(config: &LoadedConfig) -> FeedInfo {
+    FeedInfo {
+        run: config.run.id(),
+        format: config.run.format.clone(),
+        workers: config.execution.workers,
     }
 }
 
