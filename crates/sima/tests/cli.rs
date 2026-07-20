@@ -122,6 +122,131 @@ fn status_before_any_run_exits_1_and_after_reports_the_counts() {
     );
 }
 
+/// The key of the run's task that ended on `outcome`, from its journal.
+fn task_ending_in(config: &Path, outcome: fn(&Event) -> Option<&String>) -> String {
+    common::journal_events(config)
+        .iter()
+        .find_map(outcome)
+        .expect("a task with that outcome")
+        .clone()
+}
+
+/// The key of the first task the run committed. Commit order across workers is
+/// a race, so callers use a config in which exactly one task commits.
+fn committed_task(config: &Path) -> String {
+    task_ending_in(config, |event| match event {
+        Event::Committed { task, .. } => Some(task),
+        _ => None,
+    })
+}
+
+/// The key of a task the run rejected.
+fn rejected_task(config: &Path) -> String {
+    task_ending_in(config, |event| match event {
+        Event::Rejected { task, .. } => Some(task),
+        _ => None,
+    })
+}
+
+#[test]
+fn status_task_prints_every_attempt_of_a_retried_task() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    // The flaky task fails once and commits on its second attempt: its
+    // timeline names both attempts and the outcome each reached.
+    let config = write_config(dir.path(), r#""succeed", "flaky:1""#);
+    let path = config.to_str().expect("utf-8 path");
+    assert_eq!(sima(&["run", path]).status.code(), Some(0));
+
+    let flaky = task_ending_in(&config, |event| match event {
+        Event::Failed { task, .. } => Some(task),
+        _ => None,
+    });
+    let output = sima(&["status", path, "--task", &flaky[..8]]);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let text = stdout(&output);
+    assert!(text.contains(&flaky[..12]), "names the task: {text}");
+    assert!(text.contains("committed"), "the terminal outcome: {text}");
+    assert!(text.contains("failed"), "the first attempt failed: {text}");
+    assert!(text.contains("elapsed"), "the elapsed column: {text}");
+    // One row per attempt: the rows are the lines an attempt number opens.
+    let rows = text
+        .lines()
+        .filter(|line| {
+            line.split_whitespace()
+                .next()
+                .is_some_and(|first| first.parse::<u32>().is_ok())
+        })
+        .count();
+    assert_eq!(rows, 2, "one row per attempt: {text}");
+}
+
+#[test]
+fn status_task_reports_a_rejected_task_and_its_reason() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config = write_config(dir.path(), r#""succeed", "reject""#);
+    let path = config.to_str().expect("utf-8 path");
+    assert_eq!(sima(&["run", path]).status.code(), Some(2));
+
+    let rejected = rejected_task(&config);
+    let output = sima(&["status", path, "--task", &rejected[..8]]);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let text = stdout(&output);
+    assert!(text.contains("rejected"), "the terminal outcome: {text}");
+    assert!(text.contains("programmed rejection"), "the reason: {text}");
+}
+
+#[test]
+fn status_task_rejects_an_ambiguous_or_unmatched_prefix() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config = write_config(dir.path(), r#""succeed", "succeed", "succeed""#);
+    let path = config.to_str().expect("utf-8 path");
+    assert_eq!(sima(&["run", path]).status.code(), Some(0));
+
+    // The empty prefix matches every task the run journaled.
+    let ambiguous = sima(&["status", path, "--task", ""]);
+    assert_eq!(ambiguous.status.code(), Some(1), "{ambiguous:?}");
+    let stderr = String::from_utf8(ambiguous.stderr).expect("stderr is UTF-8");
+    assert!(stderr.contains("ambiguous"), "{stderr}");
+
+    let unmatched = sima(&["status", path, "--task", "ffffffffff"]);
+    assert_eq!(unmatched.status.code(), Some(1), "{unmatched:?}");
+    let stderr = String::from_utf8(unmatched.stderr).expect("stderr is UTF-8");
+    assert!(stderr.contains("no task"), "{stderr}");
+}
+
+#[test]
+fn status_failed_names_the_tasks_a_failed_run_did_not_commit() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config = write_config(dir.path(), r#""succeed", "reject""#);
+    let path = config.to_str().expect("utf-8 path");
+    assert_eq!(sima(&["run", path]).status.code(), Some(2));
+
+    // The run failed; the query over its journal answers, so it exits 0.
+    let output = sima(&["status", path, "--failed"]);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let text = stdout(&output);
+    assert!(text.contains("1 task did not commit"), "{text}");
+    let rejected = rejected_task(&config);
+    assert!(text.contains(&rejected[..12]), "names the task: {text}");
+    assert!(text.contains("rejected"), "names the outcome: {text}");
+    assert!(text.contains("programmed rejection"), "the reason: {text}");
+}
+
+#[test]
+fn status_failed_over_an_all_committed_run_names_no_task() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config = write_config(dir.path(), r#""succeed", "flaky:1""#);
+    let path = config.to_str().expect("utf-8 path");
+    assert_eq!(sima(&["run", path]).status.code(), Some(0));
+
+    let output = sima(&["status", path, "--failed"]);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let text = stdout(&output);
+    assert!(text.contains("0 tasks did not commit"), "{text}");
+    // A retried task committed in the end, so no row names it.
+    assert_eq!(text.lines().count(), 1, "the header alone: {text}");
+}
+
 #[test]
 fn report_defaults_to_the_compact_summary() {
     let dir = tempfile::tempdir().expect("temp dir");
@@ -142,13 +267,13 @@ fn report_defaults_to_the_compact_summary() {
 }
 
 #[test]
-fn report_full_prints_one_line_per_committed_task() {
+fn report_all_prints_one_line_per_committed_task() {
     let dir = tempfile::tempdir().expect("temp dir");
     let config = write_config(dir.path(), r#""succeed", "succeed""#);
     let path = config.to_str().expect("utf-8 path");
 
     assert_eq!(sima(&["run", path]).status.code(), Some(0));
-    let output = sima(&["report", "--full", path]);
+    let output = sima(&["report", path, "--all"]);
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let text = stdout(&output);
     // One line per committed task — `<short task key>  <rendered stats>`, each
@@ -166,6 +291,53 @@ fn report_full_prints_one_line_per_committed_task() {
             "the key is hex: {line}"
         );
         assert_eq!(stats, "attempt 0", "the rendered stats: {line}");
+    }
+}
+
+#[test]
+fn report_task_prints_one_committed_task_s_stats() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    // Exactly one task commits, so the task the report addresses and the
+    // attempt it committed on are both fixed regardless of worker ordering.
+    let config = write_config(dir.path(), r#""succeed", "reject""#);
+    let path = config.to_str().expect("utf-8 path");
+    assert_eq!(sima(&["run", path]).status.code(), Some(2));
+
+    let task = committed_task(&config);
+    let output = sima(&["report", path, "--task", &task[..8]]);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert_eq!(stdout(&output), format!("{}  attempt 0\n", &task[..12]));
+}
+
+#[test]
+fn report_task_over_a_task_that_never_committed_exits_1() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config = write_config(dir.path(), r#""succeed", "reject""#);
+    let path = config.to_str().expect("utf-8 path");
+    assert_eq!(sima(&["run", path]).status.code(), Some(2));
+
+    let rejected = rejected_task(&config);
+    let output = sima(&["report", path, "--task", &rejected[..8]]);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).expect("stderr is UTF-8");
+    assert!(stderr.contains("has no committed result"), "{stderr}");
+}
+
+#[test]
+fn report_full_is_no_longer_a_command() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config = write_config(dir.path(), r#""succeed""#);
+    let path = config.to_str().expect("utf-8 path");
+    assert_eq!(sima(&["run", path]).status.code(), Some(0));
+
+    for args in [
+        vec!["report", "--full", path],
+        vec!["report", path, "--full"],
+    ] {
+        let output = sima(&args);
+        assert_eq!(output.status.code(), Some(1), "{args:?}: {output:?}");
+        let stderr = String::from_utf8(output.stderr).expect("stderr is UTF-8");
+        assert!(stderr.contains("usage"), "{args:?}: {stderr}");
     }
 }
 
@@ -369,16 +541,26 @@ fn an_unknown_subcommand_exits_1_with_usage_on_stderr() {
 }
 
 #[test]
-fn the_usage_text_names_the_tui_subcommand() {
+fn the_usage_text_names_every_command_form() {
     let output = sima(&[]);
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let stderr = String::from_utf8(output.stderr).expect("stderr is UTF-8");
-    assert!(stderr.contains("sima tui"), "usage names tui: {stderr}");
+    for form in [
+        "sima run",
+        "sima status",
+        "--failed",
+        "--task",
+        "sima report",
+        "--all",
+        "sima rm",
+        "sima tui",
+    ] {
+        assert!(stderr.contains(form), "usage names {form}: {stderr}");
+    }
     assert!(
-        stderr.contains("sima report"),
-        "usage names report: {stderr}"
+        !stderr.contains("--full"),
+        "the renamed flag is gone: {stderr}"
     );
-    assert!(stderr.contains("sima rm"), "usage names rm: {stderr}");
 }
 
 #[test]

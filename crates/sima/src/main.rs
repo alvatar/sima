@@ -1,8 +1,18 @@
-//! `sima` command-line binary: `run` drives a config to its outcome with
-//! live progress and graceful Ctrl-C; `status` reports a run's journal
-//! state. All orchestration lives in `sima-pipeline` — this binary parses
-//! arguments, renders output, registers the interrupt flag, and maps
-//! outcomes to exit codes:
+//! `sima` command-line binary. `run` drives a config to its outcome with
+//! live progress and graceful Ctrl-C; the query commands read the run's
+//! journal along two axes — what the command reports, and how much of the
+//! run it covers:
+//!
+//! - `status` reports execution: the run's state and counters, one task's
+//!   attempt timeline under `--task <key>`, or the tasks that did not commit
+//!   under `--failed`.
+//! - `report` reports results: the committed stats, grouped by default, one
+//!   line per task under `--all`, or one task's under `--task <key>`.
+//!
+//! A `<key>` is any prefix of a task key that names one task. All
+//! orchestration lives in `sima-pipeline` — this binary parses arguments,
+//! renders output, registers the interrupt flag, and maps outcomes to exit
+//! codes:
 //!
 //! - 0 — the run finalized (or `status` answered);
 //! - 2 — a definitive candidate failure;
@@ -20,8 +30,8 @@ use std::sync::atomic::AtomicBool;
 
 use sima_core::{Error, Result};
 use sima_pipeline::{
-    LoadedConfig, RemovalReport, ReportRow, RunControl, RunOutcome, RunStatus, load, orchestrate,
-    status,
+    LoadedConfig, RemovalReport, ReportRow, RunControl, RunId, RunOutcome, RunStatus, TaskHistory,
+    load, orchestrate, status,
 };
 
 /// Exit code for a definitive candidate failure.
@@ -38,19 +48,26 @@ fn main() -> ExitCode {
     match args.iter().map(String::as_str).collect::<Vec<_>>()[..] {
         ["run", config] => run_command(&resolve_config(config)),
         ["status", config] => status_command(&resolve_config(config)),
-        ["report", config] => report_command(&resolve_config(config), false),
-        ["report", "--full", config] => report_command(&resolve_config(config), true),
+        ["status", config, "--failed"] => status_failed_command(&resolve_config(config)),
+        ["status", config, "--task", key] => status_task_command(&resolve_config(config), key),
+        ["report", config] => report_command(&resolve_config(config), Report::Summary),
+        ["report", config, "--all"] => report_command(&resolve_config(config), Report::All),
+        ["report", config, "--task", key] => report_task_command(&resolve_config(config), key),
         ["rm", config] => rm_command(&resolve_config(config)),
         ["tui", config] => tui::tui_command(&resolve_config(config)),
         _ => {
             eprint!(
-                "usage: sima run <config>     drive the configured run\n\
-                 \x20      sima status <config>  report the run's state\n\
-                 \x20      sima report <config>  count committed tasks per distinct stats value\n\
-                 \x20      sima report --full <config>  print each committed task's stats\n\
-                 \x20      sima rm <config>      delete the run and what only it references\n\
-                 \x20      sima tui <config>     drive the run in a full-screen terminal UI\n\
-                 \x20      <config> is a sima.toml path; the .toml extension may be omitted\n"
+                "usage: sima run <config>                  drive the configured run\n\
+                 \x20      sima status <config>               report the run's state\n\
+                 \x20      sima status <config> --task <key>  print one task's attempt timeline\n\
+                 \x20      sima status <config> --failed      digest the tasks that did not commit\n\
+                 \x20      sima report <config>               count committed tasks per distinct stats value\n\
+                 \x20      sima report <config> --all         print each committed task's stats\n\
+                 \x20      sima report <config> --task <key>  print one committed task's stats\n\
+                 \x20      sima rm <config>                   delete the run and what only it references\n\
+                 \x20      sima tui <config>                  drive the run in a full-screen terminal UI\n\
+                 \x20      <config> is a sima.toml path; the .toml extension may be omitted\n\
+                 \x20      <key> is any prefix of a task key that names one task\n"
             );
             ExitCode::from(EXIT_ERROR)
         }
@@ -124,6 +141,46 @@ fn read_status(config: &Path) -> Result<RunStatus> {
     status(&loaded)
 }
 
+/// `sima status <config.toml> --task <key>`: one task's attempt timeline,
+/// addressed by a prefix of its key. The store and run id come from the
+/// config the same way the aggregate status derives them.
+fn status_task_command(config: &Path, prefix: &str) -> ExitCode {
+    match read_task_history(config, prefix) {
+        Ok(history) => {
+            println!("{}", render::task_block(&history));
+            ExitCode::SUCCESS
+        }
+        Err(e) => report(e),
+    }
+}
+
+/// Loads the config and projects one task's lifecycle from its journal.
+fn read_task_history(config: &Path, prefix: &str) -> Result<TaskHistory> {
+    let loaded = load(config)?;
+    sima_pipeline::task_history(&loaded, prefix)
+}
+
+/// `sima status <config.toml> --failed`: the tasks the run did not commit,
+/// one line each. The query answers whatever the run's own outcome was, so a
+/// digest over a failed run still exits 0.
+fn status_failed_command(config: &Path) -> ExitCode {
+    match read_failures(config) {
+        Ok((run, failures)) => {
+            println!("{}", render::failures_block(&run, &failures));
+            ExitCode::SUCCESS
+        }
+        Err(e) => report(e),
+    }
+}
+
+/// Loads the config and projects the tasks its run did not commit, with the
+/// run the digest names.
+fn read_failures(config: &Path) -> Result<(RunId, Vec<TaskHistory>)> {
+    let loaded = load(config)?;
+    let failures = sima_pipeline::failures(&loaded)?;
+    Ok((loaded.run.id(), failures))
+}
+
 /// Seeds the tui's display from any existing journal for `config`'s run,
 /// replaying it through the same `apply` method `sima status` uses so a
 /// resumed run opens on its prior progress. This is the observational view:
@@ -148,26 +205,44 @@ pub(crate) fn seed_status(config: &LoadedConfig) -> Result<RunStatus> {
     }
 }
 
-/// `sima report [--full] <config.toml>`: renders the run's committed stats.
-/// The default is the compact summary — a total header, then one line per
-/// distinct rendered stats value with its count; `--full` prints one
-/// `<short task key>  <rendered stats>` line per task. The store and run id
-/// come from the config the same way `status` derives them.
-fn report_command(config: &Path, full: bool) -> ExitCode {
+/// How much of a run's committed stats `sima report` prints.
+enum Report {
+    /// A total header, then one line per distinct rendered stats value with
+    /// its count.
+    Summary,
+    /// One `<short task key>  <rendered stats>` line per committed task.
+    All,
+}
+
+/// `sima report [--all] <config.toml>`: renders the run's committed stats,
+/// compactly by default. The store and run id come from the config the same
+/// way `status` derives them.
+fn report_command(config: &Path, scope: Report) -> ExitCode {
     match read_report(config) {
-        Ok(rows) => {
-            let stdout = std::io::stdout();
-            let mut out = stdout.lock();
-            let written = if full {
-                write_report(&mut out, &rows)
-            } else {
-                write_summary(&mut out, &rows)
-            };
-            match written {
-                Ok(()) => ExitCode::SUCCESS,
-                Err(e) => report(e),
-            }
-        }
+        Ok(rows) => write_rows(&rows, scope),
+        Err(e) => report(e),
+    }
+}
+
+/// `sima report <config.toml> --task <key>`: one committed task's stats,
+/// addressed by a prefix of its key.
+fn report_task_command(config: &Path, prefix: &str) -> ExitCode {
+    match read_report_task(config, prefix) {
+        Ok(row) => write_rows(&[row], Report::All),
+        Err(e) => report(e),
+    }
+}
+
+/// Writes `rows` to stdout, taken locked once, in the form `scope` names.
+fn write_rows(rows: &[ReportRow], scope: Report) -> ExitCode {
+    let stdout = std::io::stdout();
+    let mut out = stdout.lock();
+    let written = match scope {
+        Report::Summary => write_summary(&mut out, rows),
+        Report::All => write_report(&mut out, rows),
+    };
+    match written {
+        Ok(()) => ExitCode::SUCCESS,
         Err(e) => report(e),
     }
 }
@@ -237,6 +312,12 @@ fn group_stats(rows: &[ReportRow]) -> Vec<(usize, &str)> {
 fn read_report(config: &Path) -> Result<Vec<ReportRow>> {
     let loaded = load(config)?;
     sima_pipeline::report(&loaded)
+}
+
+/// Loads the config and renders one committed task's stats from its journal.
+fn read_report_task(config: &Path, prefix: &str) -> Result<ReportRow> {
+    let loaded = load(config)?;
+    sima_pipeline::report_task(&loaded, prefix)
 }
 
 /// `sima rm <config.toml>`: deletes the run — and everything no surviving run

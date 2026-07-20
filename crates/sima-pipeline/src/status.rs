@@ -2,12 +2,12 @@
 
 use std::collections::BTreeMap;
 
-use sima_core::{Error, Result};
+use sima_core::Result;
 use sima_model::RunId;
 use sima_scheduler::{Event, Record};
-use sima_store::Store;
 
 use crate::config::LoadedConfig;
+use crate::journal;
 
 /// A run's observable state, built from its lifecycle events. `sima status`
 /// and the tui update the same `RunStatus` type through the same
@@ -240,47 +240,27 @@ fn composition_label(device: &str, host: &str) -> String {
 
 /// Computes the status of the run a loaded config describes, from its
 /// journal alone — the read-only counterpart of
-/// [`orchestrate`](crate::orchestrate). A store root that does not exist
-/// is [`Error::Validation`] before anything touches the disk (opening a
-/// store creates its skeleton, and a query must not); a run never started
-/// in the store is [`Error::Validation`]; a journal line that fails to
-/// parse is [`Error::Corruption`].
+/// [`orchestrate`](crate::orchestrate). Every line is replayed through
+/// [`RunStatus::apply`], the same method the tui runs over the live event
+/// stream, so a resumed run and a first run derive their state one way. The
+/// journal is read under the guards every read-only query applies: a missing
+/// store root and a run never started there are
+/// [`Error::Validation`](sima_core::Error::Validation), and a line that fails
+/// to parse is [`Error::Corruption`](sima_core::Error::Corruption).
 pub fn status(config: &LoadedConfig) -> Result<RunStatus> {
-    if !config.store.is_dir() {
-        return Err(Error::Validation(format!(
-            "store {} does not exist: no run was ever driven there",
-            config.store.display()
-        )));
+    let mut status = RunStatus::new(config.run.id());
+    for record in journal::records(config)? {
+        status.apply(&record);
     }
-    let store = Store::open(&config.store)?;
-    from_journal(&store, &config.run.id())
-}
-
-/// Reads `run`'s journal in `store` and builds a [`RunStatus`] by replaying
-/// every line through [`RunStatus::apply`] — the same method the tui runs
-/// over the live event stream, so a resumed run and a first run derive their
-/// state one way.
-fn from_journal(store: &Store, run: &RunId) -> Result<RunStatus> {
-    let lines = store.journal(run)?;
-    if lines.is_empty() {
-        return Err(Error::Validation(format!(
-            "run {run} was never started in this store"
-        )));
-    }
-    let mut report = RunStatus::new(*run);
-    for line in &lines {
-        let record = Record::from_line(line)
-            .map_err(|e| Error::Corruption(format!("journal of run {run}: {e}")))?;
-        report.apply(&record);
-    }
-    Ok(report)
+    Ok(status)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use sima_core::hash_bytes;
-    use sima_model::{FormatId, GeneratorConfig, GeneratorId, Params, RunConfig};
+
+    use crate::fixtures::{journal_with, stub_config};
 
     fn run_id() -> RunId {
         RunId::from_hash(hash_bytes(b"status test run"))
@@ -490,27 +470,9 @@ mod tests {
         assert_eq!(interrupted.state, RunState::Interrupted);
     }
 
-    /// A minimal run config whose id addresses the parity test's run.
-    fn parity_test_config() -> Result<RunConfig> {
-        Ok(RunConfig {
-            root_seed: 1,
-            segments: None,
-            format: FormatId::new("stub.v1")?,
-            generator: GeneratorConfig {
-                id: GeneratorId::new("stub.v1")?,
-                params: Vec::new(),
-            },
-            params: Params { bytes: Vec::new() },
-        })
-    }
-
     #[test]
-    fn from_journal_equals_a_replay_through_apply() -> Result<()> {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let store = Store::open(dir.path())?;
-        let config = parity_test_config()?;
-        let run = config.id();
-        store.create_run(&config)?;
+    fn the_journal_read_equals_a_replay_through_apply() -> Result<()> {
+        let run = stub_config()?.id();
 
         // A journal exercising counters, occupancy churn, a retry, and the
         // finalize that decides the state.
@@ -528,17 +490,14 @@ mod tests {
                 committed: 2,
             }),
         ];
-        let mut writer = store.journal_writer(&run)?;
-        for record in &records {
-            writer.append(&record.to_line()?)?;
-        }
+        let (_dir, config) = journal_with(&records)?;
 
         let mut replay = RunStatus::new(run);
         for record in &records {
             replay.apply(record);
         }
         assert_eq!(
-            from_journal(&store, &run)?,
+            status(&config)?,
             replay,
             "status's journal read must equal a direct replay through apply"
         );

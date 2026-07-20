@@ -4,7 +4,9 @@
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use sima_pipeline::{Event, Record, RunState, RunStatus};
+use sima_pipeline::{
+    Attempt, AttemptResult, Event, Record, RunId, RunState, RunStatus, TaskHistory, TaskOutcome,
+};
 
 /// How many hex characters of an id a progress line shows.
 const SHORT: usize = 12;
@@ -140,6 +142,211 @@ impl Progress {
     fn committed(&self) -> usize {
         self.committed.load(Ordering::Relaxed)
     }
+}
+
+/// The attempt table's column headers, in render order.
+const ATTEMPT_COLUMNS: [&str; 6] = ["attempt", "worker", "host", "device", "outcome", "elapsed"];
+
+/// Renders one task's timeline: its key and terminal state, one row per
+/// attempt, and the committed result. Every duration is the span the
+/// collector observed between the lease and the event that ended it, so it
+/// carries the queue and transport latency around the work as well.
+pub fn task_block(history: &TaskHistory) -> String {
+    let mut block = format!(
+        "task     {}\nstate    {}",
+        short(&history.task),
+        task_state(&history.outcome)
+    );
+    if !history.attempts.is_empty() {
+        block.push_str("\n\n");
+        block.push_str(&attempt_table(&history.attempts));
+    }
+    if let TaskOutcome::Committed { record, stats } = &history.outcome {
+        block.push_str(&format!("\n\nresult   {}  {stats}", short(record)));
+    }
+    block
+}
+
+/// The failure digest's column headers, in render order.
+const FAILURE_COLUMNS: [&str; 5] = ["task", "final", "attempts", "worker", "reason"];
+
+/// Renders the failure digest: a header counting the tasks the run did not
+/// commit, then one row each naming how the task ended and why. An empty
+/// digest is the header alone.
+pub fn failures_block(run: &RunId, failures: &[TaskHistory]) -> String {
+    let tasks = if failures.len() == 1 { "task" } else { "tasks" };
+    let header = format!(
+        "run {}   {} {tasks} did not commit",
+        short(&run.to_string()),
+        failures.len()
+    );
+    if failures.is_empty() {
+        return header;
+    }
+    let rows: Vec<Vec<String>> = failures.iter().map(failure_cells).collect();
+    format!("{header}\n\n{}", table(&FAILURE_COLUMNS, &rows, false))
+}
+
+/// One failed task's cells, in [`FAILURE_COLUMNS`] order: the worker is the
+/// one that ran the deciding attempt, which is the last the task took.
+fn failure_cells(history: &TaskHistory) -> Vec<String> {
+    let (outcome, reason) = match &history.outcome {
+        TaskOutcome::Rejected { reason, .. } => ("rejected", reason.clone()),
+        TaskOutcome::Faulted { error, .. } => ("faulted", error.clone()),
+        TaskOutcome::Queued | TaskOutcome::InProgress | TaskOutcome::Committed { .. } => {
+            ("open", String::new())
+        }
+    };
+    let worker = history
+        .attempts
+        .last()
+        .map_or_else(|| "—".to_string(), |attempt| format!("w{}", attempt.worker));
+    vec![
+        short(&history.task).to_string(),
+        outcome.to_string(),
+        history.attempts.len().to_string(),
+        worker,
+        reason,
+    ]
+}
+
+/// The state line for a task's outcome: the terminal ones carry the attempt
+/// that decided them and why.
+fn task_state(outcome: &TaskOutcome) -> String {
+    match outcome {
+        TaskOutcome::Queued => "queued".to_string(),
+        TaskOutcome::InProgress => "in progress".to_string(),
+        TaskOutcome::Committed { .. } => "committed".to_string(),
+        TaskOutcome::Rejected { attempt, reason } => {
+            format!("rejected on attempt {attempt}: {reason}")
+        }
+        TaskOutcome::Faulted { attempt, error } => {
+            format!("faulted on attempt {attempt}: {error}")
+        }
+    }
+}
+
+/// Renders the attempt rows under their headers. The failure text of an
+/// attempt that has one trails its row, in a column the headers leave unnamed
+/// since it reads as the row's note rather than a field.
+fn attempt_table(attempts: &[Attempt]) -> String {
+    let mut headers: Vec<&str> = ATTEMPT_COLUMNS.to_vec();
+    headers.push("");
+    let rows: Vec<Vec<String>> = attempts
+        .iter()
+        .map(|attempt| {
+            let mut cells = attempt_cells(attempt).to_vec();
+            cells.push(attempt_note(attempt));
+            cells
+        })
+        .collect();
+    table(&headers, &rows, true)
+}
+
+/// Renders `rows` under `headers`, indented two spaces, with every column
+/// widened to its longest cell so the table aligns whatever it holds.
+/// `number_first` right-aligns the leading column, for a table whose first
+/// field is a count rather than a name.
+fn table(headers: &[&str], rows: &[Vec<String>], number_first: bool) -> String {
+    let widths: Vec<usize> = headers
+        .iter()
+        .enumerate()
+        .map(|(column, header)| {
+            rows.iter()
+                .filter_map(|row| row.get(column))
+                .map(|cell| cell.chars().count())
+                .chain([header.chars().count()])
+                .max()
+                .unwrap_or_default()
+        })
+        .collect();
+    let header_cells: Vec<String> = headers.iter().map(|header| header.to_string()).collect();
+    let mut table = padded_row(&header_cells, &widths, number_first);
+    for row in rows {
+        table.push('\n');
+        table.push_str(&padded_row(row, &widths, number_first));
+    }
+    table
+}
+
+/// One table line, indented and column-padded. Trailing padding is dropped,
+/// so no line carries whitespace past its last word.
+fn padded_row(cells: &[String], widths: &[usize], number_first: bool) -> String {
+    let mut line = String::from(" ");
+    for (column, cell) in cells.iter().enumerate() {
+        let width = widths[column];
+        line.push(' ');
+        if column == 0 && number_first {
+            line.push_str(&format!("{cell:>width$}"));
+        } else {
+            line.push_str(&format!("{cell:<width$}"));
+        }
+        line.push(' ');
+    }
+    line.trim_end().to_string()
+}
+
+/// One attempt's cells, in [`ATTEMPT_COLUMNS`] order. A local worker's host
+/// and a deviceless domain's device render as placeholders, since the journal
+/// states neither.
+fn attempt_cells(attempt: &Attempt) -> [String; 6] {
+    [
+        attempt.attempt.to_string(),
+        format!("w{}", attempt.worker),
+        placeholder(&attempt.host, "—"),
+        placeholder(&attempt.device, "(none)"),
+        attempt_outcome(&attempt.result).to_string(),
+        elapsed(attempt),
+    ]
+}
+
+/// `value`, or `absent` where the journal states nothing.
+fn placeholder(value: &str, absent: &str) -> String {
+    if value.is_empty() {
+        absent.to_string()
+    } else {
+        value.to_string()
+    }
+}
+
+/// The one word naming how an attempt ended.
+fn attempt_outcome(result: &AttemptResult) -> &'static str {
+    match result {
+        AttemptResult::Committed => "committed",
+        AttemptResult::Failed { .. } => "failed",
+        AttemptResult::Rejected { .. } => "rejected",
+        AttemptResult::Faulted { .. } => "faulted",
+        AttemptResult::InFlight => "in flight",
+    }
+}
+
+/// The span the collector observed over an attempt, in seconds to one
+/// decimal, or a placeholder while its lease is still open.
+fn elapsed(attempt: &Attempt) -> String {
+    match attempt.ended_ms {
+        Some(ended_ms) => format!(
+            "{:.1}s",
+            ended_ms.saturating_sub(attempt.started_ms) as f64 / 1_000.0
+        ),
+        None => "—".to_string(),
+    }
+}
+
+/// What trails an attempt's row: why it failed, and whether a lease expiry
+/// preempted it.
+fn attempt_note(attempt: &Attempt) -> String {
+    let mut note = match &attempt.result {
+        AttemptResult::Failed { reason } | AttemptResult::Rejected { reason } => reason.clone(),
+        AttemptResult::Faulted { error } => error.clone(),
+        AttemptResult::Committed | AttemptResult::InFlight => String::new(),
+    };
+    if attempt.lease_expired {
+        if !note.is_empty() {
+            note.push(' ');
+        }
+        note.push_str("(lease expired)");
+    }
+    note
 }
 
 /// Renders the status block, one aligned `name  value` line per field.
@@ -308,9 +515,7 @@ mod tests {
 
     /// A zeroed status for a throwaway run; tests set the fields they assert.
     fn a_status() -> RunStatus {
-        RunStatus::new(sima_model::RunId::from_hash(sima_core::hash_bytes(
-            b"a run to render",
-        )))
+        RunStatus::new(a_run())
     }
 
     #[test]
@@ -386,6 +591,246 @@ mod tests {
             "{block}"
         );
         assert!(!block.contains("rebound"), "{block}");
+    }
+
+    /// `text` with every run of spaces collapsed to one, so an assertion
+    /// names the cells of a line rather than the padding between them.
+    fn squeezed(text: &str) -> String {
+        text.split_whitespace().collect::<Vec<&str>>().join(" ")
+    }
+
+    /// One attempt over the fields a row varies in; the rest are fixed.
+    fn attempt(number: u32, worker: u64, result: AttemptResult, ended_ms: Option<u64>) -> Attempt {
+        Attempt {
+            attempt: number,
+            worker,
+            device: String::new(),
+            host: String::new(),
+            started_ms: 1_000,
+            ended_ms,
+            result,
+            lease_expired: false,
+        }
+    }
+
+    #[test]
+    fn a_task_block_names_the_task_its_state_and_every_attempt() {
+        let history = TaskHistory {
+            task: "4e".repeat(32),
+            queued_ms: Some(900),
+            attempts: vec![
+                attempt(
+                    0,
+                    0,
+                    AttemptResult::Failed {
+                        reason: "programmed flake".to_string(),
+                    },
+                    Some(1_400),
+                ),
+                attempt(1, 1, AttemptResult::Committed, Some(1_300)),
+            ],
+            outcome: TaskOutcome::Committed {
+                record: "3f".repeat(32),
+                stats: "attempt 1".to_string(),
+            },
+        };
+        let block = task_block(&history);
+        let squeezed = squeezed(&block);
+        assert!(squeezed.contains("task 4e4e4e4e4e4e"), "{block}");
+        assert!(squeezed.contains("state committed"), "{block}");
+        // The column header, then one row per attempt: a deviceless local
+        // worker renders its host and device as the placeholders.
+        assert!(
+            squeezed.contains("attempt worker host device outcome elapsed"),
+            "{block}"
+        );
+        assert!(
+            squeezed.contains("0 w0 — (none) failed 0.4s programmed flake"),
+            "{block}"
+        );
+        assert!(squeezed.contains("1 w1 — (none) committed 0.3s"), "{block}");
+        assert!(
+            squeezed.contains("result 3f3f3f3f3f3f attempt 1"),
+            "{block}"
+        );
+    }
+
+    #[test]
+    fn an_open_attempt_renders_no_elapsed_and_an_in_progress_state() {
+        let history = TaskHistory {
+            task: "aa".repeat(32),
+            queued_ms: Some(0),
+            attempts: vec![attempt(0, 2, AttemptResult::InFlight, None)],
+            outcome: TaskOutcome::InProgress,
+        };
+        let block = task_block(&history);
+        assert!(squeezed(&block).contains("state in progress"), "{block}");
+        assert!(block.contains("in flight"), "{block}");
+        assert!(!block.contains("result "), "no result yet: {block}");
+    }
+
+    #[test]
+    fn a_rejected_task_block_states_the_attempt_and_reason() {
+        let history = TaskHistory {
+            task: "aa".repeat(32),
+            queued_ms: Some(0),
+            attempts: vec![attempt(
+                2,
+                0,
+                AttemptResult::Rejected {
+                    reason: "programmed rejection".to_string(),
+                },
+                Some(1_500),
+            )],
+            outcome: TaskOutcome::Rejected {
+                attempt: 2,
+                reason: "programmed rejection".to_string(),
+            },
+        };
+        let block = task_block(&history);
+        assert!(
+            squeezed(&block).contains("state rejected on attempt 2: programmed rejection"),
+            "{block}"
+        );
+    }
+
+    #[test]
+    fn a_preempted_attempt_notes_its_lease_expiry() {
+        let mut expired = attempt(
+            0,
+            0,
+            AttemptResult::Failed {
+                reason: "lease expired".to_string(),
+            },
+            Some(1_500),
+        );
+        expired.lease_expired = true;
+        let history = TaskHistory {
+            task: "aa".repeat(32),
+            queued_ms: None,
+            attempts: vec![expired],
+            outcome: TaskOutcome::InProgress,
+        };
+        assert!(
+            task_block(&history).contains("(lease expired)"),
+            "{}",
+            task_block(&history)
+        );
+    }
+
+    #[test]
+    fn a_queued_task_block_names_no_attempt() {
+        let history = TaskHistory {
+            task: "aa".repeat(32),
+            queued_ms: Some(5),
+            attempts: Vec::new(),
+            outcome: TaskOutcome::Queued,
+        };
+        let block = task_block(&history);
+        assert!(squeezed(&block).contains("state queued"), "{block}");
+        assert!(
+            !squeezed(&block).contains("attempt worker"),
+            "no table: {block}"
+        );
+    }
+
+    #[test]
+    fn an_attempt_on_a_remote_device_names_both() {
+        let mut bound = attempt(0, 0, AttemptResult::Committed, Some(2_000));
+        bound.device = "NVIDIA RTX PRO 2000".to_string();
+        bound.host = "gpubox".to_string();
+        let history = TaskHistory {
+            task: "aa".repeat(32),
+            queued_ms: None,
+            attempts: vec![bound],
+            outcome: TaskOutcome::Committed {
+                record: "3f".repeat(32),
+                stats: "attempt 0".to_string(),
+            },
+        };
+        let block = task_block(&history);
+        assert!(block.contains("gpubox"), "{block}");
+        assert!(block.contains("NVIDIA RTX PRO 2000"), "{block}");
+    }
+
+    /// The run the digest tests render against.
+    fn a_run() -> RunId {
+        RunId::from_hash(sima_core::hash_bytes(b"a run to render"))
+    }
+
+    /// One task the run ended on a rejection.
+    fn a_rejected_history() -> TaskHistory {
+        TaskHistory {
+            task: "7f".repeat(32),
+            queued_ms: Some(0),
+            attempts: vec![attempt(
+                0,
+                1,
+                AttemptResult::Rejected {
+                    reason: "programmed rejection".to_string(),
+                },
+                Some(1_500),
+            )],
+            outcome: TaskOutcome::Rejected {
+                attempt: 0,
+                reason: "programmed rejection".to_string(),
+            },
+        }
+    }
+
+    #[test]
+    fn the_failure_digest_names_each_task_its_outcome_and_its_reason() {
+        let block = failures_block(&a_run(), &[a_rejected_history()]);
+        let squeezed = squeezed(&block);
+        assert!(squeezed.contains("1 task did not commit"), "{block}");
+        assert!(
+            squeezed.contains("task final attempts worker reason"),
+            "{block}"
+        );
+        assert!(
+            squeezed.contains("7f7f7f7f7f7f rejected 1 w1 programmed rejection"),
+            "{block}"
+        );
+    }
+
+    #[test]
+    fn a_faulted_task_is_named_by_its_error() {
+        let history = TaskHistory {
+            task: "aa".repeat(32),
+            queued_ms: None,
+            attempts: vec![attempt(
+                3,
+                0,
+                AttemptResult::Faulted {
+                    error: "executor died".to_string(),
+                },
+                Some(2_000),
+            )],
+            outcome: TaskOutcome::Faulted {
+                attempt: 3,
+                error: "executor died".to_string(),
+            },
+        };
+        let block = squeezed(&failures_block(&a_run(), &[history]));
+        assert!(block.contains("faulted"), "{block}");
+        assert!(block.contains("executor died"), "{block}");
+    }
+
+    #[test]
+    fn a_digest_of_no_failures_is_the_header_alone() {
+        let block = failures_block(&a_run(), &[]);
+        assert!(block.contains("0 tasks did not commit"), "{block}");
+        assert!(!block.contains("reason"), "no table: {block}");
+        assert_eq!(block.lines().count(), 1, "{block}");
+    }
+
+    #[test]
+    fn the_digest_header_pluralizes_its_count() {
+        let two = [a_rejected_history(), a_rejected_history()];
+        assert!(
+            failures_block(&a_run(), &two).contains("2 tasks did not commit"),
+            "two failures read as tasks"
+        );
     }
 
     #[test]

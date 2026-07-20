@@ -72,38 +72,7 @@ impl RunObserver {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sima_model::{FormatId, GeneratorConfig, GeneratorId, Params, RunConfig};
-
-    /// A minimal stub run config; its id addresses the test's run.
-    fn stub_config() -> Result<RunConfig> {
-        Ok(RunConfig {
-            root_seed: 1,
-            segments: None,
-            format: FormatId::new("stub.v1")?,
-            generator: GeneratorConfig {
-                id: GeneratorId::new("stub.v1")?,
-                params: Vec::new(),
-            },
-            params: Params { bytes: Vec::new() },
-        })
-    }
-
-    /// A loaded config over `store` for the stub run.
-    fn loaded(store: std::path::PathBuf) -> Result<LoadedConfig> {
-        Ok(LoadedConfig {
-            run: stub_config()?,
-            devices: Vec::new(),
-            remotes: Vec::new(),
-            execution: sima_scheduler::ExecutionConfig::new(
-                1,
-                1,
-                std::time::Duration::MAX,
-                std::time::Duration::MAX,
-                None,
-            )?,
-            store,
-        })
-    }
+    use crate::fixtures::{loaded, stub_config};
 
     /// A fresh store with the stub run created, and the loaded config over
     /// it. The temp dir keeps the store alive for the caller.

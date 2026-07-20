@@ -8,23 +8,38 @@
 //! id dispatches to a generator with its own config translation. The pipeline
 //! routes configuration sections to the domain and generator code that owns
 //! them; it never interprets their content.
+//!
+//! Beside the driven run sit the read-only queries over what a run left
+//! behind. Each folds the run's journal and touches no store object:
+//! [`status`] and [`task_history`] project execution — the run's state, and
+//! one task's attempts — [`failures`] names the tasks that did not commit,
+//! and [`report`] and [`report_task`] render the results committed tasks
+//! produced. The queries return data; rendering it is the caller's.
 
 mod config;
 mod devices;
+#[cfg(test)]
+mod fixtures;
+mod journal;
 mod observe;
 mod orchestrate;
 mod remove;
 mod report;
 mod status;
+mod task_history;
 
 pub use config::{LoadedConfig, RemoteConfig, load};
 pub use devices::DeviceSelector;
 pub use observe::RunObserver;
 pub use orchestrate::orchestrate;
 pub use remove::remove;
-pub use report::{ReportRow, report};
+pub use report::{ReportRow, report, report_task};
+// The run identity a query names, re-exported with the rest of the surface a
+// caller reads a run through.
+pub use sima_model::RunId;
 pub use sima_store::RemovalReport;
 // The scheduler types a caller drives and observes runs through, re-exported
 // so the CLI consumes one coherent surface.
 pub use sima_scheduler::{Event, Level, Record, RunControl, RunOutcome};
 pub use status::{Occupancy, RunState, RunStatus, status};
+pub use task_history::{Attempt, AttemptResult, TaskHistory, TaskOutcome, failures, task_history};
