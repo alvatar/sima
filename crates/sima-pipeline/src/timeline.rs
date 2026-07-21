@@ -243,9 +243,9 @@ fn session(records: &[Record]) -> &[Record] {
 }
 
 /// Closes `task`'s open lease at `ended_ms`, crediting the span to the worker
-/// that took it, and reports that worker. A journal may state an outcome with
-/// no lease before it — a resume segment restates prior commits — and then
-/// there is no span to close.
+/// that took it, and reports that worker. A malformed or truncated journal may
+/// state an outcome with no lease before it, and then there is no span to
+/// close.
 fn close<'a>(
     open: &mut BTreeMap<&'a str, (u64, u64)>,
     workers: &mut BTreeMap<u64, WorkerAccumulator>,

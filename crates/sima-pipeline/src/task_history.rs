@@ -226,9 +226,9 @@ impl TaskHistory {
         Ok(())
     }
 
-    /// Ends the open attempt at `ended_ms` with `result`. A journal may state
-    /// an outcome with no lease before it — a resume segment restates prior
-    /// commits — and then there is no attempt to close.
+    /// Ends the open attempt at `ended_ms` with `result`. A malformed or
+    /// truncated journal may state an outcome with no lease before it, and then
+    /// there is no attempt to close.
     fn close(&mut self, ended_ms: u64, result: AttemptResult) {
         if let Some(open) = self.open_attempt() {
             open.ended_ms = Some(ended_ms);
@@ -711,9 +711,10 @@ mod tests {
     }
 
     #[test]
-    fn the_last_outcome_wins_when_a_resume_segment_restates_a_commit() -> Result<()> {
-        // The task was leased and committed in an earlier segment, and the
-        // resumed segment restates the commit with no lease before it.
+    fn the_last_outcome_wins_when_a_journal_states_a_commit_with_no_lease() -> Result<()> {
+        // A malformed journal states the commit twice, the second with no lease
+        // before it: the guard closes no attempt and the last outcome still
+        // decides.
         let history = history_of(
             &[
                 leased("aa", 0, 0, 10),
