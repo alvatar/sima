@@ -505,8 +505,8 @@ work never depends on a provider being reachable.
 ### The stub provider
 
 `StubProvider` is an in-memory marketplace with scriptable behavior — a lost
-offer, a machine that stays provisioning, a failing API — and is public
-because the layers above test their acquisition paths against it.
+offer, a machine that stays provisioning, a failing API — and is public so
+that the layers above can test their acquisition paths against it.
 
 ## `sima-contracts` (L3)
 

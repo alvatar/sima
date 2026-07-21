@@ -80,17 +80,25 @@ pub trait Provider {
     /// [`select`](crate::select) imposes the order that does.
     fn offers(&self) -> Result<Vec<Offer>>;
 
-    /// Rents `offer`, attaching `tag` to the created instance so a later
-    /// scan can find the machine by the ledger key it was created under.
+    /// Rents `offer`, attaching `tag` to the created instance verbatim.
     /// An offer another renter took first is [`Provision::OfferGone`];
     /// only an API or transport failure is `Err`.
+    ///
+    /// The tag is the ledger key, and it is the whole of what recovers an
+    /// attempt that died before learning the instance id: the record that
+    /// attempt left names the tag and nothing else, so a backend that drops,
+    /// rewrites, or omits it leaves the machine running and billed with
+    /// nothing in the process able to detect that.
     fn provision(&self, offer: &OfferId, tag: &str) -> Result<Provision>;
 
     /// The provider-reported state of one instance. An identifier the
     /// provider does not hold is [`InstanceStatus::Gone`].
     fn instance(&self, id: &InstanceId) -> Result<InstanceStatus>;
 
-    /// Every instance this account currently holds, with its tag.
+    /// Every instance this account currently holds, each with the tag it
+    /// was created under, verbatim. This scan is what reconciliation matches
+    /// an intent record against, and the tag is the only key it has: the
+    /// contract offers no fallback.
     fn instances(&self) -> Result<Vec<TaggedInstance>>;
 
     /// Destroys an instance. Destroying one already gone is `Ok`: guards

@@ -1,7 +1,7 @@
 //! [`StubProvider`]: an in-memory marketplace standing in for a backend.
 //!
-//! The stub is a public type because consumers above this crate test their
-//! acquisition paths against it. It honors every obligation the
+//! The stub is a public type so that consumers above this crate can test
+//! their acquisition paths against it. It honors every obligation the
 //! [`Provider`] contract states, and its scripted departures — a lost
 //! offer, a machine that never comes up, a failing API — are the cases a
 //! real marketplace produces and callers must handle.
