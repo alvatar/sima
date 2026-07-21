@@ -49,11 +49,10 @@ so resume, crash-recovery, and re-run are one code path.
 
 `sima-provider` also sits beside the spine, above the store: it is the
 rented-hardware control plane, depending on `sima-core`, `sima-model`, and
-`sima-store`, with the in-memory stub as its only backend. M6.2 puts the
-pipeline on the seam and adds the first backend speaking to a real service;
-backends become a sibling group under `crates/providers/`, named
-`sima-provider-<name>` after the service each one speaks to, so the first
-HTTP client enters exactly one crate. See
+`sima-store`, and it carries the contract, the offer model, and the
+in-memory stub. Backends speaking to a real service are a sibling group
+under `crates/providers/`, named `sima-provider-<name>` after the service
+each one speaks to, so an HTTP client enters exactly one crate. See
 [`sima-provider`](#sima-provider).
 
 Execution backends sit off the spine as a sibling group under
@@ -515,6 +514,50 @@ holding no rentals never depends on a provider being reachable.
 `StubProvider` is an in-memory marketplace with scriptable behavior — a lost
 offer, a machine that stays provisioning, a failing API — and is public so
 that the layers above can test their acquisition paths against it.
+
+### Image delivery
+
+A rented machine boots the worker image, and the host pulls it from a
+registry before the container exists: the image is published to ghcr.io
+under the repository owner's account, public, so a create request carries no
+pull credentials and no registry credential ever reaches a provider.
+Shipping the image to each instance after boot is rejected because the pull
+happens before there is anything to ship it to, and because a
+multi-gigabyte transfer per instance is bounded by the uplink it would leave
+from.
+
+### `sima-provider-vast`
+
+The Vast.ai backend, under the `crates/providers/` namespace that mirrors
+`crates/toolkits/`: it holds the workspace's HTTP and JSON dependencies and
+nothing else depends on it. It implements the contract above and adds
+nothing to it — five methods over five endpoints:
+
+| Contract method | Endpoint                          |
+|-----------------|-----------------------------------|
+| `offers`        | `POST /api/v0/bundles/`           |
+| `provision`     | `PUT /api/v0/asks/{offer}/`       |
+| `instance`      | `GET /api/v0/instances/{id}/`     |
+| `instances`     | `GET /api/v1/instances/`          |
+| `destroy`       | `DELETE /api/v0/instances/{id}/`  |
+
+Three decisions shape it:
+
+- **The query narrows only to the backend's scope.** The search asks for
+  rentable machines rented on demand, and everything it answers is
+  normalized and handed up. Constraints and ranking stay in
+  [Selection](#selection), so what disqualifies an offer is one code path
+  across every backend.
+- **The API key is read from the environment.** Run configuration is
+  content-addressed and identity-bearing, so a key placed there would enter
+  run hashes and the store. The backend reads `VAST_API_KEY` at
+  construction and sends it as a bearer token.
+- **An instance carrying no label is omitted from the listing.** A ledger
+  record exists only for a tag this backend wrote, so an unlabeled instance
+  corresponds to no record, and the tag is the only key reconciliation has.
+  For the same reason only the status a missing instance answers with reads
+  as `Gone`: any other failing answer is an error, since reading it as
+  absence would report a machine still running and billed as destroyed.
 
 ## `sima-contracts` (L3)
 
