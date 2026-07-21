@@ -359,6 +359,54 @@ mod tests {
     }
 
     #[test]
+    fn a_machine_ready_only_after_several_polls_is_waited_out_and_rented() -> Result<()> {
+        let (_dir, store) = temp_store();
+        // Two `Provisioning` answers before readiness, so the wait repolls
+        // instead of settling on the first status call.
+        let stub = StubProvider::new(vec![stub_offer("cheap", 100_000)]).ready_after(2);
+        let guard = acquire_any(&stub, &store)?;
+        assert_eq!(guard.endpoint().port, 22);
+        // The machine was waited for, not abandoned.
+        assert!(stub.destroyed().is_empty());
+        let records = store.instances()?;
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].instance(), Some(guard.id().0.as_str()));
+        Ok(())
+    }
+
+    #[test]
+    fn a_machine_still_provisioning_when_the_wait_elapses_is_abandoned() -> Result<()> {
+        let (_dir, store) = temp_store();
+        let stalling = stub_offer("cheap", 100_000);
+        let stub = StubProvider::new(vec![stalling.clone(), stub_offer("dearer", 200_000)])
+            .never_ready(stalling.id.clone());
+        // A window the wait reaches by elapsed time, over several polls, and
+        // short enough to keep the suite quick.
+        let limits = AcquireLimits {
+            ready_timeout: Duration::from_millis(10),
+            ready_poll: Duration::from_millis(1),
+        };
+        let lock = store.acquire_run_lock(&sample_run(7))?;
+        let guard = acquire(
+            &stub,
+            &store,
+            &lock,
+            &Constraints::default(),
+            Objective::CheapestPerHour,
+            &limits,
+        )?;
+        let records = store.instances()?;
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].price_micro_usd_hour, 200_000);
+        assert_eq!(records[0].tag, guard.tag());
+        // The stalling machine was taken down before the next offer was
+        // rented.
+        assert_eq!(stub.destroyed().len(), 1);
+        assert_ne!(stub.destroyed()[0], *guard.id());
+        Ok(())
+    }
+
+    #[test]
     fn losing_every_offer_is_a_provider_error_over_a_clean_ledger() -> Result<()> {
         let (_dir, store) = temp_store();
         let stub = StubProvider::new(vec![stub_offer("a", 100_000), stub_offer("b", 200_000)])
