@@ -207,7 +207,9 @@ mod tests {
     use crate::provider::{InstanceId, InstanceStatus, Provider, Provision, TaggedInstance};
     use crate::reconcile::reconcile;
     use crate::stub::StubProvider;
-    use crate::testutil::{acquire_any, prompt_limits, sample_run, stub_offer, temp_store};
+    use crate::testutil::{
+        acquire_any, instance_record, live_state, prompt_limits, sample_run, stub_offer, temp_store,
+    };
 
     /// A provider that watches what the acquisition loop does before and
     /// while it calls through: every `provision` asserts the attempt's
@@ -465,16 +467,11 @@ mod tests {
         let (_dir, store) = temp_store();
         let stub = StubProvider::new(vec![stub_offer("cheap", 100_000)])
             .with_instance(InstanceId("held".to_string()), "sima-tag-0");
-        store.put_instance(&InstanceRecord {
-            tag: "sima-tag-0".to_string(),
-            provider: "stub".to_string(),
-            owner: sample_run(7).to_string(),
-            state: InstanceRecordState::Live {
-                instance: "held".to_string(),
-            },
-            price_micro_usd_hour: 100_000,
-            created_ms: 1_700_000_000_000,
-        })?;
+        store.put_instance(&instance_record(
+            "sima-tag-0",
+            live_state("held"),
+            sample_run(7),
+        ))?;
         // The lock the acquisition runs under is the acquiring run's, so its
         // own earlier record reads as owned by a running orchestrator.
         let lock = store.acquire_run_lock(&sample_run(7))?;

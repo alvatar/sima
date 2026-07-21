@@ -3,7 +3,7 @@
 use std::time::Duration;
 
 use sima_model::{FormatId, GeneratorConfig, GeneratorId, Params, RunConfig, RunId};
-use sima_store::Store;
+use sima_store::{InstanceRecord, InstanceRecordState, Store};
 use tempfile::TempDir;
 
 use sima_core::Result;
@@ -36,6 +36,29 @@ pub(crate) fn temp_store() -> (TempDir, Store) {
     let dir = tempfile::tempdir().expect("create temp dir");
     let store = Store::open(dir.path()).expect("open temp store");
     (dir, store)
+}
+
+/// A ledger record for `tag` in `state`, owned by `owner`.
+pub(crate) fn instance_record(
+    tag: &str,
+    state: InstanceRecordState,
+    owner: RunId,
+) -> InstanceRecord {
+    InstanceRecord {
+        tag: tag.to_string(),
+        provider: "stub".to_string(),
+        owner: owner.to_string(),
+        state,
+        price_micro_usd_hour: 100_000,
+        created_ms: 1_700_000_000_000,
+    }
+}
+
+/// The live record state naming `instance`.
+pub(crate) fn live_state(instance: &str) -> InstanceRecordState {
+    InstanceRecordState::Live {
+        instance: instance.to_string(),
+    }
 }
 
 /// A run id to own acquisitions with, varying by `root_seed`.
