@@ -468,7 +468,7 @@ equality between an observed and an unobserved run.
       orchestrator journals them; follow tails the journal into one
       aggregated view (works from another terminal against a running
       orchestrator, local or SSH)
-- [ ] M5.3 Run timeline and summary report: throughput, retry rates, worker
+- [x] M5.3 Run timeline and summary report: throughput, retry rates, worker
       utilization per run
 
 ## P6 — Slingshot

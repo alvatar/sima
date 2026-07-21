@@ -5,7 +5,8 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use sima_pipeline::{
-    Attempt, AttemptResult, Event, Record, RunId, RunState, RunStatus, TaskHistory, TaskOutcome,
+    Attempt, AttemptResult, Event, Record, RetryStats, RunId, RunState, RunStatus, RunTimeline,
+    TaskHistory, TaskOutcome, WorkerMetrics,
 };
 
 /// How many hex characters of an id a progress line shows.
@@ -407,6 +408,267 @@ fn devices_line(status: &RunStatus) -> Option<String> {
         line.push_str(&format!(", rebound chains: {}", status.rebound_chains));
     }
     Some(line)
+}
+
+/// How many columns wide the temporal chart draws, whatever the terminal is.
+/// A fixed axis makes one journal render one way, on any screen.
+const CHART_WIDTH: usize = 48;
+
+/// The glyphs a commit bucket's count maps to, lightest first.
+const COMMIT_GLYPHS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+
+/// The worker table's column headers, in render order.
+const WORKER_COLUMNS: [&str; 8] = [
+    "worker", "device", "host", "spawn", "respawns", "util", "commits", "attempts",
+];
+
+/// What a figure reads when the counts it is taken over leave it undefined.
+const UNDEFINED: &str = "—";
+
+/// Renders a run's metrics: the summary scalars, the three retry ratios, the
+/// per-worker table, and the temporal chart beneath them.
+///
+/// Every duration is elapsed wall-clock as the run's journal stamped it, so a
+/// worker's occupancy covers the queueing and transport around its work as
+/// well as the work.
+pub fn timeline_block(timeline: &RunTimeline) -> String {
+    let span_ms = timeline
+        .session_end_ms
+        .saturating_sub(timeline.session_start_ms);
+    let mut block = format!(
+        "run          {}\n\
+         wall-clock   {}\n\
+         committed    {}\n\
+         throughput   {}",
+        timeline.run,
+        duration(span_ms),
+        timeline.committed,
+        throughput(timeline.session_committed, span_ms),
+    );
+    block.push_str("\n\nretry rates\n");
+    block.push_str(&retry_block(&timeline.retries, timeline.tasks));
+    let rows: Vec<Vec<String>> = timeline
+        .workers
+        .iter()
+        .map(|worker| worker_cells(worker, timeline.session_start_ms).to_vec())
+        .collect();
+    block.push_str("\n\n");
+    block.push_str(&table(&WORKER_COLUMNS, &rows, false));
+    if let Some(chart) = chart(timeline, span_ms) {
+        block.push_str("\n\n");
+        block.push_str(&chart);
+    }
+    block
+}
+
+/// Committed tasks per second over a session of `span_ms`, or a placeholder
+/// for a session of no span — a run that journaled its start and nothing
+/// since has no rate, rather than an infinite one.
+fn throughput(committed: usize, span_ms: u64) -> String {
+    if span_ms == 0 {
+        return UNDEFINED.to_string();
+    }
+    format!(
+        "{:.1} task/s",
+        committed as f64 / (span_ms as f64 / 1_000.0)
+    )
+}
+
+/// An elapsed span: seconds to two decimals under a minute, minutes and whole
+/// seconds above. One pinned precision, so one journal renders one way.
+fn duration(ms: u64) -> String {
+    if ms < 60_000 {
+        return format!("{:.2}s", ms as f64 / 1_000.0);
+    }
+    format!("{}m{:02}s", ms / 60_000, (ms % 60_000) / 1_000)
+}
+
+/// The three retry figures, each on its own line naming the numerator and
+/// denominator it is taken over. They answer different questions and can
+/// disagree by an order of magnitude on one run, so each states its own ratio
+/// rather than leaving the reader to guess which a bare number is.
+fn retry_block(retries: &RetryStats, tasks: usize) -> String {
+    let rows = [
+        [
+            "retries / tasks".to_string(),
+            counts(retries.total_retries, tasks),
+            per_task(retries.total_retries, tasks),
+        ],
+        [
+            "tasks retried / tasks".to_string(),
+            counts(retries.retried_tasks, tasks),
+            percent(retries.retried_tasks, tasks),
+        ],
+        [
+            "failed attempts / attempts".to_string(),
+            counts(retries.failed_attempts, retries.total_attempts),
+            percent(retries.failed_attempts, retries.total_attempts),
+        ],
+    ];
+    let label_width = rows
+        .iter()
+        .map(|row| row[0].len())
+        .max()
+        .unwrap_or_default();
+    let counts_width = rows
+        .iter()
+        .map(|row| row[1].len())
+        .max()
+        .unwrap_or_default();
+    rows.iter()
+        .map(|[label, counts, result]| {
+            format!("  {label:<label_width$}  {counts:>counts_width$}  =  {result}")
+        })
+        .collect::<Vec<String>>()
+        .join("\n")
+}
+
+/// The `n / of` pair a ratio is taken over, stated whether or not the ratio
+/// itself is defined.
+fn counts(n: usize, of: usize) -> String {
+    format!("{n} / {of}")
+}
+
+/// `n` per task over `of` tasks, to two decimals, or a placeholder where there
+/// are no tasks to divide by.
+fn per_task(n: usize, of: usize) -> String {
+    if of == 0 {
+        return UNDEFINED.to_string();
+    }
+    format!("{:.2} per task", n as f64 / of as f64)
+}
+
+/// `n` as a percentage of `of`, to one decimal, or a placeholder where there
+/// is nothing to divide by.
+fn percent(n: usize, of: usize) -> String {
+    if of == 0 {
+        return UNDEFINED.to_string();
+    }
+    format!("{:.1}%", 100.0 * n as f64 / of as f64)
+}
+
+/// One worker's cells, in [`WORKER_COLUMNS`] order. Spawn is the provisioning
+/// cost the worker's first binding past the session's start states, which is
+/// the ssh and container startup for a remote pool and near zero for a local
+/// one; utilization is over the worker's own lifespan, so provisioning time
+/// is not charged as idleness. A local worker's host and a deviceless domain's
+/// device render as the same placeholders the attempt table uses.
+fn worker_cells(worker: &WorkerMetrics, session_start_ms: u64) -> [String; 8] {
+    [
+        format!("w{}", worker.worker),
+        placeholder(&worker.device, "(none)"),
+        placeholder(&worker.host, UNDEFINED),
+        duration(worker.first_bind_ms.saturating_sub(session_start_ms)),
+        worker.respawns.to_string(),
+        utilization(worker),
+        worker.commits.to_string(),
+        worker.attempts.to_string(),
+    ]
+}
+
+/// The share of its lifespan a worker held a lease, as a whole percentage, or
+/// a placeholder for a worker that bound as the journal ended.
+fn utilization(worker: &WorkerMetrics) -> String {
+    if worker.lifespan_ms == 0 {
+        return UNDEFINED.to_string();
+    }
+    format!(
+        "{:.0}%",
+        100.0 * worker.busy_ms as f64 / worker.lifespan_ms as f64
+    )
+}
+
+/// The temporal chart over the session: commits per column, then one
+/// occupancy bar per worker, all on the one axis so they align. `None` for a
+/// session of no span, which has no axis to bucket.
+fn chart(timeline: &RunTimeline, span_ms: u64) -> Option<String> {
+    if span_ms == 0 {
+        return None;
+    }
+    let buckets: Vec<(u64, u64)> = (0..CHART_WIDTH)
+        .map(|column| {
+            (
+                timeline.session_start_ms + span_ms * column as u64 / CHART_WIDTH as u64,
+                timeline.session_start_ms + span_ms * (column as u64 + 1) / CHART_WIDTH as u64,
+            )
+        })
+        .collect();
+    let mut lines = vec![(
+        "commits".to_string(),
+        sparkline(&timeline.commit_times_ms, &buckets),
+    )];
+    lines.extend(timeline.workers.iter().map(|worker| {
+        (
+            format!("w{}", worker.worker),
+            occupancy_bar(worker, &buckets),
+        )
+    }));
+    let label_width = lines.iter().map(|(label, _)| label.len()).max()?;
+    let chart = lines
+        .iter()
+        // Indented to the left edge the tables above it share.
+        .map(|(label, glyphs)| format!("  {label:<label_width$}  {glyphs}"))
+        .collect::<Vec<String>>()
+        .join("\n");
+    Some(format!(
+        "each column spans {}\n\n{chart}",
+        duration(span_ms / CHART_WIDTH as u64)
+    ))
+}
+
+/// Commits per column, each count a glyph scaled to the busiest column, and a
+/// blank where nothing committed.
+fn sparkline(commit_times_ms: &[u64], buckets: &[(u64, u64)]) -> String {
+    let mut counts = vec![0usize; buckets.len()];
+    for &ts_ms in commit_times_ms {
+        counts[column_of(ts_ms, buckets)] += 1;
+    }
+    let busiest = counts.iter().copied().max().unwrap_or_default();
+    counts
+        .iter()
+        .map(|&count| {
+            if count == 0 || busiest == 0 {
+                return ' ';
+            }
+            // Scale to the busiest column and round up, so any commit at all
+            // draws a mark rather than vanishing into the lightest glyph.
+            let step = (count * COMMIT_GLYPHS.len()).div_ceil(busiest);
+            COMMIT_GLYPHS[step.saturating_sub(1).min(COMMIT_GLYPHS.len() - 1)]
+        })
+        .collect()
+}
+
+/// The column a stamp falls in. The last column carries the session's end, so
+/// the final commit lands on the axis rather than past it.
+fn column_of(ts_ms: u64, buckets: &[(u64, u64)]) -> usize {
+    buckets
+        .iter()
+        .rposition(|(start, _)| ts_ms >= *start)
+        .unwrap_or_default()
+}
+
+/// One worker's occupancy across the columns: blank before it came alive, so
+/// its provisioning gap is drawn to scale; filled for a column it held a lease
+/// through at least half of; light otherwise.
+fn occupancy_bar(worker: &WorkerMetrics, buckets: &[(u64, u64)]) -> String {
+    buckets
+        .iter()
+        .map(|&(start, end)| {
+            if end <= worker.first_bind_ms {
+                return ' ';
+            }
+            let busy_ms: u64 = worker
+                .spans
+                .iter()
+                .map(|&(from, to)| to.min(end).saturating_sub(from.max(start)))
+                .sum();
+            if end > start && busy_ms * 2 >= end - start {
+                '█'
+            } else {
+                '░'
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -839,5 +1101,182 @@ mod tests {
         // no device writes: there is nothing truthful to print.
         let block = status_block(&a_status());
         assert!(!block.contains("devices"), "{block}");
+    }
+
+    /// One worker's metrics over the fields the tests vary; the rest are fixed.
+    fn worker_metrics(
+        worker: u64,
+        host: &str,
+        first_bind_ms: u64,
+        busy_ms: u64,
+        spans: Vec<(u64, u64)>,
+    ) -> WorkerMetrics {
+        WorkerMetrics {
+            worker,
+            device: String::new(),
+            host: host.to_string(),
+            first_bind_ms,
+            respawns: 0,
+            busy_ms,
+            lifespan_ms: 134_000 - first_bind_ms,
+            commits: 340,
+            attempts: 351,
+            spans,
+        }
+    }
+
+    /// A run of a thousand tasks over two minutes and change: one worker alive
+    /// from the start, one that took forty seconds to provision.
+    fn a_timeline() -> RunTimeline {
+        RunTimeline {
+            run: a_run(),
+            tasks: 1_000,
+            committed: 1_000,
+            session_committed: 1_000,
+            session_start_ms: 0,
+            session_end_ms: 134_000,
+            retries: RetryStats {
+                total_retries: 120,
+                retried_tasks: 100,
+                failed_attempts: 120,
+                total_attempts: 1_120,
+            },
+            workers: vec![
+                worker_metrics(0, "", 0, 100_000, vec![(0, 100_000)]),
+                worker_metrics(2, "gpubox", 41_200, 60_000, vec![(41_200, 101_200)]),
+            ],
+            commit_times_ms: vec![1_000, 2_000, 2_500, 60_000, 133_000],
+        }
+    }
+
+    #[test]
+    fn the_timeline_block_names_the_run_its_wall_clock_and_its_throughput() {
+        let squeezed = squeezed(&timeline_block(&a_timeline()));
+        assert!(squeezed.contains(&format!("run {}", a_run())), "{squeezed}");
+        assert!(squeezed.contains("wall-clock 2m14s"), "{squeezed}");
+        assert!(squeezed.contains("committed 1000"), "{squeezed}");
+        // A thousand commits over 134 seconds.
+        assert!(squeezed.contains("throughput 7.5 task/s"), "{squeezed}");
+    }
+
+    #[test]
+    fn each_retry_ratio_is_rendered_with_the_counts_it_is_taken_over() {
+        // The three figures answer different questions and disagree on the same
+        // run, so each states its own numerator and denominator in words.
+        let squeezed = squeezed(&timeline_block(&a_timeline()));
+        assert!(
+            squeezed.contains("retries / tasks 120 / 1000 = 0.12 per task"),
+            "{squeezed}"
+        );
+        assert!(
+            squeezed.contains("tasks retried / tasks 100 / 1000 = 10.0%"),
+            "{squeezed}"
+        );
+        assert!(
+            squeezed.contains("failed attempts / attempts 120 / 1120 = 10.7%"),
+            "{squeezed}"
+        );
+    }
+
+    #[test]
+    fn each_worker_row_states_its_spawn_respawns_utilization_and_counts() {
+        let block = timeline_block(&a_timeline());
+        let squeezed = squeezed(&block);
+        assert!(
+            squeezed.contains("worker device host spawn respawns util commits attempts"),
+            "{block}"
+        );
+        // A local worker bound as the pool launched, and its device is one the
+        // journal never named: both render as placeholders.
+        assert!(
+            squeezed.contains("w0 (none) — 0.00s 0 75% 340 351"),
+            "{block}"
+        );
+        // The remote worker was provisioned forty seconds in, so it was alive
+        // for less of the run and its utilization is over that lifespan.
+        assert!(
+            squeezed.contains("w2 (none) gpubox 41.20s 0 65% 340 351"),
+            "{block}"
+        );
+    }
+
+    /// The chart lines of a rendered block: the sparkline and the occupancy
+    /// bars, as `(label, glyphs)` pairs. A chart line ends in exactly
+    /// `CHART_WIDTH` glyphs, which is what tells it from a table row — the
+    /// bar's own leading blanks make a separator unreliable.
+    fn chart_lines(block: &str) -> Vec<(String, String)> {
+        block
+            .lines()
+            .filter_map(|line| {
+                let chars: Vec<char> = line.chars().collect();
+                let label_width = chars.len().checked_sub(CHART_WIDTH)?;
+                let (label, glyphs) = chars.split_at(label_width);
+                glyphs
+                    .iter()
+                    .all(|glyph| " ▁▂▃▄▅▆▇█░".contains(*glyph))
+                    .then(|| {
+                        (
+                            label.iter().collect::<String>().trim().to_string(),
+                            glyphs.iter().collect::<String>(),
+                        )
+                    })
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_chart_draws_one_fixed_width_line_per_worker_under_the_commits() {
+        let block = timeline_block(&a_timeline());
+        let lines = chart_lines(&block);
+        let labels: Vec<&str> = lines.iter().map(|(label, _)| label.as_str()).collect();
+        assert_eq!(labels, vec!["commits", "w0", "w2"], "{block}");
+        for (label, glyphs) in &lines {
+            assert_eq!(
+                glyphs.chars().count(),
+                CHART_WIDTH,
+                "{label} spans the fixed axis: {block}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_late_bound_workers_bar_begins_with_the_blanks_its_spawn_gap_spans() {
+        // Forty-one seconds of a 134-second run: the provisioning gap is drawn
+        // to scale as columns where the worker did not yet exist.
+        let block = timeline_block(&a_timeline());
+        let lines = chart_lines(&block);
+        let (_, remote) = lines.iter().find(|(label, _)| label == "w2").expect("w2");
+        let blanks = remote.chars().take_while(|glyph| *glyph == ' ').count();
+        assert_eq!(blanks, 14, "{block}");
+        let (_, local) = lines.iter().find(|(label, _)| label == "w0").expect("w0");
+        assert!(
+            !local.starts_with(' '),
+            "a worker alive from the start has no gap: {block}"
+        );
+    }
+
+    #[test]
+    fn a_session_of_no_span_renders_its_scalars_without_a_chart() {
+        // A run that journaled its start and nothing since: there is no axis to
+        // bucket, and no rate to take over a zero denominator.
+        let timeline = RunTimeline {
+            run: a_run(),
+            tasks: 4,
+            committed: 0,
+            session_committed: 0,
+            session_start_ms: 1_000,
+            session_end_ms: 1_000,
+            retries: RetryStats::default(),
+            workers: vec![worker_metrics(0, "", 1_000, 0, Vec::new())],
+            commit_times_ms: Vec::new(),
+        };
+        let block = timeline_block(&timeline);
+        let squeezed = squeezed(&block);
+        assert!(squeezed.contains("throughput —"), "{block}");
+        assert!(
+            squeezed.contains("failed attempts / attempts 0 / 0 = —"),
+            "{block}"
+        );
+        assert!(chart_lines(&block).is_empty(), "no axis to draw: {block}");
     }
 }

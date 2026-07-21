@@ -226,9 +226,9 @@ impl TaskHistory {
         Ok(())
     }
 
-    /// Ends the open attempt at `ended_ms` with `result`. A journal may state
-    /// an outcome with no lease before it — a resume segment restates prior
-    /// commits — and then there is no attempt to close.
+    /// Ends the open attempt at `ended_ms` with `result`. A malformed or
+    /// truncated journal may state an outcome with no lease before it, and then
+    /// there is no attempt to close.
     fn close(&mut self, ended_ms: u64, result: AttemptResult) {
         if let Some(open) = self.open_attempt() {
             open.ended_ms = Some(ended_ms);
@@ -269,10 +269,12 @@ fn lifecycle_task(event: &Event) -> Option<&str> {
     }
 }
 
-/// The device and host each worker reported at its last spawn. Read ahead of
-/// the per-task fold so the join holds however the journal orders the two: a
-/// resumed run leases before its workers restate their bindings.
-fn worker_bindings(records: &[Record]) -> BTreeMap<u64, (String, String)> {
+/// The device and host each worker reported at its last spawn — the shared
+/// worker → `(device, host)` pre-pass every merge that attributes work to
+/// hardware joins through. Read ahead of the merge that consumes it so the join
+/// holds however the journal orders the two: a resumed run leases before its
+/// workers restate their bindings.
+pub(crate) fn worker_bindings(records: &[Record]) -> BTreeMap<u64, (String, String)> {
     let mut bound = BTreeMap::new();
     for record in records {
         if let Event::WorkerBound {
@@ -621,6 +623,27 @@ mod tests {
     }
 
     #[test]
+    fn the_binding_pre_pass_keeps_each_workers_last_device_and_host() {
+        // A local worker names no host; a remote one names the machine it runs
+        // on; and a worker that spawned again is known by what its later child
+        // reported.
+        let bound = worker_bindings(&[
+            worker_bound(0, "Intel Arc 140T", ""),
+            worker_bound(1, "NVIDIA RTX PRO 2000", "gpubox"),
+            worker_bound(0, "NVIDIA RTX PRO 2000", ""),
+        ]);
+        assert_eq!(
+            bound,
+            [
+                (0, ("NVIDIA RTX PRO 2000".to_string(), String::new())),
+                (1, ("NVIDIA RTX PRO 2000".to_string(), "gpubox".to_string())),
+            ]
+            .into_iter()
+            .collect()
+        );
+    }
+
+    #[test]
     fn a_worker_binding_after_the_lease_still_joins() -> Result<()> {
         // A resumed run leases before its workers restate their bindings; the
         // binding pass runs first, so the join holds either way.
@@ -688,9 +711,10 @@ mod tests {
     }
 
     #[test]
-    fn the_last_outcome_wins_when_a_resume_segment_restates_a_commit() -> Result<()> {
-        // The task was leased and committed in an earlier segment, and the
-        // resumed segment restates the commit with no lease before it.
+    fn the_last_outcome_wins_when_a_journal_states_a_commit_with_no_lease() -> Result<()> {
+        // A malformed journal states the commit twice, the second with no lease
+        // before it: the guard closes no attempt and the last outcome still
+        // decides.
         let history = history_of(
             &[
                 leased("aa", 0, 0, 10),
