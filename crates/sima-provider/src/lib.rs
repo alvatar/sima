@@ -22,6 +22,7 @@ mod acquire;
 mod guard;
 mod offer;
 mod provider;
+mod reconcile;
 pub mod stub;
 #[cfg(test)]
 mod testutil;
@@ -32,3 +33,4 @@ pub use offer::{Constraints, Objective, Offer, OfferId, Price, select};
 pub use provider::{
     Instance, InstanceId, InstanceStatus, Provider, Provision, SshEndpoint, TaggedInstance,
 };
+pub use reconcile::{ReconcileReport, reconcile};

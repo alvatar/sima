@@ -14,6 +14,7 @@ use sima_store::{InstanceRecord, InstanceRecordState, Store};
 use crate::guard::{InstanceGuard, teardown};
 use crate::offer::{Constraints, Objective, Offer, select};
 use crate::provider::{Instance, InstanceStatus, Provider, Provision};
+use crate::reconcile::reconcile;
 
 /// Bounds on waiting for a provisioned instance to become ready.
 #[derive(Debug, Clone, Copy)]
@@ -44,6 +45,9 @@ pub fn acquire<'a, P: Provider>(
     objective: Objective,
     limits: &AcquireLimits,
 ) -> Result<InstanceGuard<'a, P>> {
+    // Orphans of an earlier crash are destroyed before a new machine is
+    // paid for.
+    reconcile(provider, store)?;
     let ranked = select(provider.offers()?, constraints, objective);
     if ranked.is_empty() {
         return Err(Error::Provider(format!(
