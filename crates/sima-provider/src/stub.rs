@@ -22,7 +22,12 @@ use crate::provider::{
 struct StubState {
     /// The marketplace this stub lists.
     offers: Vec<Offer>,
-    /// Offers already rented; a second request for one is `OfferGone`.
+    /// Offers already rented; a second request for one is `OfferGone`. A
+    /// rented offer stays here for the stub's life, so it never returns to
+    /// the marketplace. A real marketplace relists a machine once its renter
+    /// releases it, and the acquisition loop visits each offer at most once,
+    /// so holding an offer taken is the whole marketplace behavior the
+    /// contract exposes.
     taken: Vec<OfferId>,
     /// Offers that answer `OfferGone` however often they are requested.
     lost: Vec<OfferId>,
