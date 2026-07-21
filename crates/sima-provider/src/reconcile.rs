@@ -54,14 +54,14 @@ pub fn reconcile<P: Provider>(provider: &P, store: &Store) -> Result<ReconcileRe
         if owner_alive(store, &record)? {
             continue;
         }
-        // The intent record names no instance, so the tag it was written
-        // under is what identifies the machine the dead process may have
-        // created.
         let orphan = match record.state {
             InstanceRecordState::Live => record
                 .instance
                 .as_deref()
                 .map(|instance| InstanceId(instance.to_string())),
+            // An intent record names no instance — its writer died before
+            // learning of one — so the tag it was written under is what
+            // identifies the machine the provider may have created.
             InstanceRecordState::Intent => tagged(&held, &record.tag),
         };
         match orphan {

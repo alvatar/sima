@@ -13,7 +13,7 @@ use sima_store::{InstanceRecord, InstanceRecordState, Store};
 
 use crate::guard::{InstanceGuard, teardown};
 use crate::offer::{Constraints, Objective, Offer, select};
-use crate::provider::{Instance, InstanceStatus, Provider, Provision};
+use crate::provider::{Instance, InstanceStatus, Provider, Provision, SshEndpoint};
 use crate::reconcile::reconcile;
 
 /// Bounds on waiting for a provisioned instance to become ready.
@@ -101,7 +101,7 @@ fn wait_ready<P: Provider>(
     provider: &P,
     instance: &Instance,
     limits: &AcquireLimits,
-) -> Result<Option<crate::provider::SshEndpoint>> {
+) -> Result<Option<SshEndpoint>> {
     let started = Instant::now();
     loop {
         match provider.instance(&instance.id)? {
