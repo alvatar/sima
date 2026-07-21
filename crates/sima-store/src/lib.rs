@@ -8,7 +8,7 @@
 //! <root>/objects/<aa>/<64-hex>     object bytes; aa = first two hex chars
 //! <root>/tmp/<pid>-<seq>           in-flight writes
 //! <root>/tasks/<task-key-hex>      index entry: record-hash hex + newline
-//! <root>/instances/<tag>              one rented instance's ledger record
+//! <root>/instances/<tag>           one rented instance's ledger record
 //! <root>/runs/<run-id-hex>/manifest.json
 //! <root>/runs/<run-id-hex>/journal
 //! <root>/runs/<run-id-hex>/orchestrator.lock
