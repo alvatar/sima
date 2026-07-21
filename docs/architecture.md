@@ -388,7 +388,7 @@ reports host trust.
 
 ### The offer model
 
-`list` returns concrete offers, never instance types: **(GPU model, VRAM,
+`offers` returns concrete offers, never instance types: **(GPU model, VRAM,
 GPU count, $/hr, host reliability, verified status, disk, bandwidth,
 location, offer id)**, normalized across providers. A marketplace is the
 general case — a fixed type catalog degenerates into one offer per type at
