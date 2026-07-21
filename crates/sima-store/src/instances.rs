@@ -226,6 +226,12 @@ mod tests {
         store.put_instance(&record)?;
         let text =
             fs::read_to_string(dir.path().join("instances").join(tag)).expect("read the record");
+        // The state serializes as an object keyed by the variant name, which
+        // is what the external tagging the ledger format rests on looks like.
+        assert!(
+            text.contains(r#""state": {"#) && text.contains(r#""live": {"#),
+            "the live variant names itself in the state: {text}"
+        );
         assert!(
             text.contains(r#""instance": "i-9""#),
             "the live state carries the instance: {text}"
