@@ -49,10 +49,12 @@ so resume, crash-recovery, and re-run are one code path.
 
 `sima-provider` also sits beside the spine, above the store: it is the
 rented-hardware control plane, depending on `sima-core`, `sima-model`, and
-`sima-store`, and consumed from the pipeline. Provider backends form a
-sibling group under `crates/providers/`, named `sima-provider-<name>` after
-the service each one speaks to, so the first HTTP client enters exactly one
-crate. See [`sima-provider`](#sima-provider).
+`sima-store`, with the in-memory stub as its only backend. M6.2 puts the
+pipeline on the seam and adds the first backend speaking to a real service;
+backends become a sibling group under `crates/providers/`, named
+`sima-provider-<name>` after the service each one speaks to, so the first
+HTTP client enters exactly one crate. See
+[`sima-provider`](#sima-provider).
 
 Execution backends sit off the spine as a sibling group under
 `crates/toolkits/` (`sima-toolkit-*`). A toolkit is a compute library a domain
