@@ -5,6 +5,21 @@
 //! control-plane calls — and a codebase whose concurrency is threads.
 //! Implementations are API clients; the contract each method states is what
 //! acquisition, the guard, and reconciliation rely on.
+//!
+//! Any service supplying the following fits, whether it is a peer-to-peer
+//! marketplace or a first-party cloud with a fixed catalog:
+//!
+//! - **Rental against offers**, where an offer can be gone by the time
+//!   provisioning reaches the service. A fixed type catalog degenerates into
+//!   one offer per type at the type's list price, and a type that is out of
+//!   stock is [`Provision::OfferGone`].
+//! - **A client-chosen tag** attached to the created instance and reported
+//!   back verbatim by the instance scan, under the terms
+//!   [`Provider::provision`] and [`Provider::instances`] state.
+//! - **SSH reachability**, so a ready instance is a user, host, and port.
+//! - **Hourly pricing**, normalized to micro-USD ([`Price`]).
+//! - **Idempotent destroy**, so tearing down a machine already gone
+//!   succeeds.
 
 use sima_core::Result;
 

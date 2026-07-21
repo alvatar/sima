@@ -9,6 +9,10 @@
 ///
 /// Integer, so ranking is a total order without float comparison. Prices
 /// are ephemeral market data and never enter a hash.
+///
+/// Micro-USD is the unit every provider is normalized to; a backend billing
+/// in another currency converts as part of its own configuration, so the
+/// rates reaching selection are comparable across providers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Price(pub u64);
 
@@ -18,7 +22,9 @@ pub struct OfferId(pub String);
 
 /// One rentable machine as the marketplace lists it, normalized across
 /// providers. A fixed type catalog degenerates into this: one offer per
-/// type, at the type's list price.
+/// type, at the type's list price. A machine carrying no GPUs states a
+/// `gpu_count` of 0, a `vram_mb` of 0, and an empty `gpu_model`, which
+/// default constraints admit.
 #[derive(Debug, Clone)]
 pub struct Offer {
     /// The provider's identifier for this offer.
@@ -31,9 +37,13 @@ pub struct Offer {
     pub vram_mb: u64,
     /// The hourly rate.
     pub price: Price,
-    /// Provider-reported host reliability, in `[0, 1]`.
+    /// Provider-reported host reliability, in `[0, 1]`. This describes trust
+    /// in a marketplace host; a first-party datacenter backend, which reports
+    /// nothing of the kind, states 1.0.
     pub reliability: f64,
-    /// Whether the provider vetted the host.
+    /// Whether the provider vetted the host. As with `reliability`, this is
+    /// marketplace host trust, and a first-party datacenter backend states
+    /// true.
     pub verified: bool,
     /// Disk available to the rental, in gigabytes.
     pub disk_gb: u64,
