@@ -404,7 +404,7 @@ difference.
       I/O lifted into `sima-core`: records and referenced CAS objects only
       (checkpoints are mid-segment scratch, placement re-binds, journals
       stay home), caller supplies the task-key set, content addressing is
-      the transfer integrity check; first production consumer is M6.8's
+      the transfer integrity check; first production consumer is M6.6's
       migrate;
       (c) the remote worker: the existing framed stdio protocol runs
       unchanged through `ssh <host> docker run -i` (the store never leaves
@@ -480,10 +480,10 @@ leaked instances are leaked money.
 - [ ] M6.1 Provider abstraction: provision / destroy / list / price query;
       instance lifecycle owned by the run, teardown on success, failure, and
       interrupt
-- [ ] M6.2 Vast.ai backend
-- [ ] M6.3 Hetzner backend
-- [ ] M6.4 AWS backend
-- [ ] M6.5 On-worker stats reduction: kernel-side population/activity counts
+- [ ] M6.2 Vast.ai backend — the single provider for now; further providers
+      (Hetzner, AWS, ...) are added on demand as separate milestones when
+      needed
+- [ ] M6.3 On-worker stats reduction: kernel-side population/activity counts
       so remote runs return stats always, snapshots only on a cheap predicate
       (placed here as the bandwidth guard; P7's funnel metrics consume the
       same reduction — the mechanism is shared). "Stats always" covers the
@@ -495,12 +495,12 @@ leaked instances are leaked money.
       become structured named scalars (population, activity, ...) the P7 funnel
       can threshold family-agnostically, plus an optional opaque family blob
       for anything richer — decide the shape here, consumed at M7.2
-- [ ] M6.6 Budget guard: max price, max wall-clock, spend accounting per run
-- [ ] M6.7 Trust-tiered scheduling: redundant execution, quorum validation,
+- [ ] M6.4 Budget guard: max price, max wall-clock, spend accounting per run
+- [ ] M6.5 Trust-tiered scheduling: redundant execution, quorum validation,
       spot-check sampling, host reputation — the BOINC playbook; the largest
       mechanism in this phase, expected to split into several PRs at
       elaboration
-- [ ] M6.8 End-to-end slingshot consolidation (phase acceptance): start a
+- [ ] M6.6 End-to-end slingshot consolidation (phase acceptance): start a
       search locally; interrupt it mid-simulation (inside a segment chain);
       `sima migrate` to a freshly provisioned instance — sync closure, resume
       remotely, follow events live; sync results home; teardown verified. The
@@ -529,7 +529,7 @@ thresholds re-classifies without any re-execution.
       requires
 - [ ] M7.2 Verdict classification: dead / frozen / exploding / cyclic,
       thresholds from config. Classification reads named numeric metrics
-      generically, so it requires the structured `Stats` decided at M6.5 rather
+      generically, so it requires the structured `Stats` decided at M6.3 rather
       than the opaque bytes M1.4 shipped — opaque stats would force a per-family
       decoder here and defeat the funnel's family-agnostic design
 - [ ] M7.3 Staged cheapest-first funnel + re-evaluation from recorded runs

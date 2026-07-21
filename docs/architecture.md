@@ -819,7 +819,7 @@ mechanism minus the ssh hop.
   them at container start through CDI. Delivery to a manual remote is
   `podman save | ssh <host> docker load`.
 
-**Store synchronization** is a separate, standalone piece built here for M6.8's
+**Store synchronization** is a separate, standalone piece built here for M6.6's
 `sima migrate` to compose: a have/want protocol over any byte pipe, living in
 `sima-store` over `sima-core`'s framing. Each side advertises what it holds,
 computes `want = theirs − mine`, and streams the difference; received objects
