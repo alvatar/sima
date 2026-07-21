@@ -56,12 +56,22 @@ pub fn acquire<'a, P: Provider>(
     }
     for offer in ranked {
         let tag = attempt_tag(owner);
+        // One stamp per attempt: the live write carries the intent's, which
+        // is what the record's field states.
+        let created_ms = now_ms();
         // Durable before the provider is asked for anything: the provider
         // attaches this tag to whatever it creates, so a death anywhere
         // after this line leaves a record naming the machine that may
         // exist. Without it, a crash between the call and its answer would
         // leak an instance nothing knows about.
-        store.put_instance(&record(&tag, provider.id(), owner, &offer, None))?;
+        store.put_instance(&record(
+            &tag,
+            provider.id(),
+            owner,
+            &offer,
+            None,
+            created_ms,
+        ))?;
         let instance = match provider.provision(&offer.id, &tag) {
             Ok(Provision::Provisioned(instance)) => instance,
             // The offer went to another renter: the next-ranked one is the
@@ -78,7 +88,14 @@ pub fn acquire<'a, P: Provider>(
             // that machine unreachable.
             Err(e) => return Err(e),
         };
-        store.put_instance(&record(&tag, provider.id(), owner, &offer, Some(&instance)))?;
+        store.put_instance(&record(
+            &tag,
+            provider.id(),
+            owner,
+            &offer,
+            Some(&instance),
+            created_ms,
+        ))?;
         if let Some(endpoint) = wait_ready(provider, &instance, limits)? {
             return Ok(InstanceGuard::new(
                 provider,
@@ -120,13 +137,15 @@ fn wait_ready<P: Provider>(
 }
 
 /// The ledger record for one attempt: the intent record while `instance` is
-/// `None`, the live record once the provider named the machine.
+/// `None`, the live record once the provider named the machine. Both writes
+/// carry the attempt's single `created_ms` stamp.
 fn record(
     tag: &str,
     provider: &str,
     owner: &RunId,
     offer: &Offer,
     instance: Option<&Instance>,
+    created_ms: u64,
 ) -> InstanceRecord {
     InstanceRecord {
         tag: tag.to_string(),
@@ -139,7 +158,7 @@ fn record(
         instance: instance.map(|instance| instance.id.0.clone()),
         // The offer's rate until the provider states the instance's own.
         price_micro_usd_hour: instance.map_or(offer.price, |instance| instance.price).0,
-        created_ms: now_ms(),
+        created_ms,
     }
 }
 
@@ -173,7 +192,7 @@ mod tests {
     use std::time::Duration;
 
     use sima_core::{Error, Result};
-    use sima_store::{InstanceRecordState, Store};
+    use sima_store::{InstanceRecord, InstanceRecordState, Store};
 
     use super::{AcquireLimits, acquire};
     use crate::offer::{Constraints, Objective, Offer, OfferId};
@@ -184,12 +203,12 @@ mod tests {
 
     /// A provider that watches what the acquisition loop does before and
     /// while it calls through: every `provision` asserts the attempt's
-    /// intent record is already durable, and the tags are recorded in call
-    /// order.
+    /// intent record is already durable, and keeps the records it saw in
+    /// call order.
     struct WatchingProvider {
         inner: StubProvider,
         root: PathBuf,
-        provisioned_tags: Mutex<Vec<String>>,
+        observed_intents: Mutex<Vec<InstanceRecord>>,
     }
 
     impl WatchingProvider {
@@ -197,13 +216,22 @@ mod tests {
             WatchingProvider {
                 inner,
                 root,
-                provisioned_tags: Mutex::new(Vec::new()),
+                observed_intents: Mutex::new(Vec::new()),
             }
+        }
+
+        /// The intent records the loop wrote before calling through, in call
+        /// order.
+        fn observed_intents(&self) -> Vec<InstanceRecord> {
+            self.observed_intents.lock().expect("intent lock").clone()
         }
 
         /// The tags the loop provisioned under, in call order.
         fn provisioned_tags(&self) -> Vec<String> {
-            self.provisioned_tags.lock().expect("tag lock").clone()
+            self.observed_intents()
+                .into_iter()
+                .map(|record| record.tag)
+                .collect()
         }
     }
 
@@ -224,10 +252,13 @@ mod tests {
                 .find(|record| record.tag == tag)
                 .unwrap_or_else(|| panic!("the intent record for {tag} must precede this call"));
             assert_eq!(intent.state, InstanceRecordState::Intent);
-            self.provisioned_tags
+            self.observed_intents
                 .lock()
-                .expect("tag lock")
-                .push(tag.to_string());
+                .expect("intent lock")
+                .push(intent.clone());
+            // Pushes the live write into a later millisecond, so a record
+            // stamped twice is visible as two different stamps.
+            std::thread::sleep(Duration::from_millis(2));
             self.inner.provision(offer, tag)
         }
 
@@ -428,6 +459,22 @@ mod tests {
         // opened store, which is what a later process would find.
         let guard = acquire_any(&watching, &store)?;
         assert_eq!(watching.provisioned_tags(), vec![guard.tag().to_string()]);
+        Ok(())
+    }
+
+    #[test]
+    fn an_attempt_is_stamped_once_and_the_live_write_keeps_that_stamp() -> Result<()> {
+        let (dir, store) = temp_store();
+        let stub = StubProvider::new(vec![stub_offer("cheap", 100_000)]);
+        let watching = WatchingProvider::new(stub, dir.path().to_path_buf());
+        let _guard = acquire_any(&watching, &store)?;
+        let intent = watching.observed_intents();
+        assert_eq!(intent.len(), 1);
+        let records = store.instances()?;
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].state, InstanceRecordState::Live);
+        // The record is stamped at intent, which is what its field says.
+        assert_eq!(records[0].created_ms, intent[0].created_ms);
         Ok(())
     }
 }

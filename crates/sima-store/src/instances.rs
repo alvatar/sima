@@ -41,7 +41,7 @@ pub struct InstanceRecord {
     /// The offer's rate at intent, the instance's rate once live.
     pub price_micro_usd_hour: u64,
     /// Wall-clock milliseconds since the epoch at intent, like the journal's
-    /// stamps.
+    /// stamps. The live write keeps the stamp the attempt began under.
     pub created_ms: u64,
 }
 
