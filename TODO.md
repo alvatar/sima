@@ -479,10 +479,27 @@ leaked instances are leaked money.
 
 - [ ] M6.1 Provider abstraction: provision / destroy / list / price query;
       instance lifecycle owned by the run, teardown on success, failure, and
-      interrupt
+      interrupt. `list` returns concrete, normalized offers, not instance
+      types — (GPU model, VRAM, GPU count, $/hr, host reliability, verified
+      status, disk, bandwidth, location, offer id); a marketplace query is
+      the general case and a fixed type catalog degenerates into it.
+      Selection is provider-agnostic and splits into two parts kept
+      deliberately separate: hard constraints in config (min VRAM,
+      acceptable GPU models, verified hosts only, min reliability, max
+      $/hr) that disqualify, and a single scalar ranking objective over
+      qualifying offers (default: cheapest $/hr; no weighted multi-criteria
+      scoring). Provision treats "offer no longer available" as a normal
+      outcome and falls through to the next-ranked offer
 - [ ] M6.2 Vast.ai backend — the single provider for now; further providers
       (Hetzner, AWS, ...) are added on demand as separate milestones when
-      needed
+      needed. Translates the normalized filter into Vast.ai's marketplace
+      query and maps its offer fields (reliability score, verified status,
+      rental mode) into the normalized offer form; on-demand rentals only —
+      interruptible bidding waits for the trust and budget machinery (M6.4,
+      M6.5). Settle image delivery here: a manual remote takes
+      `podman save | ssh docker load`, but Vast.ai pulls from a registry,
+      so bootstrap implies publishing the image or loading it on-instance
+      after boot
 - [ ] M6.3 On-worker stats reduction: kernel-side population/activity counts
       so remote runs return stats always, snapshots only on a cheap predicate
       (placed here as the bandwidth guard; P7's funnel metrics consume the
