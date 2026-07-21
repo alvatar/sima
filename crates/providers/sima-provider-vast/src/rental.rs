@@ -54,9 +54,15 @@ pub(crate) fn create(
             id.0
         )));
     };
+    let Some(rate) = row.dph_total else {
+        return Err(Error::Provider(format!(
+            "{OPERATION}: the answer names no rate for instance {}",
+            id.0
+        )));
+    };
     Ok(Provision::Provisioned(Instance {
         id,
-        price: price::per_hour(row.dph_total),
+        price: price::per_hour(rate),
     }))
 }
 
@@ -241,6 +247,22 @@ mod tests {
             create(&client, &config(&server.url()), &offer(), "sima-tag-0"),
             Err(Error::Provider(message))
                 if message == "create instance: HTTP 500: internal"
+        ));
+    }
+
+    #[test]
+    fn a_created_instance_reporting_no_rate_is_a_provider_error() {
+        // The rate is the point of the follow-up fetch, so the one path
+        // that consumes it is the one path that demands it.
+        let server = TestServer::new(vec![
+            answer(200, r#"{"success": true, "new_contract": 555}"#),
+            answer(200, r#"{"instances": {"id": 555, "label": "sima-tag-0"}}"#),
+        ]);
+        let client = VastClient::new(&server.url(), "k-secret");
+        assert!(matches!(
+            create(&client, &config(&server.url()), &offer(), "sima-tag-0"),
+            Err(Error::Provider(message))
+                if message == "create instance: the answer names no rate for instance 555"
         ));
     }
 

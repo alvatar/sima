@@ -48,8 +48,13 @@ pub(crate) struct InstanceRow {
     ssh_host: Option<String>,
     /// The port the instance is reached at once it is up.
     ssh_port: Option<u16>,
-    /// The hourly rate the account is charged for the instance.
-    pub(crate) dph_total: f64,
+    /// The hourly rate the account is charged for the instance, which the
+    /// API reports for a billed instance and an anomalous row may omit.
+    /// Only the rental path consumes it, and only there is its presence
+    /// demanded: readiness polling and the reconciliation listing read the
+    /// other fields, so a row missing a rate still normalizes and still
+    /// lists.
+    pub(crate) dph_total: Option<f64>,
 }
 
 /// The API's envelope around a single instance.
@@ -297,6 +302,43 @@ mod tests {
         assert_eq!(instances.len(), 1);
         assert_eq!(instances[0].id, InstanceId("2".to_string()));
         assert_eq!(instances[0].tag, "sima-tag-2");
+        Ok(())
+    }
+
+    #[test]
+    fn an_instance_reporting_no_rate_still_lists() -> Result<()> {
+        // Reconciliation exists to reap strays, and a stray is the row most
+        // likely to be anomalous, so a missing rate never costs the listing.
+        let server = TestServer::new(vec![answer(
+            200,
+            r#"{"instances": [{"id": 1, "label": "sima-tag-1"},
+                              {"id": 2, "label": "sima-tag-2", "dph_total": null}],
+                "next_token": null}"#,
+        )]);
+        let client = VastClient::new(&server.url(), "k-secret");
+        let instances = held(&client)?;
+        let tags: Vec<&str> = instances.iter().map(|held| held.tag.as_str()).collect();
+        assert_eq!(tags, vec!["sima-tag-1", "sima-tag-2"]);
+        Ok(())
+    }
+
+    #[test]
+    fn an_instance_reporting_no_rate_still_normalizes() -> Result<()> {
+        let server = TestServer::new(vec![answer(
+            200,
+            r#"{"instances": {"id": 555, "actual_status": "running",
+                "ssh_host": "ssh4.vast.ai", "ssh_port": 41231,
+                "label": "sima-tag-0"}}"#,
+        )]);
+        let client = VastClient::new(&server.url(), "k-secret");
+        assert_eq!(
+            status(&client, &instance())?,
+            InstanceStatus::Ready(SshEndpoint {
+                host: "ssh4.vast.ai".to_string(),
+                port: 41231,
+                user: "root".to_string(),
+            })
+        );
         Ok(())
     }
 
