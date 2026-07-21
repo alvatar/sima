@@ -159,10 +159,11 @@ fn record(
         provider: provider.to_string(),
         owner: owner.to_string(),
         state: match instance {
-            Some(_) => InstanceRecordState::Live,
+            Some(instance) => InstanceRecordState::Live {
+                instance: instance.id.0.clone(),
+            },
             None => InstanceRecordState::Intent,
         },
-        instance: instance.map(|instance| instance.id.0.clone()),
         // The offer's rate until the provider states the instance's own.
         price_micro_usd_hour: instance.map_or(offer.price, |instance| instance.price).0,
         created_ms,
@@ -292,11 +293,11 @@ mod tests {
         let records = store.instances()?;
         assert_eq!(records.len(), 1);
         let record = &records[0];
-        assert_eq!(record.state, InstanceRecordState::Live);
         assert_eq!(record.provider, "stub");
         assert_eq!(record.owner, sample_run(7).to_string());
         assert_eq!(record.price_micro_usd_hour, 100_000);
-        assert_eq!(record.instance.as_deref(), Some(guard.id().0.as_str()));
+        // The live state names the machine the guard holds.
+        assert_eq!(record.instance(), Some(guard.id().0.as_str()));
         assert_eq!(record.tag, guard.tag());
         // The tag names the owner, the acquiring process, and the attempt.
         let parts: Vec<&str> = record.tag.split('-').collect();
@@ -468,8 +469,9 @@ mod tests {
             tag: "sima-tag-0".to_string(),
             provider: "stub".to_string(),
             owner: sample_run(7).to_string(),
-            state: InstanceRecordState::Live,
-            instance: Some("held".to_string()),
+            state: InstanceRecordState::Live {
+                instance: "held".to_string(),
+            },
             price_micro_usd_hour: 100_000,
             created_ms: 1_700_000_000_000,
         })?;
@@ -517,7 +519,7 @@ mod tests {
         assert_eq!(intent.len(), 1);
         let records = store.instances()?;
         assert_eq!(records.len(), 1);
-        assert_eq!(records[0].state, InstanceRecordState::Live);
+        assert!(matches!(records[0].state, InstanceRecordState::Live { .. }));
         // The record is stamped at intent, which is what its field says.
         assert_eq!(records[0].created_ms, intent[0].created_ms);
         Ok(())

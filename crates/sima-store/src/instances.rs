@@ -34,10 +34,8 @@ pub struct InstanceRecord {
     /// The owning run, full 64-character hex. Its orchestrator lock answers
     /// whether the owner is still alive.
     pub owner: String,
-    /// How far the attempt got.
+    /// How far the attempt got, and the instance once there is one.
     pub state: InstanceRecordState,
-    /// The provider-side instance id, present exactly in the live state.
-    pub instance: Option<String>,
     /// The offer's rate at intent, the instance's rate once live.
     pub price_micro_usd_hour: u64,
     /// Wall-clock milliseconds since the epoch at intent, like the journal's
@@ -48,15 +46,32 @@ pub struct InstanceRecord {
     pub created_ms: u64,
 }
 
-/// How far one acquisition attempt got.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+impl InstanceRecord {
+    /// The provider-side instance this record names, for a caller that asks
+    /// what machine the record leads to without deciding on the state. An
+    /// attempt still at intent names none.
+    pub fn instance(&self) -> Option<&str> {
+        match &self.state {
+            InstanceRecordState::Intent => None,
+            InstanceRecordState::Live { instance } => Some(instance),
+        }
+    }
+}
+
+/// How far one acquisition attempt got. The instance id lives in the live
+/// variant, so a record names a machine exactly when the attempt reached
+/// one, and the type carries that pairing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum InstanceRecordState {
     /// The provider has been asked, or is about to be asked, for a machine:
     /// an instance carrying the tag may exist.
     Intent,
-    /// The provider created the instance named in the record.
-    Live,
+    /// The provider created this instance.
+    Live {
+        /// The provider-side instance id.
+        instance: String,
+    },
 }
 
 impl Store {
@@ -158,7 +173,6 @@ mod tests {
             provider: "stub".to_string(),
             owner: sample_run_config(root_seed).id().to_string(),
             state: InstanceRecordState::Intent,
-            instance: None,
             price_micro_usd_hour: 82_400,
             created_ms: 1_700_000_000_000,
         }
@@ -181,13 +195,54 @@ mod tests {
     }
 
     #[test]
+    fn an_intent_record_names_its_state_alone_and_holds_no_instance() -> Result<()> {
+        let (dir, store) = temp_store();
+        let tag = "sima-0123456789abcdef-42-0";
+        let record = intent(tag, 7);
+        assert_eq!(record.instance(), None);
+        store.put_instance(&record)?;
+        let text = fs::read_to_string(dir.path().join("instances").join(tag))
+            .expect("read the intent record");
+        assert!(
+            text.contains(r#""state": "intent""#),
+            "the intent state is a bare name: {text}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_live_record_carries_its_instance_inside_the_state() -> Result<()> {
+        let (dir, store) = temp_store();
+        let tag = "sima-0123456789abcdef-42-0";
+        let record = InstanceRecord {
+            state: InstanceRecordState::Live {
+                instance: "i-9".to_string(),
+            },
+            ..intent(tag, 7)
+        };
+        // The id is reachable without matching on the state, for callers
+        // that only ask what machine the record names.
+        assert_eq!(record.instance(), Some("i-9"));
+        store.put_instance(&record)?;
+        let text =
+            fs::read_to_string(dir.path().join("instances").join(tag)).expect("read the record");
+        assert!(
+            text.contains(r#""instance": "i-9""#),
+            "the live state carries the instance: {text}"
+        );
+        assert_eq!(store.instances()?, vec![record]);
+        Ok(())
+    }
+
+    #[test]
     fn rewriting_a_tag_upgrades_the_record_in_place() -> Result<()> {
         let (_dir, store) = temp_store();
         let tag = "sima-0123456789abcdef-42-0";
         store.put_instance(&intent(tag, 7))?;
         let live = InstanceRecord {
-            state: InstanceRecordState::Live,
-            instance: Some("i-9".to_string()),
+            state: InstanceRecordState::Live {
+                instance: "i-9".to_string(),
+            },
             ..intent(tag, 7)
         };
         store.put_instance(&live)?;

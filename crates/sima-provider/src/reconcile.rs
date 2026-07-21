@@ -65,11 +65,8 @@ pub fn reconcile<P: Provider>(provider: &P, store: &Store) -> Result<ReconcileRe
         if owner_alive(store, &record)? {
             continue;
         }
-        let orphan = match record.state {
-            InstanceRecordState::Live => record
-                .instance
-                .as_deref()
-                .map(|instance| InstanceId(instance.to_string())),
+        let orphan = match &record.state {
+            InstanceRecordState::Live { instance } => Some(InstanceId(instance.clone())),
             // An intent record names no instance — its writer died before
             // learning of one — so the tag it was written under is what
             // identifies the machine the provider may have created.
@@ -123,28 +120,27 @@ mod tests {
     use crate::stub::StubProvider;
     use crate::testutil::{acquire_any, sample_run, stub_offer, temp_store};
 
-    /// A record for `tag` in `state`, owned by the run for seed 7 and
-    /// naming `instance` when the state is live.
-    fn record(tag: &str, state: InstanceRecordState, instance: Option<&str>) -> InstanceRecord {
-        owned_record(tag, state, instance, sample_run(7))
+    /// A record for `tag` in `state`, owned by the run for seed 7.
+    fn record(tag: &str, state: InstanceRecordState) -> InstanceRecord {
+        owned_record(tag, state, sample_run(7))
     }
 
-    /// A record for `tag` in `state`, owned by `owner` and naming
-    /// `instance` when the state is live.
-    fn owned_record(
-        tag: &str,
-        state: InstanceRecordState,
-        instance: Option<&str>,
-        owner: RunId,
-    ) -> InstanceRecord {
+    /// A record for `tag` in `state`, owned by `owner`.
+    fn owned_record(tag: &str, state: InstanceRecordState, owner: RunId) -> InstanceRecord {
         InstanceRecord {
             tag: tag.to_string(),
             provider: "stub".to_string(),
             owner: owner.to_string(),
             state,
-            instance: instance.map(str::to_string),
             price_micro_usd_hour: 100_000,
             created_ms: 1_700_000_000_000,
+        }
+    }
+
+    /// The live state naming `instance`.
+    fn live(instance: &str) -> InstanceRecordState {
+        InstanceRecordState::Live {
+            instance: instance.to_string(),
         }
     }
 
@@ -153,11 +149,7 @@ mod tests {
         let (_dir, store) = temp_store();
         let stub = StubProvider::new(Vec::new())
             .with_instance(InstanceId("i-1".to_string()), "sima-tag-0");
-        store.put_instance(&record(
-            "sima-tag-0",
-            InstanceRecordState::Live,
-            Some("i-1"),
-        ))?;
+        store.put_instance(&record("sima-tag-0", live("i-1")))?;
         let report = reconcile(&stub, &store)?;
         assert_eq!(report.destroyed, vec![InstanceId("i-1".to_string())]);
         assert_eq!(report.cleared, vec!["sima-tag-0".to_string()]);
@@ -171,11 +163,7 @@ mod tests {
         let (_dir, store) = temp_store();
         let stub = StubProvider::new(Vec::new())
             .with_instance(InstanceId("i-1".to_string()), "sima-tag-0");
-        store.put_instance(&record(
-            "sima-tag-0",
-            InstanceRecordState::Live,
-            Some("i-1"),
-        ))?;
+        store.put_instance(&record("sima-tag-0", live("i-1")))?;
         // The owner holds its orchestrator lock for the length of the pass,
         // which is what a running run looks like.
         let _lock = store.acquire_run_lock(&sample_run(7))?;
@@ -191,11 +179,7 @@ mod tests {
     fn a_live_record_the_provider_no_longer_holds_is_only_cleared() -> Result<()> {
         let (_dir, store) = temp_store();
         let stub = StubProvider::new(Vec::new());
-        store.put_instance(&record(
-            "sima-tag-0",
-            InstanceRecordState::Live,
-            Some("expired"),
-        ))?;
+        store.put_instance(&record("sima-tag-0", live("expired")))?;
         let report = reconcile(&stub, &store)?;
         assert!(report.destroyed.is_empty());
         assert_eq!(report.cleared, vec!["sima-tag-0".to_string()]);
@@ -211,7 +195,7 @@ mod tests {
         // what the provider had created for it.
         let stub = StubProvider::new(Vec::new())
             .with_instance(InstanceId("i-2".to_string()), "sima-tag-0");
-        store.put_instance(&record("sima-tag-0", InstanceRecordState::Intent, None))?;
+        store.put_instance(&record("sima-tag-0", InstanceRecordState::Intent))?;
         let report = reconcile(&stub, &store)?;
         assert_eq!(report.destroyed, vec![InstanceId("i-2".to_string())]);
         assert_eq!(report.cleared, vec!["sima-tag-0".to_string()]);
@@ -225,7 +209,7 @@ mod tests {
         let (_dir, store) = temp_store();
         let stub =
             StubProvider::new(Vec::new()).with_instance(InstanceId("i-3".to_string()), "other-tag");
-        store.put_instance(&record("sima-tag-0", InstanceRecordState::Intent, None))?;
+        store.put_instance(&record("sima-tag-0", InstanceRecordState::Intent))?;
         let report = reconcile(&stub, &store)?;
         assert!(report.destroyed.is_empty());
         assert_eq!(report.cleared, vec!["sima-tag-0".to_string()]);
@@ -239,7 +223,7 @@ mod tests {
         let (_dir, store) = temp_store();
         let stub = StubProvider::new(Vec::new())
             .with_instance(InstanceId("i-4".to_string()), "sima-tag-0");
-        store.put_instance(&record("sima-tag-0", InstanceRecordState::Intent, None))?;
+        store.put_instance(&record("sima-tag-0", InstanceRecordState::Intent))?;
         let _lock = store.acquire_run_lock(&sample_run(7))?;
         let report = reconcile(&stub, &store)?;
         assert!(report.destroyed.is_empty());
@@ -253,7 +237,7 @@ mod tests {
         let (_dir, store) = temp_store();
         let stub = StubProvider::new(Vec::new())
             .with_instance(InstanceId("i-5".to_string()), "sima-tag-0");
-        let mut foreign = record("sima-tag-0", InstanceRecordState::Live, Some("i-5"));
+        let mut foreign = record("sima-tag-0", live("i-5"));
         foreign.provider = "vastai".to_string();
         store.put_instance(&foreign)?;
         let report = reconcile(&stub, &store)?;
@@ -268,7 +252,7 @@ mod tests {
     fn a_record_with_a_malformed_owner_is_corruption() -> Result<()> {
         let (_dir, store) = temp_store();
         let stub = StubProvider::new(Vec::new());
-        let mut malformed = record("sima-tag-0", InstanceRecordState::Live, Some("i-6"));
+        let mut malformed = record("sima-tag-0", live("i-6"));
         malformed.owner = "not-a-run-id".to_string();
         store.put_instance(&malformed)?;
         assert!(matches!(
@@ -285,12 +269,7 @@ mod tests {
             .with_instance(InstanceId("orphan".to_string()), "sima-tag-0");
         // The orphan belongs to another run, whose lock is free: the
         // acquiring run holds only its own.
-        store.put_instance(&owned_record(
-            "sima-tag-0",
-            InstanceRecordState::Live,
-            Some("orphan"),
-            sample_run(8),
-        ))?;
+        store.put_instance(&owned_record("sima-tag-0", live("orphan"), sample_run(8)))?;
         let guard = acquire_any(&stub, &store)?;
         // The orphan went down before the new machine came up, and the
         // ledger holds the new attempt alone.
