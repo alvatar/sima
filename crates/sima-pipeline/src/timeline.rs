@@ -1,4 +1,4 @@
-//! [`RunTimeline`]: a run's execution metrics and temporal shape, folded from
+//! [`RunTimeline`]: a run's execution metrics and temporal shape, merged from
 //! its journal.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -11,7 +11,7 @@ use crate::config::LoadedConfig;
 use crate::journal;
 use crate::task_history::worker_bindings;
 
-/// A run's execution metrics and temporal shape, folded from its journal.
+/// A run's execution metrics and temporal shape, merged from its journal.
 ///
 /// Every rate and per-worker figure covers the latest run session — a resumed
 /// run's journal spans sessions separated by downtime, and a span across that
@@ -94,7 +94,7 @@ pub struct WorkerMetrics {
     pub spans: Vec<(u64, u64)>,
 }
 
-/// What the fold accumulates per worker before the session's end closes its
+/// What the merge accumulates per worker before the session's end closes its
 /// open span and fixes its lifespan.
 #[derive(Default)]
 struct WorkerAccumulator {
@@ -123,11 +123,11 @@ pub fn timeline(config: &LoadedConfig) -> Result<RunTimeline> {
     ))
 }
 
-/// Folds `records` — a run's lifecycle events in append order — into the
-/// metrics of `run`. The fold half of [`timeline`], over records from any
+/// Merges `records` — a run's lifecycle events in append order — into the
+/// metrics of `run`. The merge half of [`timeline`], over records from any
 /// source: a journal read locally, or a stream from the host that drives the
 /// run. Every figure is an infrastructure fact the journal states, so no
-/// domain is consulted and the fold cannot fail.
+/// domain is consulted and the merge cannot fail.
 pub fn timeline_records(run: RunId, records: &[Record]) -> RunTimeline {
     let bindings = worker_bindings(records);
     let committed = records
@@ -233,7 +233,7 @@ pub fn timeline_records(run: RunId, records: &[Record]) -> RunTimeline {
 
 /// The records of the latest session: a resumed run restates `RunStarted` per
 /// orchestration, and the last one opens the session the metrics cover. A
-/// journal naming no session start is read whole, so a malformed one folds to
+/// journal naming no session start is read whole, so a malformed one merges to
 /// figures rather than to nothing.
 fn session(records: &[Record]) -> &[Record] {
     records
@@ -409,12 +409,12 @@ mod tests {
         )
     }
 
-    /// The metrics `records` fold to.
-    fn folded(records: &[Record]) -> RunTimeline {
+    /// The metrics `records` merge to.
+    fn merged(records: &[Record]) -> RunTimeline {
         timeline_records(run_id(), records)
     }
 
-    /// The metrics of the worker `id`, which the fold must have named.
+    /// The metrics of the worker `id`, which the merge must have named.
     fn worker(timeline: &RunTimeline, id: u64) -> WorkerMetrics {
         timeline
             .workers
@@ -426,7 +426,7 @@ mod tests {
 
     #[test]
     fn throughput_is_the_sessions_commits_over_its_span() {
-        let timeline = folded(&[
+        let timeline = merged(&[
             started(2, 1_000),
             leased("aa", 0, 0, 1_100),
             committed("aa", 2_100),
@@ -445,7 +445,7 @@ mod tests {
 
     #[test]
     fn busy_time_is_the_sum_of_a_workers_lease_spans() {
-        let timeline = folded(&[
+        let timeline = merged(&[
             started(2, 0),
             worker_bound(0, "", "", 0),
             leased("aa", 0, 0, 100),
@@ -466,7 +466,7 @@ mod tests {
     fn spawn_latency_is_the_first_binding_past_the_session_start() {
         // A local worker binds as the pool launches; a remote one binds once
         // its ssh connection and container are up.
-        let timeline = folded(&[
+        let timeline = merged(&[
             started(2, 1_000),
             worker_bound(0, "Intel Arc 140T", "", 1_000),
             worker_bound(1, "NVIDIA RTX PRO 2000", "gpubox", 42_200),
@@ -486,7 +486,7 @@ mod tests {
 
     #[test]
     fn a_respawned_worker_counts_its_bindings_past_the_first() {
-        let timeline = folded(&[
+        let timeline = merged(&[
             started(1, 0),
             worker_bound(0, "Intel Arc 140T", "", 100),
             worker_bound(0, "Intel Arc 140T", "", 500),
@@ -526,7 +526,7 @@ mod tests {
             records.push(committed(&key, ts + 1));
             ts += 2;
         }
-        let timeline = folded(&records);
+        let timeline = merged(&records);
         assert_eq!(timeline.tasks, 1_000);
         assert_eq!(timeline.session_committed, 1_000);
         assert_eq!(
@@ -542,7 +542,7 @@ mod tests {
 
     #[test]
     fn a_rejection_and_a_fault_count_as_failed_attempts() {
-        let timeline = folded(&[
+        let timeline = merged(&[
             started(2, 0),
             leased("aa", 0, 0, 10),
             rejected("aa", 0, 20),
@@ -562,7 +562,7 @@ mod tests {
     fn a_lease_the_journal_never_closed_ends_at_the_session_end() {
         // An attempt still in flight, or one a dead orchestrator left open: the
         // worker was occupied up to the last thing the journal saw.
-        let timeline = folded(&[
+        let timeline = merged(&[
             started(2, 0),
             worker_bound(0, "", "", 0),
             leased("aa", 0, 0, 100),
@@ -589,9 +589,9 @@ mod tests {
 
     #[test]
     fn the_rates_cover_the_latest_session_and_the_commit_count_the_run() {
-        // A run resumed after an hour of downtime: folding the gap into the
+        // A run resumed after an hour of downtime: merging the gap into the
         // rates would collapse them, so they cover the latest session alone.
-        let timeline = folded(&[
+        let timeline = merged(&[
             started(2, 0),
             worker_bound(0, "", "", 0),
             leased("aa", 0, 0, 100),
@@ -617,7 +617,7 @@ mod tests {
 
     #[test]
     fn each_worker_joins_the_device_and_host_it_reported() {
-        let timeline = folded(&[
+        let timeline = merged(&[
             started(2, 0),
             worker_bound(0, "Intel Arc 140T", "", 0),
             worker_bound(1, "NVIDIA RTX PRO 2000", "gpubox", 0),
@@ -638,7 +638,7 @@ mod tests {
 
     #[test]
     fn a_session_that_committed_nothing_reports_its_idle_workers() {
-        let timeline = folded(&[
+        let timeline = merged(&[
             started(4, 1_000),
             worker_bound(0, "", "", 1_000),
             worker_bound(1, "", "", 1_000),
@@ -652,15 +652,15 @@ mod tests {
             assert_eq!(worker.busy_ms, 0);
             assert_eq!(worker.attempts, 0);
             // The session is one instant long: the renderer's guard, not the
-            // fold's, is what keeps a rate off a zero denominator.
+            // merge's, is what keeps a rate off a zero denominator.
             assert_eq!(worker.lifespan_ms, 0);
         }
     }
 
     #[test]
-    fn a_journal_naming_no_session_start_folds_over_every_record() {
-        // A malformed journal still folds to figures rather than to nothing.
-        let timeline = folded(&[leased("aa", 0, 0, 100), committed("aa", 400)]);
+    fn a_journal_naming_no_session_start_merges_over_every_record() {
+        // A malformed journal still merges to figures rather than to nothing.
+        let timeline = merged(&[leased("aa", 0, 0, 100), committed("aa", 400)]);
         assert_eq!(timeline.session_start_ms, 100);
         assert_eq!(timeline.session_end_ms, 400);
         assert_eq!(timeline.session_committed, 1);
@@ -671,7 +671,7 @@ mod tests {
     }
 
     #[test]
-    fn the_record_fold_equals_the_timeline_read_from_the_journal() -> Result<()> {
+    fn the_record_merge_equals_the_timeline_read_from_the_journal() -> Result<()> {
         let records = vec![
             started(2, 0),
             worker_bound(0, "", "", 0),

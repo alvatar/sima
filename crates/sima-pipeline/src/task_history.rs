@@ -270,8 +270,8 @@ fn lifecycle_task(event: &Event) -> Option<&str> {
 }
 
 /// The device and host each worker reported at its last spawn — the shared
-/// worker → `(device, host)` pre-pass every fold that attributes work to
-/// hardware joins through. Read ahead of the fold that consumes it so the join
+/// worker → `(device, host)` pre-pass every merge that attributes work to
+/// hardware joins through. Read ahead of the merge that consumes it so the join
 /// holds however the journal orders the two: a resumed run leases before its
 /// workers restate their bindings.
 pub(crate) fn worker_bindings(records: &[Record]) -> BTreeMap<u64, (String, String)> {
