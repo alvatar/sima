@@ -88,6 +88,23 @@ pub(crate) fn write_exclusive(root: &Path, dest: &Path, bytes: &[u8]) -> Result<
     }
 }
 
+/// Removes `path`, treating an already-absent file as success, so a
+/// resumed removal converges.
+pub(crate) fn remove_file_idempotent(path: &Path) -> Result<()> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(io_error(path, e)),
+    }
+}
+
+/// Removes `path` idempotently and fsyncs its parent, so the removal
+/// itself survives a crash.
+pub(crate) fn remove_file_durable(path: &Path) -> Result<()> {
+    remove_file_idempotent(path)?;
+    sync_parent_dir(path)
+}
+
 /// Creates `dir` (and any missing ancestors) and fsyncs its parent, so
 /// the new directory entry itself survives a crash — a file fsynced
 /// inside a directory whose entry was never synced can vanish with the
