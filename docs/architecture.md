@@ -379,6 +379,14 @@ The seam between a run and the machines it rents. A provider lists a
 marketplace, rents one machine, reports its state, and destroys it; the
 crate turns that into an owned instance with guaranteed teardown.
 
+The contract targets any service meeting the obligations the `Provider` trait
+module documents, whether it is a peer-to-peer marketplace or a first-party
+cloud renting from a fixed catalog. Two normalizations carry that breadth: a
+backend billing in another currency converts to micro-USD as part of its own
+configuration, and a first-party backend, whose hosts are its own datacenter
+machines, states full reliability and verified status where a marketplace
+reports host trust.
+
 ### The offer model
 
 `list` returns concrete offers, never instance types: **(GPU model, VRAM,
