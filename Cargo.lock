@@ -810,6 +810,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "sima-provider"
+version = "0.1.0"
+dependencies = [
+ "sima-core",
+ "sima-model",
+ "sima-store",
+ "tempfile",
+]
+
+[[package]]
 name = "sima-scheduler"
 version = "0.1.0"
 dependencies = [

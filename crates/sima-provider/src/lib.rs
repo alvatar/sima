@@ -10,5 +10,12 @@
 //! scalar [`Objective`] ranks whatever qualifies.
 
 mod offer;
+mod provider;
+pub mod stub;
+#[cfg(test)]
+mod testutil;
 
 pub use offer::{Constraints, Objective, Offer, OfferId, Price, select};
+pub use provider::{
+    Instance, InstanceId, InstanceStatus, Provider, Provision, SshEndpoint, TaggedInstance,
+};
