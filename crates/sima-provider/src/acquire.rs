@@ -162,7 +162,7 @@ fn record(
     }
 }
 
-/// The tag one acquisition attempt runs under: `sima-<run16>-<pid>-<seq>`.
+/// The tag one acquisition attempt runs under: `sima-<owner16>-<pid>-<seq>`.
 /// It is both the ledger key and the provider-side label, so the machine and
 /// its record carry one name. The owner's first 16 hex characters keep it
 /// short enough for provider label limits while staying attributable; the
