@@ -118,7 +118,10 @@ mod tests {
     fn renting_an_offer_sends_the_configured_rental_under_the_tag() -> Result<()> {
         let server = TestServer::new(vec![
             answer(200, r#"{"success": true, "new_contract": 555}"#),
-            answer(200, r#"{"instances": {"dph_total": 0.412}}"#),
+            answer(
+                200,
+                r#"{"instances": {"id": 555, "label": "sima-tag-0", "dph_total": 0.412}}"#,
+            ),
         ]);
         let client = VastClient::new(&server.url(), "k-secret");
         create(&client, &config(&server.url()), &offer(), "sima-tag-0")?;
@@ -138,7 +141,10 @@ mod tests {
     fn a_configured_environment_reaches_the_rental() -> Result<()> {
         let server = TestServer::new(vec![
             answer(200, r#"{"success": true, "new_contract": 555}"#),
-            answer(200, r#"{"instances": {"dph_total": 0.412}}"#),
+            answer(
+                200,
+                r#"{"instances": {"id": 555, "label": "sima-tag-0", "dph_total": 0.412}}"#,
+            ),
         ]);
         let client = VastClient::new(&server.url(), "k-secret");
         let mut config = config(&server.url());
@@ -155,7 +161,10 @@ mod tests {
     fn a_created_instance_carries_the_rate_the_instance_is_charged_at() -> Result<()> {
         let server = TestServer::new(vec![
             answer(200, r#"{"success": true, "new_contract": 555}"#),
-            answer(200, r#"{"instances": {"dph_total": 0.5125}}"#),
+            answer(
+                200,
+                r#"{"instances": {"id": 555, "label": "sima-tag-0", "dph_total": 0.5125}}"#,
+            ),
         ]);
         let client = VastClient::new(&server.url(), "k-secret");
         let provision = create(&client, &config(&server.url()), &offer(), "sima-tag-0")?;

@@ -25,6 +25,5 @@ mod rental;
 #[cfg(test)]
 mod test_server;
 
-pub use client::{Answer, VastClient};
 pub use config::{API_KEY_VAR, DEFAULT_BASE_URL, VastConfig};
 pub use provider::VastProvider;

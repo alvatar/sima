@@ -14,28 +14,28 @@ use ureq::http::Response;
 use ureq::{Body, RequestBuilder};
 
 /// One answer from the API: the status and the parsed JSON body.
-pub struct Answer {
+pub(crate) struct Answer {
     /// The HTTP status the API answered with.
-    pub status: u16,
+    pub(crate) status: u16,
     /// The response body, parsed as JSON.
-    pub body: Value,
+    pub(crate) body: Value,
 }
 
 impl Answer {
     /// Whether the API answered with a success status.
-    pub fn is_success(&self) -> bool {
+    pub(crate) fn is_success(&self) -> bool {
         (200..300).contains(&self.status)
     }
 
     /// The body's `error` field, which the API sets when it names a
     /// failure.
-    pub fn error(&self) -> Option<&str> {
+    pub(crate) fn error(&self) -> Option<&str> {
         self.body.get("error")?.as_str()
     }
 
     /// The body of a successful answer, or an [`Error::Provider`] naming
     /// `operation`, the status, and the error the body names.
-    pub fn ok(self, operation: &str) -> Result<Value> {
+    pub(crate) fn ok(self, operation: &str) -> Result<Value> {
         if self.is_success() {
             return Ok(self.body);
         }
@@ -43,7 +43,7 @@ impl Answer {
     }
 
     /// How this answer reads as a failure of `operation`.
-    pub fn failure(&self, operation: &str) -> String {
+    pub(crate) fn failure(&self, operation: &str) -> String {
         match self.error() {
             Some(error) => format!("{operation}: HTTP {}: {error}", self.status),
             None => format!("{operation}: HTTP {}", self.status),
@@ -52,7 +52,7 @@ impl Answer {
 }
 
 /// An authenticated client for one API root.
-pub struct VastClient {
+pub(crate) struct VastClient {
     /// The API root every path is appended to.
     base_url: String,
     /// The key sent as a bearer token on every request.
@@ -63,7 +63,7 @@ pub struct VastClient {
 
 impl VastClient {
     /// A client reaching `base_url`, authenticating with `api_key`.
-    pub fn new(base_url: &str, api_key: &str) -> VastClient {
+    pub(crate) fn new(base_url: &str, api_key: &str) -> VastClient {
         // Statuses carry meaning this backend maps itself, so the agent
         // hands every answer back rather than turning some into transport
         // errors.
@@ -79,25 +79,25 @@ impl VastClient {
     }
 
     /// `GET path`.
-    pub fn get(&self, path: &str, operation: &str) -> Result<Answer> {
+    pub(crate) fn get(&self, path: &str, operation: &str) -> Result<Answer> {
         let request = self.authed(self.agent.get(self.url(path)));
         answer(request.call(), operation)
     }
 
     /// `POST path` with `body` as JSON.
-    pub fn post(&self, path: &str, body: &Value, operation: &str) -> Result<Answer> {
+    pub(crate) fn post(&self, path: &str, body: &Value, operation: &str) -> Result<Answer> {
         let request = self.authed(self.agent.post(self.url(path)));
         answer(request.send_json(body), operation)
     }
 
     /// `PUT path` with `body` as JSON.
-    pub fn put(&self, path: &str, body: &Value, operation: &str) -> Result<Answer> {
+    pub(crate) fn put(&self, path: &str, body: &Value, operation: &str) -> Result<Answer> {
         let request = self.authed(self.agent.put(self.url(path)));
         answer(request.send_json(body), operation)
     }
 
     /// `DELETE path`.
-    pub fn delete(&self, path: &str, operation: &str) -> Result<Answer> {
+    pub(crate) fn delete(&self, path: &str, operation: &str) -> Result<Answer> {
         let request = self.authed(self.agent.delete(self.url(path)));
         answer(request.call(), operation)
     }
