@@ -8,6 +8,7 @@
 //! <root>/objects/<aa>/<64-hex>     object bytes; aa = first two hex chars
 //! <root>/tmp/<pid>-<seq>           in-flight writes
 //! <root>/tasks/<task-key-hex>      index entry: record-hash hex + newline
+//! <root>/instances/<tag>           one rented instance's ledger record
 //! <root>/runs/<run-id-hex>/manifest.json
 //! <root>/runs/<run-id-hex>/journal
 //! <root>/runs/<run-id-hex>/orchestrator.lock
@@ -29,6 +30,7 @@ mod atomic;
 mod cas;
 mod catalog;
 mod checkpoint;
+mod instances;
 mod journal;
 mod layout;
 mod lock;
@@ -40,6 +42,7 @@ mod sync;
 #[cfg(test)]
 mod testutil;
 
+pub use instances::{InstanceRecord, InstanceRecordState};
 pub use journal::JournalWriter;
 pub use lock::RunLock;
 pub use manifest::{Manifest, ManifestEntry};

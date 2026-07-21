@@ -26,7 +26,6 @@
 use std::collections::BTreeSet;
 use std::fs;
 use std::io::ErrorKind;
-use std::path::Path;
 use std::str;
 
 use sima_core::{Error, Hash, Result};
@@ -117,10 +116,10 @@ impl Store {
         // Delete references before referents: the task-index entries that name
         // the record objects come first.
         for task in &plan.tasks {
-            remove_file_idempotent(&layout::task_path(self.root(), task))?;
+            atomic::remove_file_idempotent(&layout::task_path(self.root(), task))?;
         }
         for object in &plan.objects {
-            remove_file_idempotent(&layout::object_path(self.root(), object))?;
+            atomic::remove_file_idempotent(&layout::object_path(self.root(), object))?;
             sima_core::crashpoint("remove.mid-objects");
         }
         // The run directory last: manifest, journal, checkpoints, and the intent
@@ -274,18 +273,10 @@ fn parse_intent(bytes: &[u8]) -> Result<RemovalPlan> {
     Ok(RemovalPlan { objects, tasks })
 }
 
-/// Removes `path`, treating an already-absent file as success, so a resumed
-/// removal converges.
-fn remove_file_idempotent(path: &Path) -> Result<()> {
-    match fs::remove_file(path) {
-        Ok(()) => Ok(()),
-        Err(e) if e.kind() == ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(io_error(path, e)),
-    }
-}
-
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use super::*;
     use crate::testutil::{
         record_with_stored_artifact, sample_identity, sample_run_config, store_identity_components,
@@ -527,8 +518,8 @@ mod tests {
         // leave them.
         let plan = store.compute_removal(&a)?;
         store.write_remove_intent(&a, &plan)?;
-        remove_file_idempotent(&layout::task_path(store.root(), &plan.tasks[0]))?;
-        remove_file_idempotent(&layout::object_path(store.root(), &plan.objects[0]))?;
+        atomic::remove_file_idempotent(&layout::task_path(store.root(), &plan.tasks[0]))?;
+        atomic::remove_file_idempotent(&layout::object_path(store.root(), &plan.objects[0]))?;
 
         // Resuming reads the intent, re-applies the deletions idempotently, and
         // converges on the reference end state.

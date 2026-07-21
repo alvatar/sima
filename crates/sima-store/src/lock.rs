@@ -20,9 +20,22 @@ use crate::store::Store;
 /// Exclusive right to drive a run: holds the OS lock on the run's
 /// `orchestrator.lock` file. The kernel releases it when the holder
 /// exits, however it exits. Unlocks on drop.
+///
+/// The lock names the run it was taken for, so a reference to it is a
+/// capability: holding one proves that run's lock is held, which is what
+/// every liveness probe against that run reads.
 pub struct RunLock {
+    /// The run this lock covers.
+    run: RunId,
     /// The locked file, unlocked on drop.
     file: File,
+}
+
+impl RunLock {
+    /// The run this lock covers.
+    pub fn run(&self) -> &RunId {
+        &self.run
+    }
 }
 
 impl Drop for RunLock {
@@ -66,7 +79,7 @@ impl Store {
                 file.set_len(0).map_err(|e| io_error(&path, e))?;
                 file.write_all(holder.as_bytes())
                     .map_err(|e| io_error(&path, e))?;
-                Ok(RunLock { file })
+                Ok(RunLock { run: *run, file })
             }
             Err(TryLockError::WouldBlock) => {
                 // Contended: name the holder the lock owner recorded.
@@ -152,6 +165,16 @@ mod tests {
         // The content is diagnostic: this process's pid, then a hostname.
         let pid = std::process::id().to_string();
         assert_eq!(content.split_whitespace().next(), Some(pid.as_str()));
+        Ok(())
+    }
+
+    #[test]
+    fn a_lock_names_the_run_it_covers() -> Result<()> {
+        let (_dir, store, run) = store_and_run();
+        let lock = store.acquire_run_lock(&run)?;
+        // A reference to the lock stands for that run's liveness, so the
+        // run it covers is readable from it.
+        assert_eq!(lock.run(), &run);
         Ok(())
     }
 

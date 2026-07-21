@@ -8,6 +8,7 @@ members = [
     "crates/sima-integration",
     "crates/sima-model",
     "crates/sima-pipeline",
+    "crates/sima-provider",
     "crates/sima-scheduler",
     "crates/sima-store",
     "crates/sima-trace",

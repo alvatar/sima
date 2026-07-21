@@ -7,6 +7,7 @@
 //! <root>/objects/<aa>/<64-hex>     object bytes; aa = first two hex chars
 //! <root>/tmp/<pid>-<seq>           in-flight writes
 //! <root>/tasks/<task-key-hex>      index entry: record-hash hex + newline
+//! <root>/instances/<tag>           one rented instance's ledger record
 //! <root>/runs/<run-id-hex>/manifest.json
 //! <root>/runs/<run-id-hex>/journal
 //! <root>/runs/<run-id-hex>/orchestrator.lock
@@ -40,6 +41,11 @@ pub(crate) fn tasks_dir(root: &Path) -> PathBuf {
     root.join("tasks")
 }
 
+/// The `instances/` ledger directory.
+pub(crate) fn instances_dir(root: &Path) -> PathBuf {
+    root.join("instances")
+}
+
 /// The `runs/` directory.
 pub(crate) fn runs_dir(root: &Path) -> PathBuf {
     root.join("runs")
@@ -55,6 +61,12 @@ pub(crate) fn object_path(root: &Path, hash: &Hash) -> PathBuf {
 /// A task's index-entry path: `tasks/<task-key-hex>`.
 pub(crate) fn task_path(root: &Path, key: &TaskKey) -> PathBuf {
     tasks_dir(root).join(key.to_string())
+}
+
+/// One acquisition attempt's ledger path: `instances/<tag>`. The tag is
+/// validated against its charset before it reaches this function.
+pub(crate) fn instance_path(root: &Path, tag: &str) -> PathBuf {
+    instances_dir(root).join(tag)
 }
 
 /// A run's directory: `runs/<run-id-hex>/`.

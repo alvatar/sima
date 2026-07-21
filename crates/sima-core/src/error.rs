@@ -50,6 +50,12 @@ pub enum Error {
     /// frame violated the wire protocol (torn or oversize length prefix).
     /// The payload names the operation and the underlying cause.
     Transport(String),
+    /// The rented-hardware provider seam failed: a provider API call
+    /// (authentication, quota, network, a malformed provider response), or an
+    /// acquisition that ended without a machine — no offer qualified, or every
+    /// qualifying offer was lost or never came up. The payload names the
+    /// operation and the underlying cause.
+    Provider(String),
     /// A failure another machine reported, already rendered there and carried
     /// verbatim. The classification belongs to the machine that failed, which
     /// is the one holding the store and the process; re-classifying it here
@@ -68,6 +74,7 @@ impl fmt::Display for Error {
             Error::MissingObject(hash) => write!(f, "missing object: {hash}"),
             Error::Gpu(msg) => write!(f, "gpu error: {msg}"),
             Error::Transport(msg) => write!(f, "worker transport error: {msg}"),
+            Error::Provider(msg) => write!(f, "provider error: {msg}"),
             Error::Reported(msg) => write!(f, "{msg}"),
         }
     }
@@ -145,6 +152,15 @@ mod tests {
         assert_eq!(
             e.to_string(),
             "worker transport error: frame length truncated after 2 bytes"
+        );
+    }
+
+    #[test]
+    fn display_renders_provider_context() {
+        let e = Error::Provider("list offers: 401 unauthorized".to_string());
+        assert_eq!(
+            e.to_string(),
+            "provider error: list offers: 401 unauthorized"
         );
     }
 
