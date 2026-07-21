@@ -41,7 +41,10 @@ pub struct InstanceRecord {
     /// The offer's rate at intent, the instance's rate once live.
     pub price_micro_usd_hour: u64,
     /// Wall-clock milliseconds since the epoch at intent, like the journal's
-    /// stamps. The live write keeps the stamp the attempt began under.
+    /// stamps. The live write keeps the stamp the attempt began under. The
+    /// stamp serves human diagnosis of the ledger: ordering, identity, and
+    /// reconciliation all decide from other fields, which is what leaves the
+    /// clock free to move backwards.
     pub created_ms: u64,
 }
 
