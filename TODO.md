@@ -404,7 +404,7 @@ difference.
       I/O lifted into `sima-core`: records and referenced CAS objects only
       (checkpoints are mid-segment scratch, placement re-binds, journals
       stay home), caller supplies the task-key set, content addressing is
-      the transfer integrity check; first production consumer is M6.6's
+      the transfer integrity check; first production consumer is M6.7's
       migrate;
       (c) the remote worker: the existing framed stdio protocol runs
       unchanged through `ssh <host> docker run -i` (the store never leaves
@@ -496,7 +496,7 @@ leaked instances are leaked money.
       query and maps its offer fields (reliability score, verified status,
       rental mode) into the normalized offer form; on-demand rentals only —
       interruptible bidding waits for the trust and budget machinery (M6.4,
-      M6.5). Settle image delivery here: a manual remote takes
+      M6.6). Settle image delivery here: a manual remote takes
       `podman save | ssh docker load`, but Vast.ai pulls from a registry,
       so bootstrap implies publishing the image or loading it on-instance
       after boot
@@ -513,11 +513,33 @@ leaked instances are leaked money.
       can threshold family-agnostically, plus an optional opaque family blob
       for anything richer — decide the shape here, consumed at M7.2
 - [ ] M6.4 Budget guard: max price, max wall-clock, spend accounting per run
-- [ ] M6.5 Trust-tiered scheduling: redundant execution, quorum validation,
+- [ ] M6.5 Distributed run: one local orchestrator drives a provisioned
+      fleet beside the local devices. Run config declares (provider,
+      constraints, objective, machine count); at run start the pipeline
+      acquires through M6.1's loop against the M6.2 backend and registers
+      each Ready instance as an SSH worker — the M4.3 framed stdio
+      protocol through `ssh <host> podman run -i` on the published image —
+      in the same pool as local thread, process, and GPU workers; the
+      scheduler contract, leases, and frontier re-derivation are unchanged,
+      so a slow host simply takes fewer leases. The store never leaves the
+      orchestrator (task inputs and results cross inline, the M4.3
+      settlement), and instances are not durable state: on crash or
+      resume, reconcile destroys strays and acquisition re-derives the
+      fleet from config — the same store-only recovery path as tasks. A
+      worker failure is a lease expiry; an instance failure is `Gone` at
+      the next poll; replacement is a fresh acquire against the same
+      config, bounded by the M6.4 budget guard. Teardown runs on every
+      exit path (success, failure, interrupt) through guards plus
+      reconcile. Acceptance: a real family search over the local machine
+      plus ≥2 rented instances produces a manifest identical to the
+      local-only reference run, and the provider account holds zero
+      instances afterwards. This is the fleet M6.6's trust tiers assume
+      and delivers the README's elastic scale-out principle
+- [ ] M6.6 Trust-tiered scheduling: redundant execution, quorum validation,
       spot-check sampling, host reputation — the BOINC playbook; the largest
       mechanism in this phase, expected to split into several PRs at
       elaboration
-- [ ] M6.6 End-to-end slingshot consolidation (phase acceptance): start a
+- [ ] M6.7 End-to-end slingshot consolidation (phase acceptance): start a
       search locally; interrupt it mid-simulation (inside a segment chain);
       `sima migrate` to a freshly provisioned instance — sync closure, resume
       remotely, follow events live; sync results home; teardown verified. The
