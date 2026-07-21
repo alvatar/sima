@@ -47,6 +47,13 @@ The store is the only durable state. Queues, schedulers, and orchestrators
 are ephemeral: the runnable frontier is derived from (config, store state),
 so resume, crash-recovery, and re-run are one code path.
 
+`sima-provider` also sits beside the spine, above the store: it is the
+rented-hardware control plane, depending on `sima-core`, `sima-model`, and
+`sima-store`, and consumed from the pipeline. Provider backends form a
+sibling group under `crates/providers/`, named `sima-provider-<name>` after
+the service each one speaks to, so the first HTTP client enters exactly one
+crate. See [`sima-provider`](#sima-provider).
+
 Execution backends sit off the spine as a sibling group under
 `crates/toolkits/` (`sima-toolkit-*`). A toolkit is a compute library a domain
 computes on, below `sima-domains` and beside `sima-contracts`: it depends on
@@ -228,6 +235,7 @@ One `Store` type over a root directory:
 <root>/objects/<aa>/<hash>       CAS object bytes; aa = first two hex chars
 <root>/tmp/<pid>-<seq>           in-flight writes
 <root>/tasks/<task-key>          index entry: record-hash hex + newline
+<root>/instances/<tag>           one rented instance's ledger record
 <root>/runs/<run-id>/manifest.json
 <root>/runs/<run-id>/journal
 <root>/runs/<run-id>/orchestrator.lock
@@ -362,6 +370,126 @@ holder exits, however it exits, so no staleness protocol exists. The file's
 content (pid, hostname) is diagnostic only — it names the holder in the
 validation error a second acquirer receives — and is never consulted for
 liveness.
+
+## `sima-provider`
+
+The seam between a run and the machines it rents. A provider lists a
+marketplace, rents one machine, reports its state, and destroys it; the
+crate turns that into an owned instance with guaranteed teardown.
+
+### The offer model
+
+`list` returns concrete offers, never instance types: **(GPU model, VRAM,
+GPU count, $/hr, host reliability, verified status, disk, bandwidth,
+location, offer id)**, normalized across providers. A marketplace is the
+general case — a fixed type catalog degenerates into one offer per type at
+the type's list price — so the model that carries a marketplace carries
+both.
+
+Prices are integer micro-USD per hour (`Price`), giving ranking a total
+order without float comparison, at a granularity that covers sub-cent
+marketplace rates. Reliability stays `f64` in $[0, 1]$ as providers report
+it, threshold-compared and never ordered.
+
+### Selection
+
+Selection is two separate steps, and keeping them separate is the design:
+
+- **Hard constraints disqualify.** Minimum VRAM, GPU count, disk and
+  bandwidth; a maximum price; a reliability floor; verified hosts only; and
+  an any-of list of acceptable GPU models, matched case-insensitively by
+  substring — the rule `[[execution.device]]` selectors already use for
+  hardware names. Each optional constraint judges only when set.
+- **One scalar objective ranks.** `Objective::CheapestPerHour` sorts
+  ascending by price, ties broken by offer id, so the order is
+  deterministic. There is no weighted multi-criteria score: the reason one
+  offer outranks another is always a single comparison.
+
+### The acquisition loop
+
+`acquire` reconciles, lists, ranks, then walks the ranked offers:
+
+```
+reconcile ── destroy what an earlier crash left running
+offers  ──── the live marketplace, normalized
+select  ──── constraints disqualify, the objective ranks
+for each ranked offer:
+    write the intent record         (ledger, state: intent)
+    provision(offer, tag)
+        OfferGone ───────────────── clear the record, next offer
+        Provisioned(instance) ───── upgrade the record (state: live)
+            poll until ready
+                Ready ───────────── return the guard
+                gone or timed out ─ destroy, clear the record, next offer
+list exhausted ──────────────────── Error::Provider
+```
+
+A lost offer is an outcome, not a failure: on a marketplace another renter
+taking a machine first is normal operation, and the next-ranked offer is the
+answer. An API error is different — it would repeat against every remaining
+offer — so it aborts the loop and propagates. A machine that never reports
+itself ready is a bad offer: it is destroyed and the walk continues.
+Readiness is the provider's own answer, carrying the SSH endpoint; whether
+sshd is listening is the bootstrap layer's question.
+
+### The teardown guarantee
+
+A rented machine costs money for as long as it runs, so it is torn down on
+success, on failure, and on interrupt. Three tiers cover the exits:
+
+- **In process.** `InstanceGuard` owns the instance. `release` is the
+  deliberate path and reports what failed; drop is the backstop that covers
+  an error returning through `?` and a panic unwinding, discarding the
+  outcome because a destructor has nowhere to report it.
+- **Interrupt.** The first SIGINT is a graceful wind-down, so it unwinds
+  through the guard like any other exit.
+- **Crash.** SIGKILL or power loss runs no code at all. What covers it is
+  durable state: the ledger, plus reconciliation.
+
+### The ledger and its write ordering
+
+One record per acquisition attempt lives in the store at
+`instances/<tag>`, placed with the store's atomic write. The tag —
+`sima-<owner16>-<pid>-<seq>` — is both the ledger key and the label the
+provider attaches to the machine, so record and machine carry one name.
+
+**The intent record is durable before the provider is called.** That
+ordering is the whole crash argument: at every point where a process can
+die, the orphan is discoverable.
+
+| Crash point            | What is left                            | What reconciliation does                        |
+|------------------------|-----------------------------------------|-------------------------------------------------|
+| before the intent write| nothing                                 | nothing to do                                   |
+| after the intent write | an intent record, perhaps a machine carrying the tag | scan for the tag, destroy what it finds, clear the record |
+| after the live write   | a record naming the instance            | destroy the instance, clear the record          |
+| after the destroy      | a record whose machine is gone          | clear the record                                |
+
+### Reconciliation
+
+`reconcile` runs at the start of every acquisition, so orphans stop costing
+money before a new machine is paid for, and is public so a command can
+invoke it on its own. It considers only records naming the given provider.
+Owner liveness is the run's orchestrator lock: the kernel releases it the
+moment its holder exits, so a free lock means the owning process is gone.
+
+| Record state | Provider says           | Owner run lock | Action                               |
+|--------------|-------------------------|----------------|--------------------------------------|
+| live         | instance exists         | held           | keep: a running orchestrator owns it  |
+| live         | instance exists         | free           | destroy instance, clear record        |
+| live         | instance gone           | free           | clear record                          |
+| intent       | —                       | held           | keep: an acquisition is in flight     |
+| intent       | tag scan finds instance | free           | destroy it, then clear record         |
+| intent       | tag scan finds nothing  | free           | clear record                          |
+
+One pass is one ledger scan plus one provider instance listing. A ledger
+holding no record for the provider reaches no provider API at all, so local
+work never depends on a provider being reachable.
+
+### The stub provider
+
+`StubProvider` is an in-memory marketplace with scriptable behavior — a lost
+offer, a machine that stays provisioning, a failing API — and is public
+because the layers above test their acquisition paths against it.
 
 ## `sima-contracts` (L3)
 

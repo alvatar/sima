@@ -477,7 +477,7 @@ One command sends an experiment to rented hardware and brings results home:
 provision, bootstrap, run, sync, tear down. Teardown must be guaranteed —
 leaked instances are leaked money.
 
-- [ ] M6.1 Provider abstraction: provision / destroy / list / price query;
+- [x] M6.1 Provider abstraction: provision / destroy / list / price query;
       instance lifecycle owned by the run, teardown on success, failure, and
       interrupt. `list` returns concrete, normalized offers, not instance
       types — (GPU model, VRAM, GPU count, $/hr, host reliability, verified
