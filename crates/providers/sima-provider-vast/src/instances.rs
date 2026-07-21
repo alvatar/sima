@@ -262,6 +262,20 @@ mod tests {
     }
 
     #[test]
+    fn an_absence_only_an_intermediary_states_is_a_fault_rather_than_gone() {
+        // The API answers JSON, so an HTML 404 came from something between
+        // this client and the API. Reading it as absence would report a
+        // machine still running and billed as gone.
+        let server = TestServer::new(vec![answer(404, "<html>not found</html>")]);
+        let client = VastClient::new(&server.url(), "k-secret");
+        assert!(matches!(
+            status(&client, &instance()),
+            Err(Error::Provider(message))
+                if message.starts_with("show instance: HTTP 404: the response body is not JSON")
+        ));
+    }
+
+    #[test]
     fn the_listing_walks_every_page_the_api_serves() -> Result<()> {
         let server = TestServer::new(vec![
             answer(

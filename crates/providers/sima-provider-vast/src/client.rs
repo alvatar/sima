@@ -117,6 +117,13 @@ impl VastClient {
 
 /// Turns a call's outcome into an [`Answer`], mapping a transport failure
 /// and a body that is not JSON to [`Error::Provider`] naming `operation`.
+///
+/// The JSON mapping applies whatever the status is. The classifications
+/// callers draw from a status — an instance gone, an offer taken, a destroy
+/// that has already happened — are grounded in the API's own answers, which
+/// are JSON; a body that is not JSON means an intermediary answered, and
+/// reading its 404 as absence would report a machine still running and
+/// billed as destroyed.
 fn answer(
     outcome: std::result::Result<Response<Body>, ureq::Error>,
     operation: &str,
