@@ -14,6 +14,17 @@
 //! | intent       | tag scan finds instance | free           | destroy it, then clear record   |
 //! | intent       | tag scan finds nothing  | free           | clear record                    |
 //!
+//! The owner run lock column rests on one contract: every live run holds
+//! its orchestrator lock for as long as it holds a machine.
+//! [`acquire`](crate::acquire) enforces it for the acquiring run through its
+//! signature, which takes the lock itself.
+//!
+//! A record is judged by its owner's lock alone, so a run holding its lock
+//! keeps every record naming it — including one an earlier process of that
+//! same run left behind. Such a leftover is indistinguishable from a machine
+//! the live process is using, and it is reaped like any orphan once the
+//! run's lock is free.
+//!
 //! Only records naming the given provider participate; another provider's
 //! records are left untouched and unreported.
 
@@ -104,6 +115,7 @@ fn tagged(held: &[TaggedInstance], tag: &str) -> Option<InstanceId> {
 #[cfg(test)]
 mod tests {
     use sima_core::{Error, Result};
+    use sima_model::RunId;
     use sima_store::{InstanceRecord, InstanceRecordState};
 
     use super::reconcile;
@@ -111,13 +123,24 @@ mod tests {
     use crate::stub::StubProvider;
     use crate::testutil::{acquire_any, sample_run, stub_offer, temp_store};
 
-    /// A record for `tag` in `state`, owned by the run for `root_seed` and
+    /// A record for `tag` in `state`, owned by the run for seed 7 and
     /// naming `instance` when the state is live.
     fn record(tag: &str, state: InstanceRecordState, instance: Option<&str>) -> InstanceRecord {
+        owned_record(tag, state, instance, sample_run(7))
+    }
+
+    /// A record for `tag` in `state`, owned by `owner` and naming
+    /// `instance` when the state is live.
+    fn owned_record(
+        tag: &str,
+        state: InstanceRecordState,
+        instance: Option<&str>,
+        owner: RunId,
+    ) -> InstanceRecord {
         InstanceRecord {
             tag: tag.to_string(),
             provider: "stub".to_string(),
-            owner: sample_run(7).to_string(),
+            owner: owner.to_string(),
             state,
             instance: instance.map(str::to_string),
             price_micro_usd_hour: 100_000,
@@ -260,10 +283,13 @@ mod tests {
         let (_dir, store) = temp_store();
         let stub = StubProvider::new(vec![stub_offer("cheap", 100_000)])
             .with_instance(InstanceId("orphan".to_string()), "sima-tag-0");
-        store.put_instance(&record(
+        // The orphan belongs to another run, whose lock is free: the
+        // acquiring run holds only its own.
+        store.put_instance(&owned_record(
             "sima-tag-0",
             InstanceRecordState::Live,
             Some("orphan"),
+            sample_run(8),
         ))?;
         let guard = acquire_any(&stub, &store)?;
         // The orphan went down before the new machine came up, and the

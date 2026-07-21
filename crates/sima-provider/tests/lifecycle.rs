@@ -10,7 +10,7 @@ use sima_provider::{
     AcquireLimits, Constraints, InstanceId, Objective, Offer, OfferId, Price, Provider, acquire,
     reconcile,
 };
-use sima_store::Store;
+use sima_store::{RunLock, Store};
 
 /// An offer at `price` micro-USD per hour, ample enough for constraints
 /// that disqualify nothing.
@@ -29,10 +29,10 @@ fn offer(id: &str, price: u64) -> Offer {
     }
 }
 
-/// The run owning these acquisitions.
-fn owner() -> RunId {
+/// A run to own acquisitions with, varying by `root_seed`.
+fn owner(root_seed: u64) -> RunId {
     RunConfig {
-        root_seed: 11,
+        root_seed,
         segments: None,
         format: FormatId::new("stub.v1").expect("format id"),
         generator: GeneratorConfig {
@@ -61,19 +61,24 @@ fn contested_market() -> StubProvider {
         .gone_at_provision(OfferId("cheap".to_string()))
 }
 
-/// Rents one machine over `provider`, ranked by price.
+/// Rents one machine over `provider`, ranked by price, returning the run
+/// lock the rental was made under alongside the guard: a caller standing in
+/// for a killed process drops the lock to make the owner look gone.
 fn rent<'a, P: Provider>(
     provider: &'a P,
     store: &'a Store,
-) -> Result<sima_provider::InstanceGuard<'a, P>> {
-    acquire(
+    run: &RunId,
+) -> Result<(sima_provider::InstanceGuard<'a, P>, RunLock)> {
+    let lock = store.acquire_run_lock(run)?;
+    let guard = acquire(
         provider,
         store,
-        &owner(),
+        &lock,
         &Constraints::default(),
         Objective::CheapestPerHour,
         &limits(),
-    )
+    )?;
+    Ok((guard, lock))
 }
 
 #[test]
@@ -82,12 +87,12 @@ fn a_rental_falls_through_a_lost_offer_and_is_given_back_on_release() -> Result<
     let store = Store::open(dir.path())?;
     let provider = contested_market();
 
-    let guard = rent(&provider, &store)?;
+    let (guard, _lock) = rent(&provider, &store, &owner(11))?;
     assert_eq!(guard.endpoint().user, "root");
     let records = store.instances()?;
     assert_eq!(records.len(), 1, "one record for the machine held");
     assert_eq!(records[0].price_micro_usd_hour, 200_000, "the lost offer");
-    assert_eq!(records[0].owner, owner().to_string());
+    assert_eq!(records[0].owner, owner(11).to_string());
     let id = guard.id().clone();
 
     guard.release()?;
@@ -103,11 +108,13 @@ fn a_machine_a_dead_process_left_running_is_destroyed_by_reconciliation() -> Res
     let provider = StubProvider::new(vec![offer("only", 100_000)]);
     let leaked: InstanceId = {
         let store = Store::open(dir.path())?;
-        let guard = rent(&provider, &store)?;
+        let (guard, lock) = rent(&provider, &store, &owner(11))?;
         let id = guard.id().clone();
         // Standing in for a process killed outright: no destructor runs, so
-        // the machine stays up and its ledger record stays behind.
+        // the machine stays up and its ledger record stays behind, while the
+        // kernel frees the run lock the dead process held.
         std::mem::forget(guard);
+        drop(lock);
         id
     };
 
@@ -123,25 +130,58 @@ fn a_machine_a_dead_process_left_running_is_destroyed_by_reconciliation() -> Res
 }
 
 #[test]
-fn acquiring_again_cleans_the_orphan_before_renting_a_new_machine() -> Result<()> {
+fn acquiring_cleans_a_dead_runs_orphan_before_renting_a_new_machine() -> Result<()> {
     let dir = tempfile::tempdir().expect("create temp dir");
     let provider = StubProvider::new(vec![offer("first", 100_000), offer("second", 200_000)]);
     let leaked: InstanceId = {
         let store = Store::open(dir.path())?;
-        let guard = rent(&provider, &store)?;
+        let (guard, lock) = rent(&provider, &store, &owner(11))?;
         let id = guard.id().clone();
         std::mem::forget(guard);
+        drop(lock);
         id
     };
 
     let store = Store::open(dir.path())?;
-    let guard = rent(&provider, &store)?;
-    // Acquisition reconciles first, so the orphan was down before the new
-    // machine came up.
+    let (guard, _lock) = rent(&provider, &store, &owner(12))?;
+    // Acquisition reconciles first, so the orphan of the run whose lock is
+    // free was down before the new machine came up.
     assert_eq!(provider.destroyed(), vec![leaked]);
     assert_eq!(provider.live(), vec![guard.id().clone()]);
     let records = store.instances()?;
     assert_eq!(records.len(), 1);
     assert_eq!(records[0].tag, guard.tag());
+    Ok(())
+}
+
+#[test]
+fn a_runs_own_leftover_survives_its_next_acquisition_while_it_holds_the_lock() -> Result<()> {
+    let dir = tempfile::tempdir().expect("create temp dir");
+    let provider = StubProvider::new(vec![offer("first", 100_000), offer("second", 200_000)]);
+    let leaked: InstanceId = {
+        let store = Store::open(dir.path())?;
+        let (guard, lock) = rent(&provider, &store, &owner(11))?;
+        let id = guard.id().clone();
+        std::mem::forget(guard);
+        drop(lock);
+        id
+    };
+
+    let store = Store::open(dir.path())?;
+    let (guard, lock) = rent(&provider, &store, &owner(11))?;
+    // A held run lock is the owner still running, so the leftover an earlier
+    // process of this same run wrote is kept: reconciliation cannot tell it
+    // from a machine the live process is using.
+    assert!(provider.destroyed().is_empty());
+    assert_eq!(provider.live(), vec![leaked.clone(), guard.id().clone()]);
+    assert_eq!(store.instances()?.len(), 2);
+
+    // Once the run's lock is free, the leftover is reaped like any orphan.
+    std::mem::forget(guard);
+    drop(lock);
+    let report = reconcile(&provider, &store)?;
+    assert_eq!(report.destroyed.len(), 2);
+    assert!(report.destroyed.contains(&leaked));
+    assert!(store.instances()?.is_empty());
     Ok(())
 }

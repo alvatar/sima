@@ -409,7 +409,12 @@ Selection is two separate steps, and keeping them separate is the design:
 
 ### The acquisition loop
 
-`acquire` reconciles, lists, ranks, then walks the ranked offers:
+`acquire` takes the acquiring run's orchestrator lock by reference, and the
+ledger record's owner is stamped from it. The lock is the capability: a
+reference to it proves the run holds it, which is what reconciliation reads
+as the owner still running, here and for every other live run.
+
+It then reconciles, lists, ranks, and walks the ranked offers:
 
 ```
 reconcile ── destroy what an earlier crash left running
@@ -486,6 +491,12 @@ moment its holder exits, so a free lock means the owning process is gone.
 | intent       | —                       | held           | keep: an acquisition is in flight     |
 | intent       | tag scan finds instance | free           | destroy it, then clear record         |
 | intent       | tag scan finds nothing  | free           | clear record                          |
+
+A record is judged by its owner's lock alone, so a run holding its lock
+keeps every record naming it — including one an earlier process of that same
+run left behind. Such a leftover is indistinguishable from a machine the
+live process is using, and it is reaped like any orphan once the run's lock
+is free.
 
 One pass is one ledger scan plus one provider instance listing. A ledger
 holding no record for the provider reaches no provider API at all, so local

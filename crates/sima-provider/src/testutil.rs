@@ -65,14 +65,19 @@ pub(crate) fn prompt_limits() -> AcquireLimits {
 
 /// Rents one machine over `provider` under constraints that disqualify
 /// nothing, ranked by the only objective.
+///
+/// The run lock lives for the call alone, which is what a test needing only
+/// a guard requires; a test whose assertions depend on the lock still being
+/// held takes it itself and calls [`acquire`] directly.
 pub(crate) fn acquire_any<'a, P: Provider>(
     provider: &'a P,
     store: &'a Store,
 ) -> Result<InstanceGuard<'a, P>> {
+    let lock = store.acquire_run_lock(&sample_run(7))?;
     acquire(
         provider,
         store,
-        &sample_run(7),
+        &lock,
         &Constraints::default(),
         Objective::CheapestPerHour,
         &prompt_limits(),

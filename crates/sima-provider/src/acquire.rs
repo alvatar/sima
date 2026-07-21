@@ -9,7 +9,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use sima_core::{Error, Result};
 use sima_model::RunId;
-use sima_store::{InstanceRecord, InstanceRecordState, Store};
+use sima_store::{InstanceRecord, InstanceRecordState, RunLock, Store};
 
 use crate::guard::{InstanceGuard, teardown};
 use crate::offer::{Constraints, Objective, Offer, select};
@@ -37,14 +37,21 @@ static SEQ: AtomicU64 = AtomicU64::new(0);
 ///
 /// The returned guard owns the instance. An empty ranked list, and a list
 /// walked to its end, are both [`Error::Provider`].
+///
+/// `lock` is the acquiring run's orchestrator lock, and taking it by
+/// reference is how the caller's obligation is met: reconciliation reads a
+/// held run lock as the owner still running, for this run and for every
+/// other live run, so a run that rents a machine holds its lock for as long
+/// as it holds the machine. The record's owner is stamped from the lock.
 pub fn acquire<'a, P: Provider>(
     provider: &'a P,
     store: &'a Store,
-    owner: &RunId,
+    lock: &RunLock,
     constraints: &Constraints,
     objective: Objective,
     limits: &AcquireLimits,
 ) -> Result<InstanceGuard<'a, P>> {
+    let owner = lock.run();
     // Orphans of an earlier crash are destroyed before a new machine is
     // paid for.
     reconcile(provider, store)?;
@@ -329,10 +336,11 @@ mod tests {
             ready_timeout: Duration::ZERO,
             ready_poll: Duration::ZERO,
         };
+        let lock = store.acquire_run_lock(&sample_run(7))?;
         let guard = acquire(
             &stub,
             &store,
-            &sample_run(7),
+            &lock,
             &Constraints::default(),
             Objective::CheapestPerHour,
             &limits,
@@ -370,10 +378,11 @@ mod tests {
             min_vram_mb: Some(1_000_000),
             ..Constraints::default()
         };
+        let lock = store.acquire_run_lock(&sample_run(7))?;
         let outcome = acquire(
             &stub,
             &store,
-            &sample_run(7),
+            &lock,
             &constraints,
             Objective::CheapestPerHour,
             &prompt_limits(),
@@ -447,6 +456,42 @@ mod tests {
         assert_eq!(report.cleared, vec![tag]);
         assert!(provider.live().is_empty());
         assert!(store.instances()?.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn a_record_of_the_acquiring_run_survives_the_acquire_time_reconcile() -> Result<()> {
+        let (_dir, store) = temp_store();
+        let stub = StubProvider::new(vec![stub_offer("cheap", 100_000)])
+            .with_instance(InstanceId("held".to_string()), "sima-tag-0");
+        store.put_instance(&InstanceRecord {
+            tag: "sima-tag-0".to_string(),
+            provider: "stub".to_string(),
+            owner: sample_run(7).to_string(),
+            state: InstanceRecordState::Live,
+            instance: Some("held".to_string()),
+            price_micro_usd_hour: 100_000,
+            created_ms: 1_700_000_000_000,
+        })?;
+        // The lock the acquisition runs under is the acquiring run's, so its
+        // own earlier record reads as owned by a running orchestrator.
+        let lock = store.acquire_run_lock(&sample_run(7))?;
+        let guard = acquire(
+            &stub,
+            &store,
+            &lock,
+            &Constraints::default(),
+            Objective::CheapestPerHour,
+            &prompt_limits(),
+        )?;
+        assert!(stub.destroyed().is_empty());
+        let tags: Vec<String> = store
+            .instances()?
+            .into_iter()
+            .map(|record| record.tag)
+            .collect();
+        assert!(tags.contains(&"sima-tag-0".to_string()));
+        assert!(tags.contains(&guard.tag().to_string()));
         Ok(())
     }
 
