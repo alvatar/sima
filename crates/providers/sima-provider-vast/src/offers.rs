@@ -7,18 +7,16 @@
 
 use serde::Deserialize;
 use sima_core::{Error, Result};
-use sima_provider::{Offer, OfferId, Price};
+use sima_provider::{Offer, OfferId};
 
 use crate::client::VastClient;
+use crate::price;
 
 /// The search endpoint.
 const SEARCH_PATH: &str = "/api/v0/bundles/";
 
 /// What the search is called in failures.
 const OPERATION: &str = "list offers";
-
-/// Micro-USD in one dollar, the unit [`Price`] normalizes to.
-const MICRO_USD_PER_USD: f64 = 1_000_000.0;
 
 /// The verification the marketplace reports for a host it vetted.
 const VERIFIED: &str = "verified";
@@ -76,7 +74,7 @@ fn normalize(row: OfferRow) -> Offer {
         gpu_model: row.gpu_name,
         gpu_count: row.num_gpus,
         vram_mb: row.gpu_ram.round() as u64,
-        price: Price((row.dph_total * MICRO_USD_PER_USD).round() as u64),
+        price: price::per_hour(row.dph_total),
         reliability: row.reliability,
         verified: row.verification == VERIFIED,
         disk_gb: row.disk_space.round() as u64,

@@ -17,8 +17,11 @@
 
 mod client;
 mod config;
+mod instances;
 mod offers;
+mod price;
 mod provider;
+mod rental;
 #[cfg(test)]
 mod test_server;
 
