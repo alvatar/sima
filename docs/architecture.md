@@ -507,8 +507,8 @@ live process is using, and it is reaped like any orphan once the run's lock
 is free.
 
 One pass is one ledger scan plus one provider instance listing. A ledger
-holding no record for the provider reaches no provider API at all, so local
-work never depends on a provider being reachable.
+holding no record for the provider reaches no provider API at all, so a store
+holding no rentals never depends on a provider being reachable.
 
 ### The stub provider
 
