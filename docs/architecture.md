@@ -417,6 +417,7 @@ for each ranked offer:
     write the intent record         (ledger, state: intent)
     provision(offer, tag)
         OfferGone ───────────────── clear the record, next offer
+        error ───────────────────── abort, leaving the intent record
         Provisioned(instance) ───── upgrade the record (state: live)
             poll until ready
                 Ready ───────────── return the guard
@@ -427,7 +428,10 @@ list exhausted ──────────────────── Erro
 A lost offer is an outcome, not a failure: on a marketplace another renter
 taking a machine first is normal operation, and the next-ranked offer is the
 answer. An API error is different — it would repeat against every remaining
-offer — so it aborts the loop and propagates. A machine that never reports
+offer — so it aborts the loop and propagates, and the attempt's intent
+record stays behind: an error answer does not say whether the request
+landed, so a machine that may carry the tag must remain discoverable, and
+reconciliation resolves it. A machine that never reports
 itself ready is a bad offer: it is destroyed and the walk continues.
 Readiness is the provider's own answer, carrying the SSH endpoint; whether
 sshd is listening is the bootstrap layer's question.

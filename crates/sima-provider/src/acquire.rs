@@ -70,11 +70,13 @@ pub fn acquire<'a, P: Provider>(
                 store.remove_instance(&tag)?;
                 continue;
             }
-            // An API failure repeats against every remaining offer.
-            Err(e) => {
-                store.remove_instance(&tag)?;
-                return Err(e);
-            }
+            // An API failure repeats against every remaining offer, so it
+            // aborts the loop. Its intent record stays: an error answer does
+            // not say whether the request landed — a timeout can mean a
+            // machine carrying the tag exists — and the record is the only
+            // thing reconciliation acts on, so clearing it here would make
+            // that machine unreachable.
+            Err(e) => return Err(e),
         };
         store.put_instance(&record(&tag, provider.id(), owner, &offer, Some(&instance)))?;
         if let Some(endpoint) = wait_ready(provider, &instance, limits)? {
@@ -176,6 +178,7 @@ mod tests {
     use super::{AcquireLimits, acquire};
     use crate::offer::{Constraints, Objective, Offer, OfferId};
     use crate::provider::{InstanceId, InstanceStatus, Provider, Provision, TaggedInstance};
+    use crate::reconcile::reconcile;
     use crate::stub::StubProvider;
     use crate::testutil::{acquire_any, prompt_limits, sample_run, stub_offer, temp_store};
 
@@ -351,6 +354,17 @@ mod tests {
         Ok(())
     }
 
+    /// Aborts one acquisition on a failing provision call, returning the
+    /// tag of the intent record it left in the ledger.
+    fn aborted_attempt_tag(store: &Store) -> Result<String> {
+        let stub = StubProvider::new(vec![stub_offer("a", 100_000)])
+            .failing_provision("create instance: 500");
+        assert!(acquire_any(&stub, store).is_err());
+        let records = store.instances()?;
+        assert_eq!(records.len(), 1);
+        Ok(records[0].tag.clone())
+    }
+
     #[test]
     fn an_api_failure_aborts_the_loop_after_one_attempt() -> Result<()> {
         let (dir, store) = temp_store();
@@ -363,8 +377,44 @@ mod tests {
             Err(Error::Provider(message)) if message == "create instance: 500"
         ));
         // The failure would repeat against the second offer, so the loop
-        // never reaches it, and the attempt's record is cleared.
+        // never reaches it.
         assert_eq!(watching.provisioned_tags().len(), 1);
+        // The attempt's intent record survives: the error says nothing about
+        // whether the request landed, so the machine that may carry the tag
+        // stays discoverable.
+        let records = store.instances()?;
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].state, InstanceRecordState::Intent);
+        assert_eq!(records[0].tag, watching.provisioned_tags()[0]);
+        Ok(())
+    }
+
+    #[test]
+    fn the_record_an_api_failure_left_is_cleared_by_reconciliation() -> Result<()> {
+        let (_dir, store) = temp_store();
+        let tag = aborted_attempt_tag(&store)?;
+        // The owner holds no lock, and the provider created nothing under
+        // the tag, so the record is all there was to clean up.
+        let provider = StubProvider::new(Vec::new());
+        let report = reconcile(&provider, &store)?;
+        assert!(report.destroyed.is_empty());
+        assert_eq!(report.cleared, vec![tag]);
+        assert!(store.instances()?.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn a_machine_an_api_failure_may_have_created_is_reconciled_away() -> Result<()> {
+        let (_dir, store) = temp_store();
+        let tag = aborted_attempt_tag(&store)?;
+        // The request had landed after all: the provider holds a machine
+        // under the attempt's tag, which the intent record leads to.
+        let landed = InstanceId("stub-landed".to_string());
+        let provider = StubProvider::new(Vec::new()).with_instance(landed.clone(), &tag);
+        let report = reconcile(&provider, &store)?;
+        assert_eq!(report.destroyed, vec![landed]);
+        assert_eq!(report.cleared, vec![tag]);
+        assert!(provider.live().is_empty());
         assert!(store.instances()?.is_empty());
         Ok(())
     }
