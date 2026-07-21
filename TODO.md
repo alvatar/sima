@@ -490,7 +490,7 @@ leaked instances are leaked money.
       qualifying offers (default: cheapest $/hr; no weighted multi-criteria
       scoring). Provision treats "offer no longer available" as a normal
       outcome and falls through to the next-ranked offer
-- [ ] M6.2 Vast.ai backend — the single provider for now; further providers
+- [x] M6.2 Vast.ai backend — the single provider for now; further providers
       (Hetzner, AWS, ...) are added on demand as separate milestones when
       needed. Translates the normalized filter into Vast.ai's marketplace
       query and maps its offer fields (reliability score, verified status,
