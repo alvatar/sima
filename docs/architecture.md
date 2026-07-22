@@ -474,8 +474,13 @@ success, on failure, and on interrupt. Three tiers cover the exits:
 
 One record per acquisition attempt lives in the store at
 `instances/<tag>`, placed with the store's atomic write. The tag —
-`sima-<owner16>-<pid>-<seq>` — is both the ledger key and the label the
-provider attaches to the machine, so record and machine carry one name.
+`sima-<owner16>-<pid>-<rand8hex>-<seq>` — is both the ledger key and the
+label the provider attaches to the machine, so record and machine carry one
+name. It is an operational identifier and enters no hash. The random
+component is drawn once per process from OS entropy, which is what keeps two
+processes from producing one tag: a pid the operating system recycles, with
+a per-process attempt counter that starts at zero, would otherwise reproduce
+the tags of a process that died.
 
 **The intent record is durable before the provider is called.** That
 ordering is the whole crash argument: at every point where a process can
@@ -565,13 +570,12 @@ never read. Every systematic path counts at least what the provider bills:
 clears a record writes an entry first, except an offer another renter took:
 there the provider itself answered that no machine exists. The entry is
 keyed by the rental's tag and start stamp, both read from the record, so
-closing one rental twice reproduces one key and overwrites — while two
-rentals that reused a tag across process restarts carry distinct stamps and
-coexist. Keying by tag alone would let a later rental's close replace an
-earlier one's entry, which is the one error direction this design forbids.
-Two rentals reusing a tag within one millisecond — a recycled pid producing
-the same tag that fast — would still merge into one entry; that is the
-accepted residual of keying on a millisecond stamp.
+closing one rental twice reproduces one key and overwrites. Keying by tag
+alone would let a later rental's close replace an earlier one's entry, which
+is the one error direction this design forbids. Two rentals can only share a
+key by sharing a tag, and the tag's per-process random component makes that
+impossible across processes: within one process the attempt counter
+separates them.
 
 Two crash windows follow from that ordering, and neither loses a charge:
 

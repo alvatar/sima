@@ -4,6 +4,9 @@
 //! that never comes up, as reasons to try the next one. Only an API failure
 //! aborts it: that failure would repeat against every remaining offer.
 
+use std::collections::hash_map::RandomState;
+use std::hash::{BuildHasher, Hasher};
+use std::sync::LazyLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
@@ -29,6 +32,18 @@ pub struct AcquireLimits {
 
 /// Distinguishes acquisition attempts made by one process.
 static SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// Distinguishes this process's attempts from those of every other process,
+/// including one the operating system gave the same pid to later.
+///
+/// Drawn once, from the operating system: a fresh `RandomState` takes its
+/// keys from OS entropy, and the initial state of the hasher it builds is
+/// those keys. The lower 32 bits are what the tag carries, as 8 hex
+/// characters.
+static NONCE: LazyLock<String> = LazyLock::new(|| {
+    let seed = RandomState::new().build_hasher().finish();
+    format!("{:08x}", seed as u32)
+});
 
 /// Rents one machine satisfying `constraints`, best by `objective`: list
 /// the marketplace, rank it, then walk the ranked offers — write the intent
@@ -205,17 +220,25 @@ fn record(
     }
 }
 
-/// The tag one acquisition attempt runs under: `sima-<owner16>-<pid>-<seq>`.
-/// It is both the ledger key and the provider-side label, so the machine and
-/// its record carry one name. The owner's first 16 hex characters keep it
-/// short enough for provider label limits while staying attributable; the
-/// full owner lives in the record.
+/// The tag one acquisition attempt runs under:
+/// `sima-<owner16>-<pid>-<rand8hex>-<seq>`. It is both the ledger key and the
+/// provider-side label, so the machine and its record carry one name. The
+/// owner's first 16 hex characters keep it short enough for provider label
+/// limits while staying attributable; the full owner lives in the record.
+///
+/// A tag is an operational identifier and nothing hashes it. The random
+/// component is what makes it unrepeatable across restarts: a pid the
+/// operating system recycles, together with a counter that starts at zero in
+/// every process, would otherwise reproduce a tag an earlier process used —
+/// and spend entries are keyed by tag and stamp, so a reproduced tag can
+/// write over an earlier rental's entry.
 fn attempt_tag(owner: &RunId) -> String {
     let owner = owner.to_string();
     format!(
-        "sima-{}-{}-{}",
+        "sima-{}-{}-{}-{}",
         &owner[..16],
         std::process::id(),
+        *NONCE,
         SEQ.fetch_add(1, Ordering::Relaxed)
     )
 }
@@ -231,7 +254,7 @@ mod tests {
     use sima_model::RunId;
     use sima_store::{InstanceRecord, InstanceRecordState, SpendEntry, Store};
 
-    use super::{AcquireLimits, Ordering, acquire};
+    use super::{AcquireLimits, Ordering, acquire, attempt_tag};
     use crate::budget::{Budget, Cost};
     use crate::guard::InstanceGuard;
     use crate::offer::{Constraints, Objective, Offer, OfferId, Price};
@@ -347,14 +370,49 @@ mod tests {
         // The live state names the machine the guard holds.
         assert_eq!(record.instance(), Some(guard.id().0.as_str()));
         assert_eq!(record.tag, guard.tag());
-        // The tag names the owner, the acquiring process, and the attempt.
-        let parts: Vec<&str> = record.tag.split('-').collect();
-        assert_eq!(parts.len(), 4);
+        // The tag names the owner, the acquiring process, that process's
+        // random component, and the attempt.
+        assert_parts(&record.tag);
+        Ok(())
+    }
+
+    /// Asserts that `tag` has the documented shape —
+    /// `sima-<owner16>-<pid>-<rand8hex>-<seq>` over the owner these tests
+    /// acquire under — and returns its parts.
+    fn assert_parts(tag: &str) -> Vec<&str> {
+        // Providers label instances with it, so it stays within the
+        // conservative alphanumeric-and-hyphen charset.
+        assert!(
+            tag.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'),
+            "a tag is a provider label: {tag}"
+        );
+        let parts: Vec<&str> = tag.split('-').collect();
+        assert_eq!(parts.len(), 5, "{tag}");
         assert_eq!(parts[0], "sima");
         assert_eq!(parts[1], &sample_run(7).to_string()[..16]);
         assert_eq!(parts[2], std::process::id().to_string());
-        assert!(parts[3].parse::<u64>().is_ok(), "the attempt counter");
-        Ok(())
+        assert_eq!(parts[3].len(), 8, "the random component: {tag}");
+        assert!(
+            parts[3]
+                .chars()
+                .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c)),
+            "the random component is lowercase hex: {tag}"
+        );
+        assert!(parts[4].parse::<u64>().is_ok(), "the attempt counter");
+        parts
+    }
+
+    #[test]
+    fn two_tags_of_one_process_share_its_random_component_and_differ_by_attempt() {
+        let owner = sample_run(7);
+        let first = attempt_tag(&owner);
+        let second = attempt_tag(&owner);
+        let first = assert_parts(&first);
+        let second = assert_parts(&second);
+        // The random component is drawn once per process, so it is the
+        // attempt counter alone that separates two tags of one process.
+        assert_eq!(first[3], second[3]);
+        assert_ne!(first[4], second[4]);
     }
 
     #[test]
