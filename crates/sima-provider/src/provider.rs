@@ -81,6 +81,11 @@ pub struct TaggedInstance {
     pub id: InstanceId,
     /// The tag the instance was created under.
     pub tag: String,
+    /// The hourly rate the provider is charging for the instance, when its
+    /// listing states one. A rental closed out from this scan is charged at
+    /// this rate, so it matches the bill; a listing without one leaves the
+    /// ledger record's rate standing.
+    pub price: Option<Price>,
 }
 
 /// The rented-hardware control plane: list the market, rent a machine,
@@ -111,9 +116,10 @@ pub trait Provider {
     fn instance(&self, id: &InstanceId) -> Result<InstanceStatus>;
 
     /// Every instance this account currently holds, each with the tag it
-    /// was created under, verbatim. This scan is what reconciliation matches
-    /// an intent record against, and the tag is the only key it has: the
-    /// contract offers no fallback.
+    /// was created under, verbatim, and the rate the provider charges for
+    /// it where the listing states one. This scan is what reconciliation
+    /// matches an intent record against, and the tag is the only key it has:
+    /// the contract offers no fallback.
     fn instances(&self) -> Result<Vec<TaggedInstance>>;
 
     /// Destroys an instance. Destroying one already gone is `Ok`: guards

@@ -54,16 +54,15 @@ pub(crate) fn create(
             id.0
         )));
     };
-    let Some(rate) = row.dph_total else {
+    // A rate no price can be read from states nothing about what the machine
+    // costs, so it is the same answer as a row carrying no rate at all.
+    let Some(price) = row.dph_total.and_then(price::per_hour) else {
         return Err(Error::Provider(format!(
             "{OPERATION}: the answer names no rate for instance {}",
             id.0
         )));
     };
-    Ok(Provision::Provisioned(Instance {
-        id,
-        price: price::per_hour(rate),
-    }))
+    Ok(Provision::Provisioned(Instance { id, price }))
 }
 
 /// The path renting `offer`.
@@ -257,6 +256,25 @@ mod tests {
         let server = TestServer::new(vec![
             answer(200, r#"{"success": true, "new_contract": 555}"#),
             answer(200, r#"{"instances": {"id": 555, "label": "sima-tag-0"}}"#),
+        ]);
+        let client = VastClient::new(&server.url(), "k-secret");
+        assert!(matches!(
+            create(&client, &config(&server.url()), &offer(), "sima-tag-0"),
+            Err(Error::Provider(message))
+                if message == "create instance: the answer names no rate for instance 555"
+        ));
+    }
+
+    #[test]
+    fn a_created_instance_reporting_an_anomalous_rate_is_a_provider_error() {
+        // A rate no price can be read from is as good as no rate at all: the
+        // rental fails, and the tag-keyed record recovers the machine.
+        let server = TestServer::new(vec![
+            answer(200, r#"{"success": true, "new_contract": 555}"#),
+            answer(
+                200,
+                r#"{"instances": {"id": 555, "label": "sima-tag-0", "dph_total": -0.4}}"#,
+            ),
         ]);
         let client = VastClient::new(&server.url(), "k-secret");
         assert!(matches!(

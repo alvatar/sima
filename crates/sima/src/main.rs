@@ -22,6 +22,7 @@
 //! - 1 — everything else: infrastructure fault, config error, usage error.
 
 mod follow;
+mod reconcile;
 mod render;
 mod tui;
 
@@ -53,10 +54,13 @@ fn main() -> ExitCode {
     let (args, host) = split_target(&args);
     match args[..] {
         // The write commands never observe: `run` drives a run, which happens
-        // where the hardware is, and `rm` mutates a store. A host on either
-        // falls through to the usage error.
+        // where the hardware is, and `rm` and `reconcile` mutate a store. A
+        // host on any of them falls through to the usage error.
         ["run", config] if host.is_none() => run_command(&resolve_config(config)),
         ["rm", config] if host.is_none() => rm_command(&resolve_config(config)),
+        ["reconcile", config] if host.is_none() => {
+            reconcile::reconcile_command(&resolve_config(config))
+        }
         // The far half of the follow transport, invoked over ssh by another
         // machine's read command. It is not a user-facing verb.
         ["follow-serve", config] if host.is_none() => serve_command(config, false),
@@ -80,6 +84,7 @@ fn main() -> ExitCode {
                  \x20      sima report <config> --all         print each committed task's stats\n\
                  \x20      sima report <config> --task <key>  print one committed task's stats\n\
                  \x20      sima rm <config>                   delete the run and what only it references\n\
+                 \x20      sima reconcile <config>            destroy the machines a crashed run left running\n\
                  \x20      sima tui <config>                  drive the run in a full-screen terminal UI\n\
                  \x20      sima follow <config>               stream the run's events until it ends\n\
                  \x20      sima timeline <config>             report the run's metrics and its timeline\n\

@@ -39,10 +39,13 @@ pub struct InstanceRecord {
     /// The offer's rate at intent, the instance's rate once live.
     pub price_micro_usd_hour: u64,
     /// Wall-clock milliseconds since the epoch at intent, like the journal's
-    /// stamps. The live write keeps the stamp the attempt began under. The
-    /// stamp serves human diagnosis of the ledger: ordering, identity, and
-    /// reconciliation all decide from other fields, which is what leaves the
-    /// clock free to move backwards.
+    /// stamps. The live write keeps the stamp the attempt began under.
+    ///
+    /// This is the accounting anchor: the charged window of the rental opens
+    /// here, before the provider is called, and closes when the rental's
+    /// spend entry is written. Ordering, identity, and reconciliation all
+    /// decide from other fields, so a clock that moves backwards costs
+    /// accuracy in what a rental is charged and nothing else.
     pub created_ms: u64,
 }
 
@@ -125,6 +128,30 @@ impl Store {
         Ok(records)
     }
 
+    /// The record under `tag`, for a caller holding the tag it wants — a
+    /// teardown closing one rental out, where reading the whole ledger
+    /// would be a directory scan for a single file. A record that does not
+    /// parse, or that names a different tag, is [`Error::Corruption`], as
+    /// in [`instances`](Store::instances).
+    pub fn instance(&self, tag: &str) -> Result<Option<InstanceRecord>> {
+        validate_tag(tag)?;
+        let path = layout::instance_path(self.root(), tag);
+        let bytes = match fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(e) if e.kind() == ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(io_error(&path, e)),
+        };
+        let record: InstanceRecord = serde_json::from_slice(&bytes)
+            .map_err(|e| Error::Corruption(format!("instance record {tag} does not parse: {e}")))?;
+        if record.tag != tag {
+            return Err(Error::Corruption(format!(
+                "instance record {tag} names the tag {:?}",
+                record.tag
+            )));
+        }
+        Ok(Some(record))
+    }
+
     /// Clears the record under `tag`. An absent record is `Ok`: a guard's
     /// teardown and a reconciliation pass may clear the same record.
     pub fn remove_instance(&self, tag: &str) -> Result<()> {
@@ -143,8 +170,9 @@ fn record_bytes(record: &InstanceRecord) -> Vec<u8> {
 }
 
 /// Accepts a tag of one or more `[a-z0-9-]` characters, which is what may
-/// become a file name directly under the ledger directory.
-fn validate_tag(tag: &str) -> Result<()> {
+/// become a file name directly under the ledger directory, and part of one
+/// under the spend ledger.
+pub(crate) fn validate_tag(tag: &str) -> Result<()> {
     if !tag.is_empty()
         && tag
             .bytes()
@@ -268,6 +296,61 @@ mod tests {
         // Idempotent: a reconciliation pass may race the guard that already
         // cleared the record.
         store.remove_instance(tag)?;
+        Ok(())
+    }
+
+    #[test]
+    fn one_record_reads_back_by_its_tag_and_an_absent_tag_is_none() -> Result<()> {
+        let (_dir, store) = temp_store();
+        let tag = "sima-0123456789abcdef-42-0";
+        let record = intent(tag, 7);
+        store.put_instance(&record)?;
+        assert_eq!(store.instance(tag)?, Some(record));
+        assert_eq!(store.instance("sima-never-written")?, None);
+        Ok(())
+    }
+
+    #[test]
+    fn reading_one_record_rejects_a_tag_outside_the_charset() -> Result<()> {
+        let (_dir, store) = temp_store();
+        assert!(matches!(
+            store.instance("../escape"),
+            Err(Error::Validation(_))
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn reading_one_unparseable_record_is_corruption_naming_it() -> Result<()> {
+        let (dir, store) = temp_store();
+        fs::write(dir.path().join("instances").join("sima-bad"), b"not json")
+            .expect("write a garbage record");
+        let read = store.instance("sima-bad");
+        let Err(Error::Corruption(msg)) = read else {
+            panic!("a malformed record must be corruption, got {read:?}");
+        };
+        assert!(
+            msg.contains("sima-bad"),
+            "corruption names the record: {msg}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn reading_a_record_that_names_another_tag_is_corruption() -> Result<()> {
+        let (dir, store) = temp_store();
+        store.put_instance(&intent("sima-0123456789abcdef-42-0", 7))?;
+        fs::rename(
+            dir.path()
+                .join("instances")
+                .join("sima-0123456789abcdef-42-0"),
+            dir.path().join("instances").join("sima-other"),
+        )
+        .expect("move the record off its key");
+        assert!(matches!(
+            store.instance("sima-other"),
+            Err(Error::Corruption(_))
+        ));
         Ok(())
     }
 

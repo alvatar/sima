@@ -185,3 +185,25 @@ forces a deliberate update in the same change:
   benchmark for annexing machines without restructuring the program; Ray
   tasks are not content-addressed or deterministic by construction, which is
   what SIMA's provenance layer requires.
+
+## Known caveats
+
+One accepted limitation of the rental layer, operational rather than
+architectural.
+
+### A hard crash leaves a machine running until something reconciles
+
+While a run is alive, the guard destroys the machines it rented on every
+exit path it can observe, including interrupts and panics. A hard crash —
+`SIGKILL`, a power cut — runs no code at all. The machine stays up and keeps
+billing.
+
+Cleanup is tied to an invocation: the store is the only durable state and
+there is no daemon, so nothing watches in between. Two invocations reconcile.
+Any acquisition against the same store runs the pass before it rents, and
+`sima reconcile <config>` is that pass on its own — from a shell after a
+crash, or from whatever schedules periodic maintenance. Either one finds the
+record the crashed process left behind and destroys the machine.
+
+Until one of them runs, the machine bills. If nothing is ever invoked against
+that store again, the provider's own console remains the way to end it.

@@ -36,7 +36,7 @@ Strictly downward dependencies, enforced by workspace crate edges.
 | L5    | `sima-domains`   | per-format executors, generators, codecs, environments, id dispatch, and config translation; the reference stub domain |
 | L6    | `sima-scheduler` | task sources, worker pool, leases, retry, device placement, run driver |
 | L7    | `sima-pipeline`  | config loading, orchestration, run and per-task queries               |
-| L8    | `sima`           | CLI: run, status, report, timeline, rm, tui                           |
+| L8    | `sima`           | CLI: run, status, report, timeline, rm, reconcile, tui                |
 
 Beside the spine, `sima-worker` is the worker binary: it depends on
 `sima-transport` (the executor host loop) and `sima-domains` (the executor
@@ -52,8 +52,10 @@ rented-hardware control plane, depending on `sima-core`, `sima-model`, and
 `sima-store`, and it carries the contract, the offer model, and the
 in-memory stub. Backends speaking to a real service are a sibling group
 under `crates/providers/`, named `sima-provider-<name>` after the service
-each one speaks to, so an HTTP client enters exactly one crate. See
-[`sima-provider`](#sima-provider).
+each one speaks to, so an HTTP client enters exactly one crate. The CLI
+depends on the control plane and on each backend, because resolving a ledger
+record's provider id to the backend that answers to it is what
+`sima reconcile` does. See [`sima-provider`](#sima-provider).
 
 Execution backends sit off the spine as a sibling group under
 `crates/toolkits/` (`sima-toolkit-*`). A toolkit is a compute library a domain
@@ -237,6 +239,7 @@ One `Store` type over a root directory:
 <root>/tmp/<pid>-<seq>           in-flight writes
 <root>/tasks/<task-key>          index entry: record-hash hex + newline
 <root>/instances/<tag>           one rented instance's ledger record
+<root>/spend/<owner>/<tag>-<started-ms>  one closed rental's cost
 <root>/runs/<run-id>/manifest.json
 <root>/runs/<run-id>/journal
 <root>/runs/<run-id>/orchestrator.lock
@@ -270,6 +273,10 @@ One `Store` type over a root directory:
 - **closure** — the deduplicated, sorted set of objects a finalized run
   depends on: config, records, and every object those records reference. The
   unit of run portability and store sync.
+- **spend entry** — what one rental cost, from its ledger record's stamp to
+  its confirmed destruction. It is written when the rental is closed out and
+  outlives the record, so a run's total spend survives every machine it
+  rented.
 - **removal** — deleting a run and every object no surviving run's closure
   references, guarded so an object a live run needs is never removed. The plan
   is recorded in the run's `remove-intent` slot before any deletion, so a
@@ -421,13 +428,15 @@ ledger record's owner is stamped from it. The lock is the capability: a
 reference to it proves the run holds it, which is what reconciliation reads
 as the owner still running, here and for every other live run.
 
-It then reconciles, lists, ranks, and walks the ranked offers:
+It then reconciles, admits, lists, ranks, and walks the ranked offers:
 
 ```
 reconcile ── destroy what an earlier crash left running
+admit   ──── refuse an exhausted budget before the marketplace is listed
 offers  ──── the live marketplace, normalized
 select  ──── constraints disqualify, the objective ranks
 for each ranked offer:
+    admit                           (refuse an exhausted budget)
     write the intent record         (ledger, state: intent)
     provision(offer, tag)
         OfferGone ───────────────── clear the record, next offer
@@ -438,6 +447,14 @@ for each ranked offer:
                 gone or timed out ─ destroy, clear the record, next offer
 list exhausted ──────────────────── Error::Provider
 ```
+
+Admission is the budget guard, and it runs at two points: once before the
+marketplace is listed, and again before each attempt of the walk, so a
+machine that consumed the budget during a failed readiness wait is not
+followed by another rental. An exhausted budget is `Error::Provider` naming
+the limit and the numbers. Reconciliation precedes both, because destroying
+orphans stops spending, which matters most precisely when the budget is
+gone.
 
 A lost offer is an outcome, not a failure: on a marketplace another renter
 taking a machine first is normal operation, and the next-ranked offer is the
@@ -458,7 +475,8 @@ success, on failure, and on interrupt. Three tiers cover the exits:
 - **In process.** `InstanceGuard` owns the instance. `release` is the
   deliberate path and reports what failed; drop is the backstop that covers
   an error returning through `?` and a panic unwinding, discarding the
-  outcome because a destructor has nowhere to report it.
+  outcome because a destructor has nowhere to report it. Teardown also
+  closes the rental's spend entry, so what the machine cost outlives it.
 - **Interrupt.** The first SIGINT is a graceful wind-down, so it unwinds
   through the guard like any other exit.
 - **Crash.** SIGKILL or power loss runs no code at all. What covers it is
@@ -468,8 +486,13 @@ success, on failure, and on interrupt. Three tiers cover the exits:
 
 One record per acquisition attempt lives in the store at
 `instances/<tag>`, placed with the store's atomic write. The tag —
-`sima-<owner16>-<pid>-<seq>` — is both the ledger key and the label the
-provider attaches to the machine, so record and machine carry one name.
+`sima-<owner16>-<pid>-<rand8hex>-<seq>` — is both the ledger key and the
+label the provider attaches to the machine, so record and machine carry one
+name. It is an operational identifier and enters no hash. The random
+component is drawn once per process from OS entropy, which is what keeps two
+processes from producing one tag: a pid the operating system recycles, with
+a per-process attempt counter that starts at zero, would otherwise reproduce
+the tags of a process that died.
 
 **The intent record is durable before the provider is called.** That
 ordering is the whole crash argument: at every point where a process can
@@ -478,26 +501,50 @@ die, the orphan is discoverable.
 | Crash point            | What is left                            | What reconciliation does                        |
 |------------------------|-----------------------------------------|-------------------------------------------------|
 | before the intent write| nothing                                 | nothing to do                                   |
-| after the intent write | an intent record, perhaps a machine carrying the tag | scan for the tag, destroy what it finds, clear the record |
-| after the live write   | a record naming the instance            | destroy the instance, clear the record          |
-| after the destroy      | a record whose machine is gone          | clear the record                                |
+| after the intent write | an intent record, perhaps a machine carrying the tag | scan for the tag, destroy what it finds, close the rental out |
+| after the live write   | a record naming the instance            | destroy the instance, close the rental out      |
+| after the destroy      | a record whose machine is gone          | close the rental out                            |
+
+The record's `created_ms` is the accounting anchor: it stamps where the
+rental's charged window opens, and the window closes when the rental's
+spend entry is written at `spend/<owner>/<tag>-<started-ms>`. Closing a
+rental out always precedes clearing its record, so a record is removed only
+once what it cost is durable.
 
 ### Reconciliation
 
 `reconcile` runs at the start of every acquisition, so orphans stop costing
-money before a new machine is paid for, and is public so a command can
-invoke it on its own. It considers only records naming the given provider.
+money before a new machine is paid for, and `sima reconcile <config>` is the
+same pass invoked on its own — the answer after a crash, when nothing starts
+an acquisition. It considers only records naming the given provider.
 Owner liveness is the run's orchestrator lock: the kernel releases it the
 moment its holder exits, so a free lock means the owning process is gone.
 
 | Record state | Provider says           | Owner run lock | Action                               |
 |--------------|-------------------------|----------------|--------------------------------------|
 | live         | instance exists         | held           | keep: a running orchestrator owns it  |
-| live         | instance exists         | free           | destroy instance, clear record        |
-| live         | instance gone           | free           | clear record                          |
+| live         | instance exists         | free           | destroy instance, close the rental out |
+| live         | instance gone           | free           | close the rental out                  |
 | intent       | —                       | held           | keep: an acquisition is in flight     |
-| intent       | tag scan finds instance | free           | destroy it, then clear record         |
-| intent       | tag scan finds nothing  | free           | clear record                          |
+| intent       | tag scan finds instance | free           | destroy it, then close the rental out |
+| intent       | tag scan finds nothing  | free           | close the rental out                  |
+
+What the provider says about a live record's machine is the instance
+listing, and, where the listing omits it, the provider's own answer for the
+instance id. The probe exists because a listing may omit a running machine —
+the vast backend drops rows carrying no label — and closing such a record out
+would clear the only trace of a machine that keeps billing. A probe that
+fails propagates rather than reading as absence.
+
+Every orphan this pass reaps leaves its spend entry behind. The last row
+charges a machine the scan never found, because a close-out lost to a crash
+and a provision that never landed leave the same state, and overcounting a
+phantom attempt is the safe direction to be wrong in.
+
+The scan carries each instance's rate, and a rental closed out from a
+machine it found is charged that rate: it is what the marketplace bills, so
+the entry follows the bill in both directions. The record's own rate stands
+where the scan found no machine, and where the listing states no rate.
 
 A record is judged by its owner's lock alone, so a run holding its lock
 keeps every record naming it — including one an earlier process of that same
@@ -508,6 +555,79 @@ is free.
 One pass is one ledger scan plus one provider instance listing. A ledger
 holding no record for the provider reaches no provider API at all, so a store
 holding no rentals never depends on a provider being reachable.
+
+### The budget guard
+
+A run's rentals are bounded by a `Budget`: a ceiling on total spend, and a
+ceiling on the wall-clock the rental phase may span. Both are optional, and
+an absent one is unlimited. The spend cap is cumulative over the whole run,
+across every rental and every provider — one pool of money — which is a
+different question from the per-offer `$/hr` cap among the selection
+constraints. The wall-clock ceiling is anchored at the run's first rental,
+derived from durable state, so it survives a crash and a resume.
+
+**The charged window** of one rental opens at its ledger record's stamp,
+written before the provider is called, and closes when the rental is closed
+out — at teardown, or at the reconciliation pass that cleans up after a
+crash. Spend is our own clock times the rate the entry books — the rate the
+reconciliation scan's listing states for the machine, and the rate the record
+carries wherever there is no such listing; the provider's billing API is
+never read. Every systematic path counts at least what the provider bills:
+
+- **Rounding is up.** `Cost` is micro-USD, the unit `Price` states rates in,
+  and every started fraction of an hour-rate charge counts in full.
+- **A record's window opens before its machine exists.** The interval
+  between the record write and the provider's answer is charged, though no
+  machine was running for it.
+- **An intent record carries the offer's rate**, since its writer died
+  before the provider named the machine's own. That guess is what the entry
+  books only when the machine is absent from the reconciliation scan or its
+  listing states no rate; otherwise the listed rate replaces it.
+- **A rental whose close-out was lost is charged again**, from the same
+  window, with a later end.
+
+**Close-out** writes the entry and then clears the record. Every path that
+clears a record writes an entry first, except an offer another renter took:
+there the provider itself answered that no machine exists. The entry is
+keyed by the rental's tag and start stamp, both read from the record, so
+closing one rental twice reproduces one key and overwrites. Keying by tag
+alone would let a later rental's close replace an earlier one's entry, which
+is the one error direction this design forbids. Two rentals can only share a
+key by sharing a tag, and the tag's per-process random component makes that
+impossible across processes: within one process the attempt counter
+separates them.
+
+Two crash windows follow from that ordering, and neither loses a charge:
+
+- **Between the entry write and the record clear**, both exist; the next
+  reconciliation pass finds the record with its machine gone and rewrites
+  the entry under the same key, with a later end.
+- **Between the destroy and the entry write**, the record remains and its
+  machine is gone; the next pass writes the entry then.
+
+**Accrual** is one fold over durable state: the sum of closed entries' costs,
+plus every record of the run charged from its stamp to now. A record whose
+tag and stamp already have an entry is that entry's own, pending removal,
+and is left out — which is what keeps the two windows above from
+double-counting. `spend_report` is that fold, and `assess` reads its verdict
+off it: `Within`, carrying the accrued total and the deadline when one
+exists, or `Exhausted`, naming the spend cap or the deadline that was
+reached. A limit is reached at equality, so a budget exactly consumed admits
+nothing further; when both are, the spend is reported.
+
+`acquire` takes the budget and refuses an exhausted one with
+`Error::Provider` naming the limit and the numbers — once before the
+marketplace is listed, and again before each attempt of the walk, so a
+machine that consumed the budget during a failed readiness wait is not
+followed by another rental. Reconciliation still runs first: destroying
+orphans stops spending, which matters most precisely when the budget is
+gone.
+
+Admission compares what stands now and projects nothing: how long the
+rental being admitted will run is unknowable at that point. **The guard
+supplies the verdict; the enforcement cadence belongs to its caller** — the
+orchestrator that polls `assess` while a fleet runs and tears the fleet down
+when it reports exhaustion.
 
 ### The stub provider
 
@@ -1297,6 +1417,13 @@ command form keeps its shape whether or not a host is named:
   interrupt flag for a graceful wind-down; a second SIGINT falls through
   to default death, which is exactly the crash the recovery guarantees
   cover.
+- **`sima reconcile <config.toml>`** — destroys the machines the config's
+  store still holds instance records for, and prints how many machines it
+  destroyed and how many records it cleared. The instance ledger decides
+  which providers it touches: each distinct provider id its records name
+  resolves to that backend, keyed from the environment, and a store holding
+  no record reaches no provider API and needs no credentials. An id no
+  backend answers to is an error naming it.
 - **`sima status <config.toml>`** — reports execution. The config file is
   the one argument: its execution section names the store and its identity
   section derives the run id. `--task <key>` prints one task's attempt

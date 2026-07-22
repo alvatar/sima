@@ -6,6 +6,7 @@ use sima_core::{Error, Result};
 use sima_provider::{InstanceId, InstanceStatus, SshEndpoint, TaggedInstance};
 
 use crate::client::VastClient;
+use crate::price;
 
 /// The status a missing instance answers with. Only this status reads as
 /// absence: any other failure is a fault, and reading it as absence would
@@ -97,9 +98,11 @@ pub(crate) fn status(client: &VastClient, id: &InstanceId) -> Result<InstanceSta
 
 /// Every instance the account holds, with the tag it was created under.
 ///
-/// An instance carrying no label is omitted: a ledger record exists only
-/// for a tag this backend wrote, so an unlabeled instance corresponds to
-/// no record and reconciliation has no key to judge it by.
+/// An instance carrying no label is omitted: the listing's key is the tag,
+/// and a row stating none carries nothing to match a ledger record by. The
+/// omission costs no machine, because reconciliation serves this listing to
+/// intent records alone — a live record names its instance id, and one the
+/// listing omits is probed by id directly.
 pub(crate) fn held(client: &VastClient) -> Result<Vec<TaggedInstance>> {
     let mut held = Vec::new();
     let mut cursor: Option<String> = None;
@@ -110,10 +113,9 @@ pub(crate) fn held(client: &VastClient) -> Result<Vec<TaggedInstance>> {
         let page: InstancePage = serde_json::from_value(body)
             .map_err(|failure| Error::Provider(format!("{LIST_OPERATION}: {failure}")))?;
         held.extend(page.instances.into_iter().filter_map(|row| {
-            row.label.map(|tag| TaggedInstance {
-                id: InstanceId(row.id.to_string()),
-                tag,
-            })
+            let id = InstanceId(row.id.to_string());
+            let price = row.dph_total.and_then(price::per_hour);
+            row.label.map(|tag| TaggedInstance { id, tag, price })
         }));
         // The API reports a cursor for as long as a page follows, so an
         // absent one is the end of the listing.
@@ -173,7 +175,7 @@ mod tests {
     use crate::client::VastClient;
     use crate::test_server::{ScriptedAnswer, TestServer};
     use sima_core::{Error, Result};
-    use sima_provider::{InstanceId, InstanceStatus, SshEndpoint};
+    use sima_provider::{InstanceId, InstanceStatus, Price, SshEndpoint};
 
     /// A scripted answer with `status` and `body`.
     fn answer(status: u16, body: &str) -> ScriptedAnswer {
@@ -294,6 +296,10 @@ mod tests {
         let tags: Vec<&str> = instances.iter().map(|held| held.tag.as_str()).collect();
         assert_eq!(tags, vec!["sima-tag-1", "sima-tag-2"]);
         assert_eq!(instances[0].id, InstanceId("1".to_string()));
+        // The rate each row states is what the account is billed, which is
+        // what a rental closed out from the listing is charged.
+        assert_eq!(instances[0].price, Some(Price(100_000)));
+        assert_eq!(instances[1].price, Some(Price(200_000)));
         let requests = server.requests();
         assert_eq!(requests[0].path, "/api/v1/instances/?limit=25");
         assert_eq!(
@@ -333,6 +339,26 @@ mod tests {
         let instances = held(&client)?;
         let tags: Vec<&str> = instances.iter().map(|held| held.tag.as_str()).collect();
         assert_eq!(tags, vec!["sima-tag-1", "sima-tag-2"]);
+        // A row stating no rate lists without one, and a close-out reading
+        // this listing falls back to the record's rate.
+        assert_eq!(instances[0].price, None);
+        assert_eq!(instances[1].price, None);
+        Ok(())
+    }
+
+    #[test]
+    fn an_instance_reporting_an_anomalous_rate_lists_with_no_rate() -> Result<()> {
+        let server = TestServer::new(vec![answer(
+            200,
+            r#"{"instances": [{"id": 1, "label": "sima-tag-1", "dph_total": -0.1}],
+                "next_token": null}"#,
+        )]);
+        let client = VastClient::new(&server.url(), "k-secret");
+        let instances = held(&client)?;
+        // The machine still lists, so reconciliation can still reap it; the
+        // rate no price can be read from leaves the record's own standing.
+        assert_eq!(instances.len(), 1);
+        assert_eq!(instances[0].price, None);
         Ok(())
     }
 

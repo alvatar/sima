@@ -4,13 +4,17 @@
 //! that never comes up, as reasons to try the next one. Only an API failure
 //! aborts it: that failure would repeat against every remaining offer.
 
+use std::collections::hash_map::RandomState;
+use std::hash::{BuildHasher, Hasher};
+use std::sync::LazyLock;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use sima_core::{Error, Result};
 use sima_model::RunId;
 use sima_store::{InstanceRecord, InstanceRecordState, RunLock, Store};
 
+use crate::budget::{Budget, Exhaustion, Verdict, assess, now_ms};
 use crate::guard::{InstanceGuard, teardown};
 use crate::offer::{Constraints, Objective, Offer, select};
 use crate::provider::{Instance, InstanceStatus, Provider, Provision, SshEndpoint};
@@ -29,6 +33,18 @@ pub struct AcquireLimits {
 /// Distinguishes acquisition attempts made by one process.
 static SEQ: AtomicU64 = AtomicU64::new(0);
 
+/// Distinguishes this process's attempts from those of every other process,
+/// including one the operating system gave the same pid to later.
+///
+/// Drawn once, from the operating system: a fresh `RandomState` takes its
+/// keys from OS entropy, and the initial state of the hasher it builds is
+/// those keys. The lower 32 bits are what the tag carries, as 8 hex
+/// characters.
+static NONCE: LazyLock<String> = LazyLock::new(|| {
+    let seed = RandomState::new().build_hasher().finish();
+    format!("{:08x}", seed as u32)
+});
+
 /// Rents one machine satisfying `constraints`, best by `objective`: list
 /// the marketplace, rank it, then walk the ranked offers — write the intent
 /// record, provision, upgrade the record, wait for readiness — falling
@@ -43,6 +59,12 @@ static SEQ: AtomicU64 = AtomicU64::new(0);
 /// held run lock as the owner still running, for this run and for every
 /// other live run, so a run that rents a machine holds its lock for as long
 /// as it holds the machine. The record's owner is stamped from the lock.
+///
+/// `budget` is what the run may still spend and how long its rental phase
+/// may last. A budget already reached refuses the acquisition with
+/// [`Error::Provider`], before any offer is asked for and again before each
+/// attempt, so no money is committed past it. A caller that must tell
+/// exhaustion from every other failure reads [`assess`] itself.
 pub fn acquire<'a, P: Provider>(
     provider: &'a P,
     store: &'a Store,
@@ -50,11 +72,15 @@ pub fn acquire<'a, P: Provider>(
     constraints: &Constraints,
     objective: Objective,
     limits: &AcquireLimits,
+    budget: &Budget,
 ) -> Result<InstanceGuard<'a, P>> {
     let owner = lock.run();
     // Orphans of an earlier crash are destroyed before a new machine is
-    // paid for.
+    // paid for. This comes before the budget check: destroying orphans
+    // stops spending, which matters most when the budget is exhausted.
     reconcile(provider, store)?;
+    // An exhausted budget refuses before the marketplace is even listed.
+    admit(store, owner, budget)?;
     let ranked = select(provider.offers()?, constraints, objective);
     if ranked.is_empty() {
         return Err(Error::Provider(format!(
@@ -62,6 +88,9 @@ pub fn acquire<'a, P: Provider>(
         )));
     }
     for offer in ranked {
+        // A machine that consumed the budget during a failed readiness wait
+        // must not be followed by another rental.
+        admit(store, owner, budget)?;
         let tag = attempt_tag(owner);
         // One stamp per attempt: the live write carries the intent's, which
         // is what the record's field states.
@@ -113,11 +142,32 @@ pub fn acquire<'a, P: Provider>(
             ));
         }
         // A machine that never came up is a bad offer, not a fatal error.
-        teardown(provider, store, &tag, &instance.id)?;
+        // The record already carries the rate the provider named for it.
+        teardown(provider, store, &tag, &instance.id, None)?;
     }
     Err(Error::Provider(
         "every qualifying offer was lost or failed to become ready".to_string(),
     ))
+}
+
+/// Admits one rental attempt, or refuses it naming the limit `owner`
+/// reached and the numbers behind it.
+///
+/// The comparison is against what stands now: how long the rental being
+/// admitted will run is unknowable here, so nothing is projected. Bounding
+/// how far a running fleet may overshoot is the work of the caller that
+/// polls [`assess`] while the fleet runs.
+fn admit(store: &Store, owner: &RunId, budget: &Budget) -> Result<()> {
+    match assess(store, owner, budget, now_ms())? {
+        Verdict::Within { .. } => Ok(()),
+        Verdict::Exhausted(Exhaustion::Spend { accrued, cap }) => Err(Error::Provider(format!(
+            "the run's rental budget is exhausted: spent {} of {} micro-USD",
+            accrued.0, cap.0
+        ))),
+        Verdict::Exhausted(Exhaustion::WallClock { deadline_ms }) => Err(Error::Provider(format!(
+            "the run's rental budget is exhausted: the rental deadline (epoch ms {deadline_ms}) has passed"
+        ))),
+    }
 }
 
 /// Polls `instance` until it reports an endpoint, `None` when it is gone or
@@ -170,45 +220,51 @@ fn record(
     }
 }
 
-/// The tag one acquisition attempt runs under: `sima-<owner16>-<pid>-<seq>`.
-/// It is both the ledger key and the provider-side label, so the machine and
-/// its record carry one name. The owner's first 16 hex characters keep it
-/// short enough for provider label limits while staying attributable; the
-/// full owner lives in the record.
+/// The tag one acquisition attempt runs under:
+/// `sima-<owner16>-<pid>-<rand8hex>-<seq>`. It is both the ledger key and the
+/// provider-side label, so the machine and its record carry one name. The
+/// owner's first 16 hex characters keep it short enough for provider label
+/// limits while staying attributable; the full owner lives in the record.
+///
+/// A tag is an operational identifier and nothing hashes it. The random
+/// component is what makes it unrepeatable across restarts: a pid the
+/// operating system recycles, together with a counter that starts at zero in
+/// every process, would otherwise reproduce a tag an earlier process used.
+/// A spend entry is keyed by the pair (tag, start stamp), so two rentals
+/// share a key only where a reproduced tag meets a coinciding stamp — the
+/// tag alone keeps that pair apart whatever the clock reads.
 fn attempt_tag(owner: &RunId) -> String {
     let owner = owner.to_string();
     format!(
-        "sima-{}-{}-{}",
+        "sima-{}-{}-{}-{}",
         &owner[..16],
         std::process::id(),
+        *NONCE,
         SEQ.fetch_add(1, Ordering::Relaxed)
     )
-}
-
-/// Wall-clock milliseconds since the epoch, the stamp the journal carries.
-/// A clock behind the epoch stamps zero.
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |since| since.as_millis() as u64)
 }
 
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
     use std::sync::Mutex;
+    use std::sync::atomic::AtomicUsize;
     use std::time::Duration;
 
     use sima_core::{Error, Result};
-    use sima_store::{InstanceRecord, InstanceRecordState, Store};
+    use sima_model::RunId;
+    use sima_store::{InstanceRecord, InstanceRecordState, SpendEntry, Store};
 
-    use super::{AcquireLimits, acquire};
-    use crate::offer::{Constraints, Objective, Offer, OfferId};
+    use super::{AcquireLimits, Ordering, acquire, attempt_tag};
+    use crate::budget::{Budget, Cost};
+    use crate::guard::InstanceGuard;
+    use crate::offer::{Constraints, Objective, Offer, OfferId, Price};
     use crate::provider::{InstanceId, InstanceStatus, Provider, Provision, TaggedInstance};
     use crate::reconcile::reconcile;
     use crate::stub::StubProvider;
     use crate::testutil::{
-        acquire_any, instance_record, live_state, prompt_limits, sample_run, stub_offer, temp_store,
+        acquire_any, instance_record, live_state, prompt_limits, sample_run, spend_entries,
+        stub_offer, temp_store,
     };
 
     /// A provider that watches what the acquisition loop does before and
@@ -219,6 +275,7 @@ mod tests {
         inner: StubProvider,
         root: PathBuf,
         observed_intents: Mutex<Vec<InstanceRecord>>,
+        calls: AtomicUsize,
     }
 
     impl WatchingProvider {
@@ -227,7 +284,19 @@ mod tests {
                 inner,
                 root,
                 observed_intents: Mutex::new(Vec::new()),
+                calls: AtomicUsize::new(0),
             }
+        }
+
+        /// How many provider calls the loop has made, of any kind.
+        fn calls(&self) -> usize {
+            self.calls.load(Ordering::Relaxed)
+        }
+
+        /// Counts one call through to the provider.
+        fn counted<T>(&self, call: impl FnOnce() -> Result<T>) -> Result<T> {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            call()
         }
 
         /// The intent records the loop wrote before calling through, in call
@@ -251,10 +320,11 @@ mod tests {
         }
 
         fn offers(&self) -> Result<Vec<Offer>> {
-            self.inner.offers()
+            self.counted(|| self.inner.offers())
         }
 
         fn provision(&self, offer: &OfferId, tag: &str) -> Result<Provision> {
+            self.calls.fetch_add(1, Ordering::Relaxed);
             let store = Store::open(&self.root).expect("open the store the loop writes to");
             let records = store.instances().expect("list the ledger");
             let intent = records
@@ -273,15 +343,15 @@ mod tests {
         }
 
         fn instance(&self, id: &InstanceId) -> Result<InstanceStatus> {
-            self.inner.instance(id)
+            self.counted(|| self.inner.instance(id))
         }
 
         fn instances(&self) -> Result<Vec<TaggedInstance>> {
-            self.inner.instances()
+            self.counted(|| self.inner.instances())
         }
 
         fn destroy(&self, id: &InstanceId) -> Result<()> {
-            self.inner.destroy(id)
+            self.counted(|| self.inner.destroy(id))
         }
     }
 
@@ -301,14 +371,49 @@ mod tests {
         // The live state names the machine the guard holds.
         assert_eq!(record.instance(), Some(guard.id().0.as_str()));
         assert_eq!(record.tag, guard.tag());
-        // The tag names the owner, the acquiring process, and the attempt.
-        let parts: Vec<&str> = record.tag.split('-').collect();
-        assert_eq!(parts.len(), 4);
+        // The tag names the owner, the acquiring process, that process's
+        // random component, and the attempt.
+        assert_parts(&record.tag);
+        Ok(())
+    }
+
+    /// Asserts that `tag` has the documented shape —
+    /// `sima-<owner16>-<pid>-<rand8hex>-<seq>` over the owner these tests
+    /// acquire under — and returns its parts.
+    fn assert_parts(tag: &str) -> Vec<&str> {
+        // Providers label instances with it, so it stays within the
+        // conservative alphanumeric-and-hyphen charset.
+        assert!(
+            tag.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'),
+            "a tag is a provider label: {tag}"
+        );
+        let parts: Vec<&str> = tag.split('-').collect();
+        assert_eq!(parts.len(), 5, "{tag}");
         assert_eq!(parts[0], "sima");
         assert_eq!(parts[1], &sample_run(7).to_string()[..16]);
         assert_eq!(parts[2], std::process::id().to_string());
-        assert!(parts[3].parse::<u64>().is_ok(), "the attempt counter");
-        Ok(())
+        assert_eq!(parts[3].len(), 8, "the random component: {tag}");
+        assert!(
+            parts[3]
+                .chars()
+                .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c)),
+            "the random component is lowercase hex: {tag}"
+        );
+        assert!(parts[4].parse::<u64>().is_ok(), "the attempt counter");
+        parts
+    }
+
+    #[test]
+    fn two_tags_of_one_process_share_its_random_component_and_differ_by_attempt() {
+        let owner = sample_run(7);
+        let first = attempt_tag(&owner);
+        let second = attempt_tag(&owner);
+        let first = assert_parts(&first);
+        let second = assert_parts(&second);
+        // The random component is drawn once per process, so it is the
+        // attempt counter alone that separates two tags of one process.
+        assert_eq!(first[3], second[3]);
+        assert_ne!(first[4], second[4]);
     }
 
     #[test]
@@ -347,6 +452,7 @@ mod tests {
             &Constraints::default(),
             Objective::CheapestPerHour,
             &limits,
+            &Budget::default(),
         )?;
         let records = store.instances()?;
         assert_eq!(records.len(), 1);
@@ -355,6 +461,165 @@ mod tests {
         // The abandoned machine was taken down, not left running.
         assert_eq!(stub.destroyed().len(), 1);
         assert_ne!(stub.destroyed()[0], *guard.id());
+        Ok(())
+    }
+
+    #[test]
+    fn a_machine_that_never_comes_up_is_closed_out_before_the_next_offer() -> Result<()> {
+        let (_dir, store) = temp_store();
+        let stalling = stub_offer("cheap", 100_000);
+        let stub = StubProvider::new(vec![stalling.clone(), stub_offer("dearer", 200_000)])
+            .never_ready(stalling.id.clone());
+        let limits = AcquireLimits {
+            ready_timeout: Duration::ZERO,
+            ready_poll: Duration::ZERO,
+        };
+        let lock = store.acquire_run_lock(&sample_run(7))?;
+        let guard = acquire(
+            &stub,
+            &store,
+            &lock,
+            &Constraints::default(),
+            Objective::CheapestPerHour,
+            &limits,
+            &Budget::default(),
+        )?;
+        // The abandoned machine ran and was billed for, so the walk that
+        // moved past it left its cost behind.
+        let entries = spend_entries(&store, &sample_run(7))?;
+        assert_eq!(entries.len(), 1);
+        assert_ne!(entries[0].tag, guard.tag());
+        assert_eq!(entries[0].price_micro_usd_hour, 100_000);
+        Ok(())
+    }
+
+    #[test]
+    fn a_lost_offer_leaves_no_spend_entry() -> Result<()> {
+        let (_dir, store) = temp_store();
+        let cheap = stub_offer("cheap", 100_000);
+        let stub = StubProvider::new(vec![cheap.clone(), stub_offer("dearer", 200_000)])
+            .gone_at_provision(OfferId("cheap".to_string()));
+        let guard = acquire_any(&stub, &store)?;
+        // The provider itself answered that no machine exists, which is the
+        // one clear that owes nothing.
+        assert!(spend_entries(&store, &sample_run(7))?.is_empty());
+        drop(guard);
+        Ok(())
+    }
+
+    /// Rents over `provider` under `budget`, with limits that poll without
+    /// waiting.
+    fn acquire_within<'a, P: Provider>(
+        provider: &'a P,
+        store: &'a Store,
+        budget: &Budget,
+    ) -> Result<InstanceGuard<'a, P>> {
+        let lock = store.acquire_run_lock(&sample_run(7))?;
+        acquire(
+            provider,
+            store,
+            &lock,
+            &Constraints::default(),
+            Objective::CheapestPerHour,
+            &prompt_limits(),
+            budget,
+        )
+    }
+
+    /// A closed rental of `owner` costing `cost`, started at `started_ms`.
+    fn spent(owner: &RunId, started_ms: u64, cost: u64) -> SpendEntry {
+        SpendEntry {
+            tag: "sima-spent-0".to_string(),
+            provider: "stub".to_string(),
+            owner: owner.to_string(),
+            price_micro_usd_hour: 100_000,
+            started_ms,
+            ended_ms: started_ms + 3_600_000,
+            cost_micro_usd: cost,
+        }
+    }
+
+    #[test]
+    fn a_budget_out_of_money_refuses_without_calling_the_provider() -> Result<()> {
+        let (dir, store) = temp_store();
+        let stub = StubProvider::new(vec![stub_offer("cheap", 100_000)]);
+        let watching = WatchingProvider::new(stub, dir.path().to_path_buf());
+        // The instance ledger is empty, so reconciliation reaches no
+        // provider API either: the refusal costs nothing at all.
+        store.put_spend(&spent(&sample_run(7), 1_700_000_000_000, 120_000))?;
+        let budget = Budget {
+            max_spend: Some(Cost(100_000)),
+            ..Budget::default()
+        };
+        assert!(matches!(
+            acquire_within(&watching, &store, &budget),
+            Err(Error::Provider(message))
+                if message == "the run's rental budget is exhausted: spent 120000 of 100000 micro-USD"
+        ));
+        assert_eq!(watching.calls(), 0);
+        assert!(store.instances()?.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn a_budget_out_of_time_refuses_without_calling_the_provider() -> Result<()> {
+        let (dir, store) = temp_store();
+        let stub = StubProvider::new(vec![stub_offer("cheap", 100_000)]);
+        let watching = WatchingProvider::new(stub, dir.path().to_path_buf());
+        // The first rental anchored the phase far enough back that its
+        // deadline is behind any clock this test could read.
+        store.put_spend(&spent(&sample_run(7), 0, 0))?;
+        let budget = Budget {
+            max_wall_clock: Some(Duration::from_millis(1)),
+            ..Budget::default()
+        };
+        assert!(matches!(
+            acquire_within(&watching, &store, &budget),
+            Err(Error::Provider(message))
+                if message == "the run's rental budget is exhausted: the rental deadline (epoch ms 1) has passed"
+        ));
+        assert_eq!(watching.calls(), 0);
+        assert!(store.instances()?.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn a_budget_the_first_attempt_consumes_refuses_the_second() -> Result<()> {
+        let (dir, store) = temp_store();
+        let stalling = stub_offer("cheap", 100_000);
+        let stub = StubProvider::new(vec![stalling.clone(), stub_offer("dearer", 200_000)])
+            .never_ready(stalling.id.clone())
+            // A rate that consumes the cap within a millisecond of running.
+            .charging_instances_at(Price(u64::MAX / 2));
+        let watching = WatchingProvider::new(stub, dir.path().to_path_buf());
+        let lock = store.acquire_run_lock(&sample_run(7))?;
+        let budget = Budget {
+            max_spend: Some(Cost(1)),
+            ..Budget::default()
+        };
+        let outcome = acquire(
+            &watching,
+            &store,
+            &lock,
+            &Constraints::default(),
+            Objective::CheapestPerHour,
+            // At least one poll sleeps, so the abandoned machine's charged
+            // window is never empty.
+            &AcquireLimits {
+                ready_timeout: Duration::from_millis(1),
+                ready_poll: Duration::from_millis(1),
+            },
+            &budget,
+        );
+        assert!(matches!(
+            outcome,
+            Err(Error::Provider(message))
+                if message.starts_with("the run's rental budget is exhausted: spent ")
+        ));
+        // The second offer was never provisioned: what the first machine
+        // cost is already past the cap.
+        assert_eq!(watching.provisioned_tags().len(), 1);
+        assert!(store.instances()?.is_empty());
         Ok(())
     }
 
@@ -394,6 +659,7 @@ mod tests {
             &Constraints::default(),
             Objective::CheapestPerHour,
             &limits,
+            &Budget::default(),
         )?;
         let records = store.instances()?;
         assert_eq!(records.len(), 1);
@@ -437,6 +703,7 @@ mod tests {
             &constraints,
             Objective::CheapestPerHour,
             &prompt_limits(),
+            &Budget::default(),
         );
         assert!(matches!(outcome, Err(Error::Provider(_))));
         // Nothing was rented, so nothing is owed.
@@ -489,8 +756,14 @@ mod tests {
         let provider = StubProvider::new(Vec::new());
         let report = reconcile(&provider, &store)?;
         assert!(report.destroyed.is_empty());
-        assert_eq!(report.cleared, vec![tag]);
+        assert_eq!(report.cleared, vec![tag.clone()]);
         assert!(store.instances()?.is_empty());
+        // The attempt is charged: the failure says nothing about whether a
+        // machine was created, and an overcounted phantom is the safe
+        // direction to be wrong in.
+        let entries = spend_entries(&store, &sample_run(7))?;
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].tag, tag);
         Ok(())
     }
 
@@ -530,6 +803,7 @@ mod tests {
             &Constraints::default(),
             Objective::CheapestPerHour,
             &prompt_limits(),
+            &Budget::default(),
         )?;
         assert!(stub.destroyed().is_empty());
         let tags: Vec<String> = store
