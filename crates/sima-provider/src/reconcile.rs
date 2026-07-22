@@ -5,14 +5,22 @@
 //! it ran on lost power. The ledger record it wrote before calling the
 //! provider is the trace, and this pass acts on it:
 //!
-//! | Record state | Provider says           | Owner run lock | Action                              |
-//! |--------------|-------------------------|----------------|-------------------------------------|
-//! | live         | instance exists         | held           | keep: a running orchestrator owns it |
-//! | live         | instance exists         | free           | destroy instance, close the rental out |
-//! | live         | instance gone           | free           | close the rental out                |
-//! | intent       | —                       | held           | keep: an acquisition is in flight   |
-//! | intent       | tag scan finds instance | free           | destroy it, then close the rental out |
-//! | intent       | tag scan finds nothing  | free           | close the rental out                |
+//! | Record state | Provider says                        | Owner run lock | Action                              |
+//! |--------------|--------------------------------------|----------------|-------------------------------------|
+//! | live         | the listing carries the instance     | held           | keep: a running orchestrator owns it |
+//! | live         | the listing carries the instance     | free           | destroy instance, close the rental out |
+//! | live         | the listing omits it, the id probe finds it | free    | destroy instance, close the rental out |
+//! | live         | the id probe answers gone            | free           | close the rental out                |
+//! | intent       | —                                    | held           | keep: an acquisition is in flight   |
+//! | intent       | tag scan finds instance              | free           | destroy it, then close the rental out |
+//! | intent       | tag scan finds nothing               | free           | close the rental out                |
+//!
+//! A live record the scan missed is probed by id before anything is
+//! concluded: a listing may omit a machine that is running — the vast
+//! backend drops rows carrying no label — and only the provider's own answer
+//! for the instance id is read as absence. The scan alone would clear the
+//! record of a machine that keeps billing, leaving nothing for a later pass
+//! to act on.
 //!
 //! Closing a rental out writes what it cost and then clears its record, so
 //! every orphan this pass reaps leaves its spend behind. The last row
@@ -43,7 +51,8 @@ use sima_model::RunId;
 use sima_store::{InstanceRecord, InstanceRecordState, Store};
 
 use crate::guard::{close_out, teardown};
-use crate::provider::{InstanceId, Provider};
+use crate::offer::Price;
+use crate::provider::{InstanceId, InstanceStatus, Provider, TaggedInstance};
 
 /// What one reconciliation pass did.
 #[derive(Debug, Default)]
@@ -75,21 +84,9 @@ pub fn reconcile<P: Provider + ?Sized>(provider: &P, store: &Store) -> Result<Re
         if owner_alive(store, &record)? {
             continue;
         }
-        let listed = match &record.state {
-            InstanceRecordState::Live { instance } => {
-                held.iter().find(|held| held.id.0 == *instance)
-            }
-            // An intent record names no instance — its writer died before
-            // learning of one — so the tag it was written under is what
-            // identifies the machine the provider may have created.
-            InstanceRecordState::Intent => held.iter().find(|held| held.tag == record.tag),
-        };
-        match listed {
-            // The listing states what the marketplace bills, so the rental
-            // is closed out at that rate wherever the scan found the machine.
-            Some(instance) => {
-                let id = instance.id.clone();
-                teardown(provider, store, &record.tag, &id, instance.price)?;
+        match reaping(provider, &held, &record)? {
+            Reap::Destroy { id, listed } => {
+                teardown(provider, store, &record.tag, &id, listed)?;
                 report.destroyed.push(id);
             }
             // The provider no longer holds the machine: the record is all
@@ -97,11 +94,70 @@ pub fn reconcile<P: Provider + ?Sized>(provider: &P, store: &Store) -> Result<Re
             // carries. A machine that died provider-side ran until it did;
             // an intent record naming no machine is indistinguishable from a
             // close-out a crash lost, so it is charged too.
-            None => close_out(store, &record, None)?,
+            Reap::Close => close_out(store, &record, None)?,
         }
         report.cleared.push(record.tag);
     }
     Ok(report)
+}
+
+/// What the pass does with one orphan.
+enum Reap {
+    /// Destroy the machine, then close the rental out at `listed` where a
+    /// listing row states a rate for it.
+    Destroy {
+        /// The machine to destroy.
+        id: InstanceId,
+        /// The rate its listing row states, if the scan carried one.
+        listed: Option<Price>,
+    },
+    /// Close the rental out at the record's own rate, with no machine to
+    /// destroy.
+    Close,
+}
+
+/// Decides what becomes of `record`, from the scan `held` and, for a live
+/// record the scan missed, the provider's own answer for the instance id.
+///
+/// The scan is a listing, and a listing may omit a machine that is running:
+/// the vast backend drops rows carrying no label, which is what an operator
+/// edit in the console produces. Closing such a record out would clear the
+/// only trace of a machine that keeps billing, so absence is concluded from
+/// the provider's answer for the id alone. A probe that fails propagates,
+/// because reading a fault as absence has that same effect.
+fn reaping<P: Provider + ?Sized>(
+    provider: &P,
+    held: &[TaggedInstance],
+    record: &InstanceRecord,
+) -> Result<Reap> {
+    match &record.state {
+        InstanceRecordState::Live { instance } => {
+            let id = InstanceId(instance.clone());
+            if let Some(listed) = held.iter().find(|held| held.id == id) {
+                return Ok(Reap::Destroy {
+                    id,
+                    listed: listed.price,
+                });
+            }
+            match provider.instance(&id)? {
+                InstanceStatus::Gone => Ok(Reap::Close),
+                // The machine exists and no listing row is in hand, so the
+                // record's own rate — rewritten from the instance's at
+                // provision — is what its close-out books.
+                _ => Ok(Reap::Destroy { id, listed: None }),
+            }
+        }
+        // An intent record names no instance — its writer died before
+        // learning of one — so the tag it was written under is what
+        // identifies the machine the provider may have created.
+        InstanceRecordState::Intent => Ok(match held.iter().find(|held| held.tag == record.tag) {
+            Some(listed) => Reap::Destroy {
+                id: listed.id.clone(),
+                listed: listed.price,
+            },
+            None => Reap::Close,
+        }),
+    }
 }
 
 /// Whether the run that wrote `record` is still running.
@@ -175,10 +231,53 @@ mod tests {
         // The machine died on the provider's side, or a crash landed
         // between its destroy and its close-out: either way it ran, and
         // what it ran for is charged.
-        store.put_instance(&record("sima-tag-0", live_state("expired")))?;
+        let orphan = record("sima-tag-0", live_state("expired"));
+        store.put_instance(&orphan)?;
         reconcile(&stub, &store)?;
-        assert_eq!(spend_entries(&store, &sample_run(7))?.len(), 1);
+        let entries = spend_entries(&store, &sample_run(7))?;
+        assert_eq!(entries.len(), 1);
+        // Nothing states a rate for a machine that no longer exists, so the
+        // record's own is what the entry books.
+        assert_eq!(entries[0].price_micro_usd_hour, orphan.price_micro_usd_hour);
         assert!(store.instances()?.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn a_live_orphan_the_listing_omits_but_the_probe_finds_is_destroyed() -> Result<()> {
+        let (_dir, store) = temp_store();
+        // A machine the account holds and the scan does not carry, which is
+        // what a provider row reporting no tag looks like.
+        let stub = StubProvider::new(Vec::new())
+            .with_unlisted_instance(InstanceId("i-1".to_string()), "sima-tag-0");
+        let orphan = record("sima-tag-0", live_state("i-1"));
+        store.put_instance(&orphan)?;
+        let report = reconcile(&stub, &store)?;
+        assert_eq!(report.destroyed, vec![InstanceId("i-1".to_string())]);
+        assert_eq!(report.cleared, vec!["sima-tag-0".to_string()]);
+        assert!(stub.live().is_empty());
+        let entries = spend_entries(&store, &sample_run(7))?;
+        assert_eq!(entries.len(), 1);
+        // No listing row is in hand, so the record's rate is what it costs.
+        assert_eq!(entries[0].price_micro_usd_hour, orphan.price_micro_usd_hour);
+        assert!(store.instances()?.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn a_live_orphan_whose_probe_fails_keeps_its_record() -> Result<()> {
+        let (_dir, store) = temp_store();
+        let stub = StubProvider::new(Vec::new()).failing_instance("show instance: 503");
+        let orphan = record("sima-tag-0", live_state("i-1"));
+        store.put_instance(&orphan)?;
+        // Reading the fault as absence would clear the record of a machine
+        // that may still be running and billed.
+        assert!(matches!(
+            reconcile(&stub, &store),
+            Err(Error::Provider(message)) if message == "show instance: 503"
+        ));
+        assert_eq!(store.instances()?, vec![orphan]);
+        assert!(spend_entries(&store, &sample_run(7))?.is_empty());
         Ok(())
     }
 

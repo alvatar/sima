@@ -98,9 +98,11 @@ pub(crate) fn status(client: &VastClient, id: &InstanceId) -> Result<InstanceSta
 
 /// Every instance the account holds, with the tag it was created under.
 ///
-/// An instance carrying no label is omitted: a ledger record exists only
-/// for a tag this backend wrote, so an unlabeled instance corresponds to
-/// no record and reconciliation has no key to judge it by.
+/// An instance carrying no label is omitted: the listing's key is the tag,
+/// and a row stating none carries nothing to match a ledger record by. The
+/// omission costs no machine, because reconciliation serves this listing to
+/// intent records alone — a live record names its instance id, and one the
+/// listing omits is probed by id directly.
 pub(crate) fn held(client: &VastClient) -> Result<Vec<TaggedInstance>> {
     let mut held = Vec::new();
     let mut cursor: Option<String> = None;
