@@ -20,6 +20,10 @@
 //! provision that never landed leave the same state, and only one of the
 //! two answers is safe to be wrong about.
 //!
+//! What a reaped rental is charged is the rate its listing states, which is
+//! what the marketplace bills. The record's own rate stands for a machine
+//! the scan did not find, and for a listing stating no rate.
+//!
 //! The owner run lock column rests on one contract: every live run holds
 //! its orchestrator lock for as long as it holds a machine.
 //! [`acquire`](crate::acquire) enforces it for the acquiring run through its
