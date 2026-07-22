@@ -39,7 +39,7 @@ use sima_model::RunId;
 use sima_store::{InstanceRecord, InstanceRecordState, Store};
 
 use crate::guard::{close_out, teardown};
-use crate::provider::{InstanceId, Provider, TaggedInstance};
+use crate::provider::{InstanceId, Provider};
 
 /// What one reconciliation pass did.
 #[derive(Debug, Default)]
@@ -71,24 +71,29 @@ pub fn reconcile<P: Provider>(provider: &P, store: &Store) -> Result<ReconcileRe
         if owner_alive(store, &record)? {
             continue;
         }
-        let orphan = match &record.state {
-            InstanceRecordState::Live { instance } => Some(InstanceId(instance.clone())),
+        let listed = match &record.state {
+            InstanceRecordState::Live { instance } => {
+                held.iter().find(|held| held.id.0 == *instance)
+            }
             // An intent record names no instance — its writer died before
             // learning of one — so the tag it was written under is what
             // identifies the machine the provider may have created.
-            InstanceRecordState::Intent => tagged(&held, &record.tag),
+            InstanceRecordState::Intent => held.iter().find(|held| held.tag == record.tag),
         };
-        match orphan {
-            Some(id) if held.iter().any(|instance| instance.id == id) => {
-                teardown(provider, store, &record.tag, &id)?;
+        match listed {
+            // The listing states what the marketplace bills, so the rental
+            // is closed out at that rate wherever the scan found the machine.
+            Some(instance) => {
+                let id = instance.id.clone();
+                teardown(provider, store, &record.tag, &id, instance.price)?;
                 report.destroyed.push(id);
             }
             // The provider no longer holds the machine: the record is all
-            // that is left of it, and it is charged for. A machine that
-            // died provider-side ran until it did; an intent record naming
-            // no machine is indistinguishable from a close-out a crash
-            // lost, so it is charged too.
-            _ => close_out(store, &record)?,
+            // that is left of it, and it is charged for at the rate it
+            // carries. A machine that died provider-side ran until it did;
+            // an intent record naming no machine is indistinguishable from a
+            // close-out a crash lost, so it is charged too.
+            None => close_out(store, &record, None)?,
         }
         report.cleared.push(record.tag);
     }
@@ -111,19 +116,13 @@ fn owner_alive(store: &Store, record: &InstanceRecord) -> Result<bool> {
     Ok(store.lock_holder(&owner)?.is_some())
 }
 
-/// The instance the provider holds under `tag`, if any.
-fn tagged(held: &[TaggedInstance], tag: &str) -> Option<InstanceId> {
-    held.iter()
-        .find(|instance| instance.tag == tag)
-        .map(|instance| instance.id.clone())
-}
-
 #[cfg(test)]
 mod tests {
     use sima_core::{Error, Result};
     use sima_store::{InstanceRecord, InstanceRecordState};
 
     use super::reconcile;
+    use crate::offer::Price;
     use crate::provider::InstanceId;
     use crate::stub::StubProvider;
     use crate::testutil::{
@@ -187,6 +186,53 @@ mod tests {
         store.put_instance(&record("sima-tag-0", InstanceRecordState::Intent))?;
         reconcile(&stub, &store)?;
         assert_eq!(spend_entries(&store, &sample_run(7))?.len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn an_orphan_the_listing_prices_is_charged_that_rate_rather_than_the_records() -> Result<()> {
+        let (_dir, store) = temp_store();
+        // The record of an intent orphan carries the offer's rate, which its
+        // writer never got to replace with the machine's own. The listing
+        // states what the marketplace bills.
+        let stub = StubProvider::new(Vec::new())
+            .charging_instances_at(Price(250_000))
+            .with_instance(InstanceId("i-2".to_string()), "sima-tag-0");
+        store.put_instance(&record("sima-tag-0", InstanceRecordState::Intent))?;
+        reconcile(&stub, &store)?;
+        let entries = spend_entries(&store, &sample_run(7))?;
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].price_micro_usd_hour, 250_000);
+        Ok(())
+    }
+
+    #[test]
+    fn a_listing_cheaper_than_the_record_is_booked_at_the_cheaper_rate() -> Result<()> {
+        let (_dir, store) = temp_store();
+        // The entry follows the bill in both directions: a listing under the
+        // record's rate is booked as it stands, not floored at the record's.
+        let stub = StubProvider::new(Vec::new())
+            .charging_instances_at(Price(40_000))
+            .with_instance(InstanceId("i-1".to_string()), "sima-tag-0");
+        store.put_instance(&record("sima-tag-0", live_state("i-1")))?;
+        reconcile(&stub, &store)?;
+        let entries = spend_entries(&store, &sample_run(7))?;
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].price_micro_usd_hour, 40_000);
+        Ok(())
+    }
+
+    #[test]
+    fn a_listing_stating_no_rate_leaves_the_records_rate_standing() -> Result<()> {
+        let (_dir, store) = temp_store();
+        let stub = StubProvider::new(Vec::new())
+            .with_instance(InstanceId("i-1".to_string()), "sima-tag-0");
+        let orphan = record("sima-tag-0", live_state("i-1"));
+        store.put_instance(&orphan)?;
+        reconcile(&stub, &store)?;
+        let entries = spend_entries(&store, &sample_run(7))?;
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].price_micro_usd_hour, orphan.price_micro_usd_hour);
         Ok(())
     }
 

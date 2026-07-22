@@ -516,6 +516,11 @@ charges a machine the scan never found, because a close-out lost to a crash
 and a provision that never landed leave the same state, and overcounting a
 phantom attempt is the safe direction to be wrong in.
 
+The scan carries each instance's rate, and a rental closed out from a
+machine it found is charged that rate: it is what the marketplace bills, so
+the entry follows the bill in both directions. The record's own rate stands
+where the scan found no machine, and where the listing states no rate.
+
 A record is judged by its owner's lock alone, so a run holding its lock
 keeps every record naming it — including one an earlier process of that same
 run left behind. Such a leftover is indistinguishable from a machine the
@@ -539,15 +544,20 @@ derived from durable state, so it survives a crash and a resume.
 **The charged window** of one rental opens at its ledger record's stamp,
 written before the provider is called, and closes when the rental is closed
 out — at teardown, or at the reconciliation pass that cleans up after a
-crash. Spend is our own clock times the rate the record carries; the
-provider's billing API is never read. Every systematic path counts at least
-what the provider bills:
+crash. Spend is our own clock times the rate the entry books — the rate the
+reconciliation scan's listing states for the machine, and the rate the record
+carries wherever there is no such listing; the provider's billing API is
+never read. Every systematic path counts at least what the provider bills:
 
 - **Rounding is up.** `Cost` is micro-USD, the unit `Price` states rates in,
   and every started fraction of an hour-rate charge counts in full.
 - **A record's window opens before its machine exists.** The interval
   between the record write and the provider's answer is charged, though no
   machine was running for it.
+- **An intent record carries the offer's rate**, since its writer died
+  before the provider named the machine's own. That guess is what the entry
+  books only when the machine is absent from the reconciliation scan or its
+  listing states no rate; otherwise the listed rate replaces it.
 - **A rental whose close-out was lost is charged again**, from the same
   window, with a later end.
 

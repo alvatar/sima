@@ -70,7 +70,7 @@ impl<'a, P: Provider> InstanceGuard<'a, P> {
     /// failure. A silently failed teardown is a machine still being paid
     /// for, so the caller learns of it here.
     pub fn release(mut self) -> Result<()> {
-        let outcome = teardown(self.provider, self.store, &self.tag, &self.id);
+        let outcome = teardown(self.provider, self.store, &self.tag, &self.id, None);
         self.released = true;
         outcome
     }
@@ -84,14 +84,14 @@ impl<P: Provider> Drop for InstanceGuard<'_, P> {
         // Nothing here can report: the outcome is dropped, and the ledger
         // record left behind by a failed teardown is what reconciliation
         // acts on.
-        let _ = teardown(self.provider, self.store, &self.tag, &self.id);
+        let _ = teardown(self.provider, self.store, &self.tag, &self.id, None);
     }
 }
 
-/// Destroys the instance, then closes its rental out. The order is what
-/// keeps a failed teardown recoverable: a provider that refused the destroy
-/// leaves the record standing, so the next reconciliation pass finds the
-/// machine and takes it down.
+/// Destroys the instance, then closes its rental out at `listed`. The order
+/// is what keeps a failed teardown recoverable: a provider that refused the
+/// destroy leaves the record standing, so the next reconciliation pass finds
+/// the machine and takes it down.
 ///
 /// A record already cleared leaves nothing to reconstruct the rental from,
 /// so the destroy still runs — it is idempotent — and no entry is written.
@@ -100,27 +100,37 @@ pub(crate) fn teardown<P: Provider>(
     store: &Store,
     tag: &str,
     id: &InstanceId,
+    listed: Option<Price>,
 ) -> Result<()> {
     provider.destroy(id)?;
     match store.instance(tag)? {
-        Some(record) => close_out(store, &record),
+        Some(record) => close_out(store, &record, listed),
         None => Ok(()),
     }
 }
 
 /// Writes what the rental cost, then clears its ledger record.
 ///
+/// `listed` is the rate the provider's listing states for the machine, which
+/// only a caller holding that listing has; it is what the marketplace bills,
+/// so it is what the entry books. Every other caller passes `None` and the
+/// record's own rate stands.
+///
 /// The entry comes first, so a failure between the two steps leaves the
 /// record standing and the next reconciliation pass closes the rental out
 /// again. That repeat is safe: the entry's key is the record's tag and
 /// stamp, so a second close overwrites the first with a later end rather
 /// than adding a second charge.
-pub(crate) fn close_out(store: &Store, record: &InstanceRecord) -> Result<()> {
+pub(crate) fn close_out(
+    store: &Store,
+    record: &InstanceRecord,
+    listed: Option<Price>,
+) -> Result<()> {
     let ended_ms = now_ms();
     // A clock that stepped backwards yields a window of no time rather than
     // an underflow.
     let elapsed_ms = ended_ms.saturating_sub(record.created_ms);
-    let rate = Price(record.price_micro_usd_hour);
+    let rate = listed.unwrap_or(Price(record.price_micro_usd_hour));
     store.put_spend(&SpendEntry {
         tag: record.tag.clone(),
         provider: record.provider.clone(),
@@ -255,6 +265,7 @@ mod tests {
             &store,
             "sima-tag-0",
             &InstanceId("i-1".to_string()),
+            None,
         );
         assert!(matches!(outcome, Err(Error::Provider(_))));
         assert_eq!(store.instance("sima-tag-0")?, Some(record));

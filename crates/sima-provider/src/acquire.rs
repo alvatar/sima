@@ -127,7 +127,8 @@ pub fn acquire<'a, P: Provider>(
             ));
         }
         // A machine that never came up is a bad offer, not a fatal error.
-        teardown(provider, store, &tag, &instance.id)?;
+        // The record already carries the rate the provider named for it.
+        teardown(provider, store, &tag, &instance.id, None)?;
     }
     Err(Error::Provider(
         "every qualifying offer was lost or failed to become ready".to_string(),
