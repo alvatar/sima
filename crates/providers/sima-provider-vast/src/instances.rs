@@ -114,7 +114,7 @@ pub(crate) fn held(client: &VastClient) -> Result<Vec<TaggedInstance>> {
             .map_err(|failure| Error::Provider(format!("{LIST_OPERATION}: {failure}")))?;
         held.extend(page.instances.into_iter().filter_map(|row| {
             let id = InstanceId(row.id.to_string());
-            let price = row.dph_total.map(price::per_hour);
+            let price = row.dph_total.and_then(price::per_hour);
             row.label.map(|tag| TaggedInstance { id, tag, price })
         }));
         // The API reports a cursor for as long as a page follows, so an
@@ -343,6 +343,22 @@ mod tests {
         // this listing falls back to the record's rate.
         assert_eq!(instances[0].price, None);
         assert_eq!(instances[1].price, None);
+        Ok(())
+    }
+
+    #[test]
+    fn an_instance_reporting_an_anomalous_rate_lists_with_no_rate() -> Result<()> {
+        let server = TestServer::new(vec![answer(
+            200,
+            r#"{"instances": [{"id": 1, "label": "sima-tag-1", "dph_total": -0.1}],
+                "next_token": null}"#,
+        )]);
+        let client = VastClient::new(&server.url(), "k-secret");
+        let instances = held(&client)?;
+        // The machine still lists, so reconciliation can still reap it; the
+        // rate no price can be read from leaves the record's own standing.
+        assert_eq!(instances.len(), 1);
+        assert_eq!(instances[0].price, None);
         Ok(())
     }
 

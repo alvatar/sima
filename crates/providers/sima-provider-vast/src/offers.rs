@@ -64,23 +64,25 @@ pub(crate) fn search(client: &VastClient) -> Result<Vec<Offer>> {
     // silently dropping a machine that might have been the cheapest.
     let page: OfferPage = serde_json::from_value(body)
         .map_err(|failure| Error::Provider(format!("{OPERATION}: {failure}")))?;
-    Ok(page.offers.into_iter().map(normalize).collect())
+    Ok(page.offers.into_iter().filter_map(normalize).collect())
 }
 
-/// The normalized form of one marketplace row.
-fn normalize(row: OfferRow) -> Offer {
-    Offer {
+/// The normalized form of one marketplace row, or `None` for a row whose
+/// rate no price can be read from: ranking rests on the price, and an offer
+/// priced by an anomalous rate would rank as free and be rented first.
+fn normalize(row: OfferRow) -> Option<Offer> {
+    Some(Offer {
         id: OfferId(row.id.to_string()),
         gpu_model: row.gpu_name,
         gpu_count: row.num_gpus,
         vram_mb: row.gpu_ram.round() as u64,
-        price: price::per_hour(row.dph_total),
+        price: price::per_hour(row.dph_total)?,
         reliability: row.reliability,
         verified: row.verification == VERIFIED,
         disk_gb: row.disk_space.round() as u64,
         bandwidth_mbps: row.inet_down.round() as u64,
         location: row.geolocation.unwrap_or_default(),
-    }
+    })
 }
 
 #[cfg(test)]
@@ -189,6 +191,19 @@ mod tests {
         let server = TestServer::new(page(&format!("{NOMINAL},{UNVETTED}")));
         let client = VastClient::new(&server.url(), "k-secret");
         assert_eq!(search(&client)?.len(), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn an_offer_whose_rate_does_not_convert_to_a_price_is_omitted() -> Result<()> {
+        // A rate below zero is a marketplace answer no price can be read
+        // from, and an offer whose price is unknown is not rentable.
+        let anomalous = NOMINAL.replace(r#""dph_total": 0.412"#, r#""dph_total": -0.5"#);
+        let server = TestServer::new(page(&format!("{anomalous},{UNVETTED}")));
+        let client = VastClient::new(&server.url(), "k-secret");
+        let offers = search(&client)?;
+        assert_eq!(offers.len(), 1);
+        assert_eq!(offers[0].id, OfferId("9000001".to_string()));
         Ok(())
     }
 

@@ -519,6 +519,13 @@ moment its holder exits, so a free lock means the owning process is gone.
 | intent       | tag scan finds instance | free           | destroy it, then close the rental out |
 | intent       | tag scan finds nothing  | free           | close the rental out                  |
 
+What the provider says about a live record's machine is the instance
+listing, and, where the listing omits it, the provider's own answer for the
+instance id. The probe exists because a listing may omit a running machine —
+the vast backend drops rows carrying no label — and closing such a record out
+would clear the only trace of a machine that keeps billing. A probe that
+fails propagates rather than reading as absence.
+
 Every orphan this pass reaps leaves its spend entry behind. The last row
 charges a machine the scan never found, because a close-out lost to a crash
 and a provision that never landed leave the same state, and overcounting a
