@@ -185,3 +185,50 @@ forces a deliberate update in the same change:
   benchmark for annexing machines without restructuring the program; Ray
   tasks are not content-addressed or deterministic by construction, which is
   what SIMA's provenance layer requires.
+
+## Known caveats
+
+Two accepted limitations of the rental layer, both operational rather than
+architectural.
+
+### A spend entry can be overwritten by a later rental
+
+When a rental closes, what it cost is written to the store under a key made
+of the rental's tag and the millisecond its intent record was created. The
+tag is `sima-<owner16>-<pid>-<seq>`: the owning run, the process id, and a
+counter that starts at zero in every process. Across restarts, tags
+therefore repeat — a reused process id together with the same attempt number
+produces the same tag a previous process used.
+
+A collision needs one more coincidence: the wall clock must have been moved
+backwards far enough that the new rental's intent record is stamped with the
+exact millisecond the earlier one was. When both hold, closing the new
+rental writes over the earlier rental's entry.
+
+The damage is confined to accounting. Exactly one rental's cost vanishes
+from the run's total, and the budget consequently admits that much more
+spend than intended before it reports exhaustion. Billing and teardown are
+unaffected: the earlier machine was destroyed on its own path and the
+provider charges for it as usual. It is the conjunction — clock rewind,
+process-id reuse, and matching attempt number — that makes this cheap to
+accept and expensive to engineer away.
+
+### A hard crash leaves a machine running until the next start
+
+While a run is alive, the guard destroys the machines it rented on every
+exit path it can observe, including interrupts and panics. A hard crash —
+`SIGKILL`, a power cut — runs no code at all. The machine stays up and keeps
+billing.
+
+Recovery happens at the next start: any acquisition against the same store
+runs reconciliation first, finds the record the crashed process left behind,
+and destroys the machine. Nothing watches in between. The store is the only
+durable state and there is no daemon, so cleanup is tied to the next
+invocation by design. If no further work is ever started against that store,
+nothing on this side stops the billing; the provider's own console remains
+the way to end it.
+
+Reconciliation is invocable from code but has no standalone command yet. The
+operational answer after a crash is therefore to start any acquisition
+against the affected store, which reconciles before it rents. A directly
+invocable command is the intended surface.
