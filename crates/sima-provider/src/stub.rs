@@ -54,6 +54,9 @@ struct StubState {
 struct StubInstance {
     /// The tag it was created under.
     tag: String,
+    /// The rate it is charged at, `None` for an instance the stub was seeded
+    /// with, which stands in for a machine this process never created.
+    price: Option<Price>,
     /// Whether it stays `Provisioning` however long it is polled.
     stalling: bool,
     /// Status calls it has answered so far.
@@ -128,6 +131,7 @@ impl StubProvider {
                 id.0,
                 StubInstance {
                     tag: tag.to_string(),
+                    price: None,
                     stalling: false,
                     polls: 0,
                     destroyed: false,
@@ -202,6 +206,7 @@ impl Provider for StubProvider {
             id.0.clone(),
             StubInstance {
                 tag: tag.to_string(),
+                price: Some(price),
                 stalling,
                 polls: 0,
                 destroyed: false,
@@ -238,6 +243,9 @@ impl Provider for StubProvider {
                 .map(|(id, instance)| TaggedInstance {
                     id: InstanceId(id.clone()),
                     tag: instance.tag.clone(),
+                    // A seeded instance carries no rate of its own, and
+                    // takes the scripted one where the stub charges at it.
+                    price: instance.price.or(state.instance_price),
                 })
                 .collect();
             held.sort_by(|a, b| a.id.0.cmp(&b.id.0));
@@ -396,13 +404,43 @@ mod tests {
     }
 
     #[test]
-    fn a_seeded_instance_is_held_under_its_tag() -> Result<()> {
+    fn a_seeded_instance_is_held_under_its_tag_and_states_no_rate() -> Result<()> {
         let stub = StubProvider::new(Vec::new())
             .with_instance(InstanceId("i-7".to_string()), "sima-tag-7");
         let held = stub.instances()?;
         assert_eq!(held.len(), 1);
         assert_eq!(held[0].id, InstanceId("i-7".to_string()));
         assert_eq!(held[0].tag, "sima-tag-7");
+        // Nothing scripted a rate, which is a marketplace listing that
+        // reports none.
+        assert_eq!(held[0].price, None);
+        Ok(())
+    }
+
+    #[test]
+    fn a_provisioned_instance_lists_the_rate_it_was_created_at() -> Result<()> {
+        let offer = stub_offer("listed", 100_000);
+        let stub = StubProvider::new(vec![offer.clone()]);
+        stub.provision(&offer.id, "sima-tag-0")?;
+        assert_eq!(stub.instances()?[0].price, Some(Price(100_000)));
+        Ok(())
+    }
+
+    #[test]
+    fn a_scripted_instance_rate_is_what_the_listing_states() -> Result<()> {
+        let offer = stub_offer("listed", 100_000);
+        let stub = StubProvider::new(vec![offer.clone()])
+            .charging_instances_at(Price(250_000))
+            .with_instance(InstanceId("i-7".to_string()), "sima-tag-7");
+        stub.provision(&offer.id, "sima-tag-8")?;
+        // The rate the stub charges covers the machines it creates and the
+        // ones it was seeded with, which stand in for an earlier process's.
+        let rates: Vec<Option<Price>> = stub
+            .instances()?
+            .into_iter()
+            .map(|instance| instance.price)
+            .collect();
+        assert_eq!(rates, vec![Some(Price(250_000)), Some(Price(250_000))]);
         Ok(())
     }
 
