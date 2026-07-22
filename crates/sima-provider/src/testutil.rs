@@ -9,6 +9,7 @@ use tempfile::TempDir;
 use sima_core::Result;
 
 use crate::acquire::{AcquireLimits, acquire};
+use crate::budget::Budget;
 use crate::guard::InstanceGuard;
 use crate::offer::{Constraints, Objective, Offer, OfferId, Price};
 use crate::provider::Provider;
@@ -109,5 +110,6 @@ pub(crate) fn acquire_any<'a, P: Provider>(
         &Constraints::default(),
         Objective::CheapestPerHour,
         &prompt_limits(),
+        &Budget::default(),
     )
 }

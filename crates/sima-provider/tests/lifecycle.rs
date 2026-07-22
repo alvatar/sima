@@ -7,8 +7,8 @@ use sima_core::Result;
 use sima_model::{FormatId, GeneratorConfig, GeneratorId, Params, RunConfig, RunId};
 use sima_provider::stub::StubProvider;
 use sima_provider::{
-    AcquireLimits, Constraints, InstanceId, Objective, Offer, OfferId, Price, Provider, acquire,
-    reconcile,
+    AcquireLimits, Budget, Constraints, InstanceId, Objective, Offer, OfferId, Price, Provider,
+    acquire, reconcile,
 };
 use sima_store::{RunLock, Store};
 
@@ -77,6 +77,7 @@ fn rent<'a, P: Provider>(
         &Constraints::default(),
         Objective::CheapestPerHour,
         &limits(),
+        &Budget::default(),
     )?;
     Ok((guard, lock))
 }
