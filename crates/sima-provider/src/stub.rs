@@ -42,6 +42,8 @@ struct StubState {
     offers_failure: Option<String>,
     /// The message `provision` fails with, when scripted to fail.
     provision_failure: Option<String>,
+    /// The message `instance` fails with, when scripted to fail.
+    instance_failure: Option<String>,
     /// Every instance the stub ever created or was seeded with, by id.
     instances: HashMap<String, StubInstance>,
     /// Instance ids passed to `destroy`, in call order.
@@ -57,6 +59,10 @@ struct StubInstance {
     /// The rate it is charged at, `None` for an instance the stub was seeded
     /// with, which stands in for a machine this process never created.
     price: Option<Price>,
+    /// Whether the account listing carries it. An instance the listing
+    /// omits is still answered for by id, which is what a marketplace row
+    /// carrying no tag looks like.
+    listed: bool,
     /// Whether it stays `Provisioning` however long it is polled.
     stalling: bool,
     /// Status calls it has answered so far.
@@ -123,15 +129,35 @@ impl StubProvider {
         self
     }
 
+    /// Scripts [`Provider::instance`] to fail with `message`.
+    pub fn failing_instance(self, message: &str) -> StubProvider {
+        self.edit(|state| state.instance_failure = Some(message.to_string()));
+        self
+    }
+
     /// Seeds an instance the account already holds under `tag`, standing in
     /// for a machine an earlier process rented.
     pub fn with_instance(self, id: InstanceId, tag: &str) -> StubProvider {
+        self.seed(id, tag, true)
+    }
+
+    /// Seeds an instance the account holds and the listing omits, which is
+    /// what a marketplace row carrying no tag looks like: it answers by id
+    /// and appears in no scan.
+    pub fn with_unlisted_instance(self, id: InstanceId, tag: &str) -> StubProvider {
+        self.seed(id, tag, false)
+    }
+
+    /// Seeds an instance under `tag`, carried by the account listing where
+    /// `listed`.
+    fn seed(self, id: InstanceId, tag: &str, listed: bool) -> StubProvider {
         self.edit(|state| {
             state.instances.insert(
                 id.0,
                 StubInstance {
                     tag: tag.to_string(),
                     price: None,
+                    listed,
                     stalling: false,
                     polls: 0,
                     destroyed: false,
@@ -207,6 +233,7 @@ impl Provider for StubProvider {
             StubInstance {
                 tag: tag.to_string(),
                 price: Some(price),
+                listed: true,
                 stalling,
                 polls: 0,
                 destroyed: false,
@@ -217,6 +244,9 @@ impl Provider for StubProvider {
 
     fn instance(&self, id: &InstanceId) -> Result<InstanceStatus> {
         let mut state = self.state.lock().expect("stub state lock");
+        if let Some(message) = &state.instance_failure {
+            return Err(Error::Provider(message.clone()));
+        }
         let ready_after = state.ready_after;
         let Some(instance) = state.instances.get_mut(&id.0) else {
             return Ok(InstanceStatus::Gone);
@@ -239,7 +269,7 @@ impl Provider for StubProvider {
             let mut held: Vec<TaggedInstance> = state
                 .instances
                 .iter()
-                .filter(|(_, instance)| !instance.destroyed)
+                .filter(|(_, instance)| !instance.destroyed && instance.listed)
                 .map(|(id, instance)| TaggedInstance {
                     id: InstanceId(id.clone()),
                     tag: instance.tag.clone(),
@@ -445,6 +475,20 @@ mod tests {
     }
 
     #[test]
+    fn an_unlisted_instance_answers_by_id_and_appears_in_no_scan() -> Result<()> {
+        let id = InstanceId("i-8".to_string());
+        let stub = StubProvider::new(Vec::new()).with_unlisted_instance(id.clone(), "sima-tag-8");
+        assert!(stub.instances()?.is_empty());
+        // The machine is held all the same: it answers for its id, and it is
+        // still there to destroy.
+        assert!(matches!(stub.instance(&id)?, InstanceStatus::Ready(_)));
+        assert_eq!(stub.live(), vec![id.clone()]);
+        stub.destroy(&id)?;
+        assert_eq!(stub.instance(&id)?, InstanceStatus::Gone);
+        Ok(())
+    }
+
+    #[test]
     fn a_scripted_api_failure_surfaces_from_offers_and_provision() {
         let listing = StubProvider::new(Vec::new()).failing_offers("list offers: 503");
         assert!(matches!(
@@ -457,6 +501,17 @@ mod tests {
         assert!(matches!(
             renting.provision(&offer.id, "sima-tag-0"),
             Err(Error::Provider(message)) if message == "create instance: 429"
+        ));
+    }
+
+    #[test]
+    fn a_scripted_api_failure_surfaces_from_the_status_call() {
+        let stub = StubProvider::new(Vec::new())
+            .with_instance(InstanceId("i-9".to_string()), "sima-tag-9")
+            .failing_instance("show instance: 503");
+        assert!(matches!(
+            stub.instance(&InstanceId("i-9".to_string())),
+            Err(Error::Provider(message)) if message == "show instance: 503"
         ));
     }
 }
