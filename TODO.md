@@ -533,7 +533,10 @@ leaked instances are leaked money.
       budget verdict on its heartbeat and tears the fleet down when it
       reports exhaustion; journal events and any CLI spend surface for
       rentals are settled here too. Teardown runs on every exit path
-      (success, failure, interrupt) through guards plus reconcile.
+      (success, failure, interrupt) through guards plus reconcile. Crash
+      points planted in `sima-provider` for the close-out windows require
+      adding `"sima-provider/crash-injection"` to the binary's
+      `crash-injection` feature list, matching the forwards already there.
       Acceptance: a real family search over the local machine
       plus ≥2 rented instances produces a manifest identical to the
       local-only reference run, and the provider account holds zero
