@@ -36,7 +36,7 @@ Strictly downward dependencies, enforced by workspace crate edges.
 | L5    | `sima-domains`   | per-format executors, generators, codecs, environments, id dispatch, and config translation; the reference stub domain |
 | L6    | `sima-scheduler` | task sources, worker pool, leases, retry, device placement, run driver |
 | L7    | `sima-pipeline`  | config loading, orchestration, run and per-task queries               |
-| L8    | `sima`           | CLI: run, status, report, timeline, rm, tui                           |
+| L8    | `sima`           | CLI: run, status, report, timeline, rm, reconcile, tui                |
 
 Beside the spine, `sima-worker` is the worker binary: it depends on
 `sima-transport` (the executor host loop) and `sima-domains` (the executor
@@ -52,8 +52,10 @@ rented-hardware control plane, depending on `sima-core`, `sima-model`, and
 `sima-store`, and it carries the contract, the offer model, and the
 in-memory stub. Backends speaking to a real service are a sibling group
 under `crates/providers/`, named `sima-provider-<name>` after the service
-each one speaks to, so an HTTP client enters exactly one crate. See
-[`sima-provider`](#sima-provider).
+each one speaks to, so an HTTP client enters exactly one crate. The CLI
+depends on the control plane and on each backend, because resolving a ledger
+record's provider id to the backend that answers to it is what
+`sima reconcile` does. See [`sima-provider`](#sima-provider).
 
 Execution backends sit off the spine as a sibling group under
 `crates/toolkits/` (`sima-toolkit-*`). A toolkit is a compute library a domain
@@ -502,8 +504,9 @@ once what it cost is durable.
 ### Reconciliation
 
 `reconcile` runs at the start of every acquisition, so orphans stop costing
-money before a new machine is paid for, and is public so a command can
-invoke it on its own. It considers only records naming the given provider.
+money before a new machine is paid for, and `sima reconcile <config>` is the
+same pass invoked on its own — the answer after a crash, when nothing starts
+an acquisition. It considers only records naming the given provider.
 Owner liveness is the run's orchestrator lock: the kernel releases it the
 moment its holder exits, so a free lock means the owning process is gone.
 
@@ -1397,6 +1400,13 @@ command form keeps its shape whether or not a host is named:
   interrupt flag for a graceful wind-down; a second SIGINT falls through
   to default death, which is exactly the crash the recovery guarantees
   cover.
+- **`sima reconcile <config.toml>`** — destroys the machines the config's
+  store still holds instance records for, and prints how many machines it
+  destroyed and how many records it cleared. The instance ledger decides
+  which providers it touches: each distinct provider id its records name
+  resolves to that backend, keyed from the environment, and a store holding
+  no record reaches no provider API and needs no credentials. An id no
+  backend answers to is an error naming it.
 - **`sima status <config.toml>`** — reports execution. The config file is
   the one argument: its execution section names the store and its identity
   section derives the run id. `--task <key>` prints one task's attempt

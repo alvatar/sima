@@ -9,8 +9,11 @@ use crate::client::VastClient;
 use crate::config::VastConfig;
 use crate::{instances, offers, rental};
 
-/// The identifier ledger records carry for machines rented here.
-const PROVIDER_ID: &str = "vastai";
+/// The identifier ledger records carry for machines rented here. It is
+/// public so a caller resolving a backend from a ledger record's provider
+/// field matches on the id this crate answers with, rather than on a copy
+/// of the literal.
+pub const PROVIDER_ID: &str = "vastai";
 
 /// The Vast.ai backend, holding the client every call goes through and the
 /// shape of the rentals it creates.

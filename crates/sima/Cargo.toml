@@ -15,6 +15,10 @@ crash-injection = [
 [dependencies]
 sima-core = { path = "../sima-core" }
 sima-pipeline = { path = "../sima-pipeline" }
+sima-provider = { path = "../sima-provider" }
+# The reconcile command resolves a backend from each ledger record's provider
+# id, so the binary is where the backends are named.
+sima-provider-vast = { path = "../providers/sima-provider-vast" }
 sima-scheduler = { path = "../sima-scheduler" }
 sima-store = { path = "../sima-store" }
 crossterm.workspace = true

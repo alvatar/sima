@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 
 use common::{manifest_of, sima_command, worker_processes};
 use sima_pipeline::{Event, RunObserver, load};
+use sima_store::{InstanceRecord, InstanceRecordState, Store};
 
 /// Writes a `sima.toml` under `dir` whose store lives beside it.
 fn write_config(dir: &Path, behaviors: &str) -> PathBuf {
@@ -1032,4 +1033,49 @@ fn follow_streams_a_live_run_to_its_end() {
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     assert!(stdout(&output).contains("finalized"), "{output:?}");
     assert_eq!(run.wait().expect("wait for sima run").code(), Some(0));
+}
+
+/// The stderr of `output`, as UTF-8.
+fn stderr(output: &Output) -> String {
+    String::from_utf8(output.stderr.clone()).expect("stderr is UTF-8")
+}
+
+#[test]
+fn reconcile_over_a_store_holding_no_rental_reports_nothing_to_do() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config = write_config(dir.path(), r#""succeed""#);
+    let output = sima(&["reconcile", config.to_str().expect("utf-8 path")]);
+    // No record names a provider, so the pass needs no credentials and
+    // reaches no API.
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert!(
+        stdout(&output).contains("nothing to reconcile"),
+        "{output:?}"
+    );
+}
+
+#[test]
+fn reconcile_over_a_record_naming_an_unknown_provider_fails_naming_it() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config = write_config(dir.path(), r#""succeed""#);
+    let loaded = load(&config).expect("load config");
+    let store = Store::open(&loaded.store).expect("open the store");
+    store
+        .put_instance(&InstanceRecord {
+            tag: "sima-tag-0".to_string(),
+            provider: "nowhere".to_string(),
+            owner: loaded.run.id().to_string(),
+            state: InstanceRecordState::Live {
+                instance: "i-1".to_string(),
+            },
+            price_micro_usd_hour: 100_000,
+            created_ms: 1_700_000_000_000,
+        })
+        .expect("seed the instance ledger");
+
+    let output = sima(&["reconcile", config.to_str().expect("utf-8 path")]);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert!(stderr(&output).contains("nowhere"), "{output:?}");
+    // Nothing judged the machine the record names, so the record stands.
+    assert_eq!(store.instances().expect("read the ledger").len(), 1);
 }

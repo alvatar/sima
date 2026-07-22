@@ -56,7 +56,7 @@ pub struct ReconcileReport {
 /// Runs at the start of every acquisition, so orphans stop costing money
 /// before a new machine is rented. A ledger holding no record for this
 /// provider reaches no provider API at all.
-pub fn reconcile<P: Provider>(provider: &P, store: &Store) -> Result<ReconcileReport> {
+pub fn reconcile<P: Provider + ?Sized>(provider: &P, store: &Store) -> Result<ReconcileReport> {
     let records: Vec<InstanceRecord> = store
         .instances()?
         .into_iter()

@@ -191,22 +191,19 @@ forces a deliberate update in the same change:
 One accepted limitation of the rental layer, operational rather than
 architectural.
 
-### A hard crash leaves a machine running until the next start
+### A hard crash leaves a machine running until something reconciles
 
 While a run is alive, the guard destroys the machines it rented on every
 exit path it can observe, including interrupts and panics. A hard crash —
 `SIGKILL`, a power cut — runs no code at all. The machine stays up and keeps
 billing.
 
-Recovery happens at the next start: any acquisition against the same store
-runs reconciliation first, finds the record the crashed process left behind,
-and destroys the machine. Nothing watches in between. The store is the only
-durable state and there is no daemon, so cleanup is tied to the next
-invocation by design. If no further work is ever started against that store,
-nothing on this side stops the billing; the provider's own console remains
-the way to end it.
+Cleanup is tied to an invocation: the store is the only durable state and
+there is no daemon, so nothing watches in between. Two invocations reconcile.
+Any acquisition against the same store runs the pass before it rents, and
+`sima reconcile <config>` is that pass on its own — from a shell after a
+crash, or from whatever schedules periodic maintenance. Either one finds the
+record the crashed process left behind and destroys the machine.
 
-Reconciliation is invocable from code but has no standalone command yet. The
-operational answer after a crash is therefore to start any acquisition
-against the affected store, which reconciles before it rents. A directly
-invocable command is the intended surface.
+Until one of them runs, the machine bills. If nothing is ever invoked against
+that store again, the provider's own console remains the way to end it.

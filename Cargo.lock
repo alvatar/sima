@@ -1067,6 +1067,8 @@ dependencies = [
  "sima-domains",
  "sima-model",
  "sima-pipeline",
+ "sima-provider",
+ "sima-provider-vast",
  "sima-scheduler",
  "sima-store",
  "tempfile",

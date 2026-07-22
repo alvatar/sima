@@ -26,4 +26,4 @@ mod rental;
 mod test_server;
 
 pub use config::{API_KEY_VAR, DEFAULT_BASE_URL, VastConfig};
-pub use provider::VastProvider;
+pub use provider::{PROVIDER_ID, VastProvider};

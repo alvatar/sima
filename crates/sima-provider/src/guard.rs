@@ -95,7 +95,7 @@ impl<P: Provider> Drop for InstanceGuard<'_, P> {
 ///
 /// A record already cleared leaves nothing to reconstruct the rental from,
 /// so the destroy still runs — it is idempotent — and no entry is written.
-pub(crate) fn teardown<P: Provider>(
+pub(crate) fn teardown<P: Provider + ?Sized>(
     provider: &P,
     store: &Store,
     tag: &str,
