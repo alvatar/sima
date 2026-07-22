@@ -5,14 +5,20 @@
 //! it ran on lost power. The ledger record it wrote before calling the
 //! provider is the trace, and this pass acts on it:
 //!
-//! | Record state | Provider says           | Owner run lock | Action                          |
-//! |--------------|-------------------------|----------------|---------------------------------|
+//! | Record state | Provider says           | Owner run lock | Action                              |
+//! |--------------|-------------------------|----------------|-------------------------------------|
 //! | live         | instance exists         | held           | keep: a running orchestrator owns it |
-//! | live         | instance exists         | free           | destroy instance, clear record  |
-//! | live         | instance gone           | free           | clear record                    |
-//! | intent       | —                       | held           | keep: an acquisition is in flight |
-//! | intent       | tag scan finds instance | free           | destroy it, then clear record   |
-//! | intent       | tag scan finds nothing  | free           | clear record                    |
+//! | live         | instance exists         | free           | destroy instance, close the rental out |
+//! | live         | instance gone           | free           | close the rental out                |
+//! | intent       | —                       | held           | keep: an acquisition is in flight   |
+//! | intent       | tag scan finds instance | free           | destroy it, then close the rental out |
+//! | intent       | tag scan finds nothing  | free           | close the rental out                |
+//!
+//! Closing a rental out writes what it cost and then clears its record, so
+//! every orphan this pass reaps leaves its spend behind. The last row
+//! charges a machine it never found: a close-out lost to a crash and a
+//! provision that never landed leave the same state, and only one of the
+//! two answers is safe to be wrong about.
 //!
 //! The owner run lock column rests on one contract: every live run holds
 //! its orchestrator lock for as long as it holds a machine.
@@ -32,7 +38,7 @@ use sima_core::{Error, Result};
 use sima_model::RunId;
 use sima_store::{InstanceRecord, InstanceRecordState, Store};
 
-use crate::guard::teardown;
+use crate::guard::{close_out, teardown};
 use crate::provider::{InstanceId, Provider, TaggedInstance};
 
 /// What one reconciliation pass did.
@@ -78,8 +84,11 @@ pub fn reconcile<P: Provider>(provider: &P, store: &Store) -> Result<ReconcileRe
                 report.destroyed.push(id);
             }
             // The provider no longer holds the machine: the record is all
-            // that is left of it.
-            _ => store.remove_instance(&record.tag)?,
+            // that is left of it, and it is charged for. A machine that
+            // died provider-side ran until it did; an intent record naming
+            // no machine is indistinguishable from a close-out a crash
+            // lost, so it is charged too.
+            _ => close_out(store, &record)?,
         }
         report.cleared.push(record.tag);
     }
@@ -118,7 +127,7 @@ mod tests {
     use crate::provider::InstanceId;
     use crate::stub::StubProvider;
     use crate::testutil::{
-        acquire_any, instance_record, live_state, sample_run, stub_offer, temp_store,
+        acquire_any, instance_record, live_state, sample_run, spend_entries, stub_offer, temp_store,
     };
 
     /// A record for `tag` in `state`, owned by the run for seed 7.
@@ -137,6 +146,84 @@ mod tests {
         assert_eq!(report.cleared, vec!["sima-tag-0".to_string()]);
         assert!(stub.live().is_empty());
         assert!(store.instances()?.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn a_destroyed_live_orphan_has_its_rental_closed_out() -> Result<()> {
+        let (_dir, store) = temp_store();
+        let stub = StubProvider::new(Vec::new())
+            .with_instance(InstanceId("i-1".to_string()), "sima-tag-0");
+        let orphan = record("sima-tag-0", live_state("i-1"));
+        store.put_instance(&orphan)?;
+        reconcile(&stub, &store)?;
+        let entries = spend_entries(&store, &sample_run(7))?;
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].tag, "sima-tag-0");
+        assert_eq!(entries[0].started_ms, orphan.created_ms);
+        assert_eq!(entries[0].price_micro_usd_hour, orphan.price_micro_usd_hour);
+        Ok(())
+    }
+
+    #[test]
+    fn a_live_orphan_whose_machine_is_gone_is_closed_out_and_cleared() -> Result<()> {
+        let (_dir, store) = temp_store();
+        let stub = StubProvider::new(Vec::new());
+        // The machine died on the provider's side, or a crash landed
+        // between its destroy and its close-out: either way it ran, and
+        // what it ran for is charged.
+        store.put_instance(&record("sima-tag-0", live_state("expired")))?;
+        reconcile(&stub, &store)?;
+        assert_eq!(spend_entries(&store, &sample_run(7))?.len(), 1);
+        assert!(store.instances()?.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn an_intent_orphan_whose_tag_names_a_machine_is_closed_out() -> Result<()> {
+        let (_dir, store) = temp_store();
+        let stub = StubProvider::new(Vec::new())
+            .with_instance(InstanceId("i-2".to_string()), "sima-tag-0");
+        store.put_instance(&record("sima-tag-0", InstanceRecordState::Intent))?;
+        reconcile(&stub, &store)?;
+        assert_eq!(spend_entries(&store, &sample_run(7))?.len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn an_intent_orphan_naming_no_machine_is_charged_all_the_same() -> Result<()> {
+        let (_dir, store) = temp_store();
+        let stub = StubProvider::new(Vec::new());
+        // A close-out lost to a crash and a provision that never landed
+        // leave the same state, so the pass charges both: a phantom attempt
+        // counted is an overcount, and a real machine missed is money the
+        // ledger never accounts for.
+        store.put_instance(&record("sima-tag-0", InstanceRecordState::Intent))?;
+        reconcile(&stub, &store)?;
+        let entries = spend_entries(&store, &sample_run(7))?;
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].tag, "sima-tag-0");
+        assert!(store.instances()?.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn closing_one_rental_twice_leaves_one_entry() -> Result<()> {
+        let (_dir, store) = temp_store();
+        let stub = StubProvider::new(Vec::new());
+        let orphan = record("sima-tag-0", live_state("expired"));
+        store.put_instance(&orphan)?;
+        reconcile(&stub, &store)?;
+        let first = spend_entries(&store, &sample_run(7))?;
+        assert_eq!(first.len(), 1);
+        // The state a crash between the entry write and the record clear
+        // leaves: the record is back, and its close-out reproduces the same
+        // key, so the entry is rewritten rather than added to.
+        store.put_instance(&orphan)?;
+        reconcile(&stub, &store)?;
+        let second = spend_entries(&store, &sample_run(7))?;
+        assert_eq!(second.len(), 1);
+        assert!(second[0].ended_ms >= first[0].ended_ms);
         Ok(())
     }
 

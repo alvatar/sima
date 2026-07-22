@@ -39,10 +39,13 @@ pub struct InstanceRecord {
     /// The offer's rate at intent, the instance's rate once live.
     pub price_micro_usd_hour: u64,
     /// Wall-clock milliseconds since the epoch at intent, like the journal's
-    /// stamps. The live write keeps the stamp the attempt began under. The
-    /// stamp serves human diagnosis of the ledger: ordering, identity, and
-    /// reconciliation all decide from other fields, which is what leaves the
-    /// clock free to move backwards.
+    /// stamps. The live write keeps the stamp the attempt began under.
+    ///
+    /// This is the accounting anchor: the charged window of the rental opens
+    /// here, before the provider is called, and closes when the rental's
+    /// spend entry is written. Ordering, identity, and reconciliation all
+    /// decide from other fields, so a clock that moves backwards costs
+    /// accuracy in what a rental is charged and nothing else.
     pub created_ms: u64,
 }
 

@@ -1,5 +1,8 @@
-//! The money a run spends on rented machines: the unit it is counted in
-//! and the arithmetic that turns a rate and a duration into an amount.
+//! The money a run spends on rented machines: the unit it is counted in,
+//! the arithmetic that turns a rate and a duration into an amount, and the
+//! clock the charged window is measured against.
+
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::offer::Price;
 
@@ -25,6 +28,15 @@ impl Cost {
         let micro = (rate.0 as u128 * elapsed_ms as u128).div_ceil(MS_PER_HOUR);
         Cost(micro.min(u64::MAX as u128) as u64)
     }
+}
+
+/// Wall-clock milliseconds since the epoch: the stamp a rental's charged
+/// window opens and closes on, and the stamp the ledger record carries. A
+/// clock behind the epoch stamps zero.
+pub(crate) fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |since| since.as_millis() as u64)
 }
 
 #[cfg(test)]

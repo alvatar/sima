@@ -3,7 +3,7 @@
 use std::time::Duration;
 
 use sima_model::{FormatId, GeneratorConfig, GeneratorId, Params, RunConfig, RunId};
-use sima_store::{InstanceRecord, InstanceRecordState, Store};
+use sima_store::{InstanceRecord, InstanceRecordState, SpendEntry, Store};
 use tempfile::TempDir;
 
 use sima_core::Result;
@@ -59,6 +59,11 @@ pub(crate) fn live_state(instance: &str) -> InstanceRecordState {
     InstanceRecordState::Live {
         instance: instance.to_string(),
     }
+}
+
+/// The spend entries `owner` has closed out, in file order.
+pub(crate) fn spend_entries(store: &Store, owner: &RunId) -> Result<Vec<SpendEntry>> {
+    store.spend_entries(&owner.to_string())
 }
 
 /// A run id to own acquisitions with, varying by `root_seed`.

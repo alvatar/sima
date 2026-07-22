@@ -5,12 +5,13 @@
 //! aborts it: that failure would repeat against every remaining offer.
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use sima_core::{Error, Result};
 use sima_model::RunId;
 use sima_store::{InstanceRecord, InstanceRecordState, RunLock, Store};
 
+use crate::budget::now_ms;
 use crate::guard::{InstanceGuard, teardown};
 use crate::offer::{Constraints, Objective, Offer, select};
 use crate::provider::{Instance, InstanceStatus, Provider, Provision, SshEndpoint};
@@ -185,14 +186,6 @@ fn attempt_tag(owner: &RunId) -> String {
     )
 }
 
-/// Wall-clock milliseconds since the epoch, the stamp the journal carries.
-/// A clock behind the epoch stamps zero.
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |since| since.as_millis() as u64)
-}
-
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
@@ -208,7 +201,8 @@ mod tests {
     use crate::reconcile::reconcile;
     use crate::stub::StubProvider;
     use crate::testutil::{
-        acquire_any, instance_record, live_state, prompt_limits, sample_run, stub_offer, temp_store,
+        acquire_any, instance_record, live_state, prompt_limits, sample_run, spend_entries,
+        stub_offer, temp_store,
     };
 
     /// A provider that watches what the acquisition loop does before and
@@ -355,6 +349,48 @@ mod tests {
         // The abandoned machine was taken down, not left running.
         assert_eq!(stub.destroyed().len(), 1);
         assert_ne!(stub.destroyed()[0], *guard.id());
+        Ok(())
+    }
+
+    #[test]
+    fn a_machine_that_never_comes_up_is_closed_out_before_the_next_offer() -> Result<()> {
+        let (_dir, store) = temp_store();
+        let stalling = stub_offer("cheap", 100_000);
+        let stub = StubProvider::new(vec![stalling.clone(), stub_offer("dearer", 200_000)])
+            .never_ready(stalling.id.clone());
+        let limits = AcquireLimits {
+            ready_timeout: Duration::ZERO,
+            ready_poll: Duration::ZERO,
+        };
+        let lock = store.acquire_run_lock(&sample_run(7))?;
+        let guard = acquire(
+            &stub,
+            &store,
+            &lock,
+            &Constraints::default(),
+            Objective::CheapestPerHour,
+            &limits,
+        )?;
+        // The abandoned machine ran and was billed for, so the walk that
+        // moved past it left its cost behind.
+        let entries = spend_entries(&store, &sample_run(7))?;
+        assert_eq!(entries.len(), 1);
+        assert_ne!(entries[0].tag, guard.tag());
+        assert_eq!(entries[0].price_micro_usd_hour, 100_000);
+        Ok(())
+    }
+
+    #[test]
+    fn a_lost_offer_leaves_no_spend_entry() -> Result<()> {
+        let (_dir, store) = temp_store();
+        let cheap = stub_offer("cheap", 100_000);
+        let stub = StubProvider::new(vec![cheap.clone(), stub_offer("dearer", 200_000)])
+            .gone_at_provision(OfferId("cheap".to_string()));
+        let guard = acquire_any(&stub, &store)?;
+        // The provider itself answered that no machine exists, which is the
+        // one clear that owes nothing.
+        assert!(spend_entries(&store, &sample_run(7))?.is_empty());
+        drop(guard);
         Ok(())
     }
 
