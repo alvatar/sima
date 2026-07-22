@@ -428,13 +428,15 @@ ledger record's owner is stamped from it. The lock is the capability: a
 reference to it proves the run holds it, which is what reconciliation reads
 as the owner still running, here and for every other live run.
 
-It then reconciles, lists, ranks, and walks the ranked offers:
+It then reconciles, admits, lists, ranks, and walks the ranked offers:
 
 ```
 reconcile ── destroy what an earlier crash left running
+admit   ──── refuse an exhausted budget before the marketplace is listed
 offers  ──── the live marketplace, normalized
 select  ──── constraints disqualify, the objective ranks
 for each ranked offer:
+    admit                           (refuse an exhausted budget)
     write the intent record         (ledger, state: intent)
     provision(offer, tag)
         OfferGone ───────────────── clear the record, next offer
@@ -445,6 +447,14 @@ for each ranked offer:
                 gone or timed out ─ destroy, clear the record, next offer
 list exhausted ──────────────────── Error::Provider
 ```
+
+Admission is the budget guard, and it runs at two points: once before the
+marketplace is listed, and again before each attempt of the walk, so a
+machine that consumed the budget during a failed readiness wait is not
+followed by another rental. An exhausted budget is `Error::Provider` naming
+the limit and the numbers. Reconciliation precedes both, because destroying
+orphans stops spending, which matters most precisely when the budget is
+gone.
 
 A lost offer is an outcome, not a failure: on a marketplace another renter
 taking a machine first is normal operation, and the next-ranked offer is the

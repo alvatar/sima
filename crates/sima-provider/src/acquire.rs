@@ -229,9 +229,10 @@ fn record(
 /// A tag is an operational identifier and nothing hashes it. The random
 /// component is what makes it unrepeatable across restarts: a pid the
 /// operating system recycles, together with a counter that starts at zero in
-/// every process, would otherwise reproduce a tag an earlier process used —
-/// and spend entries are keyed by tag and stamp, so a reproduced tag can
-/// write over an earlier rental's entry.
+/// every process, would otherwise reproduce a tag an earlier process used.
+/// A spend entry is keyed by the pair (tag, start stamp), so two rentals
+/// share a key only where a reproduced tag meets a coinciding stamp — the
+/// tag alone keeps that pair apart whatever the clock reads.
 fn attempt_tag(owner: &RunId) -> String {
     let owner = owner.to_string();
     format!(
