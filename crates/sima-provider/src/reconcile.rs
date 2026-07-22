@@ -141,10 +141,13 @@ fn reaping<P: Provider + ?Sized>(
             }
             match provider.instance(&id)? {
                 InstanceStatus::Gone => Ok(Reap::Close),
-                // The machine exists and no listing row is in hand, so the
-                // record's own rate — rewritten from the instance's at
-                // provision — is what its close-out books.
-                _ => Ok(Reap::Destroy { id, listed: None }),
+                // The machine exists — up, or still coming up — and no
+                // listing row is in hand, so the record's own rate, which
+                // was rewritten from the instance's at provision, is what
+                // its close-out books.
+                InstanceStatus::Ready(_) | InstanceStatus::Provisioning => {
+                    Ok(Reap::Destroy { id, listed: None })
+                }
             }
         }
         // An intent record names no instance — its writer died before

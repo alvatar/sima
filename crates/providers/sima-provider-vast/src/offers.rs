@@ -61,7 +61,9 @@ pub(crate) fn search(client: &VastClient) -> Result<Vec<Offer>> {
     let body = client.post(SEARCH_PATH, &query, OPERATION)?.ok(OPERATION)?;
     // An offer missing a field is a marketplace answer this backend cannot
     // interpret, so the whole listing fails naming the field rather than
-    // silently dropping a machine that might have been the cheapest.
+    // silently dropping a machine that might have been the cheapest. A rate
+    // no price can be read from is narrower — one row the marketplace
+    // answered anomalously — and costs that row alone.
     let page: OfferPage = serde_json::from_value(body)
         .map_err(|failure| Error::Provider(format!("{OPERATION}: {failure}")))?;
     Ok(page.offers.into_iter().filter_map(normalize).collect())
