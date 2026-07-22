@@ -11,7 +11,7 @@ use std::sync::Mutex;
 
 use sima_core::{Error, Result};
 
-use crate::offer::{Offer, OfferId};
+use crate::offer::{Offer, OfferId, Price};
 use crate::provider::{
     Instance, InstanceId, InstanceStatus, Provider, Provision, SshEndpoint, TaggedInstance,
 };
@@ -33,6 +33,9 @@ struct StubState {
     lost: Vec<OfferId>,
     /// Offers whose instances stay `Provisioning` forever.
     stalling: Vec<OfferId>,
+    /// The rate created instances are charged at, when it departs from the
+    /// offer's.
+    instance_price: Option<Price>,
     /// Status calls an instance answers `Provisioning` before it is ready.
     ready_after: u32,
     /// The message `offers` fails with, when scripted to fail.
@@ -80,6 +83,14 @@ impl StubProvider {
     /// [`Provision::OfferGone`].
     pub fn gone_at_provision(self, offer: OfferId) -> StubProvider {
         self.edit(|state| state.lost.push(offer));
+        self
+    }
+
+    /// Scripts created instances to be charged at `price` whatever the
+    /// offer listed, which is what a marketplace billing the machine at its
+    /// own rate looks like.
+    pub fn charging_instances_at(self, price: Price) -> StubProvider {
+        self.edit(|state| state.instance_price = Some(price));
         self
     }
 
@@ -182,7 +193,7 @@ impl Provider for StubProvider {
         let Some(listed) = state.offers.iter().find(|listed| listed.id == *offer) else {
             return Ok(Provision::OfferGone);
         };
-        let price = listed.price;
+        let price = state.instance_price.unwrap_or(listed.price);
         let stalling = state.stalling.contains(offer);
         let id = InstanceId(format!("stub-{}", state.next_id));
         state.next_id += 1;
@@ -257,6 +268,7 @@ fn endpoint(id: &InstanceId) -> SshEndpoint {
 #[cfg(test)]
 mod tests {
     use super::StubProvider;
+    use crate::offer::Price;
     use crate::provider::{InstanceId, InstanceStatus, Provider, Provision, SshEndpoint};
     use crate::testutil::stub_offer;
     use sima_core::{Error, Result};
@@ -281,6 +293,17 @@ mod tests {
         assert_eq!(held.len(), 1);
         assert_eq!(held[0].id, instance.id);
         assert_eq!(held[0].tag, "sima-tag-0");
+        Ok(())
+    }
+
+    #[test]
+    fn a_scripted_instance_rate_replaces_the_offers() -> Result<()> {
+        let offer = stub_offer("listed", 100_000);
+        let stub = StubProvider::new(vec![offer.clone()]).charging_instances_at(Price(250_000));
+        let Provision::Provisioned(instance) = stub.provision(&offer.id, "sima-tag-0")? else {
+            panic!("the listed offer must provision");
+        };
+        assert_eq!(instance.price, Price(250_000));
         Ok(())
     }
 
