@@ -19,6 +19,7 @@
 //! acquisition, destroys what an earlier process left behind.
 
 mod acquire;
+mod budget;
 mod guard;
 mod offer;
 mod provider;
@@ -28,6 +29,7 @@ pub mod stub;
 mod testutil;
 
 pub use acquire::{AcquireLimits, acquire};
+pub use budget::Cost;
 pub use guard::InstanceGuard;
 pub use offer::{Constraints, Objective, Offer, OfferId, Price, select};
 pub use provider::{
