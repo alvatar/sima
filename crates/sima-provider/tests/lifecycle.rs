@@ -253,6 +253,9 @@ fn a_machine_a_dead_process_left_running_is_charged_by_reconciliation() -> Resul
     let entries = store.spend_entries(&owner(11).to_string())?;
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].tag, tag);
+    // The rate the machine was rented at is what it is charged: a rental
+    // reaped by reconciliation is booked no differently from one released.
+    assert_eq!(entries[0].price_micro_usd_hour, 100_000);
     // The cost of a rental nobody gave back is still the run's to account
     // for.
     let report = spend_report(&store, &owner(11), entries[0].ended_ms)?;

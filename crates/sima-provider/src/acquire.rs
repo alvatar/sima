@@ -755,8 +755,14 @@ mod tests {
         let provider = StubProvider::new(Vec::new());
         let report = reconcile(&provider, &store)?;
         assert!(report.destroyed.is_empty());
-        assert_eq!(report.cleared, vec![tag]);
+        assert_eq!(report.cleared, vec![tag.clone()]);
         assert!(store.instances()?.is_empty());
+        // The attempt is charged: the failure says nothing about whether a
+        // machine was created, and an overcounted phantom is the safe
+        // direction to be wrong in.
+        let entries = spend_entries(&store, &sample_run(7))?;
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].tag, tag);
         Ok(())
     }
 

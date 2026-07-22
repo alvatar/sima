@@ -182,6 +182,7 @@ mod tests {
     use sima_store::{InstanceRecord, InstanceRecordState};
 
     use super::reconcile;
+    use crate::guard::teardown;
     use crate::offer::Price;
     use crate::provider::InstanceId;
     use crate::stub::StubProvider;
@@ -373,6 +374,32 @@ mod tests {
         let second = spend_entries(&store, &sample_run(7))?;
         assert_eq!(second.len(), 1);
         assert!(second[0].ended_ms >= first[0].ended_ms);
+        Ok(())
+    }
+
+    #[test]
+    fn a_rental_two_paths_close_is_charged_once() -> Result<()> {
+        let (_dir, store) = temp_store();
+        let stub = StubProvider::new(Vec::new());
+        let orphan = record("sima-tag-0", InstanceRecordState::Intent);
+        store.put_instance(&orphan)?;
+        reconcile(&stub, &store)?;
+        let charged = spend_entries(&store, &sample_run(7))?;
+        assert_eq!(charged.len(), 1);
+        // The acquiring process comes back to a tag reconciliation already
+        // charged and cleared. Its teardown finds no record, so it writes
+        // nothing: the entry the pass left stands alone.
+        teardown(
+            &stub,
+            &store,
+            "sima-tag-0",
+            &InstanceId("i-1".to_string()),
+            None,
+        )?;
+        let entries = spend_entries(&store, &sample_run(7))?;
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].started_ms, orphan.created_ms);
+        assert_eq!(entries[0].ended_ms, charged[0].ended_ms);
         Ok(())
     }
 
