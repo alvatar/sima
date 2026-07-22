@@ -34,8 +34,8 @@ pub struct Cost(pub u64);
 
 impl Cost {
     /// What `rate` charges over `elapsed_ms`, rounded up: every started
-    /// fraction counts, so the amount is at least what the provider bills
-    /// and never less.
+    /// fraction counts, so the amount is at least what the window costs at
+    /// that rate.
     pub fn accrued(rate: Price, elapsed_ms: u64) -> Cost {
         // The product of a rate and a duration leaves 64 bits at extreme
         // values, so the multiplication happens wide and the quotient comes
