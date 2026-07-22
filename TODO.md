@@ -464,7 +464,7 @@ equality between an observed and an unobserved run.
       state, attempt history, durations, failure summaries over the journal.
       Worker host attribution is journaled; reading a remote run's journal
       lands in M5.2
-- [ ] M5.2 Live follow: workers emit events over their transport, the
+- [x] M5.2 Live follow: workers emit events over their transport, the
       orchestrator journals them; follow tails the journal into one
       aggregated view (works from another terminal against a running
       orchestrator, local or SSH)
