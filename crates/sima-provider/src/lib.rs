@@ -17,6 +17,13 @@
 //! called, so a process killed outright still leaves the machine
 //! discoverable — and `reconcile`, which runs at the start of every
 //! acquisition, destroys what an earlier process left behind.
+//!
+//! What those machines cost is counted the same way: every rental that ends
+//! leaves a durable spend entry behind, so a run's total spend outlives both
+//! its machines and the process that rented them. A [`Budget`] states the
+//! ceilings that total and the rental phase's wall-clock must stay under,
+//! [`assess`] answers where a run stands against them, and acquisition
+//! refuses to rent once they are reached.
 
 mod acquire;
 mod budget;
@@ -29,7 +36,7 @@ pub mod stub;
 mod testutil;
 
 pub use acquire::{AcquireLimits, acquire};
-pub use budget::Cost;
+pub use budget::{Budget, Cost, Exhaustion, OpenSpend, SpendReport, Verdict, assess, spend_report};
 pub use guard::InstanceGuard;
 pub use offer::{Constraints, Objective, Offer, OfferId, Price, select};
 pub use provider::{
