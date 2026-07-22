@@ -8,6 +8,7 @@
 //! <root>/tmp/<pid>-<seq>           in-flight writes
 //! <root>/tasks/<task-key-hex>      index entry: record-hash hex + newline
 //! <root>/instances/<tag>           one rented instance's ledger record
+//! <root>/spend/<owner-hex>/<tag>-<started-ms>   one closed rental's cost
 //! <root>/runs/<run-id-hex>/manifest.json
 //! <root>/runs/<run-id-hex>/journal
 //! <root>/runs/<run-id-hex>/orchestrator.lock
@@ -46,6 +47,11 @@ pub(crate) fn instances_dir(root: &Path) -> PathBuf {
     root.join("instances")
 }
 
+/// The `spend/` ledger directory.
+pub(crate) fn spend_ledger_dir(root: &Path) -> PathBuf {
+    root.join("spend")
+}
+
 /// The `runs/` directory.
 pub(crate) fn runs_dir(root: &Path) -> PathBuf {
     root.join("runs")
@@ -67,6 +73,19 @@ pub(crate) fn task_path(root: &Path, key: &TaskKey) -> PathBuf {
 /// validated against its charset before it reaches this function.
 pub(crate) fn instance_path(root: &Path, tag: &str) -> PathBuf {
     instances_dir(root).join(tag)
+}
+
+/// One owner's spend directory: `spend/<owner-hex>/`. The owner is
+/// validated against its hex form before it reaches this function.
+pub(crate) fn spend_dir(root: &Path, owner: &str) -> PathBuf {
+    spend_ledger_dir(root).join(owner)
+}
+
+/// One closed rental's spend path: `spend/<owner-hex>/<tag>-<started-ms>`.
+/// The tag is validated against its charset before it reaches this
+/// function.
+pub(crate) fn spend_path(root: &Path, owner: &str, tag: &str, started_ms: u64) -> PathBuf {
+    spend_dir(root, owner).join(crate::spend::key(tag, started_ms))
 }
 
 /// A run's directory: `runs/<run-id-hex>/`.
