@@ -512,7 +512,8 @@ leaked instances are leaked money.
       become structured named scalars (population, activity, ...) the P7 funnel
       can threshold family-agnostically, plus an optional opaque family blob
       for anything richer — decide the shape here, consumed at M7.2
-- [ ] M6.4 Budget guard: max price, max wall-clock, spend accounting per run
+- [x] M6.4 Budget guard: total spend cap and rental-phase wall-clock limit
+      per run, durable spend accounting
 - [ ] M6.5 Distributed run: one local orchestrator drives a provisioned
       fleet beside the local devices. Run config declares (provider,
       constraints, objective, machine count); at run start the pipeline
@@ -528,9 +529,11 @@ leaked instances are leaked money.
       fleet from config — the same store-only recovery path as tasks. A
       worker failure is a lease expiry; an instance failure is `Gone` at
       the next poll; replacement is a fresh acquire against the same
-      config, bounded by the M6.4 budget guard. Teardown runs on every
-      exit path (success, failure, interrupt) through guards plus
-      reconcile. Acceptance: a real family search over the local machine
+      config, bounded by the M6.4 budget guard: the orchestrator polls the
+      budget verdict on its heartbeat and tears the fleet down when it
+      reports exhaustion; journal events and any CLI spend surface for
+      rentals are settled here too. Teardown runs on every exit path
+      (success, failure, interrupt) through guards plus reconcile. Acceptance: a real family search over the local machine
       plus ≥2 rented instances produces a manifest identical to the
       local-only reference run, and the provider account holds zero
       instances afterwards. This is the fleet M6.6's trust tiers assume
