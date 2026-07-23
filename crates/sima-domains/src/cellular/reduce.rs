@@ -123,21 +123,29 @@ pub fn reduce(
     Ok(name_scalars(channels, &values))
 }
 
-/// Names the reduction's flat output: four metrics per channel, then the two
-/// grid-level scalars, widening each `f32` to `f64` for the scalar list.
-fn name_scalars(channels: u32, values: &[f32]) -> Vec<(String, f64)> {
-    let mut scalars = Vec::with_capacity((4 * channels + 2) as usize);
+/// The scalar names the reduction emits for a `channels`-channel grid, in
+/// emission order: four metrics per channel, then the two grid-level scalars.
+/// This is the naming authority — the flat output is paired with it, and the
+/// predicate layer validates a scalar name against it.
+pub fn scalar_names(channels: u32) -> Vec<String> {
+    let mut names = Vec::with_capacity((4 * channels + 2) as usize);
     for c in 0..channels {
-        let base = (c * 4) as usize;
-        scalars.push((format!("c{c}.mean"), f64::from(values[base])));
-        scalars.push((format!("c{c}.var"), f64::from(values[base + 1])));
-        scalars.push((format!("c{c}.min"), f64::from(values[base + 2])));
-        scalars.push((format!("c{c}.max"), f64::from(values[base + 3])));
+        for metric in ["mean", "var", "min", "max"] {
+            names.push(format!("c{c}.{metric}"));
+        }
     }
-    let grid_base = (4 * channels) as usize;
-    scalars.push(("population".to_string(), f64::from(values[grid_base])));
-    scalars.push(("activity".to_string(), f64::from(values[grid_base + 1])));
-    scalars
+    names.push("population".to_string());
+    names.push("activity".to_string());
+    names
+}
+
+/// Pairs the reduction's flat output with its names, widening each `f32` to
+/// `f64`. The output layout matches [`scalar_names`] element for element.
+fn name_scalars(channels: u32, values: &[f32]) -> Vec<(String, f64)> {
+    scalar_names(channels)
+        .into_iter()
+        .zip(values.iter().map(|&v| f64::from(v)))
+        .collect()
 }
 
 #[cfg(test)]

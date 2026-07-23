@@ -19,6 +19,11 @@ base_u = 0.5
 base_v = 0.25
 side_divisor = 8
 noise_width = 0.02
+# Commit the final-grid snapshot only when a stat clears a threshold; absent,
+# every candidate's snapshot is committed. The scalar names one the reduction
+# emits — population, activity, or c<i>.{mean,var,min,max}. Requires an
+# unsegmented run.
+# snapshot_when = { scalar = "activity", min = 1e-4 }
 
 [execution]
 store = "./store"

@@ -221,7 +221,7 @@ mod tests {
         let params_table: toml::Table = "width = 8\nheight = 8\nsteps = 4\ndt = 1.0\nbase = 0.5"
             .parse()
             .expect("parse params table");
-        let blob = translate_params::<Toy>(&params_table)?.bytes;
+        let blob = translate_params::<Toy>(&params_table, false)?.bytes;
         let (shared, ignition) = decode_params::<Toy>(&blob)?;
         assert_eq!((shared.width(), shared.height(), shared.steps()), (8, 8, 4));
         assert_eq!(ignition, Toy::ignition(0.5));

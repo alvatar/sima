@@ -42,10 +42,16 @@ pub(crate) fn domain_for(format: &FormatId) -> Option<Result<Domain>> {
 }
 
 /// Resolves the `[run.params]` translation for a format id, or `None`.
-pub(crate) fn params_for(format: &FormatId, table: &toml::Table) -> Option<Result<Params>> {
+/// `segmented` is whether the run divides candidates into segments; the models
+/// forbid a `snapshot_when` predicate on a segmented run.
+pub(crate) fn params_for(
+    format: &FormatId,
+    table: &toml::Table,
+    segmented: bool,
+) -> Option<Result<Params>> {
     match format.as_str() {
-        GrayScott::FORMAT_ID => Some(params::translate::<GrayScott>(table)),
-        Nca::FORMAT_ID => Some(params::translate::<Nca>(table)),
+        GrayScott::FORMAT_ID => Some(params::translate::<GrayScott>(table, segmented)),
+        Nca::FORMAT_ID => Some(params::translate::<Nca>(table, segmented)),
         _ => None,
     }
 }

@@ -15,6 +15,6 @@ mod reference;
 mod step;
 
 pub use grid::Grid;
-pub use reduce::{GridPair, REDUCE_WGSL, ReduceKernels, reduce};
+pub use reduce::{GridPair, REDUCE_WGSL, ReduceKernels, reduce, scalar_names};
 pub use reference::CellularRule;
 pub use step::{Trajectory, run};

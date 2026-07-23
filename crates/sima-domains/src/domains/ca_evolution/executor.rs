@@ -210,26 +210,63 @@ impl<M: CaModel> Executor for CaExecutor<M> {
             },
         )
         .unwrap_or_default();
-        let last = trajectory.grid()?;
-        // The one committed artifact is the segment's final state. A stepped
-        // model frames it as (step reached, grid) so a successor resumes the
-        // absolute step; a bare-grid model commits the grid alone, since its
-        // update is the same map at every step and the grid is a complete
-        // continuation on its own.
-        let bytes = match step_base {
-            Some(base) => encode_continuation(base + u64::from(shared.steps()), &last),
-            None => last.to_bytes(),
-        };
-        Ok(Outcome::Completed {
-            artifacts: vec![Artifact {
+        let keep = keep_snapshot(shared.snapshot_when(), &scalars, M::NAME)?;
+        // The committed artifact is the segment's final state. A stepped model
+        // frames it as (step reached, grid) so a successor resumes the absolute
+        // step; a bare-grid model commits the grid alone, since its update is the
+        // same map at every step and the grid is a complete continuation on its
+        // own. A dropped snapshot commits an empty artifact list — and skips the
+        // full-grid readback entirely, which is the bandwidth the predicate saves.
+        let artifacts = if keep {
+            let last = trajectory.grid()?;
+            let bytes = match step_base {
+                Some(base) => encode_continuation(base + u64::from(shared.steps()), &last),
+                None => last.to_bytes(),
+            };
+            vec![Artifact {
                 name: STATE_ARTIFACT.to_string(),
                 bytes,
-            }],
+            }]
+        } else {
+            Vec::new()
+        };
+        Ok(Outcome::Completed {
+            artifacts,
             stats: Stats {
                 scalars,
                 blob: Vec::new(),
             },
         })
+    }
+}
+
+/// Whether to commit the snapshot given the run's predicate and the computed
+/// stats. An absent predicate always commits. A present predicate commits
+/// exactly when the named scalar is finite and at least its minimum: a
+/// non-finite value (a diverged candidate) fails the comparison and drops the
+/// snapshot rather than committing on a spurious one. A predicate naming a
+/// scalar absent from the stats is an infrastructure fault, unreachable after
+/// translation-time validation.
+fn keep_snapshot(
+    predicate: Option<&(String, f64)>,
+    scalars: &[(String, f64)],
+    model: &str,
+) -> Result<bool> {
+    match predicate {
+        None => Ok(true),
+        Some((scalar, min)) => {
+            let value = scalars
+                .iter()
+                .find(|(name, _)| name == scalar)
+                .map(|(_, value)| *value)
+                .ok_or_else(|| {
+                    Error::Validation(format!(
+                        "{model} snapshot_when names scalar {scalar:?}, absent from the \
+                         computed stats"
+                    ))
+                })?;
+            Ok(value.is_finite() && value >= *min)
+        }
     }
 }
 
@@ -378,18 +415,72 @@ mod tests {
         Ok(())
     }
 
-    /// The scalar names the reduction emits for a `channels`-channel model:
-    /// four metrics per channel, then the two grid-level scalars.
+    /// The scalar names the reduction emits for a `channels`-channel model.
     fn expected_scalar_names(channels: u32) -> Vec<String> {
-        let mut names = Vec::new();
-        for c in 0..channels {
-            for metric in ["mean", "var", "min", "max"] {
-                names.push(format!("c{c}.{metric}"));
-            }
+        crate::cellular::scalar_names(channels)
+    }
+
+    /// A stat list carrying one scalar at `value`.
+    fn one_scalar(name: &str, value: f64) -> Vec<(String, f64)> {
+        vec![(name.to_string(), value)]
+    }
+
+    #[test]
+    fn an_absent_predicate_keeps_the_snapshot() -> Result<()> {
+        assert!(keep_snapshot(None, &one_scalar("population", 0.0), "m")?);
+        Ok(())
+    }
+
+    #[test]
+    fn a_predicate_keeps_at_and_above_the_threshold() -> Result<()> {
+        let predicate = ("population".to_string(), 0.5);
+        // Exactly at the minimum keeps, and above it keeps.
+        assert!(keep_snapshot(
+            Some(&predicate),
+            &one_scalar("population", 0.5),
+            "m"
+        )?);
+        assert!(keep_snapshot(
+            Some(&predicate),
+            &one_scalar("population", 0.9),
+            "m"
+        )?);
+        Ok(())
+    }
+
+    #[test]
+    fn a_predicate_drops_below_the_threshold() -> Result<()> {
+        let predicate = ("population".to_string(), 0.5);
+        assert!(!keep_snapshot(
+            Some(&predicate),
+            &one_scalar("population", 0.49),
+            "m"
+        )?);
+        Ok(())
+    }
+
+    #[test]
+    fn a_predicate_drops_a_non_finite_value() -> Result<()> {
+        // A diverged candidate: NaN and the infinities all fail the gate, so the
+        // snapshot is dropped rather than committed on a spurious comparison.
+        let predicate = ("activity".to_string(), 1.0e-4);
+        for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert!(!keep_snapshot(
+                Some(&predicate),
+                &one_scalar("activity", value),
+                "m"
+            )?);
         }
-        names.push("population".to_string());
-        names.push("activity".to_string());
-        names
+        Ok(())
+    }
+
+    #[test]
+    fn a_predicate_naming_a_missing_scalar_is_a_fault() {
+        let predicate = ("nonesuch".to_string(), 0.5);
+        assert!(matches!(
+            keep_snapshot(Some(&predicate), &one_scalar("population", 1.0), "m"),
+            Err(Error::Validation(_))
+        ));
     }
 
     /// Requires a real Vulkan device. Run with `cargo test -- --ignored`.
@@ -474,6 +565,40 @@ mod tests {
                 let names: Vec<String> =
                     stats.scalars.iter().map(|(n, _)| n.clone()).collect();
                 assert_eq!(names, expected_scalar_names(Nca::CHANNELS));
+            }
+            other => panic!("expected Completed, got {other:?}"),
+        }
+    }
+
+    /// Requires a real Vulkan device. Run with `cargo test -- --ignored`.
+    #[test]
+    #[ignore = "requires a Vulkan device"]
+    fn a_failed_predicate_drops_the_snapshot_but_keeps_the_stats() {
+        // `population` is a fraction, so a minimum of 2.0 can never be met: the
+        // state artifact is dropped, the outcome still completes, and the stats
+        // are journaled regardless.
+        let exec = CaExecutor::<GrayScott>::new(None).expect("executor");
+        let spec = Spec {
+            format: FormatId::new(GrayScott::FORMAT_ID).expect("format id"),
+            bytes: Genome::<GrayScott>::new(0.055, 0.062, 0.16, 0.08)
+                .expect("genome")
+                .to_bytes(),
+        };
+        let params = Params {
+            bytes: encode_params::<GrayScott>(
+                &CaParams::new(32, 32, 16, 1.0)
+                    .expect("params")
+                    .with_snapshot_when(Some(("population".to_string(), 2.0))),
+                &Ignition::<GrayScott>::new(0.5, 0.25, 8, 0.02).expect("ignition"),
+            ),
+        };
+        match exec
+            .execute(&input(&spec, &params, None), &ctx(), &NoCheckpoint)
+            .expect("execute")
+        {
+            Outcome::Completed { artifacts, stats } => {
+                assert!(artifacts.is_empty(), "the dropped snapshot commits nothing");
+                assert!(!stats.scalars.is_empty(), "stats are journaled regardless");
             }
             other => panic!("expected Completed, got {other:?}"),
         }
