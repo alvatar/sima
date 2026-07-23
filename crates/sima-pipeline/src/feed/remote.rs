@@ -428,7 +428,8 @@ mod tests {
                 event: Event::Committed {
                     task: task.to_string(),
                     record: "11".repeat(32),
-                    stats_hex: String::new(),
+                    stats: Vec::new(),
+                    stats_blob_hex: String::new(),
                 },
             }
             .to_line()
@@ -492,7 +493,8 @@ mod tests {
                 event: Event::Committed {
                     task: "aa".to_string(),
                     record: "11".repeat(32),
-                    stats_hex: String::new(),
+                    stats: Vec::new(),
+                    stats_blob_hex: String::new(),
                 },
             },
         ];

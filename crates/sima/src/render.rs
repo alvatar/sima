@@ -721,7 +721,8 @@ mod tests {
         progress.event(&rec(Event::Committed {
             task: "cd".repeat(32),
             record: "ef".repeat(32),
-            stats_hex: String::new(),
+            stats: Vec::new(),
+            stats_blob_hex: String::new(),
         }));
         assert_eq!(progress.committed(), 3);
     }

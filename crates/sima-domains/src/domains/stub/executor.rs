@@ -185,29 +185,6 @@ fn stats(ctx: &ExecutionContext) -> Stats {
     }
 }
 
-/// Renders the stub's committed stats bytes into one line for `sima report`.
-/// The `Accumulate` behavior records the attempt followed by the steps it
-/// executed; every other behavior records the attempt alone, so a payload
-/// longer than the four attempt bytes carries the step count. Malformed bytes
-/// are [`Error::Validation`].
-pub(crate) fn describe_stats(bytes: &[u8]) -> Result<String> {
-    render_stats(bytes).map_err(|e| Error::Validation(format!("malformed stub stats: {e}")))
-}
-
-/// Decodes and formats the stub stats; decoder faults surface as
-/// [`Error::Encoding`], which [`describe_stats`] restates as a validation fault.
-fn render_stats(bytes: &[u8]) -> Result<String> {
-    let mut dec = sima_core::Dec::new(bytes);
-    let attempt = dec.u32()?;
-    let line = if bytes.len() > 4 {
-        format!("attempt {attempt} steps {}", dec.u64()?)
-    } else {
-        format!("attempt {attempt}")
-    };
-    dec.finish()?;
-    Ok(line)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -246,33 +223,6 @@ mod tests {
             .find(|(n, _)| n == name)
             .map(|(_, v)| *v)
             .unwrap_or_else(|| panic!("scalar {name} present"))
-    }
-
-    #[test]
-    fn describe_stats_renders_the_attempt_only_payload() -> Result<()> {
-        // A four-byte payload is the attempt alone.
-        let mut enc = Enc::new();
-        enc.u32(2);
-        assert_eq!(describe_stats(&enc.finish())?, "attempt 2");
-        Ok(())
-    }
-
-    #[test]
-    fn describe_stats_renders_the_accumulate_payload() -> Result<()> {
-        // attempt 1 then steps 5, exactly as `accumulate` encodes them.
-        let mut enc = Enc::new();
-        enc.u32(1).u64(5);
-        assert_eq!(describe_stats(&enc.finish())?, "attempt 1 steps 5");
-        Ok(())
-    }
-
-    #[test]
-    fn describe_stats_rejects_malformed_bytes() {
-        // Too short for the attempt, and a five-byte payload too short for the
-        // steps u64: both are validation faults.
-        for bytes in [vec![0u8; 3], vec![0u8; 5]] {
-            assert!(matches!(describe_stats(&bytes), Err(Error::Validation(_))));
-        }
     }
 
     /// The single artifact of a `Completed` outcome; panics otherwise.

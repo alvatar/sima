@@ -3,21 +3,20 @@
 
 use std::collections::BTreeMap;
 
-use sima_core::{Error, Result, from_hex};
-use sima_domains::{Domain, domain_for};
-use sima_model::FormatId;
-use sima_scheduler::{Event, Record};
+use sima_core::{Error, Result};
+use sima_scheduler::{Event, Record, StatScalar};
 
 use crate::config::LoadedConfig;
 use crate::journal;
+use crate::stats::render_stats;
 use crate::task_history::resolve_task_key;
 
-/// One reported task: its journaled key and the domain-rendered stats line.
+/// One reported task: its journaled key and its rendered stats line.
 #[derive(Debug, PartialEq, Eq)]
 pub struct ReportRow {
     /// The committed task's key, as journaled — the lowercase-hex string.
     pub task: String,
-    /// The task's stats rendered into one line by its domain.
+    /// The task's stats rendered into one line.
     pub stats: String,
 }
 
@@ -26,24 +25,22 @@ pub struct ReportRow {
 /// counterpart of [`orchestrate`](crate::orchestrate). Rows are sorted by task
 /// key.
 ///
-/// The format's domain renders the observational stats bytes each `Committed`
-/// event carries; a task commits at most once, so each contributes one row.
-/// Stats bytes the domain does not recognize are [`Error::Validation`] from
-/// the renderer; a missing store, a run never started there, and an
+/// Each `Committed` event carries the executor's named scalars and the family
+/// blob's hex, rendered generically; a task commits at most once, so each
+/// contributes one row. A missing store, a run never started there, and an
 /// unparseable line carry the errors every journal query reports.
 pub fn report(config: &LoadedConfig) -> Result<Vec<ReportRow>> {
-    report_records(&config.run.format, &journal::records(config)?)
+    report_records(&journal::records(config)?)
 }
 
 /// Renders each committed task's stats from `records` — a run's lifecycle
-/// events in append order — through `format`'s domain. The fold half of
-/// [`report`], over records from any source.
-pub fn report_records(format: &FormatId, records: &[Record]) -> Result<Vec<ReportRow>> {
-    let domain = domain_for(format)?;
-    committed_stats(records)
+/// events in append order. The fold half of [`report`], over records from any
+/// source.
+pub fn report_records(records: &[Record]) -> Result<Vec<ReportRow>> {
+    Ok(committed_stats(records)
         .into_iter()
-        .map(|(task, stats_hex)| row(task, &stats_hex, &domain))
-        .collect()
+        .map(|(task, (scalars, blob_hex))| row(task, &scalars, &blob_hex))
+        .collect())
 }
 
 /// Renders one committed task's per-candidate stats, addressed by a prefix of
@@ -52,45 +49,46 @@ pub fn report_records(format: &FormatId, records: &[Record]) -> Result<Vec<Repor
 /// task's execution history is what [`task_history`](crate::task_history)
 /// answers.
 pub fn report_task(config: &LoadedConfig, prefix: &str) -> Result<ReportRow> {
-    report_task_records(&config.run.format, &journal::records(config)?, prefix)
+    report_task_records(&journal::records(config)?, prefix)
 }
 
 /// Renders one committed task's stats from `records`, addressed by a prefix
 /// of its key. The fold half of [`report_task`], over records from any
 /// source.
-pub fn report_task_records(
-    format: &FormatId,
-    records: &[Record],
-    prefix: &str,
-) -> Result<ReportRow> {
-    let domain = domain_for(format)?;
+pub fn report_task_records(records: &[Record], prefix: &str) -> Result<ReportRow> {
     let task = resolve_task_key(records, prefix)?;
-    let stats_hex = committed_stats(records)
+    let (scalars, blob_hex) = committed_stats(records)
         .remove(&task)
         .ok_or_else(|| Error::Validation(format!("task {task} has no committed result")))?;
-    row(task, &stats_hex, &domain)
+    Ok(row(task, &scalars, &blob_hex))
 }
 
 /// The latest committed stats per task, ordered by task key. A task commits
 /// once, but a resume segment re-journals prior commits, so the last
-/// `Committed` line wins.
-fn committed_stats(records: &[Record]) -> BTreeMap<String, String> {
+/// `Committed` line wins. Each entry is the event's scalars and its family
+/// blob hex.
+fn committed_stats(records: &[Record]) -> BTreeMap<String, (Vec<StatScalar>, String)> {
     let mut latest = BTreeMap::new();
     for record in records {
         if let Event::Committed {
-            task, stats_hex, ..
+            task,
+            stats,
+            stats_blob_hex,
+            ..
         } = &record.event
         {
-            latest.insert(task.clone(), stats_hex.clone());
+            latest.insert(task.clone(), (stats.clone(), stats_blob_hex.clone()));
         }
     }
     latest
 }
 
-/// One row for `task`, its stats bytes rendered through the format's domain.
-fn row(task: String, stats_hex: &str, domain: &Domain) -> Result<ReportRow> {
-    let stats = (domain.stats)(&from_hex(stats_hex)?)?;
-    Ok(ReportRow { task, stats })
+/// One row for `task`, its scalars and family blob rendered generically.
+fn row(task: String, scalars: &[StatScalar], blob_hex: &str) -> ReportRow {
+    ReportRow {
+        task,
+        stats: render_stats(scalars, blob_hex),
+    }
 }
 
 #[cfg(test)]
@@ -115,12 +113,21 @@ mod tests {
         })
     }
 
-    /// A `Committed` line for `task` carrying `stats_hex`.
-    fn committed(task: &str, stats_hex: &str) -> Record {
+    /// A `StatScalar` from a name and value.
+    fn scalar(name: &str, value: f64) -> StatScalar {
+        StatScalar {
+            name: name.to_string(),
+            value,
+        }
+    }
+
+    /// A `Committed` line for `task` carrying `scalars` and no blob.
+    fn committed(task: &str, scalars: Vec<StatScalar>) -> Record {
         rec(Event::Committed {
             task: task.to_string(),
             record: "11".repeat(32),
-            stats_hex: stats_hex.to_string(),
+            stats: scalars,
+            stats_blob_hex: String::new(),
         })
     }
 
@@ -130,9 +137,9 @@ mod tests {
             started(&stub_config()?.id(), 2),
             // Out of key order and with a duplicate: the map sorts and the last
             // commit of a task wins.
-            committed("bb", "01000000"),
-            committed("aa", "00000000"),
-            committed("aa", "02000000"),
+            committed("bb", vec![scalar("attempt", 1.0)]),
+            committed("aa", vec![scalar("attempt", 0.0)]),
+            committed("aa", vec![scalar("attempt", 2.0)]),
         ])?;
         let rows = report(&config)?;
         assert_eq!(
@@ -140,11 +147,11 @@ mod tests {
             vec![
                 ReportRow {
                     task: "aa".to_string(),
-                    stats: "attempt 2".to_string(),
+                    stats: "attempt=2".to_string(),
                 },
                 ReportRow {
                     task: "bb".to_string(),
-                    stats: "attempt 1".to_string(),
+                    stats: "attempt=1".to_string(),
                 },
             ]
         );
@@ -152,25 +159,27 @@ mod tests {
     }
 
     #[test]
-    fn an_accumulate_payload_renders_attempt_and_steps() -> Result<()> {
-        // attempt 0 (`00000000`) then steps 5 (`0500000000000000`).
+    fn scalars_render_space_joined() -> Result<()> {
         let (_dir, config) = journal_with(&[
             started(&stub_config()?.id(), 1),
-            committed("aa", "000000000500000000000000"),
+            committed("aa", vec![scalar("attempt", 0.0), scalar("steps", 5.0)]),
         ])?;
-        assert_eq!(report(&config)?[0].stats, "attempt 0 steps 5");
+        assert_eq!(report(&config)?[0].stats, "attempt=0 steps=5");
         Ok(())
     }
 
     #[test]
-    fn malformed_stats_bytes_are_a_validation_error() -> Result<()> {
-        // Five bytes: a u32 attempt then one dangling byte, too short for the
-        // steps u64. The renderer rejects it.
+    fn a_non_empty_blob_reports_its_byte_length() -> Result<()> {
         let (_dir, config) = journal_with(&[
             started(&stub_config()?.id(), 1),
-            committed("aa", "0000000099"),
+            rec(Event::Committed {
+                task: "aa".to_string(),
+                record: "11".repeat(32),
+                stats: vec![scalar("attempt", 0.0)],
+                stats_blob_hex: "aabbcc".to_string(),
+            }),
         ])?;
-        assert!(matches!(report(&config), Err(Error::Validation(_))));
+        assert_eq!(report(&config)?[0].stats, "attempt=0 blob=3B");
         Ok(())
     }
 
@@ -178,14 +187,14 @@ mod tests {
     fn a_task_report_resolves_a_prefix_and_renders_that_task_alone() -> Result<()> {
         let (_dir, config) = journal_with(&[
             started(&stub_config()?.id(), 2),
-            committed("abcd", "00000000"),
-            committed("bcde", "01000000"),
+            committed("abcd", vec![scalar("attempt", 0.0)]),
+            committed("bcde", vec![scalar("attempt", 1.0)]),
         ])?;
         assert_eq!(
             report_task(&config, "ab")?,
             ReportRow {
                 task: "abcd".to_string(),
-                stats: "attempt 0".to_string(),
+                stats: "attempt=0".to_string(),
             }
         );
         Ok(())
@@ -206,7 +215,8 @@ mod tests {
                 task: "abcd".to_string(),
                 attempt: 0,
                 reason: "programmed rejection".to_string(),
-                stats_hex: String::new(),
+                stats: Vec::new(),
+                stats_blob_hex: String::new(),
             }),
         ])?;
         let reported = report_task(&config, "ab");
@@ -226,16 +236,15 @@ mod tests {
 
     #[test]
     fn the_record_folds_equal_the_reports_read_from_the_journal() -> Result<()> {
-        let format = sima_model::FormatId::new("stub.v1")?;
         let records = vec![
             started(&stub_config()?.id(), 2),
-            committed("abcd", "00000000"),
-            committed("bcde", "01000000"),
+            committed("abcd", vec![scalar("attempt", 0.0)]),
+            committed("bcde", vec![scalar("attempt", 1.0)]),
         ];
         let (_dir, config) = journal_with(&records)?;
-        assert_eq!(report_records(&format, &records)?, report(&config)?);
+        assert_eq!(report_records(&records)?, report(&config)?);
         assert_eq!(
-            report_task_records(&format, &records, "ab")?,
+            report_task_records(&records, "ab")?,
             report_task(&config, "ab")?
         );
         Ok(())

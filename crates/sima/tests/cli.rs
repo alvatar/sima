@@ -369,7 +369,7 @@ fn report_defaults_to_the_compact_summary() {
     // ordered by count descending.
     assert_eq!(
         stdout(&output),
-        "3 committed tasks\n2  attempt 0\n1  attempt 1\n"
+        "3 committed tasks\n2  attempt=0 blob=4B\n1  attempt=1 blob=4B\n"
     );
 }
 
@@ -397,7 +397,7 @@ fn report_all_prints_one_line_per_committed_task() {
             key.chars().all(|c| c.is_ascii_hexdigit()),
             "the key is hex: {line}"
         );
-        assert_eq!(stats, "attempt 0", "the rendered stats: {line}");
+        assert_eq!(stats, "attempt=0 blob=4B", "the rendered stats: {line}");
     }
 }
 
@@ -413,7 +413,10 @@ fn report_task_prints_one_committed_task_s_stats() {
     let task = committed_task(&config);
     let output = sima(&["report", path, "--task", &task[..8]]);
     assert_eq!(output.status.code(), Some(0), "{output:?}");
-    assert_eq!(stdout(&output), format!("{}  attempt 0\n", &task[..12]));
+    assert_eq!(
+        stdout(&output),
+        format!("{}  attempt=0 blob=4B\n", &task[..12])
+    );
 }
 
 #[test]

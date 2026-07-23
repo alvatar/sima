@@ -40,11 +40,6 @@ pub struct Domain {
     pub device_desc: fn(Option<&DeviceBinding>) -> Result<(String, String)>,
     /// The environment entering every task's identity.
     pub environment: Environment,
-    /// Renders the domain's executor stats bytes — the observational summary
-    /// carried on the `Stats` channel — into one human-readable line, or
-    /// [`Error::Validation`] for bytes the format does not recognize. `sima
-    /// report` calls this per committed task.
-    pub stats: fn(&[u8]) -> Result<String>,
 }
 
 /// Static dispatch: the domains this build knows. The stub is matched directly;
