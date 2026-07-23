@@ -712,8 +712,11 @@ keeps candidate failure out of the shared `sima-core::Error` enum. An
 `Artifact` is produced bytes — a name
 and a blob the worker stores in the CAS and references from the `TaskRecord`
 through a model `ArtifactRef` — and must be a pure function of the identity
-inputs. `Stats` is opaque observational bytes destined for the journal; it may
-reflect the execution context and never enters a record.
+inputs. `Stats` is observational data destined for the journal — named `f64`
+scalars plus an opaque family blob for anything richer — returned on every
+outcome arm, success and failure alike; it may reflect the execution context
+and never enters a record, a manifest, or any identity criterion. The scalars
+make `Stats` (and `Outcome`) `PartialEq` only, matching IEEE-754.
 
 The third `execute` parameter is the attempt's `Checkpoint` handle — the
 crash-resume channel under the same discipline. The executor decides what
@@ -802,6 +805,12 @@ step counts. Each step is one fence-waited submission, reusing the toolkit's
 per-op synchronization. The harness is neighborhood-agnostic: a small stencil
 and a large-radius convolution are both just the kernel argument.
 
+`run` returns a `Trajectory` over the two buffers left resident — the final
+grid $G_N$ and the step before it $G_{N-1}$ — rather than a downloaded grid.
+Downloading the final grid and reducing over the pair are separate operations
+on the handle, so a caller that only needs stats never pays for the full-grid
+readback.
+
 **Binding and dispatch convention.** The kind's kernels bind group-0 storage
 buffers in a fixed order:
 
@@ -822,6 +831,41 @@ the reference and through the harness for equal step counts and comparing the
 resulting grids. Where a kernel uses only exact operations — a neighborhood max
 — the two agree byte for byte with no tolerance; agreement across distinct GPU
 backend classes is a separate tolerance policy.
+
+**Per-candidate stats.** A second kernel reduces the final grid pair into the
+observational scalars, on the GPU, over the two buffers the harness left
+resident — so a dead candidate returns a handful of numbers instead of a
+downloaded grid. The scalars are, per channel, the mean, variance, min, and
+max, plus two grid-level figures: `population`, the fraction of cells alive by
+the model's own rule (a channel and a minimum each model declares — liveness is
+model vocabulary, defined nowhere above the model layer), and `activity`, the
+mean absolute per-cell change between the final two steps. Accumulation is
+`f32`, widened to `f64` in the scalar list; a diverging simulation propagates
+its non-finite values into the scalars as-is, handled at the journal and the
+predicate. The reduction has a fixed two-level topology — a constant partition
+count folded in index order, with variance a second pass after the mean — so
+its result is deterministic per backend. Its source digest joins the
+environment: the reduction's output gates committed bytes, so editing it must
+change task keys exactly as editing a step kernel does.
+
+**The snapshot predicate.** A run may gate the committed state snapshot on a
+stat, so a dead candidate returns its scalars alone and no megabytes of grid.
+The predicate is one condition — a scalar name and a minimum,
+`snapshot_when = { scalar = "activity", min = 1e-4 }` in `[run.params]`; absent,
+the snapshot is always committed. It commits the state artifact exactly when the
+named scalar is finite and at least the minimum, so a diverged candidate (a
+non-finite value) drops its snapshot rather than committing on a spurious
+comparison, and skips the full-grid readback entirely.
+
+The predicate must live where it cannot break the invariant that **committed
+artifacts are a pure function of the task key**. So it rides in the
+identity-bearing params blob, never in `[execution]`, and it is confined to
+**unsegmented runs**: all segments of a chain share one params blob, and a
+chain successor faults on a predecessor whose state a predicate dropped, so a
+params-carried predicate would gate every segment identically and break the
+chain. A predicate on a segmented run is a config-load validation error, and
+the scalar name is validated at translation against the names the model's
+reduction emits.
 
 ## Execution toolkits
 
@@ -1291,7 +1335,10 @@ on the clock and so disables enforcement.
 ### Journal events
 
 The scheduler is the journal's principal emitter. A typed `sima-trace`
-`Event` serializes to one JSON line, with ids and stats rendered as hex.
+`Event` serializes to one JSON line, with ids and the stats family blob
+rendered as hex and the stats scalars as `name`/`value` pairs. A non-finite
+scalar value serializes to `null` and reads back as `NaN`, so a diverged
+candidate can never fail a journal append.
 The vocabulary:
 
 - **run started** — the run began; carries the planned task total, those
@@ -1400,8 +1447,10 @@ is indistinguishable from a live one by the journal alone.
 Every read-only query is a fold over records: one half reads a run's journal,
 the other projects the view. The two are separate functions, so the same fold
 serves records read from a local store and records streamed from the host that
-drives the run. The folds that render stats take the run's format id, which is
-all they need a config for.
+drives the run. Stats render generically from the scalars each outcome event
+carries — `name=value` pairs joined by a space, with a trailing `blob=<len>B`
+when the family blob is non-empty — so the fold needs no domain and no format
+id to render them.
 
 ## `sima` (L8)
 
@@ -1431,8 +1480,8 @@ command form keeps its shape whether or not a host is named:
   ran it, how each attempt ended, and the span the collector observed over
   it. `--failed` digests the tasks that did not commit, naming the terminal
   outcome and reason of each.
-- **`sima report <config.toml>`** — reports results: the stats each
-  committed task's domain renders, grouped by distinct value with a count.
+- **`sima report <config.toml>`** — reports results: each committed task's
+  rendered stats line, grouped by distinct value with a count.
   `--all` prints one line per committed task instead, and `--task <key>`
   one task's line. A task that never committed has no report; its
   execution history is what `status --task` answers.
