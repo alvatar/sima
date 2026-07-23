@@ -62,9 +62,9 @@ fn pass1(@builtin(global_invocation_id) gid: vec3<u32>) {
     let c_count = channels();
     let range = chunk_range(p);
 
-    var sum: array<f32, 16>;
-    var lo: array<f32, 16>;
-    var hi: array<f32, 16>;
+    var sum: array<f32, MAX_CHANNELS>;
+    var lo: array<f32, MAX_CHANNELS>;
+    var hi: array<f32, MAX_CHANNELS>;
     for (var c = 0u; c < c_count; c = c + 1u) {
         sum[c] = 0.0;
         lo[c] = bitcast<f32>(0x7f800000u);
@@ -140,7 +140,7 @@ fn pass2(@builtin(global_invocation_id) gid: vec3<u32>) {
     let c_count = channels();
     let range = chunk_range(p);
 
-    var sq: array<f32, 16>;
+    var sq: array<f32, MAX_CHANNELS>;
     for (var c = 0u; c < c_count; c = c + 1u) { sq[c] = 0.0; }
     for (var cell = range.x; cell < range.y; cell = cell + 1u) {
         let base = cell * c_count;
