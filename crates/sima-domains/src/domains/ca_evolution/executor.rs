@@ -267,11 +267,17 @@ fn stats_or_propagate(
 
 /// Whether to commit the snapshot given the run's predicate and the computed
 /// stats. An absent predicate always commits. A present predicate commits
-/// exactly when the named scalar is finite and at least its minimum: a
-/// non-finite value (a diverged candidate) fails the comparison and drops the
-/// snapshot rather than committing on a spurious one. A predicate naming a
-/// scalar absent from the stats is an infrastructure fault, unreachable after
-/// translation-time validation.
+/// exactly when the named scalar is at least its minimum AND every scalar in
+/// the list is finite: a non-finite value anywhere marks the candidate diverged
+/// and drops the snapshot. A predicate naming a scalar absent from the stats is
+/// an infrastructure fault, unreachable after translation-time validation.
+///
+/// The all-finite conjunct lives here because IEEE semantics are reliable at the
+/// Rust layer. In the shader they are not: WGSL `min`/`max` skip a NaN operand
+/// and the population test counts a NaN cell as dead, so a predicate on
+/// `population`, `c<i>.min`, or `c<i>.max` could otherwise commit a partially
+/// diverged grid. The finite check catches divergence a sum-derived scalar
+/// (mean, variance, activity) would surface but those scalars would not.
 fn keep_snapshot(
     predicate: Option<&(String, f64)>,
     scalars: &[(String, f64)],
@@ -290,7 +296,8 @@ fn keep_snapshot(
                          computed stats"
                     ))
                 })?;
-            Ok(value.is_finite() && value >= *min)
+            let all_finite = scalars.iter().all(|(_, value)| value.is_finite());
+            Ok(all_finite && value >= *min)
         }
     }
 }
@@ -452,7 +459,10 @@ mod tests {
 
     #[test]
     fn an_absent_predicate_keeps_the_snapshot() -> Result<()> {
+        // No predicate commits regardless of the scalar values, a diverged
+        // candidate included: the divergence guard is a predicate-only conjunct.
         assert!(keep_snapshot(None, &one_scalar("population", 0.0), "m")?);
+        assert!(keep_snapshot(None, &one_scalar("c0.min", f64::NAN), "m")?);
         Ok(())
     }
 
@@ -496,6 +506,36 @@ mod tests {
                 "m"
             )?);
         }
+        Ok(())
+    }
+
+    #[test]
+    fn a_predicate_drops_when_another_scalar_diverges() -> Result<()> {
+        // The named scalar clears its threshold, but a different scalar is
+        // non-finite: the candidate diverged, so the snapshot drops. WGSL
+        // min/max skip NaN operands and the population test counts a NaN cell as
+        // dead, so a predicate on a finite scalar must still catch divergence
+        // reported through another scalar.
+        let predicate = ("population".to_string(), 0.5);
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let scalars = vec![("population".to_string(), 0.9), ("c0.min".to_string(), bad)];
+            assert!(!keep_snapshot(Some(&predicate), &scalars, "m")?);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_predicate_keeps_when_every_scalar_is_finite() -> Result<()> {
+        // The named scalar clears its threshold and every scalar in the list is
+        // finite, so the snapshot commits: the divergence guard admits a
+        // converged candidate.
+        let predicate = ("population".to_string(), 0.5);
+        let scalars = vec![
+            ("c0.min".to_string(), -1.0),
+            ("population".to_string(), 0.9),
+            ("activity".to_string(), 0.001),
+        ];
+        assert!(keep_snapshot(Some(&predicate), &scalars, "m")?);
         Ok(())
     }
 
