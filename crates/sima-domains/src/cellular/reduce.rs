@@ -332,6 +332,85 @@ mod tests {
     /// Requires a real Vulkan device. Run with `cargo test -- --ignored`.
     #[test]
     #[ignore = "requires a Vulkan device"]
+    fn the_reduction_reads_the_harness_resident_pair() {
+        // The reduction runs over the two ping-pong buffers `run` leaves
+        // resident, not synthetic uploads, so `Trajectory::previous` (G_{N-1})
+        // is exercised end to end. A kernel that adds one per step keeps every
+        // sum exact: after k steps the final grid is `initial + k` and the step
+        // before is `initial + (k - 1)`, so the absolute change is one in every
+        // cell.
+        const ADD_ONE_WGSL: &str = r#"
+@group(0) @binding(0) var<storage, read> in_grid: array<f32>;
+@group(0) @binding(1) var<storage, read_write> out_grid: array<f32>;
+@group(0) @binding(2) var<storage, read> dims: array<u32>;
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let cell = gid.x;
+    if (cell >= dims[0] * dims[1]) { return; }
+    out_grid[cell] = in_grid[cell] + 1.0;
+}
+"#;
+        let context = Context::new().expect("context");
+        let kernels = ReduceKernels::build(&context).expect("kernels");
+        let kernel = context.kernel(ADD_ONE_WGSL, "main").expect("add-one kernel");
+
+        let cells = 16u32;
+        let initial =
+            crate::cellular::Grid::new(4, 4, 1, vec![0.0; cells as usize]).expect("grid");
+        let steps = 3u32;
+        let trajectory =
+            crate::cellular::run(&context, &kernel, &initial, steps, &[], None).expect("run");
+
+        // The two resident buffers, downloaded as the reduction reads them.
+        let read = |buffer: &Buffer| -> Vec<f32> {
+            context
+                .download(buffer)
+                .expect("download")
+                .chunks_exact(4)
+                .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                .collect()
+        };
+        let current = read(trajectory.current());
+        let previous = read(trajectory.previous());
+
+        // Activity is the mean absolute change over every cell and channel; the
+        // mean is over the final grid alone. Both are computed here from the
+        // downloaded pair, independent of the reduction.
+        let activity: f64 = current
+            .iter()
+            .zip(&previous)
+            .map(|(&c, &p)| f64::from((c - p).abs()))
+            .sum::<f64>()
+            / f64::from(cells);
+        let mean: f64 = current.iter().map(|&v| f64::from(v)).sum::<f64>() / f64::from(cells);
+
+        // The reduction reads the resident buffers in place, not the downloads.
+        let map: HashMap<String, f64> = reduce(
+            &context,
+            &kernels,
+            &GridPair {
+                current: trajectory.current(),
+                previous: trajectory.previous(),
+                channels: trajectory.channels(),
+                cell_count: trajectory.cell_count(),
+                alive_channel: 0,
+                alive_min: 0.0,
+            },
+        )
+        .expect("reduce")
+        .into_iter()
+        .collect();
+        // Activity ties the reduction to the resident G_{N-1}; the mean is over
+        // G_N alone, so it catches a reduction that read the pair swapped.
+        assert_eq!(map["activity"], activity);
+        assert_eq!(map["activity"], 1.0);
+        assert_eq!(map["c0.mean"], mean);
+        assert_eq!(map["c0.mean"], f64::from(steps));
+    }
+
+    /// Requires a real Vulkan device. Run with `cargo test -- --ignored`.
+    #[test]
+    #[ignore = "requires a Vulkan device"]
     fn too_many_channels_is_rejected() {
         // A channel count past the scratch-array bound is a validation fault,
         // caught before any dispatch.
