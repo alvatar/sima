@@ -191,3 +191,36 @@ fn the_shipped_search_config_loads() -> Result<()> {
     assert_eq!(loaded.execution.workers, 2);
     Ok(())
 }
+
+#[test]
+fn the_shipped_search_config_loads_with_the_snapshot_predicate_enabled() -> Result<()> {
+    // The example ships the `snapshot_when` line commented, so no test parses
+    // the template's predicate syntax or its scalar vocabulary, and both can
+    // drift unnoticed. Enabling the line and loading pins both: translation
+    // validates the scalar against the reduction's names, so a load that
+    // succeeds proves the shipped syntax parses and the scalar is one the
+    // reduction emits.
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/gray-scott-search.toml");
+    let text = std::fs::read_to_string(&path).expect("read the example");
+    // Strip the leading comment marker from the predicate line alone; the
+    // surrounding explanatory comments stay commented.
+    let enabled = text.replace("# snapshot_when =", "snapshot_when =");
+    assert!(
+        enabled.contains("\nsnapshot_when ="),
+        "the predicate line was uncommented"
+    );
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config = dir.path().join("gray-scott-search.toml");
+    std::fs::write(&config, &enabled).expect("write the enabled config");
+    sima_pipeline::load(&config)?;
+
+    // Gray-Scott is a two-channel model (u, v); the example's scalar must be a
+    // name the reduction emits for it.
+    let names = sima_domains::cellular::scalar_names(2);
+    assert!(
+        names.iter().any(|name| name == "activity"),
+        "the example's scalar is a reduction name: {names:?}"
+    );
+    Ok(())
+}
