@@ -512,8 +512,7 @@ mod tests {
                     "a state artifact"
                 );
                 assert!(stats.blob.is_empty(), "ca_evolution carries no blob");
-                let names: Vec<String> =
-                    stats.scalars.iter().map(|(n, _)| n.clone()).collect();
+                let names: Vec<String> = stats.scalars.iter().map(|(n, _)| n.clone()).collect();
                 assert_eq!(names, expected_scalar_names(GrayScott::CHANNELS));
                 let population = stats
                     .scalars
@@ -562,8 +561,7 @@ mod tests {
                 // over the grid, not these framed bytes.
                 decode_continuation(&state.bytes).expect("framed");
                 assert!(stats.blob.is_empty(), "ca_evolution carries no blob");
-                let names: Vec<String> =
-                    stats.scalars.iter().map(|(n, _)| n.clone()).collect();
+                let names: Vec<String> = stats.scalars.iter().map(|(n, _)| n.clone()).collect();
                 assert_eq!(names, expected_scalar_names(Nca::CHANNELS));
             }
             other => panic!("expected Completed, got {other:?}"),

@@ -166,9 +166,7 @@ mod tests {
 
     /// Uploads `data` (cell-major interleaved f32) into a fresh device buffer.
     fn upload(context: &Context, data: &[f32]) -> Buffer {
-        let buffer = context
-            .buffer(std::mem::size_of_val(data))
-            .expect("buffer");
+        let buffer = context.buffer(std::mem::size_of_val(data)).expect("buffer");
         context
             .upload(&buffer, bytemuck::cast_slice(data))
             .expect("upload");
@@ -358,8 +356,16 @@ mod tests {
         assert_eq!(
             names,
             vec![
-                "c0.mean", "c0.var", "c0.min", "c0.max", "c1.mean", "c1.var", "c1.min", "c1.max",
-                "population", "activity",
+                "c0.mean",
+                "c0.var",
+                "c0.min",
+                "c0.max",
+                "c1.mean",
+                "c1.var",
+                "c1.min",
+                "c1.max",
+                "population",
+                "activity",
             ]
         );
         assert_eq!(named[0].1, 0.0);

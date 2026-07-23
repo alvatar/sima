@@ -223,7 +223,12 @@ fn parse_snapshot_when<M: CaModel>(value: &toml::Value, segmented: bool) -> Resu
             M::FORMAT_ID
         ))
     })?;
-    reject_unknown_keys(M::FORMAT_ID, table, &["scalar", "min"], "params.snapshot_when")?;
+    reject_unknown_keys(
+        M::FORMAT_ID,
+        table,
+        &["scalar", "min"],
+        "params.snapshot_when",
+    )?;
     let scalar = table
         .get("scalar")
         .and_then(toml::Value::as_str)
@@ -234,15 +239,12 @@ fn parse_snapshot_when<M: CaModel>(value: &toml::Value, segmented: bool) -> Resu
             ))
         })?
         .to_string();
-    let min = table
-        .get("min")
-        .and_then(toml_number)
-        .ok_or_else(|| {
-            Error::Validation(format!(
-                "{} params snapshot_when.min must be a number",
-                M::FORMAT_ID
-            ))
-        })?;
+    let min = table.get("min").and_then(toml_number).ok_or_else(|| {
+        Error::Validation(format!(
+            "{} params snapshot_when.min must be a number",
+            M::FORMAT_ID
+        ))
+    })?;
     let valid = crate::cellular::scalar_names(M::CHANNELS);
     if !valid.contains(&scalar) {
         return Err(Error::Validation(format!(

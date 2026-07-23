@@ -117,7 +117,12 @@ fn a_stub_run_journals_scalars_and_report_renders_them() -> Result<()> {
     // journal carries structured scalars for both the Committed and the Failed
     // events, and `report` renders them generically.
     let dir = tempfile::tempdir().expect("temp dir");
-    let config = stub_config(dir.path(), "sima.toml", "./store", r#""succeed", "flaky:1""#)?;
+    let config = stub_config(
+        dir.path(),
+        "sima.toml",
+        "./store",
+        r#""succeed", "flaky:1""#,
+    )?;
     assert!(matches!(
         orchestrate(&config, &RunControl::detached())?,
         RunOutcome::Finalized { .. }
@@ -140,7 +145,11 @@ fn a_stub_run_journals_scalars_and_report_renders_them() -> Result<()> {
     assert_eq!(committed.len(), 2, "both tasks commit");
     for (stats, blob_hex) in &committed {
         assert!(stats.iter().any(|s| s.name == "attempt"));
-        assert_eq!(blob_hex.len(), 8, "the stub's four-byte blob is eight hex chars");
+        assert_eq!(
+            blob_hex.len(),
+            8,
+            "the stub's four-byte blob is eight hex chars"
+        );
     }
 
     // The flaky candidate's first attempt failed transiently; that Failed event
@@ -152,7 +161,10 @@ fn a_stub_run_journals_scalars_and_report_renders_them() -> Result<()> {
             _ => None,
         })
         .collect();
-    assert!(!failed.is_empty(), "the flaky candidate failed at least once");
+    assert!(
+        !failed.is_empty(),
+        "the flaky candidate failed at least once"
+    );
     for stats in &failed {
         assert!(stats.iter().any(|s| s.name == "attempt"));
     }
@@ -257,7 +269,14 @@ fn a_predicate_run_finalizes_a_deterministic_manifest() -> Result<()> {
     let dir = tempfile::tempdir().expect("temp dir");
     let predicate = Some(r#"{ scalar = "activity", min = 1e-4 }"#);
     let first = gray_scott_config(dir.path(), "first.toml", "./store-first", 2, 60, predicate)?;
-    let second = gray_scott_config(dir.path(), "second.toml", "./store-second", 2, 60, predicate)?;
+    let second = gray_scott_config(
+        dir.path(),
+        "second.toml",
+        "./store-second",
+        2,
+        60,
+        predicate,
+    )?;
     for config in [&first, &second] {
         assert!(matches!(
             orchestrate(config, &RunControl::detached())?,
