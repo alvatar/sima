@@ -15,11 +15,11 @@
 
 use std::time::{Duration, Instant};
 
-use sima_contracts::{Artifact, DeviceBinding, Outcome, WorkerId};
+use sima_contracts::{Artifact, DeviceBinding, Outcome, Stats, WorkerId};
 use sima_core::{Error, Hash, Result, to_hex};
 use sima_model::{ArtifactRef, RunConfig, RunId, TaskIdentity, TaskKey, TaskRecord};
 use sima_store::Store;
-use sima_trace::{Emitter, Event};
+use sima_trace::{Emitter, Event, StatScalar};
 use sima_transport::protocol::Assignment;
 use sima_transport::{LinkEvent, WorkerLink, WorkerTransport};
 
@@ -364,10 +364,12 @@ fn process(
             LinkEvent::Done(Outcome::Completed { artifacts, stats }) => {
                 match commit(ctx.store, identity, artifacts) {
                     Ok(record) => {
+                        let (scalars, blob_hex) = journal_stats(&stats);
                         ctx.events.emit(Event::Committed {
                             task,
                             record: record.to_string(),
-                            stats_hex: to_hex(&stats.bytes),
+                            stats: scalars,
+                            stats_blob_hex: blob_hex,
                         });
                         ctx.coordinator.resolve(key);
                     }
@@ -376,11 +378,13 @@ fn process(
                 return ChildState::Alive;
             }
             LinkEvent::Done(Outcome::Failed { reason, stats }) => {
+                let (scalars, blob_hex) = journal_stats(&stats);
                 ctx.events.emit(Event::Failed {
                     task: task.clone(),
                     attempt,
                     reason: reason.clone(),
-                    stats_hex: to_hex(&stats.bytes),
+                    stats: scalars,
+                    stats_blob_hex: blob_hex,
                 });
                 retry_or_terminate(
                     ctx,
@@ -393,11 +397,13 @@ fn process(
                 return ChildState::Alive;
             }
             LinkEvent::Done(Outcome::Rejected { reason, stats }) => {
+                let (scalars, blob_hex) = journal_stats(&stats);
                 ctx.events.emit(Event::Rejected {
                     task,
                     attempt,
                     reason: reason.clone(),
-                    stats_hex: to_hex(&stats.bytes),
+                    stats: scalars,
+                    stats_blob_hex: blob_hex,
                 });
                 ctx.coordinator.terminate(key, reason);
                 return ChildState::Alive;
@@ -409,7 +415,9 @@ fn process(
                     task,
                     attempt,
                     reason: reason.clone(),
-                    stats_hex: String::new(),
+                    // A panic left no executor stats to report.
+                    stats: Vec::new(),
+                    stats_blob_hex: String::new(),
                 });
                 ctx.coordinator.terminate(key, reason);
                 return ChildState::Alive;
@@ -490,6 +498,21 @@ fn retry(spec: sima_model::Spec, identity: TaskIdentity, chain: Option<u64>) -> 
 /// Journals a transient failure and applies the retry policy. One settlement
 /// for every way an attempt fails transiently without stats: a child death,
 /// a preemption, a broken pipe, a protocol violation.
+/// Maps executor stats into the journal event's structured form: the named
+/// scalars verbatim, and the opaque family blob as hex. The scheduler is the
+/// seam between the contracts type and the trace facade's own representation.
+fn journal_stats(stats: &Stats) -> (Vec<StatScalar>, String) {
+    let scalars = stats
+        .scalars
+        .iter()
+        .map(|(name, value)| StatScalar {
+            name: name.clone(),
+            value: *value,
+        })
+        .collect();
+    (scalars, to_hex(&stats.blob))
+}
+
 fn fail_transiently(
     ctx: &WorkerContext<'_>,
     key: TaskKey,
@@ -502,7 +525,9 @@ fn fail_transiently(
         task: task.clone(),
         attempt,
         reason: reason.clone(),
-        stats_hex: String::new(),
+        // A lease expiry kills the worker before any stats return.
+        stats: Vec::new(),
+        stats_blob_hex: String::new(),
     });
     retry_or_terminate(ctx, key, task, attempt, task_to_retry, reason);
 }
@@ -894,25 +919,21 @@ mod tests {
         }
     }
 
-    /// The steps the committed attempt executed, from the stub's stats in
-    /// the `Committed` event: `(u32 attempt, u64 steps)`.
+    /// The steps the committed attempt executed, read from the stub's `steps`
+    /// scalar in the `Committed` event.
     fn committed_steps(events: &[Event]) -> u64 {
-        let stats_hex = events
+        let stats = events
             .iter()
             .find_map(|e| match e {
-                Event::Committed { stats_hex, .. } => Some(stats_hex.clone()),
+                Event::Committed { stats, .. } => Some(stats.clone()),
                 _ => None,
             })
             .expect("a Committed event");
-        let bytes: Vec<u8> = (0..stats_hex.len())
-            .step_by(2)
-            .map(|i| u8::from_str_radix(&stats_hex[i..i + 2], 16).expect("hex"))
-            .collect();
-        let mut dec = sima_core::Dec::new(&bytes);
-        dec.u32().expect("attempt");
-        let steps = dec.u64().expect("steps");
-        dec.finish().expect("stats end");
-        steps
+        stats
+            .iter()
+            .find(|s| s.name == "steps")
+            .map(|s| s.value as u64)
+            .expect("a steps scalar")
     }
 
     /// The stub trajectory from `{step: 0, acc: seed}` through `steps` steps.
