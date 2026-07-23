@@ -14,6 +14,7 @@
 //! - `Option<u64>` as the same present-flag byte followed by the little-endian
 //!   value
 //! - `f32` as its IEEE-754 bits in a little-endian `u32`
+//! - `f64` as its IEEE-754 bits in a little-endian `u64`
 //! - an `f32` slice as those elements written back to back with no length prefix
 //!   (the count is fixed by surrounding context)
 
@@ -76,6 +77,12 @@ impl Enc {
 
     /// Writes an `f32` as its IEEE-754 bits in a little-endian `u32`.
     pub fn f32(&mut self, v: f32) -> &mut Self {
+        self.buf.extend_from_slice(&v.to_bits().to_le_bytes());
+        self
+    }
+
+    /// Writes an `f64` as its IEEE-754 bits in a little-endian `u64`.
+    pub fn f64(&mut self, v: f64) -> &mut Self {
         self.buf.extend_from_slice(&v.to_bits().to_le_bytes());
         self
     }
@@ -198,6 +205,11 @@ impl<'a> Dec<'a> {
     /// Reads an `f32` from its little-endian IEEE-754 bits.
     pub fn f32(&mut self) -> Result<f32> {
         Ok(f32::from_bits(u32::from_le_bytes(self.array()?)))
+    }
+
+    /// Reads an `f64` from its little-endian IEEE-754 bits.
+    pub fn f64(&mut self) -> Result<f64> {
+        Ok(f64::from_bits(u64::from_le_bytes(self.array()?)))
     }
 
     /// Reads `count` `f32` elements written back to back with no length
@@ -411,6 +423,46 @@ mod tests {
         let mut enc = Enc::new();
         enc.f32(1.5);
         assert_eq!(to_hex(&enc.finish()), "0000c03f");
+    }
+
+    #[test]
+    fn f64_round_trips_representative_values() -> Result<()> {
+        let values = [
+            1.5f64,
+            -0.0,
+            0.0,
+            f64::MIN,
+            f64::MAX,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NAN,
+        ];
+        for v in values {
+            let mut enc = Enc::new();
+            enc.f64(v);
+            let buf = enc.finish();
+            let mut dec = Dec::new(&buf);
+            // Compare by bits so -0.0, the infinities, and NaN are preserved
+            // exactly (a NaN never equals itself under `==`).
+            assert_eq!(dec.f64()?.to_bits(), v.to_bits());
+            dec.finish()?;
+        }
+        Ok(())
+    }
+
+    /// `f64` is written as its IEEE-754 bits in a little-endian `u64`. `1.5f64`
+    /// has bit pattern `0x3FF8000000000000`, little-endian bytes
+    /// `00 00 00 00 00 00 f8 3f`.
+    #[test]
+    fn f64_encoding_is_byte_stable() {
+        let mut enc = Enc::new();
+        enc.f64(1.5);
+        assert_eq!(to_hex(&enc.finish()), "000000000000f83f");
+    }
+
+    #[test]
+    fn f64_truncation_errors_never_panics() {
+        assert!(matches!(Dec::new(&[0u8; 7]).f64(), Err(Error::Encoding(_))));
     }
 
     #[test]
