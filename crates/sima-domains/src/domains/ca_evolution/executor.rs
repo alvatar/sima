@@ -239,19 +239,29 @@ impl<M: CaModel> Executor for CaExecutor<M> {
 }
 
 /// The stat scalars to carry forward given the reduction result and the run's
-/// predicate. With a predicate present the scalars decide whether the snapshot
-/// commits, so a reduction fault makes the verdict uncomputable and propagates.
-/// Without one the scalars are purely observational — they travel the `Stats`
-/// channel to the journal and enter no record, manifest, or identity criterion —
-/// so a fault degrades to empty stats rather than failing the evaluation.
+/// predicate. The fault handling discriminates on the error variant:
+///
+/// - A definitive fault (`Error::Validation`, a misdeclared model constant such
+///   as `M::CHANNELS` or `M::ALIVE_CHANNEL`) can never succeed for this model,
+///   so it surfaces whether or not a predicate needs the scalars — never
+///   silently blanking stats for every task of the misdeclared model.
+/// - A transient device fault (`Error::Gpu`, and any other variant) fails the
+///   evaluation only when a predicate is present, since the scalars then decide
+///   whether the snapshot commits and the verdict is uncomputable without them.
+///   Absent a predicate the scalars are purely observational — they travel the
+///   `Stats` channel to the journal and enter no record, manifest, or identity
+///   criterion — so the fault degrades to empty stats rather than failing.
 fn stats_or_propagate(
     reduced: Result<Vec<(String, f64)>>,
     predicate: Option<&(String, f64)>,
 ) -> Result<Vec<(String, f64)>> {
-    match (reduced, predicate) {
-        (Ok(scalars), _) => Ok(scalars),
-        (Err(error), Some(_)) => Err(error),
-        (Err(_), None) => Ok(Vec::new()),
+    match reduced {
+        Ok(scalars) => Ok(scalars),
+        Err(error @ Error::Validation(_)) => Err(error),
+        Err(error) => match predicate {
+            Some(_) => Err(error),
+            None => Ok(Vec::new()),
+        },
     }
 }
 
@@ -511,24 +521,45 @@ mod tests {
     }
 
     #[test]
-    fn a_reduction_fault_propagates_under_a_predicate() {
-        // The predicate needs the scalars to decide the snapshot, so the real
-        // reduction error surfaces rather than a spurious missing-scalar fault.
+    fn a_device_fault_propagates_under_a_predicate() {
+        // A transient device fault (`Error::Gpu`) with a predicate present: the
+        // predicate needs the scalars to decide the snapshot, so the fault
+        // surfaces rather than a spurious missing-scalar fault.
         let predicate = ("population".to_string(), 0.5);
-        let fault: Result<Vec<(String, f64)>> = Err(Error::Validation("device lost".to_string()));
+        let fault: Result<Vec<(String, f64)>> = Err(Error::Gpu("device lost".to_string()));
         match stats_or_propagate(fault, Some(&predicate)) {
-            Err(Error::Validation(message)) => assert_eq!(message, "device lost"),
-            other => panic!("expected the reduction error, got {other:?}"),
+            Err(Error::Gpu(message)) => assert_eq!(message, "device lost"),
+            other => panic!("expected the device fault, got {other:?}"),
         }
     }
 
     #[test]
-    fn a_reduction_fault_degrades_to_empty_without_a_predicate() -> Result<()> {
-        // With no predicate the scalars are observational, so a fault degrades to
-        // an empty list and the evaluation still completes.
-        let fault: Result<Vec<(String, f64)>> = Err(Error::Validation("device lost".to_string()));
+    fn a_device_fault_degrades_to_empty_without_a_predicate() -> Result<()> {
+        // A transient device fault (`Error::Gpu`) with no predicate: the scalars
+        // are observational, so the fault degrades to an empty list and the
+        // evaluation still completes.
+        let fault: Result<Vec<(String, f64)>> = Err(Error::Gpu("device lost".to_string()));
         assert!(stats_or_propagate(fault, None)?.is_empty());
         Ok(())
+    }
+
+    #[test]
+    fn a_validation_fault_propagates_either_way() {
+        // `Error::Validation` from the reduction is a misdeclared model constant:
+        // the reduction can never succeed for this model, so the fault surfaces
+        // whether or not a predicate needs the scalars, never silently blanking
+        // stats.
+        let predicate = ("population".to_string(), 0.5);
+        for guard in [None, Some(&predicate)] {
+            let fault: Result<Vec<(String, f64)>> =
+                Err(Error::Validation("alive_channel out of range".to_string()));
+            match stats_or_propagate(fault, guard) {
+                Err(Error::Validation(message)) => {
+                    assert_eq!(message, "alive_channel out of range");
+                }
+                other => panic!("expected the validation fault, got {other:?}"),
+            }
+        }
     }
 
     /// Requires a real Vulkan device. Run with `cargo test -- --ignored`.
