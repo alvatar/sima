@@ -4,7 +4,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Once;
 
 use sima_core::Result;
-use sima_pipeline::{LoadedConfig, load};
+use sima_pipeline::{Event, LoadedConfig, Record, load};
+use sima_store::Store;
 
 /// Writes `text` as a config file named `name` under `dir` and loads it.
 /// Also ensures the worker binary exists: these tests drive `orchestrate`,
@@ -15,6 +16,20 @@ pub fn loaded_text(dir: &Path, name: &str, text: &str) -> Result<LoadedConfig> {
     let path: PathBuf = dir.join(name);
     std::fs::write(&path, text).expect("write config");
     load(&path)
+}
+
+/// The journal events of the run `config` describes, in append order. Each
+/// top-level file under `tests/` compiles as its own crate, so a helper only
+/// some suites use reads as dead code in the others.
+#[allow(dead_code)]
+pub fn journal_events(config: &LoadedConfig) -> Vec<Event> {
+    let store = Store::open(&config.store).expect("open store");
+    store
+        .journal(&config.run.id())
+        .expect("read journal")
+        .iter()
+        .map(|line| Record::from_line(line).expect("parse journal line").event)
+        .collect()
 }
 
 /// Builds the `sima-worker` binary once per test process. Cargo builds
