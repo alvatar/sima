@@ -358,11 +358,12 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 "#;
         let context = Context::new().expect("context");
         let kernels = ReduceKernels::build(&context).expect("kernels");
-        let kernel = context.kernel(ADD_ONE_WGSL, "main").expect("add-one kernel");
+        let kernel = context
+            .kernel(ADD_ONE_WGSL, "main")
+            .expect("add-one kernel");
 
         let cells = 16u32;
-        let initial =
-            crate::cellular::Grid::new(4, 4, 1, vec![0.0; cells as usize]).expect("grid");
+        let initial = crate::cellular::Grid::new(4, 4, 1, vec![0.0; cells as usize]).expect("grid");
         let steps = 3u32;
         let trajectory =
             crate::cellular::run(&context, &kernel, &initial, steps, &[], None).expect("run");
