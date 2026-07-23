@@ -73,6 +73,14 @@ pub fn reduce(
             "reduction handles 1..={MAX_CHANNELS} channels, got {channels}"
         )));
     }
+    // The liveness channel indexes into the cell's channels; out of range, the
+    // shader would read past the cell. A model misdeclaring it is caught here.
+    if input.alive_channel >= channels {
+        return Err(Error::Validation(format!(
+            "reduction alive_channel {} is out of range for {channels} channels",
+            input.alive_channel
+        )));
+    }
 
     // The parameter buffer the shader reads: the alive minimum travels as its
     // f32 bits, since the toolkit's buffers are untyped byte storage.
@@ -340,6 +348,32 @@ mod tests {
                     channels: MAX_CHANNELS + 1,
                     cell_count: 4,
                     alive_channel: 0,
+                    alive_min: 0.0,
+                },
+            ),
+            Err(Error::Validation(_))
+        ));
+    }
+
+    /// Requires a real Vulkan device. Run with `cargo test -- --ignored`.
+    #[test]
+    #[ignore = "requires a Vulkan device"]
+    fn an_out_of_range_alive_channel_is_rejected() {
+        // A two-channel grid with the liveness channel at index 2 is out of
+        // range: a validation fault, caught before any dispatch.
+        let context = Context::new().expect("context");
+        let kernels = ReduceKernels::build(&context).expect("kernels");
+        let grid = upload(&context, &[0.0; 4]);
+        assert!(matches!(
+            reduce(
+                &context,
+                &kernels,
+                &GridPair {
+                    current: &grid,
+                    previous: &grid,
+                    channels: 2,
+                    cell_count: 2,
+                    alive_channel: 2,
                     alive_min: 0.0,
                 },
             ),
