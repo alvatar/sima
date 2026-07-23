@@ -853,12 +853,23 @@ stat, so a dead candidate returns its scalars alone and no megabytes of grid.
 The predicate is one condition — a scalar name and a minimum,
 `snapshot_when = { scalar = "activity", min = 1e-4 }` in `[run.params]`; absent,
 the snapshot is always committed. It commits the state artifact exactly when the
-named scalar is finite and at least the minimum, so a diverged candidate (a
-non-finite value) drops its snapshot rather than committing on a spurious
-comparison, and skips the full-grid readback entirely.
+named scalar is at least the minimum and every scalar in the list is finite, so
+a diverged candidate — a non-finite value in any scalar — drops its snapshot
+rather than committing on a spurious comparison, and skips the full-grid readback
+entirely.
+
+The all-finite check runs at the Rust layer, where IEEE semantics are reliable.
+WGSL permits fast-math relaxation, so whether the shader itself produces a NaN
+is a per-backend property: the population test counts a NaN cell as dead and
+`min`/`max` skip a NaN operand, so a predicate on `population`, `c<i>.min`, or
+`c<i>.max` could otherwise clear its threshold on a partially diverged grid. The
+Rust-side finite check is the defense, and its reliability matches the
+per-backend determinism tier the float families already live at.
 
 The predicate must live where it cannot break the invariant that **committed
-artifacts are a pure function of the task key**. So it rides in the
+artifacts are single-valued per task key**: within a store each key maps to one
+record, with cross-class float divergence the recorded exception (a fresh re-run
+on another device class may differ in the last bits). So it rides in the
 identity-bearing params blob, never in `[execution]`, and it is confined to
 **unsegmented runs**: all segments of a chain share one params blob, and a
 chain successor faults on a predecessor whose state a predicate dropped, so a

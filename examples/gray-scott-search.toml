@@ -22,7 +22,9 @@ noise_width = 0.02
 # Commit the final-grid snapshot only when a stat clears a threshold; absent,
 # every candidate's snapshot is committed. The scalar names one the reduction
 # emits — population, activity, or c<i>.{mean,var,min,max}. Requires an
-# unsegmented run.
+# unsegmented run. On a fleet of mixed device classes a threshold adjacent to a
+# float scalar's rounding envelope can decide differently per class; a
+# population threshold set away from an exact cell-count boundary is robust.
 # snapshot_when = { scalar = "activity", min = 1e-4 }
 
 [execution]

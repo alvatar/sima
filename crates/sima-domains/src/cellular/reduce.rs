@@ -5,6 +5,12 @@
 //! over the two live ping-pong buffers a [`run`](super::run) left resident. The
 //! scalars are named as the reporting layer expects: `c<i>.mean`, `c<i>.var`,
 //! `c<i>.min`, `c<i>.max` per channel, then `population` and `activity`.
+//!
+//! A diverged candidate carries non-finite values into the scalars as-is. WGSL
+//! permits fast-math relaxation, so whether an evaluation that would yield a NaN
+//! actually produces one is a per-backend property. The defense lives at the
+//! Rust layer, where IEEE semantics are reliable: the snapshot predicate's
+//! all-finite check is what catches a partially diverged grid.
 
 use sima_core::{Error, Result};
 use sima_toolkit_wgsl::{Buffer, Context, Kernel};
