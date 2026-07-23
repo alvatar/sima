@@ -14,15 +14,15 @@ use sima_toolkit_wgsl::{Buffer, Context, Kernel};
 use super::continuation::{decode_continuation, encode_continuation};
 use super::model::CaModel;
 use super::params::decode_params;
-use super::stats::grid_stats;
-use crate::cellular::{Grid, run};
+use crate::cellular::{Grid, GridPair, ReduceKernels, reduce, run};
 
 /// Evaluates a candidate of the model `M` on the GPU, under format
 /// `M::FORMAT_ID`: the spec's genome and the run params frame one task — ignite
-/// (or continue) a grid, advance it `steps` kernel dispatches, commit the final
-/// state as the `state` artifact with empty stats. A bare-grid model commits the
-/// grid's canonical bytes; a stepped model commits framed continuation state,
-/// the reached step ahead of the grid.
+/// (or continue) a grid, advance it `steps` kernel dispatches, reduce the final
+/// grid pair into the observational stat scalars, and commit the final state as
+/// the `state` artifact. A bare-grid model commits the grid's canonical bytes; a
+/// stepped model commits framed continuation state, the reached step ahead of
+/// the grid.
 ///
 /// The GPU engine is created lazily on the first execute, never at construction,
 /// so [`build_domain`](super::domain::build_domain) stays device-free —
@@ -52,13 +52,15 @@ pub(crate) struct CaExecutor<M: CaModel> {
     model: PhantomData<fn() -> M>,
 }
 
-/// The device context and the compiled kernel, created together once.
+/// The device context and the compiled kernels, created together once: the
+/// update kernel that advances the grid and the reduction that summarizes it.
 struct GpuEngine {
-    /// Declared before `context` so it drops first: struct fields drop in
-    /// declaration order, and the kernel's pipeline handles belong to the
-    /// context's device, so the kernel must be destroyed before the context. A
+    /// Declared before `context` so they drop first: struct fields drop in
+    /// declaration order, and the kernels' pipeline handles belong to the
+    /// context's device, so a kernel must be destroyed before the context. A
     /// reorder would drop the device first and segfault at engine drop.
     kernel: Kernel,
+    reduce: ReduceKernels,
     context: Context,
 }
 
@@ -150,7 +152,12 @@ impl<M: CaModel> Executor for CaExecutor<M> {
                 None => Context::new()?,
             };
             let kernel = context.kernel(M::KERNEL_WGSL, "main")?;
-            *gpu = Some(GpuEngine { context, kernel });
+            let reduce = ReduceKernels::build(&context)?;
+            *gpu = Some(GpuEngine {
+                context,
+                kernel,
+                reduce,
+            });
         }
         let engine = gpu.as_ref().expect("gpu engine initialized above");
         // The model's uniform buffer — binding 3 of the cellular convention,
@@ -177,7 +184,7 @@ impl<M: CaModel> Executor for CaExecutor<M> {
         if let Some(seed_buffer) = seed_buffer.as_ref() {
             params.push(seed_buffer);
         }
-        let last = run(
+        let trajectory = run(
             &engine.context,
             &engine.kernel,
             &initial,
@@ -185,6 +192,25 @@ impl<M: CaModel> Executor for CaExecutor<M> {
             &params,
             step_base,
         )?;
+        // Observational per-candidate stats, reduced on the GPU over the two
+        // resident grids ($G_N$ and $G_{N-1}$) before any readback. They travel
+        // the `Stats` channel to the journal and enter no record, manifest, or
+        // identity criterion, so a reduction fault degrades to empty stats
+        // rather than failing the evaluation. The alive rule is the model's own.
+        let scalars = reduce(
+            &engine.context,
+            &engine.reduce,
+            &GridPair {
+                current: trajectory.current(),
+                previous: trajectory.previous(),
+                channels: trajectory.channels(),
+                cell_count: trajectory.cell_count(),
+                alive_channel: M::ALIVE_CHANNEL,
+                alive_min: M::ALIVE_MIN,
+            },
+        )
+        .unwrap_or_default();
+        let last = trajectory.grid()?;
         // The one committed artifact is the segment's final state. A stepped
         // model frames it as (step reached, grid) so a successor resumes the
         // absolute step; a bare-grid model commits the grid alone, since its
@@ -194,17 +220,14 @@ impl<M: CaModel> Executor for CaExecutor<M> {
             Some(base) => encode_continuation(base + u64::from(shared.steps()), &last),
             None => last.to_bytes(),
         };
-        // Observational per-candidate stats over the final decoded grid (never
-        // the continuation frame): they travel the `Stats` channel to the journal
-        // and enter no record, manifest, or identity criterion.
         Ok(Outcome::Completed {
             artifacts: vec![Artifact {
                 name: STATE_ARTIFACT.to_string(),
                 bytes,
             }],
             stats: Stats {
-                scalars: Vec::new(),
-                blob: grid_stats(&last),
+                scalars,
+                blob: Vec::new(),
             },
         })
     }
@@ -355,13 +378,26 @@ mod tests {
         Ok(())
     }
 
+    /// The scalar names the reduction emits for a `channels`-channel model:
+    /// four metrics per channel, then the two grid-level scalars.
+    fn expected_scalar_names(channels: u32) -> Vec<String> {
+        let mut names = Vec::new();
+        for c in 0..channels {
+            for metric in ["mean", "var", "min", "max"] {
+                names.push(format!("c{c}.{metric}"));
+            }
+        }
+        names.push("population".to_string());
+        names.push("activity".to_string());
+        names
+    }
+
     /// Requires a real Vulkan device. Run with `cargo test -- --ignored`.
     #[test]
     #[ignore = "requires a Vulkan device"]
-    fn stats_summarize_the_committed_grid() {
-        // A bare-grid model commits the grid alone, so its stats are
-        // `grid_stats` of the grid the committed bytes decode to. Gray-Scott,
-        // the simplest bare-grid model, is the vehicle.
+    fn a_bare_grid_evaluation_reduces_to_named_scalars() {
+        // A bare-grid model reduces its final grid pair into the named scalars;
+        // the family blob stays empty. Gray-Scott, two channels, is the vehicle.
         let exec = CaExecutor::<GrayScott>::new(None).expect("executor");
         let spec = Spec {
             format: FormatId::new(GrayScott::FORMAT_ID).expect("format id"),
@@ -380,13 +416,24 @@ mod tests {
             .expect("execute")
         {
             Outcome::Completed { artifacts, stats } => {
-                let state = artifacts
+                assert!(
+                    artifacts.iter().any(|a| a.name == STATE_ARTIFACT),
+                    "a state artifact"
+                );
+                assert!(stats.blob.is_empty(), "ca_evolution carries no blob");
+                let names: Vec<String> =
+                    stats.scalars.iter().map(|(n, _)| n.clone()).collect();
+                assert_eq!(names, expected_scalar_names(GrayScott::CHANNELS));
+                let population = stats
+                    .scalars
                     .iter()
-                    .find(|a| a.name == STATE_ARTIFACT)
-                    .expect("a state artifact");
-                let grid = Grid::from_bytes(&state.bytes).expect("grid");
-                assert_eq!(stats.blob, grid_stats(&grid));
-                assert!(!stats.blob.is_empty(), "the stats channel is filled");
+                    .find(|(n, _)| n == "population")
+                    .expect("a population scalar")
+                    .1;
+                assert!(
+                    (0.0..=1.0).contains(&population),
+                    "population is a fraction: {population}"
+                );
             }
             other => panic!("expected Completed, got {other:?}"),
         }
@@ -395,11 +442,10 @@ mod tests {
     /// Requires a real Vulkan device. Run with `cargo test -- --ignored`.
     #[test]
     #[ignore = "requires a Vulkan device"]
-    fn stats_summarize_the_decoded_grid() {
-        // A stepped model commits framed continuation state, and its stats are
-        // `grid_stats` of the final decoded grid — the grid inside the
-        // continuation frame, never the framed bytes. NCA, the simplest
-        // stepped model, is the vehicle.
+    fn a_stepped_evaluation_reduces_the_decoded_grid() {
+        // A stepped model frames its committed state, but the reduction runs over
+        // the resident grid pair, so it names the same scalars. NCA, eight
+        // channels, is the vehicle.
         let exec = CaExecutor::<Nca>::new(None).expect("executor");
         let genome = Nca::sample(&GenConfig::<Nca>::new(0.5).expect("config"), 42, 0);
         let spec = Spec {
@@ -421,9 +467,13 @@ mod tests {
                     .iter()
                     .find(|a| a.name == STATE_ARTIFACT)
                     .expect("a state artifact");
-                let (_, grid) = decode_continuation(&state.bytes).expect("framed");
-                assert_eq!(stats.blob, grid_stats(&grid));
-                assert!(!stats.blob.is_empty(), "the stats channel is filled");
+                // The committed state is a continuation frame; the reduction ran
+                // over the grid, not these framed bytes.
+                decode_continuation(&state.bytes).expect("framed");
+                assert!(stats.blob.is_empty(), "ca_evolution carries no blob");
+                let names: Vec<String> =
+                    stats.scalars.iter().map(|(n, _)| n.clone()).collect();
+                assert_eq!(names, expected_scalar_names(Nca::CHANNELS));
             }
             other => panic!("expected Completed, got {other:?}"),
         }

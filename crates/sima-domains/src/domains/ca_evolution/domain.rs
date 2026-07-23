@@ -6,16 +6,19 @@ use sima_toolkit_wgsl::{COMPILER_ID, selected_device_desc, source_digest};
 
 use super::executor::CaExecutor;
 use super::model::CaModel;
+use crate::cellular::REDUCE_WGSL;
 use crate::domain::Domain;
 
 /// Assembles the [`Domain`] for the model `M`: the GPU executor and a
-/// three-component environment — the executor's own version, the blake3 digest
-/// of the WGSL kernel source, and the pinned WGSL compiler id. The component
-/// names derive from `M::NAME`. Source digest and compiler id together pin the
-/// compiled SPIR-V: editing the shader or upgrading the compiler changes every
-/// task key, forcing re-execution instead of silently reusing stale results.
-/// All three components are computed device-free, so
-/// [`domain_for`](crate::domain_for) never needs a GPU.
+/// four-component environment — the executor's own version, the blake3 digest
+/// of the WGSL update-kernel source, the digest of the reduction-kernel source,
+/// and the pinned WGSL compiler id. The component names derive from `M::NAME`.
+/// The two source digests and the compiler id together pin the compiled
+/// SPIR-V: editing either shader or upgrading the compiler changes every task
+/// key, forcing re-execution instead of silently reusing stale results. The
+/// reduction joins the environment because its output gates committed bytes,
+/// exactly as the update kernel's does. All components are computed device-free,
+/// so [`domain_for`](crate::domain_for) never needs a GPU.
 pub(crate) fn build_domain<M: CaModel>() -> Result<Domain> {
     Ok(Domain {
         format: FormatId::new(M::FORMAT_ID)?,
@@ -35,6 +38,10 @@ pub(crate) fn build_domain<M: CaModel>() -> Result<Domain> {
             EnvironmentComponent::new(
                 format!("{}.kernel", M::NAME),
                 EnvironmentValue::Digest(source_digest(M::KERNEL_WGSL)),
+            )?,
+            EnvironmentComponent::new(
+                format!("{}.reduce", M::NAME),
+                EnvironmentValue::Digest(source_digest(REDUCE_WGSL)),
             )?,
             EnvironmentComponent::new(
                 "wgsl.compiler",

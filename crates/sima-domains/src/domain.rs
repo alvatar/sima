@@ -194,6 +194,7 @@ mod tests {
             [
                 "ca_evolution.gray_scott.executor",
                 "ca_evolution.gray_scott.kernel",
+                "ca_evolution.gray_scott.reduce",
                 "wgsl.compiler",
             ]
         );

@@ -36,6 +36,17 @@ pub(crate) trait CaModel: 'static {
     const VERSION: &'static str;
     /// Channels per cell.
     const CHANNELS: u32;
+    /// The channel whose value defines a cell's liveness, and the minimum value
+    /// on it a live cell holds. A cell is alive when its value on
+    /// [`ALIVE_CHANNEL`](CaModel::ALIVE_CHANNEL) is at least
+    /// [`ALIVE_MIN`](CaModel::ALIVE_MIN); the `population` scalar is the fraction
+    /// of cells alive. Each model declares its own rule — liveness is model
+    /// vocabulary, defined nowhere above the model layer — and model research may
+    /// revise it.
+    const ALIVE_CHANNEL: u32;
+    /// The minimum value on [`ALIVE_CHANNEL`](CaModel::ALIVE_CHANNEL) a live
+    /// cell holds. See [`ALIVE_CHANNEL`](CaModel::ALIVE_CHANNEL).
+    const ALIVE_MIN: f32;
     /// The WGSL update kernel source (`include_str!` of the co-located file).
     const KERNEL_WGSL: &'static str;
     /// Whether the kernel declares the binding-4 seed buffer: the candidate's
