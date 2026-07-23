@@ -203,7 +203,8 @@ impl<M: CaModel> Executor for CaExecutor<M> {
                 bytes,
             }],
             stats: Stats {
-                bytes: grid_stats(&last),
+                scalars: Vec::new(),
+                blob: grid_stats(&last),
             },
         })
     }
@@ -384,8 +385,8 @@ mod tests {
                     .find(|a| a.name == STATE_ARTIFACT)
                     .expect("a state artifact");
                 let grid = Grid::from_bytes(&state.bytes).expect("grid");
-                assert_eq!(stats.bytes, grid_stats(&grid));
-                assert!(!stats.bytes.is_empty(), "the stats channel is filled");
+                assert_eq!(stats.blob, grid_stats(&grid));
+                assert!(!stats.blob.is_empty(), "the stats channel is filled");
             }
             other => panic!("expected Completed, got {other:?}"),
         }
@@ -421,8 +422,8 @@ mod tests {
                     .find(|a| a.name == STATE_ARTIFACT)
                     .expect("a state artifact");
                 let (_, grid) = decode_continuation(&state.bytes).expect("framed");
-                assert_eq!(stats.bytes, grid_stats(&grid));
-                assert!(!stats.bytes.is_empty(), "the stats channel is filled");
+                assert_eq!(stats.blob, grid_stats(&grid));
+                assert!(!stats.blob.is_empty(), "the stats channel is filled");
             }
             other => panic!("expected Completed, got {other:?}"),
         }
