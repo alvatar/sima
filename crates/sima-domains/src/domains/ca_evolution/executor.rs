@@ -192,12 +192,10 @@ impl<M: CaModel> Executor for CaExecutor<M> {
             &params,
             step_base,
         )?;
-        // Observational per-candidate stats, reduced on the GPU over the two
-        // resident grids ($G_N$ and $G_{N-1}$) before any readback. They travel
-        // the `Stats` channel to the journal and enter no record, manifest, or
-        // identity criterion, so a reduction fault degrades to empty stats
-        // rather than failing the evaluation. The alive rule is the model's own.
-        let scalars = reduce(
+        // Per-candidate stats, reduced on the GPU over the two resident grids
+        // ($G_N$ and $G_{N-1}$) before any readback. The alive rule is the
+        // model's own.
+        let reduced = reduce(
             &engine.context,
             &engine.reduce,
             &GridPair {
@@ -208,8 +206,8 @@ impl<M: CaModel> Executor for CaExecutor<M> {
                 alive_channel: M::ALIVE_CHANNEL,
                 alive_min: M::ALIVE_MIN,
             },
-        )
-        .unwrap_or_default();
+        );
+        let scalars = stats_or_propagate(reduced, shared.snapshot_when())?;
         let keep = keep_snapshot(shared.snapshot_when(), &scalars, M::NAME)?;
         // The committed artifact is the segment's final state. A stepped model
         // frames it as (step reached, grid) so a successor resumes the absolute
@@ -237,6 +235,23 @@ impl<M: CaModel> Executor for CaExecutor<M> {
                 blob: Vec::new(),
             },
         })
+    }
+}
+
+/// The stat scalars to carry forward given the reduction result and the run's
+/// predicate. With a predicate present the scalars decide whether the snapshot
+/// commits, so a reduction fault makes the verdict uncomputable and propagates.
+/// Without one the scalars are purely observational — they travel the `Stats`
+/// channel to the journal and enter no record, manifest, or identity criterion —
+/// so a fault degrades to empty stats rather than failing the evaluation.
+fn stats_or_propagate(
+    reduced: Result<Vec<(String, f64)>>,
+    predicate: Option<&(String, f64)>,
+) -> Result<Vec<(String, f64)>> {
+    match (reduced, predicate) {
+        (Ok(scalars), _) => Ok(scalars),
+        (Err(error), Some(_)) => Err(error),
+        (Err(_), None) => Ok(Vec::new()),
     }
 }
 
@@ -481,6 +496,39 @@ mod tests {
             keep_snapshot(Some(&predicate), &one_scalar("population", 1.0), "m"),
             Err(Error::Validation(_))
         ));
+    }
+
+    #[test]
+    fn a_successful_reduction_carries_its_scalars_either_way() -> Result<()> {
+        // Whether or not a predicate is present, a successful reduction's scalars
+        // pass through unchanged.
+        let predicate = ("population".to_string(), 0.5);
+        for guard in [None, Some(&predicate)] {
+            let scalars = stats_or_propagate(Ok(one_scalar("population", 1.0)), guard)?;
+            assert_eq!(scalars, one_scalar("population", 1.0));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_reduction_fault_propagates_under_a_predicate() {
+        // The predicate needs the scalars to decide the snapshot, so the real
+        // reduction error surfaces rather than a spurious missing-scalar fault.
+        let predicate = ("population".to_string(), 0.5);
+        let fault: Result<Vec<(String, f64)>> = Err(Error::Validation("device lost".to_string()));
+        match stats_or_propagate(fault, Some(&predicate)) {
+            Err(Error::Validation(message)) => assert_eq!(message, "device lost"),
+            other => panic!("expected the reduction error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_reduction_fault_degrades_to_empty_without_a_predicate() -> Result<()> {
+        // With no predicate the scalars are observational, so a fault degrades to
+        // an empty list and the evaluation still completes.
+        let fault: Result<Vec<(String, f64)>> = Err(Error::Validation("device lost".to_string()));
+        assert!(stats_or_propagate(fault, None)?.is_empty());
+        Ok(())
     }
 
     /// Requires a real Vulkan device. Run with `cargo test -- --ignored`.
