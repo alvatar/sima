@@ -357,7 +357,7 @@ mod tests {
 
     use sima_core::{Error, hash_bytes, write_frame};
     use sima_model::{FormatId, RunId};
-    use sima_scheduler::Event;
+    use sima_scheduler::{Event, StatScalar};
 
     use crate::feed::FOLLOW_PROTOCOL_VERSION;
 
@@ -507,6 +507,47 @@ mod tests {
         assert_eq!(info.format, loaded.run.format);
         assert_eq!(info.workers, loaded.execution.workers);
         assert_eq!(records, journaled);
+        Ok(())
+    }
+
+    #[test]
+    fn a_record_with_a_non_finite_scalar_round_trips_through_the_transport() -> Result<()> {
+        // The transport is the only place a journal Record is re-serialized to a
+        // line and re-parsed on the near side. A diverged candidate carries a
+        // non-finite scalar, which travels as JSON null and reads back as NaN,
+        // so the frame path must carry it without failing. StatScalar's
+        // PartialEq is value equality and NaN never equals NaN, so the recovered
+        // value is checked with is_nan rather than compared.
+        let committed = Record {
+            ts_ms: 7,
+            event: Event::Committed {
+                task: "aa".to_string(),
+                record: "11".repeat(32),
+                stats: vec![StatScalar {
+                    name: "activity".to_string(),
+                    value: f64::NAN,
+                }],
+                stats_blob_hex: String::new(),
+            },
+        };
+        let bytes = stream_of(&[
+            hello_at(FOLLOW_PROTOCOL_VERSION),
+            FollowFrame::Records(vec![committed.to_line()?]),
+            FollowFrame::Complete,
+        ]);
+        let (_, records) = snapshot_over(Stream::over(std::io::Cursor::new(bytes)))?;
+        let [record] = records.as_slice() else {
+            panic!("one record, got {records:?}");
+        };
+        let Event::Committed { stats, .. } = &record.event else {
+            panic!("a committed event, got {:?}", record.event);
+        };
+        assert_eq!(stats.len(), 1);
+        assert_eq!(stats[0].name, "activity");
+        assert!(
+            stats[0].value.is_nan(),
+            "the non-finite scalar reads back as NaN"
+        );
         Ok(())
     }
 
