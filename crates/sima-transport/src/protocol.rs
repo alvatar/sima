@@ -22,7 +22,7 @@ use sima_core::{Dec, Enc, Error, Result};
 use sima_model::{EnvironmentId, FormatId};
 
 /// Version of the wire protocol; the handshake refuses a mismatch.
-pub const PROTOCOL_VERSION: u32 = 4;
+pub const PROTOCOL_VERSION: u32 = 5;
 
 // Parent → child message tags.
 const TAG_HELLO: u8 = 0;
@@ -100,8 +100,9 @@ pub enum ToChild {
     Assign(Assignment),
 }
 
-/// A child → parent message.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// A child → parent message. `PartialEq` only, since [`ToParent::Done`]
+/// carries an [`Outcome`] whose [`Stats`] hold `f64` scalars.
+#[derive(Debug, Clone, PartialEq)]
 pub enum ToParent {
     /// The handshake answer: the child resolved its executor and speaks
     /// this protocol version.
@@ -254,7 +255,13 @@ impl ToParent {
                 for artifact in artifacts {
                     enc.str(&artifact.name).bytes(&artifact.bytes);
                 }
-                enc.bytes(&stats.bytes).str(reason);
+                // Stats: the scalar count, then each name and its f64 value,
+                // then the opaque family blob.
+                enc.u64(stats.scalars.len() as u64);
+                for (name, value) in &stats.scalars {
+                    enc.str(name).f64(*value);
+                }
+                enc.bytes(&stats.blob).str(reason);
             }
             ToParent::Panicked(reason) => {
                 enc.u8(TAG_PANICKED).str(reason);
@@ -292,8 +299,19 @@ impl ToParent {
                     let bytes = dec.bytes()?.to_vec();
                     artifacts.push(Artifact { name, bytes });
                 }
+                let scalar_count = dec.u64()?;
+                // No pre-allocation from the untrusted count: each scalar reads
+                // a length-prefixed name and eight value bytes, so a lying count
+                // fails on truncation before any oversized buffer exists.
+                let mut scalars = Vec::new();
+                for _ in 0..scalar_count {
+                    let name = dec.str()?.to_string();
+                    let value = dec.f64()?;
+                    scalars.push((name, value));
+                }
                 let stats = Stats {
-                    bytes: dec.bytes()?.to_vec(),
+                    scalars,
+                    blob: dec.bytes()?.to_vec(),
                 };
                 let reason = dec.str()?.to_string();
                 let outcome = match outcome_tag {
@@ -466,17 +484,27 @@ mod tests {
                         bytes: Vec::new(),
                     },
                 ],
-                stats: Stats { bytes: vec![0xAA] },
+                // Both channels present: named scalars and a family blob.
+                stats: Stats {
+                    scalars: vec![
+                        ("population".to_string(), 0.5),
+                        ("activity".to_string(), 1.25e-3),
+                    ],
+                    blob: vec![0xAA],
+                },
             }),
+            // A failure still reports scalars; the blob is empty.
             ToParent::Done(Outcome::Failed {
                 reason: "programmed failure".to_string(),
-                stats: Stats { bytes: Vec::new() },
+                stats: Stats {
+                    scalars: vec![("attempt".to_string(), 2.0)],
+                    blob: Vec::new(),
+                },
             }),
+            // Empty stats: neither channel carries anything.
             ToParent::Done(Outcome::Rejected {
                 reason: "programmed rejection".to_string(),
-                stats: Stats {
-                    bytes: vec![1, 2, 3],
-                },
+                stats: Stats::empty(),
             }),
             ToParent::Panicked("panic: boom".to_string()),
             ToParent::Fault("spec is malformed".to_string()),
@@ -493,7 +521,7 @@ mod tests {
     fn the_protocol_version_is_pinned() {
         // The handshake contract both binaries compile against; bumping it is
         // a deliberate act.
-        assert_eq!(PROTOCOL_VERSION, 4);
+        assert_eq!(PROTOCOL_VERSION, 5);
     }
 
     #[test]
@@ -531,6 +559,38 @@ mod tests {
     }
 
     #[test]
+    fn a_non_finite_scalar_survives_the_done_frame() -> Result<()> {
+        // A diverged candidate reports non-finite scalars; the wire carries the
+        // f64 bits, so they must reappear bit-exact. Compared by bits because a
+        // NaN never equals itself.
+        let done = ToParent::Done(Outcome::Completed {
+            artifacts: Vec::new(),
+            stats: Stats {
+                scalars: vec![
+                    ("c0.max".to_string(), f64::NAN),
+                    ("c0.mean".to_string(), f64::INFINITY),
+                    ("c0.min".to_string(), f64::NEG_INFINITY),
+                ],
+                blob: Vec::new(),
+            },
+        });
+        let ToParent::Done(Outcome::Completed { stats, .. }) = ToParent::decode(&done.encode())?
+        else {
+            panic!("expected a completed Done");
+        };
+        let bits: Vec<u64> = stats.scalars.iter().map(|(_, v)| v.to_bits()).collect();
+        assert_eq!(
+            bits,
+            vec![
+                f64::NAN.to_bits(),
+                f64::INFINITY.to_bits(),
+                f64::NEG_INFINITY.to_bits()
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
     fn unknown_message_tags_are_encoding_errors() {
         for payload in [[9u8].as_slice(), [255u8].as_slice()] {
             assert!(matches!(ToChild::decode(payload), Err(Error::Encoding(_))));
@@ -540,9 +600,10 @@ mod tests {
 
     #[test]
     fn an_unknown_outcome_tag_is_an_encoding_error() {
-        // A Done frame whose outcome tag is 3: structure otherwise valid.
+        // A Done frame whose outcome tag is 3: structure otherwise valid —
+        // no artifacts, no scalars, an empty blob, an empty reason.
         let mut enc = Enc::new();
-        enc.u8(TAG_DONE).u8(3).u64(0).bytes(&[]).str("");
+        enc.u8(TAG_DONE).u8(3).u64(0).u64(0).bytes(&[]).str("");
         assert!(matches!(
             ToParent::decode(&enc.finish()),
             Err(Error::Encoding(_))
