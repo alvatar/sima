@@ -309,7 +309,9 @@ mod tests {
             member: 0,
         };
         // The handshake completes inside spawn, so the resolver has already run.
-        let link = transport.spawn(0, Some(&binding), discarding_emitter())?.into_link();
+        let link = transport
+            .spawn(0, Some(&binding), discarding_emitter())?
+            .into_link();
         assert_eq!(link.device_name(), "loopback device");
         assert_eq!(
             *seen

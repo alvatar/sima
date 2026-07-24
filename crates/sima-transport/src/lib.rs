@@ -15,9 +15,12 @@
 //!   SIGKILL preemption.
 //! - [`remote`] — a worker inside a container runtime, optionally across an
 //!   ssh hop, over the same spawn and handshake machinery.
+//! - [`fleet`] — a worker on a rented instance reached over ssh, whose target
+//!   the orchestrator swaps under the running pool as instances are replaced.
 //! - [`loopback`] — the test transport: the real host loop and wire protocol
 //!   over in-memory pipes, for tests that need workers without processes.
 
+pub mod fleet;
 pub mod host;
 pub mod link;
 pub mod loopback;
@@ -27,6 +30,7 @@ pub mod subprocess;
 
 mod checkpoint_cadence;
 
+pub use fleet::{FleetMode, FleetTransport, SshTarget};
 pub use link::{LinkEvent, SpawnOutcome, WorkerLink, WorkerTransport};
 pub use remote::RemoteTransport;
 pub use subprocess::SubprocessTransport;
