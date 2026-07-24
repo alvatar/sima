@@ -69,16 +69,36 @@ pub struct Artifact {
     pub bytes: Vec<u8>,
 }
 
-/// Observational statistics: opaque, non-identity-bearing bytes destined for
-/// the run journal. May reflect execution context. Never enters a record.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Observational statistics destined for the run journal: named scalars plus
+/// an opaque family payload. Observational only — never enters a record, a
+/// manifest, or any identity criterion — and may reflect execution context.
+///
+/// The `f64` scalars make `Stats` (and every type embedding it) `PartialEq`
+/// only: a non-finite scalar never equals itself, matching IEEE-754.
+#[derive(Debug, Clone, PartialEq)]
 pub struct Stats {
-    /// Executor-defined observational payload.
-    pub bytes: Vec<u8>,
+    /// Named observational scalars, ordered as the executor emitted them. A
+    /// value may be non-finite when a candidate diverged.
+    pub scalars: Vec<(String, f64)>,
+    /// Opaque family payload for anything richer than a scalar. Empty when the
+    /// scalars carry everything.
+    pub blob: Vec<u8>,
 }
 
-/// The result of one evaluation attempt.
-#[derive(Debug, Clone, PartialEq, Eq)]
+impl Stats {
+    /// Stats carrying nothing: no scalars, an empty blob. The degraded result
+    /// when even the reduction over a failed attempt could not run.
+    pub fn empty() -> Stats {
+        Stats {
+            scalars: Vec::new(),
+            blob: Vec::new(),
+        }
+    }
+}
+
+/// The result of one evaluation attempt. `PartialEq` only, since [`Stats`]
+/// carries `f64` scalars.
+#[derive(Debug, Clone, PartialEq)]
 pub enum Outcome {
     /// The candidate evaluated successfully: committed artifacts plus
     /// observational stats.
@@ -137,5 +157,60 @@ mod tests {
         assert_eq!(worker.0, 7);
         assert_eq!(worker, WorkerId(7));
         assert_ne!(worker, WorkerId(8));
+    }
+
+    #[test]
+    fn stats_carry_named_scalars_and_a_blob() {
+        let stats = Stats {
+            scalars: vec![
+                ("population".to_string(), 0.5),
+                ("activity".to_string(), 1e-4),
+            ],
+            blob: vec![0xAA, 0xBB],
+        };
+        assert_eq!(stats.scalars.len(), 2);
+        assert_eq!(stats.scalars[0], ("population".to_string(), 0.5));
+        assert_eq!(stats.blob, vec![0xAA, 0xBB]);
+    }
+
+    #[test]
+    fn empty_stats_carry_nothing() {
+        let stats = Stats::empty();
+        assert!(stats.scalars.is_empty());
+        assert!(stats.blob.is_empty());
+    }
+
+    #[test]
+    fn every_outcome_arm_carries_stats() {
+        // The contract keeps stats symmetric across the three arms; a
+        // non-finite scalar is representable, so a diverged candidate still
+        // reports what it computed.
+        let stats = || Stats {
+            scalars: vec![("c0.max".to_string(), f64::NAN)],
+            blob: Vec::new(),
+        };
+        let arms = [
+            Outcome::Completed {
+                artifacts: Vec::new(),
+                stats: stats(),
+            },
+            Outcome::Failed {
+                reason: "transient".to_string(),
+                stats: stats(),
+            },
+            Outcome::Rejected {
+                reason: "definitive".to_string(),
+                stats: stats(),
+            },
+        ];
+        for arm in arms {
+            let carried = match arm {
+                Outcome::Completed { stats, .. }
+                | Outcome::Failed { stats, .. }
+                | Outcome::Rejected { stats, .. } => stats,
+            };
+            assert_eq!(carried.scalars.len(), 1);
+            assert!(carried.scalars[0].1.is_nan());
+        }
     }
 }

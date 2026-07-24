@@ -9,9 +9,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::config::LoadedConfig;
 use crate::journal;
-use sima_core::{Error, Result, from_hex};
-use sima_domains::{Domain, domain_for};
-use sima_model::FormatId;
+use crate::stats::render_stats;
+use sima_core::{Error, Result};
 use sima_scheduler::{Event, Record};
 
 /// One task's lifecycle, folded from the run journal.
@@ -126,13 +125,8 @@ impl TaskHistory {
     /// Applies one of this task's records: opens an attempt on a lease, closes
     /// the open one on whatever ended it, and moves the outcome to what the
     /// event states. `workers` supplies the device and host the attempt's
-    /// worker reported; `domain` renders a commit's stats.
-    fn apply(
-        &mut self,
-        record: &Record,
-        workers: &BTreeMap<u64, (String, String)>,
-        domain: &Domain,
-    ) -> Result<()> {
+    /// worker reported.
+    fn apply(&mut self, record: &Record, workers: &BTreeMap<u64, (String, String)>) {
         let ts_ms = record.ts_ms;
         match &record.event {
             // The first queueing is when the task started waiting; a resume
@@ -158,13 +152,14 @@ impl TaskHistory {
             }
             Event::Committed {
                 record: object,
-                stats_hex,
+                stats,
+                stats_blob_hex,
                 ..
             } => {
                 self.close(ts_ms, AttemptResult::Committed);
                 self.outcome = TaskOutcome::Committed {
                     record: object.clone(),
-                    stats: (domain.stats)(&from_hex(stats_hex)?)?,
+                    stats: render_stats(stats, stats_blob_hex),
                 };
             }
             Event::Failed { reason, .. } => {
@@ -223,7 +218,6 @@ impl TaskHistory {
             | Event::ChainRebound { .. }
             | Event::Diagnostic { .. } => {}
         }
-        Ok(())
     }
 
     /// Ends the open attempt at `ended_ms` with `result`. A malformed or
@@ -294,7 +288,7 @@ pub(crate) fn worker_bindings(records: &[Record]) -> BTreeMap<u64, (String, Stri
 /// key. One pass reads the worker bindings, a second drives each task's
 /// history through the events naming it: two walks of the journal, and one
 /// entry per task.
-fn ledger(records: &[Record], domain: &Domain) -> Result<BTreeMap<String, TaskHistory>> {
+fn ledger(records: &[Record]) -> BTreeMap<String, TaskHistory> {
     let workers = worker_bindings(records);
     let mut ledger: BTreeMap<String, TaskHistory> = BTreeMap::new();
     for record in records {
@@ -304,9 +298,9 @@ fn ledger(records: &[Record], domain: &Domain) -> Result<BTreeMap<String, TaskHi
         ledger
             .entry(task.to_string())
             .or_insert_with(|| TaskHistory::new(task))
-            .apply(record, &workers, domain)?;
+            .apply(record, &workers);
     }
-    Ok(ledger)
+    ledger
 }
 
 /// Resolves a task-key prefix against the keys the journal names in a
@@ -334,23 +328,18 @@ pub(crate) fn resolve_task_key(records: &[Record], prefix: &str) -> Result<Strin
 }
 
 /// One task's lifecycle in the run a loaded config describes, addressed by a
-/// prefix of its key. The committed outcome carries the stats its domain
-/// renders, the same rendering [`report`](crate::report) prints.
+/// prefix of its key. The committed outcome carries the stats line, the same
+/// rendering [`report`](crate::report) prints.
 pub fn task_history(config: &LoadedConfig, prefix: &str) -> Result<TaskHistory> {
-    task_history_records(&config.run.format, &journal::records(config)?, prefix)
+    task_history_records(&journal::records(config)?, prefix)
 }
 
 /// Projects one task's lifecycle from `records` — a run's lifecycle events in
-/// append order — rendering its committed stats through `format`'s domain.
-/// The fold half of [`task_history`], over records from any source.
-pub fn task_history_records(
-    format: &FormatId,
-    records: &[Record],
-    prefix: &str,
-) -> Result<TaskHistory> {
+/// append order. The fold half of [`task_history`], over records from any
+/// source.
+pub fn task_history_records(records: &[Record], prefix: &str) -> Result<TaskHistory> {
     let task = resolve_task_key(records, prefix)?;
-    let domain = domain_for(format)?;
-    ledger(records, &domain)?
+    ledger(records)
         .remove(&task)
         .ok_or_else(|| Error::Corruption(format!("task {task} resolved to no history")))
 }
@@ -358,30 +347,25 @@ pub fn task_history_records(
 /// Every task the run ended on a definitive failure, ordered by key: the
 /// tasks a finished run did not commit, and why.
 pub fn failures(config: &LoadedConfig) -> Result<Vec<TaskHistory>> {
-    failures_records(&config.run.format, &journal::records(config)?)
+    Ok(failures_records(&journal::records(config)?))
 }
 
 /// The histories of the tasks `records` shows the run did not commit, ordered
 /// by key. The fold half of [`failures`], over records from any source.
-pub fn failures_records(format: &FormatId, records: &[Record]) -> Result<Vec<TaskHistory>> {
-    let domain = domain_for(format)?;
-    Ok(ledger(records, &domain)?
+pub fn failures_records(records: &[Record]) -> Vec<TaskHistory> {
+    ledger(records)
         .into_values()
         .filter(TaskHistory::failed)
-        .collect())
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sima_scheduler::StatScalar;
     use sima_store::Store;
 
     use crate::fixtures::{journal_with, loaded};
-
-    /// The stub domain the synthetic journals render their stats through.
-    fn stub_domain() -> Result<Domain> {
-        domain_for(&FormatId::new("stub.v1")?)
-    }
 
     /// Wraps an event as a record stamped `ts_ms`.
     fn at(ts_ms: u64, event: Event) -> Record {
@@ -414,7 +398,11 @@ mod tests {
             Event::Committed {
                 task: task.to_string(),
                 record: "11".repeat(32),
-                stats_hex: "00000000".to_string(),
+                stats: vec![StatScalar {
+                    name: "attempt".to_string(),
+                    value: 0.0,
+                }],
+                stats_blob_hex: String::new(),
             },
         )
     }
@@ -426,7 +414,8 @@ mod tests {
                 task: task.to_string(),
                 attempt,
                 reason: "programmed flake".to_string(),
-                stats_hex: String::new(),
+                stats: Vec::new(),
+                stats_blob_hex: String::new(),
             },
         )
     }
@@ -448,7 +437,8 @@ mod tests {
                 task: task.to_string(),
                 attempt,
                 reason: "programmed rejection".to_string(),
-                stats_hex: String::new(),
+                stats: Vec::new(),
+                stats_blob_hex: String::new(),
             },
         )
     }
@@ -476,9 +466,10 @@ mod tests {
         )
     }
 
-    /// The ledger `records` fold to, through the stub domain.
+    /// The ledger `records` fold to. Returns `Result` for `?` ergonomics in
+    /// the tests, though the fold itself never fails.
     fn folded(records: &[Record]) -> Result<BTreeMap<String, TaskHistory>> {
-        ledger(records, &stub_domain()?)
+        Ok(ledger(records))
     }
 
     /// One task's history out of the ledger `records` fold to.
@@ -507,7 +498,7 @@ mod tests {
             history.outcome,
             TaskOutcome::Committed {
                 record: "11".repeat(32),
-                stats: "attempt 0".to_string(),
+                stats: "attempt=0".to_string(),
             }
         );
         Ok(())
@@ -847,7 +838,6 @@ mod tests {
 
     #[test]
     fn the_record_folds_equal_the_histories_read_from_the_journal() -> Result<()> {
-        let format = FormatId::new("stub.v1")?;
         let records = vec![
             queued("abcd", 1),
             leased("abcd", 0, 0, 2),
@@ -858,10 +848,10 @@ mod tests {
         ];
         let (_dir, config) = journal_with(&records)?;
         assert_eq!(
-            task_history_records(&format, &records, "ab")?,
+            task_history_records(&records, "ab")?,
             task_history(&config, "ab")?
         );
-        assert_eq!(failures_records(&format, &records)?, failures(&config)?);
+        assert_eq!(failures_records(&records), failures(&config)?);
         Ok(())
     }
 }

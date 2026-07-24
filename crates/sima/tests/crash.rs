@@ -186,8 +186,8 @@ fn write_step_segmented_config(dir: &Path, name: &str, store: &str) -> PathBuf {
 }
 
 /// The steps each committed attempt executed after the journal's last
-/// `run_started` line — the resume segment — from the stub's stats
-/// encoding `(u32 attempt, u64 steps)`.
+/// `run_started` line — the resume segment — read from the stub's `steps`
+/// scalar in each `Committed` event.
 fn resumed_steps(config_path: &Path) -> Vec<u64> {
     let events = journal_events(config_path);
     let resume_start = events
@@ -197,15 +197,13 @@ fn resumed_steps(config_path: &Path) -> Vec<u64> {
     events[resume_start..]
         .iter()
         .filter_map(|e| match e {
-            sima_pipeline::Event::Committed { stats_hex, .. } => {
-                let bytes: Vec<u8> = (0..stats_hex.len())
-                    .step_by(2)
-                    .map(|i| u8::from_str_radix(&stats_hex[i..i + 2], 16).expect("hex"))
-                    .collect();
-                let mut dec = sima_core::Dec::new(&bytes);
-                dec.u32().expect("attempt");
-                Some(dec.u64().expect("steps"))
-            }
+            sima_pipeline::Event::Committed { stats, .. } => Some(
+                stats
+                    .iter()
+                    .find(|s| s.name == "steps")
+                    .map(|s| s.value as u64)
+                    .expect("a steps scalar"),
+            ),
             _ => None,
         })
         .collect()

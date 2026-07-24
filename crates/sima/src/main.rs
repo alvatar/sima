@@ -278,8 +278,8 @@ fn status_task_command(target: &Target, prefix: &str) -> ExitCode {
 
 /// Projects one task's lifecycle from the records the target run journaled.
 fn read_task_history(target: &Target, prefix: &str) -> Result<TaskHistory> {
-    let (info, records) = snapshot(target)?;
-    task_history_records(&info.format, &records, prefix)
+    let (_info, records) = snapshot(target)?;
+    task_history_records(&records, prefix)
 }
 
 /// `sima status <config.toml> --failed`: the tasks the run did not commit,
@@ -299,7 +299,7 @@ fn status_failed_command(target: &Target) -> ExitCode {
 /// names.
 fn read_failures(target: &Target) -> Result<(RunId, Vec<TaskHistory>)> {
     let (info, records) = snapshot(target)?;
-    Ok((info.run, failures_records(&info.format, &records)?))
+    Ok((info.run, failures_records(&records)))
 }
 
 /// Seeds the tui's display from any existing journal for `config`'s run,
@@ -432,15 +432,15 @@ fn group_stats(rows: &[ReportRow]) -> Vec<(usize, &str)> {
 /// Renders each committed task's stats from the records the target run
 /// journaled.
 fn read_report(target: &Target) -> Result<Vec<ReportRow>> {
-    let (info, records) = snapshot(target)?;
-    report_records(&info.format, &records)
+    let (_info, records) = snapshot(target)?;
+    report_records(&records)
 }
 
 /// Renders one committed task's stats from the records the target run
 /// journaled.
 fn read_report_task(target: &Target, prefix: &str) -> Result<ReportRow> {
-    let (info, records) = snapshot(target)?;
-    report_task_records(&info.format, &records, prefix)
+    let (_info, records) = snapshot(target)?;
+    report_task_records(&records, prefix)
 }
 
 /// `sima follow-serve <config> [--once]`: writes the run's follow stream to

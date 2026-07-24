@@ -5,8 +5,61 @@ use sima_toolkit_wgsl::{Buffer, Context, Kernel};
 
 use crate::cellular::Grid;
 
+/// The result of a [`run`]: the two ping-pong buffers left resident on the
+/// device — the final grid $G_N$ and the step before it $G_{N-1}$ — over the
+/// context that produced them.
+///
+/// Downloading the final grid and reducing over the pair are separate
+/// operations on this handle: a caller that only needs stats never pays for the
+/// full grid readback, and the reduction reads the two buffers in place.
+pub struct Trajectory<'a> {
+    context: &'a Context,
+    /// The most recently written buffer: the final grid $G_N$.
+    current: Buffer,
+    /// The buffer written the step before: $G_{N-1}$. Equal in content to
+    /// `current` when the run took no steps.
+    previous: Buffer,
+    width: u32,
+    height: u32,
+    channels: u32,
+}
+
+impl<'a> Trajectory<'a> {
+    /// The final grid buffer $G_N$, resident on the device.
+    pub fn current(&self) -> &Buffer {
+        &self.current
+    }
+
+    /// The grid one step before the final, $G_{N-1}$, resident on the device.
+    pub fn previous(&self) -> &Buffer {
+        &self.previous
+    }
+
+    /// The cell count of the grid: `width * height`.
+    pub fn cell_count(&self) -> u32 {
+        self.width * self.height
+    }
+
+    /// The channel count of the grid.
+    pub fn channels(&self) -> u32 {
+        self.channels
+    }
+
+    /// Downloads the final grid and rebuilds it into a [`Grid`].
+    pub fn grid(&self) -> Result<Grid> {
+        // Rebuild the payload from little-endian bytes four at a time: a u8 ->
+        // f32 cast of the unaligned download buffer would be unsound.
+        let bytes = self.context.download(&self.current)?;
+        let data: Vec<f32> = bytes
+            .chunks_exact(4)
+            .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+            .collect();
+        Grid::new(self.width, self.height, self.channels, data)
+    }
+}
+
 /// Advances `initial` by `steps` double-buffered dispatches of `kernel`,
-/// returning the resulting grid.
+/// returning a [`Trajectory`] over the two buffers left resident.
 ///
 /// Each step dispatches `kernel` over the whole grid with one invocation per
 /// cell, ping-ponging between two device buffers. The bindings follow the
@@ -31,21 +84,18 @@ use crate::cellular::Grid;
 /// step buffer is created or bound and the dispatch is byte-identical to a run
 /// without one.
 ///
-/// `steps == 0` returns a clone of `initial` without dispatching. The harness
-/// is neighborhood-agnostic: a small stencil and a large-radius convolution
-/// are both just the `kernel` argument.
-pub fn run(
-    context: &Context,
+/// `steps == 0` dispatches nothing and leaves both buffers holding `initial`,
+/// so a reduction over the pair reports no activity. The harness is
+/// neighborhood-agnostic: a small stencil and a large-radius convolution are
+/// both just the `kernel` argument.
+pub fn run<'a>(
+    context: &'a Context,
     kernel: &Kernel,
     initial: &Grid,
     steps: u32,
     params: &[&Buffer],
     step_base: Option<u64>,
-) -> Result<Grid> {
-    if steps == 0 {
-        return Ok(initial.clone());
-    }
-
+) -> Result<Trajectory<'a>> {
     let width = initial.width();
     let height = initial.height();
     let channels = initial.channels();
@@ -59,7 +109,9 @@ pub fn run(
     let dims = context.buffer(std::mem::size_of_val(&dims_values))?;
     context.upload(&dims, bytemuck::cast_slice(&dims_values))?;
     // A f32 -> u8 cast is alignment-safe, so the payload uploads zero-copy.
+    // Both buffers start on `initial` so a zero-step run leaves the pair equal.
     context.upload(&a, bytemuck::cast_slice(payload))?;
+    context.upload(&b, bytemuck::cast_slice(payload))?;
 
     // The per-step index buffer, created once and re-uploaded each dispatch when
     // the model opts in. Two u32 words carry the step as a little-endian u64.
@@ -72,12 +124,14 @@ pub fn run(
     let cell_count = width as u64 * height as u64;
     let groups = [cell_count.div_ceil(64) as u32, 1, 1];
 
-    // `src` holds the current state, `dst` receives the next. Swapping after
-    // each dispatch leaves `src` on the most recently written buffer for both
-    // even and odd step counts.
-    let mut src = &a;
-    let mut dst = &b;
+    // `current_is_a` tracks which buffer holds the latest state. Each dispatch
+    // reads the current buffer and writes the other; after the swap the written
+    // buffer becomes current. This leaves `current` on the most recently
+    // written buffer and `previous` on the one before it, for even and odd step
+    // counts alike.
+    let mut current_is_a = true;
     for i in 0..steps {
+        let (src, dst) = if current_is_a { (&a, &b) } else { (&b, &a) };
         let mut bound: Vec<&Buffer> = Vec::with_capacity(3 + params.len() + 1);
         bound.push(src);
         bound.push(dst);
@@ -90,17 +144,18 @@ pub fn run(
             bound.push(buffer);
         }
         context.dispatch(kernel, &bound, groups)?;
-        std::mem::swap(&mut src, &mut dst);
+        current_is_a = !current_is_a;
     }
 
-    // Rebuild the payload from little-endian bytes four at a time: a u8 -> f32
-    // cast of the unaligned download buffer would be unsound.
-    let bytes = context.download(src)?;
-    let data: Vec<f32> = bytes
-        .chunks_exact(4)
-        .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
-        .collect();
-    Grid::new(width, height, channels, data)
+    let (current, previous) = if current_is_a { (a, b) } else { (b, a) };
+    Ok(Trajectory {
+        context,
+        current,
+        previous,
+        width,
+        height,
+        channels,
+    })
 }
 
 #[cfg(test)]
@@ -150,7 +205,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         //   x0=max(1,3,4)=4, x1=max(4,1,2)=4, x2=max(2,4,5)=5,
         //   x3=max(5,2,3)=5, x4=max(3,5,1)=5.
         let initial = Grid::new(5, 1, 1, vec![1.0, 4.0, 2.0, 5.0, 3.0]).expect("grid");
-        let result = run(&context, &kernel, &initial, 1, &[], None).expect("run");
+        let result = run(&context, &kernel, &initial, 1, &[], None)
+            .expect("run")
+            .grid()
+            .expect("grid");
         assert_eq!(result.data(), &[4.0, 4.0, 5.0, 5.0, 5.0]);
     }
 
@@ -164,7 +222,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         // every cell's toroidal 3-point max is 7. Channel 1 is [9, 2, 5], so
         // every cell's max is 9. The two channels never mix.
         let initial = Grid::new(3, 1, 2, vec![1.0, 9.0, 4.0, 2.0, 7.0, 5.0]).expect("grid");
-        let result = run(&context, &kernel, &initial, 1, &[], None).expect("run");
+        let result = run(&context, &kernel, &initial, 1, &[], None)
+            .expect("run")
+            .grid()
+            .expect("grid");
         assert_eq!(result.data(), &[7.0, 9.0, 7.0, 9.0, 7.0, 9.0]);
     }
 
@@ -179,13 +240,28 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         // Advancing k steps must equal advancing one step k times, for even and
         // odd k alike. A ping-pong that returns the wrong buffer for even step
         // counts would break this self-consistency.
-        let two = run(&context, &kernel, &initial, 2, &[], None).expect("two");
-        let one = run(&context, &kernel, &initial, 1, &[], None).expect("one");
-        let one_then_one = run(&context, &kernel, &one, 1, &[], None).expect("one then one");
+        let two = run(&context, &kernel, &initial, 2, &[], None)
+            .expect("two")
+            .grid()
+            .expect("grid");
+        let one = run(&context, &kernel, &initial, 1, &[], None)
+            .expect("one")
+            .grid()
+            .expect("grid");
+        let one_then_one = run(&context, &kernel, &one, 1, &[], None)
+            .expect("one then one")
+            .grid()
+            .expect("grid");
         assert_eq!(two.to_bytes(), one_then_one.to_bytes());
 
-        let three = run(&context, &kernel, &initial, 3, &[], None).expect("three");
-        let two_then_one = run(&context, &kernel, &two, 1, &[], None).expect("two then one");
+        let three = run(&context, &kernel, &initial, 3, &[], None)
+            .expect("three")
+            .grid()
+            .expect("grid");
+        let two_then_one = run(&context, &kernel, &two, 1, &[], None)
+            .expect("two then one")
+            .grid()
+            .expect("grid");
         assert_eq!(three.to_bytes(), two_then_one.to_bytes());
     }
 
@@ -196,7 +272,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let context = Context::new().expect("create compute context");
         let kernel = smoke(&context);
         let initial = Grid::new(3, 2, 2, (0..12).map(|i| i as f32).collect()).expect("grid");
-        let result = run(&context, &kernel, &initial, 0, &[], None).expect("run");
+        let result = run(&context, &kernel, &initial, 0, &[], None)
+            .expect("run")
+            .grid()
+            .expect("grid");
         assert_eq!(result.to_bytes(), initial.to_bytes());
     }
 
@@ -214,7 +293,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             .expect("build step probe kernel");
         let initial = Grid::new(4, 4, 1, vec![0.0; 16]).expect("grid");
         let (base, steps) = (100u64, 5u32);
-        let result = run(&context, &kernel, &initial, steps, &[], Some(base)).expect("run");
+        let result = run(&context, &kernel, &initial, steps, &[], Some(base))
+            .expect("run")
+            .grid()
+            .expect("grid");
         // Sum of base ..= base + steps - 1 = 100 + 101 + 102 + 103 + 104 = 510.
         let expected = (base..base + u64::from(steps)).sum::<u64>() as f32;
         assert!(

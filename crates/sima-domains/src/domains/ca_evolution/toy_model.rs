@@ -133,6 +133,9 @@ impl CaModel for Toy {
     const NAME: &'static str = "toy";
     const VERSION: &'static str = "v1";
     const CHANNELS: u32 = 1;
+    // The toy has one channel; a cell counts as alive at half scale.
+    const ALIVE_CHANNEL: u32 = 0;
+    const ALIVE_MIN: f32 = 0.5;
     const KERNEL_WGSL: &'static str = "// toy kernel";
 
     fn uniforms(genome: &ToyGenome, shared: &CaParams) -> Vec<f32> {
@@ -190,7 +193,10 @@ mod tests {
             .iter()
             .map(|c| c.name())
             .collect();
-        assert_eq!(names, ["toy.executor", "toy.kernel", "wgsl.compiler"]);
+        assert_eq!(
+            names,
+            ["toy.executor", "toy.kernel", "toy.reduce", "wgsl.compiler"]
+        );
         Ok(())
     }
 
@@ -215,7 +221,7 @@ mod tests {
         let params_table: toml::Table = "width = 8\nheight = 8\nsteps = 4\ndt = 1.0\nbase = 0.5"
             .parse()
             .expect("parse params table");
-        let blob = translate_params::<Toy>(&params_table)?.bytes;
+        let blob = translate_params::<Toy>(&params_table, false)?.bytes;
         let (shared, ignition) = decode_params::<Toy>(&blob)?;
         assert_eq!((shared.width(), shared.height(), shared.steps()), (8, 8, 4));
         assert_eq!(ignition, Toy::ignition(0.5));

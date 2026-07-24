@@ -37,6 +37,10 @@ impl CaModel for GrayScott {
     const NAME: &'static str = "ca_evolution.gray_scott";
     const VERSION: &'static str = "v1";
     const CHANNELS: u32 = 2;
+    // The V field (channel 1) carries the pattern; a cell is alive where V rises
+    // meaningfully above the near-zero background.
+    const ALIVE_CHANNEL: u32 = 1;
+    const ALIVE_MIN: f32 = 0.1;
     const KERNEL_WGSL: &'static str = include_str!("gray_scott.wgsl");
 
     fn uniforms(genome: &GrayScottGenome, shared: &CaParams) -> Vec<f32> {
@@ -94,14 +98,15 @@ mod tests {
         let domain = build_domain::<GrayScott>()?;
         assert_eq!(domain.format.as_str(), GrayScott::FORMAT_ID);
         let components = domain.environment.components();
-        assert_eq!(components.len(), 3);
+        assert_eq!(components.len(), 4);
         assert_eq!(components[0].name(), "ca_evolution.gray_scott.executor");
         assert_eq!(components[1].name(), "ca_evolution.gray_scott.kernel");
         assert_eq!(
             *components[1].value(),
             EnvironmentValue::Digest(source_digest(GrayScott::KERNEL_WGSL))
         );
-        assert_eq!(components[2].name(), "wgsl.compiler");
+        assert_eq!(components[2].name(), "ca_evolution.gray_scott.reduce");
+        assert_eq!(components[3].name(), "wgsl.compiler");
         Ok(())
     }
 

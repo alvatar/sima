@@ -121,15 +121,20 @@ fn accumulate(
         sima_core::crashpoint("stub.accumulate.step");
         checkpoint.offer(&|| state.to_bytes());
     }
-    let mut stats = Enc::new();
-    stats.u32(ctx.attempt).u64(steps_executed);
     Ok(Outcome::Completed {
         artifacts: vec![Artifact {
             name: sima_contracts::STATE_ARTIFACT.to_string(),
             bytes: state.to_bytes(),
         }],
+        // The accumulate stats carry the attempt and the steps this attempt
+        // actually executed, so a test can prove a resume checkpoint shortened
+        // re-execution.
         stats: Stats {
-            bytes: stats.finish(),
+            scalars: vec![
+                ("attempt".to_string(), f64::from(ctx.attempt)),
+                ("steps".to_string(), steps_executed as f64),
+            ],
+            blob: STUB_STATS_BLOB.to_vec(),
         },
     })
 }
@@ -166,37 +171,18 @@ fn identity_digest(input: &TaskInput<'_>) -> Hash {
     hash_bytes(&enc.finish())
 }
 
-/// Observational stats: the attempt number, encoded. Journal-bound, never
-/// identity-bearing, so it legitimately varies with the execution context.
+/// A fixed marker the stub places in the stats family blob, so the blob
+/// channel is exercised across the wire and journal alongside the scalars.
+const STUB_STATS_BLOB: &[u8] = b"stub";
+
+/// Observational stats: the attempt number as a named scalar, plus the fixed
+/// blob marker. Journal-bound, never identity-bearing, so it legitimately
+/// varies with the execution context.
 fn stats(ctx: &ExecutionContext) -> Stats {
-    let mut enc = Enc::new();
-    enc.u32(ctx.attempt);
     Stats {
-        bytes: enc.finish(),
+        scalars: vec![("attempt".to_string(), f64::from(ctx.attempt))],
+        blob: STUB_STATS_BLOB.to_vec(),
     }
-}
-
-/// Renders the stub's committed stats bytes into one line for `sima report`.
-/// The `Accumulate` behavior records the attempt followed by the steps it
-/// executed; every other behavior records the attempt alone, so a payload
-/// longer than the four attempt bytes carries the step count. Malformed bytes
-/// are [`Error::Validation`].
-pub(crate) fn describe_stats(bytes: &[u8]) -> Result<String> {
-    render_stats(bytes).map_err(|e| Error::Validation(format!("malformed stub stats: {e}")))
-}
-
-/// Decodes and formats the stub stats; decoder faults surface as
-/// [`Error::Encoding`], which [`describe_stats`] restates as a validation fault.
-fn render_stats(bytes: &[u8]) -> Result<String> {
-    let mut dec = sima_core::Dec::new(bytes);
-    let attempt = dec.u32()?;
-    let line = if bytes.len() > 4 {
-        format!("attempt {attempt} steps {}", dec.u64()?)
-    } else {
-        format!("attempt {attempt}")
-    };
-    dec.finish()?;
-    Ok(line)
 }
 
 #[cfg(test)]
@@ -229,31 +215,14 @@ mod tests {
         }
     }
 
-    #[test]
-    fn describe_stats_renders_the_attempt_only_payload() -> Result<()> {
-        // The `stats(ctx)` producer for every non-accumulate behavior: a bare
-        // attempt.
-        let bytes = stats(&ctx(2, 0)).bytes;
-        assert_eq!(describe_stats(&bytes)?, "attempt 2");
-        Ok(())
-    }
-
-    #[test]
-    fn describe_stats_renders_the_accumulate_payload() -> Result<()> {
-        // attempt 1 then steps 5, exactly as `accumulate` encodes them.
-        let mut enc = Enc::new();
-        enc.u32(1).u64(5);
-        assert_eq!(describe_stats(&enc.finish())?, "attempt 1 steps 5");
-        Ok(())
-    }
-
-    #[test]
-    fn describe_stats_rejects_malformed_bytes() {
-        // Too short for the attempt, and a five-byte payload too short for the
-        // steps u64: both are validation faults.
-        for bytes in [vec![0u8; 3], vec![0u8; 5]] {
-            assert!(matches!(describe_stats(&bytes), Err(Error::Validation(_))));
-        }
+    /// The value of the named scalar in `stats`; panics when it is absent.
+    fn scalar(stats: &Stats, name: &str) -> f64 {
+        stats
+            .scalars
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, v)| *v)
+            .unwrap_or_else(|| panic!("scalar {name} present"))
     }
 
     /// The single artifact of a `Completed` outcome; panics otherwise.
@@ -423,8 +392,8 @@ mod tests {
         match exec.execute(&input, &ctx(2, 0), &NoCheckpoint)? {
             Outcome::Rejected { reason, stats } => {
                 assert_eq!(reason, "programmed rejection");
-                // The stub folds the attempt into the observational stats.
-                assert!(!stats.bytes.is_empty());
+                // The stub folds the attempt into the observational scalars.
+                assert_eq!(scalar(&stats, "attempt"), 2.0);
             }
             other => panic!("expected Rejected, got {other:?}"),
         }
@@ -452,7 +421,7 @@ mod tests {
             (Outcome::Failed { stats: a, .. }, Outcome::Failed { stats: b, .. }) => (a, b),
             other => panic!("expected two Failed outcomes, got {other:?}"),
         };
-        assert!(!first.bytes.is_empty());
+        assert_eq!(scalar(&first, "attempt"), 0.0);
         assert_ne!(first, second);
         Ok(())
     }
@@ -624,10 +593,8 @@ mod tests {
         };
         assert_eq!(artifacts.len(), 1, "accumulate commits one artifact");
         assert_eq!(artifacts[0].name, sima_contracts::STATE_ARTIFACT);
-        let mut dec = sima_core::Dec::new(&stats.bytes);
-        let attempt = dec.u32().expect("stats attempt");
-        let steps = dec.u64().expect("stats steps");
-        dec.finish().expect("stats end");
+        let attempt = scalar(stats, "attempt") as u32;
+        let steps = scalar(stats, "steps") as u64;
         (artifacts[0].bytes.clone(), attempt, steps)
     }
 

@@ -22,5 +22,5 @@ mod event;
 mod record;
 
 pub use collector::{Collector, DurableSink, Emitter, Observer};
-pub use event::{Event, Level};
+pub use event::{Event, Level, StatScalar};
 pub use record::Record;

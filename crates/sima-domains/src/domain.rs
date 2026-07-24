@@ -40,11 +40,6 @@ pub struct Domain {
     pub device_desc: fn(Option<&DeviceBinding>) -> Result<(String, String)>,
     /// The environment entering every task's identity.
     pub environment: Environment,
-    /// Renders the domain's executor stats bytes — the observational summary
-    /// carried on the `Stats` channel — into one human-readable line, or
-    /// [`Error::Validation`] for bytes the format does not recognize. `sima
-    /// report` calls this per committed task.
-    pub stats: fn(&[u8]) -> Result<String>,
 }
 
 /// Static dispatch: the domains this build knows. The stub is matched directly;
@@ -63,12 +58,14 @@ pub fn domain_for(format: &FormatId) -> Result<Domain> {
 }
 
 /// Params translation for the domain: the `[run.params]` table into the opaque
-/// canonical params bytes. The domain owns and validates its keys.
-pub fn params_for(format: &FormatId, table: &toml::Table) -> Result<Params> {
+/// canonical params bytes. The domain owns and validates its keys. `segmented`
+/// is whether the run divides candidates into segments — a domain may forbid a
+/// setting that a segment chain cannot honor; the stub ignores it.
+pub fn params_for(format: &FormatId, table: &toml::Table, segmented: bool) -> Result<Params> {
     if format.as_str() == stub::ID {
         return stub::params(table);
     }
-    ca_evolution::params_for(format, table).unwrap_or_else(|| {
+    ca_evolution::params_for(format, table, segmented).unwrap_or_else(|| {
         Err(Error::Validation(format!(
             "unknown format id {:?}",
             format.as_str()
@@ -123,7 +120,7 @@ mod tests {
         let unknown = format("no-such-domain.v1");
         for result in [
             domain_for(&unknown).map(|_| ()),
-            params_for(&unknown, &toml::Table::new()).map(|_| ()),
+            params_for(&unknown, &toml::Table::new(), false).map(|_| ()),
         ] {
             match result {
                 Err(Error::Validation(msg)) => {
@@ -199,6 +196,7 @@ mod tests {
             [
                 "ca_evolution.gray_scott.executor",
                 "ca_evolution.gray_scott.kernel",
+                "ca_evolution.gray_scott.reduce",
                 "wgsl.compiler",
             ]
         );

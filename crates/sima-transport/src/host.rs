@@ -368,7 +368,8 @@ mod tests {
                             bytes: enc.finish(),
                         }],
                         stats: Stats {
-                            bytes: vec![ctx.attempt as u8],
+                            scalars: vec![("attempt".to_string(), f64::from(ctx.attempt))],
+                            blob: Vec::new(),
                         },
                     })
                 }
@@ -378,18 +379,18 @@ mod tests {
                     }
                     Ok(Outcome::Completed {
                         artifacts: Vec::new(),
-                        stats: Stats { bytes: Vec::new() },
+                        stats: Stats::empty(),
                     })
                 }
                 Behavior::Panic => panic!("programmed panic"),
                 Behavior::Fault => Err(Error::Validation("programmed fault".to_string())),
                 Behavior::Fail => Ok(Outcome::Failed {
                     reason: "programmed failure".to_string(),
-                    stats: Stats { bytes: Vec::new() },
+                    stats: Stats::empty(),
                 }),
                 Behavior::Reject => Ok(Outcome::Rejected {
                     reason: "programmed rejection".to_string(),
-                    stats: Stats { bytes: Vec::new() },
+                    stats: Stats::empty(),
                 }),
             }
         }
@@ -610,7 +611,10 @@ mod tests {
         let ToParent::Done(Outcome::Completed { artifacts, stats }) = &frames[1] else {
             panic!("expected Done(Completed), got {:?}", frames[1]);
         };
-        assert_eq!(stats.bytes, vec![assign.attempt as u8]);
+        assert_eq!(
+            stats.scalars,
+            vec![("attempt".to_string(), f64::from(assign.attempt))]
+        );
         // The echo artifact folds exactly what the child handed the executor.
         let mut expected = Enc::new();
         expected

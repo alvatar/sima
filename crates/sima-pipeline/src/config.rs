@@ -247,7 +247,7 @@ pub fn load(path: &Path) -> Result<LoadedConfig> {
     // Identity flows through the dispatched-to code: the generator and the
     // domain turn their tables into the canonical bytes the model hashes.
     let generator_params = generator_params_for(&generator_id, &file.run.generator.rest)?;
-    let params = params_for(&format, &file.run.params)?;
+    let params = params_for(&format, &file.run.params, segments.is_some())?;
     let run = RunConfig {
         root_seed,
         segments,

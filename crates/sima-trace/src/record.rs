@@ -10,7 +10,9 @@ use crate::event::Event;
 /// into the line, so the line is flat: the event's own keys sit beside
 /// `ts_ms` at the top level:
 /// `{"ts_ms":1234,"event":"leased","task":"ab…","worker":3,"attempt":1}`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// `PartialEq` only, following [`Event`], whose outcome variants carry `f64`
+/// scalars.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Record {
     /// Wall-clock milliseconds since the Unix epoch, stamped by the
     /// collector thread when the line is appended.
@@ -42,7 +44,7 @@ impl Record {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::event::Level;
+    use crate::event::{Level, StatScalar};
 
     /// A record as the collector writes it: stamped.
     fn stamped(event: Event) -> Record {
@@ -75,7 +77,8 @@ mod tests {
             task: "cd".repeat(32),
             attempt: 0,
             reason: "panic: line one\nline two".to_string(),
-            stats_hex: String::new(),
+            stats: Vec::new(),
+            stats_blob_hex: String::new(),
         });
         let line = record.to_line()?;
         assert!(!line.contains('\n'));
@@ -122,7 +125,11 @@ mod tests {
         let record = stamped(Event::Committed {
             task: "11".repeat(32),
             record: "22".repeat(32),
-            stats_hex: "00000000".to_string(),
+            stats: vec![StatScalar {
+                name: "population".to_string(),
+                value: 0.25,
+            }],
+            stats_blob_hex: "00000000".to_string(),
         });
         let line = record.to_line()?;
         assert_eq!(Record::from_line(&line)?, record);
@@ -148,13 +155,18 @@ mod tests {
             Event::Committed {
                 task: task.clone(),
                 record: "ef".repeat(32),
-                stats_hex: "0011".to_string(),
+                stats: vec![StatScalar {
+                    name: "population".to_string(),
+                    value: 0.5,
+                }],
+                stats_blob_hex: "0011".to_string(),
             },
             Event::Failed {
                 task: task.clone(),
                 attempt: 0,
                 reason: "flaky".to_string(),
-                stats_hex: String::new(),
+                stats: Vec::new(),
+                stats_blob_hex: String::new(),
             },
             Event::Retried {
                 task: task.clone(),
@@ -164,7 +176,8 @@ mod tests {
                 task: task.clone(),
                 attempt: 1,
                 reason: "rejected".to_string(),
-                stats_hex: String::new(),
+                stats: Vec::new(),
+                stats_blob_hex: String::new(),
             },
             Event::Faulted {
                 task: task.clone(),

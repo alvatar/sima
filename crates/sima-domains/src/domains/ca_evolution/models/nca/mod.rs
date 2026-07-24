@@ -50,6 +50,10 @@ impl CaModel for Nca {
     const NAME: &'static str = "ca_evolution.nca";
     const VERSION: &'static str = "v1";
     const CHANNELS: u32 = CHANNELS;
+    // Channel 0 is the visible state channel; a cell is alive where it rises
+    // meaningfully above zero.
+    const ALIVE_CHANNEL: u32 = 0;
+    const ALIVE_MIN: f32 = 0.1;
     // The kernel is the shared WGSL PRNG snippet composed with the async update
     // kernel. `concat!` needs string literals, and `include_str!` expands to one
     // only within this crate — the reason both files live in `sima-domains`. The
@@ -111,14 +115,15 @@ mod tests {
         let domain = build_domain::<Nca>()?;
         assert_eq!(domain.format.as_str(), Nca::FORMAT_ID);
         let components = domain.environment.components();
-        assert_eq!(components.len(), 3);
+        assert_eq!(components.len(), 4);
         assert_eq!(components[0].name(), "ca_evolution.nca.executor");
         assert_eq!(components[1].name(), "ca_evolution.nca.kernel");
         assert_eq!(
             *components[1].value(),
             EnvironmentValue::Digest(source_digest(Nca::KERNEL_WGSL))
         );
-        assert_eq!(components[2].name(), "wgsl.compiler");
+        assert_eq!(components[2].name(), "ca_evolution.nca.reduce");
+        assert_eq!(components[3].name(), "wgsl.compiler");
         Ok(())
     }
 

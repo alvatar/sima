@@ -27,6 +27,7 @@ mod observe;
 mod orchestrate;
 mod remove;
 mod report;
+mod stats;
 mod status;
 mod task_history;
 mod timeline;

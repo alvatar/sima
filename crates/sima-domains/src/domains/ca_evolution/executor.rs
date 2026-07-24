@@ -14,15 +14,15 @@ use sima_toolkit_wgsl::{Buffer, Context, Kernel};
 use super::continuation::{decode_continuation, encode_continuation};
 use super::model::CaModel;
 use super::params::decode_params;
-use super::stats::grid_stats;
-use crate::cellular::{Grid, run};
+use crate::cellular::{Grid, GridPair, ReduceKernels, reduce, run};
 
 /// Evaluates a candidate of the model `M` on the GPU, under format
 /// `M::FORMAT_ID`: the spec's genome and the run params frame one task — ignite
-/// (or continue) a grid, advance it `steps` kernel dispatches, commit the final
-/// state as the `state` artifact with empty stats. A bare-grid model commits the
-/// grid's canonical bytes; a stepped model commits framed continuation state,
-/// the reached step ahead of the grid.
+/// (or continue) a grid, advance it `steps` kernel dispatches, reduce the final
+/// grid pair into the observational stat scalars, and commit the final state as
+/// the `state` artifact. A bare-grid model commits the grid's canonical bytes; a
+/// stepped model commits framed continuation state, the reached step ahead of
+/// the grid.
 ///
 /// The GPU engine is created lazily on the first execute, never at construction,
 /// so [`build_domain`](super::domain::build_domain) stays device-free —
@@ -52,13 +52,15 @@ pub(crate) struct CaExecutor<M: CaModel> {
     model: PhantomData<fn() -> M>,
 }
 
-/// The device context and the compiled kernel, created together once.
+/// The device context and the compiled kernels, created together once: the
+/// update kernel that advances the grid and the reduction that summarizes it.
 struct GpuEngine {
-    /// Declared before `context` so it drops first: struct fields drop in
-    /// declaration order, and the kernel's pipeline handles belong to the
-    /// context's device, so the kernel must be destroyed before the context. A
+    /// Declared before `context` so they drop first: struct fields drop in
+    /// declaration order, and the kernels' pipeline handles belong to the
+    /// context's device, so a kernel must be destroyed before the context. A
     /// reorder would drop the device first and segfault at engine drop.
     kernel: Kernel,
+    reduce: ReduceKernels,
     context: Context,
 }
 
@@ -150,7 +152,12 @@ impl<M: CaModel> Executor for CaExecutor<M> {
                 None => Context::new()?,
             };
             let kernel = context.kernel(M::KERNEL_WGSL, "main")?;
-            *gpu = Some(GpuEngine { context, kernel });
+            let reduce = ReduceKernels::build(&context)?;
+            *gpu = Some(GpuEngine {
+                context,
+                kernel,
+                reduce,
+            });
         }
         let engine = gpu.as_ref().expect("gpu engine initialized above");
         // The model's uniform buffer — binding 3 of the cellular convention,
@@ -177,7 +184,7 @@ impl<M: CaModel> Executor for CaExecutor<M> {
         if let Some(seed_buffer) = seed_buffer.as_ref() {
             params.push(seed_buffer);
         }
-        let last = run(
+        let trajectory = run(
             &engine.context,
             &engine.kernel,
             &initial,
@@ -185,27 +192,113 @@ impl<M: CaModel> Executor for CaExecutor<M> {
             &params,
             step_base,
         )?;
-        // The one committed artifact is the segment's final state. A stepped
-        // model frames it as (step reached, grid) so a successor resumes the
-        // absolute step; a bare-grid model commits the grid alone, since its
-        // update is the same map at every step and the grid is a complete
-        // continuation on its own.
-        let bytes = match step_base {
-            Some(base) => encode_continuation(base + u64::from(shared.steps()), &last),
-            None => last.to_bytes(),
-        };
-        // Observational per-candidate stats over the final decoded grid (never
-        // the continuation frame): they travel the `Stats` channel to the journal
-        // and enter no record, manifest, or identity criterion.
-        Ok(Outcome::Completed {
-            artifacts: vec![Artifact {
+        // Per-candidate stats, reduced on the GPU over the two resident grids
+        // ($G_N$ and $G_{N-1}$) before any readback. The alive rule is the
+        // model's own.
+        let reduced = reduce(
+            &engine.context,
+            &engine.reduce,
+            &GridPair {
+                current: trajectory.current(),
+                previous: trajectory.previous(),
+                channels: trajectory.channels(),
+                cell_count: trajectory.cell_count(),
+                alive_channel: M::ALIVE_CHANNEL,
+                alive_min: M::ALIVE_MIN,
+            },
+        );
+        let scalars = stats_or_propagate(reduced, shared.snapshot_when())?;
+        let keep = keep_snapshot(shared.snapshot_when(), &scalars, M::NAME)?;
+        // The committed artifact is the segment's final state. A stepped model
+        // frames it as (step reached, grid) so a successor resumes the absolute
+        // step; a bare-grid model commits the grid alone, since its update is the
+        // same map at every step and the grid is a complete continuation on its
+        // own. A dropped snapshot commits an empty artifact list — and skips the
+        // full-grid readback entirely, which is the bandwidth the predicate saves.
+        let artifacts = if keep {
+            let last = trajectory.grid()?;
+            let bytes = match step_base {
+                Some(base) => encode_continuation(base + u64::from(shared.steps()), &last),
+                None => last.to_bytes(),
+            };
+            vec![Artifact {
                 name: STATE_ARTIFACT.to_string(),
                 bytes,
-            }],
+            }]
+        } else {
+            Vec::new()
+        };
+        Ok(Outcome::Completed {
+            artifacts,
             stats: Stats {
-                bytes: grid_stats(&last),
+                scalars,
+                blob: Vec::new(),
             },
         })
+    }
+}
+
+/// The stat scalars to carry forward given the reduction result and the run's
+/// predicate. The fault handling discriminates on the error variant:
+///
+/// - A definitive fault (`Error::Validation`, a misdeclared model constant such
+///   as `M::CHANNELS` or `M::ALIVE_CHANNEL`) can never succeed for this model,
+///   so it surfaces whether or not a predicate needs the scalars — never
+///   silently blanking stats for every task of the misdeclared model.
+/// - A transient device fault (`Error::Gpu`, and any other variant) fails the
+///   evaluation only when a predicate is present, since the scalars then decide
+///   whether the snapshot commits and the verdict is uncomputable without them.
+///   Absent a predicate the scalars are purely observational — they travel the
+///   `Stats` channel to the journal and enter no record, manifest, or identity
+///   criterion — so the fault degrades to empty stats rather than failing.
+fn stats_or_propagate(
+    reduced: Result<Vec<(String, f64)>>,
+    predicate: Option<&(String, f64)>,
+) -> Result<Vec<(String, f64)>> {
+    match reduced {
+        Ok(scalars) => Ok(scalars),
+        Err(error @ Error::Validation(_)) => Err(error),
+        Err(error) => match predicate {
+            Some(_) => Err(error),
+            None => Ok(Vec::new()),
+        },
+    }
+}
+
+/// Whether to commit the snapshot given the run's predicate and the computed
+/// stats. An absent predicate always commits. A present predicate commits
+/// exactly when the named scalar is at least its minimum AND every scalar in
+/// the list is finite: a non-finite value anywhere marks the candidate diverged
+/// and drops the snapshot. A predicate naming a scalar absent from the stats is
+/// an infrastructure fault, unreachable after translation-time validation.
+///
+/// The all-finite conjunct lives here because IEEE semantics are reliable at the
+/// Rust layer. In the shader they are not: WGSL `min`/`max` skip a NaN operand
+/// and the population test counts a NaN cell as dead, so a predicate on
+/// `population`, `c<i>.min`, or `c<i>.max` could otherwise commit a partially
+/// diverged grid. The finite check catches divergence a sum-derived scalar
+/// (mean, variance, activity) would surface but those scalars would not.
+fn keep_snapshot(
+    predicate: Option<&(String, f64)>,
+    scalars: &[(String, f64)],
+    model: &str,
+) -> Result<bool> {
+    match predicate {
+        None => Ok(true),
+        Some((scalar, min)) => {
+            let value = scalars
+                .iter()
+                .find(|(name, _)| name == scalar)
+                .map(|(_, value)| *value)
+                .ok_or_else(|| {
+                    Error::Validation(format!(
+                        "{model} snapshot_when names scalar {scalar:?}, absent from the \
+                         computed stats"
+                    ))
+                })?;
+            let all_finite = scalars.iter().all(|(_, value)| value.is_finite());
+            Ok(all_finite && value >= *min)
+        }
     }
 }
 
@@ -354,13 +447,167 @@ mod tests {
         Ok(())
     }
 
+    /// The scalar names the reduction emits for a `channels`-channel model.
+    fn expected_scalar_names(channels: u32) -> Vec<String> {
+        crate::cellular::scalar_names(channels)
+    }
+
+    /// A stat list carrying one scalar at `value`.
+    fn one_scalar(name: &str, value: f64) -> Vec<(String, f64)> {
+        vec![(name.to_string(), value)]
+    }
+
+    #[test]
+    fn an_absent_predicate_keeps_the_snapshot() -> Result<()> {
+        // No predicate commits regardless of the scalar values, a diverged
+        // candidate included: the divergence guard is a predicate-only conjunct.
+        assert!(keep_snapshot(None, &one_scalar("population", 0.0), "m")?);
+        assert!(keep_snapshot(None, &one_scalar("c0.min", f64::NAN), "m")?);
+        Ok(())
+    }
+
+    #[test]
+    fn a_predicate_keeps_at_and_above_the_threshold() -> Result<()> {
+        let predicate = ("population".to_string(), 0.5);
+        // Exactly at the minimum keeps, and above it keeps.
+        assert!(keep_snapshot(
+            Some(&predicate),
+            &one_scalar("population", 0.5),
+            "m"
+        )?);
+        assert!(keep_snapshot(
+            Some(&predicate),
+            &one_scalar("population", 0.9),
+            "m"
+        )?);
+        Ok(())
+    }
+
+    #[test]
+    fn a_predicate_drops_below_the_threshold() -> Result<()> {
+        let predicate = ("population".to_string(), 0.5);
+        assert!(!keep_snapshot(
+            Some(&predicate),
+            &one_scalar("population", 0.49),
+            "m"
+        )?);
+        Ok(())
+    }
+
+    #[test]
+    fn a_predicate_drops_a_non_finite_value() -> Result<()> {
+        // A diverged candidate: NaN and the infinities all fail the gate, so the
+        // snapshot is dropped rather than committed on a spurious comparison.
+        let predicate = ("activity".to_string(), 1.0e-4);
+        for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert!(!keep_snapshot(
+                Some(&predicate),
+                &one_scalar("activity", value),
+                "m"
+            )?);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_predicate_drops_when_another_scalar_diverges() -> Result<()> {
+        // The named scalar clears its threshold, but a different scalar is
+        // non-finite: the candidate diverged, so the snapshot drops. WGSL
+        // min/max skip NaN operands and the population test counts a NaN cell as
+        // dead, so a predicate on a finite scalar must still catch divergence
+        // reported through another scalar.
+        let predicate = ("population".to_string(), 0.5);
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let scalars = vec![("population".to_string(), 0.9), ("c0.min".to_string(), bad)];
+            assert!(!keep_snapshot(Some(&predicate), &scalars, "m")?);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_predicate_keeps_when_every_scalar_is_finite() -> Result<()> {
+        // The named scalar clears its threshold and every scalar in the list is
+        // finite, so the snapshot commits: the divergence guard admits a
+        // converged candidate.
+        let predicate = ("population".to_string(), 0.5);
+        let scalars = vec![
+            ("c0.min".to_string(), -1.0),
+            ("population".to_string(), 0.9),
+            ("activity".to_string(), 0.001),
+        ];
+        assert!(keep_snapshot(Some(&predicate), &scalars, "m")?);
+        Ok(())
+    }
+
+    #[test]
+    fn a_predicate_naming_a_missing_scalar_is_a_fault() {
+        let predicate = ("nonesuch".to_string(), 0.5);
+        assert!(matches!(
+            keep_snapshot(Some(&predicate), &one_scalar("population", 1.0), "m"),
+            Err(Error::Validation(_))
+        ));
+    }
+
+    #[test]
+    fn a_successful_reduction_carries_its_scalars_either_way() -> Result<()> {
+        // Whether or not a predicate is present, a successful reduction's scalars
+        // pass through unchanged.
+        let predicate = ("population".to_string(), 0.5);
+        for guard in [None, Some(&predicate)] {
+            let scalars = stats_or_propagate(Ok(one_scalar("population", 1.0)), guard)?;
+            assert_eq!(scalars, one_scalar("population", 1.0));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_device_fault_propagates_under_a_predicate() {
+        // A transient device fault (`Error::Gpu`) with a predicate present: the
+        // predicate needs the scalars to decide the snapshot, so the fault
+        // surfaces rather than a spurious missing-scalar fault.
+        let predicate = ("population".to_string(), 0.5);
+        let fault: Result<Vec<(String, f64)>> = Err(Error::Gpu("device lost".to_string()));
+        match stats_or_propagate(fault, Some(&predicate)) {
+            Err(Error::Gpu(message)) => assert_eq!(message, "device lost"),
+            other => panic!("expected the device fault, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_device_fault_degrades_to_empty_without_a_predicate() -> Result<()> {
+        // A transient device fault (`Error::Gpu`) with no predicate: the scalars
+        // are observational, so the fault degrades to an empty list and the
+        // evaluation still completes.
+        let fault: Result<Vec<(String, f64)>> = Err(Error::Gpu("device lost".to_string()));
+        assert!(stats_or_propagate(fault, None)?.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn a_validation_fault_propagates_either_way() {
+        // `Error::Validation` from the reduction is a misdeclared model constant:
+        // the reduction can never succeed for this model, so the fault surfaces
+        // whether or not a predicate needs the scalars, never silently blanking
+        // stats.
+        let predicate = ("population".to_string(), 0.5);
+        for guard in [None, Some(&predicate)] {
+            let fault: Result<Vec<(String, f64)>> =
+                Err(Error::Validation("alive_channel out of range".to_string()));
+            match stats_or_propagate(fault, guard) {
+                Err(Error::Validation(message)) => {
+                    assert_eq!(message, "alive_channel out of range");
+                }
+                other => panic!("expected the validation fault, got {other:?}"),
+            }
+        }
+    }
+
     /// Requires a real Vulkan device. Run with `cargo test -- --ignored`.
     #[test]
     #[ignore = "requires a Vulkan device"]
-    fn stats_summarize_the_committed_grid() {
-        // A bare-grid model commits the grid alone, so its stats are
-        // `grid_stats` of the grid the committed bytes decode to. Gray-Scott,
-        // the simplest bare-grid model, is the vehicle.
+    fn a_bare_grid_evaluation_reduces_to_named_scalars() {
+        // A bare-grid model reduces its final grid pair into the named scalars;
+        // the family blob stays empty. Gray-Scott, two channels, is the vehicle.
         let exec = CaExecutor::<GrayScott>::new(None).expect("executor");
         let spec = Spec {
             format: FormatId::new(GrayScott::FORMAT_ID).expect("format id"),
@@ -379,13 +626,23 @@ mod tests {
             .expect("execute")
         {
             Outcome::Completed { artifacts, stats } => {
-                let state = artifacts
+                assert!(
+                    artifacts.iter().any(|a| a.name == STATE_ARTIFACT),
+                    "a state artifact"
+                );
+                assert!(stats.blob.is_empty(), "ca_evolution carries no blob");
+                let names: Vec<String> = stats.scalars.iter().map(|(n, _)| n.clone()).collect();
+                assert_eq!(names, expected_scalar_names(GrayScott::CHANNELS));
+                let population = stats
+                    .scalars
                     .iter()
-                    .find(|a| a.name == STATE_ARTIFACT)
-                    .expect("a state artifact");
-                let grid = Grid::from_bytes(&state.bytes).expect("grid");
-                assert_eq!(stats.bytes, grid_stats(&grid));
-                assert!(!stats.bytes.is_empty(), "the stats channel is filled");
+                    .find(|(n, _)| n == "population")
+                    .expect("a population scalar")
+                    .1;
+                assert!(
+                    (0.0..=1.0).contains(&population),
+                    "population is a fraction: {population}"
+                );
             }
             other => panic!("expected Completed, got {other:?}"),
         }
@@ -394,11 +651,10 @@ mod tests {
     /// Requires a real Vulkan device. Run with `cargo test -- --ignored`.
     #[test]
     #[ignore = "requires a Vulkan device"]
-    fn stats_summarize_the_decoded_grid() {
-        // A stepped model commits framed continuation state, and its stats are
-        // `grid_stats` of the final decoded grid — the grid inside the
-        // continuation frame, never the framed bytes. NCA, the simplest
-        // stepped model, is the vehicle.
+    fn a_stepped_evaluation_reduces_the_decoded_grid() {
+        // A stepped model frames its committed state, but the reduction runs over
+        // the resident grid pair, so it names the same scalars. NCA, eight
+        // channels, is the vehicle.
         let exec = CaExecutor::<Nca>::new(None).expect("executor");
         let genome = Nca::sample(&GenConfig::<Nca>::new(0.5).expect("config"), 42, 0);
         let spec = Spec {
@@ -420,9 +676,46 @@ mod tests {
                     .iter()
                     .find(|a| a.name == STATE_ARTIFACT)
                     .expect("a state artifact");
-                let (_, grid) = decode_continuation(&state.bytes).expect("framed");
-                assert_eq!(stats.bytes, grid_stats(&grid));
-                assert!(!stats.bytes.is_empty(), "the stats channel is filled");
+                // The committed state is a continuation frame; the reduction ran
+                // over the grid, not these framed bytes.
+                decode_continuation(&state.bytes).expect("framed");
+                assert!(stats.blob.is_empty(), "ca_evolution carries no blob");
+                let names: Vec<String> = stats.scalars.iter().map(|(n, _)| n.clone()).collect();
+                assert_eq!(names, expected_scalar_names(Nca::CHANNELS));
+            }
+            other => panic!("expected Completed, got {other:?}"),
+        }
+    }
+
+    /// Requires a real Vulkan device. Run with `cargo test -- --ignored`.
+    #[test]
+    #[ignore = "requires a Vulkan device"]
+    fn a_failed_predicate_drops_the_snapshot_but_keeps_the_stats() {
+        // `population` is a fraction, so a minimum of 2.0 can never be met: the
+        // state artifact is dropped, the outcome still completes, and the stats
+        // are journaled regardless.
+        let exec = CaExecutor::<GrayScott>::new(None).expect("executor");
+        let spec = Spec {
+            format: FormatId::new(GrayScott::FORMAT_ID).expect("format id"),
+            bytes: Genome::<GrayScott>::new(0.055, 0.062, 0.16, 0.08)
+                .expect("genome")
+                .to_bytes(),
+        };
+        let params = Params {
+            bytes: encode_params::<GrayScott>(
+                &CaParams::new(32, 32, 16, 1.0)
+                    .expect("params")
+                    .with_snapshot_when(Some(("population".to_string(), 2.0))),
+                &Ignition::<GrayScott>::new(0.5, 0.25, 8, 0.02).expect("ignition"),
+            ),
+        };
+        match exec
+            .execute(&input(&spec, &params, None), &ctx(), &NoCheckpoint)
+            .expect("execute")
+        {
+            Outcome::Completed { artifacts, stats } => {
+                assert!(artifacts.is_empty(), "the dropped snapshot commits nothing");
+                assert!(!stats.scalars.is_empty(), "stats are journaled regardless");
             }
             other => panic!("expected Completed, got {other:?}"),
         }
