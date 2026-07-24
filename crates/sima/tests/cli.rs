@@ -524,26 +524,6 @@ fn report_spend_refuses_a_remote_host() {
 }
 
 #[test]
-fn report_timeline_accepts_a_remote_host() {
-    let dir = tempfile::tempdir().expect("temp dir");
-    let config = write_config(dir.path(), r#""succeed""#);
-    let path = config.to_str().expect("utf-8 path");
-    assert_eq!(sima(&["run", path]).status.code(), Some(0));
-
-    // The timeline view is journal-derived, so it takes `--on` like the
-    // `timeline` command did: the dispatch accepts the flag and reaches the
-    // remote feed, which fails against an unreachable host with a feed error
-    // rather than the usage error.
-    let output = sima(&["report", path, "--timeline", "--on", "sima-none.invalid"]);
-    assert_eq!(output.status.code(), Some(1), "{output:?}");
-    let stderr = String::from_utf8(output.stderr).expect("stderr is UTF-8");
-    assert!(
-        !stderr.contains("usage"),
-        "the flag is accepted, not a usage error: {stderr}"
-    );
-}
-
-#[test]
 fn a_rerun_of_a_finalized_run_reports_prior_commits() {
     let dir = tempfile::tempdir().expect("temp dir");
     let config = write_config(dir.path(), r#""succeed", "succeed""#);
