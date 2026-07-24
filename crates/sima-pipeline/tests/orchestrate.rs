@@ -157,6 +157,7 @@ fn an_undispatchable_config_orchestrates_to_validation_without_touching_the_stor
     let config = LoadedConfig {
         devices: Vec::new(),
         remotes: Vec::new(),
+        fleet: None,
         run: RunConfig {
             root_seed: 1,
             segments: None,
