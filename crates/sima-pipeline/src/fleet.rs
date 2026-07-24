@@ -429,6 +429,18 @@ impl<'a, 'b> Supervisor<'a, 'b> {
     /// Announces the initial fleet composition once, as soon as the emitter is
     /// available: one `InstanceOnline` per instance still holding a guard.
     fn announce_composition(&self) {
+        // Latch only once the emitter has arrived. A tick that beats the start
+        // hook would otherwise spend the latch with no emitter to receive the
+        // events, dropping the whole initial composition from the journal; a
+        // later tick, once the emitter is present, announces it instead.
+        if self
+            .emitter
+            .lock()
+            .expect("the emitter lock is never poisoned")
+            .is_none()
+        {
+            return;
+        }
         if self.announced.swap(true, Ordering::Relaxed) {
             return;
         }
@@ -1288,6 +1300,101 @@ mod tests {
         // The transport retired, and no run-level fault event was emitted: the
         // run will resume as Interrupted, not fault under strict fill.
         assert!(instances[0].transport.live_host().is_none());
+        release_all(instances)?;
+        Ok(())
+    }
+
+    #[test]
+    fn the_composition_is_announced_once_the_emitter_arrives_not_before() -> Result<()> {
+        // A tick that beats the start hook must not spend the announcement
+        // latch: the initial composition would vanish from the journal. The
+        // latch holds until the emitter arrives, then a later tick announces.
+        let (_dir, store, run) = acquisition_env();
+        let lock = store.acquire_run_lock(&run)?;
+        let provider = StubProvider::new(vec![offer("a", 100_000)]);
+        let format = FormatId::new("stub.v1")?;
+        let fleet = stub_fleet(1);
+        let instances = acquire_fleet(
+            &fleet,
+            &provider,
+            &store,
+            &lock,
+            &deviceless_probe(),
+            &format,
+            &exec(),
+        )?;
+        let interrupt = AtomicBool::new(false);
+        let captured: Arc<Mutex<Vec<Event>>> = Arc::new(Mutex::new(Vec::new()));
+        let captured_obs = Arc::clone(&captured);
+        let observer = move |record: &Record| {
+            captured_obs
+                .lock()
+                .expect("capture lock")
+                .push(record.event.clone());
+        };
+        thread::scope(|scope| -> Result<()> {
+            let collector = Collector::spawn(scope, NullSink, &observer);
+            let emitter = Mutex::new(None);
+            let supervisor = Supervisor::new(
+                &provider, &store, &lock, &fleet, &instances, &interrupt, &emitter,
+            );
+            // The emitter has not arrived: this tick announces nothing and
+            // leaves the latch unspent.
+            supervisor.tick(now_ms())?;
+            *emitter.lock().expect("emitter lock") = Some(collector.emitter());
+            // The emitter is present now: this tick announces the composition.
+            supervisor.tick(now_ms())?;
+            // The latch holds: a third tick announces nothing more.
+            supervisor.tick(now_ms())?;
+            *emitter.lock().expect("emitter lock") = None;
+            collector.shutdown()
+        })?;
+        let online = captured
+            .lock()
+            .expect("capture lock")
+            .iter()
+            .filter(|event| matches!(event, Event::InstanceOnline { .. }))
+            .count();
+        assert_eq!(
+            online, 1,
+            "the composition is announced exactly once, after the emitter arrives"
+        );
+        release_all(instances)?;
+        Ok(())
+    }
+
+    #[test]
+    fn the_composition_is_announced_once_when_the_emitter_is_present_from_the_start() -> Result<()>
+    {
+        // The regression: with the emitter present from the first tick, the
+        // announcement fires once, and a second tick does not repeat it.
+        let (_dir, store, run) = acquisition_env();
+        let lock = store.acquire_run_lock(&run)?;
+        let provider = StubProvider::new(vec![offer("a", 100_000)]);
+        let format = FormatId::new("stub.v1")?;
+        let fleet = stub_fleet(1);
+        let instances = acquire_fleet(
+            &fleet,
+            &provider,
+            &store,
+            &lock,
+            &deviceless_probe(),
+            &format,
+            &exec(),
+        )?;
+        let interrupt = AtomicBool::new(false);
+        let events = capture_events(|emitter| {
+            let supervisor = Supervisor::new(
+                &provider, &store, &lock, &fleet, &instances, &interrupt, emitter,
+            );
+            supervisor.tick(now_ms())?;
+            supervisor.tick(now_ms())
+        })?;
+        let online = events
+            .iter()
+            .filter(|event| matches!(event, Event::InstanceOnline { .. }))
+            .count();
+        assert_eq!(online, 1, "announced exactly once from the start");
         release_all(instances)?;
         Ok(())
     }
