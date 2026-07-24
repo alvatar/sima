@@ -174,6 +174,11 @@ fn acquire_one<'a>(
         format.clone(),
         exec.checkpoint_interval,
         exec.checkpoint_interval_steps,
+        // The transport waits out a respawn against a dead host on the same
+        // readiness bounds the fleet acquires under, bridging the window until
+        // the supervisor swaps a replacement in.
+        fleet.ready_timeout,
+        fleet.ready_poll,
     );
     Ok(FleetInstance {
         guard: Mutex::new(Some(guard)),
