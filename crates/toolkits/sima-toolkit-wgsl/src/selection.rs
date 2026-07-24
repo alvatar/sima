@@ -72,9 +72,13 @@ impl DeviceType {
 /// class in enumeration order.
 ///
 /// Creates and destroys an instance of its own, so callers learn what hardware
-/// exists without holding a [`Context`](crate::Context).
+/// exists without holding a [`Context`](crate::Context). A machine without
+/// Vulkan — no loader library, or a loader whose driver search comes up empty —
+/// has no such device, so it enumerates as an empty list, never an error; the
+/// worker's `--enumerate` probe relies on this to answer "none" on a driverless
+/// host instead of failing the probe.
 pub fn enumerate_devices() -> Result<Vec<DeviceInfo>> {
-    instance::with_query_instance(|instance| {
+    let devices = instance::with_query_instance_or_none(|instance| {
         let candidates = compute_capable_devices(instance)?;
         // Members count within a class, so each class gets its own running
         // index as enumeration order is walked.
@@ -104,7 +108,8 @@ pub fn enumerate_devices() -> Result<Vec<DeviceInfo>> {
             });
         }
         Ok(devices)
-    })
+    })?;
+    Ok(devices.unwrap_or_default())
 }
 
 /// The name and driver version of the device that `device` — or, for `None`,

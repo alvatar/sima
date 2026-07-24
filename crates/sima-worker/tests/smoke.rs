@@ -342,6 +342,30 @@ fn the_enumerate_probe_prints_one_json_device_per_line() {
 }
 
 #[test]
+fn the_enumerate_probe_answers_none_on_a_machine_without_a_driver() {
+    // A driverless machine — a CI runner, a fleet instance with a broken
+    // driver — has zero compute devices, and "none" is the probe's answer
+    // there, never a failure: the fleet derives one deviceless worker from an
+    // empty probe. `VK_DRIVER_FILES` naming a nonexistent manifest makes the
+    // loader's driver search come up empty, the same condition as a machine
+    // with no driver installed.
+    let output = Command::new(env!("CARGO_BIN_EXE_sima-worker"))
+        .arg("--enumerate")
+        .env("VK_DRIVER_FILES", "/nonexistent/no_driver.json")
+        .output()
+        .expect("run the probe");
+    assert!(
+        output.status.success(),
+        "a driverless probe exits zero: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        output.stdout.is_empty(),
+        "a driverless machine enumerates no devices"
+    );
+}
+
+#[test]
 fn a_protocol_version_mismatch_exits_nonzero_before_ready() {
     let mut worker = Worker::spawn();
     worker.send(&hello(PROTOCOL_VERSION + 1));
