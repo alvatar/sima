@@ -418,40 +418,53 @@ impl<'a, 'b> Supervisor<'a, 'b> {
         }
     }
 
-    /// One heartbeat: announce the composition once, assess the budget, then
-    /// each instance's health. Budget exhaustion short-circuits the health
-    /// poll — the whole run is winding down. `now_ms` is a parameter so a test
-    /// can drive exhaustion without waiting on the clock.
+    /// Winds the run down for budget exhaustion: sets the interrupt flag SIGINT
+    /// sets, so the run winds down gracefully and the guards tear the fleet
+    /// down, and announces the exhaustion once. Shared by the heartbeat's own
+    /// budget check and a replacement refused for want of budget.
+    fn wind_down_for_budget(&self, exhaustion: Exhaustion) {
+        self.interrupt.store(true, Ordering::Relaxed);
+        if !self.budget_announced.swap(true, Ordering::Relaxed) {
+            self.emit(match exhaustion {
+                Exhaustion::Spend { accrued, cap } => Event::BudgetSpendExhausted {
+                    accrued_microusd: accrued.0,
+                    cap_microusd: cap.0,
+                },
+                Exhaustion::WallClock { deadline_ms } => {
+                    Event::BudgetWallClockExhausted { deadline_ms }
+                }
+            });
+        }
+    }
+
+    /// One heartbeat: observe the wind-down flag, announce the composition
+    /// once, assess the budget, then each instance's health. Budget exhaustion
+    /// short-circuits the health poll — the whole run is winding down. `now_ms`
+    /// is a parameter so a test can drive exhaustion without waiting on the
+    /// clock.
     fn tick(&self, now_ms: u64) -> Result<()> {
+        // Once wind-down is requested — Ctrl-C or budget — the marketplace is
+        // off limits: rent no replacement while the run is ending. The flag is
+        // read first, before any provider call.
+        if self.interrupt.load(Ordering::Relaxed) {
+            return Ok(());
+        }
         self.announce_composition();
         if let Verdict::Exhausted(exhaustion) =
             assess(self.store, self.lock.run(), &self.fleet.budget, now_ms)?
         {
-            // The same flag SIGINT sets: the run winds down gracefully and the
-            // guards tear the fleet down.
-            self.interrupt.store(true, Ordering::Relaxed);
-            if !self.budget_announced.swap(true, Ordering::Relaxed) {
-                self.emit(match exhaustion {
-                    Exhaustion::Spend { accrued, cap } => Event::BudgetSpendExhausted {
-                        accrued_microusd: accrued.0,
-                        cap_microusd: cap.0,
-                    },
-                    Exhaustion::WallClock { deadline_ms } => {
-                        Event::BudgetWallClockExhausted { deadline_ms }
-                    }
-                });
-            }
+            self.wind_down_for_budget(exhaustion);
             return Ok(());
         }
         for instance in self.instances {
-            self.check_instance(instance)?;
+            self.check_instance(instance, now_ms)?;
         }
         Ok(())
     }
 
     /// Polls one instance's health, replacing it if the provider reports it
     /// gone.
-    fn check_instance(&self, instance: &FleetInstance<'a>) -> Result<()> {
+    fn check_instance(&self, instance: &FleetInstance<'a>, now_ms: u64) -> Result<()> {
         let id = match &*instance
             .guard
             .lock()
@@ -463,14 +476,15 @@ impl<'a, 'b> Supervisor<'a, 'b> {
         };
         match self.provider.instance(&id)? {
             InstanceStatus::Ready(_) | InstanceStatus::Provisioning => Ok(()),
-            InstanceStatus::Gone => self.replace(instance),
+            InstanceStatus::Gone => self.replace(instance, now_ms),
         }
     }
 
     /// Replaces a lost instance: blocks the transport's spawns, closes the dead
     /// instance out, acquires a replacement, and swaps the target — or retires
-    /// the transport when no replacement can be made.
-    fn replace(&self, instance: &FleetInstance<'a>) -> Result<()> {
+    /// the transport when no replacement can be made. `now_ms` dates the budget
+    /// re-assessment a failed acquisition triggers.
+    fn replace(&self, instance: &FleetInstance<'a>, now_ms: u64) -> Result<()> {
         // Block the pool's spawns while the target is in flux; the worker
         // threads wait this out rather than spawning against the dead host.
         instance.transport.mark_replacing();
@@ -529,10 +543,23 @@ impl<'a, 'b> Supervisor<'a, 'b> {
                 Ok(())
             }
             Err(_) => {
-                // No replacement: retire. Strict fill faults the run; best-effort
-                // runs on with one fewer pool.
-                let fatal = matches!(self.fleet.fill, FillPolicy::Strict);
-                instance.transport.retire(fatal);
+                // A replacement refused because the budget is exhausted is a
+                // graceful wind-down, not a strict-fill fault: exhaustion is
+                // resumable, a fault is not. Re-assess, and on exhaustion take
+                // the interrupt path — the transport retires non-fatally as the
+                // run is ending. Any other failure retires per the fill policy:
+                // strict faults the run, best-effort runs on with one fewer
+                // pool.
+                match assess(self.store, self.lock.run(), &self.fleet.budget, now_ms)? {
+                    Verdict::Exhausted(exhaustion) => {
+                        self.wind_down_for_budget(exhaustion);
+                        instance.transport.retire(false);
+                    }
+                    Verdict::Within { .. } => {
+                        let fatal = matches!(self.fleet.fill, FillPolicy::Strict);
+                        instance.transport.retire(fatal);
+                    }
+                }
                 Ok(())
             }
         }
@@ -1107,6 +1134,131 @@ mod tests {
             instances[0].transport.live_host().is_none(),
             "a transport with no replacement retires"
         );
+        release_all(instances)?;
+        Ok(())
+    }
+
+    /// A closed rental of `owner` that cost `cost` micro-USD, anchoring a run's
+    /// spend at a fixed past window.
+    fn closed_spend(owner: &RunId, cost: u64) -> sima_store::SpendEntry {
+        sima_store::SpendEntry {
+            tag: "sima-prior-0".to_string(),
+            provider: "stub".to_string(),
+            owner: owner.to_string(),
+            price_micro_usd_hour: 100_000,
+            started_ms: 1_700_000_000_000,
+            ended_ms: 1_700_000_000_000 + 3_600_000,
+            cost_micro_usd: cost,
+        }
+    }
+
+    #[test]
+    fn a_wind_down_tick_rents_no_replacement() -> Result<()> {
+        // Two offers, one instance: a Gone instance is normally replaced from
+        // the second offer. With the interrupt already set, the tick reads it
+        // first and does nothing — no paid replacement while the run winds
+        // down.
+        let (_dir, store, run) = acquisition_env();
+        let lock = store.acquire_run_lock(&run)?;
+        let provider = StubProvider::new(vec![offer("a", 100_000), offer("b", 200_000)]);
+        let format = FormatId::new("stub.v1")?;
+        let fleet = stub_fleet(1);
+        let instances = acquire_fleet(
+            &fleet,
+            &provider,
+            &store,
+            &lock,
+            &deviceless_probe(),
+            &format,
+            &exec(),
+        )?;
+        let original_host = instances[0].transport.live_host().expect("a live host");
+        let dead_id = instances[0]
+            .guard
+            .lock()
+            .expect("the fleet guard lock is never poisoned")
+            .as_ref()
+            .expect("a live guard")
+            .id()
+            .clone();
+        provider.destroy(&dead_id)?;
+
+        let interrupt = AtomicBool::new(true);
+        let emitter = Mutex::new(None);
+        let supervisor = Supervisor::new(
+            &provider, &store, &lock, &fleet, &instances, &interrupt, &emitter,
+        );
+        supervisor.tick(now_ms())?;
+
+        // Nothing new was provisioned, and the transport is untouched — still
+        // naming the original host, not swapped or retired.
+        assert!(provider.live().is_empty(), "a wind-down tick rents nothing");
+        assert_eq!(
+            instances[0].transport.live_host().as_deref(),
+            Some(original_host.as_str()),
+            "the transport is left as the wind-down found it"
+        );
+        release_all(instances)?;
+        Ok(())
+    }
+
+    #[test]
+    fn a_replacement_refused_for_budget_winds_down_rather_than_faulting() -> Result<()> {
+        // A strict-fill fleet whose replacement cannot be paid for: exhaustion
+        // must surface as the resumable interrupt, not a strict-fill fault.
+        let (_dir, store, run) = acquisition_env();
+        let lock = store.acquire_run_lock(&run)?;
+        let provider = StubProvider::new(vec![offer("a", 100_000), offer("b", 200_000)]);
+        let format = FormatId::new("stub.v1")?;
+        let fleet = budgeted_fleet(sima_provider::Budget {
+            max_spend: Some(sima_provider::Cost(50_000)),
+            max_wall_clock: None,
+        });
+        let instances = acquire_fleet(
+            &fleet,
+            &provider,
+            &store,
+            &lock,
+            &deviceless_probe(),
+            &format,
+            &exec(),
+        )?;
+        // A prior closed rental already past the cap, so any replacement
+        // acquisition is refused for want of budget whatever the clock reads.
+        store.put_spend(&closed_spend(&run, 120_000))?;
+        let dead_id = instances[0]
+            .guard
+            .lock()
+            .expect("the fleet guard lock is never poisoned")
+            .as_ref()
+            .expect("a live guard")
+            .id()
+            .clone();
+        provider.destroy(&dead_id)?;
+
+        let interrupt = AtomicBool::new(false);
+        let events = capture_events(|emitter| {
+            let supervisor = Supervisor::new(
+                &provider, &store, &lock, &fleet, &instances, &interrupt, emitter,
+            );
+            // Drive the replacement directly: acquisition is refused for
+            // budget, and the failure must classify as exhaustion.
+            supervisor.replace(&instances[0], u64::MAX)
+        })?;
+
+        assert!(
+            interrupt.load(Ordering::Relaxed),
+            "a budget-refused replacement winds the run down"
+        );
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, Event::BudgetSpendExhausted { .. })),
+            "the exhaustion is announced to the journal"
+        );
+        // The transport retired, and no run-level fault event was emitted: the
+        // run will resume as Interrupted, not fault under strict fill.
+        assert!(instances[0].transport.live_host().is_none());
         release_all(instances)?;
         Ok(())
     }
