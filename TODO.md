@@ -544,10 +544,20 @@ leaked instances are leaked money.
       reproducible per backend class, and a mixed fleet crosses classes by
       construction. This is the fleet M6.6's trust tiers assume and
       delivers the README's elastic scale-out principle
-- [ ] M6.6 Trust-tiered scheduling: redundant execution, quorum validation,
-      spot-check sampling, host reputation — the BOINC playbook; the largest
-      mechanism in this phase, expected to split into several PRs at
-      elaboration
+- [ ] M6.6 Machine reputation: rented machines are judged by
+      observable operational behavior, never by output verification —
+      workers cannot touch the store, so a bad machine's whole
+      influence is operational (vanish mid-run, never become ready,
+      fail the worker probe), and results need no cross-checking
+      apparatus. Each such behavior is recorded durably per
+      marketplace machine (provider-scoped machine id) beside the
+      instance ledger; a machine with two or more incidents is
+      disqualified at offer selection, in the store that observed
+      them; `sima report --machines` lists the records. Redundant
+      execution, quorum validation, and spot-check re-execution are
+      deliberately absent: they presume adversarial hosts running
+      foreign code and require cross-hardware determinism the float
+      families do not promise.
 - [ ] M6.7 End-to-end slingshot consolidation (phase acceptance): start a
       search locally; interrupt it mid-simulation (inside a segment chain);
       `sima migrate` to a freshly provisioned instance — sync closure, resume

@@ -1498,6 +1498,29 @@ scheduler edge to the provider. Acquisition intent and final spend live in
 the durable provider records and the ledger, which `sima report --spend`
 reports.
 
+**Machine reputation.** A rented machine is judged by observable operational
+behavior alone — a worker never touches the store, so a bad machine's whole
+influence is operational, and results need no cross-checking apparatus. Three
+behaviors are recorded durably per marketplace machine, keyed by the provider's
+stable machine identifier:
+
+- **Lost** — a live instance the supervisor polled `Gone` mid-run.
+- **NeverReady** — a provisioned machine that never reported a usable endpoint
+  within the readiness timeout, including one that went `Gone` while
+  provisioning. A cancelled wait is a wind-down of ours, never an incident.
+- **ProbeFailed** — a machine that reported ready but failed the ssh worker
+  probe, so it cannot run work.
+
+A machine with two or more incidents of any kinds is disqualified at offer
+selection. The blacklist is never materialized: the excluded set is derived
+from the incident records at each acquisition, so there is one source of truth.
+The records live beside the instance ledger, keyed by machine and shared by
+every run using the store, so a machine that misbehaved for one run is avoided
+by the next. Both the initial fleet acquisition and every supervisor
+replacement flow through [`acquire`](#the-acquisition-loop), so one derivation
+point covers both. A machine the provider reports no identifier for normalizes
+to an empty machine, which records no incidents and is never excluded.
+
 ### Run status
 
 `status` computes a run's observable state from its journal alone. The
@@ -1573,6 +1596,12 @@ command form keeps its shape whether or not a host is named:
     store state the orchestrator writes and the follow feed carries journal
     state alone, so this view reads the local store like `reconcile` and takes
     no `--on`.
+  - `--machines` reports machine reputation from the store's incident ledger:
+    one line per machine with a recorded incident, its counts by kind, and
+    whether it is blacklisted, with an explicit line when the store holds none.
+    Like `--spend` it reads store state the follow feed does not carry, so it is
+    local-only and takes no `--on`. It is store-scoped rather than run-scoped,
+    since one machine's reputation is shared by every run using the store.
 
 `status` and `report` split along what they report — how the run is running
 against what it produced, how efficiently it got there, and what it cost.
@@ -1604,10 +1633,10 @@ own outcome.
 ### Following a run over SSH
 
 `status`, `report`, `tui`, and `follow` each accept `--on <ssh-dest>`, which
-names the host the run's orchestrator runs on. `report --spend` is the one
-read view that does not: its ledger is local store state the follow feed does
-not carry. Three properties of the system decide the shape, and none of them is
-a choice:
+names the host the run's orchestrator runs on. `report --spend` and
+`report --machines` are the read views that do not: they read local store state
+the follow feed does not carry. Three properties of the system decide the shape,
+and none of them is a choice:
 
 - **A run's identity is the hash of its config**, and its store path resolves
   relative to the config file's directory. A local copy of the config would
