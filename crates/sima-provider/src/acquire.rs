@@ -7,7 +7,7 @@
 use std::collections::hash_map::RandomState;
 use std::hash::{BuildHasher, Hasher};
 use std::sync::LazyLock;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use sima_core::{Error, Result};
@@ -65,6 +65,14 @@ static NONCE: LazyLock<String> = LazyLock::new(|| {
 /// [`Error::Provider`], before any offer is asked for and again before each
 /// attempt, so no money is committed past it. A caller that must tell
 /// exhaustion from every other failure reads [`assess`] itself.
+///
+/// `cancel` aborts a walk in progress: it is read between ranked offers and
+/// inside the readiness poll, so a caller winding down — the fleet supervisor
+/// on interrupt or run teardown — abandons the acquisition promptly rather
+/// than sitting through `offers × ready_timeout`. A cancellation tears down any
+/// machine already provisioned and returns [`Error::Provider`] naming it. A
+/// caller with nothing to cancel passes a never-set flag.
+#[allow(clippy::too_many_arguments)]
 pub fn acquire<'a, P: Provider + ?Sized>(
     provider: &'a P,
     store: &'a Store,
@@ -73,6 +81,7 @@ pub fn acquire<'a, P: Provider + ?Sized>(
     objective: Objective,
     limits: &AcquireLimits,
     budget: &Budget,
+    cancel: &AtomicBool,
 ) -> Result<InstanceGuard<'a, P>> {
     let owner = lock.run();
     // Orphans of an earlier crash are destroyed before a new machine is
@@ -88,6 +97,11 @@ pub fn acquire<'a, P: Provider + ?Sized>(
         )));
     }
     for offer in ranked {
+        // Cancellation between offers abandons the walk before another machine
+        // is paid for.
+        if cancel.load(Ordering::Relaxed) {
+            return Err(cancelled());
+        }
         // A machine that consumed the budget during a failed readiness wait
         // must not be followed by another rental.
         admit(store, owner, budget)?;
@@ -139,7 +153,7 @@ pub fn acquire<'a, P: Provider + ?Sized>(
             Some(&instance),
             created_ms,
         ))?;
-        if let Some(endpoint) = wait_ready(provider, &instance, limits)? {
+        if let Some(endpoint) = wait_ready(provider, &instance, limits, cancel)? {
             return Ok(InstanceGuard::new(
                 provider,
                 store,
@@ -151,13 +165,25 @@ pub fn acquire<'a, P: Provider + ?Sized>(
                 instance.price,
             ));
         }
-        // A machine that never came up is a bad offer, not a fatal error.
-        // The record already carries the rate the provider named for it.
+        // A machine that never came up is a bad offer, not a fatal error;
+        // a cancelled wait leaves the same pending machine. Either way it is
+        // torn down. The record already carries the rate the provider named.
         teardown(provider, store, &tag, &instance.id, None)?;
+        // A cancellation during the wait abandons the walk once the pending
+        // machine is down, rather than moving on to the next offer.
+        if cancel.load(Ordering::Relaxed) {
+            return Err(cancelled());
+        }
     }
     Err(Error::Provider(
         "every qualifying offer was lost or failed to become ready".to_string(),
     ))
+}
+
+/// The error a cancelled acquisition returns, naming the cancellation so the
+/// caller tells it from a market that simply had nothing.
+fn cancelled() -> Error {
+    Error::Provider("the acquisition was cancelled".to_string())
 }
 
 /// Admits one rental attempt, or refuses it naming the limit `owner`
@@ -180,16 +206,24 @@ fn admit(store: &Store, owner: &RunId, budget: &Budget) -> Result<()> {
     }
 }
 
-/// Polls `instance` until it reports an endpoint, `None` when it is gone or
-/// the wait runs out. The deadline is measured with [`Instant`], so a
-/// wall-clock adjustment cannot extend or cut the wait.
+/// Polls `instance` until it reports an endpoint, `None` when it is gone, the
+/// wait runs out, or `cancel` is set. The deadline is measured with
+/// [`Instant`], so a wall-clock adjustment cannot extend or cut the wait. A
+/// cancellation returns `None` — the same "no endpoint" the caller tears the
+/// pending machine down for — so the caller closes it out on one path.
 fn wait_ready<P: Provider + ?Sized>(
     provider: &P,
     instance: &Instance,
     limits: &AcquireLimits,
+    cancel: &AtomicBool,
 ) -> Result<Option<SshEndpoint>> {
     let started = Instant::now();
     loop {
+        // Checked before each status call, so a cancellation set while the
+        // machine is still provisioning abandons the wait promptly.
+        if cancel.load(Ordering::Relaxed) {
+            return Ok(None);
+        }
         match provider.instance(&instance.id)? {
             InstanceStatus::Ready(endpoint) => return Ok(Some(endpoint)),
             InstanceStatus::Gone => return Ok(None),
@@ -258,7 +292,7 @@ fn attempt_tag(owner: &RunId) -> String {
 mod tests {
     use std::path::PathBuf;
     use std::sync::Mutex;
-    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::{AtomicBool, AtomicUsize};
     use std::time::Duration;
 
     use sima_core::{Error, Result};
@@ -273,8 +307,8 @@ mod tests {
     use crate::reconcile::reconcile;
     use crate::stub::StubProvider;
     use crate::testutil::{
-        acquire_any, instance_record, live_state, prompt_limits, sample_run, spend_entries,
-        stub_offer, temp_store,
+        acquire_any, instance_record, live_state, never_cancelled, prompt_limits, sample_run,
+        spend_entries, stub_offer, temp_store,
     };
 
     /// A provider that watches what the acquisition loop does before and
@@ -463,6 +497,7 @@ mod tests {
             Objective::CheapestPerHour,
             &limits,
             &Budget::default(),
+            never_cancelled(),
         )?;
         let records = store.instances()?;
         assert_eq!(records.len(), 1);
@@ -493,6 +528,7 @@ mod tests {
             Objective::CheapestPerHour,
             &limits,
             &Budget::default(),
+            never_cancelled(),
         )?;
         // The abandoned machine ran and was billed for, so the walk that
         // moved past it left its cost behind.
@@ -533,6 +569,7 @@ mod tests {
             Objective::CheapestPerHour,
             &prompt_limits(),
             budget,
+            never_cancelled(),
         )
     }
 
@@ -620,6 +657,7 @@ mod tests {
                 ready_poll: Duration::from_millis(1),
             },
             &budget,
+            never_cancelled(),
         );
         assert!(matches!(
             outcome,
@@ -670,6 +708,7 @@ mod tests {
             Objective::CheapestPerHour,
             &limits,
             &Budget::default(),
+            never_cancelled(),
         )?;
         let records = store.instances()?;
         assert_eq!(records.len(), 1);
@@ -714,6 +753,7 @@ mod tests {
             Objective::CheapestPerHour,
             &prompt_limits(),
             &Budget::default(),
+            never_cancelled(),
         );
         assert!(matches!(outcome, Err(Error::Provider(_))));
         // Nothing was rented, so nothing is owed.
@@ -814,6 +854,7 @@ mod tests {
             Objective::CheapestPerHour,
             &prompt_limits(),
             &Budget::default(),
+            never_cancelled(),
         )?;
         assert!(stub.destroyed().is_empty());
         let tags: Vec<String> = store
@@ -851,6 +892,113 @@ mod tests {
         assert!(matches!(records[0].state, InstanceRecordState::Live { .. }));
         // The record is stamped at intent, which is what its field says.
         assert_eq!(records[0].created_ms, intent[0].created_ms);
+        Ok(())
+    }
+
+    /// A provider that sets a cancellation flag the moment a readiness poll
+    /// reports `Provisioning`, so a wait entered against a not-yet-ready
+    /// machine is cancelled from within the poll loop rather than by racing a
+    /// background thread.
+    struct CancellingProvider<'a> {
+        inner: StubProvider,
+        cancel: &'a AtomicBool,
+    }
+
+    impl Provider for CancellingProvider<'_> {
+        fn id(&self) -> &'static str {
+            self.inner.id()
+        }
+
+        fn offers(&self) -> Result<Vec<Offer>> {
+            self.inner.offers()
+        }
+
+        fn provision(&self, offer: &OfferId, tag: &str) -> Result<Provision> {
+            self.inner.provision(offer, tag)
+        }
+
+        fn instance(&self, id: &InstanceId) -> Result<InstanceStatus> {
+            let status = self.inner.instance(id)?;
+            if matches!(status, InstanceStatus::Provisioning) {
+                self.cancel.store(true, Ordering::Relaxed);
+            }
+            Ok(status)
+        }
+
+        fn instances(&self) -> Result<Vec<TaggedInstance>> {
+            self.inner.instances()
+        }
+
+        fn destroy(&self, id: &InstanceId) -> Result<()> {
+            self.inner.destroy(id)
+        }
+    }
+
+    #[test]
+    fn a_cancellation_set_before_the_walk_provisions_nothing() -> Result<()> {
+        let (_dir, store) = temp_store();
+        let stub = StubProvider::new(vec![stub_offer("cheap", 100_000)]);
+        let cancel = AtomicBool::new(true);
+        let lock = store.acquire_run_lock(&sample_run(7))?;
+        let outcome = acquire(
+            &stub,
+            &store,
+            &lock,
+            &Constraints::default(),
+            Objective::CheapestPerHour,
+            &prompt_limits(),
+            &Budget::default(),
+            &cancel,
+        );
+        assert!(matches!(
+            outcome,
+            Err(Error::Provider(message)) if message.contains("cancelled")
+        ));
+        // Nothing was rented: the walk stopped before the first provision.
+        assert!(store.instances()?.is_empty());
+        assert!(stub.live().is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn a_cancellation_during_the_readiness_wait_tears_the_pending_machine_down() -> Result<()> {
+        let (_dir, store) = temp_store();
+        let stalling = stub_offer("cheap", 100_000);
+        let inner = StubProvider::new(vec![stalling.clone()]).never_ready(stalling.id.clone());
+        let cancel = AtomicBool::new(false);
+        let provider = CancellingProvider {
+            inner,
+            cancel: &cancel,
+        };
+        let lock = store.acquire_run_lock(&sample_run(7))?;
+        let outcome = acquire(
+            &provider,
+            &store,
+            &lock,
+            &Constraints::default(),
+            Objective::CheapestPerHour,
+            // A generous window the wait would sit through if it were not
+            // cancelled from within the poll.
+            &AcquireLimits {
+                ready_timeout: Duration::from_secs(5),
+                ready_poll: Duration::from_millis(1),
+            },
+            &Budget::default(),
+            &cancel,
+        );
+        assert!(matches!(
+            outcome,
+            Err(Error::Provider(message)) if message.contains("cancelled")
+        ));
+        // The machine that was provisioned before the cancellation is torn
+        // down, and its ledger record is cleared — nothing leaks.
+        assert_eq!(
+            provider.inner.destroyed().len(),
+            1,
+            "the pending machine is torn down"
+        );
+        assert!(provider.inner.live().is_empty());
+        assert!(store.instances()?.is_empty());
         Ok(())
     }
 }

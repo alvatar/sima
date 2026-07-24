@@ -162,6 +162,9 @@ fn acquire_one<'a>(
         Objective::CheapestPerHour,
         limits,
         &fleet.budget,
+        // Run-start acquisition has nothing to cancel: the run is not yet
+        // driving, so no wind-down is in flight.
+        never_cancelled(),
     )?;
     let target = endpoint_target(guard.endpoint().clone());
     let host = target.host.clone();
@@ -263,6 +266,13 @@ pub(crate) fn release_all(instances: Vec<FleetInstance<'_>>) -> Result<()> {
 /// concern and the poll is cheap, so a fixed period suffices; no config knob.
 const HEARTBEAT: Duration = Duration::from_secs(10);
 
+/// A cancellation flag that is never set, for an acquisition with no wind-down
+/// to observe — the run-start fleet acquisition, before the run drives.
+fn never_cancelled() -> &'static AtomicBool {
+    static NEVER: AtomicBool = AtomicBool::new(false);
+    &NEVER
+}
+
 /// Milliseconds since the epoch, the clock the budget ledger is stamped in.
 fn now_ms() -> u64 {
     SystemTime::now()
@@ -333,8 +343,14 @@ pub(crate) struct Supervisor<'a, 'b> {
     instances: &'b [FleetInstance<'a>],
     /// The wind-down flag, shared with the driver and SIGINT. It carries the
     /// slice's short lifetime, so a caller holding a longer-lived flag passes
-    /// it freely.
+    /// it freely. The supervisor reads it to stop starting replacements, and
+    /// sets it on budget exhaustion; it never writes it on a clean exit.
     interrupt: &'b AtomicBool,
+    /// Aborts a replacement acquisition already in flight, so run teardown
+    /// never waits out an offer walk. The run's teardown sets it; the
+    /// supervisor only reads it. `None` for a caller that never cancels — the
+    /// unit tests, which drive ticks to completion.
+    cancel: Option<&'b AtomicBool>,
     /// The run's emitter, delivered by the start hook once the collector spawns
     /// and `None` until then. Fleet events cross the same single-writer journal
     /// seam every other event does.
@@ -363,10 +379,19 @@ impl<'a, 'b> Supervisor<'a, 'b> {
             fleet,
             instances,
             interrupt,
+            cancel: None,
             emitter,
             announced: AtomicBool::new(false),
             budget_announced: AtomicBool::new(false),
         }
+    }
+
+    /// Sets the flag that aborts a replacement acquisition in flight, so run
+    /// teardown never waits out an offer walk. The orchestrator supplies it;
+    /// the unit tests leave it unset.
+    pub(crate) fn on_cancel(mut self, cancel: &'b AtomicBool) -> Supervisor<'a, 'b> {
+        self.cancel = Some(cancel);
+        self
     }
 
     /// Runs the heartbeat loop until `stop` is raised. One drop guard owns
@@ -523,6 +548,10 @@ impl<'a, 'b> Supervisor<'a, 'b> {
             Objective::CheapestPerHour,
             &limits,
             &self.fleet.budget,
+            // Run teardown sets this to abort a replacement mid-flight, so a
+            // slow offer walk never delays the run's exit; a caller with no
+            // cancellation (the unit tests) walks to completion.
+            self.cancel.unwrap_or(never_cancelled()),
         ) {
             Ok(new_guard) => {
                 self.emit(Event::InstanceReplaced {

@@ -121,11 +121,17 @@ pub fn orchestrate(config: &LoadedConfig, control: &RunControl) -> Result<RunOut
             let on_start = |e: sima_trace::Emitter| {
                 *emitter.lock().expect("the emitter lock is never poisoned") = Some(e);
             };
+            // Aborts a replacement acquisition in flight, so teardown never
+            // waits out an offer walk. Set on the terminal event and again
+            // after the driver returns; distinct from the caller's interrupt,
+            // which the run owns.
+            let cancel = std::sync::atomic::AtomicBool::new(false);
             // Wrap the caller's observer to stop the supervisor the moment the
             // run reaches a terminal event: the supervisor then drops its
             // emitter clone, so the run's collector — which joins only once
             // every emitter is dropped — can shut down. A fault emits no
-            // run-level event, so `Faulted` is a stop trigger too.
+            // run-level event, so `Faulted` is a stop trigger too. The same
+            // event cancels a replacement still acquiring.
             let caller_observer = control.observer;
             let stopper = |record: &sima_trace::Record| {
                 (caller_observer)(record);
@@ -136,6 +142,7 @@ pub fn orchestrate(config: &LoadedConfig, control: &RunControl) -> Result<RunOut
                         | sima_trace::Event::RunInterrupted { .. }
                         | sima_trace::Event::Faulted { .. }
                 ) {
+                    cancel.store(true, std::sync::atomic::Ordering::Relaxed);
                     stop.raise();
                 }
             };
@@ -152,7 +159,8 @@ pub fn orchestrate(config: &LoadedConfig, control: &RunControl) -> Result<RunOut
                 &fleet_instances,
                 control.interrupt,
                 &emitter,
-            );
+            )
+            .on_cancel(&cancel);
             std::thread::scope(|scope| {
                 let handle = scope.spawn(|| supervisor.run(&stop));
                 let outcome = sima_scheduler::run(
@@ -164,6 +172,10 @@ pub fn orchestrate(config: &LoadedConfig, control: &RunControl) -> Result<RunOut
                     &execution,
                     &control,
                 );
+                // Cancel any replacement the supervisor is still acquiring
+                // before joining it: teardown must not wait out an offer walk
+                // for a machine the finished run no longer needs.
+                cancel.store(true, std::sync::atomic::Ordering::Relaxed);
                 stop.raise();
                 handle.join().expect("the supervisor thread joins");
                 outcome

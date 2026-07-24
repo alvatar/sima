@@ -1,5 +1,6 @@
 //! Fixtures shared by the crate's test modules.
 
+use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
 use sima_model::{FormatId, GeneratorConfig, GeneratorId, Params, RunConfig, RunId};
@@ -92,6 +93,13 @@ pub(crate) fn prompt_limits() -> AcquireLimits {
     }
 }
 
+/// A cancellation flag that is never set, for the acquisitions whose walk runs
+/// to completion.
+pub(crate) fn never_cancelled() -> &'static AtomicBool {
+    static NEVER: AtomicBool = AtomicBool::new(false);
+    &NEVER
+}
+
 /// Rents one machine over `provider` under constraints that disqualify
 /// nothing, ranked by the only objective.
 ///
@@ -111,5 +119,6 @@ pub(crate) fn acquire_any<'a, P: Provider>(
         Objective::CheapestPerHour,
         &prompt_limits(),
         &Budget::default(),
+        never_cancelled(),
     )
 }
