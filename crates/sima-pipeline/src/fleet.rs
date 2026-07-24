@@ -17,8 +17,8 @@ use sima_domains::devices::DeviceInfo;
 use sima_model::FormatId;
 use sima_provider::stub::StubProvider;
 use sima_provider::{
-    AcquireLimits, Exhaustion, InstanceGuard, InstanceStatus, Objective, Offer, OfferId, Price,
-    Provider, SshEndpoint, Verdict, acquire, assess,
+    AcquireLimits, Exhaustion, IncidentKind, InstanceGuard, InstanceStatus, Objective, Offer,
+    OfferId, Price, Provider, SshEndpoint, Verdict, acquire, assess, record_incident,
 };
 use sima_provider_vast::{VastConfig, VastProvider};
 use sima_scheduler::ExecutionConfig;
@@ -170,7 +170,24 @@ fn acquire_one<'a>(
     let host = target.host.clone();
     // The probe drives the instance's device enumeration; a failure drops the
     // guard, tearing the instance down.
-    let slots = probe_slots(mode, &target, fleet.ready_poll)?;
+    let slots = match probe_slots(mode, &target, fleet.ready_poll) {
+        Ok(slots) => slots,
+        Err(error) => {
+            // The machine reported ready but cannot run work: an incident
+            // against it, recorded before the guard drops and tears it down.
+            // The probe error is what fails the acquisition; a store failure
+            // recording the incident supersedes it.
+            record_incident(
+                store,
+                provider.id(),
+                guard.machine(),
+                guard.tag(),
+                IncidentKind::ProbeFailed,
+                now_ms(),
+            )?;
+            return Err(error);
+        }
+    };
     let transport = FleetTransport::new(
         mode.clone(),
         target,
@@ -535,10 +552,21 @@ impl<'a, 'b> Supervisor<'a, 'b> {
         let lost_id = if let Some(old) = lost {
             let tag = old.tag().to_string();
             let id = old.id().0.clone();
+            let machine = old.machine().to_string();
             self.emit(Event::InstanceLost {
-                tag,
+                tag: tag.clone(),
                 instance: id.clone(),
             });
+            // A live instance the supervisor found gone mid-run is an incident
+            // against its machine; a machine with no identity records nothing.
+            record_incident(
+                self.store,
+                self.provider.id(),
+                &machine,
+                &tag,
+                IncidentKind::Lost,
+                now_ms,
+            )?;
             let _ = old.release();
             id
         } else {
@@ -908,6 +936,12 @@ mod tests {
         assert!(result.is_err(), "a probe failure fails the acquisition");
         assert_eq!(provider.destroyed().len(), 1, "the instance is torn down");
         assert!(provider.live().is_empty());
+        // A machine that reported ready but failed the probe cannot run work:
+        // one ProbeFailed incident against its machine.
+        let incidents = store.machine_incidents()?;
+        assert_eq!(incidents.len(), 1);
+        assert_eq!(incidents[0].kind, IncidentKind::ProbeFailed);
+        assert_eq!(incidents[0].machine, "machine-a");
         Ok(())
     }
 
@@ -1130,6 +1164,12 @@ mod tests {
             Some(new_host.as_str()),
             "the replacement announces its own host, not the dead instance's"
         );
+        // The lost instance left one Lost incident naming its machine, so a
+        // machine that keeps vanishing is eventually disqualified.
+        let incidents = store.machine_incidents()?;
+        assert_eq!(incidents.len(), 1);
+        assert_eq!(incidents[0].kind, IncidentKind::Lost);
+        assert_eq!(incidents[0].machine, "machine-a");
         release_all(instances)?;
         assert!(
             provider.live().is_empty(),

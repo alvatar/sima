@@ -19,6 +19,7 @@ use crate::guard::{InstanceGuard, teardown};
 use crate::offer::{Constraints, Objective, Offer, select};
 use crate::provider::{Instance, InstanceStatus, Provider, Provision, SshEndpoint};
 use crate::reconcile::reconcile;
+use crate::reputation::{IncidentKind, record_incident};
 
 /// Bounds on waiting for a provisioned instance to become ready.
 #[derive(Debug, Clone, Copy)]
@@ -175,6 +176,18 @@ pub fn acquire<'a, P: Provider + ?Sized>(
         if cancel.load(Ordering::Relaxed) {
             return Err(cancelled());
         }
+        // The wait ran out on a machine that never reported an endpoint (or one
+        // that went gone while provisioning): an incident against the machine,
+        // recorded now that a cancellation has been ruled out. A machine with
+        // no identity records nothing.
+        record_incident(
+            store,
+            provider.id(),
+            &offer.machine,
+            &tag,
+            IncidentKind::NeverReady,
+            now_ms(),
+        )?;
     }
     Err(Error::Provider(
         "every qualifying offer was lost or failed to become ready".to_string(),
@@ -543,6 +556,89 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert_ne!(entries[0].tag, guard.tag());
         assert_eq!(entries[0].price_micro_usd_hour, 100_000);
+        Ok(())
+    }
+
+    #[test]
+    fn a_machine_that_never_comes_up_records_one_never_ready_incident() -> Result<()> {
+        let (_dir, store) = temp_store();
+        let stalling = stub_offer("cheap", 100_000);
+        let stub = StubProvider::new(vec![stalling.clone(), stub_offer("dearer", 200_000)])
+            .never_ready(stalling.id.clone());
+        let limits = AcquireLimits {
+            ready_timeout: Duration::ZERO,
+            ready_poll: Duration::ZERO,
+        };
+        let lock = store.acquire_run_lock(&sample_run(7))?;
+        let guard = acquire(
+            &stub,
+            &store,
+            &lock,
+            &Constraints::default(),
+            Objective::CheapestPerHour,
+            &limits,
+            &Budget::default(),
+            never_cancelled(),
+        )?;
+        // The abandoned machine left one incident naming its own machine and
+        // the attempt that observed it; the taken machine left none.
+        let incidents = store.machine_incidents()?;
+        assert_eq!(incidents.len(), 1);
+        assert_eq!(incidents[0].kind, sima_store::IncidentKind::NeverReady);
+        assert_eq!(incidents[0].machine, "m-cheap");
+        assert_ne!(incidents[0].tag, guard.tag());
+        Ok(())
+    }
+
+    #[test]
+    fn a_never_ready_machine_with_no_identity_records_nothing() -> Result<()> {
+        let (_dir, store) = temp_store();
+        // A provider reporting no machine identifier normalizes it to empty;
+        // an empty machine is never blacklisted, so it records no incident.
+        let stalling = Offer {
+            machine: String::new(),
+            ..stub_offer("cheap", 100_000)
+        };
+        let stub = StubProvider::new(vec![stalling.clone(), stub_offer("dearer", 200_000)])
+            .never_ready(stalling.id.clone());
+        let limits = AcquireLimits {
+            ready_timeout: Duration::ZERO,
+            ready_poll: Duration::ZERO,
+        };
+        let lock = store.acquire_run_lock(&sample_run(7))?;
+        let _guard = acquire(
+            &stub,
+            &store,
+            &lock,
+            &Constraints::default(),
+            Objective::CheapestPerHour,
+            &limits,
+            &Budget::default(),
+            never_cancelled(),
+        )?;
+        assert!(store.machine_incidents()?.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn a_successful_acquisition_records_no_incident() -> Result<()> {
+        let (_dir, store) = temp_store();
+        let stub = StubProvider::new(vec![stub_offer("cheap", 100_000)]);
+        let _guard = acquire_any(&stub, &store)?;
+        assert!(store.machine_incidents()?.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn a_lost_offer_records_no_incident() -> Result<()> {
+        let (_dir, store) = temp_store();
+        let cheap = stub_offer("cheap", 100_000);
+        let stub = StubProvider::new(vec![cheap.clone(), stub_offer("dearer", 200_000)])
+            .gone_at_provision(OfferId("cheap".to_string()));
+        let _guard = acquire_any(&stub, &store)?;
+        // An offer another renter took is not the machine's failure: the
+        // provider answered that no machine of ours exists.
+        assert!(store.machine_incidents()?.is_empty());
         Ok(())
     }
 
@@ -1006,6 +1102,9 @@ mod tests {
         );
         assert!(provider.inner.live().is_empty());
         assert!(store.instances()?.is_empty());
+        // A cancelled wait is our wind-down, not the machine's fault, so it
+        // records no incident.
+        assert!(store.machine_incidents()?.is_empty());
         Ok(())
     }
 }
