@@ -16,7 +16,7 @@ use crate::provider::{InstanceId, Provider, SshEndpoint};
 /// discards the outcome, because a destructor has nowhere to report it. A
 /// teardown lost that way is caught by the ledger record, which the next
 /// reconciliation pass acts on.
-pub struct InstanceGuard<'a, P: Provider> {
+pub struct InstanceGuard<'a, P: Provider + ?Sized> {
     /// The provider holding the instance.
     provider: &'a P,
     /// The store holding the ledger record.
@@ -31,7 +31,7 @@ pub struct InstanceGuard<'a, P: Provider> {
     released: bool,
 }
 
-impl<'a, P: Provider> InstanceGuard<'a, P> {
+impl<'a, P: Provider + ?Sized> InstanceGuard<'a, P> {
     /// Takes ownership of the instance `tag` names, reachable at
     /// `endpoint`.
     pub(crate) fn new(
@@ -76,7 +76,7 @@ impl<'a, P: Provider> InstanceGuard<'a, P> {
     }
 }
 
-impl<P: Provider> Drop for InstanceGuard<'_, P> {
+impl<P: Provider + ?Sized> Drop for InstanceGuard<'_, P> {
     fn drop(&mut self) {
         if self.released {
             return;

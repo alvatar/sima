@@ -15,6 +15,7 @@ use sima_transport::{RemoteTransport, SubprocessTransport};
 
 use crate::config::{LoadedConfig, RemoteConfig};
 use crate::devices;
+use crate::fleet::{acquire_fleet, provider_for, release_all, transport_mode};
 
 /// Drives the run a loaded config describes: opens the store (creating it
 /// where missing), takes the run's orchestrator lock, dispatches the domain
@@ -25,9 +26,9 @@ use crate::devices;
 /// The lock is held for the whole call and releases on return.
 pub fn orchestrate(config: &LoadedConfig, control: &RunControl) -> Result<RunOutcome> {
     // Dispatch and discovery precede every store mutation: a config naming an
-    // unknown format or generator, or a build without the worker binary, must
-    // not leave a store, a run directory, or a lock file behind for a run
-    // that can never execute.
+    // unknown format or generator, a build without the worker binary, or a
+    // fleet whose provider cannot be reached, must not leave a store, a run
+    // directory, or a lock file behind for a run that can never execute.
     let domain = domain_for(&config.run.format)?;
     let generator = generator_for(&config.run.generator.id)?;
     let transport = SubprocessTransport::new(
@@ -43,41 +44,83 @@ pub fn orchestrate(config: &LoadedConfig, control: &RunControl) -> Result<RunOut
     // a machine with no device.
     let execution = resolve_devices(config)?;
     let run = config.run.id();
+    // The fleet backend and the mode its instances are reached through are
+    // built before the store: a vast fleet without its key fails here, before
+    // any store mutation. A run with no fleet builds no provider.
+    let fleet = match &config.fleet {
+        Some(fleet) => Some((provider_for(fleet)?, transport_mode(fleet)?, fleet)),
+        None => None,
+    };
     // Remote pools resolve at run start too, over each remote's own hardware:
     // the image is verified present, then the enumeration probe drives the
     // remote's device-table resolution. Both precede the store so a
     // misconfigured remote leaves nothing behind.
     let remotes = build_remote_pools(config, &run, &execution)?;
     let store = Store::open(&config.store)?;
-    let _lock = store.acquire_run_lock(&run)?;
+    let lock = store.acquire_run_lock(&run)?;
+    // The fleet is acquired under the held lock — each instance behind a
+    // teardown guard held for the run's life. A strict-fill shortfall tears
+    // down whatever was acquired and fails here, before any task runs.
+    let fleet_instances = match &fleet {
+        Some((provider, mode, fleet_config)) => acquire_fleet(
+            fleet_config,
+            provider.as_ref(),
+            &store,
+            &lock,
+            mode,
+            &config.run.format,
+            &execution,
+        )?,
+        None => Vec::new(),
+    };
     // The pools, local first: the subprocess pool when a local pool is
-    // configured, then one container pool per remote. Worker ids run global
-    // and sequential across them.
-    let mut pools: Vec<WorkerPool<'_>> = Vec::new();
-    let local_slots = worker_slots(&execution);
-    if !local_slots.is_empty() {
-        pools.push(WorkerPool {
-            transport: &transport,
-            host: String::new(),
-            slots: local_slots,
-        });
+    // configured, then one container pool per manual remote, then one pool per
+    // fleet instance. Worker ids run global and sequential across them. The
+    // pools borrow the transports and guards, so they live in an inner scope
+    // that ends before teardown.
+    let outcome = {
+        let mut pools: Vec<WorkerPool<'_>> = Vec::new();
+        let local_slots = worker_slots(&execution);
+        if !local_slots.is_empty() {
+            pools.push(WorkerPool {
+                transport: &transport,
+                host: String::new(),
+                slots: local_slots,
+            });
+        }
+        for remote in &remotes {
+            pools.push(WorkerPool {
+                transport: &remote.transport,
+                host: remote.host.clone(),
+                slots: remote.slots.clone(),
+            });
+        }
+        for instance in &fleet_instances {
+            pools.push(WorkerPool {
+                transport: &instance.transport,
+                host: instance.host.clone(),
+                slots: instance.slots.clone(),
+            });
+        }
+        sima_scheduler::run(
+            &store,
+            &config.run,
+            &domain.environment,
+            generator.as_ref(),
+            &pools,
+            &execution,
+            control,
+        )
+    };
+    // Guards release explicitly on the success path, surfacing a teardown
+    // failure — a machine still running is worth an operator's attention. A run
+    // that already faulted keeps its fault; teardown is best-effort, and the
+    // ledger record a failed teardown leaves is what reconcile acts on next.
+    let released = release_all(fleet_instances);
+    match outcome {
+        Ok(run_outcome) => released.map(|()| run_outcome),
+        Err(error) => Err(error),
     }
-    for remote in &remotes {
-        pools.push(WorkerPool {
-            transport: &remote.transport,
-            host: remote.host.clone(),
-            slots: remote.slots.clone(),
-        });
-    }
-    sima_scheduler::run(
-        &store,
-        &config.run,
-        &domain.environment,
-        generator.as_ref(),
-        &pools,
-        &execution,
-        control,
-    )
 }
 
 /// A resolved remote pool: its transport, the host it runs on, and its slots.
@@ -199,7 +242,7 @@ fn command_succeeds(argv: &[String]) -> Result<bool> {
 
 /// Runs `argv` and returns its stdout, or an error if it fails or its output
 /// is not UTF-8. Stderr is inherited for diagnostics.
-fn command_stdout(argv: &[String]) -> Result<String> {
+pub(crate) fn command_stdout(argv: &[String]) -> Result<String> {
     let (program, args) = argv.split_first().expect("a non-empty command vector");
     let output = Command::new(program)
         .args(args)

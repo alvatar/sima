@@ -65,7 +65,7 @@ static NONCE: LazyLock<String> = LazyLock::new(|| {
 /// [`Error::Provider`], before any offer is asked for and again before each
 /// attempt, so no money is committed past it. A caller that must tell
 /// exhaustion from every other failure reads [`assess`] itself.
-pub fn acquire<'a, P: Provider>(
+pub fn acquire<'a, P: Provider + ?Sized>(
     provider: &'a P,
     store: &'a Store,
     lock: &RunLock,
@@ -173,7 +173,7 @@ fn admit(store: &Store, owner: &RunId, budget: &Budget) -> Result<()> {
 /// Polls `instance` until it reports an endpoint, `None` when it is gone or
 /// the wait runs out. The deadline is measured with [`Instant`], so a
 /// wall-clock adjustment cannot extend or cut the wait.
-fn wait_ready<P: Provider>(
+fn wait_ready<P: Provider + ?Sized>(
     provider: &P,
     instance: &Instance,
     limits: &AcquireLimits,

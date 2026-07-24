@@ -61,6 +61,7 @@ pub struct SshTarget {
 }
 
 /// How a fleet transport reaches its worker.
+#[derive(Debug, Clone)]
 pub enum FleetMode {
     /// ssh to a rented instance; the worker runs as the ssh command.
     Ssh,
