@@ -178,15 +178,22 @@ fn record_bytes(record: &InstanceRecord) -> Vec<u8> {
 /// become a file name directly under the ledger directory, and part of one
 /// under the spend ledger.
 pub(crate) fn validate_tag(tag: &str) -> Result<()> {
-    if !tag.is_empty()
-        && tag
+    validate_charset("instance tag", tag)
+}
+
+/// Accepts a `value` of one or more `[a-z0-9-]` characters, the charset every
+/// store component that becomes a file name is confined to. `label` names the
+/// component in the error so the refusal points at what was rejected.
+pub(crate) fn validate_charset(label: &str, value: &str) -> Result<()> {
+    if !value.is_empty()
+        && value
             .bytes()
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
     {
         return Ok(());
     }
     Err(Error::Validation(format!(
-        "instance tag {tag:?} must be one or more of [a-z0-9-]"
+        "{label} {value:?} must be one or more of [a-z0-9-]"
     )))
 }
 

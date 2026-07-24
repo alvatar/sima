@@ -10,6 +10,7 @@
 //! <root>/tasks/<task-key-hex>      index entry: record-hash hex + newline
 //! <root>/instances/<tag>           one rented instance's ledger record
 //! <root>/spend/<owner-hex>/<tag>-<started-ms>   one closed rental's cost
+//! <root>/machines/<provider>-<machine>/<tag>-<occurred-ms>   one incident
 //! <root>/runs/<run-id-hex>/manifest.json
 //! <root>/runs/<run-id-hex>/journal
 //! <root>/runs/<run-id-hex>/orchestrator.lock
@@ -34,6 +35,7 @@ mod checkpoint;
 mod instances;
 mod journal;
 mod layout;
+mod machines;
 mod lock;
 mod manifest;
 mod placement;
@@ -46,6 +48,7 @@ mod testutil;
 
 pub use instances::{InstanceRecord, InstanceRecordState};
 pub use journal::JournalWriter;
+pub use machines::{IncidentKind, MachineIncident};
 pub use lock::RunLock;
 pub use manifest::{Manifest, ManifestEntry};
 pub use retention::RemovalReport;
