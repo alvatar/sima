@@ -31,3 +31,23 @@ noise_width = 0.02
 store = "./store"
 workers = 2
 max_attempts = 3
+
+# Rent GPU instances to run beside the local workers. Uncomment to enable; the
+# provider's API key is read from the environment (VAST_API_KEY), never from
+# config, which is content-addressed. "strict" fill fails the run unless the
+# full count is acquired; "best-effort" runs on whatever came up. The budget
+# caps total spend and the rental phase's wall-clock; either arm is optional.
+# [fleet]
+# provider = "vast"
+# count = 2
+# fill = "strict"
+# image = "ghcr.io/alvatar/sima-worker:latest"
+#
+# [fleet.constraints]
+# gpu_models = ["RTX 4090"]
+# min_vram_mb = 16000
+# max_price_usd_hour = 0.5
+#
+# [fleet.budget]
+# max_spend_usd = 5.0
+# max_wall_clock_ms = 3600000

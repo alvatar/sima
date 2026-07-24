@@ -537,11 +537,13 @@ leaked instances are leaked money.
       points planted in `sima-provider` for the close-out windows require
       adding `"sima-provider/crash-injection"` to the binary's
       `crash-injection` feature list, matching the forwards already there.
-      Acceptance: a real family search over the local machine
-      plus ≥2 rented instances produces a manifest identical to the
-      local-only reference run, and the provider account holds zero
-      instances afterwards. This is the fleet M6.6's trust tiers assume
-      and delivers the README's elastic scale-out principle
+      Acceptance is relaxed: a real family search over the local machine
+      plus ≥2 rented instances finalizes with its results in the local
+      store, and the provider account holds zero instances afterwards.
+      There is no manifest-equality criterion — float families are
+      reproducible per backend class, and a mixed fleet crosses classes by
+      construction. This is the fleet M6.6's trust tiers assume and
+      delivers the README's elastic scale-out principle
 - [ ] M6.6 Trust-tiered scheduling: redundant execution, quorum validation,
       spot-check sampling, host reputation — the BOINC playbook; the largest
       mechanism in this phase, expected to split into several PRs at
