@@ -369,13 +369,16 @@ impl<'a, 'b> Supervisor<'a, 'b> {
         }
     }
 
-    /// Runs the heartbeat loop until `stop` is raised. A panic in a tick must
-    /// not leave a worker blocked in `Replacing`, so a drop guard retires every
-    /// transport as fatal on the way out of an unwinding stack; a clean return
-    /// disarms it.
+    /// Runs the heartbeat loop until `stop` is raised. One drop guard owns
+    /// every supervisor exit duty: it clears the run's emitter clone on every
+    /// path — a clone held past the run would block the collector's shutdown —
+    /// and, on an unwinding stack alone, retires the transports as fatal so a
+    /// worker blocked in `Replacing` never waits on a panicked supervisor. A
+    /// clean return disarms the retirement; the emitter is cleared regardless.
     pub(crate) fn run(&self, stop: &StopSignal) {
-        let guard = RetireOnPanic::<'a, 'b> {
+        let guard = SupervisorExit::<'a, 'b> {
             instances: self.instances,
+            emitter: self.emitter,
             armed: true,
         };
         while !stop.wait(HEARTBEAT) {
@@ -384,13 +387,6 @@ impl<'a, 'b> Supervisor<'a, 'b> {
             // simply tries again next heartbeat.
             let _ = self.tick(now_ms());
         }
-        // Drop the emitter clone as the run winds down: the run's collector
-        // joins only once every emitter is dropped, so a clone held past the
-        // run would block its shutdown.
-        *self
-            .emitter
-            .lock()
-            .expect("the emitter lock is never poisoned") = None;
         guard.disarm();
     }
 
@@ -556,22 +552,35 @@ fn instance_online<P: Provider + ?Sized>(guard: &InstanceGuard<'_, P>, host: &st
     }
 }
 
-/// Retires every fleet transport as fatal if the supervisor unwinds: a worker
-/// blocked in `Replacing` would otherwise wait forever on a target the panicked
-/// supervisor will never swap. A clean supervisor return disarms it.
-struct RetireOnPanic<'a, 'b> {
+/// The supervisor's exit guard, run on every path out of
+/// [`Supervisor::run`]: it clears the run's emitter clone so the collector can
+/// join, and retires the transports as fatal on an unwind so a worker blocked
+/// in `Replacing` never waits forever on a target the panicked supervisor will
+/// never swap. A clean return disarms the retirement; the emitter clearing is
+/// unconditional.
+struct SupervisorExit<'a, 'b> {
     instances: &'b [FleetInstance<'a>],
+    emitter: &'b Mutex<Option<Emitter>>,
     armed: bool,
 }
 
-impl RetireOnPanic<'_, '_> {
+impl SupervisorExit<'_, '_> {
+    /// Disarms the transport retirement: a clean return leaves the transports
+    /// alive for the run's own wind-down. The emitter is still cleared on drop.
     fn disarm(mut self) {
         self.armed = false;
     }
 }
 
-impl Drop for RetireOnPanic<'_, '_> {
+impl Drop for SupervisorExit<'_, '_> {
     fn drop(&mut self) {
+        // The run's collector joins only once every emitter clone drops, so the
+        // supervisor's clone must be released on every exit path — including
+        // the panic path the explicit clearing in `run` would skip.
+        *self
+            .emitter
+            .lock()
+            .expect("the emitter lock is never poisoned") = None;
         if self.armed {
             for instance in self.instances {
                 instance.transport.retire(true);
@@ -1097,6 +1106,98 @@ mod tests {
         assert!(
             instances[0].transport.live_host().is_none(),
             "a transport with no replacement retires"
+        );
+        release_all(instances)?;
+        Ok(())
+    }
+
+    #[test]
+    fn a_clean_supervisor_exit_clears_the_emitter_and_leaves_transports_alive() -> Result<()> {
+        // The run's own wind-down tears the fleet down, so a clean supervisor
+        // exit must leave the transports alive — but it must still release the
+        // emitter clone, or the collector never joins.
+        let (_dir, store, run) = acquisition_env();
+        let lock = store.acquire_run_lock(&run)?;
+        let provider = StubProvider::new(vec![offer("a", 100_000)]);
+        let format = FormatId::new("stub.v1")?;
+        let fleet = stub_fleet(1);
+        let instances = acquire_fleet(
+            &fleet,
+            &provider,
+            &store,
+            &lock,
+            &deviceless_probe(),
+            &format,
+            &exec(),
+        )?;
+        assert!(instances[0].transport.live_host().is_some());
+        let observer = |_: &Record| {};
+        thread::scope(|scope| -> Result<()> {
+            let collector = Collector::spawn(scope, NullSink, &observer);
+            let emitter = Mutex::new(Some(collector.emitter()));
+            let guard = SupervisorExit {
+                instances: &instances,
+                emitter: &emitter,
+                armed: true,
+            };
+            guard.disarm();
+            assert!(
+                emitter.lock().expect("emitter lock").is_none(),
+                "a clean exit still clears the emitter"
+            );
+            collector.shutdown()
+        })?;
+        assert!(
+            instances[0].transport.live_host().is_some(),
+            "a clean exit leaves the transports alive for the run's wind-down"
+        );
+        release_all(instances)?;
+        Ok(())
+    }
+
+    #[test]
+    fn a_supervisor_panic_clears_the_emitter_and_retires_the_transports() -> Result<()> {
+        // A tick panic unwinds past the emitter-clearing line the old `run`
+        // held; the collector would then wait forever on the leaked clone and
+        // the fleet would never tear down. The exit guard clears the emitter
+        // and retires the transports on the unwind alike.
+        let (_dir, store, run) = acquisition_env();
+        let lock = store.acquire_run_lock(&run)?;
+        let provider = StubProvider::new(vec![offer("a", 100_000)]);
+        let format = FormatId::new("stub.v1")?;
+        let fleet = stub_fleet(1);
+        let instances = acquire_fleet(
+            &fleet,
+            &provider,
+            &store,
+            &lock,
+            &deviceless_probe(),
+            &format,
+            &exec(),
+        )?;
+        assert!(instances[0].transport.live_host().is_some());
+        let observer = |_: &Record| {};
+        thread::scope(|scope| -> Result<()> {
+            let collector = Collector::spawn(scope, NullSink, &observer);
+            let emitter = Mutex::new(Some(collector.emitter()));
+            let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _guard = SupervisorExit {
+                    instances: &instances,
+                    emitter: &emitter,
+                    armed: true,
+                };
+                panic!("a supervisor tick panicked");
+            }));
+            assert!(unwound.is_err(), "the panic propagated");
+            assert!(
+                emitter.lock().expect("emitter lock").is_none(),
+                "the panic path still clears the emitter"
+            );
+            collector.shutdown()
+        })?;
+        assert!(
+            instances[0].transport.live_host().is_none(),
+            "the panic retires the transports so no worker waits on a dead supervisor"
         );
         release_all(instances)?;
         Ok(())
