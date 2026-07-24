@@ -19,7 +19,7 @@ use sima_contracts::{Artifact, DeviceBinding, Outcome, Stats, WorkerId};
 use sima_core::{Error, Hash, Result, to_hex};
 use sima_model::{ArtifactRef, RunConfig, RunId, TaskIdentity, TaskKey, TaskRecord};
 use sima_store::Store;
-use sima_trace::{Emitter, Event, StatScalar};
+use sima_trace::{Emitter, Event, Level, StatScalar};
 use sima_transport::protocol::Assignment;
 use sima_transport::{LinkEvent, SpawnOutcome, WorkerLink, WorkerTransport};
 
@@ -66,7 +66,7 @@ pub(crate) fn worker_loop(worker: WorkerId, ctx: WorkerContext<'_>) {
     // only when the retirement is fatal.
     let mut link = match spawn_bound(&ctx, worker) {
         Ok(SpawnOutcome::Link(link)) => link,
-        Ok(SpawnOutcome::Retired { fatal }) => return retire_worker(&ctx, fatal),
+        Ok(SpawnOutcome::Retired { fatal }) => return retire_worker(&ctx, worker, fatal),
         Err(e) => return ctx.coordinator.fault_run(e),
     };
     while let Some(leased) = ctx.coordinator.next_task(ctx.device.map(|d| d.class())) {
@@ -102,7 +102,9 @@ pub(crate) fn worker_loop(worker: WorkerId, ctx: WorkerContext<'_>) {
                 link.kill();
                 link = match spawn_bound(&ctx, worker) {
                     Ok(SpawnOutcome::Link(link)) => link,
-                    Ok(SpawnOutcome::Retired { fatal }) => return retire_worker(&ctx, fatal),
+                    Ok(SpawnOutcome::Retired { fatal }) => {
+                        return retire_worker(&ctx, worker, fatal);
+                    }
                     Err(e) => return ctx.coordinator.fault_run(e),
                 };
             }
@@ -136,15 +138,36 @@ fn spawn_bound(ctx: &WorkerContext<'_>, worker: WorkerId) -> Result<SpawnOutcome
     Ok(outcome)
 }
 
-/// Winds a worker down when its transport retires. A fatal retirement — a
-/// strict-fill fleet that lost the instances it depends on — faults the run
-/// at once. A non-fatal one lets the worker thread exit cleanly, leaving the
-/// survivors to drain the queue; when no survivor remains, the worker's exit
-/// (through [`WorkerExit`]) is what faults the run.
-fn retire_worker(ctx: &WorkerContext<'_>, fatal: bool) {
+/// Winds a worker down when its transport retires, journaling the retirement
+/// so a degraded pool is visible rather than silently gone. A fatal retirement
+/// faults the run at once — the transport retires fatally whenever the run
+/// cannot proceed without it, whatever the fill policy: a strict-fill
+/// shortfall, or a supervisor unwind. A non-fatal one lets the worker thread
+/// exit cleanly, leaving the survivors to drain the queue; when no survivor
+/// remains, the worker's exit (through [`WorkerExit`]) is what faults the run.
+fn retire_worker(ctx: &WorkerContext<'_>, worker: WorkerId, fatal: bool) {
+    ctx.events.emit(Event::Diagnostic {
+        level: Level::Warn,
+        source: "scheduler".to_string(),
+        message: if fatal {
+            format!(
+                "worker {} retired; the run cannot continue without its transport",
+                worker.0
+            )
+        } else {
+            format!(
+                "worker {} retired; the run continues on its surviving workers",
+                worker.0
+            )
+        },
+        worker: Some(worker.0),
+        // The parent's account of the pool: empty for a local slot.
+        host: (!ctx.host.is_empty()).then(|| ctx.host.clone()),
+        task: None,
+    });
     if fatal {
         ctx.coordinator.fault_run(Error::Transport(
-            "the worker's transport retired under strict fill".to_string(),
+            "the worker's transport retired; the run cannot continue without it".to_string(),
         ));
     }
 }

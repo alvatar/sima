@@ -6,11 +6,11 @@ mod common;
 
 use std::time::Duration;
 
-use common::{config, exec, run_id, run_pools, stub_resolver, temp_store};
+use common::{config, exec, journal_events, run_id, run_pools, stub_resolver, temp_store};
 use sima_contracts::DeviceBinding;
 use sima_core::{Error, Result};
 use sima_domains::StubBehavior;
-use sima_scheduler::{RunOutcome, WorkerPool};
+use sima_scheduler::{Event, Level, RunOutcome, WorkerPool};
 use sima_trace::Emitter;
 use sima_transport::loopback::LoopbackTransport;
 use sima_transport::{SpawnOutcome, WorkerTransport};
@@ -67,12 +67,53 @@ fn a_fatal_retirement_faults_the_run() -> Result<()> {
     }];
     match run_pools(&store, &cfg, &exec(1, 3, 1_000), &pools) {
         Err(Error::Transport(msg)) => {
-            assert!(msg.contains("strict fill"), "names the cause: {msg}");
+            // The message is policy-neutral: a transport retires fatally
+            // whenever the run cannot proceed without it, not only under strict
+            // fill.
+            assert!(
+                msg.contains("cannot continue without it"),
+                "names the cause: {msg}"
+            );
         }
-        other => panic!("expected a strict-fill fault, got {other:?}"),
+        other => panic!("expected a transport retirement fault, got {other:?}"),
     }
     // A faulted run writes no manifest.
     assert!(store.manifest(&run_id(&cfg))?.is_none());
+    Ok(())
+}
+
+#[test]
+fn a_retirement_is_journaled_as_a_diagnostic() -> Result<()> {
+    // A best-effort retirement degrades a pool with no run-level failure; a
+    // journal diagnostic is what makes the degradation visible. Two candidates,
+    // a retiring best-effort pool and a healthy survivor: the survivor drains
+    // the queue and the retirement leaves a warning behind.
+    let cfg = config(74, vec![StubBehavior::Succeed, StubBehavior::Sleep(0)]);
+    let (_dir, store) = temp_store();
+    let exec = exec(1, 3, 1_000);
+    let retiring = RetiringTransport { fatal: false };
+    let survivor = LoopbackTransport::new(cfg.format.clone(), Duration::MAX, None, stub_resolver());
+    let pools = [
+        WorkerPool {
+            transport: &retiring,
+            host: String::new(),
+            slots: one_slot(),
+        },
+        WorkerPool {
+            transport: &survivor,
+            host: String::new(),
+            slots: one_slot(),
+        },
+    ];
+    run_pools(&store, &cfg, &exec, &pools)?;
+    let events = journal_events(&store, &run_id(&cfg));
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            Event::Diagnostic { level: Level::Warn, message, .. } if message.contains("retired")
+        )),
+        "the retirement is journaled as a warning"
+    );
     Ok(())
 }
 
