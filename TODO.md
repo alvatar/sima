@@ -500,7 +500,7 @@ leaked instances are leaked money.
       `podman save | ssh docker load`, but Vast.ai pulls from a registry,
       so bootstrap implies publishing the image or loading it on-instance
       after boot
-- [ ] M6.3 On-worker stats reduction: kernel-side population/activity counts
+- [x] M6.3 On-worker stats reduction: kernel-side population/activity counts
       so remote runs return stats always, snapshots only on a cheap predicate
       (placed here as the bandwidth guard; P7's funnel metrics consume the
       same reduction — the mechanism is shared). "Stats always" covers the
