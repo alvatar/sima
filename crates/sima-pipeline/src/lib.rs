@@ -24,6 +24,7 @@ mod feed;
 mod fixtures;
 mod fleet;
 mod journal;
+mod machines;
 mod observe;
 mod orchestrate;
 mod remove;
@@ -40,13 +41,15 @@ pub use feed::{
     FOLLOW_PROTOCOL_VERSION, FeedInfo, FollowFrame, LocalFeed, RemoteFeed, RunFeed, follow_serve,
     local_snapshot, remote_snapshot,
 };
+pub use machines::machines;
 pub use observe::RunObserver;
 pub use orchestrate::orchestrate;
 pub use remove::remove;
 pub use report::{ReportRow, report, report_records, report_task, report_task_records};
 pub use spend::spend;
-// The rental-ledger types a caller renders a spend report through.
-pub use sima_provider::{Cost, OpenSpend, Price, SpendReport};
+// The rental-ledger and reputation types a caller renders those reports
+// through.
+pub use sima_provider::{Cost, MachineReport, MachineSummary, OpenSpend, Price, SpendReport};
 pub use sima_store::SpendEntry;
 // The run identity a query names, re-exported with the rest of the surface a
 // caller reads a run through.

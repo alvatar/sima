@@ -10,7 +10,7 @@
 //! hold; the derivation that turns these records into an excluded set lives at
 //! acquisition.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use sima_core::Result;
 use sima_store::{MachineIncident, Store};
@@ -72,11 +72,85 @@ pub(crate) fn excluded_machines(store: &Store, provider: &str) -> Result<Vec<Str
         .collect())
 }
 
+/// The reputation ledger grouped for reporting: one summary per machine,
+/// sorted by provider then machine so the render is deterministic.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MachineReport {
+    /// Every machine that has recorded at least one incident.
+    pub machines: Vec<MachineSummary>,
+}
+
+/// One machine's recorded incidents, counted by kind, with the window they
+/// span and whether the machine is blacklisted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MachineSummary {
+    /// The provider the machine was rented from.
+    pub provider: String,
+    /// The provider's stable machine identifier.
+    pub machine: String,
+    /// Incidents of every kind against the machine.
+    pub incidents: usize,
+    /// Incidents where a live instance was polled gone mid-run.
+    pub lost: usize,
+    /// Incidents where a machine never became ready.
+    pub never_ready: usize,
+    /// Incidents where a ready machine failed the worker probe.
+    pub probe_failed: usize,
+    /// The earliest incident's stamp, in epoch milliseconds.
+    pub first_occurred_ms: u64,
+    /// The latest incident's stamp, in epoch milliseconds.
+    pub last_occurred_ms: u64,
+    /// Whether the machine is disqualified at selection: at least
+    /// [`BLACKLIST_STRIKES`] incidents.
+    pub blacklisted: bool,
+}
+
+/// Groups every incident in `store` per (provider, machine) for the
+/// `report --machines` view: counts by kind, the window they span, and the
+/// blacklist verdict. Reads the same ledger the excluded set is derived from,
+/// so the view and the enforcement never disagree.
+pub fn machine_report(store: &Store) -> Result<MachineReport> {
+    let mut grouped: BTreeMap<(String, String), MachineSummary> = BTreeMap::new();
+    for incident in store.machine_incidents()? {
+        let summary = grouped
+            .entry((incident.provider.clone(), incident.machine.clone()))
+            .or_insert_with(|| MachineSummary {
+                provider: incident.provider.clone(),
+                machine: incident.machine.clone(),
+                incidents: 0,
+                lost: 0,
+                never_ready: 0,
+                probe_failed: 0,
+                first_occurred_ms: incident.occurred_ms,
+                last_occurred_ms: incident.occurred_ms,
+                blacklisted: false,
+            });
+        summary.incidents += 1;
+        match incident.kind {
+            IncidentKind::Lost => summary.lost += 1,
+            IncidentKind::NeverReady => summary.never_ready += 1,
+            IncidentKind::ProbeFailed => summary.probe_failed += 1,
+        }
+        summary.first_occurred_ms = summary.first_occurred_ms.min(incident.occurred_ms);
+        summary.last_occurred_ms = summary.last_occurred_ms.max(incident.occurred_ms);
+    }
+    let machines = grouped
+        .into_values()
+        .map(|mut summary| {
+            summary.blacklisted = summary.incidents >= BLACKLIST_STRIKES;
+            summary
+        })
+        .collect();
+    Ok(MachineReport { machines })
+}
+
 #[cfg(test)]
 mod tests {
     use sima_core::Result;
 
-    use super::{BLACKLIST_STRIKES, IncidentKind, excluded_machines, record_incident};
+    use super::{
+        BLACKLIST_STRIKES, IncidentKind, excluded_machines, machine_report, record_incident,
+    };
     use crate::testutil::temp_store;
 
     /// Records `count` incidents against `machine` under the stub provider.
@@ -112,6 +186,53 @@ mod tests {
         strike(&store, "blacklisted", BLACKLIST_STRIKES)?;
         // The strikes are the stub's; another provider's excluded set is empty.
         assert!(excluded_machines(&store, "vastai")?.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn the_machine_report_groups_by_machine_counts_by_kind_and_marks_blacklisted() -> Result<()> {
+        let (_dir, store) = temp_store();
+        // One machine with two incidents of different kinds, spanning a window,
+        // and a second with a single incident.
+        record_incident(&store, "stub", "flaky", "sima-a", IncidentKind::Lost, 10)?;
+        record_incident(
+            &store,
+            "stub",
+            "flaky",
+            "sima-b",
+            IncidentKind::ProbeFailed,
+            30,
+        )?;
+        record_incident(
+            &store,
+            "stub",
+            "fluke",
+            "sima-c",
+            IncidentKind::NeverReady,
+            20,
+        )?;
+        let report = machine_report(&store)?;
+        assert_eq!(report.machines.len(), 2);
+        // Sorted by provider then machine: `flaky` before `fluke`.
+        let flaky = &report.machines[0];
+        assert_eq!(flaky.machine, "flaky");
+        assert_eq!(flaky.incidents, 2);
+        assert_eq!(flaky.lost, 1);
+        assert_eq!(flaky.probe_failed, 1);
+        assert_eq!(flaky.first_occurred_ms, 10);
+        assert_eq!(flaky.last_occurred_ms, 30);
+        assert!(flaky.blacklisted, "two incidents blacklist");
+        let fluke = &report.machines[1];
+        assert_eq!(fluke.machine, "fluke");
+        assert_eq!(fluke.never_ready, 1);
+        assert!(!fluke.blacklisted, "one incident is tolerated");
+        Ok(())
+    }
+
+    #[test]
+    fn the_machine_report_over_a_clean_store_is_empty() -> Result<()> {
+        let (_dir, store) = temp_store();
+        assert!(machine_report(&store)?.machines.is_empty());
         Ok(())
     }
 

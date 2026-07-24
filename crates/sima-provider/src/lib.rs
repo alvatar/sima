@@ -44,4 +44,6 @@ pub use provider::{
     Instance, InstanceId, InstanceStatus, Provider, Provision, SshEndpoint, TaggedInstance,
 };
 pub use reconcile::{ReconcileReport, reconcile};
-pub use reputation::{IncidentKind, record_incident};
+pub use reputation::{
+    IncidentKind, MachineReport, MachineSummary, machine_report, record_incident,
+};
