@@ -25,7 +25,7 @@ use sima_core::Result;
 use sima_model::FormatId;
 use sima_trace::Emitter;
 
-use crate::link::{LinkEvent, WorkerLink, WorkerTransport};
+use crate::link::{LinkEvent, SpawnOutcome, WorkerLink, WorkerTransport};
 use crate::protocol::{Assignment, Hello};
 use crate::subprocess::{EventContext, hello, spawn_worker};
 
@@ -89,7 +89,7 @@ impl WorkerTransport for RemoteTransport {
         worker: u64,
         device: Option<&DeviceBinding>,
         events: Emitter,
-    ) -> Result<Box<dyn WorkerLink>> {
+    ) -> Result<SpawnOutcome> {
         let n = self.counter.fetch_add(1, Ordering::Relaxed);
         let container = container_name(&self.container_prefix, n);
         let run = run_argv(
@@ -120,10 +120,10 @@ impl WorkerTransport for RemoteTransport {
             context,
         )?;
         let kill_command = kill_argv(self.host.as_deref(), &self.runtime, &container);
-        Ok(Box::new(RemoteLink {
+        Ok(SpawnOutcome::Link(Box::new(RemoteLink {
             inner,
             kill_command,
-        }))
+        })))
     }
 }
 

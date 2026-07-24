@@ -139,7 +139,8 @@ fn a_command_vector_spawn_reaches_the_worker_through_a_wrapper() {
             None,
             sima_trace::Emitter::from(std::sync::mpsc::channel().0),
         )
-        .expect("spawn through the wrapper");
+        .expect("spawn through the wrapper")
+        .into_link();
     // The handshake completed through the wrapper: the stub names no device.
     assert_eq!(link.device_name(), "");
     let ToChild::Assign(task) = assignment() else {
@@ -179,7 +180,8 @@ fn worker_stderr_lines_arrive_as_correlated_diagnostics() {
     let (tx, rx) = std::sync::mpsc::channel();
     let _link = transport
         .spawn(3, None, Emitter::from(tx))
-        .expect("spawn through the wrapper");
+        .expect("spawn through the wrapper")
+        .into_link();
     let event = rx
         .recv_timeout(Duration::from_secs(10))
         .expect("a captured stderr diagnostic");
@@ -219,7 +221,8 @@ fn an_overlong_stderr_line_is_truncated_with_a_marker() {
     let (tx, rx) = std::sync::mpsc::channel();
     let _link = transport
         .spawn(0, None, Emitter::from(tx))
-        .expect("spawn through the wrapper");
+        .expect("spawn through the wrapper")
+        .into_link();
     let event = rx
         .recv_timeout(Duration::from_secs(10))
         .expect("a captured stderr diagnostic");
@@ -257,7 +260,8 @@ fn an_executor_panic_crosses_as_a_correlated_diagnostic_event() {
     let (tx, rx) = std::sync::mpsc::channel();
     let mut link = transport
         .spawn(5, None, Emitter::from(tx))
-        .expect("spawn the worker");
+        .expect("spawn the worker")
+        .into_link();
     let task = ToChild::Assign(Assignment {
         spec: StubProgram {
             behavior: StubBehavior::Panic,

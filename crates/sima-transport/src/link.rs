@@ -27,14 +27,46 @@ pub trait WorkerTransport: Sync {
     /// attribute events. `events` is the run's emitter: the spawn's reader
     /// threads emit the child's structured events and captured stderr
     /// through it, and drop their clones when the child dies, so the
-    /// collector's channel closes when the run's last worker does. An `Err`
-    /// is a spawn failure — an infrastructure error, never a task outcome.
+    /// collector's channel closes when the run's last worker does.
+    ///
+    /// A successful spawn yields [`SpawnOutcome::Link`]; a fleet transport
+    /// whose instances are gone yields [`SpawnOutcome::Retired`] instead of a
+    /// link. An `Err` is a spawn failure — an infrastructure error, never a
+    /// task outcome.
     fn spawn(
         &self,
         worker: u64,
         device: Option<&DeviceBinding>,
         events: Emitter,
-    ) -> Result<Box<dyn WorkerLink>>;
+    ) -> Result<SpawnOutcome>;
+}
+
+/// What spawning a worker slot produced.
+pub enum SpawnOutcome {
+    /// A live worker to converse with.
+    Link(Box<dyn WorkerLink>),
+    /// The slot's transport retired: no worker was spawned, and none will be.
+    /// `fatal` marks a retirement the run must fault on — a strict-fill fleet
+    /// that lost the instances it depends on; a non-fatal retirement lets the
+    /// worker thread exit cleanly, the best-effort degradation of a fleet that
+    /// runs on whatever instances remain.
+    Retired {
+        /// Whether the retirement must fault the run.
+        fatal: bool,
+    },
+}
+
+impl SpawnOutcome {
+    /// The link, panicking on a retirement. For call sites where a link is
+    /// guaranteed: tests, and the transports that never retire.
+    pub fn into_link(self) -> Box<dyn WorkerLink> {
+        match self {
+            SpawnOutcome::Link(link) => link,
+            SpawnOutcome::Retired { .. } => {
+                panic!("spawn retired where a link was expected")
+            }
+        }
+    }
 }
 
 /// The parent's conversation with one live worker.

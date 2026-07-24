@@ -27,6 +27,6 @@ pub mod subprocess;
 
 mod checkpoint_cadence;
 
-pub use link::{LinkEvent, WorkerLink, WorkerTransport};
+pub use link::{LinkEvent, SpawnOutcome, WorkerLink, WorkerTransport};
 pub use remote::RemoteTransport;
 pub use subprocess::SubprocessTransport;

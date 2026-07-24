@@ -21,7 +21,7 @@ use sima_model::{ArtifactRef, RunConfig, RunId, TaskIdentity, TaskKey, TaskRecor
 use sima_store::Store;
 use sima_trace::{Emitter, Event, StatScalar};
 use sima_transport::protocol::Assignment;
-use sima_transport::{LinkEvent, WorkerLink, WorkerTransport};
+use sima_transport::{LinkEvent, SpawnOutcome, WorkerLink, WorkerTransport};
 
 use crate::config::ExecutionConfig;
 use crate::coordinator::{Coordinator, Pending, RunState};
@@ -56,8 +56,11 @@ pub(crate) struct WorkerContext<'a> {
 /// the child exits on end-of-stream, and the parent reaps it.
 pub(crate) fn worker_loop(worker: WorkerId, ctx: WorkerContext<'_>) {
     // A worker that cannot spawn its child cannot take work: the run faults.
+    // A retired transport yields no child: the worker exits, faulting the run
+    // only when the retirement is fatal.
     let mut link = match spawn_bound(&ctx, worker) {
-        Ok(link) => link,
+        Ok(SpawnOutcome::Link(link)) => link,
+        Ok(SpawnOutcome::Retired { fatal }) => return retire_worker(&ctx, fatal),
         Err(e) => return ctx.coordinator.fault_run(e),
     };
     while let Some(leased) = ctx.coordinator.next_task(ctx.device.map(|d| d.class())) {
@@ -92,7 +95,8 @@ pub(crate) fn worker_loop(worker: WorkerId, ctx: WorkerContext<'_>) {
                 // still dying is finished off, before the replacement spawns.
                 link.kill();
                 link = match spawn_bound(&ctx, worker) {
-                    Ok(link) => link,
+                    Ok(SpawnOutcome::Link(link)) => link,
+                    Ok(SpawnOutcome::Retired { fatal }) => return retire_worker(&ctx, fatal),
                     Err(e) => return ctx.coordinator.fault_run(e),
                 };
             }
@@ -104,23 +108,37 @@ pub(crate) fn worker_loop(worker: WorkerId, ctx: WorkerContext<'_>) {
 }
 
 /// Spawns this slot's child on its device and journals the device the child
-/// reports, at every spawn and respawn.
+/// reports, at every spawn and respawn. A retired transport yields no child
+/// and no `WorkerBound`; the caller decides whether the retirement faults.
 ///
 /// The event carries the child's own answer, so the journal records where the
 /// work actually ran rather than what the parent asked for.
-fn spawn_bound<'a>(ctx: &WorkerContext<'a>, worker: WorkerId) -> Result<Box<dyn WorkerLink + 'a>> {
-    let link = ctx
+fn spawn_bound(ctx: &WorkerContext<'_>, worker: WorkerId) -> Result<SpawnOutcome> {
+    let outcome = ctx
         .transport
         .spawn(worker.0, ctx.device.as_ref(), ctx.events.clone())?;
-    ctx.events.emit(Event::WorkerBound {
-        worker: worker.0,
-        device: link.device_name().to_string(),
-        driver: link.driver().to_string(),
-        // The child's device and driver are its own; the host is the
-        // parent's account of the pool — empty for a local slot.
-        host: ctx.host.clone(),
-    });
-    Ok(link)
+    if let SpawnOutcome::Link(link) = &outcome {
+        ctx.events.emit(Event::WorkerBound {
+            worker: worker.0,
+            device: link.device_name().to_string(),
+            driver: link.driver().to_string(),
+            // The child's device and driver are its own; the host is the
+            // parent's account of the pool — empty for a local slot.
+            host: ctx.host.clone(),
+        });
+    }
+    Ok(outcome)
+}
+
+/// Winds a worker down when its transport retires. A fatal retirement — a
+/// strict-fill fleet that lost the instances it depends on — faults the run;
+/// a non-fatal one lets the worker thread exit cleanly, leaving the survivors
+/// to drain the queue.
+fn retire_worker(ctx: &WorkerContext<'_>, fatal: bool) {
+    if fatal {
+        ctx.coordinator
+            .fault_run(Error::Reported("a fleet worker retired under strict fill".to_string()));
+    }
 }
 
 /// Persists and journals what a pull decided about its chain's placement.
@@ -763,7 +781,7 @@ mod tests {
                 },
                 attempt: 0,
             };
-            let mut link = transport.spawn(0, None, ctx.events.clone())?;
+            let mut link = transport.spawn(0, None, ctx.events.clone())?.into_link();
             process(&ctx, WorkerId(0), pending, link.as_mut());
         }
         let events = rx.into_iter().collect();
@@ -1034,7 +1052,7 @@ mod tests {
                     },
                     attempt: 1,
                 };
-                let mut link = transport.spawn(0, None, ctx.events.clone())?;
+                let mut link = transport.spawn(0, None, ctx.events.clone())?.into_link();
                 process(&ctx, WorkerId(0), pending, link.as_mut());
             }
             Ok(rx.into_iter().collect())
