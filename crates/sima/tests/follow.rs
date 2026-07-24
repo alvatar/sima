@@ -112,7 +112,7 @@ fn views(path: &str) -> Vec<Vec<&str>> {
         vec!["status", path, "--failed"],
         vec!["report", path],
         vec!["report", path, "--all"],
-        vec!["timeline", path],
+        vec!["report", path, "--timeline"],
     ]
 }
 

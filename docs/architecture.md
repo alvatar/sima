@@ -36,7 +36,7 @@ Strictly downward dependencies, enforced by workspace crate edges.
 | L5    | `sima-domains`   | per-format executors, generators, codecs, environments, id dispatch, and config translation; the reference stub domain |
 | L6    | `sima-scheduler` | task sources, worker pool, leases, retry, device placement, run driver |
 | L7    | `sima-pipeline`  | config loading, orchestration, run and per-task queries               |
-| L8    | `sima`           | CLI: run, status, report, timeline, rm, reconcile, tui                |
+| L8    | `sima`           | CLI: run, status, report, rm, reconcile, tui, follow                  |
 
 Beside the spine, `sima-worker` is the worker binary: it depends on
 `sima-transport` (the executor host loop) and `sima-domains` (the executor
@@ -1495,7 +1495,8 @@ lost, a replacement, budget exhaustion — carried through a start hook that
 hands the supervisor the run's emitter when the collector spawns, so fleet
 events cross the same single-writer seam as every other event with no
 scheduler edge to the provider. Acquisition intent and final spend live in
-the durable provider records and the ledger, which `sima spend` reports.
+the durable provider records and the ledger, which `sima report --spend`
+reports.
 
 ### Run status
 
@@ -1535,10 +1536,6 @@ command form keeps its shape whether or not a host is named:
   resolves to that backend, keyed from the environment, and a store holding
   no record reaches no provider API and needs no credentials. An id no
   backend answers to is an error naming it.
-- **`sima spend <config.toml>`** — reports the run's rental spend from the
-  local store's ledger: each closed rental with its duration, rate, and cost,
-  each rental still open with what it has accrued, and the total, all in
-  dollars. Like `reconcile`, it reads the local store the orchestrator writes.
 - **`sima status <config.toml>`** — reports execution. The config file is
   the one argument: its execution section names the store and its identity
   section derives the run id. `--task <key>` prints one task's attempt
@@ -1546,38 +1543,48 @@ command form keeps its shape whether or not a host is named:
   ran it, how each attempt ended, and the span the collector observed over
   it. `--failed` digests the tasks that did not commit, naming the terminal
   outcome and reason of each.
-- **`sima report <config.toml>`** — reports results: each committed task's
-  rendered stats line, grouped by distinct value with a count.
-  `--all` prints one line per committed task instead, and `--task <key>`
-  one task's line. A task that never committed has no report; its
-  execution history is what `status --task` answers.
-- **`sima timeline <config.toml>`** — reports how efficiently the run
-  executed. A summary block carries the run's wall-clock, commit count, and
-  throughput; three retry ratios state retry volume, prevalence, and the share
-  of attempts that were wasted, each printed with the counts it is taken over;
-  and a per-worker table names each worker's spawn latency, respawns,
-  utilization, commits, and attempts. Beneath them a fixed-width chart draws
-  commits over time and one occupancy bar per worker on a single axis, so a
-  worker provisioned late shows its spawn gap as leading blanks drawn to
-  scale.
+- **`sima report <config.toml>`** — reports results, efficiency, and cost
+  through mutually-exclusive view flags; a combination is a usage error. The
+  result and efficiency views read the run's journal; the cost view reads the
+  store:
 
-  Rates and per-worker figures cover the **latest run session** — a resumed
-  run's journal spans downtime that would collapse them — while the commit
-  count is run-wide. Utilization is over each worker's **own lifespan**, from
-  its first binding to the session's end, so the cost of provisioning a remote
-  pool reads as spawn latency rather than as idleness. Every duration is
-  elapsed wall-clock as the journal stamped it.
+  - The default groups each committed task's rendered stats line by distinct
+    value with a count; `--all` prints one line per committed task instead,
+    and `--task <key>` one task's line. A task that never committed has no
+    report; its execution history is what `status --task` answers.
+  - `--timeline` reports how efficiently the run executed. A summary block
+    carries the run's wall-clock, commit count, and throughput; three retry
+    ratios state retry volume, prevalence, and the share of attempts that were
+    wasted, each printed with the counts it is taken over; and a per-worker
+    table names each worker's spawn latency, respawns, utilization, commits,
+    and attempts. Beneath them a fixed-width chart draws commits over time and
+    one occupancy bar per worker on a single axis, so a worker provisioned late
+    shows its spawn gap as leading blanks drawn to scale.
 
-`status`, `report`, and `timeline` split along what they report — how the run
-is running, what it produced, and how efficiently it got there. `status` and
-`report` each cover the whole run by default or one task under `--task <key>`;
-`timeline` is run-scoped, since efficiency is a property of the pool rather
-than of a task. A `<key>` is any prefix of a task
-key that names exactly one of the tasks the journal carries a lifecycle
-event for; a prefix matching none, or more than one, is an error. Every
-query reads the journal alone and never perturbs a run, so it answers over
-a live run, a finished one, and a failed one alike, and a query exits 0
-whenever it answered — independently of the run's own outcome.
+    Rates and per-worker figures cover the **latest run session** — a resumed
+    run's journal spans downtime that would collapse them — while the commit
+    count is run-wide. Utilization is over each worker's **own lifespan**, from
+    its first binding to the session's end, so the cost of provisioning a
+    remote pool reads as spawn latency rather than as idleness. Every duration
+    is elapsed wall-clock as the journal stamped it.
+  - `--spend` reports the run's rental spend from the local store's ledger:
+    each closed rental with its duration, rate, and cost, each rental still
+    open with what it has accrued, and the total, all in dollars. The ledger is
+    store state the orchestrator writes and the follow feed carries journal
+    state alone, so this view reads the local store like `reconcile` and takes
+    no `--on`.
+
+`status` and `report` split along what they report — how the run is running
+against what it produced, how efficiently it got there, and what it cost.
+Both cover the whole run by default; `status --task <key>` and
+`report --task <key>` narrow to one task, while `report --timeline` is
+run-scoped, since efficiency is a property of the pool rather than of a task. A
+`<key>` is any prefix of a task key that names exactly one of the tasks the
+journal carries a lifecycle event for; a prefix matching none, or more than
+one, is an error. Every journal-derived query reads the journal alone and never
+perturbs a run, so it answers over a live run, a finished one, and a failed one
+alike, and a query exits 0 whenever it answered — independently of the run's
+own outcome.
 - **`sima follow <config.toml>`** — streams the run's events to stdout, one
   line per event through the same renderer the tui's log uses, and exits when
   the run reaches a terminal state, carrying that outcome's exit code. It is
@@ -1596,10 +1603,11 @@ whenever it answered — independently of the run's own outcome.
 
 ### Following a run over SSH
 
-`status`, `report`, `timeline`, `tui`, and `follow` each accept
-`--on <ssh-dest>`, which names the host the run's orchestrator runs on.
-Three properties of the system decide the shape, and none of them is a
-choice:
+`status`, `report`, `tui`, and `follow` each accept `--on <ssh-dest>`, which
+names the host the run's orchestrator runs on. `report --spend` is the one
+read view that does not: its ledger is local store state the follow feed does
+not carry. Three properties of the system decide the shape, and none of them is
+a choice:
 
 - **A run's identity is the hash of its config**, and its store path resolves
   relative to the config file's directory. A local copy of the config would

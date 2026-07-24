@@ -124,7 +124,7 @@ fn status_before_any_run_exits_1_and_after_reports_the_counts() {
 }
 
 #[test]
-fn timeline_reports_the_throughput_utilization_and_temporal_shape_of_a_run() {
+fn report_timeline_reports_the_throughput_utilization_and_temporal_shape_of_a_run() {
     let dir = tempfile::tempdir().expect("temp dir");
     // Tasks that occupy their worker for a measurable span, so the utilization
     // figures and the occupancy bars have something to draw.
@@ -134,11 +134,11 @@ fn timeline_reports_the_throughput_utilization_and_temporal_shape_of_a_run() {
     );
     let path = config.to_str().expect("utf-8 path");
 
-    let before = sima(&["timeline", path]);
+    let before = sima(&["report", path, "--timeline"]);
     assert_eq!(before.status.code(), Some(1), "{before:?}");
 
     assert_eq!(sima(&["run", path]).status.code(), Some(0));
-    let output = sima(&["timeline", path]);
+    let output = sima(&["report", path, "--timeline"]);
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let text = stdout(&output);
     for field in [
@@ -170,7 +170,7 @@ fn timeline_reports_the_throughput_utilization_and_temporal_shape_of_a_run() {
 }
 
 #[test]
-fn timeline_over_a_local_run_names_no_host_and_no_device() {
+fn report_timeline_over_a_local_run_names_no_host_and_no_device() {
     let dir = tempfile::tempdir().expect("temp dir");
     let config = write_config(dir.path(), r#""succeed", "succeed""#);
     let path = config.to_str().expect("utf-8 path");
@@ -179,7 +179,7 @@ fn timeline_over_a_local_run_names_no_host_and_no_device() {
     // Local workers bind as the pool launches and the stub domain names no
     // device, so both columns state their placeholder, the spawn latency is a
     // fraction of a second, and no worker respawned.
-    let text = stdout(&sima(&["timeline", path]));
+    let text = stdout(&sima(&["report", path, "--timeline"]));
     for worker in ["w0", "w1"] {
         let row = worker_row(&text, worker);
         assert_eq!(row[1], "(none)", "the stub domain names no device: {text}");
@@ -208,14 +208,14 @@ fn worker_row(text: &str, worker: &str) -> Vec<String> {
 }
 
 #[test]
-fn timeline_over_a_failed_run_answers_and_exits_0() {
+fn report_timeline_over_a_failed_run_answers_and_exits_0() {
     let dir = tempfile::tempdir().expect("temp dir");
     let config = write_config(dir.path(), r#""succeed", "reject""#);
     let path = config.to_str().expect("utf-8 path");
     assert_eq!(sima(&["run", path]).status.code(), Some(2));
 
     // The query reports what the run did, whatever the run's own outcome was.
-    let output = sima(&["timeline", path]);
+    let output = sima(&["report", path, "--timeline"]);
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let text = stdout(&output);
     assert!(text.contains("throughput"), "{text}");
@@ -452,6 +452,78 @@ fn report_full_is_no_longer_a_command() {
 }
 
 #[test]
+fn report_spend_reports_the_rental_ledger() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config = write_config(dir.path(), r#""succeed", "succeed""#);
+    let path = config.to_str().expect("utf-8 path");
+    assert_eq!(sima(&["run", path]).status.code(), Some(0));
+
+    // A local run rents no hardware, so the ledger is empty; the view still
+    // renders its three sections, unchanged from the removed `spend` command.
+    let output = sima(&["report", path, "--spend"]);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let text = stdout(&output);
+    assert!(
+        text.contains("closed rentals"),
+        "the ledger sections: {text}"
+    );
+    assert!(text.contains("open rentals"), "the ledger sections: {text}");
+    assert!(text.contains("total"), "the ledger total: {text}");
+}
+
+#[test]
+fn the_removed_top_level_timeline_and_spend_commands_report_usage() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config = write_config(dir.path(), r#""succeed""#);
+    let path = config.to_str().expect("utf-8 path");
+    assert_eq!(sima(&["run", path]).status.code(), Some(0));
+
+    // The reporting views moved under `report`; the top-level verbs are gone.
+    for args in [vec!["timeline", path], vec!["spend", path]] {
+        let output = sima(&args);
+        assert_eq!(output.status.code(), Some(1), "{args:?}: {output:?}");
+        let stderr = String::from_utf8(output.stderr).expect("stderr is UTF-8");
+        assert!(stderr.contains("usage"), "{args:?}: {stderr}");
+    }
+}
+
+#[test]
+fn report_view_flags_are_mutually_exclusive() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config = write_config(dir.path(), r#""succeed""#);
+    let path = config.to_str().expect("utf-8 path");
+    assert_eq!(sima(&["run", path]).status.code(), Some(0));
+
+    // No arm matches two view flags together, so a combination falls to the
+    // usage error.
+    for args in [
+        vec!["report", path, "--timeline", "--spend"],
+        vec!["report", path, "--all", "--timeline"],
+        vec!["report", path, "--all", "--spend"],
+    ] {
+        let output = sima(&args);
+        assert_eq!(output.status.code(), Some(1), "{args:?}: {output:?}");
+        let stderr = String::from_utf8(output.stderr).expect("stderr is UTF-8");
+        assert!(stderr.contains("usage"), "{args:?}: {stderr}");
+    }
+}
+
+#[test]
+fn report_spend_refuses_a_remote_host() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config = write_config(dir.path(), r#""succeed""#);
+    let path = config.to_str().expect("utf-8 path");
+    assert_eq!(sima(&["run", path]).status.code(), Some(0));
+
+    // The ledger is local store state that the follow feed does not carry, so
+    // the spend view stays local-only, exactly as the `spend` command was.
+    let output = sima(&["report", path, "--spend", "--on", "gpubox"]);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).expect("stderr is UTF-8");
+    assert!(stderr.contains("usage"), "{stderr}");
+}
+
+#[test]
 fn a_rerun_of_a_finalized_run_reports_prior_commits() {
     let dir = tempfile::tempdir().expect("temp dir");
     let config = write_config(dir.path(), r#""succeed", "succeed""#);
@@ -662,14 +734,25 @@ fn the_usage_text_names_every_command_form() {
         "--task",
         "sima report",
         "--all",
+        "--timeline",
+        "--spend",
         "sima rm",
         "sima tui",
         "sima follow",
-        "sima timeline",
         "--on",
     ] {
         assert!(stderr.contains(form), "usage names {form}: {stderr}");
     }
+    // The reporting views live under `report`, so no top-level `timeline` or
+    // `spend` verb remains to name.
+    assert!(
+        !stderr.contains("sima timeline"),
+        "no top-level timeline verb: {stderr}"
+    );
+    assert!(
+        !stderr.contains("sima spend"),
+        "no top-level spend verb: {stderr}"
+    );
     // Every read view takes a host, and the note that says so must name them
     // all: a verb missing from it reads as local-only.
     let on = stderr
@@ -677,7 +760,7 @@ fn the_usage_text_names_every_command_form() {
         .skip_while(|line| !line.contains("--on <host>"))
         .collect::<Vec<&str>>()
         .join(" ");
-    for view in ["status", "report", "timeline", "tui", "follow"] {
+    for view in ["status", "report", "tui", "follow"] {
         assert!(on.contains(view), "the host note names {view}: {stderr}");
     }
     // The far half of the follow transport is internal, not a verb a user

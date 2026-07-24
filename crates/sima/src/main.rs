@@ -6,10 +6,12 @@
 //! - `status` reports execution: the run's state and counters, one task's
 //!   attempt timeline under `--task <key>`, or the tasks that did not commit
 //!   under `--failed`.
-//! - `report` reports results: the committed stats, grouped by default, one
-//!   line per task under `--all`, or one task's under `--task <key>`.
-//! - `timeline` reports efficiency: the run's throughput, retry rates, and
-//!   per-worker utilization, over a chart of commits and worker occupancy.
+//! - `report` reports results, efficiency, and cost: the committed stats,
+//!   grouped by default, one line per task under `--all`, or one task's under
+//!   `--task <key>`; the run's throughput, retry rates, and per-worker
+//!   utilization over a chart of commits and worker occupancy under
+//!   `--timeline`; and the rental ledger under `--spend`. The view flags are
+//!   mutually exclusive.
 //!
 //! A `<key>` is any prefix of a task key that names one task. All
 //! orchestration lives in `sima-pipeline` — this binary parses arguments,
@@ -71,10 +73,12 @@ fn main() -> ExitCode {
         ["report", config] => report_command(&Target::new(config, host), Report::Summary),
         ["report", config, "--all"] => report_command(&Target::new(config, host), Report::All),
         ["report", config, "--task", key] => report_task_command(&Target::new(config, host), key),
-        ["timeline", config] => timeline_command(&Target::new(config, host)),
+        ["report", config, "--timeline"] => timeline_command(&Target::new(config, host)),
         // The rental ledger lives in the local store the orchestrator writes,
-        // so `spend` reads it here, like `rm` and `reconcile`.
-        ["spend", config] if host.is_none() => spend_command(&resolve_config(config)),
+        // so the spend view reads it here, like `rm` and `reconcile`. A host
+        // falls through to the usage error: the ledger does not travel the
+        // follow feed.
+        ["report", config, "--spend"] if host.is_none() => spend_command(&resolve_config(config)),
         ["tui", config] => tui::tui_command(&Target::new(config, host)),
         ["follow", config] => follow::follow_command(&Target::new(config, host)),
         _ => {
@@ -86,17 +90,17 @@ fn main() -> ExitCode {
                  \x20      sima report <config>               count committed tasks per distinct stats value\n\
                  \x20      sima report <config> --all         print each committed task's stats\n\
                  \x20      sima report <config> --task <key>  print one committed task's stats\n\
+                 \x20      sima report <config> --timeline    report the run's metrics and its timeline\n\
+                 \x20      sima report <config> --spend       report the run's rental spend\n\
                  \x20      sima rm <config>                   delete the run and what only it references\n\
                  \x20      sima reconcile <config>            destroy the machines a crashed run left running\n\
-                 \x20      sima spend <config>                report the run's rental spend\n\
                  \x20      sima tui <config>                  drive the run in a full-screen terminal UI\n\
                  \x20      sima follow <config>               stream the run's events until it ends\n\
-                 \x20      sima timeline <config>             report the run's metrics and its timeline\n\
                  \x20      <config> is a sima.toml path; the .toml extension may be omitted\n\
                  \x20      <key> is any prefix of a task key that names one task\n\
                  \x20      --on <host> observes a run on an ssh destination: status, report,\n\
-                 \x20      timeline, tui, and follow accept it, and <config> is then a path\n\
-                 \x20      on that host\n"
+                 \x20      tui, and follow accept it (report --spend stays local), and\n\
+                 \x20      <config> is then a path on that host\n"
             );
             ExitCode::from(EXIT_ERROR)
         }
@@ -231,8 +235,8 @@ fn drive(config: &Path) -> Result<RunOutcome> {
     orchestrate(&loaded, &control)
 }
 
-/// `sima spend <config.toml>`: the run's rental ledger — closed rentals, open
-/// ones, and the total — read from the local store.
+/// `sima report <config.toml> --spend`: the run's rental ledger — closed
+/// rentals, open ones, and the total — read from the local store.
 fn spend_command(config: &Path) -> ExitCode {
     match load(config).and_then(|loaded| sima_pipeline::spend(&loaded)) {
         Ok(report) => {
@@ -261,7 +265,7 @@ fn read_status(target: &Target) -> Result<RunStatus> {
     Ok(status_records(info.run, &records))
 }
 
-/// `sima timeline <config.toml>`: the run's execution metrics and the
+/// `sima report <config.toml> --timeline`: the run's execution metrics and the
 /// temporal shape of the session behind them. The query answers whatever the
 /// run's own outcome was, so a report over a failed run still exits 0.
 fn timeline_command(target: &Target) -> ExitCode {
