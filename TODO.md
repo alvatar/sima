@@ -542,8 +542,8 @@ leaked instances are leaked money.
       store, and the provider account holds zero instances afterwards.
       There is no manifest-equality criterion — float families are
       reproducible per backend class, and a mixed fleet crosses classes by
-      construction. This is the fleet M6.6's trust tiers assume and
-      delivers the README's elastic scale-out principle
+      construction. This is the fleet that delivers the README's elastic
+      scale-out principle
 - [ ] M6.6 Machine reputation: rented machines are judged by
       observable operational behavior, never by output verification —
       workers cannot touch the store, so a bad machine's whole
