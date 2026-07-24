@@ -22,11 +22,13 @@ mod devices;
 mod feed;
 #[cfg(test)]
 mod fixtures;
+mod fleet;
 mod journal;
 mod observe;
 mod orchestrate;
 mod remove;
 mod report;
+mod spend;
 mod stats;
 mod status;
 mod task_history;
@@ -42,6 +44,10 @@ pub use observe::RunObserver;
 pub use orchestrate::orchestrate;
 pub use remove::remove;
 pub use report::{ReportRow, report, report_records, report_task, report_task_records};
+pub use spend::spend;
+// The rental-ledger types a caller renders a spend report through.
+pub use sima_provider::{Cost, OpenSpend, Price, SpendReport};
+pub use sima_store::SpendEntry;
 // The run identity a query names, re-exported with the rest of the surface a
 // caller reads a run through.
 pub use sima_model::RunId;

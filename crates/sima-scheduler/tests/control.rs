@@ -34,6 +34,7 @@ fn the_observer_mirrors_the_journal() -> Result<()> {
                 .push(record.event.clone());
         },
         interrupt: &interrupt,
+        on_start: None,
     };
 
     let (_dir, store) = temp_store();
@@ -73,6 +74,7 @@ fn an_interrupt_mid_run_drains_and_stays_resumable() -> Result<()> {
             }
         },
         interrupt: &interrupt,
+        on_start: None,
     };
 
     let (_dir, store) = temp_store();
@@ -125,6 +127,7 @@ fn an_interrupt_before_any_task_starts_commits_nothing() -> Result<()> {
     let control = RunControl {
         observer: &|_: &Record| {},
         interrupt: &interrupt,
+        on_start: None,
     };
 
     let (_dir, store) = temp_store();

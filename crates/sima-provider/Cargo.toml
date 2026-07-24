@@ -3,6 +3,12 @@ name = "sima-provider"
 version.workspace = true
 edition.workspace = true
 
+[features]
+# Forwards crash-injection to the layers whose durability the provider's
+# close-out windows depend on, so the crash harness can arm the points this
+# crate plants around acquisition and teardown.
+crash-injection = ["sima-core/crash-injection", "sima-store/crash-injection"]
+
 [dependencies]
 sima-core = { path = "../sima-core" }
 sima-model = { path = "../sima-model" }

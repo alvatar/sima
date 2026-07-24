@@ -68,6 +68,7 @@ target/release/sima run examples/gray-scott-search    # drive the run
 target/release/sima tui examples/gray-scott-search    # or watch it live
 target/release/sima report examples/gray-scott-search # per-candidate stats
 target/release/sima status examples/gray-scott-search --on gpubox # or a run elsewhere
+target/release/sima spend examples/gray-scott-search  # rented-instance spend
 ```
 
 ## How it works

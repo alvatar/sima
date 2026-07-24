@@ -1,6 +1,12 @@
 //! The parent-side transport seam: [`WorkerTransport`] spawns workers,
 //! [`WorkerLink`] converses with one.
 //!
+//! A spawn resolves to one of three outcomes: a live [`WorkerLink`] to
+//! converse with, a [`SpawnOutcome::Retired`] when a fleet transport's
+//! instances are gone with no replacement, or an `Err` — an infrastructure
+//! spawn failure the caller faults on. The retirement is a spawn-time channel
+//! distinct from the conversation's [`LinkEvent`] outcomes below.
+//!
 //! The seam exists so the scheduler's worker loop is written against traits
 //! the tests can implement without processes: the production transport spawns
 //! `sima-worker` subprocesses, the test loopback runs the same host loop and
@@ -27,14 +33,52 @@ pub trait WorkerTransport: Sync {
     /// attribute events. `events` is the run's emitter: the spawn's reader
     /// threads emit the child's structured events and captured stderr
     /// through it, and drop their clones when the child dies, so the
-    /// collector's channel closes when the run's last worker does. An `Err`
-    /// is a spawn failure — an infrastructure error, never a task outcome.
+    /// collector's channel closes when the run's last worker does.
+    ///
+    /// A successful spawn yields [`SpawnOutcome::Link`]; a fleet transport
+    /// whose instances are gone yields [`SpawnOutcome::Retired`] instead of a
+    /// link. An `Err` is a spawn failure — an infrastructure error, never a
+    /// task outcome.
     fn spawn(
         &self,
         worker: u64,
         device: Option<&DeviceBinding>,
         events: Emitter,
-    ) -> Result<Box<dyn WorkerLink>>;
+    ) -> Result<SpawnOutcome>;
+}
+
+/// What spawning a worker slot produced.
+pub enum SpawnOutcome {
+    /// A live worker to converse with.
+    Link(Box<dyn WorkerLink>),
+    /// The slot's transport retired: no worker was spawned, and none will be.
+    /// `fatal` marks a retirement the run must fault on — a strict-fill fleet
+    /// that lost the instances it depends on; a non-fatal retirement lets the
+    /// worker thread exit cleanly, the best-effort degradation of a fleet that
+    /// runs on whatever instances remain.
+    Retired {
+        /// Whether the retirement must fault the run.
+        fatal: bool,
+    },
+}
+
+impl SpawnOutcome {
+    /// The link, for call sites where a link is guaranteed: tests, and the
+    /// transports that never retire.
+    ///
+    /// # Panics
+    ///
+    /// Panics on a [`SpawnOutcome::Retired`] — the caller has asserted the
+    /// transport cannot retire, so a retirement here is a bug, not a runtime
+    /// fault.
+    pub fn into_link(self) -> Box<dyn WorkerLink> {
+        match self {
+            SpawnOutcome::Link(link) => link,
+            SpawnOutcome::Retired { .. } => {
+                panic!("spawn retired where a link was expected")
+            }
+        }
+    }
 }
 
 /// The parent's conversation with one live worker.

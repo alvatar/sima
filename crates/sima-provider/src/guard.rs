@@ -16,7 +16,7 @@ use crate::provider::{InstanceId, Provider, SshEndpoint};
 /// discards the outcome, because a destructor has nowhere to report it. A
 /// teardown lost that way is caught by the ledger record, which the next
 /// reconciliation pass acts on.
-pub struct InstanceGuard<'a, P: Provider> {
+pub struct InstanceGuard<'a, P: Provider + ?Sized> {
     /// The provider holding the instance.
     provider: &'a P,
     /// The store holding the ledger record.
@@ -27,19 +27,31 @@ pub struct InstanceGuard<'a, P: Provider> {
     id: InstanceId,
     /// Where the instance answers SSH.
     endpoint: SshEndpoint,
+    /// The GPU model the offer named, for the online event; empty for a
+    /// machine carrying none.
+    gpu_model: String,
+    /// GPUs the offer named.
+    gpu_count: u32,
+    /// The hourly rate the instance is charged at.
+    rate: Price,
     /// Whether teardown already ran, so drop leaves it alone.
     released: bool,
 }
 
-impl<'a, P: Provider> InstanceGuard<'a, P> {
-    /// Takes ownership of the instance `tag` names, reachable at
-    /// `endpoint`.
+impl<'a, P: Provider + ?Sized> InstanceGuard<'a, P> {
+    /// Takes ownership of the instance `tag` names, reachable at `endpoint`,
+    /// carrying the offer's hardware and the rate it is billed at for the
+    /// journal.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         provider: &'a P,
         store: &'a Store,
         tag: String,
         id: InstanceId,
         endpoint: SshEndpoint,
+        gpu_model: String,
+        gpu_count: u32,
+        rate: Price,
     ) -> InstanceGuard<'a, P> {
         InstanceGuard {
             provider,
@@ -47,6 +59,9 @@ impl<'a, P: Provider> InstanceGuard<'a, P> {
             tag,
             id,
             endpoint,
+            gpu_model,
+            gpu_count,
+            rate,
             released: false,
         }
     }
@@ -66,6 +81,21 @@ impl<'a, P: Provider> InstanceGuard<'a, P> {
         &self.tag
     }
 
+    /// The GPU model the offer named; empty for a machine carrying none.
+    pub fn gpu_model(&self) -> &str {
+        &self.gpu_model
+    }
+
+    /// GPUs the offer named.
+    pub fn gpu_count(&self) -> u32 {
+        self.gpu_count
+    }
+
+    /// The hourly rate the instance is billed at.
+    pub fn rate(&self) -> Price {
+        self.rate
+    }
+
     /// Destroys the instance, closes its rental out, and reports the first
     /// failure. A silently failed teardown is a machine still being paid
     /// for, so the caller learns of it here.
@@ -76,7 +106,7 @@ impl<'a, P: Provider> InstanceGuard<'a, P> {
     }
 }
 
-impl<P: Provider> Drop for InstanceGuard<'_, P> {
+impl<P: Provider + ?Sized> Drop for InstanceGuard<'_, P> {
     fn drop(&mut self) {
         if self.released {
             return;
@@ -103,6 +133,10 @@ pub(crate) fn teardown<P: Provider + ?Sized>(
     listed: Option<Price>,
 ) -> Result<()> {
     provider.destroy(id)?;
+    // A death here leaves a destroyed machine with its record still standing:
+    // reconcile re-runs the close-out under the same key, so the ledger holds
+    // exactly one entry and the machine is never double-charged.
+    sima_core::crashpoint("provider.destroyed");
     match store.instance(tag)? {
         Some(record) => close_out(store, &record, listed),
         None => Ok(()),
@@ -140,6 +174,10 @@ pub(crate) fn close_out(
         ended_ms,
         cost_micro_usd: Cost::accrued(rate, elapsed_ms).0,
     })?;
+    // A death here leaves the entry written and the record uncleared: the
+    // re-run's close-out overwrites the entry under the same (tag, stamp) key
+    // rather than adding a second, so the ledger still holds exactly one.
+    sima_core::crashpoint("provider.entry-written");
     store.remove_instance(&record.tag)
 }
 

@@ -111,6 +111,7 @@ fn d_a_copied_store_resumes_elsewhere_to_the_identical_manifest() -> Result<()> 
             }
         },
         interrupt: &interrupt,
+        on_start: None,
     };
     assert!(matches!(
         orchestrate(&config, &control)?,

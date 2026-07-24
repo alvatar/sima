@@ -42,6 +42,29 @@
 //! [[execution.remote.device]]  # optional; same semantics as local
 //! select  = "nvidia"
 //! workers = 4
+//!
+//! [fleet]                   # optional; a pool of rented instances the run
+//! provider = "vast"         # acquires. "vast" | "stub" (stub: in-process,
+//! count = 2                 # for tests). count is the instances to acquire,
+//! fill = "strict"           # >= 1. fill is "strict" | "best-effort", default
+//! image = "ghcr.io/alvatar/sima-worker:latest"  # "strict"; default image as
+//! disk_gb = 32              # shown. disk_gb, ready_timeout_ms (600000), and
+//! ready_timeout_ms = 600000 # ready_poll_ms (5000) all default as shown.
+//! ready_poll_ms = 5000
+//!
+//! [fleet.constraints]       # optional; every key optional, maps onto the
+//! gpu_models = ["RTX 4090"] # provider's offer constraints. max_price_usd_hour
+//! min_gpu_count = 1         # is f64 dollars, converted to a micro-USD rate.
+//! min_vram_mb = 16000
+//! max_price_usd_hour = 0.5
+//! min_reliability = 0.95
+//! verified_only = true
+//! min_disk_gb = 32
+//! min_bandwidth_mbps = 100
+//!
+//! [fleet.budget]            # optional; both keys optional. max_spend_usd is
+//! max_spend_usd = 5.0       # f64 dollars, converted to a micro-USD cost cap,
+//! max_wall_clock_ms = 3600000  # rounded up.
 //! ```
 //!
 //! The two checkpoint cadences are unioned: a save is due when either fires,
@@ -68,6 +91,10 @@
 //! rejected. The `[run.generator]` table (minus `id`) and the `[run.params]`
 //! table pass opaquely to the generator and domain translations, which own
 //! and validate their keys.
+//!
+//! The `[fleet]` section is operational too: it decides where tasks run,
+//! never what they produce, so it never enters the run id. Its constraints
+//! and budget map onto the provider control plane's own types.
 
 use std::fs;
 use std::num::NonZeroU64;
@@ -78,6 +105,7 @@ use serde::Deserialize;
 use sima_core::{Error, Result};
 use sima_domains::{generator_params_for, params_for};
 use sima_model::{FormatId, GeneratorConfig, GeneratorId, RunConfig};
+use sima_provider::{Budget, Constraints, Cost, Price};
 use sima_scheduler::ExecutionConfig;
 
 use crate::devices::DeviceSelector;
@@ -86,6 +114,17 @@ use crate::devices::DeviceSelector;
 const DEFAULT_IMAGE: &str = "localhost/sima-worker:latest";
 /// The container runtime a remote pool uses when its config names none.
 const DEFAULT_RUNTIME: &str = "docker";
+/// The worker image a fleet rents when its config names none.
+const DEFAULT_FLEET_IMAGE: &str = "ghcr.io/alvatar/sima-worker:latest";
+/// The disk a fleet instance is provisioned with when its config names none.
+const DEFAULT_FLEET_DISK_GB: u64 = 32;
+/// How long a fleet waits for an instance to become reachable when its config
+/// names no timeout: the provider host pulls the image before the container
+/// exists, which takes minutes.
+const DEFAULT_READY_TIMEOUT_MS: u64 = 600_000;
+/// How often a fleet polls an instance for readiness when its config names no
+/// interval.
+const DEFAULT_READY_POLL_MS: u64 = 5_000;
 
 /// A `sima.toml`, loaded and translated: the identity-bearing
 /// [`RunConfig`], the operational [`ExecutionConfig`], and the store path
@@ -104,8 +143,60 @@ pub struct LoadedConfig {
     pub devices: Vec<DeviceSelector>,
     /// The remote pools, in config order. Empty means a local-only run.
     pub remotes: Vec<RemoteConfig>,
+    /// The rented-instance fleet, or `None` for a run that rents nothing.
+    pub fleet: Option<FleetConfig>,
     /// The store path, resolved against the config file's directory.
     pub store: PathBuf,
+}
+
+/// Which control-plane backend a fleet acquires instances through.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FleetProvider {
+    /// The Vast.ai marketplace backend.
+    Vast,
+    /// The in-process stub backend: scripted offers, instant readiness, and a
+    /// local-spawn transport, so the fleet spine is exercised without a network
+    /// or real hardware. The testing path.
+    Stub,
+}
+
+/// What a fleet does when it cannot acquire its full declared count.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FillPolicy {
+    /// The full count or the run fails before any task runs, tearing down
+    /// whatever was acquired.
+    Strict,
+    /// Run with what was acquired, at least one instance.
+    BestEffort,
+}
+
+/// The resolved `[fleet]` section: a pool of rented instances acquired beside
+/// the local and manual remote pools. Operational only — it decides where
+/// tasks run, never what they produce, so it never enters the run id.
+///
+/// The constraints and budget are the provider control plane's own types, so
+/// the section maps onto them without an intermediate mirror.
+#[derive(Debug, Clone)]
+pub struct FleetConfig {
+    /// The control-plane backend to acquire through.
+    pub provider: FleetProvider,
+    /// How many instances to acquire; at least one.
+    pub count: usize,
+    /// What to do on a shortfall.
+    pub fill: FillPolicy,
+    /// The worker image each instance runs.
+    pub image: String,
+    /// The disk each instance is provisioned with, in gigabytes.
+    pub disk_gb: u64,
+    /// How long to wait for an instance to become reachable before giving up
+    /// on it.
+    pub ready_timeout: Duration,
+    /// How often to poll an instance for readiness.
+    pub ready_poll: Duration,
+    /// The hard offer constraints that qualify a rentable machine.
+    pub constraints: Constraints,
+    /// The spend and wall-clock ceilings the rental phase must stay under.
+    pub budget: Budget,
 }
 
 /// One resolved `[[execution.remote]]` pool: where its container runs and the
@@ -135,6 +226,8 @@ pub struct RemoteConfig {
 struct FileConfig {
     run: RunSection,
     execution: ExecutionSection,
+    /// The `[fleet]` section; absent means a run that rents nothing.
+    fleet: Option<FleetSection>,
 }
 
 /// The `[run]` section: every field enters run identity.
@@ -206,6 +299,52 @@ struct RemoteSection {
     run_args: Vec<String>,
     #[serde(default)]
     device: Vec<DeviceSection>,
+}
+
+/// The `[fleet]` section: a pool of rented instances. `provider` and `fill`
+/// are read as strings and matched, so an unknown value is a validation error
+/// naming it; `count` is validated to be at least 1.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FleetSection {
+    provider: String,
+    /// TOML integers are i64; the load rejects values below 1.
+    count: i64,
+    fill: Option<String>,
+    image: Option<String>,
+    disk_gb: Option<u64>,
+    ready_timeout_ms: Option<u64>,
+    ready_poll_ms: Option<u64>,
+    #[serde(default)]
+    constraints: FleetConstraintsSection,
+    budget: Option<FleetBudgetSection>,
+}
+
+/// The `[fleet.constraints]` table: every key optional, each mapping onto one
+/// field of the provider's offer constraints. `max_price_usd_hour` is dollars,
+/// converted to a micro-USD rate.
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct FleetConstraintsSection {
+    #[serde(default)]
+    gpu_models: Vec<String>,
+    min_gpu_count: Option<u32>,
+    min_vram_mb: Option<u64>,
+    max_price_usd_hour: Option<f64>,
+    min_reliability: Option<f64>,
+    #[serde(default)]
+    verified_only: bool,
+    min_disk_gb: Option<u64>,
+    min_bandwidth_mbps: Option<u64>,
+}
+
+/// The `[fleet.budget]` table: both keys optional. `max_spend_usd` is dollars,
+/// converted to a micro-USD cost cap rounded up.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FleetBudgetSection {
+    max_spend_usd: Option<f64>,
+    max_wall_clock_ms: Option<u64>,
 }
 
 /// Loads and translates the `sima.toml` at `path`. Parse errors, unknown
@@ -283,10 +422,11 @@ pub fn load(path: &Path) -> Result<LoadedConfig> {
         })
         .transpose()?;
     let remotes = resolve_remotes(path, file.execution.remote)?;
+    let fleet = resolve_fleet(path, file.fleet)?;
     // The local pool size comes from one place or the other, never both: with
     // device entries the pool is their sum, so a top-level count could only
     // disagree with it. With neither, there is no local pool — valid only when
-    // a remote pool carries the work.
+    // a remote pool or a fleet carries the work.
     let workers = match (file.execution.workers, file.execution.device.is_empty()) {
         (Some(_), false) => {
             return Err(Error::Validation(format!(
@@ -295,10 +435,10 @@ pub fn load(path: &Path) -> Result<LoadedConfig> {
                 path.display()
             )));
         }
-        (None, true) if remotes.is_empty() => {
+        (None, true) if remotes.is_empty() && fleet.is_none() => {
             return Err(Error::Validation(format!(
-                "{}: execution.workers is required without [[execution.device]] entries \
-                 or an [[execution.remote]] pool",
+                "{}: execution.workers is required without [[execution.device]] entries, \
+                 an [[execution.remote]] pool, or a [fleet]",
                 path.display()
             )));
         }
@@ -336,8 +476,121 @@ pub fn load(path: &Path) -> Result<LoadedConfig> {
         execution,
         devices,
         remotes,
+        fleet,
         store,
     })
+}
+
+/// Converts a dollar amount to micro-USD, rounding up so a cap or rate is
+/// never rendered stricter than the figure written. The value must be
+/// validated finite and non-negative first.
+fn dollars_to_micro_ceil(dollars: f64) -> u64 {
+    (dollars * 1_000_000.0).ceil() as u64
+}
+
+/// Validates that a dollar figure is finite and non-negative, naming `key` on
+/// failure.
+fn finite_dollars(path: &Path, key: &str, value: f64) -> Result<f64> {
+    if !value.is_finite() || value < 0.0 {
+        return Err(Error::Validation(format!(
+            "{}: fleet {key} must be finite and non-negative, got {value}",
+            path.display()
+        )));
+    }
+    Ok(value)
+}
+
+/// Validates the `[fleet]` section and resolves it into a [`FleetConfig`], its
+/// constraints and budget mapped onto the provider control plane's types.
+/// `provider` and `fill` must name a known variant, `count` must be at least
+/// one, and every money value must be finite and non-negative — each a
+/// [`Error::Validation`] naming what was wrong.
+fn resolve_fleet(path: &Path, section: Option<FleetSection>) -> Result<Option<FleetConfig>> {
+    let Some(section) = section else {
+        return Ok(None);
+    };
+    let provider = match section.provider.as_str() {
+        "vast" => FleetProvider::Vast,
+        "stub" => FleetProvider::Stub,
+        other => {
+            return Err(Error::Validation(format!(
+                "{}: fleet provider {other:?} is not one of vast, stub",
+                path.display()
+            )));
+        }
+    };
+    let count = usize::try_from(section.count)
+        .ok()
+        .filter(|&count| count >= 1)
+        .ok_or_else(|| {
+            Error::Validation(format!(
+                "{}: fleet count must be at least 1, got {}",
+                path.display(),
+                section.count
+            ))
+        })?;
+    let fill = match section.fill.as_deref() {
+        None | Some("strict") => FillPolicy::Strict,
+        Some("best-effort") => FillPolicy::BestEffort,
+        Some(other) => {
+            return Err(Error::Validation(format!(
+                "{}: fleet fill {other:?} is not one of strict, best-effort",
+                path.display()
+            )));
+        }
+    };
+
+    let constraints_section = section.constraints;
+    let max_price = constraints_section
+        .max_price_usd_hour
+        .map(|dollars| {
+            finite_dollars(path, "max_price_usd_hour", dollars)
+                .map(|dollars| Price(dollars_to_micro_ceil(dollars)))
+        })
+        .transpose()?;
+    let constraints = Constraints {
+        gpu_models: constraints_section.gpu_models,
+        min_gpu_count: constraints_section.min_gpu_count,
+        min_vram_mb: constraints_section.min_vram_mb,
+        max_price,
+        min_reliability: constraints_section.min_reliability,
+        verified_only: constraints_section.verified_only,
+        min_disk_gb: constraints_section.min_disk_gb,
+        min_bandwidth_mbps: constraints_section.min_bandwidth_mbps,
+    };
+
+    let budget = match section.budget {
+        None => Budget::default(),
+        Some(budget) => {
+            let max_spend = budget
+                .max_spend_usd
+                .map(|dollars| {
+                    finite_dollars(path, "max_spend_usd", dollars)
+                        .map(|dollars| Cost(dollars_to_micro_ceil(dollars)))
+                })
+                .transpose()?;
+            Budget {
+                max_spend,
+                max_wall_clock: budget.max_wall_clock_ms.map(Duration::from_millis),
+            }
+        }
+    };
+
+    Ok(Some(FleetConfig {
+        provider,
+        count,
+        fill,
+        image: section
+            .image
+            .unwrap_or_else(|| DEFAULT_FLEET_IMAGE.to_string()),
+        disk_gb: section.disk_gb.unwrap_or(DEFAULT_FLEET_DISK_GB),
+        ready_timeout: Duration::from_millis(
+            section.ready_timeout_ms.unwrap_or(DEFAULT_READY_TIMEOUT_MS),
+        ),
+        ready_poll: Duration::from_millis(section.ready_poll_ms.unwrap_or(DEFAULT_READY_POLL_MS)),
+        constraints,
+        budget,
+    }))
 }
 
 /// Validates the `[[execution.remote]]` entries and resolves each into a
@@ -801,6 +1054,211 @@ mod tests {
             "{BASE}\n[[execution.remote]]\nhost = \"gpubox\"\nworkers = 4\n"
         ));
         assert_eq!(local_only, with_remote);
+    }
+
+    /// A full `[fleet]` section, every key set, appended after a base config.
+    const FULL_FLEET: &str = r#"
+        [fleet]
+        provider = "vast"
+        count = 2
+        fill = "strict"
+        image = "ghcr.io/example/worker:pinned"
+        disk_gb = 64
+        ready_timeout_ms = 120000
+        ready_poll_ms = 2000
+
+        [fleet.constraints]
+        gpu_models = ["RTX 4090"]
+        min_gpu_count = 1
+        min_vram_mb = 16000
+        max_price_usd_hour = 0.5
+        min_reliability = 0.95
+        verified_only = true
+        min_disk_gb = 32
+        min_bandwidth_mbps = 100
+
+        [fleet.budget]
+        max_spend_usd = 5.0
+        max_wall_clock_ms = 3600000
+    "#;
+
+    #[test]
+    fn a_full_fleet_section_resolves_to_the_expected_types() -> Result<()> {
+        let loaded = load_text(&format!("{BASE}{FULL_FLEET}"))?;
+        let fleet = loaded.fleet.expect("a fleet section");
+        assert_eq!(fleet.provider, FleetProvider::Vast);
+        assert_eq!(fleet.count, 2);
+        assert_eq!(fleet.fill, FillPolicy::Strict);
+        assert_eq!(fleet.image, "ghcr.io/example/worker:pinned");
+        assert_eq!(fleet.disk_gb, 64);
+        assert_eq!(fleet.ready_timeout, Duration::from_millis(120000));
+        assert_eq!(fleet.ready_poll, Duration::from_millis(2000));
+        // The constraints map 1:1, with the dollar rate converted to micro-USD.
+        assert_eq!(fleet.constraints.gpu_models, vec!["RTX 4090".to_string()]);
+        assert_eq!(fleet.constraints.min_gpu_count, Some(1));
+        assert_eq!(fleet.constraints.min_vram_mb, Some(16000));
+        assert_eq!(fleet.constraints.max_price, Some(Price(500_000)));
+        assert_eq!(fleet.constraints.min_reliability, Some(0.95));
+        assert!(fleet.constraints.verified_only);
+        assert_eq!(fleet.constraints.min_disk_gb, Some(32));
+        assert_eq!(fleet.constraints.min_bandwidth_mbps, Some(100));
+        // The budget's dollar cap converts to a micro-USD cost.
+        assert_eq!(fleet.budget.max_spend, Some(Cost(5_000_000)));
+        assert_eq!(
+            fleet.budget.max_wall_clock,
+            Some(Duration::from_millis(3600000))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_minimal_fleet_section_takes_every_default() -> Result<()> {
+        // Only the required keys; everything else falls to its default.
+        let loaded = load_text(&format!(
+            "{BASE}\n[fleet]\nprovider = \"stub\"\ncount = 1\n"
+        ))?;
+        let fleet = loaded.fleet.expect("a fleet section");
+        assert_eq!(fleet.provider, FleetProvider::Stub);
+        assert_eq!(fleet.count, 1);
+        assert_eq!(fleet.fill, FillPolicy::Strict);
+        assert_eq!(fleet.image, "ghcr.io/alvatar/sima-worker:latest");
+        assert_eq!(fleet.disk_gb, 32);
+        assert_eq!(fleet.ready_timeout, Duration::from_millis(600_000));
+        assert_eq!(fleet.ready_poll, Duration::from_millis(5_000));
+        // Absent constraints and budget are the permissive defaults.
+        assert!(fleet.constraints.gpu_models.is_empty());
+        assert_eq!(fleet.constraints.max_price, None);
+        assert!(!fleet.constraints.verified_only);
+        assert_eq!(fleet.budget.max_spend, None);
+        assert_eq!(fleet.budget.max_wall_clock, None);
+        Ok(())
+    }
+
+    #[test]
+    fn best_effort_fill_resolves() -> Result<()> {
+        let loaded = load_text(&format!(
+            "{BASE}\n[fleet]\nprovider = \"stub\"\ncount = 2\nfill = \"best-effort\"\n"
+        ))?;
+        assert_eq!(loaded.fleet.expect("a fleet").fill, FillPolicy::BestEffort);
+        Ok(())
+    }
+
+    #[test]
+    fn a_cost_cap_rounds_up() -> Result<()> {
+        // A fractional-micro dollar cap rounds up so the cap is never rendered
+        // stricter than written.
+        let loaded = load_text(&format!(
+            "{BASE}\n[fleet]\nprovider = \"stub\"\ncount = 1\n\
+             [fleet.budget]\nmax_spend_usd = 1.2345678\n"
+        ))?;
+        let fleet = loaded.fleet.expect("a fleet");
+        assert_eq!(fleet.budget.max_spend, Some(Cost(1_234_568)));
+        Ok(())
+    }
+
+    #[test]
+    fn a_zero_fleet_count_is_rejected_naming_the_key() {
+        for value in ["count = 0", "count = -1"] {
+            let text = format!("{BASE}\n[fleet]\nprovider = \"stub\"\n{value}\n");
+            match load_text(&text) {
+                Err(Error::Validation(msg)) => {
+                    assert!(msg.contains("count"), "the error names count: {msg}");
+                }
+                other => panic!("expected Validation for {value:?}, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn an_unknown_fleet_fill_is_rejected_naming_it() {
+        let text = format!("{BASE}\n[fleet]\nprovider = \"stub\"\ncount = 1\nfill = \"eager\"\n");
+        match load_text(&text) {
+            Err(Error::Validation(msg)) => assert!(msg.contains("eager"), "names the value: {msg}"),
+            other => panic!("expected Validation, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_unknown_fleet_provider_is_rejected_naming_it() {
+        let text = format!("{BASE}\n[fleet]\nprovider = \"aws\"\ncount = 1\n");
+        match load_text(&text) {
+            Err(Error::Validation(msg)) => assert!(msg.contains("aws"), "names the value: {msg}"),
+            other => panic!("expected Validation, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn non_finite_or_negative_fleet_money_is_rejected_naming_the_key() {
+        let cases = [
+            ("max_price_usd_hour", "[fleet.constraints]", "-0.5"),
+            ("max_price_usd_hour", "[fleet.constraints]", "nan"),
+            ("max_price_usd_hour", "[fleet.constraints]", "inf"),
+            ("max_spend_usd", "[fleet.budget]", "-1.0"),
+            ("max_spend_usd", "[fleet.budget]", "nan"),
+        ];
+        for (key, table, value) in cases {
+            let text = format!(
+                "{BASE}\n[fleet]\nprovider = \"stub\"\ncount = 1\n{table}\n{key} = {value}\n"
+            );
+            match load_text(&text) {
+                Err(Error::Validation(msg)) => {
+                    assert!(msg.contains(key), "names {key}: {msg}");
+                }
+                other => panic!("expected Validation for {key}={value}, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn a_fleet_lets_the_local_pool_be_absent() -> Result<()> {
+        // No top-level workers, no local device tables, but a fleet carries the
+        // run: the local pool size is zero, and the fleet is resolved.
+        let loaded = load_text(&format!(
+            "{DEVICE_BASE}\n[fleet]\nprovider = \"stub\"\ncount = 2\n"
+        ))?;
+        assert_eq!(loaded.execution.workers, 0, "no local pool");
+        assert!(loaded.fleet.is_some());
+        Ok(())
+    }
+
+    #[test]
+    fn a_fleet_coexists_with_a_local_pool() -> Result<()> {
+        // Pools are additive: a fleet and local workers both stand.
+        let loaded = load_text(&format!(
+            "{BASE}\n[fleet]\nprovider = \"stub\"\ncount = 2\n"
+        ))?;
+        assert_eq!(loaded.execution.workers, 4, "the local pool");
+        assert!(loaded.fleet.is_some());
+        Ok(())
+    }
+
+    #[test]
+    fn a_config_without_a_fleet_loads_without_one() -> Result<()> {
+        // The regression guard: a config that names no fleet keeps loading
+        // exactly as before, with no fleet resolved.
+        assert!(load_text(BASE)?.fleet.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn a_fleet_section_rejects_an_unknown_key() {
+        let text = format!("{BASE}\n[fleet]\nprovider = \"stub\"\ncount = 1\nregion = \"eu\"\n");
+        assert!(matches!(load_text(&text), Err(Error::Validation(_))));
+    }
+
+    #[test]
+    fn a_fleet_never_enters_run_identity() {
+        // `[fleet]` is operational: it decides where tasks run, never what they
+        // produce, so it does not change which run the `[run]` section names.
+        let local_only = id_of(BASE);
+        let with_fleet = id_of(&format!("{BASE}{FULL_FLEET}"));
+        assert_eq!(local_only, with_fleet);
+        // And varying an operational fleet field leaves the id untouched.
+        let more_instances = id_of(&format!(
+            "{BASE}{}",
+            FULL_FLEET.replace("count = 2", "count = 8")
+        ));
+        assert_eq!(local_only, more_instances);
     }
 
     #[test]

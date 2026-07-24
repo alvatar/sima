@@ -6,7 +6,7 @@ edition.workspace = true
 [features]
 # Forwards crash-injection to the domains layer so the stub's planted point
 # can be armed by a test harness driving the pipeline.
-crash-injection = ["sima-domains/crash-injection"]
+crash-injection = ["sima-domains/crash-injection", "sima-provider/crash-injection"]
 
 [dependencies]
 sima-core = { path = "../sima-core" }
@@ -16,6 +16,9 @@ sima-domains = { path = "../sima-domains" }
 sima-scheduler = { path = "../sima-scheduler" }
 sima-store = { path = "../sima-store" }
 sima-transport = { path = "../sima-transport" }
+sima-trace = { path = "../sima-trace" }
+sima-provider = { path = "../sima-provider" }
+sima-provider-vast = { path = "../providers/sima-provider-vast" }
 serde.workspace = true
 serde_json.workspace = true
 toml.workspace = true

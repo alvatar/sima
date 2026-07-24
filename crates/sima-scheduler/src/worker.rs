@@ -19,9 +19,9 @@ use sima_contracts::{Artifact, DeviceBinding, Outcome, Stats, WorkerId};
 use sima_core::{Error, Hash, Result, to_hex};
 use sima_model::{ArtifactRef, RunConfig, RunId, TaskIdentity, TaskKey, TaskRecord};
 use sima_store::Store;
-use sima_trace::{Emitter, Event, StatScalar};
+use sima_trace::{Emitter, Event, Level, StatScalar};
 use sima_transport::protocol::Assignment;
-use sima_transport::{LinkEvent, WorkerLink, WorkerTransport};
+use sima_transport::{LinkEvent, SpawnOutcome, WorkerLink, WorkerTransport};
 
 use crate::config::ExecutionConfig;
 use crate::coordinator::{Coordinator, Pending, RunState};
@@ -55,9 +55,18 @@ pub(crate) struct WorkerContext<'a> {
 /// dropping the last link at exit is the graceful shutdown — stdin closes,
 /// the child exits on end-of-stream, and the parent reaps it.
 pub(crate) fn worker_loop(worker: WorkerId, ctx: WorkerContext<'_>) {
+    // Records the worker's exit on every return path — finish, fault, or
+    // retirement — so the coordinator's live-worker count stays accurate and
+    // the last worker leaving with work still pending faults the run.
+    let _exit = WorkerExit {
+        coordinator: ctx.coordinator,
+    };
     // A worker that cannot spawn its child cannot take work: the run faults.
+    // A retired transport yields no child: the worker exits, faulting the run
+    // only when the retirement is fatal.
     let mut link = match spawn_bound(&ctx, worker) {
-        Ok(link) => link,
+        Ok(SpawnOutcome::Link(link)) => link,
+        Ok(SpawnOutcome::Retired { fatal }) => return retire_worker(&ctx, worker, fatal),
         Err(e) => return ctx.coordinator.fault_run(e),
     };
     while let Some(leased) = ctx.coordinator.next_task(ctx.device.map(|d| d.class())) {
@@ -92,7 +101,10 @@ pub(crate) fn worker_loop(worker: WorkerId, ctx: WorkerContext<'_>) {
                 // still dying is finished off, before the replacement spawns.
                 link.kill();
                 link = match spawn_bound(&ctx, worker) {
-                    Ok(link) => link,
+                    Ok(SpawnOutcome::Link(link)) => link,
+                    Ok(SpawnOutcome::Retired { fatal }) => {
+                        return retire_worker(&ctx, worker, fatal);
+                    }
                     Err(e) => return ctx.coordinator.fault_run(e),
                 };
             }
@@ -104,23 +116,72 @@ pub(crate) fn worker_loop(worker: WorkerId, ctx: WorkerContext<'_>) {
 }
 
 /// Spawns this slot's child on its device and journals the device the child
-/// reports, at every spawn and respawn.
+/// reports, at every spawn and respawn. A retired transport yields no child
+/// and no `WorkerBound`; the caller decides whether the retirement faults.
 ///
 /// The event carries the child's own answer, so the journal records where the
 /// work actually ran rather than what the parent asked for.
-fn spawn_bound<'a>(ctx: &WorkerContext<'a>, worker: WorkerId) -> Result<Box<dyn WorkerLink + 'a>> {
-    let link = ctx
+fn spawn_bound(ctx: &WorkerContext<'_>, worker: WorkerId) -> Result<SpawnOutcome> {
+    let outcome = ctx
         .transport
         .spawn(worker.0, ctx.device.as_ref(), ctx.events.clone())?;
-    ctx.events.emit(Event::WorkerBound {
-        worker: worker.0,
-        device: link.device_name().to_string(),
-        driver: link.driver().to_string(),
-        // The child's device and driver are its own; the host is the
-        // parent's account of the pool — empty for a local slot.
-        host: ctx.host.clone(),
+    if let SpawnOutcome::Link(link) = &outcome {
+        ctx.events.emit(Event::WorkerBound {
+            worker: worker.0,
+            device: link.device_name().to_string(),
+            driver: link.driver().to_string(),
+            // The child's device and driver are its own; the host is the
+            // parent's account of the pool — empty for a local slot.
+            host: ctx.host.clone(),
+        });
+    }
+    Ok(outcome)
+}
+
+/// Winds a worker down when its transport retires, journaling the retirement
+/// so a degraded pool is visible rather than silently gone. A fatal retirement
+/// faults the run at once — the transport retires fatally whenever the run
+/// cannot proceed without it, whatever the fill policy: a strict-fill
+/// shortfall, or a supervisor unwind. A non-fatal one lets the worker thread
+/// exit cleanly, leaving the survivors to drain the queue; when no survivor
+/// remains, the worker's exit (through [`WorkerExit`]) is what faults the run.
+fn retire_worker(ctx: &WorkerContext<'_>, worker: WorkerId, fatal: bool) {
+    ctx.events.emit(Event::Diagnostic {
+        level: Level::Warn,
+        source: "scheduler".to_string(),
+        message: if fatal {
+            format!(
+                "worker {} retired; the run cannot continue without its transport",
+                worker.0
+            )
+        } else {
+            format!(
+                "worker {} retired; the run continues on its surviving workers",
+                worker.0
+            )
+        },
+        worker: Some(worker.0),
+        // The parent's account of the pool: empty for a local slot.
+        host: (!ctx.host.is_empty()).then(|| ctx.host.clone()),
+        task: None,
     });
-    Ok(link)
+    if fatal {
+        ctx.coordinator.fault_run(Error::Transport(
+            "the worker's transport retired; the run cannot continue without it".to_string(),
+        ));
+    }
+}
+
+/// A worker's liveness registration: its `Drop` records the worker's exit on
+/// the coordinator, whatever return path the worker took.
+struct WorkerExit<'a> {
+    coordinator: &'a Coordinator,
+}
+
+impl Drop for WorkerExit<'_> {
+    fn drop(&mut self) {
+        self.coordinator.worker_exited();
+    }
 }
 
 /// Persists and journals what a pull decided about its chain's placement.
@@ -424,10 +485,14 @@ fn process(
             }
             LinkEvent::Fault(message) => {
                 // An infrastructure fault from the executor (e.g. a
-                // structurally invalid spec) fails the whole run, distinct
-                // from a candidate that merely evaluated badly. The wire
-                // flattens the executor's error to its rendered message.
-                task_fault(ctx, task, attempt, key, Error::Validation(message));
+                // structurally invalid spec, a lost device) fails the whole
+                // run, distinct from a candidate that merely evaluated badly.
+                // The child already rendered its error's classification into
+                // the message via `Display`; the parent carries it verbatim as
+                // `Reported`, because the classification belongs to the machine
+                // that failed — re-wrapping it here would report a local
+                // judgement of a remote fact.
+                task_fault(ctx, task, attempt, key, Error::Reported(message));
                 return ChildState::Alive;
             }
             LinkEvent::Died(death) => {
@@ -759,7 +824,7 @@ mod tests {
                 },
                 attempt: 0,
             };
-            let mut link = transport.spawn(0, None, ctx.events.clone())?;
+            let mut link = transport.spawn(0, None, ctx.events.clone())?.into_link();
             process(&ctx, WorkerId(0), pending, link.as_mut());
         }
         let events = rx.into_iter().collect();
@@ -792,13 +857,141 @@ mod tests {
     fn a_missing_input_state_object_is_a_fault() -> Result<()> {
         let run = run_process(b"never stored", false)?;
         assert!(run.store.record(&run.identity.key())?.is_none());
-        assert!(matches!(run.coordinator.lock().state, RunState::Fault(_)));
+        // A local (non-wire) fault keeps the store's own classification: the
+        // absent object surfaces as `MissingObject`, never flattened to a
+        // carried-verbatim `Reported`, which is reserved for the wire path.
+        match &run.coordinator.lock().state {
+            RunState::Fault(Error::MissingObject(_)) => {}
+            RunState::Fault(e) => panic!("expected a MissingObject fault, got {e}"),
+            _ => panic!("expected the run to fault"),
+        }
         assert!(
             run.events
                 .iter()
                 .any(|e| matches!(e, Event::Faulted { .. })),
             "the load failure emits a Faulted event"
         );
+        Ok(())
+    }
+
+    /// A worker link that delivers one scripted `LinkEvent::Fault`, modelling a
+    /// child that rendered its executor error to the wire and sent it as the
+    /// terminal frame. Every other method is inert: the fault settles the
+    /// attempt on the first `next`.
+    struct FaultLink {
+        message: Option<String>,
+    }
+
+    impl WorkerLink for FaultLink {
+        fn device_name(&self) -> &str {
+            ""
+        }
+
+        fn driver(&self) -> &str {
+            ""
+        }
+
+        fn assign(&mut self, _assignment: &Assignment) -> Result<()> {
+            Ok(())
+        }
+
+        fn next(&mut self, _deadline: Option<Instant>) -> Result<LinkEvent> {
+            Ok(LinkEvent::Fault(
+                self.message.take().expect("one scripted fault"),
+            ))
+        }
+
+        fn kill(&mut self) {}
+    }
+
+    #[test]
+    fn a_wire_fault_carries_the_far_side_classification_verbatim() -> Result<()> {
+        // The child renders its executor error to the wire via `Display`, so a
+        // device fault crosses as "gpu error: device lost". The parent must
+        // surface that rendering verbatim, never re-wrap it under a local
+        // classification ("validation error: ..."), which is f_008.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let store = Store::open(dir.path()).expect("open store");
+        let params = Params { bytes: vec![9] };
+        store.put(&params.to_bytes())?;
+        let environment = EnvironmentId::from_hash(store.put(b"unit-test environment")?);
+        let spec = Spec {
+            format: FormatId::new("stub.v1")?,
+            bytes: StubProgram {
+                behavior: StubBehavior::Succeed,
+                nonce: 1,
+            }
+            .to_bytes(),
+        };
+        let spec_id = SpecId::from_hash(store.put(&spec.to_bytes())?);
+        // No input state, so `process` reaches the link without a store load.
+        let identity = TaskIdentity {
+            spec: spec_id,
+            params: params.id(),
+            seed: 1,
+            environment,
+            input_state: None,
+        };
+        let config = RunConfig {
+            root_seed: 0,
+            segments: None,
+            format: FormatId::new("stub.v1")?,
+            generator: GeneratorConfig {
+                id: GeneratorId::new("stub.v1")?,
+                params: Vec::new(),
+            },
+            params,
+        };
+        let run = store.create_run(&config)?;
+        let exec = ExecutionConfig::new(1, 1, Duration::from_secs(5), Duration::MAX, None)?;
+        let coordinator = Coordinator::new();
+        let key = identity.key();
+        coordinator.lock().leases.insert(key);
+        let (tx, rx) = mpsc::channel();
+        {
+            // The transport field is required by the context but never used:
+            // `process` drives the link it is handed.
+            let transport = stub_transport(&exec);
+            let ctx = WorkerContext {
+                coordinator: &coordinator,
+                store: &store,
+                run,
+                config: &config,
+                transport: &transport,
+                host: String::new(),
+                exec: &exec,
+                device: None,
+                events: Emitter::from(tx),
+            };
+            let pending = Pending {
+                key,
+                task: RunnableTask {
+                    spec,
+                    identity,
+                    chain: None,
+                },
+                attempt: 0,
+            };
+            let mut link = FaultLink {
+                message: Some("gpu error: device lost".to_string()),
+            };
+            process(&ctx, WorkerId(0), pending, &mut link);
+        }
+        // The run faulted, and the fault renders exactly as the far side did.
+        match &coordinator.lock().state {
+            RunState::Fault(e) => assert_eq!(e.to_string(), "gpu error: device lost"),
+            _ => panic!("expected the run to fault"),
+        }
+        // The `Faulted` event carries the same verbatim rendering.
+        let events: Vec<Event> = rx.into_iter().collect();
+        let faulted = events
+            .iter()
+            .find_map(|e| match e {
+                Event::Faulted { error, .. } => Some(error.clone()),
+                _ => None,
+            })
+            .expect("a Faulted event");
+        assert_eq!(faulted, "gpu error: device lost");
         Ok(())
     }
 
@@ -902,7 +1095,7 @@ mod tests {
                     },
                     attempt: 1,
                 };
-                let mut link = transport.spawn(0, None, ctx.events.clone())?;
+                let mut link = transport.spawn(0, None, ctx.events.clone())?.into_link();
                 process(&ctx, WorkerId(0), pending, link.as_mut());
             }
             Ok(rx.into_iter().collect())

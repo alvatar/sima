@@ -1446,6 +1446,57 @@ Resume and re-evaluation are this same call — the frontier re-derives from
 store state, so an interrupted or failed run continues where it stopped,
 and a finalized one re-finalizes idempotently without touching an executor.
 
+### Distributed run
+
+A `[fleet]` section adds a pool of rented instances beside the local and
+manual remote pools. It is operational — it decides where tasks run, never
+what they produce — so it never enters the run id, the same rule the manual
+remote pools follow. Its constraints and budget are the
+[`sima-provider`](#sima-provider) control plane's own types, mapped from the
+config's dollar figures to micro-USD.
+
+**Lifecycle.** Orchestration takes the store and lock first, then rents the
+fleet under the held lock: `count` instances, each through
+[`acquire`](#the-acquisition-loop) behind a teardown guard, each probed over
+ssh (`sima-worker --enumerate`) to derive one worker slot per GPU — or a
+single deviceless slot where the probe reports none. The `fill` policy
+decides a shortfall: **strict** tears down whatever was acquired and fails
+before any task runs; **best-effort** proceeds on what came up, down to one
+instance. The provider backend is built before the store, so a `vast` fleet
+missing its `VAST_API_KEY` fails before any store mutation. The `stub`
+provider is an in-process marketplace reached through the transport's local
+mode, so the whole spine exercises with no network.
+
+**The fleet transport is swappable.** Each instance's pool spawns workers
+over `ssh -o StrictHostKeyChecking=accept-new … -- sima-worker` — no
+container wrapper, since ssh already lands inside the instance's container.
+The transport's target is a `Live`/`Replacing`/`Retired` state machine: a
+spawn against `Replacing` blocks until the target settles, so the worker
+loop's existing respawn machinery lands on a swapped instance without the
+scheduler, the driver, or the pool's slot list ever changing.
+
+**The supervisor** is one thread beside the scheduler, both in one scope so
+it borrows the store, lock, and guards. Each heartbeat it assesses the
+budget from the ledger and polls each instance's status. **Budget
+exhaustion behaves as an interrupt**: it sets the same flag SIGINT sets, so
+the run winds down gracefully, the guards tear the fleet down, and the store
+stays resumable. An instance polled `Gone` is **replaced**: its record is
+closed out, a replacement is acquired under the same constraints raised to
+the slots in use, and the transport's target swaps to it. A replacement
+that cannot be made retires the transport — fatally under strict fill, a
+clean degradation under best-effort. A supervisor panic retires every
+transport, so no worker is left blocked on a target that will never swap.
+
+**Journal coverage matches the run window.** The journal is per-run and
+observational, but rental lifecycle extends beyond it: acquisition precedes
+the run's creation, and destruction follows its end. The events cover what
+happens while the run exists — the fleet's composition at start, an instance
+lost, a replacement, budget exhaustion — carried through a start hook that
+hands the supervisor the run's emitter when the collector spawns, so fleet
+events cross the same single-writer seam as every other event with no
+scheduler edge to the provider. Acquisition intent and final spend live in
+the durable provider records and the ledger, which `sima spend` reports.
+
 ### Run status
 
 `status` computes a run's observable state from its journal alone. The
@@ -1484,6 +1535,10 @@ command form keeps its shape whether or not a host is named:
   resolves to that backend, keyed from the environment, and a store holding
   no record reaches no provider API and needs no credentials. An id no
   backend answers to is an error naming it.
+- **`sima spend <config.toml>`** — reports the run's rental spend from the
+  local store's ledger: each closed rental with its duration, rate, and cost,
+  each rental still open with what it has accrued, and the total, all in
+  dollars. Like `reconcile`, it reads the local store the orchestrator writes.
 - **`sima status <config.toml>`** — reports execution. The config file is
   the one argument: its execution section names the store and its identity
   section derives the run id. `--task <key>` prints one task's attempt

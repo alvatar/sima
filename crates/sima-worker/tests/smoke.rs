@@ -139,7 +139,8 @@ fn a_command_vector_spawn_reaches_the_worker_through_a_wrapper() {
             None,
             sima_trace::Emitter::from(std::sync::mpsc::channel().0),
         )
-        .expect("spawn through the wrapper");
+        .expect("spawn through the wrapper")
+        .into_link();
     // The handshake completed through the wrapper: the stub names no device.
     assert_eq!(link.device_name(), "");
     let ToChild::Assign(task) = assignment() else {
@@ -179,7 +180,8 @@ fn worker_stderr_lines_arrive_as_correlated_diagnostics() {
     let (tx, rx) = std::sync::mpsc::channel();
     let _link = transport
         .spawn(3, None, Emitter::from(tx))
-        .expect("spawn through the wrapper");
+        .expect("spawn through the wrapper")
+        .into_link();
     let event = rx
         .recv_timeout(Duration::from_secs(10))
         .expect("a captured stderr diagnostic");
@@ -219,7 +221,8 @@ fn an_overlong_stderr_line_is_truncated_with_a_marker() {
     let (tx, rx) = std::sync::mpsc::channel();
     let _link = transport
         .spawn(0, None, Emitter::from(tx))
-        .expect("spawn through the wrapper");
+        .expect("spawn through the wrapper")
+        .into_link();
     let event = rx
         .recv_timeout(Duration::from_secs(10))
         .expect("a captured stderr diagnostic");
@@ -257,7 +260,8 @@ fn an_executor_panic_crosses_as_a_correlated_diagnostic_event() {
     let (tx, rx) = std::sync::mpsc::channel();
     let mut link = transport
         .spawn(5, None, Emitter::from(tx))
-        .expect("spawn the worker");
+        .expect("spawn the worker")
+        .into_link();
     let task = ToChild::Assign(Assignment {
         spec: StubProgram {
             behavior: StubBehavior::Panic,
@@ -335,6 +339,30 @@ fn the_enumerate_probe_prints_one_json_device_per_line() {
         );
         assert!(device.get("device_id").is_some(), "a device names its id");
     }
+}
+
+#[test]
+fn the_enumerate_probe_answers_none_on_a_machine_without_a_driver() {
+    // A driverless machine — a CI runner, a fleet instance with a broken
+    // driver — has zero compute devices, and "none" is the probe's answer
+    // there, never a failure: the fleet derives one deviceless worker from an
+    // empty probe. `VK_DRIVER_FILES` naming a nonexistent manifest makes the
+    // loader's driver search come up empty, the same condition as a machine
+    // with no driver installed.
+    let output = Command::new(env!("CARGO_BIN_EXE_sima-worker"))
+        .arg("--enumerate")
+        .env("VK_DRIVER_FILES", "/nonexistent/no_driver.json")
+        .output()
+        .expect("run the probe");
+    assert!(
+        output.status.success(),
+        "a driverless probe exits zero: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        output.stdout.is_empty(),
+        "a driverless machine enumerates no devices"
+    );
 }
 
 #[test]

@@ -210,6 +210,13 @@ impl RunStatus {
             // Diagnostics are observational text: no counter, no state
             // change.
             Event::Diagnostic { .. } => {}
+            // Fleet lifecycle is operational — rentals coming and going — and
+            // states nothing about task progress or worker occupancy.
+            Event::InstanceOnline { .. }
+            | Event::InstanceLost { .. }
+            | Event::InstanceReplaced { .. }
+            | Event::BudgetSpendExhausted { .. }
+            | Event::BudgetWallClockExhausted { .. } => {}
         }
     }
 

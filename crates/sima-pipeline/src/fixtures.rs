@@ -31,6 +31,7 @@ pub(crate) fn loaded(store: PathBuf) -> Result<LoadedConfig> {
         run: stub_config()?,
         devices: Vec::new(),
         remotes: Vec::new(),
+        fleet: None,
         execution: ExecutionConfig::new(1, 1, Duration::MAX, Duration::MAX, None)?,
         store,
     })

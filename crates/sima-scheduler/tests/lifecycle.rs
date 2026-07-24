@@ -392,9 +392,14 @@ fn an_executor_fault_fails_the_run_with_an_error() -> Result<()> {
     let cfg = config(7, vec![StubBehavior::Reject]);
     let key = task_keys(&cfg)[0];
     let (_dir, store) = temp_store();
+    // A fault crossing the wire surfaces as `Reported`, carrying the child's
+    // own rendering verbatim: the executor's `Error::Validation` reaches the
+    // parent as "validation error: ...", classification intact (f_008).
     match run_with(&store, &cfg, &exec(1, 3, 1_000), faulty_resolver()) {
-        Err(Error::Validation(_)) => {}
-        Err(other) => panic!("expected a validation fault, got {other}"),
+        Err(Error::Reported(msg)) => {
+            assert_eq!(msg, "validation error: injected infrastructure fault");
+        }
+        Err(other) => panic!("expected a reported wire fault, got {other}"),
         Ok(_) => panic!("expected an infrastructure fault, got a run outcome"),
     }
     // No manifest: the faulted run did not finalize.
@@ -417,8 +422,8 @@ fn a_fault_preserves_already_committed_siblings() -> Result<()> {
     // One worker in FIFO order commits the Succeed sibling before reaching the
     // faulting candidate.
     match run_with(&store, &cfg, &exec(1, 3, 1_000), faulty_resolver()) {
-        Err(Error::Validation(_)) => {}
-        Err(other) => panic!("expected a validation fault, got {other}"),
+        Err(Error::Reported(_)) => {}
+        Err(other) => panic!("expected a reported wire fault, got {other}"),
         Ok(_) => panic!("expected an infrastructure fault, got a run outcome"),
     }
 

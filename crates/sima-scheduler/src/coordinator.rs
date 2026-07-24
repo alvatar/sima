@@ -91,6 +91,11 @@ pub(crate) struct Shared {
     /// commits there is nothing left to place — so this stays in memory and
     /// no slot is ever written for it.
     stateless: HashMap<TaskKey, DeviceClass>,
+    /// Workers still alive, seeded to the pool's slot total before the workers
+    /// spawn and decremented as each exits. When the last one exits while the
+    /// run is still `Running`, no worker remains to drain the queue, so the run
+    /// faults instead of the driver waiting forever.
+    live_workers: usize,
 }
 
 impl Shared {
@@ -173,6 +178,7 @@ impl Coordinator {
                 settled: 0,
                 chains,
                 stateless: HashMap::new(),
+                live_workers: 0,
             }),
             state_changed: Condvar::new(),
             classes,
@@ -333,6 +339,28 @@ impl Coordinator {
         let mut shared = self.lock();
         if !matches!(shared.state, RunState::Fault(_)) {
             shared.state = RunState::Fault(err);
+        }
+        self.state_changed.notify_all();
+    }
+
+    /// Seeds the live-worker count to `count`, the pool's slot total, before
+    /// the workers spawn. Set once at run start.
+    pub(crate) fn set_live_workers(&self, count: usize) {
+        self.lock().live_workers = count;
+    }
+
+    /// Records a worker's exit. The last worker leaving while the run is still
+    /// `Running` faults it: no worker remains to drain the queue, so the driver
+    /// would otherwise wait forever. A worker that exits after the run has
+    /// already wound down decrements the count and nothing more — the terminal
+    /// state stands.
+    pub(crate) fn worker_exited(&self) {
+        let mut shared = self.lock();
+        shared.live_workers = shared.live_workers.saturating_sub(1);
+        if shared.live_workers == 0 && matches!(shared.state, RunState::Running) {
+            shared.state = RunState::Fault(Error::Transport(
+                "every worker retired with work still pending".to_string(),
+            ));
         }
         self.state_changed.notify_all();
     }

@@ -122,6 +122,11 @@ pub fn run(
     let (outcome, journal) = thread::scope(|scope| {
         let collector = Collector::spawn(scope, writer, control.observer);
         let events = collector.emitter();
+        // Hand the run's emitter to a caller that emits alongside it — the
+        // fleet supervisor — once, as the collector comes up.
+        if let Some(hook) = control.on_start {
+            hook(events.clone());
+        }
         events.emit(Event::RunStarted {
             run: run.to_string(),
             tasks: source.task_total(),
@@ -129,6 +134,10 @@ pub fn run(
         });
 
         let drive_result = thread::scope(|scope| -> Result<DriveOutcome> {
+            // Seed the live-worker count to the pool's slot total before the
+            // workers spawn, so the last worker to exit while the run is still
+            // running faults it rather than leaving the driver to wait forever.
+            coordinator.set_live_workers(pools.iter().map(|pool| pool.slots.len()).sum());
             // Worker ids run global and sequential across pools, local first,
             // so every slot of every pool has a distinct id in the journal.
             let mut worker = 0u64;
@@ -851,6 +860,7 @@ mod tests {
         let control = RunControl {
             observer: &|_| {},
             interrupt: &interrupt,
+            on_start: None,
         };
         let mut source = ScriptedSource {
             polls: VecDeque::from([vec![runnable(1)], vec![runnable(2)]]),

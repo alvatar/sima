@@ -15,6 +15,9 @@ use sima_transport::{RemoteTransport, SubprocessTransport};
 
 use crate::config::{LoadedConfig, RemoteConfig};
 use crate::devices;
+use crate::fleet::{
+    StopSignal, Supervisor, acquire_fleet, provider_for, release_all, transport_mode,
+};
 
 /// Drives the run a loaded config describes: opens the store (creating it
 /// where missing), takes the run's orchestrator lock, dispatches the domain
@@ -25,9 +28,9 @@ use crate::devices;
 /// The lock is held for the whole call and releases on return.
 pub fn orchestrate(config: &LoadedConfig, control: &RunControl) -> Result<RunOutcome> {
     // Dispatch and discovery precede every store mutation: a config naming an
-    // unknown format or generator, or a build without the worker binary, must
-    // not leave a store, a run directory, or a lock file behind for a run
-    // that can never execute.
+    // unknown format or generator, a build without the worker binary, or a
+    // fleet whose provider cannot be reached, must not leave a store, a run
+    // directory, or a lock file behind for a run that can never execute.
     let domain = domain_for(&config.run.format)?;
     let generator = generator_for(&config.run.generator.id)?;
     let transport = SubprocessTransport::new(
@@ -43,16 +46,40 @@ pub fn orchestrate(config: &LoadedConfig, control: &RunControl) -> Result<RunOut
     // a machine with no device.
     let execution = resolve_devices(config)?;
     let run = config.run.id();
+    // The fleet backend and the mode its instances are reached through are
+    // built before the store: a vast fleet without its key fails here, before
+    // any store mutation. A run with no fleet builds no provider.
+    let fleet = match &config.fleet {
+        Some(fleet) => Some((provider_for(fleet)?, transport_mode(fleet)?, fleet)),
+        None => None,
+    };
     // Remote pools resolve at run start too, over each remote's own hardware:
     // the image is verified present, then the enumeration probe drives the
     // remote's device-table resolution. Both precede the store so a
     // misconfigured remote leaves nothing behind.
     let remotes = build_remote_pools(config, &run, &execution)?;
     let store = Store::open(&config.store)?;
-    let _lock = store.acquire_run_lock(&run)?;
+    let lock = store.acquire_run_lock(&run)?;
+    // The fleet is acquired under the held lock — each instance behind a
+    // teardown guard held for the run's life. A strict-fill shortfall tears
+    // down whatever was acquired and fails here, before any task runs.
+    let fleet_instances = match &fleet {
+        Some((provider, mode, fleet_config)) => acquire_fleet(
+            fleet_config,
+            provider.as_ref(),
+            &store,
+            &lock,
+            mode,
+            &config.run.format,
+            &execution,
+        )?,
+        None => Vec::new(),
+    };
     // The pools, local first: the subprocess pool when a local pool is
-    // configured, then one container pool per remote. Worker ids run global
-    // and sequential across them.
+    // configured, then one container pool per manual remote, then one pool per
+    // fleet instance. Worker ids run global and sequential across them. The
+    // pools borrow the transports and guards, so they live in an inner scope
+    // that ends before teardown.
     let mut pools: Vec<WorkerPool<'_>> = Vec::new();
     let local_slots = worker_slots(&execution);
     if !local_slots.is_empty() {
@@ -69,15 +96,113 @@ pub fn orchestrate(config: &LoadedConfig, control: &RunControl) -> Result<RunOut
             slots: remote.slots.clone(),
         });
     }
-    sima_scheduler::run(
-        &store,
-        &config.run,
-        &domain.environment,
-        generator.as_ref(),
-        &pools,
-        &execution,
-        control,
-    )
+    for instance in &fleet_instances {
+        pools.push(WorkerPool {
+            transport: &instance.transport,
+            host: instance.host.clone(),
+            slots: instance.slots.clone(),
+        });
+    }
+    // A fleet run drives a supervisor thread alongside the scheduler: it keeps
+    // the fleet within budget and replaces lost instances while the run
+    // proceeds. Both live in one scope so the supervisor borrows the store,
+    // lock, and instances; the scheduler runs on this thread, and the stop
+    // signal winds the supervisor down when it returns.
+    let outcome = match &fleet {
+        Some((provider, _mode, fleet_config)) => {
+            let stop = StopSignal::new();
+            // The run's emitter reaches the supervisor through the start hook,
+            // filled once the collector spawns; the supervisor emits fleet
+            // events through it, so they cross the same journal seam as the
+            // rest. No scheduler edge to the provider appears — the hook is an
+            // opaque closure.
+            let emitter: std::sync::Mutex<Option<sima_trace::Emitter>> =
+                std::sync::Mutex::new(None);
+            let on_start = |e: sima_trace::Emitter| {
+                *emitter.lock().expect("the emitter lock is never poisoned") = Some(e);
+            };
+            // Aborts a replacement acquisition in flight, so teardown never
+            // waits out an offer walk. Set on the terminal event and again
+            // after the driver returns; distinct from the caller's interrupt,
+            // which the run owns.
+            let cancel = std::sync::atomic::AtomicBool::new(false);
+            // Wrap the caller's observer to stop the supervisor the moment the
+            // run reaches a terminal event: the supervisor then drops its
+            // emitter clone, so the run's collector — which joins only once
+            // every emitter is dropped — can shut down. A fault emits no
+            // run-level event, so `Faulted` is a stop trigger too. The same
+            // event cancels a replacement still acquiring.
+            let caller_observer = control.observer;
+            let stopper = |record: &sima_trace::Record| {
+                (caller_observer)(record);
+                if matches!(
+                    record.event,
+                    sima_trace::Event::RunFinalized { .. }
+                        | sima_trace::Event::RunFailed { .. }
+                        | sima_trace::Event::RunInterrupted { .. }
+                        | sima_trace::Event::Faulted { .. }
+                ) {
+                    cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+                    stop.raise();
+                }
+            };
+            let control = RunControl {
+                observer: &stopper,
+                interrupt: control.interrupt,
+                on_start: Some(&on_start),
+            };
+            let supervisor = Supervisor::new(
+                provider.as_ref(),
+                &store,
+                &lock,
+                fleet_config,
+                &fleet_instances,
+                control.interrupt,
+                &emitter,
+            )
+            .on_cancel(&cancel);
+            std::thread::scope(|scope| {
+                let handle = scope.spawn(|| supervisor.run(&stop));
+                let outcome = sima_scheduler::run(
+                    &store,
+                    &config.run,
+                    &domain.environment,
+                    generator.as_ref(),
+                    &pools,
+                    &execution,
+                    &control,
+                );
+                // Cancel any replacement the supervisor is still acquiring
+                // before joining it: teardown must not wait out an offer walk
+                // for a machine the finished run no longer needs.
+                cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+                stop.raise();
+                handle.join().expect("the supervisor thread joins");
+                outcome
+            })
+        }
+        None => sima_scheduler::run(
+            &store,
+            &config.run,
+            &domain.environment,
+            generator.as_ref(),
+            &pools,
+            &execution,
+            control,
+        ),
+    };
+    // The pools' borrow of the fleet transports and guards ends here, before
+    // teardown.
+    drop(pools);
+    // Guards release explicitly on the success path, surfacing a teardown
+    // failure — a machine still running is worth an operator's attention. A run
+    // that already faulted keeps its fault; teardown is best-effort, and the
+    // ledger record a failed teardown leaves is what reconcile acts on next.
+    let released = release_all(fleet_instances);
+    match outcome {
+        Ok(run_outcome) => released.map(|()| run_outcome),
+        Err(error) => Err(error),
+    }
 }
 
 /// A resolved remote pool: its transport, the host it runs on, and its slots.
@@ -199,7 +324,7 @@ fn command_succeeds(argv: &[String]) -> Result<bool> {
 
 /// Runs `argv` and returns its stdout, or an error if it fails or its output
 /// is not UTF-8. Stderr is inherited for diagnostics.
-fn command_stdout(argv: &[String]) -> Result<String> {
+pub(crate) fn command_stdout(argv: &[String]) -> Result<String> {
     let (program, args) = argv.split_first().expect("a non-empty command vector");
     let output = Command::new(program)
         .args(args)
@@ -244,7 +369,7 @@ fn resolve_devices(config: &LoadedConfig) -> Result<ExecutionConfig> {
 ///   finding the binary in `target/debug`.
 ///
 /// A missing binary is a validation error naming the searched locations.
-fn worker_binary() -> Result<PathBuf> {
+pub(crate) fn worker_binary() -> Result<PathBuf> {
     if let Some(path) = std::env::var_os("SIMA_WORKER") {
         return Ok(PathBuf::from(path));
     }

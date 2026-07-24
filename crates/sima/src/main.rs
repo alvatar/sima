@@ -72,6 +72,9 @@ fn main() -> ExitCode {
         ["report", config, "--all"] => report_command(&Target::new(config, host), Report::All),
         ["report", config, "--task", key] => report_task_command(&Target::new(config, host), key),
         ["timeline", config] => timeline_command(&Target::new(config, host)),
+        // The rental ledger lives in the local store the orchestrator writes,
+        // so `spend` reads it here, like `rm` and `reconcile`.
+        ["spend", config] if host.is_none() => spend_command(&resolve_config(config)),
         ["tui", config] => tui::tui_command(&Target::new(config, host)),
         ["follow", config] => follow::follow_command(&Target::new(config, host)),
         _ => {
@@ -85,6 +88,7 @@ fn main() -> ExitCode {
                  \x20      sima report <config> --task <key>  print one committed task's stats\n\
                  \x20      sima rm <config>                   delete the run and what only it references\n\
                  \x20      sima reconcile <config>            destroy the machines a crashed run left running\n\
+                 \x20      sima spend <config>                report the run's rental spend\n\
                  \x20      sima tui <config>                  drive the run in a full-screen terminal UI\n\
                  \x20      sima follow <config>               stream the run's events until it ends\n\
                  \x20      sima timeline <config>             report the run's metrics and its timeline\n\
@@ -222,8 +226,21 @@ fn drive(config: &Path) -> Result<RunOutcome> {
     let control = RunControl {
         observer: &|record| progress.event(record),
         interrupt: &interrupt,
+        on_start: None,
     };
     orchestrate(&loaded, &control)
+}
+
+/// `sima spend <config.toml>`: the run's rental ledger — closed rentals, open
+/// ones, and the total — read from the local store.
+fn spend_command(config: &Path) -> ExitCode {
+    match load(config).and_then(|loaded| sima_pipeline::spend(&loaded)) {
+        Ok(report) => {
+            println!("{}", render::spend_block(&report));
+            ExitCode::SUCCESS
+        }
+        Err(e) => report(e),
+    }
 }
 
 /// `sima status <config.toml>`: the config's execution section names the

@@ -56,11 +56,12 @@ pub enum Error {
     /// qualifying offer was lost or never came up. The payload names the
     /// operation and the underlying cause.
     Provider(String),
-    /// A failure another machine reported, already rendered there and carried
-    /// verbatim. The classification belongs to the machine that failed, which
-    /// is the one holding the store and the process; re-classifying it here
-    /// would report a local judgement of a remote fact. It renders as the
-    /// payload alone, so a fault reads exactly as it reads on its own host.
+    /// A failure carried verbatim from the process where it was rendered — a
+    /// worker child, possibly on this same machine, holding no store of its
+    /// own. The classification belongs to that process, so re-classifying it
+    /// here would report a local judgement of a fact rendered elsewhere. It
+    /// renders as the payload alone, so a fault reads exactly as it read where
+    /// it was raised.
     Reported(String),
 }
 

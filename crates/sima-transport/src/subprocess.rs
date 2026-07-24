@@ -25,7 +25,7 @@ use sima_core::{Error, Result, read_frame, write_frame};
 use sima_model::FormatId;
 use sima_trace::{Emitter, Event, Level};
 
-use crate::link::{LinkEvent, WorkerLink, WorkerTransport};
+use crate::link::{LinkEvent, SpawnOutcome, WorkerLink, WorkerTransport};
 use crate::protocol::{Assignment, Hello, PROTOCOL_VERSION, ToChild, ToParent};
 
 /// Spawns worker processes for one run: the command vector to run — a program
@@ -95,7 +95,7 @@ impl WorkerTransport for SubprocessTransport {
         worker: u64,
         device: Option<&DeviceBinding>,
         events: Emitter,
-    ) -> Result<Box<dyn WorkerLink>> {
+    ) -> Result<SpawnOutcome> {
         // The subprocess transport runs on this machine, so its diagnostics
         // carry the local pool's empty host label.
         let context = EventContext {
@@ -111,6 +111,7 @@ impl WorkerTransport for SubprocessTransport {
             device,
             context,
         )
+        .map(SpawnOutcome::Link)
     }
 }
 

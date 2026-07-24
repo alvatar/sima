@@ -89,6 +89,9 @@ fn rent_within<'a, P: Provider>(
         Objective::CheapestPerHour,
         &limits(),
         budget,
+        // This lifecycle exercise runs an acquisition to completion; nothing
+        // cancels it.
+        &std::sync::atomic::AtomicBool::new(false),
     )?;
     Ok((guard, lock))
 }

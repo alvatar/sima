@@ -195,7 +195,13 @@ pub fn timeline_records(run: RunId, records: &[Record]) -> RunTimeline {
             | Event::Diagnostic { .. }
             | Event::RunFinalized { .. }
             | Event::RunFailed { .. }
-            | Event::RunInterrupted { .. } => {}
+            | Event::RunInterrupted { .. }
+            // Fleet lifecycle states nothing about worker timing or rates.
+            | Event::InstanceOnline { .. }
+            | Event::InstanceLost { .. }
+            | Event::InstanceReplaced { .. }
+            | Event::BudgetSpendExhausted { .. }
+            | Event::BudgetWallClockExhausted { .. } => {}
         }
     }
     retries.retried_tasks = retried.len();

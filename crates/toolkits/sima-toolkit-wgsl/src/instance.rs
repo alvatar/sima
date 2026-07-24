@@ -25,6 +25,17 @@ pub(crate) fn load_entry() -> Result<ash::Entry> {
 /// Creates an instance on `entry`, enabling the validation layer and its
 /// debug-utils extension when `validation_enabled`.
 pub(crate) fn create(entry: &ash::Entry, validation_enabled: bool) -> Result<ash::Instance> {
+    try_create(entry, validation_enabled)
+        .map_err(|e| Error::Gpu(format!("create Vulkan instance: {e}")))
+}
+
+/// Creates an instance on `entry`, surfacing the raw Vulkan result so a caller
+/// can tell the loader's defined no-driver answer
+/// (`VK_ERROR_INCOMPATIBLE_DRIVER`) from a genuine failure.
+fn try_create(
+    entry: &ash::Entry,
+    validation_enabled: bool,
+) -> std::result::Result<ash::Instance, vk::Result> {
     let app_name = c"sima";
     let app_info = vk::ApplicationInfo::default()
         .application_name(app_name)
@@ -45,7 +56,27 @@ pub(crate) fn create(entry: &ash::Entry, validation_enabled: bool) -> Result<ash
     // layer/extension arrays are stack-local through this call; `entry` is
     // borrowed and keeps the loader resident.
     unsafe { entry.create_instance(&instance_info, None) }
-        .map_err(|e| Error::Gpu(format!("create Vulkan instance: {e}")))
+}
+
+/// Runs `query` like [`with_query_instance`], resolving to `None` on a machine
+/// where Vulkan is absent instead of an error: a loader library that fails to
+/// load and a loader that finds no driver (`VK_ERROR_INCOMPATIBLE_DRIVER`, the
+/// loader's defined answer for an empty driver search) both mean no device can
+/// exist here. For a caller asking what hardware the machine has, that is an
+/// answer. Every other creation failure stays an error.
+pub(crate) fn with_query_instance_or_none<T>(
+    query: impl FnOnce(&ash::Instance) -> Result<T>,
+) -> Result<Option<T>> {
+    let Ok(entry) = load_entry() else {
+        return Ok(None);
+    };
+    let instance = match try_create(&entry, false) {
+        Ok(instance) => InstanceGuard::new(instance),
+        Err(vk::Result::ERROR_INCOMPATIBLE_DRIVER) => return Ok(None),
+        Err(e) => return Err(Error::Gpu(format!("create Vulkan instance: {e}"))),
+    };
+    // The guard destroys the instance as this scope ends, on both paths.
+    query(instance.get()?).map(Some)
 }
 
 /// Runs `query` against an instance created solely to inspect physical devices,
