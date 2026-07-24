@@ -366,15 +366,22 @@ impl FleetMode {
     }
 }
 
+/// How long ssh waits to establish a TCP connection before failing, in
+/// seconds. Without it a host that drops packets stalls a spawn for the
+/// kernel's TCP timeout — minutes — instead of failing within the transport's
+/// own bounds, where the wait-and-retry loop can act on it.
+const SSH_CONNECT_TIMEOUT_SECS: u64 = 10;
+
 /// The argv that runs `sima-worker` on a fleet instance over ssh:
-/// `ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -p <port>
-/// <user>@<host> -- sima-worker`, with `--enumerate` appended when `probe` is
-/// set.
+/// `ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new
+/// -o ConnectTimeout=<secs> -p <port> <user>@<host> -- sima-worker`, with
+/// `--enumerate` appended when `probe` is set.
 ///
 /// `StrictHostKeyChecking=accept-new` accepts a freshly provisioned host's key
 /// on first contact and pins it afterwards — the trust model for disposable
 /// machines never present in `known_hosts`. `BatchMode=yes` never prompts, so
 /// an unreachable host is a clean spawn error rather than a hang.
+/// `ConnectTimeout` bounds a host that drops packets to a clean error.
 pub fn ssh_argv(target: &SshTarget, probe: bool) -> Vec<String> {
     let mut argv = vec![
         "ssh".to_string(),
@@ -382,6 +389,8 @@ pub fn ssh_argv(target: &SshTarget, probe: bool) -> Vec<String> {
         "BatchMode=yes".to_string(),
         "-o".to_string(),
         "StrictHostKeyChecking=accept-new".to_string(),
+        "-o".to_string(),
+        format!("ConnectTimeout={SSH_CONNECT_TIMEOUT_SECS}"),
         "-p".to_string(),
         target.port.to_string(),
         format!("{}@{}", target.user, target.host),
@@ -490,6 +499,8 @@ mod tests {
                 "BatchMode=yes",
                 "-o",
                 "StrictHostKeyChecking=accept-new",
+                "-o",
+                "ConnectTimeout=10",
                 "-p",
                 "41022",
                 "root@203.0.113.7",
@@ -497,6 +508,15 @@ mod tests {
                 "sima-worker",
             ]
         );
+    }
+
+    #[test]
+    fn the_ssh_argv_bounds_the_connection_wait() {
+        // A packet-dropping host must fail within the transport's own bounds,
+        // not stall for the kernel TCP timeout: both spawn and probe argv carry
+        // the connect timeout.
+        assert!(ssh_argv(&a_target(), false).contains(&"ConnectTimeout=10".to_string()));
+        assert!(ssh_argv(&a_target(), true).contains(&"ConnectTimeout=10".to_string()));
     }
 
     #[test]
