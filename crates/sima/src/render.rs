@@ -496,8 +496,13 @@ pub fn machines_block(report: &MachineReport) -> String {
         blacklisted,
     );
     for machine in &report.machines {
+        let noun = if machine.incidents == 1 {
+            "incident"
+        } else {
+            "incidents"
+        };
         block.push_str(&format!(
-            "\n  {}-{}  {} incidents (lost {}, never-ready {}, probe-failed {}){}",
+            "\n  {}-{}  {} {noun} (lost {}, never-ready {}, probe-failed {}){}",
             machine.provider,
             machine.machine,
             machine.incidents,
@@ -1510,14 +1515,15 @@ mod tests {
             ),
             "{block}"
         );
-        // A machine below the threshold names no status.
+        // A machine below the threshold names no status, and its single
+        // incident reads in the singular.
         assert!(
-            block.contains("vastai-90000  1 incidents (lost 0, never-ready 0, probe-failed 1)"),
+            block.contains("vastai-90000  1 incident (lost 0, never-ready 0, probe-failed 1)"),
             "{block}"
         );
         assert!(
             !block.contains(
-                "vastai-90000  1 incidents (lost 0, never-ready 0, probe-failed 1)  blacklisted"
+                "vastai-90000  1 incident (lost 0, never-ready 0, probe-failed 1)  blacklisted"
             ),
             "an untainted machine is not blacklisted: {block}"
         );
