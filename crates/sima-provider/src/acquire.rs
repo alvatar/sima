@@ -160,6 +160,7 @@ pub fn acquire<'a, P: Provider + ?Sized>(
                 tag,
                 instance.id,
                 endpoint,
+                offer.machine.clone(),
                 offer.gpu_model.clone(),
                 offer.gpu_count,
                 instance.price,
@@ -251,6 +252,8 @@ fn record(
     InstanceRecord {
         tag: tag.to_string(),
         provider: provider.to_string(),
+        // The offer's machine at intent, carried unchanged by the live write.
+        machine: offer.machine.clone(),
         owner: owner.to_string(),
         state: match instance {
             Some(instance) => InstanceRecordState::Live {
@@ -412,6 +415,10 @@ mod tests {
         assert_eq!(record.provider, "stub");
         assert_eq!(record.owner, sample_run(7).to_string());
         assert_eq!(record.price_micro_usd_hour, 100_000);
+        // The record and the guard both carry the offer's machine, so a later
+        // incident can be attributed to it.
+        assert_eq!(record.machine, "m-cheap");
+        assert_eq!(guard.machine(), "m-cheap");
         // The live state names the machine the guard holds.
         assert_eq!(record.instance(), Some(guard.id().0.as_str()));
         assert_eq!(record.tag, guard.tag());

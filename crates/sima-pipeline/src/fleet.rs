@@ -664,6 +664,7 @@ fn stub_offers(count: usize) -> Vec<Offer> {
     (0..count.max(1))
         .map(|n| Offer {
             id: OfferId(format!("stub-offer-{n}")),
+            machine: format!("stub-machine-{n}"),
             gpu_model: "stub-gpu".to_string(),
             gpu_count: 1,
             vram_mb: 24_000,
@@ -755,6 +756,7 @@ mod tests {
     fn offer(id: &str, price: u64) -> Offer {
         Offer {
             id: OfferId(id.to_string()),
+            machine: format!("machine-{id}"),
             gpu_model: "stub-gpu".to_string(),
             gpu_count: 1,
             vram_mb: 24_000,

@@ -1150,6 +1150,7 @@ fn reconcile_over_a_record_naming_an_unknown_provider_fails_naming_it() {
         .put_instance(&InstanceRecord {
             tag: "sima-tag-0".to_string(),
             provider: "nowhere".to_string(),
+            machine: "m-0".to_string(),
             owner: loaded.run.id().to_string(),
             state: InstanceRecordState::Live {
                 instance: "i-1".to_string(),

@@ -34,6 +34,9 @@ struct OfferPage {
 struct OfferRow {
     /// The marketplace's offer identifier.
     id: i64,
+    /// The marketplace's stable identifier for the physical machine behind
+    /// the offer, which reputation is scoped to.
+    machine_id: i64,
     /// The GPU model, in the marketplace's own naming.
     gpu_name: String,
     /// GPUs on the machine.
@@ -75,6 +78,7 @@ pub(crate) fn search(client: &VastClient) -> Result<Vec<Offer>> {
 fn normalize(row: OfferRow) -> Option<Offer> {
     Some(Offer {
         id: OfferId(row.id.to_string()),
+        machine: row.machine_id.to_string(),
         gpu_model: row.gpu_name,
         gpu_count: row.num_gpus,
         vram_mb: row.gpu_ram.round() as u64,
@@ -106,6 +110,7 @@ mod tests {
     /// A nominal offer: a vetted host with a region and a round rate.
     const NOMINAL: &str = r#"{
         "id": 8123456,
+        "machine_id": 81234,
         "gpu_name": "RTX_4090",
         "num_gpus": 2,
         "gpu_ram": 24564.0,
@@ -121,6 +126,7 @@ mod tests {
     /// region for, at a rate whose micro-USD value needs rounding.
     const UNVETTED: &str = r#"{
         "id": 9000001,
+        "machine_id": 90000,
         "gpu_name": "RTX_3090",
         "num_gpus": 1,
         "gpu_ram": 24576.0,
@@ -154,6 +160,9 @@ mod tests {
         assert_eq!(offers.len(), 1);
         let offer = &offers[0];
         assert_eq!(offer.id, OfferId("8123456".to_string()));
+        // The machine id is the marketplace's stable per-machine identifier,
+        // normalized to its decimal string; reputation is scoped to it.
+        assert_eq!(offer.machine, "81234");
         // The model keeps the marketplace's naming: constraints match it
         // case-insensitively by substring.
         assert_eq!(offer.gpu_model, "RTX_4090");
@@ -210,9 +219,37 @@ mod tests {
     }
 
     #[test]
+    fn an_offer_missing_its_machine_id_fails_the_listing_naming_the_field() {
+        // A machine id is what reputation is scoped to, so a row without one
+        // is a marketplace answer this backend cannot interpret: the whole
+        // listing fails naming the field, consistent with every other row
+        // field.
+        let malformed = r#"{
+            "id": 7,
+            "gpu_name": "RTX_4090",
+            "num_gpus": 1,
+            "gpu_ram": 24576.0,
+            "dph_total": 0.2,
+            "reliability": 0.9,
+            "verification": "verified",
+            "disk_space": 50.0,
+            "inet_down": 400.0,
+            "geolocation": null
+        }"#;
+        let server = TestServer::new(page(malformed));
+        let client = VastClient::new(&server.url(), "k-secret");
+        assert!(matches!(
+            search(&client),
+            Err(Error::Provider(message))
+                if message.starts_with("list offers: ") && message.contains("machine_id")
+        ));
+    }
+
+    #[test]
     fn an_offer_missing_a_field_fails_the_listing_naming_the_field() {
         let malformed = r#"{
             "id": 7,
+            "machine_id": 81234,
             "num_gpus": 1,
             "gpu_ram": 24576.0,
             "dph_total": 0.2,

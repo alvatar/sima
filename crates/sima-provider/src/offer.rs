@@ -29,6 +29,11 @@ pub struct OfferId(pub String);
 pub struct Offer {
     /// The provider's identifier for this offer.
     pub id: OfferId,
+    /// The provider's stable identifier for the physical machine behind this
+    /// offer, which reputation is scoped to. Empty when the provider reports
+    /// none: an empty machine records no incidents and never matches the
+    /// excluded set.
+    pub machine: String,
     /// The GPU model as the provider names it, for example `RTX 4090`.
     pub gpu_model: String,
     /// GPUs on the machine.
@@ -147,6 +152,7 @@ mod tests {
     fn offer(id: &str) -> Offer {
         Offer {
             id: OfferId(id.to_string()),
+            machine: format!("m-{id}"),
             gpu_model: "RTX 4090".to_string(),
             gpu_count: 2,
             vram_mb: 24_576,

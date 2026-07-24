@@ -135,6 +135,7 @@ mod tests {
         InstanceRecord {
             tag: tag.to_string(),
             provider: provider.to_string(),
+            machine: "m-0".to_string(),
             owner: owner().to_string(),
             state: InstanceRecordState::Live {
                 instance: instance.to_string(),

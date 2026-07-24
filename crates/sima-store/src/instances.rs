@@ -31,6 +31,11 @@ pub struct InstanceRecord {
     pub tag: String,
     /// The provider's stable identifier; reconciliation matches on it.
     pub provider: String,
+    /// The provider's stable identifier for the physical machine this attempt
+    /// rented, which reputation is scoped to. Empty when the provider reported
+    /// none. Stamped from the offer at intent and carried unchanged by the
+    /// live upgrade.
+    pub machine: String,
     /// The owning run, full 64-character hex. Its orchestrator lock answers
     /// whether the owner is still alive.
     pub owner: String,
@@ -199,6 +204,7 @@ mod tests {
         InstanceRecord {
             tag: tag.to_string(),
             provider: "stub".to_string(),
+            machine: "m-0".to_string(),
             owner: sample_run_config(root_seed).id().to_string(),
             state: InstanceRecordState::Intent,
             price_micro_usd_hour: 82_400,
