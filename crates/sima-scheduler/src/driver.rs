@@ -122,6 +122,11 @@ pub fn run(
     let (outcome, journal) = thread::scope(|scope| {
         let collector = Collector::spawn(scope, writer, control.observer);
         let events = collector.emitter();
+        // Hand the run's emitter to a caller that emits alongside it — the
+        // fleet supervisor — once, as the collector comes up.
+        if let Some(hook) = control.on_start {
+            hook(events.clone());
+        }
         events.emit(Event::RunStarted {
             run: run.to_string(),
             tasks: source.task_total(),
@@ -855,6 +860,7 @@ mod tests {
         let control = RunControl {
             observer: &|_| {},
             interrupt: &interrupt,
+            on_start: None,
         };
         let mut source = ScriptedSource {
             polls: VecDeque::from([vec![runnable(1)], vec![runnable(2)]]),

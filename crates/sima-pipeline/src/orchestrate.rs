@@ -111,6 +111,21 @@ pub fn orchestrate(config: &LoadedConfig, control: &RunControl) -> Result<RunOut
     let outcome = match &fleet {
         Some((provider, _mode, fleet_config)) => {
             let stop = StopSignal::new();
+            // The run's emitter reaches the supervisor through the start hook,
+            // filled once the collector spawns; the supervisor emits fleet
+            // events through it, so they cross the same journal seam as the
+            // rest. No scheduler edge to the provider appears — the hook is an
+            // opaque closure.
+            let emitter: std::sync::Mutex<Option<sima_trace::Emitter>> =
+                std::sync::Mutex::new(None);
+            let on_start = |e: sima_trace::Emitter| {
+                *emitter.lock().expect("the emitter lock is never poisoned") = Some(e);
+            };
+            let control = RunControl {
+                observer: control.observer,
+                interrupt: control.interrupt,
+                on_start: Some(&on_start),
+            };
             let supervisor = Supervisor::new(
                 provider.as_ref(),
                 &store,
@@ -118,6 +133,7 @@ pub fn orchestrate(config: &LoadedConfig, control: &RunControl) -> Result<RunOut
                 fleet_config,
                 &fleet_instances,
                 control.interrupt,
+                &emitter,
             );
             std::thread::scope(|scope| {
                 let handle = scope.spawn(|| supervisor.run(&stop));
@@ -128,7 +144,7 @@ pub fn orchestrate(config: &LoadedConfig, control: &RunControl) -> Result<RunOut
                     generator.as_ref(),
                     &pools,
                     &execution,
-                    control,
+                    &control,
                 );
                 stop.raise();
                 handle.join().expect("the supervisor thread joins");

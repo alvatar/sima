@@ -139,6 +139,9 @@ pub fn acquire<'a, P: Provider + ?Sized>(
                 tag,
                 instance.id,
                 endpoint,
+                offer.gpu_model.clone(),
+                offer.gpu_count,
+                instance.price,
             ));
         }
         // A machine that never came up is a bad offer, not a fatal error.

@@ -17,12 +17,13 @@ use sima_domains::devices::DeviceInfo;
 use sima_model::FormatId;
 use sima_provider::stub::StubProvider;
 use sima_provider::{
-    AcquireLimits, InstanceGuard, InstanceStatus, Objective, Offer, OfferId, Price, Provider,
-    SshEndpoint, Verdict, acquire, assess,
+    AcquireLimits, Exhaustion, InstanceGuard, InstanceStatus, Objective, Offer, OfferId, Price,
+    Provider, SshEndpoint, Verdict, acquire, assess,
 };
 use sima_provider_vast::{VastConfig, VastProvider};
 use sima_scheduler::ExecutionConfig;
 use sima_store::{RunLock, Store};
+use sima_trace::{Emitter, Event};
 use sima_transport::{FleetMode, FleetTransport, SshTarget};
 
 use crate::config::{FillPolicy, FleetConfig, FleetProvider};
@@ -329,6 +330,15 @@ pub(crate) struct Supervisor<'a, 'b> {
     /// slice's short lifetime, so a caller holding a longer-lived flag passes
     /// it freely.
     interrupt: &'b AtomicBool,
+    /// The run's emitter, delivered by the start hook once the collector spawns
+    /// and `None` until then. Fleet events cross the same single-writer journal
+    /// seam every other event does.
+    emitter: &'b Mutex<Option<Emitter>>,
+    /// Whether the initial fleet composition has been announced, so the online
+    /// events fire once.
+    announced: AtomicBool,
+    /// Whether a budget exhaustion has been announced, so its event fires once.
+    budget_announced: AtomicBool,
 }
 
 impl<'a, 'b> Supervisor<'a, 'b> {
@@ -339,6 +349,7 @@ impl<'a, 'b> Supervisor<'a, 'b> {
         fleet: &'a FleetConfig,
         instances: &'b [FleetInstance<'a>],
         interrupt: &'b AtomicBool,
+        emitter: &'b Mutex<Option<Emitter>>,
     ) -> Supervisor<'a, 'b> {
         Supervisor {
             provider,
@@ -347,6 +358,9 @@ impl<'a, 'b> Supervisor<'a, 'b> {
             fleet,
             instances,
             interrupt,
+            emitter,
+            announced: AtomicBool::new(false),
+            budget_announced: AtomicBool::new(false),
         }
     }
 
@@ -368,17 +382,57 @@ impl<'a, 'b> Supervisor<'a, 'b> {
         guard.disarm();
     }
 
-    /// One heartbeat: assess the budget, then each instance's health. Budget
-    /// exhaustion short-circuits the health poll — the whole run is winding
-    /// down. `now_ms` is a parameter so a test can drive exhaustion without
-    /// waiting on the clock.
+    /// Emits `event` through the run's journal, if the emitter has arrived.
+    fn emit(&self, event: Event) {
+        if let Some(emitter) = &*self
+            .emitter
+            .lock()
+            .expect("the emitter lock is never poisoned")
+        {
+            emitter.emit(event);
+        }
+    }
+
+    /// Announces the initial fleet composition once, as soon as the emitter is
+    /// available: one `InstanceOnline` per instance still holding a guard.
+    fn announce_composition(&self) {
+        if self.announced.swap(true, Ordering::Relaxed) {
+            return;
+        }
+        for instance in self.instances {
+            if let Some(guard) = &*instance
+                .guard
+                .lock()
+                .expect("the fleet guard lock is never poisoned")
+            {
+                self.emit(instance_online(guard, &instance.host));
+            }
+        }
+    }
+
+    /// One heartbeat: announce the composition once, assess the budget, then
+    /// each instance's health. Budget exhaustion short-circuits the health
+    /// poll — the whole run is winding down. `now_ms` is a parameter so a test
+    /// can drive exhaustion without waiting on the clock.
     fn tick(&self, now_ms: u64) -> Result<()> {
-        if let Verdict::Exhausted(_) =
+        self.announce_composition();
+        if let Verdict::Exhausted(exhaustion) =
             assess(self.store, self.lock.run(), &self.fleet.budget, now_ms)?
         {
             // The same flag SIGINT sets: the run winds down gracefully and the
             // guards tear the fleet down.
             self.interrupt.store(true, Ordering::Relaxed);
+            if !self.budget_announced.swap(true, Ordering::Relaxed) {
+                self.emit(match exhaustion {
+                    Exhaustion::Spend { accrued, cap } => Event::BudgetSpendExhausted {
+                        accrued_microusd: accrued.0,
+                        cap_microusd: cap.0,
+                    },
+                    Exhaustion::WallClock { deadline_ms } => {
+                        Event::BudgetWallClockExhausted { deadline_ms }
+                    }
+                });
+            }
             return Ok(());
         }
         for instance in self.instances {
@@ -414,14 +468,23 @@ impl<'a, 'b> Supervisor<'a, 'b> {
         instance.transport.mark_replacing();
         // Close the dead instance out. It is already gone, so a teardown error
         // just leaves a record for the next reconciliation pass.
-        if let Some(old) = instance
+        let lost = instance
             .guard
             .lock()
             .expect("the fleet guard lock is never poisoned")
-            .take()
-        {
+            .take();
+        let lost_id = if let Some(old) = lost {
+            let tag = old.tag().to_string();
+            let id = old.id().0.clone();
+            self.emit(Event::InstanceLost {
+                tag,
+                instance: id.clone(),
+            });
             let _ = old.release();
-        }
+            id
+        } else {
+            String::new()
+        };
         // A replacement must carry at least the GPUs the pool's slots bind.
         let gpu_slots = instance.slots.iter().filter(|slot| slot.is_some()).count() as u32;
         let mut constraints = self.fleet.constraints.clone();
@@ -440,6 +503,12 @@ impl<'a, 'b> Supervisor<'a, 'b> {
             &self.fleet.budget,
         ) {
             Ok(new_guard) => {
+                self.emit(Event::InstanceReplaced {
+                    tag: new_guard.tag().to_string(),
+                    from: lost_id,
+                    to: new_guard.id().0.clone(),
+                });
+                self.emit(instance_online(&new_guard, &instance.host));
                 instance
                     .transport
                     .swap_to_live(endpoint_target(new_guard.endpoint().clone()));
@@ -457,6 +526,19 @@ impl<'a, 'b> Supervisor<'a, 'b> {
                 Ok(())
             }
         }
+    }
+}
+
+/// The `InstanceOnline` event for a guarded instance: the rental's tag, the
+/// provider's id, the offer's hardware, its rate, and the host it answers on.
+fn instance_online<P: Provider + ?Sized>(guard: &InstanceGuard<'_, P>, host: &str) -> Event {
+    Event::InstanceOnline {
+        tag: guard.tag().to_string(),
+        instance: guard.id().0.clone(),
+        gpu_model: guard.gpu_model().to_string(),
+        gpu_count: guard.gpu_count(),
+        rate_microusd_hour: guard.rate().0,
+        host: host.to_string(),
     }
 }
 
@@ -767,7 +849,10 @@ mod tests {
             &exec(),
         )?;
         let interrupt = AtomicBool::new(false);
-        let supervisor = Supervisor::new(&provider, &store, &lock, &fleet, &instances, &interrupt);
+        let emitter = Mutex::new(None);
+        let supervisor = Supervisor::new(
+            &provider, &store, &lock, &fleet, &instances, &interrupt, &emitter,
+        );
         // A far-future heartbeat: the open rental's accrual is well past the cap.
         supervisor.tick(u64::MAX)?;
         assert!(
@@ -798,7 +883,10 @@ mod tests {
             &exec(),
         )?;
         let interrupt = AtomicBool::new(false);
-        let supervisor = Supervisor::new(&provider, &store, &lock, &fleet, &instances, &interrupt);
+        let emitter = Mutex::new(None);
+        let supervisor = Supervisor::new(
+            &provider, &store, &lock, &fleet, &instances, &interrupt, &emitter,
+        );
         supervisor.tick(u64::MAX)?;
         assert!(
             interrupt.load(Ordering::Relaxed),
@@ -828,7 +916,10 @@ mod tests {
         )?;
         let live_before = provider.live();
         let interrupt = AtomicBool::new(false);
-        let supervisor = Supervisor::new(&provider, &store, &lock, &fleet, &instances, &interrupt);
+        let emitter = Mutex::new(None);
+        let supervisor = Supervisor::new(
+            &provider, &store, &lock, &fleet, &instances, &interrupt, &emitter,
+        );
         supervisor.tick(now_ms())?;
         assert!(
             !interrupt.load(Ordering::Relaxed),
@@ -872,7 +963,10 @@ mod tests {
         provider.destroy(&dead_id)?;
 
         let interrupt = AtomicBool::new(false);
-        let supervisor = Supervisor::new(&provider, &store, &lock, &fleet, &instances, &interrupt);
+        let emitter = Mutex::new(None);
+        let supervisor = Supervisor::new(
+            &provider, &store, &lock, &fleet, &instances, &interrupt, &emitter,
+        );
         supervisor.tick(now_ms())?;
 
         // The transport now points at a different, live host, and a fresh
@@ -927,7 +1021,10 @@ mod tests {
         provider.destroy(&dead_id)?;
 
         let interrupt = AtomicBool::new(false);
-        let supervisor = Supervisor::new(&provider, &store, &lock, &fleet, &instances, &interrupt);
+        let emitter = Mutex::new(None);
+        let supervisor = Supervisor::new(
+            &provider, &store, &lock, &fleet, &instances, &interrupt, &emitter,
+        );
         supervisor.tick(now_ms())?;
 
         assert!(

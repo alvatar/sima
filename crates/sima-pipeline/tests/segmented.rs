@@ -149,6 +149,7 @@ fn an_interrupted_chain_resumes_to_the_reference_manifest() -> Result<()> {
             }
         },
         interrupt: &interrupt,
+        on_start: None,
     };
     assert!(matches!(
         orchestrate(&config, &control)?,

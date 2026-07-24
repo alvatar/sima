@@ -153,6 +153,36 @@ pub enum Event {
     /// The caller interrupted the run: in-flight attempts drained and
     /// committed, and no manifest was written, so the store is resumable.
     RunInterrupted { run: String },
+    /// A rented fleet instance came online: reported at supervisor start for
+    /// each instance, and again for each replacement. `tag` is the rental's
+    /// ledger key, `instance` the provider's id, `rate_microusd_hour` its
+    /// hourly rate in micro-USD.
+    InstanceOnline {
+        tag: String,
+        instance: String,
+        gpu_model: String,
+        gpu_count: u32,
+        rate_microusd_hour: u64,
+        host: String,
+    },
+    /// A fleet instance was polled `Gone`: the provider no longer holds it.
+    InstanceLost { tag: String, instance: String },
+    /// A lost instance's replacement succeeded: the pool's target moved from
+    /// the `from` instance to the `to` instance.
+    InstanceReplaced {
+        tag: String,
+        from: String,
+        to: String,
+    },
+    /// The run's rental spend reached its cap; no further rental is made and
+    /// the run winds down.
+    BudgetSpendExhausted {
+        accrued_microusd: u64,
+        cap_microusd: u64,
+    },
+    /// The run's rental phase reached its wall-clock deadline; no further
+    /// rental is made and the run winds down.
+    BudgetWallClockExhausted { deadline_ms: u64 },
     /// A correlated diagnostic line: observational text attributed to the
     /// component and work unit it came from. Context keys are optional
     /// because a diagnostic may precede any lease (worker startup) or
@@ -234,6 +264,43 @@ mod tests {
         ] {
             let json = serde_json::to_string(&level).expect("serialize level");
             assert_eq!(json, text);
+        }
+    }
+
+    #[test]
+    fn each_fleet_event_round_trips_through_a_journal_line() {
+        let events = [
+            Event::InstanceOnline {
+                tag: "sima-abc-1".to_string(),
+                instance: "i-42".to_string(),
+                gpu_model: "RTX 4090".to_string(),
+                gpu_count: 2,
+                rate_microusd_hour: 412_000,
+                host: "203.0.113.7".to_string(),
+            },
+            Event::InstanceLost {
+                tag: "sima-abc-1".to_string(),
+                instance: "i-42".to_string(),
+            },
+            Event::InstanceReplaced {
+                tag: "sima-abc-1".to_string(),
+                from: "i-42".to_string(),
+                to: "i-43".to_string(),
+            },
+            Event::BudgetSpendExhausted {
+                accrued_microusd: 5_100_000,
+                cap_microusd: 5_000_000,
+            },
+            Event::BudgetWallClockExhausted {
+                deadline_ms: 1_700_000_000_000,
+            },
+        ];
+        for event in events {
+            let json = serde_json::to_string(&event).expect("serialize a fleet event");
+            // One JSON line, tagged by the variant.
+            assert!(json.contains("\"event\":"), "{json}");
+            let back: Event = serde_json::from_str(&json).expect("parse a fleet event");
+            assert_eq!(back, event);
         }
     }
 

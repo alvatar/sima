@@ -126,6 +126,7 @@ fn an_interrupt_through_the_pipeline_stays_resumable() -> Result<()> {
             }
         },
         interrupt: &interrupt,
+        on_start: None,
     };
     assert!(matches!(
         orchestrate(&config, &control)?,

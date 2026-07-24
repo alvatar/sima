@@ -380,6 +380,7 @@ fn spawn_run(config: Arc<LoadedConfig>, tx: SyncSender<Msg>, interrupt: Arc<Atom
             let control = RunControl {
                 observer: &observer,
                 interrupt: &interrupt,
+                on_start: None,
             };
             orchestrate(&config, &control)
         }))

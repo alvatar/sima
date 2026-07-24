@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use sima_pipeline::{
     Attempt, AttemptResult, Event, Record, RetryStats, RunId, RunState, RunStatus, RunTimeline,
-    TaskHistory, TaskOutcome, WorkerMetrics,
+    SpendReport, TaskHistory, TaskOutcome, WorkerMetrics,
 };
 
 /// How many hex characters of an id a progress line shows.
@@ -86,8 +86,52 @@ pub fn describe(event: &Event, committed: usize, tasks: usize) -> Option<String>
                 None => format!("{level} {source}: {message}"),
             }
         }
+        // A fleet instance came online: reported at supervisor start and for
+        // each replacement, naming where the work will run.
+        Event::InstanceOnline {
+            instance,
+            gpu_model,
+            gpu_count,
+            rate_microusd_hour,
+            host,
+            ..
+        } => {
+            let hardware = if *gpu_count == 0 || gpu_model.is_empty() {
+                "no GPU".to_string()
+            } else {
+                format!("{gpu_count}× {gpu_model}")
+            };
+            format!(
+                "instance online {} on {host}: {hardware} at {}/hr",
+                short(instance),
+                dollars(*rate_microusd_hour)
+            )
+        }
+        Event::InstanceLost { instance, .. } => {
+            format!("instance lost {}", short(instance))
+        }
+        Event::InstanceReplaced { from, to, .. } => {
+            format!("instance replaced {} with {}", short(from), short(to))
+        }
+        Event::BudgetSpendExhausted {
+            accrued_microusd,
+            cap_microusd,
+        } => format!(
+            "budget exhausted: spent {} of {}, winding down",
+            dollars(*accrued_microusd),
+            dollars(*cap_microusd)
+        ),
+        Event::BudgetWallClockExhausted { deadline_ms } => format!(
+            "budget exhausted: rental deadline (epoch ms {deadline_ms}) passed, winding down"
+        ),
         Event::Queued { .. } | Event::Leased { .. } | Event::WorkerBound { .. } => return None,
     })
+}
+
+/// A micro-USD amount as dollars, to three decimals so sub-cent hourly rates
+/// stay legible: `$0.412`, `$5.000`.
+pub fn dollars(micro_usd: u64) -> String {
+    format!("${:.3}", micro_usd as f64 / 1_000_000.0)
 }
 
 /// Progress rendering over a run's event stream: prints one line per
@@ -408,6 +452,33 @@ fn devices_line(status: &RunStatus) -> Option<String> {
         line.push_str(&format!(", rebound chains: {}", status.rebound_chains));
     }
     Some(line)
+}
+
+/// Renders the rental-spend ledger: the closed rentals with their duration,
+/// rate, and cost; the rentals still open with what they have accrued; and the
+/// total the two together have cost. Every amount is in dollars.
+pub fn spend_block(report: &SpendReport) -> String {
+    let mut block = format!("closed rentals   {}", report.entries.len());
+    for entry in &report.entries {
+        block.push_str(&format!(
+            "\n  {}  {}  {}/hr  {}",
+            entry.tag,
+            duration(entry.ended_ms.saturating_sub(entry.started_ms)),
+            dollars(entry.price_micro_usd_hour),
+            dollars(entry.cost_micro_usd),
+        ));
+    }
+    block.push_str(&format!("\nopen rentals     {}", report.open.len()));
+    for open in &report.open {
+        block.push_str(&format!(
+            "\n  {}  {}/hr  {} so far",
+            open.tag,
+            dollars(open.rate.0),
+            dollars(open.accrued.0),
+        ));
+    }
+    block.push_str(&format!("\ntotal            {}", dollars(report.total.0)));
+    block
 }
 
 /// How many columns wide the temporal chart draws, whatever the terminal is.
@@ -766,6 +837,83 @@ mod tests {
         for part in ["error", "panic", "worker 3"] {
             assert!(line.contains(part), "missing {part}: {line}");
         }
+    }
+
+    #[test]
+    fn the_fleet_events_render_their_lines() {
+        let online = Event::InstanceOnline {
+            tag: "sima-abc-1".to_string(),
+            instance: "aabbccddeeff0011".to_string(),
+            gpu_model: "RTX 4090".to_string(),
+            gpu_count: 2,
+            rate_microusd_hour: 412_000,
+            host: "203.0.113.7".to_string(),
+        };
+        let line = describe(&online, 0, 0).expect("an online line");
+        for part in [
+            "instance online",
+            "aabbccddeeff",
+            "203.0.113.7",
+            "2× RTX 4090",
+            "$0.412",
+        ] {
+            assert!(line.contains(part), "missing {part}: {line}");
+        }
+
+        let deviceless = Event::InstanceOnline {
+            tag: "sima-abc-1".to_string(),
+            instance: "i0".to_string(),
+            gpu_model: String::new(),
+            gpu_count: 0,
+            rate_microusd_hour: 0,
+            host: "local".to_string(),
+        };
+        assert!(
+            describe(&deviceless, 0, 0)
+                .expect("a line")
+                .contains("no GPU"),
+            "a deviceless instance names no GPU"
+        );
+
+        let lost = Event::InstanceLost {
+            tag: "t".to_string(),
+            instance: "aabbccddeeff0011".to_string(),
+        };
+        assert!(
+            describe(&lost, 0, 0)
+                .expect("a lost line")
+                .contains("instance lost aabbccddeeff")
+        );
+
+        let replaced = Event::InstanceReplaced {
+            tag: "t".to_string(),
+            from: "aaaaaaaaaaaa1111".to_string(),
+            to: "bbbbbbbbbbbb2222".to_string(),
+        };
+        let line = describe(&replaced, 0, 0).expect("a replaced line");
+        assert!(
+            line.contains("aaaaaaaaaaaa") && line.contains("bbbbbbbbbbbb"),
+            "{line}"
+        );
+
+        let spend = Event::BudgetSpendExhausted {
+            accrued_microusd: 5_100_000,
+            cap_microusd: 5_000_000,
+        };
+        let line = describe(&spend, 0, 0).expect("a spend line");
+        assert!(
+            line.contains("budget exhausted") && line.contains("$5.100") && line.contains("$5.000"),
+            "{line}"
+        );
+
+        let wall = Event::BudgetWallClockExhausted {
+            deadline_ms: 1_700_000_000_000,
+        };
+        assert!(
+            describe(&wall, 0, 0)
+                .expect("a wall-clock line")
+                .contains("rental deadline")
+        );
     }
 
     #[test]
@@ -1254,6 +1402,39 @@ mod tests {
             !local.starts_with(' '),
             "a worker alive from the start has no gap: {block}"
         );
+    }
+
+    #[test]
+    fn the_spend_block_reports_closed_entries_open_rentals_and_the_total() {
+        let report = SpendReport {
+            entries: vec![sima_pipeline::SpendEntry {
+                tag: "sima-run-1".to_string(),
+                provider: "vast".to_string(),
+                owner: "ab".repeat(32),
+                price_micro_usd_hour: 412_000,
+                started_ms: 1_000,
+                ended_ms: 3_601_000,
+                cost_micro_usd: 412_000,
+            }],
+            open: vec![sima_pipeline::OpenSpend {
+                tag: "sima-run-2".to_string(),
+                rate: sima_pipeline::Price(500_000),
+                started_ms: 2_000,
+                accrued: sima_pipeline::Cost(250_000),
+            }],
+            total: sima_pipeline::Cost(662_000),
+        };
+        let block = spend_block(&report);
+        // A closed entry names its tag, duration, rate, and cost.
+        assert!(block.contains("closed rentals   1"), "{block}");
+        assert!(block.contains("sima-run-1"), "{block}");
+        assert!(block.contains("$0.412/hr"), "{block}");
+        // An open rental names its accrual so far.
+        assert!(block.contains("open rentals     1"), "{block}");
+        assert!(block.contains("sima-run-2"), "{block}");
+        assert!(block.contains("$0.250 so far"), "{block}");
+        // And the total in dollars.
+        assert!(block.contains("total            $0.662"), "{block}");
     }
 
     #[test]

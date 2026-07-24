@@ -2,7 +2,13 @@
 
 use std::sync::atomic::AtomicBool;
 
-use sima_trace::Observer;
+use sima_trace::{Emitter, Observer};
+
+/// A hook invoked once, on the collector thread, with a clone of the run's
+/// emitter as the run starts. It carries the emitter to a caller that emits
+/// alongside the run — the fleet supervisor — without a scheduler edge to that
+/// caller: the closure is opaque.
+pub type StartHook<'a> = &'a (dyn Fn(Emitter) + Send + Sync);
 
 /// The caller's handles into a running search: an observer invoked with
 /// each journal record and an interrupt flag the driver polls to wind
@@ -17,17 +23,21 @@ pub struct RunControl<'a> {
     /// run returns [`RunOutcome::Interrupted`](crate::RunOutcome::Interrupted)
     /// with no manifest written, leaving the store resumable.
     pub interrupt: &'a AtomicBool,
+    /// Invoked once with the run's emitter when the collector spawns, or
+    /// `None` for a caller that emits nothing of its own.
+    pub on_start: Option<StartHook<'a>>,
 }
 
 impl RunControl<'_> {
-    /// A control nobody holds: the observer ignores every record and the
-    /// interrupt flag is never set. The handle for callers that drive a
-    /// run without live observation.
+    /// A control nobody holds: the observer ignores every record, the
+    /// interrupt flag is never set, and no start hook fires. The handle for
+    /// callers that drive a run without live observation.
     pub fn detached() -> RunControl<'static> {
         static NEVER: AtomicBool = AtomicBool::new(false);
         RunControl {
             observer: &|_| {},
             interrupt: &NEVER,
+            on_start: None,
         }
     }
 }

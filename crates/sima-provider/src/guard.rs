@@ -27,19 +27,31 @@ pub struct InstanceGuard<'a, P: Provider + ?Sized> {
     id: InstanceId,
     /// Where the instance answers SSH.
     endpoint: SshEndpoint,
+    /// The GPU model the offer named, for the online event; empty for a
+    /// machine carrying none.
+    gpu_model: String,
+    /// GPUs the offer named.
+    gpu_count: u32,
+    /// The hourly rate the instance is charged at.
+    rate: Price,
     /// Whether teardown already ran, so drop leaves it alone.
     released: bool,
 }
 
 impl<'a, P: Provider + ?Sized> InstanceGuard<'a, P> {
-    /// Takes ownership of the instance `tag` names, reachable at
-    /// `endpoint`.
+    /// Takes ownership of the instance `tag` names, reachable at `endpoint`,
+    /// carrying the offer's hardware and the rate it is billed at for the
+    /// journal.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         provider: &'a P,
         store: &'a Store,
         tag: String,
         id: InstanceId,
         endpoint: SshEndpoint,
+        gpu_model: String,
+        gpu_count: u32,
+        rate: Price,
     ) -> InstanceGuard<'a, P> {
         InstanceGuard {
             provider,
@@ -47,6 +59,9 @@ impl<'a, P: Provider + ?Sized> InstanceGuard<'a, P> {
             tag,
             id,
             endpoint,
+            gpu_model,
+            gpu_count,
+            rate,
             released: false,
         }
     }
@@ -64,6 +79,21 @@ impl<'a, P: Provider + ?Sized> InstanceGuard<'a, P> {
     /// The ledger key the instance was rented under.
     pub fn tag(&self) -> &str {
         &self.tag
+    }
+
+    /// The GPU model the offer named; empty for a machine carrying none.
+    pub fn gpu_model(&self) -> &str {
+        &self.gpu_model
+    }
+
+    /// GPUs the offer named.
+    pub fn gpu_count(&self) -> u32 {
+        self.gpu_count
+    }
+
+    /// The hourly rate the instance is billed at.
+    pub fn rate(&self) -> Price {
+        self.rate
     }
 
     /// Destroys the instance, closes its rental out, and reports the first

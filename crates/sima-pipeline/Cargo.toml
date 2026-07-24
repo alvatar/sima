@@ -16,6 +16,7 @@ sima-domains = { path = "../sima-domains" }
 sima-scheduler = { path = "../sima-scheduler" }
 sima-store = { path = "../sima-store" }
 sima-transport = { path = "../sima-transport" }
+sima-trace = { path = "../sima-trace" }
 sima-provider = { path = "../sima-provider" }
 sima-provider-vast = { path = "../providers/sima-provider-vast" }
 serde.workspace = true

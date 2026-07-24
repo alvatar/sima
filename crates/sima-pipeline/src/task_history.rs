@@ -216,7 +216,12 @@ impl TaskHistory {
             | Event::RunInterrupted { .. }
             | Event::WorkerBound { .. }
             | Event::ChainRebound { .. }
-            | Event::Diagnostic { .. } => {}
+            | Event::Diagnostic { .. }
+            | Event::InstanceOnline { .. }
+            | Event::InstanceLost { .. }
+            | Event::InstanceReplaced { .. }
+            | Event::BudgetSpendExhausted { .. }
+            | Event::BudgetWallClockExhausted { .. } => {}
         }
     }
 
@@ -259,7 +264,12 @@ fn lifecycle_task(event: &Event) -> Option<&str> {
         | Event::RunInterrupted { .. }
         | Event::WorkerBound { .. }
         | Event::ChainRebound { .. }
-        | Event::Diagnostic { .. } => None,
+        | Event::Diagnostic { .. }
+        | Event::InstanceOnline { .. }
+        | Event::InstanceLost { .. }
+        | Event::InstanceReplaced { .. }
+        | Event::BudgetSpendExhausted { .. }
+        | Event::BudgetWallClockExhausted { .. } => None,
     }
 }
 
