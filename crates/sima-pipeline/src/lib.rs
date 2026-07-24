@@ -20,6 +20,7 @@
 mod config;
 mod devices;
 mod feed;
+mod fleet;
 #[cfg(test)]
 mod fixtures;
 mod journal;

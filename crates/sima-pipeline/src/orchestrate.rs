@@ -244,7 +244,7 @@ fn resolve_devices(config: &LoadedConfig) -> Result<ExecutionConfig> {
 ///   finding the binary in `target/debug`.
 ///
 /// A missing binary is a validation error naming the searched locations.
-fn worker_binary() -> Result<PathBuf> {
+pub(crate) fn worker_binary() -> Result<PathBuf> {
     if let Some(path) = std::env::var_os("SIMA_WORKER") {
         return Ok(PathBuf::from(path));
     }
