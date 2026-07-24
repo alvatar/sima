@@ -129,6 +129,10 @@ pub fn run(
         });
 
         let drive_result = thread::scope(|scope| -> Result<DriveOutcome> {
+            // Seed the live-worker count to the pool's slot total before the
+            // workers spawn, so the last worker to exit while the run is still
+            // running faults it rather than leaving the driver to wait forever.
+            coordinator.set_live_workers(pools.iter().map(|pool| pool.slots.len()).sum());
             // Worker ids run global and sequential across pools, local first,
             // so every slot of every pool has a distinct id in the journal.
             let mut worker = 0u64;

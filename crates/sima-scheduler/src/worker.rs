@@ -55,6 +55,12 @@ pub(crate) struct WorkerContext<'a> {
 /// dropping the last link at exit is the graceful shutdown — stdin closes,
 /// the child exits on end-of-stream, and the parent reaps it.
 pub(crate) fn worker_loop(worker: WorkerId, ctx: WorkerContext<'_>) {
+    // Records the worker's exit on every return path — finish, fault, or
+    // retirement — so the coordinator's live-worker count stays accurate and
+    // the last worker leaving with work still pending faults the run.
+    let _exit = WorkerExit {
+        coordinator: ctx.coordinator,
+    };
     // A worker that cannot spawn its child cannot take work: the run faults.
     // A retired transport yields no child: the worker exits, faulting the run
     // only when the retirement is fatal.
@@ -131,13 +137,27 @@ fn spawn_bound(ctx: &WorkerContext<'_>, worker: WorkerId) -> Result<SpawnOutcome
 }
 
 /// Winds a worker down when its transport retires. A fatal retirement — a
-/// strict-fill fleet that lost the instances it depends on — faults the run;
-/// a non-fatal one lets the worker thread exit cleanly, leaving the survivors
-/// to drain the queue.
+/// strict-fill fleet that lost the instances it depends on — faults the run
+/// at once. A non-fatal one lets the worker thread exit cleanly, leaving the
+/// survivors to drain the queue; when no survivor remains, the worker's exit
+/// (through [`WorkerExit`]) is what faults the run.
 fn retire_worker(ctx: &WorkerContext<'_>, fatal: bool) {
     if fatal {
-        ctx.coordinator
-            .fault_run(Error::Reported("a fleet worker retired under strict fill".to_string()));
+        ctx.coordinator.fault_run(Error::Reported(
+            "a fleet worker retired under strict fill".to_string(),
+        ));
+    }
+}
+
+/// A worker's liveness registration: its `Drop` records the worker's exit on
+/// the coordinator, whatever return path the worker took.
+struct WorkerExit<'a> {
+    coordinator: &'a Coordinator,
+}
+
+impl Drop for WorkerExit<'_> {
+    fn drop(&mut self) {
+        self.coordinator.worker_exited();
     }
 }
 
