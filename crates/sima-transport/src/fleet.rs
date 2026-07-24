@@ -152,6 +152,16 @@ impl FleetTransport {
         self.settled.notify_all();
     }
 
+    /// The host of the current live target, or `None` while replacing or once
+    /// retired. The parent's account of where this pool's workers currently
+    /// spawn, for diagnostics and for observing a replacement's target swap.
+    pub fn live_host(&self) -> Option<String> {
+        match &*self.lock() {
+            TargetState::Live(target) => Some(target.host.clone()),
+            TargetState::Replacing | TargetState::Retired { .. } => None,
+        }
+    }
+
     /// Blocks while the target is `Replacing`, then resolves to the live
     /// instance to spawn on or the retirement to report.
     fn await_spawnable(&self) -> Spawnable {

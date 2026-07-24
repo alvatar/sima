@@ -15,7 +15,9 @@ use sima_transport::{RemoteTransport, SubprocessTransport};
 
 use crate::config::{LoadedConfig, RemoteConfig};
 use crate::devices;
-use crate::fleet::{acquire_fleet, provider_for, release_all, transport_mode};
+use crate::fleet::{
+    StopSignal, Supervisor, acquire_fleet, provider_for, release_all, transport_mode,
+};
 
 /// Drives the run a loaded config describes: opens the store (creating it
 /// where missing), takes the run's orchestrator lock, dispatches the domain
@@ -78,31 +80,62 @@ pub fn orchestrate(config: &LoadedConfig, control: &RunControl) -> Result<RunOut
     // fleet instance. Worker ids run global and sequential across them. The
     // pools borrow the transports and guards, so they live in an inner scope
     // that ends before teardown.
-    let outcome = {
-        let mut pools: Vec<WorkerPool<'_>> = Vec::new();
-        let local_slots = worker_slots(&execution);
-        if !local_slots.is_empty() {
-            pools.push(WorkerPool {
-                transport: &transport,
-                host: String::new(),
-                slots: local_slots,
-            });
+    let mut pools: Vec<WorkerPool<'_>> = Vec::new();
+    let local_slots = worker_slots(&execution);
+    if !local_slots.is_empty() {
+        pools.push(WorkerPool {
+            transport: &transport,
+            host: String::new(),
+            slots: local_slots,
+        });
+    }
+    for remote in &remotes {
+        pools.push(WorkerPool {
+            transport: &remote.transport,
+            host: remote.host.clone(),
+            slots: remote.slots.clone(),
+        });
+    }
+    for instance in &fleet_instances {
+        pools.push(WorkerPool {
+            transport: &instance.transport,
+            host: instance.host.clone(),
+            slots: instance.slots.clone(),
+        });
+    }
+    // A fleet run drives a supervisor thread alongside the scheduler: it keeps
+    // the fleet within budget and replaces lost instances while the run
+    // proceeds. Both live in one scope so the supervisor borrows the store,
+    // lock, and instances; the scheduler runs on this thread, and the stop
+    // signal winds the supervisor down when it returns.
+    let outcome = match &fleet {
+        Some((provider, _mode, fleet_config)) => {
+            let stop = StopSignal::new();
+            let supervisor = Supervisor::new(
+                provider.as_ref(),
+                &store,
+                &lock,
+                fleet_config,
+                &fleet_instances,
+                control.interrupt,
+            );
+            std::thread::scope(|scope| {
+                let handle = scope.spawn(|| supervisor.run(&stop));
+                let outcome = sima_scheduler::run(
+                    &store,
+                    &config.run,
+                    &domain.environment,
+                    generator.as_ref(),
+                    &pools,
+                    &execution,
+                    control,
+                );
+                stop.raise();
+                handle.join().expect("the supervisor thread joins");
+                outcome
+            })
         }
-        for remote in &remotes {
-            pools.push(WorkerPool {
-                transport: &remote.transport,
-                host: remote.host.clone(),
-                slots: remote.slots.clone(),
-            });
-        }
-        for instance in &fleet_instances {
-            pools.push(WorkerPool {
-                transport: &instance.transport,
-                host: instance.host.clone(),
-                slots: instance.slots.clone(),
-            });
-        }
-        sima_scheduler::run(
+        None => sima_scheduler::run(
             &store,
             &config.run,
             &domain.environment,
@@ -110,8 +143,11 @@ pub fn orchestrate(config: &LoadedConfig, control: &RunControl) -> Result<RunOut
             &pools,
             &execution,
             control,
-        )
+        ),
     };
+    // The pools' borrow of the fleet transports and guards ends here, before
+    // teardown.
+    drop(pools);
     // Guards release explicitly on the success path, surfacing a teardown
     // failure — a machine still running is worth an operator's attention. A run
     // that already faulted keeps its fault; teardown is best-effort, and the

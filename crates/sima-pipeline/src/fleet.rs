@@ -6,8 +6,10 @@
 //! `[fleet]` never reaches here, so it constructs no provider and reads no
 //! `VAST_API_KEY`.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Condvar, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use sima_contracts::DeviceBinding;
 use sima_core::{Error, Result};
@@ -15,7 +17,8 @@ use sima_domains::devices::DeviceInfo;
 use sima_model::FormatId;
 use sima_provider::stub::StubProvider;
 use sima_provider::{
-    AcquireLimits, InstanceGuard, Objective, Offer, OfferId, Price, Provider, SshEndpoint, acquire,
+    AcquireLimits, InstanceGuard, InstanceStatus, Objective, Offer, OfferId, Price, Provider,
+    SshEndpoint, Verdict, acquire, assess,
 };
 use sima_provider_vast::{VastConfig, VastProvider};
 use sima_scheduler::ExecutionConfig;
@@ -33,7 +36,7 @@ use crate::orchestrate::{command_stdout, worker_binary};
 /// here before any store mutation. The `stub` backend is in-process, listing a
 /// generous always-available marketplace so a stub fleet fills its declared
 /// count. An unknown id never reaches here — the config load rejects it.
-pub(crate) fn provider_for(fleet: &FleetConfig) -> Result<Box<dyn Provider>> {
+pub(crate) fn provider_for(fleet: &FleetConfig) -> Result<Box<dyn Provider + Sync>> {
     match fleet.provider {
         FleetProvider::Vast => {
             let config = VastConfig::from_env(&fleet.image, fleet.disk_gb)?;
@@ -74,12 +77,18 @@ const PROBE_ATTEMPTS: u32 = 6;
 /// none).
 pub(crate) struct FleetInstance<'a> {
     /// Ownership of the rented instance; its teardown runs on release or drop.
-    pub(crate) guard: InstanceGuard<'a, dyn Provider + 'a>,
-    /// The transport spawning this instance's workers.
+    /// Behind a lock and an `Option` so the supervisor can swap in a
+    /// replacement without disturbing the pool's shared borrow of the
+    /// transport; `None` once the guard has been released or the instance has
+    /// retired with no replacement.
+    pub(crate) guard: Mutex<Option<InstanceGuard<'a, dyn Provider + Sync + 'a>>>,
+    /// The transport spawning this instance's workers, its target swappable
+    /// under the running pool.
     pub(crate) transport: FleetTransport,
     /// The instance's host label, for the journal.
     pub(crate) host: String,
-    /// One slot per enumerated GPU, or a single deviceless slot.
+    /// One slot per enumerated GPU, or a single deviceless slot. Fixed for the
+    /// run: a replacement must carry at least this many GPUs.
     pub(crate) slots: Vec<Option<DeviceBinding>>,
 }
 
@@ -93,7 +102,7 @@ pub(crate) struct FleetInstance<'a> {
 /// proceeds with what came up, so long as one instance did.
 pub(crate) fn acquire_fleet<'a>(
     fleet: &FleetConfig,
-    provider: &'a dyn Provider,
+    provider: &'a (dyn Provider + Sync),
     store: &'a Store,
     lock: &RunLock,
     mode: &FleetMode,
@@ -133,7 +142,7 @@ pub(crate) fn acquire_fleet<'a>(
 /// half-acquired instance leaks.
 #[allow(clippy::too_many_arguments)]
 fn acquire_one<'a>(
-    provider: &'a dyn Provider,
+    provider: &'a (dyn Provider + Sync),
     store: &'a Store,
     lock: &RunLock,
     fleet: &FleetConfig,
@@ -142,7 +151,9 @@ fn acquire_one<'a>(
     format: &FormatId,
     exec: &ExecutionConfig,
 ) -> Result<FleetInstance<'a>> {
-    let guard = acquire(
+    // Pin the trait object to `Sync`, which the supervisor thread's shared
+    // borrow of the provider needs; without it inference drops the bound.
+    let guard = acquire::<dyn Provider + Sync>(
         provider,
         store,
         lock,
@@ -164,7 +175,7 @@ fn acquire_one<'a>(
         exec.checkpoint_interval_steps,
     );
     Ok(FleetInstance {
-        guard,
+        guard: Mutex::new(Some(guard)),
         transport,
         host,
         slots,
@@ -223,8 +234,14 @@ pub(crate) fn release_all(instances: Vec<FleetInstance<'_>>) -> Result<()> {
     let mut first: Option<Error> = None;
     for instance in instances {
         // The transport drops with the instance; only the guard's teardown can
-        // fail and is worth reporting.
-        if let Err(error) = instance.guard.release()
+        // fail and is worth reporting. A `None` guard was already released by a
+        // replacement, or retired with none, so there is nothing to tear down.
+        let guard = instance
+            .guard
+            .into_inner()
+            .expect("the fleet guard lock is never poisoned");
+        if let Some(guard) = guard
+            && let Err(error) = guard.release()
             && first.is_none()
         {
             first = Some(error);
@@ -233,6 +250,237 @@ pub(crate) fn release_all(instances: Vec<FleetInstance<'_>>) -> Result<()> {
     match first {
         Some(error) => Err(error),
         None => Ok(()),
+    }
+}
+
+/// The supervisor's heartbeat period. The fleet's health is a low-frequency
+/// concern and the poll is cheap, so a fixed period suffices; no config knob.
+const HEARTBEAT: Duration = Duration::from_secs(10);
+
+/// Milliseconds since the epoch, the clock the budget ledger is stamped in.
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// The stop signal the orchestrator raises when the scheduler returns, waking
+/// the supervisor from its heartbeat wait at once rather than at the next tick.
+pub(crate) struct StopSignal {
+    stopped: Mutex<bool>,
+    changed: Condvar,
+}
+
+impl StopSignal {
+    pub(crate) fn new() -> StopSignal {
+        StopSignal {
+            stopped: Mutex::new(false),
+            changed: Condvar::new(),
+        }
+    }
+
+    /// Raises the signal, waking a supervisor parked in [`StopSignal::wait`].
+    pub(crate) fn raise(&self) {
+        *self
+            .stopped
+            .lock()
+            .expect("the stop lock is never poisoned") = true;
+        self.changed.notify_all();
+    }
+
+    /// Waits up to `timeout` for the signal, returning whether it is raised.
+    fn wait(&self, timeout: Duration) -> bool {
+        let stopped = self
+            .stopped
+            .lock()
+            .expect("the stop lock is never poisoned");
+        if *stopped {
+            return true;
+        }
+        let (stopped, _) = self
+            .changed
+            .wait_timeout(stopped, timeout)
+            .expect("the stop lock is never poisoned");
+        *stopped
+    }
+}
+
+/// The fleet supervisor: one thread that, each heartbeat, assesses the run's
+/// budget and polls each instance's health.
+///
+/// Budget exhaustion sets the interrupt flag SIGINT sets, so the run winds down
+/// gracefully and the guards tear the fleet down. An instance polled `Gone` is
+/// replaced: its record is closed out, a replacement is acquired under the same
+/// constraints (raised to the slots in use), and the transport's target swaps,
+/// so the worker loop's existing respawn lands on the new machine. A
+/// replacement that cannot be made retires the transport — fatally under strict
+/// fill, a clean degradation under best-effort.
+pub(crate) struct Supervisor<'a, 'b> {
+    provider: &'a (dyn Provider + Sync),
+    store: &'a Store,
+    lock: &'a RunLock,
+    fleet: &'a FleetConfig,
+    /// The slice borrow is a lifetime of its own, shorter than the instances'
+    /// own `'a`, so the caller can move the `Vec` for teardown once the
+    /// supervisor is done.
+    instances: &'b [FleetInstance<'a>],
+    /// The wind-down flag, shared with the driver and SIGINT. It carries the
+    /// slice's short lifetime, so a caller holding a longer-lived flag passes
+    /// it freely.
+    interrupt: &'b AtomicBool,
+}
+
+impl<'a, 'b> Supervisor<'a, 'b> {
+    pub(crate) fn new(
+        provider: &'a (dyn Provider + Sync),
+        store: &'a Store,
+        lock: &'a RunLock,
+        fleet: &'a FleetConfig,
+        instances: &'b [FleetInstance<'a>],
+        interrupt: &'b AtomicBool,
+    ) -> Supervisor<'a, 'b> {
+        Supervisor {
+            provider,
+            store,
+            lock,
+            fleet,
+            instances,
+            interrupt,
+        }
+    }
+
+    /// Runs the heartbeat loop until `stop` is raised. A panic in a tick must
+    /// not leave a worker blocked in `Replacing`, so a drop guard retires every
+    /// transport as fatal on the way out of an unwinding stack; a clean return
+    /// disarms it.
+    pub(crate) fn run(&self, stop: &StopSignal) {
+        let guard = RetireOnPanic::<'a, 'b> {
+            instances: self.instances,
+            armed: true,
+        };
+        while !stop.wait(HEARTBEAT) {
+            // A tick error is a provider or store failure; the run's own
+            // machinery surfaces failures, so the supervisor logs nothing and
+            // simply tries again next heartbeat.
+            let _ = self.tick(now_ms());
+        }
+        guard.disarm();
+    }
+
+    /// One heartbeat: assess the budget, then each instance's health. Budget
+    /// exhaustion short-circuits the health poll — the whole run is winding
+    /// down. `now_ms` is a parameter so a test can drive exhaustion without
+    /// waiting on the clock.
+    fn tick(&self, now_ms: u64) -> Result<()> {
+        if let Verdict::Exhausted(_) =
+            assess(self.store, self.lock.run(), &self.fleet.budget, now_ms)?
+        {
+            // The same flag SIGINT sets: the run winds down gracefully and the
+            // guards tear the fleet down.
+            self.interrupt.store(true, Ordering::Relaxed);
+            return Ok(());
+        }
+        for instance in self.instances {
+            self.check_instance(instance)?;
+        }
+        Ok(())
+    }
+
+    /// Polls one instance's health, replacing it if the provider reports it
+    /// gone.
+    fn check_instance(&self, instance: &FleetInstance<'a>) -> Result<()> {
+        let id = match &*instance
+            .guard
+            .lock()
+            .expect("the fleet guard lock is never poisoned")
+        {
+            Some(guard) => guard.id().clone(),
+            // Already retired with no replacement: nothing to poll.
+            None => return Ok(()),
+        };
+        match self.provider.instance(&id)? {
+            InstanceStatus::Ready(_) | InstanceStatus::Provisioning => Ok(()),
+            InstanceStatus::Gone => self.replace(instance),
+        }
+    }
+
+    /// Replaces a lost instance: blocks the transport's spawns, closes the dead
+    /// instance out, acquires a replacement, and swaps the target — or retires
+    /// the transport when no replacement can be made.
+    fn replace(&self, instance: &FleetInstance<'a>) -> Result<()> {
+        // Block the pool's spawns while the target is in flux; the worker
+        // threads wait this out rather than spawning against the dead host.
+        instance.transport.mark_replacing();
+        // Close the dead instance out. It is already gone, so a teardown error
+        // just leaves a record for the next reconciliation pass.
+        if let Some(old) = instance
+            .guard
+            .lock()
+            .expect("the fleet guard lock is never poisoned")
+            .take()
+        {
+            let _ = old.release();
+        }
+        // A replacement must carry at least the GPUs the pool's slots bind.
+        let gpu_slots = instance.slots.iter().filter(|slot| slot.is_some()).count() as u32;
+        let mut constraints = self.fleet.constraints.clone();
+        constraints.min_gpu_count = Some(constraints.min_gpu_count.unwrap_or(0).max(gpu_slots));
+        let limits = AcquireLimits {
+            ready_timeout: self.fleet.ready_timeout,
+            ready_poll: self.fleet.ready_poll,
+        };
+        match acquire::<dyn Provider + Sync>(
+            self.provider,
+            self.store,
+            self.lock,
+            &constraints,
+            Objective::CheapestPerHour,
+            &limits,
+            &self.fleet.budget,
+        ) {
+            Ok(new_guard) => {
+                instance
+                    .transport
+                    .swap_to_live(endpoint_target(new_guard.endpoint().clone()));
+                *instance
+                    .guard
+                    .lock()
+                    .expect("the fleet guard lock is never poisoned") = Some(new_guard);
+                Ok(())
+            }
+            Err(_) => {
+                // No replacement: retire. Strict fill faults the run; best-effort
+                // runs on with one fewer pool.
+                let fatal = matches!(self.fleet.fill, FillPolicy::Strict);
+                instance.transport.retire(fatal);
+                Ok(())
+            }
+        }
+    }
+}
+
+/// Retires every fleet transport as fatal if the supervisor unwinds: a worker
+/// blocked in `Replacing` would otherwise wait forever on a target the panicked
+/// supervisor will never swap. A clean supervisor return disarms it.
+struct RetireOnPanic<'a, 'b> {
+    instances: &'b [FleetInstance<'a>],
+    armed: bool,
+}
+
+impl RetireOnPanic<'_, '_> {
+    fn disarm(mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for RetireOnPanic<'_, '_> {
+    fn drop(&mut self) {
+        if self.armed {
+            for instance in self.instances {
+                instance.transport.retire(true);
+            }
+        }
     }
 }
 
@@ -486,6 +734,207 @@ mod tests {
         assert_eq!(target.host, endpoint.host);
         assert_eq!(target.port, endpoint.port);
         assert_eq!(target.user, endpoint.user);
+        Ok(())
+    }
+
+    /// A fleet under `budget` requesting one instance.
+    fn budgeted_fleet(budget: sima_provider::Budget) -> FleetConfig {
+        FleetConfig {
+            budget,
+            ..fleet_config(1, FillPolicy::Strict)
+        }
+    }
+
+    #[test]
+    fn budget_spend_exhaustion_sets_the_interrupt() -> Result<()> {
+        // One rental admitted under a small spend cap; a heartbeat at a far
+        // future time sees its accrual cross the cap and winds the run down.
+        let (_dir, store, run) = acquisition_env();
+        let lock = store.acquire_run_lock(&run)?;
+        let provider = StubProvider::new(vec![offer("a", 100_000)]);
+        let format = FormatId::new("stub.v1")?;
+        let fleet = budgeted_fleet(sima_provider::Budget {
+            max_spend: Some(sima_provider::Cost(50_000)),
+            max_wall_clock: None,
+        });
+        let instances = acquire_fleet(
+            &fleet,
+            &provider,
+            &store,
+            &lock,
+            &deviceless_probe(),
+            &format,
+            &exec(),
+        )?;
+        let interrupt = AtomicBool::new(false);
+        let supervisor = Supervisor::new(&provider, &store, &lock, &fleet, &instances, &interrupt);
+        // A far-future heartbeat: the open rental's accrual is well past the cap.
+        supervisor.tick(u64::MAX)?;
+        assert!(
+            interrupt.load(Ordering::Relaxed),
+            "spend exhaustion interrupts"
+        );
+        release_all(instances)?;
+        Ok(())
+    }
+
+    #[test]
+    fn wall_clock_exhaustion_sets_the_interrupt() -> Result<()> {
+        let (_dir, store, run) = acquisition_env();
+        let lock = store.acquire_run_lock(&run)?;
+        let provider = StubProvider::new(vec![offer("a", 100_000)]);
+        let format = FormatId::new("stub.v1")?;
+        let fleet = budgeted_fleet(sima_provider::Budget {
+            max_spend: None,
+            max_wall_clock: Some(Duration::from_millis(1)),
+        });
+        let instances = acquire_fleet(
+            &fleet,
+            &provider,
+            &store,
+            &lock,
+            &deviceless_probe(),
+            &format,
+            &exec(),
+        )?;
+        let interrupt = AtomicBool::new(false);
+        let supervisor = Supervisor::new(&provider, &store, &lock, &fleet, &instances, &interrupt);
+        supervisor.tick(u64::MAX)?;
+        assert!(
+            interrupt.load(Ordering::Relaxed),
+            "wall-clock exhaustion interrupts"
+        );
+        release_all(instances)?;
+        Ok(())
+    }
+
+    #[test]
+    fn a_healthy_fleet_makes_no_teardown_or_replacement() -> Result<()> {
+        // A heartbeat over a healthy fleet polls status and assesses budget, and
+        // does nothing else: no instance is destroyed, none replaced.
+        let (_dir, store, run) = acquisition_env();
+        let lock = store.acquire_run_lock(&run)?;
+        let provider = StubProvider::new(vec![offer("a", 100_000)]);
+        let format = FormatId::new("stub.v1")?;
+        let fleet = stub_fleet(1);
+        let instances = acquire_fleet(
+            &fleet,
+            &provider,
+            &store,
+            &lock,
+            &deviceless_probe(),
+            &format,
+            &exec(),
+        )?;
+        let live_before = provider.live();
+        let interrupt = AtomicBool::new(false);
+        let supervisor = Supervisor::new(&provider, &store, &lock, &fleet, &instances, &interrupt);
+        supervisor.tick(now_ms())?;
+        assert!(
+            !interrupt.load(Ordering::Relaxed),
+            "a healthy fleet is not interrupted"
+        );
+        assert!(provider.destroyed().is_empty(), "no instance is torn down");
+        assert_eq!(provider.live(), live_before, "no instance is replaced");
+        release_all(instances)?;
+        Ok(())
+    }
+
+    #[test]
+    fn a_lost_instance_is_replaced_and_the_target_swaps() -> Result<()> {
+        // Two offers, one instance: the acquired instance is killed on the
+        // provider side, and a heartbeat replaces it — the dead one torn down, a
+        // new one acquired, and the transport target swapped to the new host.
+        let (_dir, store, run) = acquisition_env();
+        let lock = store.acquire_run_lock(&run)?;
+        let provider = StubProvider::new(vec![offer("a", 100_000), offer("b", 200_000)]);
+        let format = FormatId::new("stub.v1")?;
+        let fleet = stub_fleet(1);
+        let instances = acquire_fleet(
+            &fleet,
+            &provider,
+            &store,
+            &lock,
+            &deviceless_probe(),
+            &format,
+            &exec(),
+        )?;
+        let original_host = instances[0].transport.live_host().expect("a live host");
+        // Kill the instance on the provider side: its next status is Gone.
+        let dead_id = instances[0]
+            .guard
+            .lock()
+            .expect("the fleet guard lock is never poisoned")
+            .as_ref()
+            .expect("a live guard")
+            .id()
+            .clone();
+        provider.destroy(&dead_id)?;
+
+        let interrupt = AtomicBool::new(false);
+        let supervisor = Supervisor::new(&provider, &store, &lock, &fleet, &instances, &interrupt);
+        supervisor.tick(now_ms())?;
+
+        // The transport now points at a different, live host, and a fresh
+        // instance is running.
+        let new_host = instances[0]
+            .transport
+            .live_host()
+            .expect("a live host after replacement");
+        assert_ne!(
+            new_host, original_host,
+            "the target swapped to the replacement"
+        );
+        assert_eq!(
+            provider.live().len(),
+            1,
+            "exactly one instance runs after replacement"
+        );
+        release_all(instances)?;
+        assert!(
+            provider.live().is_empty(),
+            "release tears the replacement down"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_replacement_that_cannot_be_made_retires_the_transport() -> Result<()> {
+        // One offer, one instance, killed on the provider side: no offer remains
+        // for a replacement, so the transport retires and points at no host.
+        let (_dir, store, run) = acquisition_env();
+        let lock = store.acquire_run_lock(&run)?;
+        let provider = StubProvider::new(vec![offer("a", 100_000)]);
+        let format = FormatId::new("stub.v1")?;
+        let fleet = fleet_config(1, FillPolicy::Strict);
+        let instances = acquire_fleet(
+            &fleet,
+            &provider,
+            &store,
+            &lock,
+            &deviceless_probe(),
+            &format,
+            &exec(),
+        )?;
+        let dead_id = instances[0]
+            .guard
+            .lock()
+            .expect("the fleet guard lock is never poisoned")
+            .as_ref()
+            .expect("a live guard")
+            .id()
+            .clone();
+        provider.destroy(&dead_id)?;
+
+        let interrupt = AtomicBool::new(false);
+        let supervisor = Supervisor::new(&provider, &store, &lock, &fleet, &instances, &interrupt);
+        supervisor.tick(now_ms())?;
+
+        assert!(
+            instances[0].transport.live_host().is_none(),
+            "a transport with no replacement retires"
+        );
+        release_all(instances)?;
         Ok(())
     }
 }
