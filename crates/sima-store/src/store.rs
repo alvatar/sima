@@ -58,7 +58,15 @@ mod tests {
         Store::open(dir.path())?;
         // The skeleton directories, pinned by name — the disk layout is a
         // fixed contract.
-        for sub in ["objects", "tmp", "tasks", "runs", "instances", "spend", "machines"] {
+        for sub in [
+            "objects",
+            "tmp",
+            "tasks",
+            "runs",
+            "instances",
+            "spend",
+            "machines",
+        ] {
             assert!(dir.path().join(sub).is_dir(), "missing skeleton dir {sub}");
         }
         Ok(())

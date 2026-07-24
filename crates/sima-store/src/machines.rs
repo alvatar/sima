@@ -277,7 +277,10 @@ mod tests {
         let Err(Error::Corruption(msg)) = listed else {
             panic!("a malformed incident must be corruption, got {listed:?}");
         };
-        assert!(msg.contains("sima-bad-9"), "corruption names the file: {msg}");
+        assert!(
+            msg.contains("sima-bad-9"),
+            "corruption names the file: {msg}"
+        );
         Ok(())
     }
 

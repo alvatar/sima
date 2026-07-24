@@ -19,7 +19,7 @@ use crate::guard::{InstanceGuard, teardown};
 use crate::offer::{Constraints, Objective, Offer, select};
 use crate::provider::{Instance, InstanceStatus, Provider, Provision, SshEndpoint};
 use crate::reconcile::reconcile;
-use crate::reputation::{IncidentKind, record_incident};
+use crate::reputation::{IncidentKind, excluded_machines, record_incident};
 
 /// Bounds on waiting for a provisioned instance to become ready.
 #[derive(Debug, Clone, Copy)]
@@ -91,7 +91,14 @@ pub fn acquire<'a, P: Provider + ?Sized>(
     reconcile(provider, store)?;
     // An exhausted budget refuses before the marketplace is even listed.
     admit(store, owner, budget)?;
-    let ranked = select(provider.offers()?, constraints, objective);
+    // Every offer selection, initial and every supervisor replacement, flows
+    // through here, so deriving the excluded set once before `select` covers
+    // both. The set is computed from the incident ledger, never stored.
+    let mut constraints = constraints.clone();
+    constraints
+        .excluded_machines
+        .extend(excluded_machines(store, provider.id())?);
+    let ranked = select(provider.offers()?, &constraints, objective);
     if ranked.is_empty() {
         return Err(Error::Provider(format!(
             "no offer satisfies the constraints {constraints:?}"
@@ -313,7 +320,9 @@ mod tests {
 
     use sima_core::{Error, Result};
     use sima_model::RunId;
-    use sima_store::{InstanceRecord, InstanceRecordState, SpendEntry, Store};
+    use sima_store::{
+        IncidentKind, InstanceRecord, InstanceRecordState, MachineIncident, SpendEntry, Store,
+    };
 
     use super::{AcquireLimits, Ordering, acquire, attempt_tag};
     use crate::budget::{Budget, Cost};
@@ -617,6 +626,123 @@ mod tests {
             never_cancelled(),
         )?;
         assert!(store.machine_incidents()?.is_empty());
+        Ok(())
+    }
+
+    /// Records `count` `Lost` incidents against `machine` under `provider`.
+    fn strike(store: &Store, provider: &str, machine: &str, count: usize) {
+        for n in 0..count {
+            store
+                .put_machine_incident(&MachineIncident {
+                    provider: provider.to_string(),
+                    machine: machine.to_string(),
+                    kind: IncidentKind::Lost,
+                    tag: format!("sima-strike-{n}"),
+                    occurred_ms: n as u64,
+                })
+                .expect("record a strike");
+        }
+    }
+
+    #[test]
+    fn a_machine_with_two_incidents_is_excluded_and_the_next_offer_taken() -> Result<()> {
+        let (_dir, store) = temp_store();
+        // The cheapest offer's machine already holds two strikes.
+        strike(&store, "stub", "m-cheap", 2);
+        let stub = StubProvider::new(vec![
+            stub_offer("cheap", 100_000),
+            stub_offer("dearer", 200_000),
+        ]);
+        let guard = acquire_any(&stub, &store)?;
+        let records = store.instances()?;
+        assert_eq!(records.len(), 1);
+        // The blacklisted machine was skipped for the dearer, clean one; the
+        // cheapest offer was never even provisioned.
+        assert_eq!(records[0].machine, "m-dearer");
+        assert_eq!(records[0].price_micro_usd_hour, 200_000);
+        assert_eq!(records[0].tag, guard.tag());
+        assert!(stub.destroyed().is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn a_machine_with_one_incident_is_still_rented() -> Result<()> {
+        let (_dir, store) = temp_store();
+        // One strike is below the threshold: the cheapest machine is tolerated.
+        strike(&store, "stub", "m-cheap", 1);
+        let stub = StubProvider::new(vec![
+            stub_offer("cheap", 100_000),
+            stub_offer("dearer", 200_000),
+        ]);
+        let guard = acquire_any(&stub, &store)?;
+        assert_eq!(store.instances()?[0].machine, "m-cheap");
+        assert_eq!(guard.machine(), "m-cheap");
+        Ok(())
+    }
+
+    #[test]
+    fn two_incidents_under_a_different_provider_exclude_nothing() -> Result<()> {
+        let (_dir, store) = temp_store();
+        // The strikes are another provider's; the stub's cheapest is untouched.
+        strike(&store, "vastai", "m-cheap", 2);
+        let stub = StubProvider::new(vec![
+            stub_offer("cheap", 100_000),
+            stub_offer("dearer", 200_000),
+        ]);
+        let guard = acquire_any(&stub, &store)?;
+        assert_eq!(store.instances()?[0].machine, "m-cheap");
+        assert_eq!(guard.machine(), "m-cheap");
+        Ok(())
+    }
+
+    #[test]
+    fn a_machine_that_keeps_failing_is_refused_once_it_has_two_strikes() -> Result<()> {
+        // The end-to-end shape: a physical machine relisted across three
+        // acquisitions records a strike each time it never comes up, and is
+        // refused the third time — recorded, derived, and excluded through
+        // `acquire` alone.
+        let (_dir, store) = temp_store();
+        let limits = AcquireLimits {
+            ready_timeout: Duration::ZERO,
+            ready_poll: Duration::ZERO,
+        };
+        // One flaky offer sharing the machine `m-flaky` and a distinct clean
+        // fallback per round, as a marketplace relisting one machine looks.
+        let round = |flaky_id: &str, clean_id: &str| -> StubProvider {
+            let flaky = Offer {
+                machine: "m-flaky".to_string(),
+                ..stub_offer(flaky_id, 100_000)
+            };
+            StubProvider::new(vec![flaky.clone(), stub_offer(clean_id, 200_000)])
+                .never_ready(flaky.id.clone())
+        };
+        let rent = |stub: &StubProvider| -> Result<InstanceRecord> {
+            let lock = store.acquire_run_lock(&sample_run(7))?;
+            let guard = acquire(
+                stub,
+                &store,
+                &lock,
+                &Constraints::default(),
+                Objective::CheapestPerHour,
+                &limits,
+                &Budget::default(),
+                never_cancelled(),
+            )?;
+            Ok(store
+                .instance(guard.tag())?
+                .expect("the rented record's tag"))
+        };
+        let stub1 = round("f1", "c1");
+        let stub2 = round("f2", "c2");
+        let stub3 = round("f3", "c3");
+        // The first two rounds each rent the clean fallback and leave a strike.
+        assert_eq!(rent(&stub1)?.machine, "m-c1");
+        assert_eq!(rent(&stub2)?.machine, "m-c2");
+        assert_eq!(store.machine_incidents()?.len(), 2);
+        // The third round finds `m-flaky` blacklisted: its offer is never
+        // provisioned, so the clean fallback is taken and no strike is added.
+        assert_eq!(rent(&stub3)?.machine, "m-c3");
+        assert_eq!(store.machine_incidents()?.len(), 2);
         Ok(())
     }
 

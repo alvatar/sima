@@ -79,6 +79,12 @@ pub struct Constraints {
     pub min_disk_gb: Option<u64>,
     /// Least downlink bandwidth, in megabits per second.
     pub min_bandwidth_mbps: Option<u64>,
+    /// Provider-scoped machine identifiers to disqualify. An offer whose
+    /// non-empty `machine` is listed is disqualified; the empty machine never
+    /// matches, so a machine with no identity is never excluded. Acquisition
+    /// fills this from the reputation ledger. An empty list disqualifies
+    /// nothing, which is what the default states.
+    pub excluded_machines: Vec<String>,
 }
 
 /// The single scalar ranking over qualifying offers.
@@ -112,6 +118,11 @@ fn qualifies(offer: &Offer, constraints: &Constraints) -> bool {
         return false;
     }
     if constraints.verified_only && !offer.verified {
+        return false;
+    }
+    // A machine with a pattern of operational failures is disqualified; a
+    // machine with no identity carries an empty string and never matches.
+    if !offer.machine.is_empty() && constraints.excluded_machines.contains(&offer.machine) {
         return false;
     }
     let minimums = [
@@ -391,6 +402,27 @@ mod tests {
             ranked(offers, &Constraints::default()),
             vec!["cheap-a", "cheap-b", "dear"]
         );
+    }
+
+    #[test]
+    fn an_excluded_machine_is_disqualified_and_the_empty_machine_never_matches() {
+        let offers = vec![
+            offer("bad"),
+            Offer {
+                machine: String::new(),
+                ..offer("anonymous")
+            },
+            offer("good"),
+        ];
+        let constraints = Constraints {
+            // The bad machine and, pointlessly, the empty string are listed.
+            excluded_machines: vec!["m-bad".to_string(), String::new()],
+            ..Constraints::default()
+        };
+        let ids = ranked(offers, &constraints);
+        // The listed machine is out; the machine with no identity is admitted
+        // even though the empty string is "listed", because it never matches.
+        assert_eq!(ids, vec!["anonymous", "good"]);
     }
 
     #[test]

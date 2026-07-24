@@ -557,6 +557,9 @@ fn resolve_fleet(path: &Path, section: Option<FleetSection>) -> Result<Option<Fl
         verified_only: constraints_section.verified_only,
         min_disk_gb: constraints_section.min_disk_gb,
         min_bandwidth_mbps: constraints_section.min_bandwidth_mbps,
+        // The excluded set is not configured: acquisition derives it from the
+        // reputation ledger at each attempt.
+        excluded_machines: Vec::new(),
     };
 
     let budget = match section.budget {
