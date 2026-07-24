@@ -66,7 +66,7 @@ fn a_fatal_retirement_faults_the_run() -> Result<()> {
         slots: one_slot(),
     }];
     match run_pools(&store, &cfg, &exec(1, 3, 1_000), &pools) {
-        Err(Error::Reported(msg)) => {
+        Err(Error::Transport(msg)) => {
             assert!(msg.contains("strict fill"), "names the cause: {msg}");
         }
         other => panic!("expected a strict-fill fault, got {other:?}"),
@@ -124,9 +124,9 @@ fn the_last_worker_retiring_faults_rather_than_hangs() -> Result<()> {
         slots: one_slot(),
     }];
     match run_pools(&store, &cfg, &exec(1, 3, 1_000), &pools) {
-        Err(Error::Reported(msg)) => {
+        Err(Error::Transport(msg)) => {
             assert!(
-                msg.contains("every fleet worker retired"),
+                msg.contains("every worker retired"),
                 "names the cause: {msg}"
             );
         }

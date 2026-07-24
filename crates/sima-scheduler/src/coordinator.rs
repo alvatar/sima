@@ -358,8 +358,8 @@ impl Coordinator {
         let mut shared = self.lock();
         shared.live_workers = shared.live_workers.saturating_sub(1);
         if shared.live_workers == 0 && matches!(shared.state, RunState::Running) {
-            shared.state = RunState::Fault(Error::Reported(
-                "every fleet worker retired with work still pending".to_string(),
+            shared.state = RunState::Fault(Error::Transport(
+                "every worker retired with work still pending".to_string(),
             ));
         }
         self.state_changed.notify_all();

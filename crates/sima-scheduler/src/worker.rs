@@ -143,8 +143,8 @@ fn spawn_bound(ctx: &WorkerContext<'_>, worker: WorkerId) -> Result<SpawnOutcome
 /// (through [`WorkerExit`]) is what faults the run.
 fn retire_worker(ctx: &WorkerContext<'_>, fatal: bool) {
     if fatal {
-        ctx.coordinator.fault_run(Error::Reported(
-            "a fleet worker retired under strict fill".to_string(),
+        ctx.coordinator.fault_run(Error::Transport(
+            "the worker's transport retired under strict fill".to_string(),
         ));
     }
 }
