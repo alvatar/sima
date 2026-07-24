@@ -424,10 +424,14 @@ fn process(
             }
             LinkEvent::Fault(message) => {
                 // An infrastructure fault from the executor (e.g. a
-                // structurally invalid spec) fails the whole run, distinct
-                // from a candidate that merely evaluated badly. The wire
-                // flattens the executor's error to its rendered message.
-                task_fault(ctx, task, attempt, key, Error::Validation(message));
+                // structurally invalid spec, a lost device) fails the whole
+                // run, distinct from a candidate that merely evaluated badly.
+                // The child already rendered its error's classification into
+                // the message via `Display`; the parent carries it verbatim as
+                // `Reported`, because the classification belongs to the machine
+                // that failed — re-wrapping it here would report a local
+                // judgement of a remote fact.
+                task_fault(ctx, task, attempt, key, Error::Reported(message));
                 return ChildState::Alive;
             }
             LinkEvent::Died(death) => {
@@ -792,13 +796,141 @@ mod tests {
     fn a_missing_input_state_object_is_a_fault() -> Result<()> {
         let run = run_process(b"never stored", false)?;
         assert!(run.store.record(&run.identity.key())?.is_none());
-        assert!(matches!(run.coordinator.lock().state, RunState::Fault(_)));
+        // A local (non-wire) fault keeps the store's own classification: the
+        // absent object surfaces as `MissingObject`, never flattened to a
+        // carried-verbatim `Reported`, which is reserved for the wire path.
+        match &run.coordinator.lock().state {
+            RunState::Fault(Error::MissingObject(_)) => {}
+            RunState::Fault(e) => panic!("expected a MissingObject fault, got {e}"),
+            _ => panic!("expected the run to fault"),
+        }
         assert!(
             run.events
                 .iter()
                 .any(|e| matches!(e, Event::Faulted { .. })),
             "the load failure emits a Faulted event"
         );
+        Ok(())
+    }
+
+    /// A worker link that delivers one scripted `LinkEvent::Fault`, modelling a
+    /// child that rendered its executor error to the wire and sent it as the
+    /// terminal frame. Every other method is inert: the fault settles the
+    /// attempt on the first `next`.
+    struct FaultLink {
+        message: Option<String>,
+    }
+
+    impl WorkerLink for FaultLink {
+        fn device_name(&self) -> &str {
+            ""
+        }
+
+        fn driver(&self) -> &str {
+            ""
+        }
+
+        fn assign(&mut self, _assignment: &Assignment) -> Result<()> {
+            Ok(())
+        }
+
+        fn next(&mut self, _deadline: Option<Instant>) -> Result<LinkEvent> {
+            Ok(LinkEvent::Fault(
+                self.message.take().expect("one scripted fault"),
+            ))
+        }
+
+        fn kill(&mut self) {}
+    }
+
+    #[test]
+    fn a_wire_fault_carries_the_far_side_classification_verbatim() -> Result<()> {
+        // The child renders its executor error to the wire via `Display`, so a
+        // device fault crosses as "gpu error: device lost". The parent must
+        // surface that rendering verbatim, never re-wrap it under a local
+        // classification ("validation error: ..."), which is f_008.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let store = Store::open(dir.path()).expect("open store");
+        let params = Params { bytes: vec![9] };
+        store.put(&params.to_bytes())?;
+        let environment = EnvironmentId::from_hash(store.put(b"unit-test environment")?);
+        let spec = Spec {
+            format: FormatId::new("stub.v1")?,
+            bytes: StubProgram {
+                behavior: StubBehavior::Succeed,
+                nonce: 1,
+            }
+            .to_bytes(),
+        };
+        let spec_id = SpecId::from_hash(store.put(&spec.to_bytes())?);
+        // No input state, so `process` reaches the link without a store load.
+        let identity = TaskIdentity {
+            spec: spec_id,
+            params: params.id(),
+            seed: 1,
+            environment,
+            input_state: None,
+        };
+        let config = RunConfig {
+            root_seed: 0,
+            segments: None,
+            format: FormatId::new("stub.v1")?,
+            generator: GeneratorConfig {
+                id: GeneratorId::new("stub.v1")?,
+                params: Vec::new(),
+            },
+            params,
+        };
+        let run = store.create_run(&config)?;
+        let exec = ExecutionConfig::new(1, 1, Duration::from_secs(5), Duration::MAX, None)?;
+        let coordinator = Coordinator::new();
+        let key = identity.key();
+        coordinator.lock().leases.insert(key);
+        let (tx, rx) = mpsc::channel();
+        {
+            // The transport field is required by the context but never used:
+            // `process` drives the link it is handed.
+            let transport = stub_transport(&exec);
+            let ctx = WorkerContext {
+                coordinator: &coordinator,
+                store: &store,
+                run,
+                config: &config,
+                transport: &transport,
+                host: String::new(),
+                exec: &exec,
+                device: None,
+                events: Emitter::from(tx),
+            };
+            let pending = Pending {
+                key,
+                task: RunnableTask {
+                    spec,
+                    identity,
+                    chain: None,
+                },
+                attempt: 0,
+            };
+            let mut link = FaultLink {
+                message: Some("gpu error: device lost".to_string()),
+            };
+            process(&ctx, WorkerId(0), pending, &mut link);
+        }
+        // The run faulted, and the fault renders exactly as the far side did.
+        match &coordinator.lock().state {
+            RunState::Fault(e) => assert_eq!(e.to_string(), "gpu error: device lost"),
+            _ => panic!("expected the run to fault"),
+        }
+        // The `Faulted` event carries the same verbatim rendering.
+        let events: Vec<Event> = rx.into_iter().collect();
+        let faulted = events
+            .iter()
+            .find_map(|e| match e {
+                Event::Faulted { error, .. } => Some(error.clone()),
+                _ => None,
+            })
+            .expect("a Faulted event");
+        assert_eq!(faulted, "gpu error: device lost");
         Ok(())
     }
 
