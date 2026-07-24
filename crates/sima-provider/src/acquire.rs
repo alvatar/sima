@@ -108,6 +108,9 @@ pub fn acquire<'a, P: Provider + ?Sized>(
             None,
             created_ms,
         ))?;
+        // A death here leaves an intent record naming a tag no machine yet
+        // carries: reconcile clears it, and nothing leaks.
+        sima_core::crashpoint("provider.intent-written");
         let instance = match provider.provision(&offer.id, &tag) {
             Ok(Provision::Provisioned(instance)) => instance,
             // The offer went to another renter: the next-ranked one is the
@@ -124,6 +127,10 @@ pub fn acquire<'a, P: Provider + ?Sized>(
             // that machine unreachable.
             Err(e) => return Err(e),
         };
+        // A death here leaves an intent record while a machine carrying its tag
+        // exists: reconcile matches the tag and destroys the untracked
+        // instance, so nothing leaks.
+        sima_core::crashpoint("provider.provisioned");
         store.put_instance(&record(
             &tag,
             provider.id(),

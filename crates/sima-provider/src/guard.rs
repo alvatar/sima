@@ -133,6 +133,10 @@ pub(crate) fn teardown<P: Provider + ?Sized>(
     listed: Option<Price>,
 ) -> Result<()> {
     provider.destroy(id)?;
+    // A death here leaves a destroyed machine with its record still standing:
+    // reconcile re-runs the close-out under the same key, so the ledger holds
+    // exactly one entry and the machine is never double-charged.
+    sima_core::crashpoint("provider.destroyed");
     match store.instance(tag)? {
         Some(record) => close_out(store, &record, listed),
         None => Ok(()),
@@ -170,6 +174,10 @@ pub(crate) fn close_out(
         ended_ms,
         cost_micro_usd: Cost::accrued(rate, elapsed_ms).0,
     })?;
+    // A death here leaves the entry written and the record uncleared: the
+    // re-run's close-out overwrites the entry under the same (tag, stamp) key
+    // rather than adding a second, so the ledger still holds exactly one.
+    sima_core::crashpoint("provider.entry-written");
     store.remove_instance(&record.tag)
 }
 

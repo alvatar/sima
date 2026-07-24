@@ -6,7 +6,7 @@ edition.workspace = true
 [features]
 # Forwards crash-injection to the domains layer so the stub's planted point
 # can be armed by a test harness driving the pipeline.
-crash-injection = ["sima-domains/crash-injection"]
+crash-injection = ["sima-domains/crash-injection", "sima-provider/crash-injection"]
 
 [dependencies]
 sima-core = { path = "../sima-core" }

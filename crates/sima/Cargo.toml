@@ -10,6 +10,7 @@ crash-injection = [
     "sima-store/crash-injection",
     "sima-scheduler/crash-injection",
     "sima-pipeline/crash-injection",
+    "sima-provider/crash-injection",
 ]
 
 [dependencies]

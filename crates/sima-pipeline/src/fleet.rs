@@ -379,6 +379,13 @@ impl<'a, 'b> Supervisor<'a, 'b> {
             // simply tries again next heartbeat.
             let _ = self.tick(now_ms());
         }
+        // Drop the emitter clone as the run winds down: the run's collector
+        // joins only once every emitter is dropped, so a clone held past the
+        // run would block its shutdown.
+        *self
+            .emitter
+            .lock()
+            .expect("the emitter lock is never poisoned") = None;
         guard.disarm();
     }
 

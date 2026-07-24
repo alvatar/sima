@@ -435,3 +435,99 @@ fn every_crashpoint_death_resumes_to_the_reference_manifest() {
         );
     }
 }
+
+/// A stub-fleet config: a local pool plus one stub-provider instance, so a run
+/// exercises the provider's acquisition and teardown close-out windows.
+fn write_fleet_config(dir: &Path, name: &str, store: &str) -> PathBuf {
+    let text = format!(
+        r#"
+        [run]
+        root_seed = 11
+        format = "stub.v1"
+
+        [run.generator]
+        id = "stub.v1"
+        behaviors = [{BEHAVIORS}]
+
+        [execution]
+        store = "{store}"
+        workers = 1
+        max_attempts = 3
+
+        [fleet]
+        provider = "stub"
+        count = 1
+    "#
+    );
+    common::write_config_text(dir, name, &text)
+}
+
+/// A death at each provider close-out window leaves a store that recovers: the
+/// unarmed re-run finalizes over the same store, and no rental is charged
+/// twice.
+///
+/// The stub provider is in-process, so a crash takes its market with it: the
+/// crashed attempt's ledger record survives, but reconcile keeps a run's own
+/// records while it holds the lock, so the re-run legitimately does not clear
+/// it — a separate lock-free reconcile does, which an in-process stub has no
+/// cross-process backend for. What this asserts end-to-end is that each window
+/// fires, the run recovers, and the ledger never double-charges a rental; the
+/// reconcile pass that clears the survivor is covered in the provider crate.
+#[test]
+fn a_provider_crash_recovers_without_double_charging() {
+    for arming in [
+        "provider.intent-written",
+        "provider.provisioned",
+        "provider.destroyed",
+        "provider.entry-written",
+    ] {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let slug = arming.replace('.', "-");
+        let config = write_fleet_config(
+            dir.path(),
+            &format!("{slug}.toml"),
+            &format!("./store-{slug}"),
+        );
+
+        // Armed: the orchestrator dies by SIGKILL at the window.
+        let status = sima_run(&config, Some(arming));
+        assert_eq!(
+            status.signal(),
+            Some(9),
+            "{arming}: the armed run dies by SIGKILL, got {status:?}"
+        );
+
+        // Unarmed re-run: the run recovers and finalizes despite the crashed
+        // attempt's record still standing.
+        assert_eq!(
+            sima_run(&config, None).code(),
+            Some(0),
+            "{arming}: the re-run finalizes"
+        );
+        assert!(
+            manifest_of(&config).is_some(),
+            "{arming}: a manifest is written"
+        );
+
+        // No rental is charged twice — the spend ledger keys each rental by its
+        // tag and stamp, and a re-close overwrites under that key rather than
+        // adding a second charge.
+        let loaded = load(&config).expect("load config");
+        let store = Store::open(&loaded.store).expect("open store");
+        let entries = store
+            .spend_entries(&loaded.run.id().to_string())
+            .expect("spend entries");
+        let mut keys: Vec<(String, u64)> = entries
+            .iter()
+            .map(|entry| (entry.tag.clone(), entry.started_ms))
+            .collect();
+        let total = keys.len();
+        keys.sort();
+        keys.dedup();
+        assert_eq!(
+            keys.len(),
+            total,
+            "{arming}: a rental appears twice in the ledger"
+        );
+    }
+}

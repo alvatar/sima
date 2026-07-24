@@ -121,8 +121,26 @@ pub fn orchestrate(config: &LoadedConfig, control: &RunControl) -> Result<RunOut
             let on_start = |e: sima_trace::Emitter| {
                 *emitter.lock().expect("the emitter lock is never poisoned") = Some(e);
             };
+            // Wrap the caller's observer to stop the supervisor the moment the
+            // run reaches a terminal event: the supervisor then drops its
+            // emitter clone, so the run's collector — which joins only once
+            // every emitter is dropped — can shut down. A fault emits no
+            // run-level event, so `Faulted` is a stop trigger too.
+            let caller_observer = control.observer;
+            let stopper = |record: &sima_trace::Record| {
+                (caller_observer)(record);
+                if matches!(
+                    record.event,
+                    sima_trace::Event::RunFinalized { .. }
+                        | sima_trace::Event::RunFailed { .. }
+                        | sima_trace::Event::RunInterrupted { .. }
+                        | sima_trace::Event::Faulted { .. }
+                ) {
+                    stop.raise();
+                }
+            };
             let control = RunControl {
-                observer: control.observer,
+                observer: &stopper,
                 interrupt: control.interrupt,
                 on_start: Some(&on_start),
             };
