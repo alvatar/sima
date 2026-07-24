@@ -4,10 +4,10 @@ use std::sync::atomic::AtomicBool;
 
 use sima_trace::{Emitter, Observer};
 
-/// A hook invoked once, on the collector thread, with a clone of the run's
-/// emitter as the run starts. It carries the emitter to a caller that emits
-/// alongside the run — the fleet supervisor — without a scheduler edge to that
-/// caller: the closure is opaque.
+/// A hook invoked once, on the driver thread, with a clone of the run's
+/// emitter as the run starts — immediately after the collector spawns. It
+/// carries the emitter to a caller that emits alongside the run — the fleet
+/// supervisor — without a scheduler edge to that caller: the closure is opaque.
 pub type StartHook<'a> = &'a (dyn Fn(Emitter) + Send + Sync);
 
 /// The caller's handles into a running search: an observer invoked with

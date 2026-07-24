@@ -1,6 +1,12 @@
 //! The parent-side transport seam: [`WorkerTransport`] spawns workers,
 //! [`WorkerLink`] converses with one.
 //!
+//! A spawn resolves to one of three outcomes: a live [`WorkerLink`] to
+//! converse with, a [`SpawnOutcome::Retired`] when a fleet transport's
+//! instances are gone with no replacement, or an `Err` — an infrastructure
+//! spawn failure the caller faults on. The retirement is a spawn-time channel
+//! distinct from the conversation's [`LinkEvent`] outcomes below.
+//!
 //! The seam exists so the scheduler's worker loop is written against traits
 //! the tests can implement without processes: the production transport spawns
 //! `sima-worker` subprocesses, the test loopback runs the same host loop and
@@ -57,8 +63,14 @@ pub enum SpawnOutcome {
 }
 
 impl SpawnOutcome {
-    /// The link, panicking on a retirement. For call sites where a link is
-    /// guaranteed: tests, and the transports that never retire.
+    /// The link, for call sites where a link is guaranteed: tests, and the
+    /// transports that never retire.
+    ///
+    /// # Panics
+    ///
+    /// Panics on a [`SpawnOutcome::Retired`] — the caller has asserted the
+    /// transport cannot retire, so a retirement here is a bug, not a runtime
+    /// fault.
     pub fn into_link(self) -> Box<dyn WorkerLink> {
         match self {
             SpawnOutcome::Link(link) => link,
