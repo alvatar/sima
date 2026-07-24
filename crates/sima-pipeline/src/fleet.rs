@@ -515,7 +515,9 @@ impl<'a, 'b> Supervisor<'a, 'b> {
                     from: lost_id,
                     to: new_guard.id().0.clone(),
                 });
-                self.emit(instance_online(&new_guard, &instance.host));
+                // The replacement answers on its own endpoint's host, not the
+                // dead instance's host fixed at construction.
+                self.emit(instance_online(&new_guard, &new_guard.endpoint().host));
                 instance
                     .transport
                     .swap_to_live(endpoint_target(new_guard.endpoint().clone()));
@@ -598,15 +600,53 @@ fn stub_offers(count: usize) -> Vec<Offer> {
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
+    use std::sync::Arc;
     use std::time::Duration;
 
     use sima_model::{GeneratorConfig, GeneratorId, Params, RunConfig, RunId};
     use sima_provider::stub::StubProvider;
     use sima_provider::{InstanceStatus, Provision};
+    use sima_trace::{Collector, DurableSink, Record};
     use tempfile::TempDir;
 
     use super::*;
     use crate::config::{FillPolicy, FleetConfig};
+
+    /// A journal sink that discards every line: tests capture events through the
+    /// collector's observer, not its durable output.
+    struct NullSink;
+
+    impl DurableSink for NullSink {
+        fn append_line(&mut self, _line: &str) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Runs `body` with a live collector, capturing every event the supervisor
+    /// emits into the returned vector. The emitter clone is released before the
+    /// collector joins, so the scoped thread always returns.
+    fn capture_events(
+        body: impl FnOnce(&Mutex<Option<Emitter>>) -> Result<()>,
+    ) -> Result<Vec<Event>> {
+        let captured: Arc<Mutex<Vec<Event>>> = Arc::new(Mutex::new(Vec::new()));
+        let captured_obs = Arc::clone(&captured);
+        let observer = move |record: &Record| {
+            captured_obs
+                .lock()
+                .expect("capture lock")
+                .push(record.event.clone());
+        };
+        thread::scope(|scope| -> Result<()> {
+            let collector = Collector::spawn(scope, NullSink, &observer);
+            let emitter = Mutex::new(Some(collector.emitter()));
+            body(&emitter)?;
+            // Release the emitter clone so the collector thread can join.
+            *emitter.lock().expect("emitter lock") = None;
+            collector.shutdown()
+        })?;
+        let events = std::mem::take(&mut *captured.lock().expect("capture lock"));
+        Ok(events)
+    }
 
     /// A stub fleet requesting `count` instances, permissive constraints.
     fn stub_fleet(count: usize) -> FleetConfig {
@@ -970,11 +1010,12 @@ mod tests {
         provider.destroy(&dead_id)?;
 
         let interrupt = AtomicBool::new(false);
-        let emitter = Mutex::new(None);
-        let supervisor = Supervisor::new(
-            &provider, &store, &lock, &fleet, &instances, &interrupt, &emitter,
-        );
-        supervisor.tick(now_ms())?;
+        let events = capture_events(|emitter| {
+            let supervisor = Supervisor::new(
+                &provider, &store, &lock, &fleet, &instances, &interrupt, emitter,
+            );
+            supervisor.tick(now_ms())
+        })?;
 
         // The transport now points at a different, live host, and a fresh
         // instance is running.
@@ -990,6 +1031,20 @@ mod tests {
             provider.live().len(),
             1,
             "exactly one instance runs after replacement"
+        );
+        // The replacement's InstanceOnline reports the host it actually answers
+        // on — the new endpoint's host — not the dead instance's original host.
+        let online_hosts: Vec<&str> = events
+            .iter()
+            .filter_map(|event| match event {
+                Event::InstanceOnline { host, .. } => Some(host.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            online_hosts.last().copied(),
+            Some(new_host.as_str()),
+            "the replacement announces its own host, not the dead instance's"
         );
         release_all(instances)?;
         assert!(
