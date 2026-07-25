@@ -33,6 +33,12 @@ impl Answer {
         self.body.get("error")?.as_str()
     }
 
+    /// The body's `msg` field, the human-readable detail the API sets
+    /// beside `error` — the part that states what was actually wrong.
+    fn msg(&self) -> Option<&str> {
+        self.body.get("msg")?.as_str()
+    }
+
     /// The body of a successful answer, or an [`Error::Provider`] naming
     /// `operation`, the status, and the error the body names.
     pub(crate) fn ok(self, operation: &str) -> Result<Value> {
@@ -44,9 +50,13 @@ impl Answer {
 
     /// How this answer reads as a failure of `operation`.
     pub(crate) fn failure(&self, operation: &str) -> String {
-        match self.error() {
-            Some(error) => format!("{operation}: HTTP {}: {error}", self.status),
-            None => format!("{operation}: HTTP {}", self.status),
+        match (self.error(), self.msg()) {
+            (Some(error), Some(msg)) => {
+                format!("{operation}: HTTP {}: {error}: {msg}", self.status)
+            }
+            (Some(error), None) => format!("{operation}: HTTP {}: {error}", self.status),
+            (None, Some(msg)) => format!("{operation}: HTTP {}: {msg}", self.status),
+            (None, None) => format!("{operation}: HTTP {}", self.status),
         }
     }
 }
@@ -201,6 +211,23 @@ mod tests {
             outcome,
             Err(Error::Provider(message))
                 if message == "show instance: HTTP 401: unauthorized"
+        ));
+    }
+
+    #[test]
+    fn a_failure_carrying_detail_reaches_the_caller_with_it() {
+        let server = TestServer::new(vec![answer(
+            400,
+            r#"{"success": false, "error": "invalid_args", "msg": "disk too small"}"#,
+        )]);
+        let client = VastClient::new(&server.url(), "k-secret");
+        let outcome = client
+            .get("/api/v0/instances/7/", "create instance")
+            .and_then(|answer| answer.ok("create instance"));
+        assert!(matches!(
+            outcome,
+            Err(Error::Provider(message))
+                if message == "create instance: HTTP 400: invalid_args: disk too small"
         ));
     }
 
