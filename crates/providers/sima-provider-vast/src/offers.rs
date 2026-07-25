@@ -21,6 +21,13 @@ const OPERATION: &str = "list offers";
 /// The verification the marketplace reports for a host it vetted.
 const VERIFIED: &str = "verified";
 
+/// How many offers the search asks for. Without an explicit limit the
+/// marketplace answers one small default page (64 rows), an arbitrary sliver
+/// of the market that selection would then rank as if it were the whole
+/// listing. The full marketplace lists on the order of 2,500 offers; this
+/// bound covers it with headroom while keeping the answer a few megabytes.
+const SEARCH_LIMIT: u32 = 4096;
+
 /// The search's answer.
 #[derive(Deserialize)]
 struct OfferPage {
@@ -60,7 +67,8 @@ struct OfferRow {
 
 /// The marketplace's current on-demand offers, normalized.
 pub(crate) fn search(client: &VastClient) -> Result<Vec<Offer>> {
-    let query = serde_json::json!({"rentable": {"eq": true}, "type": "ondemand"});
+    let query =
+        serde_json::json!({"rentable": {"eq": true}, "type": "ondemand", "limit": SEARCH_LIMIT});
     let body = client.post(SEARCH_PATH, &query, OPERATION)?.ok(OPERATION)?;
     // An offer missing a field is a marketplace answer this backend cannot
     // interpret, so the whole listing fails naming the field rather than
@@ -111,7 +119,7 @@ mod tests {
     const NOMINAL: &str = r#"{
         "id": 8123456,
         "machine_id": 81234,
-        "gpu_name": "RTX_4090",
+        "gpu_name": "RTX 4090",
         "num_gpus": 2,
         "gpu_ram": 24564.0,
         "dph_total": 0.412,
@@ -127,7 +135,7 @@ mod tests {
     const UNVETTED: &str = r#"{
         "id": 9000001,
         "machine_id": 90000,
-        "gpu_name": "RTX_3090",
+        "gpu_name": "RTX 3090",
         "num_gpus": 1,
         "gpu_ram": 24576.0,
         "dph_total": 0.1234565,
@@ -149,6 +157,7 @@ mod tests {
         let query = request.json();
         assert_eq!(query["rentable"]["eq"], true);
         assert_eq!(query["type"], "ondemand");
+        assert_eq!(query["limit"], 4096);
         Ok(())
     }
 
@@ -165,7 +174,7 @@ mod tests {
         assert_eq!(offer.machine, "81234");
         // The model keeps the marketplace's naming: constraints match it
         // case-insensitively by substring.
-        assert_eq!(offer.gpu_model, "RTX_4090");
+        assert_eq!(offer.gpu_model, "RTX 4090");
         assert_eq!(offer.gpu_count, 2);
         assert_eq!(offer.vram_mb, 24_564);
         assert_eq!(offer.price, Price(412_000));
@@ -226,7 +235,7 @@ mod tests {
         // field.
         let malformed = r#"{
             "id": 7,
-            "gpu_name": "RTX_4090",
+            "gpu_name": "RTX 4090",
             "num_gpus": 1,
             "gpu_ram": 24576.0,
             "dph_total": 0.2,
