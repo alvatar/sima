@@ -16,6 +16,13 @@ const OPERATION: &str = "create instance";
 /// The status an offer already taken answers with.
 const GONE: u16 = 410;
 
+/// The script every rental runs at boot. The marketplace's ssh entry wraps
+/// sessions in a tmux attach unless `~/.no_auto_tmux` exists; the wrap
+/// swallows the command a non-interactive ssh carries, so without this file
+/// the worker probe (`ssh <host> -- sima-worker --enumerate`) never
+/// executes.
+const ONSTART: &str = "touch ~/.no_auto_tmux";
+
 /// The error an offer already taken names.
 const NO_SUCH_ASK: &str = "no_such_ask";
 
@@ -79,6 +86,7 @@ fn request(config: &VastConfig, tag: &str) -> Value {
         "disk": config.disk_gb,
         "label": tag,
         "runtype": "ssh",
+        "onstart": ONSTART,
     });
     if let Some(env) = &config.env {
         body["env"] = json!(env);
@@ -138,6 +146,9 @@ mod tests {
         assert_eq!(sent["disk"], 64);
         assert_eq!(sent["label"], "sima-tag-0");
         assert_eq!(sent["runtype"], "ssh");
+        // The boot script disables the marketplace's tmux wrap so a
+        // non-interactive ssh command reaches the worker binary.
+        assert_eq!(sent["onstart"], "touch ~/.no_auto_tmux");
         assert!(sent.get("env").is_none());
         Ok(())
     }

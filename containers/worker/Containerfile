@@ -15,8 +15,13 @@ COPY . .
 RUN cargo build --release -p sima-worker
 
 FROM debian:bookworm-slim AS runtime
+# libxext6 and libglvnd0 are runtime dependencies of the NVIDIA Vulkan ICD
+# (libGLX_nvidia.so.0): the host's container toolkit injects the driver
+# libraries but not these X11/GL dispatch libraries, and without them the
+# loader silently falls back to llvmpipe on GPU hosts.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends libvulkan1 mesa-vulkan-drivers \
+    && apt-get install -y --no-install-recommends \
+        libvulkan1 mesa-vulkan-drivers libxext6 libglvnd0 \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=build /src/target/release/sima-worker /usr/local/bin/sima-worker
 ENTRYPOINT ["sima-worker"]
