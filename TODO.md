@@ -544,7 +544,7 @@ leaked instances are leaked money.
       reproducible per backend class, and a mixed fleet crosses classes by
       construction. This is the fleet that delivers the README's elastic
       scale-out principle
-- [ ] M6.6 Machine reputation: rented machines are judged by
+- [x] M6.6 Machine reputation: rented machines are judged by
       observable operational behavior, never by output verification —
       workers cannot touch the store, so a bad machine's whole
       influence is operational (vanish mid-run, never become ready,
