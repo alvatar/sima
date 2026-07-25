@@ -567,6 +567,24 @@ leaked instances are leaked money.
       it into the migrate command.
       Assert the final manifest and segment states are identical to an
       uninterrupted local reference run
+- [ ] M6.8 CUDA execution toolkit + NCA family: a second real execution
+      backend, `sima-toolkit-cuda`, compiling kernels at run time through
+      NVRTC and driving them through the CUDA driver API. Motivated by the
+      rented market: Vast containers expose CUDA on every host but Vulkan
+      on none — the host injection omits or breaks the graphics stack, and
+      the one workaround (installing the matching driver userspace at
+      instance boot) puts an unsupported platform dependency and a
+      ~350 MB per-boot download in the paid path, so it is rejected.
+      The toolkit proves the execution seam against a runtime that is not
+      Vulkan-shaped: worker enumeration covers CUDA devices beside Vulkan
+      ones, slots bind per GPU, and the determinism tier is declared per
+      family as always. The example family is a Neural Cellular Automaton
+      (NCA): a learned update rule applied per cell, the genome carrying
+      the rule's weights — a real search substrate whose per-candidate
+      cost justifies GPU execution. Ships with an example config and
+      end-to-end coverage in `sima-integration`; the reduced M6.5
+      acceptance (CPU-class remote workers) is superseded by a full
+      GPU-fleet acceptance run on this toolkit
 
 Expected to be re-split when reached; provider APIs and trust mechanisms hide
 surprises.
