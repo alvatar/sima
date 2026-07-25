@@ -8,6 +8,7 @@ use sima_provider::{Instance, InstanceId, OfferId, Provision};
 use crate::client::VastClient;
 use crate::config::VastConfig;
 use crate::instances;
+use crate::instances::ShowAnswer;
 use crate::price;
 
 /// What renting is called in failures.
@@ -22,6 +23,12 @@ const GONE: u16 = 410;
 /// the worker probe (`ssh <host> -- sima-worker --enumerate`) never
 /// executes.
 const ONSTART: &str = "touch ~/.no_auto_tmux";
+
+/// How many times the post-create read retries a pending row, and the wait
+/// between reads: the API materializes a created instance's row within
+/// seconds, so this covers the window without stalling a genuine failure.
+const SHOW_ATTEMPTS: u32 = 5;
+const SHOW_RETRY: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// The error an offer already taken names.
 const NO_SUCH_ASK: &str = "no_such_ask";
@@ -52,12 +59,35 @@ pub(crate) fn create(
     let id = InstanceId(contract.to_string());
     // The rate the marketplace charges for the instance is the instance's
     // own, so it is read from the instance rather than carried over from
-    // the offer. A failure here is a failure of the rental: the machine
-    // exists, and the tag the caller wrote before this call is what
-    // reconciliation destroys it by.
-    let Some(row) = instances::show(client, &id.0, OPERATION)? else {
+    // the offer. The row can answer as pending in the window right after
+    // the create, before the API materializes the read, so the read
+    // retries through that window. A failure here is a failure of the
+    // rental: the machine exists, and the tag the caller wrote before
+    // this call is what reconciliation destroys it by.
+    let mut row = None;
+    for attempt in 0..SHOW_ATTEMPTS {
+        match instances::show(client, &id.0, OPERATION)? {
+            ShowAnswer::Row(shown) => {
+                row = Some(shown);
+                break;
+            }
+            ShowAnswer::Pending => {
+                // No sleep after the final attempt.
+                if attempt + 1 < SHOW_ATTEMPTS {
+                    std::thread::sleep(SHOW_RETRY);
+                }
+            }
+            ShowAnswer::Absent => {
+                return Err(Error::Provider(format!(
+                    "{OPERATION}: the account holds no instance {}",
+                    id.0
+                )));
+            }
+        }
+    }
+    let Some(row) = row else {
         return Err(Error::Provider(format!(
-            "{OPERATION}: the account holds no instance {}",
+            "{OPERATION}: instance {} never materialized",
             id.0
         )));
     };
@@ -172,6 +202,26 @@ mod tests {
         // The API accepts environment only as an object of name-value
         // pairs; a string form is refused with invalid_args.
         assert_eq!(server.requests()[0].json()["env"]["SIMA_ROLE"], "worker");
+        Ok(())
+    }
+
+    #[test]
+    fn a_pending_row_after_the_create_is_retried_until_it_materializes() -> Result<()> {
+        // The API materializes a created instance's row within seconds;
+        // the rate read waits through that window instead of failing the
+        // rental it just paid for.
+        let server = TestServer::new(vec![
+            answer(200, r#"{"success": true, "new_contract": 555}"#),
+            answer(200, r#"{"instances": null}"#),
+            answer(
+                200,
+                r#"{"instances": {"id": 555, "label": "sima-tag-0", "dph_total": 0.412}}"#,
+            ),
+        ]);
+        let client = VastClient::new(&server.url(), "k-secret");
+        let provision = create(&client, &config(&server.url()), &offer(), "sima-tag-0")?;
+        assert!(matches!(provision, Provision::Provisioned(_)));
+        assert_eq!(server.requests().len(), 3);
         Ok(())
     }
 
