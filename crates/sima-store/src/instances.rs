@@ -31,6 +31,11 @@ pub struct InstanceRecord {
     pub tag: String,
     /// The provider's stable identifier; reconciliation matches on it.
     pub provider: String,
+    /// The provider's stable identifier for the physical machine this attempt
+    /// rented, which reputation is scoped to. Empty when the provider reported
+    /// none. Stamped from the offer at intent and carried unchanged by the
+    /// live upgrade.
+    pub machine: String,
     /// The owning run, full 64-character hex. Its orchestrator lock answers
     /// whether the owner is still alive.
     pub owner: String,
@@ -173,15 +178,22 @@ fn record_bytes(record: &InstanceRecord) -> Vec<u8> {
 /// become a file name directly under the ledger directory, and part of one
 /// under the spend ledger.
 pub(crate) fn validate_tag(tag: &str) -> Result<()> {
-    if !tag.is_empty()
-        && tag
+    validate_charset("instance tag", tag)
+}
+
+/// Accepts a `value` of one or more `[a-z0-9-]` characters, the charset every
+/// store component that becomes a file name is confined to. `label` names the
+/// component in the error so the refusal points at what was rejected.
+pub(crate) fn validate_charset(label: &str, value: &str) -> Result<()> {
+    if !value.is_empty()
+        && value
             .bytes()
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
     {
         return Ok(());
     }
     Err(Error::Validation(format!(
-        "instance tag {tag:?} must be one or more of [a-z0-9-]"
+        "{label} {value:?} must be one or more of [a-z0-9-]"
     )))
 }
 
@@ -199,6 +211,7 @@ mod tests {
         InstanceRecord {
             tag: tag.to_string(),
             provider: "stub".to_string(),
+            machine: "m-0".to_string(),
             owner: sample_run_config(root_seed).id().to_string(),
             state: InstanceRecordState::Intent,
             price_micro_usd_hour: 82_400,

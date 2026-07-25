@@ -5,8 +5,8 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use sima_pipeline::{
-    Attempt, AttemptResult, Event, Record, RetryStats, RunId, RunState, RunStatus, RunTimeline,
-    SpendReport, TaskHistory, TaskOutcome, WorkerMetrics,
+    Attempt, AttemptResult, Event, MachineReport, Record, RetryStats, RunId, RunState, RunStatus,
+    RunTimeline, SpendReport, TaskHistory, TaskOutcome, WorkerMetrics,
 };
 
 /// How many hex characters of an id a progress line shows.
@@ -478,6 +478,44 @@ pub fn spend_block(report: &SpendReport) -> String {
         ));
     }
     block.push_str(&format!("\ntotal            {}", dollars(report.total.0)));
+    block
+}
+
+/// Renders the machine-reputation ledger: one line per machine with a recorded
+/// incident, its counts by kind, and whether it is blacklisted; an explicit
+/// line when the store holds none. Machines are already sorted by provider then
+/// machine, so one store renders one way.
+pub fn machines_block(report: &MachineReport) -> String {
+    if report.machines.is_empty() {
+        return "no machine incidents recorded".to_string();
+    }
+    let blacklisted = report.machines.iter().filter(|m| m.blacklisted).count();
+    let mut block = format!(
+        "machines with incidents   {}   blacklisted   {}",
+        report.machines.len(),
+        blacklisted,
+    );
+    for machine in &report.machines {
+        let noun = if machine.incidents == 1 {
+            "incident"
+        } else {
+            "incidents"
+        };
+        block.push_str(&format!(
+            "\n  {}-{}  {} {noun} (lost {}, never-ready {}, probe-failed {}){}",
+            machine.provider,
+            machine.machine,
+            machine.incidents,
+            machine.lost,
+            machine.never_ready,
+            machine.probe_failed,
+            if machine.blacklisted {
+                "  blacklisted"
+            } else {
+                ""
+            },
+        ));
+    }
     block
 }
 
@@ -1435,6 +1473,68 @@ mod tests {
         assert!(block.contains("$0.250 so far"), "{block}");
         // And the total in dollars.
         assert!(block.contains("total            $0.662"), "{block}");
+    }
+
+    #[test]
+    fn the_machines_block_names_each_machine_its_counts_and_its_status() {
+        let report = MachineReport {
+            machines: vec![
+                sima_pipeline::MachineSummary {
+                    provider: "vastai".to_string(),
+                    machine: "81234".to_string(),
+                    incidents: 3,
+                    lost: 2,
+                    never_ready: 1,
+                    probe_failed: 0,
+                    first_occurred_ms: 10,
+                    last_occurred_ms: 30,
+                    blacklisted: true,
+                },
+                sima_pipeline::MachineSummary {
+                    provider: "vastai".to_string(),
+                    machine: "90000".to_string(),
+                    incidents: 1,
+                    lost: 0,
+                    never_ready: 0,
+                    probe_failed: 1,
+                    first_occurred_ms: 5,
+                    last_occurred_ms: 5,
+                    blacklisted: false,
+                },
+            ],
+        };
+        let block = machines_block(&report);
+        assert!(
+            block.contains("machines with incidents   2   blacklisted   1"),
+            "{block}"
+        );
+        // The blacklisted machine names its counts by kind and its status.
+        assert!(
+            block.contains(
+                "vastai-81234  3 incidents (lost 2, never-ready 1, probe-failed 0)  blacklisted"
+            ),
+            "{block}"
+        );
+        // A machine below the threshold names no status, and its single
+        // incident reads in the singular.
+        assert!(
+            block.contains("vastai-90000  1 incident (lost 0, never-ready 0, probe-failed 1)"),
+            "{block}"
+        );
+        assert!(
+            !block.contains(
+                "vastai-90000  1 incident (lost 0, never-ready 0, probe-failed 1)  blacklisted"
+            ),
+            "an untainted machine is not blacklisted: {block}"
+        );
+    }
+
+    #[test]
+    fn the_machines_block_over_a_clean_store_states_no_incidents() {
+        let report = MachineReport {
+            machines: Vec::new(),
+        };
+        assert_eq!(machines_block(&report), "no machine incidents recorded");
     }
 
     #[test]

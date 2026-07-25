@@ -20,6 +20,7 @@ use crate::provider::Provider;
 pub(crate) fn stub_offer(id: &str, price: u64) -> Offer {
     Offer {
         id: OfferId(id.to_string()),
+        machine: format!("m-{id}"),
         gpu_model: "RTX 4090".to_string(),
         gpu_count: 1,
         vram_mb: 24_576,
@@ -49,6 +50,7 @@ pub(crate) fn instance_record(
     InstanceRecord {
         tag: tag.to_string(),
         provider: "stub".to_string(),
+        machine: "m-stub".to_string(),
         owner: owner.to_string(),
         state,
         price_micro_usd_hour: 100_000,

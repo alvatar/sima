@@ -27,6 +27,10 @@ pub struct InstanceGuard<'a, P: Provider + ?Sized> {
     id: InstanceId,
     /// Where the instance answers SSH.
     endpoint: SshEndpoint,
+    /// The provider's stable machine identifier from the offer, so the fleet
+    /// can attribute an operational incident to the machine; empty when the
+    /// provider reported none.
+    machine: String,
     /// The GPU model the offer named, for the online event; empty for a
     /// machine carrying none.
     gpu_model: String,
@@ -49,6 +53,7 @@ impl<'a, P: Provider + ?Sized> InstanceGuard<'a, P> {
         tag: String,
         id: InstanceId,
         endpoint: SshEndpoint,
+        machine: String,
         gpu_model: String,
         gpu_count: u32,
         rate: Price,
@@ -59,6 +64,7 @@ impl<'a, P: Provider + ?Sized> InstanceGuard<'a, P> {
             tag,
             id,
             endpoint,
+            machine,
             gpu_model,
             gpu_count,
             rate,
@@ -79,6 +85,13 @@ impl<'a, P: Provider + ?Sized> InstanceGuard<'a, P> {
     /// The ledger key the instance was rented under.
     pub fn tag(&self) -> &str {
         &self.tag
+    }
+
+    /// The provider's stable machine identifier from the offer; empty when
+    /// the provider reported none. The recording sites attribute an incident
+    /// to it.
+    pub fn machine(&self) -> &str {
+        &self.machine
     }
 
     /// The GPU model the offer named; empty for a machine carrying none.

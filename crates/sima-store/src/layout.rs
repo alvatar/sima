@@ -9,6 +9,7 @@
 //! <root>/tasks/<task-key-hex>      index entry: record-hash hex + newline
 //! <root>/instances/<tag>           one rented instance's ledger record
 //! <root>/spend/<owner-hex>/<tag>-<started-ms>   one closed rental's cost
+//! <root>/machines/<provider>-<machine>/<tag>-<occurred-ms>   one incident
 //! <root>/runs/<run-id-hex>/manifest.json
 //! <root>/runs/<run-id-hex>/journal
 //! <root>/runs/<run-id-hex>/orchestrator.lock
@@ -52,6 +53,11 @@ pub(crate) fn spend_ledger_dir(root: &Path) -> PathBuf {
     root.join("spend")
 }
 
+/// The `machines/` reputation directory.
+pub(crate) fn machines_ledger_dir(root: &Path) -> PathBuf {
+    root.join("machines")
+}
+
 /// The `runs/` directory.
 pub(crate) fn runs_dir(root: &Path) -> PathBuf {
     root.join("runs")
@@ -86,6 +92,26 @@ pub(crate) fn spend_dir(root: &Path, owner: &str) -> PathBuf {
 /// function.
 pub(crate) fn spend_path(root: &Path, owner: &str, tag: &str, started_ms: u64) -> PathBuf {
     spend_dir(root, owner).join(crate::spend::key(tag, started_ms))
+}
+
+/// One machine's incident directory: `machines/<provider>-<machine>/`. The
+/// provider and machine are validated against their charset before they reach
+/// this function.
+pub(crate) fn machine_dir(root: &Path, provider: &str, machine: &str) -> PathBuf {
+    machines_ledger_dir(root).join(crate::machines::machine_key(provider, machine))
+}
+
+/// One incident's path: `machines/<provider>-<machine>/<tag>-<occurred-ms>`.
+/// The provider, machine, and tag are validated against their charset before
+/// they reach this function.
+pub(crate) fn machine_incident_path(
+    root: &Path,
+    provider: &str,
+    machine: &str,
+    tag: &str,
+    occurred_ms: u64,
+) -> PathBuf {
+    machine_dir(root, provider, machine).join(crate::machines::incident_key(tag, occurred_ms))
 }
 
 /// A run's directory: `runs/<run-id-hex>/`.

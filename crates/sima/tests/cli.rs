@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use common::{manifest_of, sima_command, worker_processes};
 use sima_pipeline::{Event, RunObserver, load};
-use sima_store::{InstanceRecord, InstanceRecordState, Store};
+use sima_store::{IncidentKind, InstanceRecord, InstanceRecordState, MachineIncident, Store};
 
 /// Writes a `sima.toml` under `dir` whose store lives beside it.
 fn write_config(dir: &Path, behaviors: &str) -> PathBuf {
@@ -488,6 +488,70 @@ fn the_removed_top_level_timeline_and_spend_commands_report_usage() {
 }
 
 #[test]
+fn report_machines_over_a_clean_store_reports_no_incidents() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config = write_config(dir.path(), r#""succeed""#);
+    let path = config.to_str().expect("utf-8 path");
+    assert_eq!(sima(&["run", path]).status.code(), Some(0));
+
+    // A local run rents no hardware and records no incident; the view still
+    // answers, with its explicit no-incidents line.
+    let output = sima(&["report", path, "--machines"]);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert!(
+        stdout(&output).contains("no machine incidents recorded"),
+        "the empty-ledger line: {}",
+        stdout(&output)
+    );
+}
+
+#[test]
+fn report_machines_names_the_machine_its_count_and_its_blacklist_status() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config = write_config(dir.path(), r#""succeed""#);
+    let path = config.to_str().expect("utf-8 path");
+    assert_eq!(sima(&["run", path]).status.code(), Some(0));
+
+    // Plant two incidents against one machine directly in the store, as the
+    // recording sites would; two strikes blacklist it.
+    let loaded = load(&config).expect("load config");
+    let store = Store::open(&loaded.store).expect("open the store");
+    for tag in ["sima-inc-0", "sima-inc-1"] {
+        store
+            .put_machine_incident(&MachineIncident {
+                provider: "vastai".to_string(),
+                machine: "81234".to_string(),
+                kind: IncidentKind::Lost,
+                tag: tag.to_string(),
+                occurred_ms: 1,
+            })
+            .expect("record an incident");
+    }
+
+    let output = sima(&["report", path, "--machines"]);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let text = stdout(&output);
+    assert!(text.contains("vastai-81234"), "names the machine: {text}");
+    assert!(text.contains("2 incidents"), "names the count: {text}");
+    assert!(text.contains("blacklisted"), "names the status: {text}");
+}
+
+#[test]
+fn report_machines_refuses_a_remote_host() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config = write_config(dir.path(), r#""succeed""#);
+    let path = config.to_str().expect("utf-8 path");
+    assert_eq!(sima(&["run", path]).status.code(), Some(0));
+
+    // The reputation ledger is local store state the follow feed does not
+    // carry, so the view stays local-only, exactly as `--spend`.
+    let output = sima(&["report", path, "--machines", "--on", "gpubox"]);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).expect("stderr is UTF-8");
+    assert!(stderr.contains("usage"), "{stderr}");
+}
+
+#[test]
 fn report_view_flags_are_mutually_exclusive() {
     let dir = tempfile::tempdir().expect("temp dir");
     let config = write_config(dir.path(), r#""succeed""#);
@@ -500,6 +564,8 @@ fn report_view_flags_are_mutually_exclusive() {
         vec!["report", path, "--timeline", "--spend"],
         vec!["report", path, "--all", "--timeline"],
         vec!["report", path, "--all", "--spend"],
+        vec!["report", path, "--machines", "--spend"],
+        vec!["report", path, "--machines", "--timeline"],
     ] {
         let output = sima(&args);
         assert_eq!(output.status.code(), Some(1), "{args:?}: {output:?}");
@@ -736,6 +802,7 @@ fn the_usage_text_names_every_command_form() {
         "--all",
         "--timeline",
         "--spend",
+        "--machines",
         "sima rm",
         "sima tui",
         "sima follow",
@@ -1150,6 +1217,7 @@ fn reconcile_over_a_record_naming_an_unknown_provider_fails_naming_it() {
         .put_instance(&InstanceRecord {
             tag: "sima-tag-0".to_string(),
             provider: "nowhere".to_string(),
+            machine: "m-0".to_string(),
             owner: loaded.run.id().to_string(),
             state: InstanceRecordState::Live {
                 instance: "i-1".to_string(),

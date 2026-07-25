@@ -10,8 +10,8 @@
 //!   grouped by default, one line per task under `--all`, or one task's under
 //!   `--task <key>`; the run's throughput, retry rates, and per-worker
 //!   utilization over a chart of commits and worker occupancy under
-//!   `--timeline`; and the rental ledger under `--spend`. The view flags are
-//!   mutually exclusive.
+//!   `--timeline`; the rental ledger under `--spend`; and machine reputation
+//!   under `--machines`. The view flags are mutually exclusive.
 //!
 //! A `<key>` is any prefix of a task key that names one task. All
 //! orchestration lives in `sima-pipeline` — this binary parses arguments,
@@ -79,6 +79,11 @@ fn main() -> ExitCode {
         // falls through to the usage error: the ledger does not travel the
         // follow feed.
         ["report", config, "--spend"] if host.is_none() => spend_command(&resolve_config(config)),
+        // The reputation ledger is store state too, so it reads locally like
+        // `--spend`; a host falls through to the usage error.
+        ["report", config, "--machines"] if host.is_none() => {
+            machines_command(&resolve_config(config))
+        }
         ["tui", config] => tui::tui_command(&Target::new(config, host)),
         ["follow", config] => follow::follow_command(&Target::new(config, host)),
         _ => {
@@ -92,6 +97,7 @@ fn main() -> ExitCode {
                  \x20      sima report <config> --task <key>  print one committed task's stats\n\
                  \x20      sima report <config> --timeline    report the run's metrics and its timeline\n\
                  \x20      sima report <config> --spend       report the run's rental spend\n\
+                 \x20      sima report <config> --machines    report machine reputation and blacklisting\n\
                  \x20      sima rm <config>                   delete the run and what only it references\n\
                  \x20      sima reconcile <config>            destroy the machines a crashed run left running\n\
                  \x20      sima tui <config>                  drive the run in a full-screen terminal UI\n\
@@ -99,8 +105,8 @@ fn main() -> ExitCode {
                  \x20      <config> is a sima.toml path; the .toml extension may be omitted\n\
                  \x20      <key> is any prefix of a task key that names one task\n\
                  \x20      --on <host> observes a run on an ssh destination: status, report,\n\
-                 \x20      tui, and follow accept it (report --spend stays local), and\n\
-                 \x20      <config> is then a path on that host\n"
+                 \x20      tui, and follow accept it (report --spend and --machines stay\n\
+                 \x20      local), and <config> is then a path on that host\n"
             );
             ExitCode::from(EXIT_ERROR)
         }
@@ -241,6 +247,21 @@ fn spend_command(config: &Path) -> ExitCode {
     match load(config).and_then(|loaded| sima_pipeline::spend(&loaded)) {
         Ok(report) => {
             println!("{}", render::spend_block(&report));
+            ExitCode::SUCCESS
+        }
+        Err(e) => report(e),
+    }
+}
+
+/// `sima report <config.toml> --machines`: the store's machine-reputation
+/// ledger — one line per machine with a recorded incident, its counts by kind,
+/// and its blacklist status — read from the local store. Store-scoped, so it
+/// answers whatever the store observed across every run, and exits 0 over a
+/// store that recorded none.
+fn machines_command(config: &Path) -> ExitCode {
+    match load(config).and_then(|loaded| sima_pipeline::machines(&loaded)) {
+        Ok(report) => {
+            println!("{}", render::machines_block(&report));
             ExitCode::SUCCESS
         }
         Err(e) => report(e),

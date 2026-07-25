@@ -232,6 +232,7 @@ mod tests {
         InstanceRecord {
             tag: tag.to_string(),
             provider: "stub".to_string(),
+            machine: "m-0".to_string(),
             owner: owner.to_string(),
             state: live_state("i-1"),
             price_micro_usd_hour: rate,

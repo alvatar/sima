@@ -20,7 +20,7 @@ pub struct Store {
 impl Store {
     /// Creates or opens the store at `root`, building the directory
     /// skeleton (`objects/`, `tmp/`, `tasks/`, `runs/`, `instances/`,
-    /// `spend/`) durably where
+    /// `spend/`, `machines/`) durably where
     /// absent. A fresh root and an existing store open identically —
     /// resume is a reopen.
     pub fn open(root: impl Into<PathBuf>) -> Result<Store> {
@@ -32,6 +32,7 @@ impl Store {
             layout::runs_dir(&root),
             layout::instances_dir(&root),
             layout::spend_ledger_dir(&root),
+            layout::machines_ledger_dir(&root),
         ] {
             atomic::create_dir_durable(&dir)?;
         }
@@ -57,7 +58,15 @@ mod tests {
         Store::open(dir.path())?;
         // The skeleton directories, pinned by name — the disk layout is a
         // fixed contract.
-        for sub in ["objects", "tmp", "tasks", "runs", "instances", "spend"] {
+        for sub in [
+            "objects",
+            "tmp",
+            "tasks",
+            "runs",
+            "instances",
+            "spend",
+            "machines",
+        ] {
             assert!(dir.path().join(sub).is_dir(), "missing skeleton dir {sub}");
         }
         Ok(())

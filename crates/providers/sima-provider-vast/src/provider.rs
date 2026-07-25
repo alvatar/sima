@@ -76,7 +76,7 @@ mod tests {
     fn the_backend_lists_the_marketplace_behind_the_contract() -> Result<()> {
         let server = TestServer::new(vec![ScriptedAnswer {
             status: 200,
-            body: r#"{"offers": [{"id": 8123456, "gpu_name": "RTX_4090", "num_gpus": 2,
+            body: r#"{"offers": [{"id": 8123456, "machine_id": 81234, "gpu_name": "RTX_4090", "num_gpus": 2,
                 "gpu_ram": 24564.0, "dph_total": 0.412, "reliability": 0.9871,
                 "verification": "verified", "disk_space": 205.7, "inet_down": 1350.4,
                 "geolocation": "Warsaw, PL"}]}"#

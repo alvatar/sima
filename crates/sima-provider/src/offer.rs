@@ -29,6 +29,11 @@ pub struct OfferId(pub String);
 pub struct Offer {
     /// The provider's identifier for this offer.
     pub id: OfferId,
+    /// The provider's stable identifier for the physical machine behind this
+    /// offer, which reputation is scoped to. Empty when the provider reports
+    /// none: an empty machine records no incidents and never matches the
+    /// excluded set.
+    pub machine: String,
     /// The GPU model as the provider names it, for example `RTX 4090`.
     pub gpu_model: String,
     /// GPUs on the machine.
@@ -74,6 +79,12 @@ pub struct Constraints {
     pub min_disk_gb: Option<u64>,
     /// Least downlink bandwidth, in megabits per second.
     pub min_bandwidth_mbps: Option<u64>,
+    /// Provider-scoped machine identifiers to disqualify. An offer whose
+    /// non-empty `machine` is listed is disqualified; the empty machine never
+    /// matches, so a machine with no identity is never excluded. Acquisition
+    /// fills this from the reputation ledger. An empty list disqualifies
+    /// nothing, which is what the default states.
+    pub excluded_machines: Vec<String>,
 }
 
 /// The single scalar ranking over qualifying offers.
@@ -107,6 +118,11 @@ fn qualifies(offer: &Offer, constraints: &Constraints) -> bool {
         return false;
     }
     if constraints.verified_only && !offer.verified {
+        return false;
+    }
+    // A machine with a pattern of operational failures is disqualified; a
+    // machine with no identity carries an empty string and never matches.
+    if !offer.machine.is_empty() && constraints.excluded_machines.contains(&offer.machine) {
         return false;
     }
     let minimums = [
@@ -147,6 +163,7 @@ mod tests {
     fn offer(id: &str) -> Offer {
         Offer {
             id: OfferId(id.to_string()),
+            machine: format!("m-{id}"),
             gpu_model: "RTX 4090".to_string(),
             gpu_count: 2,
             vram_mb: 24_576,
@@ -385,6 +402,27 @@ mod tests {
             ranked(offers, &Constraints::default()),
             vec!["cheap-a", "cheap-b", "dear"]
         );
+    }
+
+    #[test]
+    fn an_excluded_machine_is_disqualified_and_the_empty_machine_never_matches() {
+        let offers = vec![
+            offer("bad"),
+            Offer {
+                machine: String::new(),
+                ..offer("anonymous")
+            },
+            offer("good"),
+        ];
+        let constraints = Constraints {
+            // The bad machine and, pointlessly, the empty string are listed.
+            excluded_machines: vec!["m-bad".to_string(), String::new()],
+            ..Constraints::default()
+        };
+        let ids = ranked(offers, &constraints);
+        // The listed machine is out; the machine with no identity is admitted
+        // even though the empty string is "listed", because it never matches.
+        assert_eq!(ids, vec!["anonymous", "good"]);
     }
 
     #[test]
