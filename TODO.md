@@ -404,7 +404,7 @@ difference.
       I/O lifted into `sima-core`: records and referenced CAS objects only
       (checkpoints are mid-segment scratch, placement re-binds, journals
       stay home), caller supplies the task-key set, content addressing is
-      the transfer integrity check; first production consumer is M6.7's
+      the transfer integrity check; first production consumer is M6.8's
       migrate;
       (c) the remote worker: the existing framed stdio protocol runs
       unchanged through `ssh <host> docker run -i` (the store never leaves
@@ -558,7 +558,29 @@ leaked instances are leaked money.
       deliberately absent: they presume adversarial hosts running
       foreign code and require cross-hardware determinism the float
       families do not promise.
-- [ ] M6.7 End-to-end slingshot consolidation (phase acceptance): start a
+- [ ] M6.7 CUDA execution toolkit: a second real execution backend,
+      `sima-toolkit-cuda`, compiling kernels at run time through NVRTC and
+      driving them through the CUDA driver API. Motivated by the rented
+      market: Vast containers expose CUDA on every host but Vulkan on none —
+      the host injection omits or breaks the graphics stack, and the one
+      workaround (installing the matching driver userspace at instance boot)
+      puts an unsupported platform dependency and a per-boot driver download
+      in the paid path, so it is rejected.
+      The proof is a substrate swap, not a new family: the existing
+      reaction-diffusion model gains a CUDA kernel beside its WGSL one, with
+      its spec format, params, CPU reference, stats reduction, and store path
+      untouched. Success is measured by the diff: the change is confined to
+      the new toolkit crate and the domain's kernel selection, and anything
+      that forces a contract above the toolkit seam to change is the
+      milestone's real finding, reported rather than absorbed.
+      Worker enumeration covers CUDA devices beside Vulkan ones and slots
+      bind per GPU; the determinism tier is declared per family as always,
+      and results are compared against the CPU reference per backend, never
+      across backends. Ships with an example config and end-to-end coverage
+      in `sima-integration`; the reduced M6.5 acceptance (CPU-class remote
+      workers) is superseded by a full GPU-fleet acceptance run on this
+      toolkit
+- [ ] M6.8 End-to-end slingshot consolidation (phase acceptance): start a
       search locally; interrupt it mid-simulation (inside a segment chain);
       `sima migrate` to a freshly provisioned instance — sync closure, resume
       remotely, follow events live; sync results home; teardown verified. The
@@ -567,24 +589,6 @@ leaked instances are leaked money.
       it into the migrate command.
       Assert the final manifest and segment states are identical to an
       uninterrupted local reference run
-- [ ] M6.8 CUDA execution toolkit + NCA family: a second real execution
-      backend, `sima-toolkit-cuda`, compiling kernels at run time through
-      NVRTC and driving them through the CUDA driver API. Motivated by the
-      rented market: Vast containers expose CUDA on every host but Vulkan
-      on none — the host injection omits or breaks the graphics stack, and
-      the one workaround (installing the matching driver userspace at
-      instance boot) puts an unsupported platform dependency and a
-      ~350 MB per-boot download in the paid path, so it is rejected.
-      The toolkit proves the execution seam against a runtime that is not
-      Vulkan-shaped: worker enumeration covers CUDA devices beside Vulkan
-      ones, slots bind per GPU, and the determinism tier is declared per
-      family as always. The example family is a Neural Cellular Automaton
-      (NCA): a learned update rule applied per cell, the genome carrying
-      the rule's weights — a real search substrate whose per-candidate
-      cost justifies GPU execution. Ships with an example config and
-      end-to-end coverage in `sima-integration`; the reduced M6.5
-      acceptance (CPU-class remote workers) is superseded by a full
-      GPU-fleet acceptance run on this toolkit
 
 Expected to be re-split when reached; provider APIs and trust mechanisms hide
 surprises.
