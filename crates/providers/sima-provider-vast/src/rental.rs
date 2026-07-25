@@ -164,12 +164,14 @@ mod tests {
         ]);
         let client = VastClient::new(&server.url(), "k-secret");
         let mut config = config(&server.url());
-        config.env = Some("-e SIMA_ROLE=worker".to_string());
+        config.env = Some(std::collections::BTreeMap::from([(
+            "SIMA_ROLE".to_string(),
+            "worker".to_string(),
+        )]));
         create(&client, &config, &offer(), "sima-tag-0")?;
-        assert_eq!(
-            server.requests()[0].json()["env"],
-            "-e SIMA_ROLE=worker".to_string()
-        );
+        // The API accepts environment only as an object of name-value
+        // pairs; a string form is refused with invalid_args.
+        assert_eq!(server.requests()[0].json()["env"]["SIMA_ROLE"], "worker");
         Ok(())
     }
 
