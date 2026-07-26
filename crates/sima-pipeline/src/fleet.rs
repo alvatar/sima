@@ -170,7 +170,7 @@ fn acquire_one<'a>(
     let host = target.host.clone();
     // The probe drives the instance's device enumeration; a failure drops the
     // guard, tearing the instance down.
-    let slots = match probe_slots(mode, &target, fleet.ready_poll) {
+    let slots = match probe_slots(mode, &target, fleet.ready_poll, format) {
         Ok(slots) => slots,
         Err(error) => {
             // The machine reported ready but cannot run work: an incident
@@ -208,14 +208,16 @@ fn acquire_one<'a>(
     })
 }
 
-/// Probes an instance for its devices and derives its worker slots, retrying
-/// briefly because sshd can lag the provider's `Ready`.
+/// Probes an instance for the devices `format`'s program can run on and derives
+/// its worker slots, retrying briefly because sshd can lag the provider's
+/// `Ready`.
 fn probe_slots(
     mode: &FleetMode,
     target: &SshTarget,
     poll: Duration,
+    format: &FormatId,
 ) -> Result<Vec<Option<DeviceBinding>>> {
-    let argv = sima_transport::fleet::probe_argv(mode, target);
+    let argv = sima_transport::fleet::probe_argv(mode, target, format);
     let mut last: Option<Error> = None;
     for attempt in 0..PROBE_ATTEMPTS {
         match command_stdout(&argv).and_then(|stdout| parse_enumeration(&stdout)) {
@@ -236,11 +238,16 @@ fn probe_slots(
 /// reporting no GPU yields a single deviceless worker — the stub testing path,
 /// and any device-free instance.
 ///
+/// The devices are the ones the run's program can open, since the probe asked
+/// about its format, so every slot here is a place this run can actually put a
+/// worker.
+///
 /// A software rasterizer is skipped whenever a real GPU is present. A rented
-/// host enumerates the CPU rasterizer beside its card, and an instance is
-/// rented for its GPU: placing a worker on the rasterizer would spend the
-/// rental running the slowest device on the machine. When every enumerated
-/// device is a CPU, they are all slots — a host with no GPU still gets workers.
+/// host whose graphics stack works enumerates the CPU rasterizer beside its
+/// card, and an instance is rented for its GPU: placing a worker on the
+/// rasterizer would spend the rental running the slowest device on the machine.
+/// When every enumerated device is a CPU, they are all slots — a host that
+/// offers this program no GPU still gets workers.
 fn fleet_slots(devices: &[DeviceInfo]) -> Vec<Option<DeviceBinding>> {
     if devices.is_empty() {
         return vec![None];
@@ -910,8 +917,11 @@ mod tests {
 
     #[test]
     fn a_host_with_only_a_rasterizer_still_gets_a_slot() {
-        // With no GPU to prefer, the rasterizer is the machine's compute
-        // device and takes its slot.
+        // With no GPU to prefer, the rasterizer is the only device this
+        // program can open and takes the slot. This is what a rented instance
+        // reports to a WGSL run when its Vulkan loader cannot initialize the
+        // NVIDIA driver: the card is there, and CUDA would enumerate it, but a
+        // slot bound to it would hand a worker a device Vulkan cannot open.
         let devices = [device(
             0x10005,
             0x0000,

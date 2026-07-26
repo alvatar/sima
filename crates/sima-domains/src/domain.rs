@@ -12,6 +12,7 @@ use sima_contracts::{DeviceBinding, Executor, Generator};
 use sima_core::{Error, Result};
 use sima_model::{Environment, FormatId, GeneratorId, Params};
 
+use crate::devices::Substrate;
 use crate::domains::{ca_evolution, stub};
 
 /// Everything a format id binds: the executor that evaluates specs of the
@@ -38,6 +39,13 @@ pub struct Domain {
     /// driver version is operational provenance the journal records: the one
     /// variable an environment hash cannot see across machines of one class.
     pub device_desc: fn(Option<&DeviceBinding>) -> Result<(String, String)>,
+    /// The execution backend this domain's executor runs through.
+    ///
+    /// It is what the device enumeration follows: only this backend's devices
+    /// can hold the domain's work, so
+    /// [`enumerate_devices`](crate::devices::enumerate_devices) resolves a
+    /// format to a domain and reads this.
+    pub substrate: Substrate,
     /// The environment entering every task's identity.
     pub environment: Environment,
 }

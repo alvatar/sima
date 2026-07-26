@@ -27,7 +27,7 @@ The Vulkan loader and the Mesa ICDs (Intel and AMD) are baked into the image.
 An Intel or AMD GPU is reached by passing the render node:
 
 ```
-podman run --rm -i --device /dev/dri sima-worker --enumerate
+podman run --rm -i --device /dev/dri sima-worker --enumerate <format>
 ```
 
 NVIDIA user-space libraries are not baked — they must match the host kernel
@@ -35,11 +35,13 @@ driver — so the host's nvidia-container-toolkit injects them at container
 start through CDI:
 
 ```
-podman run --rm -i --device nvidia.com/gpu=all sima-worker --enumerate
+podman run --rm -i --device nvidia.com/gpu=all sima-worker --enumerate <format>
 ```
 
 `--enumerate` prints one JSON device per line and exits; it is the probe the
-orchestrator runs to resolve a remote's device selectors.
+orchestrator runs to resolve a remote's device selectors. It takes the run's
+format id, because that names the execution backend to enumerate and a backend
+reaches only the devices its own driver stack exposes.
 
 ## Delivery to a manually provisioned host
 

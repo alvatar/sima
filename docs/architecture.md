@@ -1176,10 +1176,20 @@ mechanism minus the ssh hop.
 
 - **Remote device selection.** `[[execution.remote]]` entries carry the same
   device tables as a local pool. Resolving them needs the remote's device
-  list, so `sima-worker` doubles as the probe: `sima-worker --enumerate` prints
-  the enumerated devices as JSON and exits. At run start the orchestrator
-  verifies each remote's image is present, then runs the probe through the
-  remote's container and reuses the local selector resolution unchanged.
+  list, so `sima-worker` doubles as the probe: `sima-worker --enumerate
+  <format>` prints the devices that format's program can run on as JSON and
+  exits. At run start the orchestrator verifies each remote's image is present,
+  then runs the probe through the remote's container and reuses the local
+  selector resolution unchanged.
+
+  The probe answers for a format rather than for a machine, because each domain
+  runs through one execution backend and a backend reaches only the devices its
+  own driver stack exposes. The two disagree on real hosts: a rented instance
+  whose Vulkan loader cannot initialize the NVIDIA driver offers a WGSL program
+  the CPU rasterizer alone while CUDA opens the card there, and a laptop's Intel
+  integrated GPU is a Vulkan device CUDA cannot open. Enumerating everything
+  present would bind workers to devices their substrate faults on, so the format
+  travels with the probe and `sima-domains` resolves it to the backend to ask.
 
 - **The image.** A multi-stage `Containerfile` builds `sima-worker` in a
   `rust:<pinned>-bookworm` stage whose glibc matches the `debian:bookworm-slim`
@@ -1458,8 +1468,9 @@ config's dollar figures to micro-USD.
 **Lifecycle.** Orchestration takes the store and lock first, then rents the
 fleet under the held lock: `count` instances, each through
 [`acquire`](#the-acquisition-loop) behind a teardown guard, each probed over
-ssh (`sima-worker --enumerate`) to derive one worker slot per GPU — or a
-single deviceless slot where the probe reports none. The `fill` policy
+ssh (`sima-worker --enumerate <format>`) to derive one worker slot per GPU the
+run's program can open — or a single deviceless slot where the probe reports
+none. The `fill` policy
 decides a shortfall: **strict** tears down whatever was acquired and fails
 before any task runs; **best-effort** proceeds on what came up, down to one
 instance. The provider backend is built before the store, so a `vast` fleet

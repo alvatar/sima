@@ -8,6 +8,7 @@ use crate::cellular::{
     CellularEngine, CellularEvaluation, EvaluationInput, Grid, GridPair, REDUCE_WGSL,
     ReduceKernels, Trajectory, reduce as reduce_pair, run,
 };
+use crate::devices::Substrate;
 
 /// The WGSL substrate: a Vulkan device, the model's update kernel compiled for
 /// it, and the four reduction passes.
@@ -22,6 +23,7 @@ pub(crate) struct WgslEngine {
 }
 
 impl CellularEngine for WgslEngine {
+    const SUBSTRATE: Substrate = Substrate::Wgsl;
     const COMPILER_COMPONENT: &'static str = "wgsl.compiler";
     const COMPILER_ID: &'static str = sima_toolkit_wgsl::COMPILER_ID;
 

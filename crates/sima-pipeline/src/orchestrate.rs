@@ -7,7 +7,7 @@ use sima_contracts::DeviceBinding;
 use sima_core::{Error, Result};
 use sima_domains::devices::{DeviceInfo, enumerate_devices};
 use sima_domains::{domain_for, generator_for};
-use sima_model::RunId;
+use sima_model::{FormatId, RunId};
 use sima_scheduler::{ExecutionConfig, RunControl, RunOutcome, WorkerPool, worker_slots};
 use sima_store::Store;
 use sima_transport::remote::{image_inspect_argv, probe_argv};
@@ -227,7 +227,7 @@ fn build_remote_pools(
         let slots = match remote.workers {
             Some(workers) => vec![None; workers],
             None => {
-                let enumerated = probe_remote_devices(remote)?;
+                let enumerated = probe_remote_devices(remote, &config.run.format)?;
                 let entries = devices::resolve(&remote.devices, &enumerated)?;
                 let exec = ExecutionConfig::with_devices(
                     entries,
@@ -297,13 +297,14 @@ fn bootstrap_image(remote: &RemoteConfig) -> Result<()> {
 }
 
 /// Runs the enumeration probe in the remote's container and parses the devices
-/// it reports.
-fn probe_remote_devices(remote: &RemoteConfig) -> Result<Vec<DeviceInfo>> {
+/// it reports for `format`.
+fn probe_remote_devices(remote: &RemoteConfig, format: &FormatId) -> Result<Vec<DeviceInfo>> {
     let argv = probe_argv(
         remote.host.as_deref(),
         &remote.runtime,
         &remote.image,
         &remote.run_args,
+        format,
     );
     let stdout = command_stdout(&argv)?;
     devices::parse_enumeration(&stdout)
@@ -349,7 +350,7 @@ fn resolve_devices(config: &LoadedConfig) -> Result<ExecutionConfig> {
     if config.devices.is_empty() {
         return Ok(config.execution.clone());
     }
-    let entries = devices::resolve(&config.devices, &enumerate_devices()?)?;
+    let entries = devices::resolve(&config.devices, &enumerate_devices(&config.run.format)?)?;
     ExecutionConfig::with_devices(
         entries,
         config.execution.max_attempts,

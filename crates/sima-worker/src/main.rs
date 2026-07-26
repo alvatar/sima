@@ -29,14 +29,19 @@ fn resolver(
     Ok((executor, device_name, driver))
 }
 
-/// Enumerates this machine's compute devices and prints one JSON object per
-/// device to stdout, one per line, then exits. The remote-resolution probe:
-/// the orchestrator runs this over ssh at run start to resolve a remote's
-/// device selectors against its actual hardware. The output is the serde form
-/// of [`sima_domains::devices::DeviceInfo`] — human-readable, never
-/// identity-bearing.
-fn enumerate() -> Result<()> {
-    for device in sima_domains::devices::enumerate_devices()? {
+/// Enumerates the compute devices the program bound to `format` can run on and
+/// prints one JSON object per device to stdout, one per line, then exits. The
+/// remote-resolution probe: the orchestrator runs this over ssh at run start to
+/// resolve a remote's device selectors against its actual hardware. The output
+/// is the serde form of [`sima_domains::devices::DeviceInfo`] — human-readable,
+/// never identity-bearing.
+///
+/// The format is what selects the backend to ask, so the answer is the devices
+/// this run's work can be placed on rather than every device present. A machine
+/// commonly has devices only one backend reaches.
+fn enumerate(format: &str) -> Result<()> {
+    let format = FormatId::new(format)?;
+    for device in sima_domains::devices::enumerate_devices(&format)? {
         let line = serde_json::to_string(&device)
             .map_err(|e| sima_core::Error::Encoding(format!("device to JSON: {e}")))?;
         println!("{line}");
@@ -49,9 +54,15 @@ fn enumerate() -> Result<()> {
 fn main() {
     // The one-shot enumeration probe: no protocol, no store, no orphan
     // protection — enumerate, print, exit. It runs before anything else so a
-    // probe never spawns the handshake machinery.
-    if std::env::args().any(|arg| arg == "--enumerate") {
-        if let Err(e) = enumerate() {
+    // probe never spawns the handshake machinery. The format id follows the
+    // flag and decides which backend is asked.
+    let mut args = std::env::args().skip_while(|arg| arg != "--enumerate");
+    if args.next().is_some() {
+        let Some(format) = args.next() else {
+            eprintln!("sima-worker: --enumerate takes the run's format id");
+            std::process::exit(1);
+        };
+        if let Err(e) = enumerate(&format) {
             eprintln!("sima-worker: {e}");
             std::process::exit(1);
         }

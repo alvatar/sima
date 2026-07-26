@@ -5,6 +5,7 @@ use sima_contracts::DeviceBinding;
 use sima_core::{Hash, Result};
 
 use crate::cellular::Grid;
+use crate::devices::Substrate;
 
 /// A compute substrate an evaluation runs on: it holds a device and the kernels
 /// compiled for it, it advances a grid, and it reduces the result.
@@ -24,6 +25,11 @@ use crate::cellular::Grid;
 /// vocabulary of the cellular kind. Implementing it for a foreign substrate
 /// violates no orphan rule, since the trait itself is local.
 pub(crate) trait CellularEngine: Send + Sized + 'static {
+    /// The execution backend behind this engine, which is also the one whose
+    /// devices can hold its work: a domain built on it enumerates that backend
+    /// alone.
+    const SUBSTRATE: Substrate;
+
     /// The name of the environment component that pins this substrate's
     /// compiler. Each substrate names its own, so a domain's environment says
     /// which compiler it depends on rather than only what that compiler is.

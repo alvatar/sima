@@ -1,17 +1,21 @@
-//! What compute devices this build can run on.
+//! What compute devices a program can run on.
 //!
 //! The domains layer is where the set of compiled-in execution backends is
-//! known, so it is where "what devices exist" is answered for the layers above:
-//! they ask this crate rather than depending on a toolkit directly.
+//! known, so it is where "what devices can be used" is answered for the layers
+//! above: they ask this crate rather than depending on a toolkit directly.
 //!
-//! The types here are the vocabulary those layers hold. They are the backends'
-//! answers translated into one shape, so a card two backends both discover
-//! appears once and the question stays "what hardware is here" rather than
-//! "what can each backend reach". Which substrate a card is used through is the
-//! program's declaration, made in the run config by choosing a format id.
+//! The question is asked about a format id, never about a machine. A backend
+//! reaches only the devices its own driver stack exposes, and the two stacks
+//! disagree on real hosts: a rented instance whose Vulkan loader cannot
+//! initialize the NVIDIA driver offers a WGSL program the CPU rasterizer alone
+//! while CUDA opens the card there, and a laptop's Intel integrated GPU is a
+//! Vulkan device that CUDA cannot open at all. A list of everything present
+//! would therefore hand a program devices its substrate faults on, so each
+//! domain names its [`Substrate`] and the enumeration follows the program.
 
 use serde::{Deserialize, Serialize};
 use sima_core::Result;
+use sima_model::FormatId;
 
 /// A compute-capable device as enumerated: what it is, what it is called, and
 /// which card it is among identical ones.
@@ -42,41 +46,45 @@ pub enum DeviceType {
     Other,
 }
 
-/// Every compute-capable device this build can run on: the union of what the
-/// backends discover, each card listed once.
-pub fn enumerate_devices() -> Result<Vec<DeviceInfo>> {
-    let wgsl: Vec<DeviceInfo> = sima_toolkit_wgsl::enumerate_devices()?
-        .into_iter()
-        .map(from_wgsl)
-        .collect();
-    let cuda: Vec<DeviceInfo> = sima_toolkit_cuda::enumerate_devices()?
-        .into_iter()
-        .map(from_cuda)
-        .collect();
-    Ok(merge(wgsl, cuda))
+/// The execution backend a domain runs its work through, and so the one that
+/// decides which of this machine's devices are available to it.
+///
+/// Every domain names one. It is what turns a format id into an enumeration,
+/// and it is a property of the program rather than of the host.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Substrate {
+    /// Computes in the worker process itself, opening no device.
+    Host,
+    /// The WGSL toolkit, over any Vulkan driver present.
+    Wgsl,
+    /// The CUDA toolkit, over the NVIDIA driver.
+    Cuda,
 }
 
-/// Concatenates two backends' enumerations, dropping a device a later one
-/// repeats.
+/// Every device the program bound to `format` can run on.
 ///
-/// An NVIDIA card on a machine with both a Vulkan driver and a CUDA driver is
-/// discovered twice, and it is one card: the layers above count devices to
-/// place workers, so listing it twice would place two workers on one GPU.
-/// Identity is the `(vendor_id, device_id, member)` triple, which is exactly
-/// what a device binding names, and the first backend to report a card fixes
-/// its reported name and type.
-fn merge(first: Vec<DeviceInfo>, second: Vec<DeviceInfo>) -> Vec<DeviceInfo> {
-    let mut devices = first;
-    for device in second {
-        let seen = devices.iter().any(|present| {
-            (present.vendor_id, present.device_id, present.member)
-                == (device.vendor_id, device.device_id, device.member)
-        });
-        if !seen {
-            devices.push(device);
-        }
+/// Resolving the format is what selects the backend: the registration table
+/// pairs each program with the substrate it executes through, so nothing above
+/// this crate has to know which backends the build compiles in.
+pub fn enumerate_devices(format: &FormatId) -> Result<Vec<DeviceInfo>> {
+    devices_of(crate::domain_for(format)?.substrate)
+}
+
+/// One backend's devices in this module's vocabulary.
+fn devices_of(substrate: Substrate) -> Result<Vec<DeviceInfo>> {
+    match substrate {
+        // A program that opens no device enumerates none, and the layers above
+        // read that as a worker needing no device rather than as a bare host.
+        Substrate::Host => Ok(Vec::new()),
+        Substrate::Wgsl => Ok(sima_toolkit_wgsl::enumerate_devices()?
+            .into_iter()
+            .map(from_wgsl)
+            .collect()),
+        Substrate::Cuda => Ok(sima_toolkit_cuda::enumerate_devices()?
+            .into_iter()
+            .map(from_cuda)
+            .collect()),
     }
-    devices
 }
 
 /// The WGSL toolkit's enumerated device in this module's vocabulary. One of the
@@ -118,15 +126,16 @@ fn from_cuda(device: sima_toolkit_cuda::DeviceInfo) -> DeviceInfo {
 mod tests {
     use super::*;
 
-    /// One enumerated device in this module's vocabulary.
-    fn device(vendor_id: u32, device_id: u32, name: &str, member: u32) -> DeviceInfo {
-        DeviceInfo {
-            vendor_id,
-            device_id,
-            name: name.to_string(),
-            device_type: DeviceType::Discrete,
-            member,
-        }
+    /// A validated format id.
+    fn format(name: &str) -> FormatId {
+        FormatId::new(name).expect("format id")
+    }
+
+    /// The substrate the program bound to `name` runs on.
+    fn substrate_of(name: &str) -> Substrate {
+        crate::domain_for(&format(name))
+            .expect("a registered format")
+            .substrate
     }
 
     #[test]
@@ -221,54 +230,40 @@ mod tests {
     }
 
     #[test]
-    fn a_host_reached_by_one_backend_alone_enumerates_unchanged() {
-        // The union is a concatenation, so a machine only one backend discovers
-        // enumerates exactly the list that backend reports, in its order.
-        let vulkan = vec![
-            device(0x8086, 0x7d51, "Intel(R) Graphics (ARL)", 0),
-            device(0x10de, 0x2d39, "NVIDIA RTX PRO 2000", 0),
-        ];
-        assert_eq!(merge(vulkan.clone(), Vec::new()), vulkan);
-        assert_eq!(merge(Vec::new(), vulkan.clone()), vulkan);
+    fn a_wgsl_program_enumerates_the_wgsl_backend() {
+        // The rented-host case: Vulkan there reaches the CPU rasterizer alone
+        // while CUDA opens the card. Enumerating anything CUDA-only for this
+        // program would bind its worker to a device Vulkan cannot open.
+        assert_eq!(substrate_of("ca_evolution.gray_scott.v1"), Substrate::Wgsl);
+        assert_eq!(substrate_of("ca_evolution.nca.v1"), Substrate::Wgsl);
     }
 
     #[test]
-    fn a_card_both_backends_discover_is_listed_once() {
-        // The dev machine: an Intel iGPU and an NVIDIA card that Vulkan and CUDA
-        // both report. Three entries in, two out — one per physical card.
-        let vulkan = vec![
-            device(0x8086, 0x7d51, "Intel(R) Graphics (ARL)", 0),
-            device(0x10de, 0x2d39, "NVIDIA RTX PRO 2000", 0),
-        ];
-        let cuda = vec![device(
-            0x10de,
-            0x2d39,
-            "NVIDIA RTX PRO 2000 Blackwell Laptop GPU",
-            0,
-        )];
-        let merged = merge(vulkan.clone(), cuda);
-        assert_eq!(merged, vulkan, "the first report of a card is the one kept");
-    }
-
-    #[test]
-    fn members_of_one_class_are_distinct_devices() {
-        // Two identical cards are one class with two members, and the second
-        // member is a card of its own — never folded into the first.
-        let vulkan = vec![device(0x10de, 0x2684, "NVIDIA GeForce RTX 4090", 0)];
-        let cuda = vec![
-            device(0x10de, 0x2684, "NVIDIA GeForce RTX 4090", 0),
-            device(0x10de, 0x2684, "NVIDIA GeForce RTX 4090", 1),
-        ];
-        let merged = merge(vulkan, cuda);
-        assert_eq!(merged.len(), 2);
-        assert_eq!(merged[0].member, 0);
-        assert_eq!(merged[1].member, 1);
+    fn a_program_that_opens_no_device_enumerates_none() {
+        // The stub computes in the worker process, so it has no device to be
+        // placed on and the layers above derive a deviceless worker.
+        assert_eq!(substrate_of("stub.v1"), Substrate::Host);
+        assert!(
+            devices_of(Substrate::Host)
+                .expect("the host substrate always answers")
+                .is_empty()
+        );
     }
 
     #[test]
     fn enumeration_answers_on_a_machine_with_no_device_at_all() {
-        // Neither backend faults for want of a driver, so the probe the worker
-        // runs answers rather than failing.
-        enumerate_devices().expect("enumeration answers on any machine");
+        // No backend faults for want of a driver, so the probe the worker runs
+        // answers rather than failing, whichever program it is asked about.
+        for name in ["stub.v1", "ca_evolution.gray_scott.v1"] {
+            enumerate_devices(&format(name)).expect("enumeration answers on any machine");
+        }
+    }
+
+    #[test]
+    fn an_unknown_format_has_no_devices_to_enumerate() {
+        // The probe resolves the format before it touches a backend, so a
+        // format this build does not know is a validation error rather than an
+        // empty list that would read as a machine with no hardware.
+        assert!(enumerate_devices(&format("no-such-domain.v1")).is_err());
     }
 }
