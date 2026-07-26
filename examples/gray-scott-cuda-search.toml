@@ -1,0 +1,59 @@
+[run]
+root_seed = 1
+format = "ca_evolution.gray_scott_cuda.v1"
+
+[run.generator]
+id = "ca_evolution.gray_scott_cuda.v1"
+count = 1000
+feed = [0.010, 0.110]
+kill = [0.045, 0.070]
+diffusion_u = [0.16, 0.16]
+diffusion_v = [0.08, 0.08]
+
+[run.params]
+width = 128
+height = 128
+steps = 2000
+dt = 1.0
+base_u = 0.5
+base_v = 0.25
+side_divisor = 8
+noise_width = 0.02
+# Commit the final-grid snapshot only when a stat clears a threshold; absent,
+# every candidate's snapshot is committed. The scalar names one the reduction
+# emits — population, activity, or c<i>.{mean,var,min,max}. Requires an
+# unsegmented run. On a fleet of mixed device classes a threshold adjacent to a
+# float scalar's rounding envelope can decide differently per class; a
+# population threshold set away from an exact cell-count boundary is robust.
+# snapshot_when = { scalar = "activity", min = 1e-4 }
+
+[execution]
+store = "./store"
+workers = 2
+max_attempts = 3
+
+# The same Gray-Scott rule as `gray-scott-search.toml`, evaluated through CUDA
+# instead of Vulkan. It is a separate program with its own identity: the two
+# agree numerically to a tolerance rather than bit for bit, so neither reuses
+# the other's stored results, and a run of this config schedules only onto
+# NVIDIA devices — the enumeration a worker answers with follows the format id.
+#
+# Rent GPU instances to run beside the local workers. Uncomment to enable; the
+# provider's API key is read from the environment (VAST_API_KEY), never from
+# config, which is content-addressed. "strict" fill fails the run unless the
+# full count is acquired; "best-effort" runs on whatever came up. The budget
+# caps total spend and the rental phase's wall-clock; either arm is optional.
+# [fleet]
+# provider = "vast"
+# count = 2
+# fill = "strict"
+# image = "ghcr.io/alvatar/sima-worker:latest"
+#
+# [fleet.constraints]
+# gpu_models = ["RTX 4090"]
+# min_vram_mb = 16000
+# max_price_usd_hour = 0.5
+#
+# [fleet.budget]
+# max_spend_usd = 5.0
+# max_wall_clock_ms = 3600000
