@@ -41,12 +41,27 @@ pub const COMPILER_ID: &str = "ptx; arch=compute_75";
 /// drift apart silently.
 pub const PTX_OPTIONS: [&str; 2] = ["--gpu-architecture=compute_75", "--fmad=true"];
 
-/// Compiles CUDA C to PTX under [`PTX_OPTIONS`].
+/// Compiles CUDA C to PTX under [`PTX_OPTIONS`], with NVRTC 12.0.x.
 ///
 /// Needs `libnvrtc`, which comes with the CUDA toolkit or, without one, from the
 /// `nvidia-cuda-nvrtc-cu12` wheel — it is a userspace compiler that needs
 /// neither a driver nor a device. Compilation failures carry NVRTC's own
 /// diagnostics, which name the offending source line.
+///
+/// The version matters, because a committed artifact answers to two separate
+/// compatibility axes and only one of them is an option:
+///
+/// - the **architecture**, `compute_75`, set by [`PTX_OPTIONS`]; PTX is forward
+///   compatible, so the driver targets any newer card from it.
+/// - the **PTX ISA version**, stamped into the artifact's header by whichever
+///   NVRTC produced it, and settable by no flag. A driver older than the ISA
+///   rejects the module outright with `CUDA_ERROR_UNSUPPORTED_PTX_VERSION`,
+///   however old the architecture it targets.
+///
+/// Regeneration is therefore pinned to NVRTC 12.0.x, which emits ISA 8.0 and so
+/// loads on r525 and newer — below the driver branch of any host a run rents.
+/// A later NVRTC raises the ISA and narrows that set: 12.9 emits ISA 8.8, which
+/// needs r575.
 pub fn compile(source: &str) -> Result<String> {
     let options = CompileOptions {
         options: PTX_OPTIONS

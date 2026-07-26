@@ -134,7 +134,9 @@ The two toolkits reach the same tier by opposite routes. WGSL is lowered during
 the run, so a domain records the shader source and names the compiler that
 lowers it. CUDA kernels are compiled ahead of time and their PTX is committed,
 so a domain records the digest of that artifact and the canonical id states only
-what it targets.
+what it targets. Committed PTX is regenerated with NVRTC 12.0.x, which fixes the
+PTX ISA version at 8.0 and so keeps the artifacts loadable on r525 and newer
+drivers; the architecture, `compute_75`, is the separate axis the id names.
 
 ## Design principles
 

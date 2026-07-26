@@ -20,7 +20,11 @@
 //! userspace compiler that opens no device and needs no driver. It comes with
 //! the CUDA toolkit, or on its own from the `nvidia-cuda-nvrtc-cu12` wheel, in
 //! which case point `LD_LIBRARY_PATH` at the directory holding
-//! `libnvrtc.so.12`. The `compile-ptx` example is the regeneration step:
+//! `libnvrtc.so.12`. Use version 12.0.x: the NVRTC that compiles a kernel fixes
+//! the PTX ISA version in its header, which is the axis the loading driver is
+//! checked against, and 12.0.x emits ISA 8.0 for the widest driver support.
+//! [`compile`] documents both compatibility axes. The `compile-ptx` example is
+//! the regeneration step:
 //!
 //! ```text
 //! LD_LIBRARY_PATH=<dir> cargo run -p sima-toolkit-cuda --example compile-ptx \

@@ -113,7 +113,7 @@ mod tests {
         ),
         (
             "ca_evolution.gray_scott_cuda.v1",
-            "be97bae9519182ba8dac5d510ded2fdba74d48e7e6e27fb76f53f974d4e6ae5a",
+            "bb2bf989e6b61745b98d33b8273435ece89387c7e638df6f40209f47cacdef23",
         ),
         (
             "ca_evolution.nca.v1",

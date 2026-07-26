@@ -973,11 +973,25 @@ driver present. The surface mirrors the WGSL toolkit's — `Context`, `Buffer`,
 NVRTC under pinned options; the PTX is committed beside its source and the
 driver's just-in-time compiler lowers it to machine code for whatever card
 loads it. Nothing compiles CUDA C while a run executes, so a worker image needs
-only the driver, which arrives with the card. The target is `compute_75`, old
-enough to be broadly supported and forward compatible to any newer
-architecture. Each kernel carries a regeneration test asserting its committed
-artifact is exactly what its committed source compiles to; regenerating needs
-`libnvrtc` alone, which opens no device.
+only the driver, which arrives with the card. Each kernel carries a regeneration
+test asserting its committed artifact is exactly what its committed source
+compiles to; regenerating needs `libnvrtc` alone, which opens no device.
+
+**Two compatibility axes.** A committed artifact must both target an
+architecture the card implements and carry a PTX ISA version the driver
+understands, and the two are set by different things:
+
+- The **architecture** is a compile option, pinned to `compute_75` — old enough
+  to be broadly supported, and forward compatible, so the driver lowers it to
+  any newer card.
+- The **ISA version** is stamped into the artifact's header by whichever NVRTC
+  compiled it, and no flag moves it. A driver older than the ISA rejects the
+  module with `CUDA_ERROR_UNSUPPORTED_PTX_VERSION` however old the architecture
+  it targets.
+
+Regeneration is therefore pinned to NVRTC 12.0.x, which emits ISA 8.0 and loads
+on r525 and newer, below the driver branch of any host a run rents. Later
+toolkits raise it: 12.9 emits ISA 8.8 and needs r575.
 
 **Identity surface.** What a domain records for a CUDA kernel is the digest of
 the **PTX** — the artifact that executes — rather than a source digest paired
