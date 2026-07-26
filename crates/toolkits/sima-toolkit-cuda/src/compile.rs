@@ -32,16 +32,21 @@ pub const COMPILER_ID: &str = "ptx; arch=compute_75";
 /// default: it is the arithmetic a CUDA program would normally have, and the
 /// tolerance a cross-substrate comparison holds to is set with that in mind.
 ///
+/// There is no optimization level here. NVRTC optimizes device code fully by
+/// default and rejects `-O3` outright; its `--dopt` switch is meaningful only
+/// beside the debug flag `-G`, which no committed PTX is built with.
+///
 /// The regeneration test recompiles each committed kernel under exactly these
 /// options and asserts the result matches what is committed, so the pair cannot
 /// drift apart silently.
-pub const PTX_OPTIONS: [&str; 3] = ["--gpu-architecture=compute_75", "-O3", "--fmad=true"];
+pub const PTX_OPTIONS: [&str; 2] = ["--gpu-architecture=compute_75", "--fmad=true"];
 
 /// Compiles CUDA C to PTX under [`PTX_OPTIONS`].
 ///
-/// Needs `libnvrtc`, which ships with the CUDA toolkit and exists only on a
-/// developer machine. Compilation failures carry NVRTC's own diagnostics, which
-/// name the offending source line.
+/// Needs `libnvrtc`, which comes with the CUDA toolkit or, without one, from the
+/// `nvidia-cuda-nvrtc-cu12` wheel — it is a userspace compiler that needs
+/// neither a driver nor a device. Compilation failures carry NVRTC's own
+/// diagnostics, which name the offending source line.
 pub fn compile(source: &str) -> Result<String> {
     let options = CompileOptions {
         options: PTX_OPTIONS
@@ -87,10 +92,10 @@ extern \"C\" __global__ void __launch_bounds__(64) main_kernel(
         );
     }
 
-    /// Requires the CUDA toolkit for `libnvrtc`. Run with
-    /// `cargo test -- --ignored` on a machine that has it.
+    /// Requires `libnvrtc`. Run with `cargo test -- --ignored` on a machine
+    /// that has it.
     #[test]
-    #[ignore = "requires the CUDA toolkit"]
+    #[ignore = "requires libnvrtc"]
     fn compile_produces_ptx_for_the_declared_architecture() {
         let ptx = compile(SAMPLE).expect("compile the sample");
         assert!(
@@ -103,10 +108,10 @@ extern \"C\" __global__ void __launch_bounds__(64) main_kernel(
         );
     }
 
-    /// Requires the CUDA toolkit for `libnvrtc`. Run with
-    /// `cargo test -- --ignored` on a machine that has it.
+    /// Requires `libnvrtc`. Run with `cargo test -- --ignored` on a machine
+    /// that has it.
     #[test]
-    #[ignore = "requires the CUDA toolkit"]
+    #[ignore = "requires libnvrtc"]
     fn compile_rejects_malformed_cuda_c() {
         let result = compile("__global__ void broken() { let x = ; }");
         match result {
@@ -117,10 +122,10 @@ extern \"C\" __global__ void __launch_bounds__(64) main_kernel(
         }
     }
 
-    /// Requires the CUDA toolkit for `libnvrtc`. Run with
-    /// `cargo test -- --ignored` on a machine that has it.
+    /// Requires `libnvrtc`. Run with `cargo test -- --ignored` on a machine
+    /// that has it.
     #[test]
-    #[ignore = "requires the CUDA toolkit"]
+    #[ignore = "requires libnvrtc"]
     fn compilation_is_reproducible() {
         // Committing generated PTX rests on this: the same source under the
         // same options yields the same text, so the regeneration test compares
