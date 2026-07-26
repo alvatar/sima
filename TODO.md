@@ -558,7 +558,7 @@ leaked instances are leaked money.
       deliberately absent: they presume adversarial hosts running
       foreign code and require cross-hardware determinism the float
       families do not promise.
-- [ ] M6.7 CUDA execution toolkit: a second real execution backend,
+- [x] M6.7 CUDA execution toolkit: a second real execution backend,
       `sima-toolkit-cuda`, driving kernels through the CUDA driver API. A
       kernel is authored in CUDA C and compiled to PTX once with NVRTC; the
       PTX is committed beside its source and the driver's just-in-time
