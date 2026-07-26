@@ -15,6 +15,7 @@ members = [
     "crates/sima-transport",
     "crates/sima-worker",
     "crates/providers/sima-provider-vast",
+    "crates/toolkits/sima-toolkit-cuda",
     "crates/toolkits/sima-toolkit-wgsl",
 ]
 
@@ -27,7 +28,19 @@ ash = "0.38"
 blake3 = "1"
 bytemuck = "1"
 crossterm = "0.28"
+# Driver API and NVRTC bindings that open the CUDA libraries at run time, so
+# the workspace builds with no CUDA toolkit present. `cuda-12000` pins the
+# binding set to the CUDA 12.0 driver API, the oldest one every driver branch
+# in use supports, and the driver API is backward compatible from there.
+cudarc = { version = "0.19.8", default-features = false, features = [
+    "std",
+    "driver",
+    "nvrtc",
+    "dynamic-loading",
+    "cuda-12000",
+] }
 libc = "0.2"
+libloading = "0.9"
 naga = { version = "30", features = ["wgsl-in", "spv-out"] }
 ratatui = "0.29"
 serde = { version = "1", features = ["derive"] }
