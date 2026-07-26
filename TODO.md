@@ -38,9 +38,11 @@ serialization and the compute shape. Required families across the ladder:
 reaction-diffusion, Lenia/Flow-Lenia, Neural CA, Physarum.
 Visualization is out of scope: snapshots in the store are
 consumed by external tools (the `../luz` renderer reads them as volumes).
-CI is in place (`.github/workflows/ci.yml`: fmt + clippy + workspace tests on
-every push and PR); GPU-gated tests are skipped in hosted CI and run on the
-dev machine — self-hosted runner revisited in P4. Reproducibility is declared
+CI is in place (`.github/workflows/ci.yml`: fmt + clippy on a hosted runner,
+the workspace test suite on a self-hosted runner carrying both GPU classes).
+No test is `#[ignore]`d for needing a device: the whole suite runs under a
+plain `cargo test`, and the only ignored tests are those that rent machines or
+call a paid API. Reproducibility is declared
 per domain across two tiers (README, Determinism), a property rather than the
 objective. Evaluation research and model-family research are standing tracks,
 deliberately out of the phase ladder.
@@ -64,6 +66,23 @@ Workers are stateless leaseholders (threads in P1, processes and remote
 workers later). Executors are pure compute; workers commit results through the
 catalog. The store is the only durable state; the orchestrator process is
 disposable at any instant.
+
+## Execution order
+
+Phase sections below are numbered by when they were conceived, not by when they
+run. The remaining order is:
+
+1. **P6** — finish the slingshot (M6.8, the phase acceptance).
+2. **P10** — out-of-tree executors.
+3. **P11** — store scale and environment provenance.
+
+Then the ladder pauses.
+
+P7 (evaluation funnel), P8 (continuous-family rigor), and P9 (Physarum) are
+deferred: they are model-specific, evaluation included, since a verdict is a
+judgement about a family's behaviour. Infrastructure comes first, and P10 is
+the consequential one — it is how anything gets built on this without
+reopening the core, which matters most while the ladder is paused.
 
 ## P1 — Infrastructure spine
 
@@ -255,7 +274,7 @@ equal length.
       only when no live manifest references it; remove a run's exclusive
       closure — lands when result objects first fill disk (M3.4 at the latest,
       earlier if M2.2/M2.3 test runs pile objects up), not before. It is the
-      same retention lever P7 (M7.1) formalizes; it arrives early only because
+      same retention lever M11.2 formalizes; it arrives early only because
       disk pressure does.
 
 ## P3 — First model families
@@ -369,7 +388,8 @@ loudly (journaled) and converges — a run always continues across hardware
 changes. Device binding is derived operational state, never identity: the
 run id is device-independent, and mixed-set float manifests are
 schedule-dependent by design (single-class runs remain the per-backend
-determinism mode; bit-agreement across device classes is P8, M8.1).
+determinism mode; results from two backend classes are compared
+within tolerance, never asserted bit-equal).
 Killing a remote worker mid-lease converges through retry with no manifest
 difference.
 
@@ -393,7 +413,7 @@ difference.
       name back for the journal; the toolkit gains device enumeration and
       selection by (vendor id, device id, member); `sima status` shows the
       run's device composition. Device identity never enters task keys or
-      the environment hash (that is M8.1).
+      the environment hash (driver provenance is M11.3).
 - [x] M4.3 Remote worker over SSH, against a manually provisioned machine.
       Settled at elaboration; split into three sequential PRs:
       (a) the two pre-existing test flakes (orchestrator-lock race in the
@@ -596,7 +616,101 @@ leaked instances are leaked money.
 Expected to be re-split when reached; provider APIs and trust mechanisms hide
 surprises.
 
+## P10 — Out-of-tree executors (extensibility without forking)
+
+Through P9 every executor and generator is an in-tree trait implementation
+selected by a compile-time format-id match (M1.6). This phase opens the
+contract as a public extension surface: a custom executor — and generator, by
+the same mechanism — is added against a public API and registered at runtime,
+with no sima source edit and no fork. The pure-compute trust boundary
+(executors never touch the store; workers commit through the catalog) is what
+makes loading foreign code safe; here it is enforced by isolation, not only by
+convention.
+
+The surface is open by construction rather than frozen after the fact. Nothing
+here is versioned into a compatibility promise: the point is that a third party
+adds something we did not anticipate, so a contract that works only because it
+enumerates the cases we happened to build is already failing. The genericity
+comes from the opacity invariant the infrastructure already holds — specs,
+params, artifacts, and state are opaque content-addressed bytes, and `Stats` are
+free-form named scalars — not from having built more families of our own to
+check it against. Where the contract is closed today it is closed concretely and
+can be found by reading it; the device backend below is the worked example.
+
+Preference throughout: pluggability over abstraction. A plug point hands over a
+concrete implementation; it does not define a universal interface that
+anticipates every case.
+
+Mechanism is deliberately open, chosen at elaboration: dynamic library loading, a
+subprocess/IPC protocol, WASM, or a manifest plus external binary each trade
+isolation, performance, and packaging differently.
+
+Phase acceptance: a custom executor built entirely against the published API,
+in a separate repository with no sima source edit, runs through the full spine
+(search, commit, re-evaluation, distribution) with results byte-reproducible
+and portable exactly as an in-tree family's; its identity folds into the
+environment hash, so two machines that load the same custom executor agree and
+one that loads a different build is distinguished — determinism and store
+portability (P1 acceptance (d)) hold across the boundary.
+
+- [ ] P10.1 Public contract API: publish the executor/generator traits and their
+      wire types (spec, params, artifact, stats, task input, execution context)
+      as a surface decoupled from internal crate churn. Audit it for anything
+      that only admits cases we already built, and open those; the deliverable
+      is the audit and its fixes, not a frozen version stamp.
+- [ ] P10.2 Pluggable device backends: `Backend` is a closed enum
+      (`Host | Wgsl | Cuda`) whose only job is selecting an enumeration
+      function, so a third party bringing Metal, ROCm, or an accelerator we have
+      not thought of cannot name their backend or supply its device list. Delete
+      the enum and have `Domain` carry the enumeration directly, beside the
+      `executor` and `device_desc` function pointers it already holds; the
+      engine supplies it in place of `const BACKEND`. Removes a concept rather
+      than adding one, and needs no registry or backend id.
+- [ ] P10.3 Runtime registration: an out-of-tree executor announces its format
+      id and is selected without editing sima's dispatch — the static
+      format-id match (M1.6) becomes a registry. Registration and loading
+      mechanism decided here. The registration unit follows the `Family`-bundle
+      decision from M1.6: a third party registers the format-bound bundle
+      (codec + executor + reference + kernel) as one object, with generators a
+      separate plug targeting the format — do not fuse executor and generator.
+- [ ] P10.4 Isolation and trust: run out-of-tree executors process-isolated so
+      the pure-compute boundary is OS-enforced (foreign code cannot reach the
+      store); their results feed the trust-tiered validation (P6.7).
+- [ ] P10.5 Identity and packaging: fold a custom executor's identity (version,
+      build/content hash) into the environment hash so runs stay reproducible
+      and portable; define how a custom family is packaged, versioned, and
+      pinned.
+- [ ] P10.6 Reference out-of-tree executor: a worked example family in a
+      separate repository, built only against the published API and exercised
+      through the full spine — the phase's proof that no fork is required.
+
+Expected to be re-split when reached; the registration and isolation mechanism
+hides surprises.
+
+## P11 — Store scale and environment provenance
+
+Two store-scaling levers and one provenance question, all independent of any
+model or metric. Last active phase before the pause.
+
+- [ ] M11.1 Object packing for scale: millions of small objects press on inode
+      and directory limits; a pack format — many objects in one file with an
+      index — is the answer. Beside retention (M11.2) as the other scaling lever
+- [ ] M11.2 Snapshot retention policy: what is kept, for how long, and what
+      re-evaluation minimally requires. The policy deferred from M3.4, where the
+      mechanism (drop an object when no live manifest references it) already
+      landed under disk pressure
+- [ ] M11.3 Driver provenance in the environment hash: a driver update can shift
+      float results, and the driver is currently journaled as operational
+      provenance rather than hashed, on the reasoning that a hash cannot see it
+      across machines of one class. If that reasoning does not hold, stale
+      results are reused as valid. Decide it: fold the driver in, or reaffirm the
+      journal and record why. Scoped to the decision and its consequences —
+      no tolerance policy, no strict-IEEE path
+
 ## P7 — Evaluation funnel v1
+
+**Deferred.** Model-family and evaluation work is paused; the ladder stops
+after P11. This phase resumes by decision, not by sequence.
 
 Deliberately simple. The funnel machinery, with the cheapest deterministic
 metrics only; metric research lives in its own track.
@@ -607,9 +721,7 @@ thresholds re-classifies without any re-execution.
 
 - [ ] M7.1 Periodic snapshot/stats recording: segment boundaries (M2.3) are
       the natural sampling points; this milestone adds the recording policy,
-      not a new mechanism. Absorbs the snapshot retention policy deferred
-      from M3.4: what is kept, for how long, and what re-evaluation minimally
-      requires
+      not a new mechanism. Retention is M11.2
 - [ ] M7.2 Verdict classification: dead / frozen / exploding / cyclic,
       thresholds from config. Classification reads named numeric metrics
       generically, so it requires the structured `Stats` decided at M6.3 rather
@@ -617,31 +729,24 @@ thresholds re-classifies without any re-execution.
       decoder here and defeat the funnel's family-agnostic design
 - [ ] M7.3 Staged cheapest-first funnel + re-evaluation from recorded runs
       without re-execution
-- [ ] M7.4 Object packing for scale, beside retention (M7.1) as the other
-      store-scaling lever: millions of small objects press on inode and
-      directory limits; a pack format — many objects in one file with an
-      index — is the answer
 
 ## P8 — Continuous-family rigor
+
+**Deferred.** Model-family and evaluation work is paused; the ladder stops
+after P11. This phase resumes by decision, not by sequence.
 
 Final research on the float families: the hard determinism, the harder
 variants, and scale. The families already run and are explorable (P3); this
 phase makes them rigorous and complete.
 
 Phase acceptance: on one pinned backend class, every float family is
-bit-identical run-to-run; across two distinct backend classes, results agree
-within the recorded tolerance policy; a seeded search run reproduces its
-fitness trajectory exactly. The tolerance policy (M8.1) is a written
-deliverable — comparison metric, bound, and its provenance record format —
-not an aspiration; it is the hardest determinism question in the project and
-"done" is defined by tests against it.
+bit-identical run-to-run, and a seeded search run reproduces its fitness
+trajectory exactly. Cross-backend bit-equality is explicitly not pursued: two
+backends are two program identities with two environments, so no result of one
+is ever reused for the other, and agreement between them is a transcription
+check at tolerance — which the cross-backend test shipped in M6.7 already
+performs. Driver provenance moved to M11.3.
 
-- [ ] M8.1 Cross-substrate float tolerance policy: strict-IEEE shader path,
-      fixed reduction order, and the tolerance policy document + tests (the
-      comparison metric, bound, and provenance record format — the
-      deliverable, per phase acceptance). Folds the compiled kernel and driver
-      into the environment hash for the float families. Shared foundation for
-      cross-substrate agreement across every family in P3
 - [ ] M8.2 Lenia and Flow-Lenia (Lenia descoped here from P3). Lenia:
       large-radius convolution kernel + growth function; genome = kernel /
       growth parameters; seeded generator, CPU reference + WGSL kernel.
@@ -656,6 +761,9 @@ not an aspiration; it is the hardest determinism question in the project and
 - [ ] M8.4 Within-launch population batching for small grids
 
 ## P9 — Physarum (agent-field family)
+
+**Deferred.** Model-family and evaluation work is paused; the ladder stops
+after P11. This phase resumes by decision, not by sequence.
 
 The second executor kind: a stigmergic multi-agent model (Jones's slime-mould
 transport networks). State is an agent population plus a trail field; the step
@@ -694,56 +802,6 @@ resumed equals an unsegmented run of equal length, bit-exact.
 - [ ] M9.4 First Physarum search through the full spine (funnel, slingshot,
       distribution unchanged); network-structure interestingness metrics feed
       the P7 funnel via the standing evaluation track
-
-## P10 — Out-of-tree executors (extensibility without forking)
-
-Through P9 every executor and generator is an in-tree trait implementation
-selected by a compile-time format-id match (M1.6). This phase opens the
-contract as a public extension surface: a custom executor — and generator, by
-the same mechanism — is added against a stable API and registered at runtime,
-with no sima source edit and no fork. The pure-compute trust boundary
-(executors never touch the store; workers commit through the catalog) is what
-makes loading foreign code safe; here it is enforced by isolation, not only by
-convention. The contract must be proven by several real in-tree families first,
-which is why the phase sits after the family phases rather than beside M1.4.
-
-Mechanism is deliberately open, chosen at elaboration and informed by the P3 /
-P8 / P9 families built against the same contract: dynamic library loading, a
-subprocess/IPC protocol, WASM, or a manifest plus external binary each trade
-isolation, performance, and packaging differently.
-
-Phase acceptance: a custom executor built entirely against the published API,
-in a separate repository with no sima source edit, runs through the full spine
-(search, commit, re-evaluation, distribution) with results byte-reproducible
-and portable exactly as an in-tree family's; its identity folds into the
-environment hash, so two machines that load the same custom executor agree and
-one that loads a different build is distinguished — determinism and store
-portability (P1 acceptance (d)) hold across the boundary.
-
-- [ ] P10.1 Stable contract API: freeze the executor/generator traits and their
-      wire types (spec, params, artifact, stats, task input, execution context)
-      as a versioned public surface decoupled from internal crate churn;
-      document the compatibility guarantee.
-- [ ] P10.2 Runtime registration: an out-of-tree executor announces its format
-      id and is selected without editing sima's dispatch — the static
-      format-id match (M1.6) becomes a registry. Registration and loading
-      mechanism decided here. The registration unit follows the `Family`-bundle
-      decision from M1.6: a third party registers the format-bound bundle
-      (codec + executor + reference + kernel) as one object, with generators a
-      separate plug targeting the format — do not fuse executor and generator.
-- [ ] P10.3 Isolation and trust: run out-of-tree executors process-isolated so
-      the pure-compute boundary is OS-enforced (foreign code cannot reach the
-      store); their results feed the trust-tiered validation (P6.7).
-- [ ] P10.4 Identity and packaging: fold a custom executor's identity (version,
-      build/content hash) into the environment hash so runs stay reproducible
-      and portable; define how a custom family is packaged, versioned, and
-      pinned.
-- [ ] P10.5 Reference out-of-tree executor: a worked example family in a
-      separate repository, built only against the published API and exercised
-      through the full spine — the phase's proof that no fork is required.
-
-Expected to be re-split when reached; the registration and isolation mechanism
-hides surprises.
 
 ## Research tracks (standing)
 
