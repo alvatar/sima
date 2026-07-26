@@ -2,12 +2,8 @@
 //! spread across unequal cards, chain stickiness across a resume, a rebind
 //! when a card is gone, and single-device determinism unchanged.
 //!
-//! Every test here needs the machine's GPUs, so all are `#[ignore]` like the
-//! other device suites. Run them where the hardware is:
-//!
-//! ```text
-//! cargo test -p sima --test devices -- --ignored
-//! ```
+//! Every test here needs the machine's GPUs and runs under a plain
+//! `cargo test`, like the other device suites.
 //!
 //! The placement rule itself is proven device-free in the scheduler's own
 //! tests; what these prove is that the whole path — config, resolution,
@@ -160,7 +156,6 @@ fn chain_with_work_on(config: &Path, device: &str) -> Option<usize> {
 /// A Gray-Scott search over both of this machine's GPUs completes, uses both,
 /// and keeps every chain on one of them.
 #[test]
-#[ignore = "requires both GPUs"]
 fn a_search_over_two_device_classes_uses_both_and_splits_no_chain() {
     let dir = tempfile::tempdir().expect("temp dir");
     let config = common::write_config_text(
@@ -196,7 +191,6 @@ fn a_search_over_two_device_classes_uses_both_and_splits_no_chain() {
 /// A run killed mid-flight and resumed keeps each chain on the class it
 /// started on: the binding is durable, so nothing rebinds.
 #[test]
-#[ignore = "requires both GPUs"]
 fn chains_keep_their_class_across_a_resume() {
     let dir = tempfile::tempdir().expect("temp dir");
     let config = common::write_config_text(
@@ -249,7 +243,6 @@ fn chains_keep_their_class_across_a_resume() {
 /// A chain bound to a class the config no longer names moves to one that is
 /// present, loudly, and the run converges.
 #[test]
-#[ignore = "requires both GPUs"]
 fn removing_a_device_rebinds_its_chains_and_the_run_converges() {
     let dir = tempfile::tempdir().expect("temp dir");
     let two = common::write_config_text(
@@ -301,7 +294,6 @@ fn removing_a_device_rebinds_its_chains_and_the_run_converges() {
 /// commits under a plain worker count: placement is operational, so it reaches
 /// nothing a run records.
 #[test]
-#[ignore = "requires an NVIDIA GPU"]
 fn a_single_device_run_commits_the_same_manifest_as_a_plain_worker_count() {
     let dir = tempfile::tempdir().expect("temp dir");
     // The reference: a plain worker count over the backend's own device

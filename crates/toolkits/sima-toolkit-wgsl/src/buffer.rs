@@ -257,17 +257,15 @@ fn create_buffer(
 mod tests {
     use super::*;
 
-    /// Requires a real Vulkan device. Run with `cargo test -- --ignored`.
+    /// Requires a real Vulkan device.
     #[test]
-    #[ignore = "requires a Vulkan device"]
     fn buffer_rejects_zero_size() {
         let context = Context::new().expect("create compute context");
         assert!(matches!(context.buffer(0), Err(Error::Gpu(_))));
     }
 
-    /// Requires a real Vulkan device. Run with `cargo test -- --ignored`.
+    /// Requires a real Vulkan device.
     #[test]
-    #[ignore = "requires a Vulkan device"]
     fn buffer_round_trips_bytes() {
         let context = Context::new().expect("create compute context");
         let data: Vec<u8> = (0..=255).collect();

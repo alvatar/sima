@@ -177,10 +177,8 @@ mod tests {
     /// from committed PTX exactly as a model's kernel is.
     const SMOKE_PTX: &str = include_str!("../../../kernels/smoke.ptx");
 
-    /// Requires `libnvrtc`. Run with `cargo test -- --ignored` on a machine
-    /// that has it.
+    /// Requires `libnvrtc`.
     #[test]
-    #[ignore = "requires libnvrtc"]
     fn the_committed_ptx_reproduces_from_its_source() {
         assert_eq!(
             sima_toolkit_cuda::compile(include_str!("../../../kernels/smoke.cu"))
@@ -189,9 +187,8 @@ mod tests {
         );
     }
 
-    /// Requires a CUDA device. Run with `cargo test -- --ignored`.
+    /// Requires a CUDA device.
     #[test]
-    #[ignore = "requires a CUDA device"]
     fn run_advances_one_step() {
         let context = Context::new().expect("create compute context");
         let kernel = context
@@ -209,9 +206,8 @@ mod tests {
         assert_eq!(result.data(), &[4.0, 4.0, 5.0, 5.0, 5.0]);
     }
 
-    /// Requires a CUDA device. Run with `cargo test -- --ignored`.
+    /// Requires a CUDA device.
     #[test]
-    #[ignore = "requires a CUDA device"]
     fn run_composes_across_steps() {
         // Advancing k steps must equal advancing one step k times, for even and
         // odd k alike. A ping-pong that returns the wrong buffer for even step
@@ -234,9 +230,8 @@ mod tests {
         assert_eq!(three.to_bytes(), advance(&two, 1).to_bytes());
     }
 
-    /// Requires a CUDA device. Run with `cargo test -- --ignored`.
+    /// Requires a CUDA device.
     #[test]
-    #[ignore = "requires a CUDA device"]
     fn run_zero_steps_returns_the_input() {
         let context = Context::new().expect("create compute context");
         let kernel = context

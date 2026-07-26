@@ -98,10 +98,8 @@ mod tests {
     /// The shipped compute kernel's committed PTX: `out[i] = in[i] * 2 + 1`.
     const SMOKE_PTX: &str = include_str!("../kernels/smoke.ptx");
 
-    /// Requires `libnvrtc`. Run with `cargo test -- --ignored` on a machine
-    /// that has it.
+    /// Requires `libnvrtc`.
     #[test]
-    #[ignore = "requires libnvrtc"]
     fn the_committed_ptx_reproduces_from_its_source() {
         // The committed artifact is what a device loads, so it must be exactly
         // what the committed source compiles to.
@@ -120,9 +118,8 @@ mod tests {
         assert_eq!(COMPILER_ID, "ptx; arch=compute_75");
     }
 
-    /// Requires an NVIDIA device. Run with `cargo test -- --ignored`.
+    /// Requires an NVIDIA device.
     #[test]
-    #[ignore = "requires a CUDA device"]
     fn kernel_reports_identity_inputs() {
         let context = Context::new().expect("create compute context");
         let kernel = context
@@ -133,9 +130,8 @@ mod tests {
         assert_eq!(kernel.block_width(), 64);
     }
 
-    /// Requires an NVIDIA device. Run with `cargo test -- --ignored`.
+    /// Requires an NVIDIA device.
     #[test]
-    #[ignore = "requires a CUDA device"]
     fn an_entry_point_the_module_does_not_declare_is_rejected() {
         let context = Context::new().expect("create compute context");
         match context.kernel(SMOKE_PTX, "no_such_entry", 64) {
@@ -147,9 +143,8 @@ mod tests {
         }
     }
 
-    /// Requires an NVIDIA device. Run with `cargo test -- --ignored`.
+    /// Requires an NVIDIA device.
     #[test]
-    #[ignore = "requires a CUDA device"]
     fn malformed_ptx_is_rejected_by_the_driver() {
         let context = Context::new().expect("create compute context");
         match context.kernel("this is not PTX", "main_kernel", 64) {
@@ -161,9 +156,8 @@ mod tests {
         }
     }
 
-    /// Requires an NVIDIA device. Run with `cargo test -- --ignored`.
+    /// Requires an NVIDIA device.
     #[test]
-    #[ignore = "requires a CUDA device"]
     fn a_block_width_the_device_cannot_launch_is_rejected() {
         // Caught before the module loads, so a mistyped width is a clear
         // toolkit error rather than an opaque launch failure later.

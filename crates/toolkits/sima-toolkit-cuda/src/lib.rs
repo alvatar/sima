@@ -50,17 +50,16 @@
 //!
 //! # Tests
 //!
-//! Tests split three ways by what they touch. Pure ones run anywhere and are
-//! covered by `cargo test`. Tests that open a [`Context`] need an NVIDIA device
-//! and are marked `#[ignore]`, so `cargo test` skips them and hosted CI stays
-//! green with no device present:
+//! Tests split three ways by what they touch: pure ones run anywhere, tests
+//! that open a [`Context`] need an NVIDIA device, and tests that call
+//! [`compile`] need `libnvrtc` instead of a device. All three run under a plain
+//! `cargo test`, with the requirement stated in each test's doc comment, so a
+//! device or compiler fault surfaces as a test failure rather than a skipped
+//! test. The compilation tests need `libnvrtc` on the loader path:
 //!
 //! ```text
-//! cargo test -p sima-toolkit-cuda -- --ignored
+//! LD_LIBRARY_PATH=<dir> cargo test -p sima-toolkit-cuda
 //! ```
-//!
-//! Tests that call [`compile`] need `libnvrtc` instead of a device, and say so
-//! in their own `#[ignore]` reason.
 //!
 //! `cudarc` opens the CUDA libraries at run time, so the crate builds with no
 //! CUDA toolkit and no driver present.

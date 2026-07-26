@@ -179,9 +179,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 "#;
 
-    /// Requires a real Vulkan device. Run with `cargo test -- --ignored`.
+    /// Requires a real Vulkan device.
     #[test]
-    #[ignore = "requires a Vulkan device"]
     fn a_kernel_that_declares_no_uniforms_evaluates() {
         // The smoke shader declares the convention's first three bindings and
         // no uniform block, which is what a model with no uniform values gets.
@@ -211,9 +210,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         assert!(scalars["c0.mean"] > 7.5, "{scalars:?}");
     }
 
-    /// Requires a real Vulkan device. Run with `cargo test -- --ignored`.
+    /// Requires a real Vulkan device.
     #[test]
-    #[ignore = "requires a Vulkan device"]
     fn the_engine_evaluates_exactly_as_the_harness_it_wraps() {
         // The engine is the dispatch harness and the reduction behind one
         // call, so its scalars and its final grid must be bit for bit what

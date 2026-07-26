@@ -208,9 +208,8 @@ mod tests {
         }
     }
 
-    /// Requires a CUDA device. Run with `cargo test -- --ignored`.
+    /// Requires a CUDA device.
     #[test]
-    #[ignore = "requires a CUDA device"]
     fn the_engine_advances_and_reduces_a_grid() {
         // The engine is the dispatch harness and the reduction behind one call.
         // The smoke kernel is a neighborhood max, so advancing a grid can only
@@ -244,10 +243,8 @@ mod tests {
         assert_eq!(grid.channels(), initial.channels());
     }
 
-    /// Requires both a CUDA device and a Vulkan device. Run with
-    /// `cargo test -- --ignored`.
+    /// Requires both a CUDA device and a Vulkan device.
     #[test]
-    #[ignore = "requires a CUDA device"]
     fn both_substrates_agree_on_the_same_grid() {
         // The port's exit criterion: the same kernel transcribed for the two
         // substrates, advanced over the same grid, reduces to the same scalars.
@@ -282,9 +279,8 @@ mod tests {
         }
     }
 
-    /// Requires a CUDA device. Run with `cargo test -- --ignored`.
+    /// Requires a CUDA device.
     #[test]
-    #[ignore = "requires a CUDA device"]
     fn a_zero_step_evaluation_reports_no_activity() {
         // Both buffers hold the initial grid, so the pair is equal and the
         // reduction sees no change — the resumption case where a segment
@@ -301,9 +297,8 @@ mod tests {
         assert_eq!(scalars["activity"], 0.0);
     }
 
-    /// Requires a CUDA device. Run with `cargo test -- --ignored`.
+    /// Requires a CUDA device.
     #[test]
-    #[ignore = "requires a CUDA device"]
     fn a_device_the_substrate_cannot_open_fails_naming_it() {
         // The binding names a class this machine's CUDA driver does not have —
         // an Intel integrated GPU is the live case, since the WGSL substrate

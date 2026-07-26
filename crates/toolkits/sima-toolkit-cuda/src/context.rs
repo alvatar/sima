@@ -77,18 +77,16 @@ mod tests {
     use super::*;
     use sima_core::Error;
 
-    /// Requires an NVIDIA device. Run with `cargo test -- --ignored`.
+    /// Requires an NVIDIA device.
     #[test]
-    #[ignore = "requires a CUDA device"]
     fn context_reports_device_provenance() {
         let context = Context::new().expect("create compute context");
         assert!(!context.device_name().is_empty());
         assert!(!context.driver_version().is_empty());
     }
 
-    /// Requires an NVIDIA device. Run with `cargo test -- --ignored`.
+    /// Requires an NVIDIA device.
     #[test]
-    #[ignore = "requires a CUDA device"]
     fn a_context_opens_on_every_enumerated_device() {
         let devices = crate::enumerate_devices().expect("enumerate devices");
         assert!(!devices.is_empty(), "at least one CUDA device");
@@ -101,9 +99,8 @@ mod tests {
         }
     }
 
-    /// Requires an NVIDIA device. Run with `cargo test -- --ignored`.
+    /// Requires an NVIDIA device.
     #[test]
-    #[ignore = "requires a CUDA device"]
     fn opening_an_absent_device_class_fails() {
         assert!(matches!(
             Context::for_device(0xdead, 0xbeef, 0),

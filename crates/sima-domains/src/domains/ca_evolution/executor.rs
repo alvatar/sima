@@ -546,9 +546,8 @@ mod tests {
         }
     }
 
-    /// Requires a real Vulkan device. Run with `cargo test -- --ignored`.
+    /// Requires a real Vulkan device.
     #[test]
-    #[ignore = "requires a Vulkan device"]
     fn a_bare_grid_evaluation_reduces_to_named_scalars() {
         // A bare-grid model reduces its final grid pair into the named scalars;
         // the family blob stays empty. Gray-Scott, two channels, is the vehicle.
@@ -592,9 +591,8 @@ mod tests {
         }
     }
 
-    /// Requires a real Vulkan device. Run with `cargo test -- --ignored`.
+    /// Requires a real Vulkan device.
     #[test]
-    #[ignore = "requires a Vulkan device"]
     fn a_stepped_evaluation_reduces_the_decoded_grid() {
         // A stepped model frames its committed state, but the reduction runs over
         // the resident grid pair, so it names the same scalars. NCA, eight
@@ -631,9 +629,8 @@ mod tests {
         }
     }
 
-    /// Requires a real Vulkan device. Run with `cargo test -- --ignored`.
+    /// Requires a real Vulkan device.
     #[test]
-    #[ignore = "requires a Vulkan device"]
     fn a_failed_predicate_drops_the_snapshot_but_keeps_the_stats() {
         // `population` is a fraction, so a minimum of 2.0 can never be met: the
         // state artifact is dropped, the outcome still completes, and the stats

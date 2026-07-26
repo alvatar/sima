@@ -8,8 +8,8 @@
 //! ssh prefix — every layer of the remote-worker mechanism except the ssh hop,
 //! which the transport cannot distinguish from any other pipe carrier. These are
 //! `#[ignore]` and skip clean when the image is absent (`SIMA_TEST_IMAGE`
-//! unset), exactly as the device suite skips without a GPU; they run in this
-//! stage's final gate set on any machine with a container runtime and the image.
+//! unset); they run in this stage's final gate set on any machine with a
+//! container runtime and the image.
 //!
 //! **Tier B — a container pool across ssh.** The ssh-specific variants: the same
 //! mixed run with a real ssh hop, the two-stage kill through a second ssh

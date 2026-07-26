@@ -4,8 +4,8 @@
 //! committed trajectory byte-identical, and the same genome evaluated by the
 //! two substrates lands on the same grid within tolerance.
 //!
-//! The tests that touch a device are `#[ignore]`; what runs everywhere is the
-//! program's identity and the shipped config, both device-free.
+//! Some tests here drive a real device; the program's identity and the shipped
+//! config are checked device-free.
 
 mod common;
 
@@ -110,9 +110,8 @@ fn manifest_states(config: &LoadedConfig) -> Result<Vec<(Hash, Grid)>> {
         .collect()
 }
 
-/// Requires a CUDA device. Run with `cargo test -- --ignored`.
+/// Requires a CUDA device.
 #[test]
-#[ignore = "requires a CUDA device"]
 fn a_gray_scott_cuda_config_runs_the_full_spine() -> Result<()> {
     let dir = tempfile::tempdir().expect("temp dir");
     let config = config(
@@ -139,9 +138,8 @@ fn a_gray_scott_cuda_config_runs_the_full_spine() -> Result<()> {
     Ok(())
 }
 
-/// Requires a CUDA device. Run with `cargo test -- --ignored`.
+/// Requires a CUDA device.
 #[test]
-#[ignore = "requires a CUDA device"]
 fn a_segment_boundary_leaves_the_trajectory_byte_identical() -> Result<()> {
     // Resume across a segment boundary is substrate-independent machinery, and
     // this is what proves the CUDA engine's resident state survives it: the
@@ -189,10 +187,8 @@ fn a_segment_boundary_leaves_the_trajectory_byte_identical() -> Result<()> {
     Ok(())
 }
 
-/// Requires both a CUDA device and a Vulkan device. Run with
-/// `cargo test -- --ignored`.
+/// Requires both a CUDA device and a Vulkan device.
 #[test]
-#[ignore = "requires a CUDA device"]
 fn both_programs_evolve_the_same_rule_to_the_same_grid() -> Result<()> {
     // The port's acceptance at program level: one genome, two substrates, two
     // full runs through the spine, and grids that agree cell for cell within

@@ -77,10 +77,8 @@ mod tests {
         );
     }
 
-    /// Requires `libnvrtc`. Run with `cargo test -- --ignored` on a machine
-    /// that has it.
+    /// Requires `libnvrtc`.
     #[test]
-    #[ignore = "requires libnvrtc"]
     fn the_committed_ptx_reproduces_from_its_source() {
         assert_eq!(
             sima_toolkit_cuda::compile(KERNEL_CU).expect("compile the kernel"),

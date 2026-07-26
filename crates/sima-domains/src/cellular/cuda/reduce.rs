@@ -169,10 +169,8 @@ mod tests {
         );
     }
 
-    /// Requires `libnvrtc`. Run with `cargo test -- --ignored` on a machine
-    /// that has it.
+    /// Requires `libnvrtc`.
     #[test]
-    #[ignore = "requires libnvrtc"]
     fn the_committed_ptx_reproduces_from_its_source() {
         // The committed artifact is what executes, so it must be exactly what
         // the committed source compiles to. A mismatch means one of the two was
@@ -224,9 +222,8 @@ mod tests {
         .collect()
     }
 
-    /// Requires a CUDA device. Run with `cargo test -- --ignored`.
+    /// Requires a CUDA device.
     #[test]
-    #[ignore = "requires a CUDA device"]
     fn a_single_channel_grid_reduces_to_known_scalars() {
         // The WGSL reduction's own known-answer case, asserted against the same
         // figures: four cells [1, 2, 3, 4] over an all-zero previous grid, every
@@ -251,9 +248,8 @@ mod tests {
         assert_eq!(map["activity"], 2.5);
     }
 
-    /// Requires a CUDA device. Run with `cargo test -- --ignored`.
+    /// Requires a CUDA device.
     #[test]
-    #[ignore = "requires a CUDA device"]
     fn each_channel_reduces_independently() {
         // Two cells, two channels, cell-major: cell0 = (1, 2), cell1 = (3, 4).
         // Channel 0 is [1, 3] (mean 2, var 1), channel 1 is [2, 4] (mean 3,
@@ -282,9 +278,8 @@ mod tests {
         assert_eq!(map["activity"], 2.5);
     }
 
-    /// Requires a CUDA device. Run with `cargo test -- --ignored`.
+    /// Requires a CUDA device.
     #[test]
-    #[ignore = "requires a CUDA device"]
     fn activity_is_the_mean_absolute_change() {
         // Current [4, 1, 3, 2], previous [1, 3, 3, 6]: |Δ| = 3 + 2 + 0 + 4 = 9
         // over four cells and one channel, so activity is 9/4 = 2.25.
@@ -302,9 +297,8 @@ mod tests {
         assert_eq!(map["activity"], 2.25);
     }
 
-    /// Requires a CUDA device. Run with `cargo test -- --ignored`.
+    /// Requires a CUDA device.
     #[test]
-    #[ignore = "requires a CUDA device"]
     fn population_spans_none_and_all_alive() {
         // The same grid: a threshold above every value counts none alive, one
         // below every value counts all.
@@ -318,9 +312,8 @@ mod tests {
         assert_eq!(all["population"], 1.0);
     }
 
-    /// Requires a CUDA device. Run with `cargo test -- --ignored`.
+    /// Requires a CUDA device.
     #[test]
-    #[ignore = "requires a CUDA device"]
     fn the_reduction_is_deterministic() {
         // The fixed topology folds every sum in the same order, so reducing the
         // same grid twice yields byte-identical scalars.
@@ -343,9 +336,8 @@ mod tests {
         assert_eq!(first_bits, second_bits);
     }
 
-    /// Requires a CUDA device. Run with `cargo test -- --ignored`.
+    /// Requires a CUDA device.
     #[test]
-    #[ignore = "requires a CUDA device"]
     fn the_reduction_reads_the_harness_resident_pair() {
         // The reduction runs over the two ping-pong buffers `run` leaves
         // resident, not synthetic uploads, so `Trajectory::previous` (G_{N-1})
@@ -386,9 +378,8 @@ mod tests {
         assert_eq!(map["population"], 1.0);
     }
 
-    /// Requires a CUDA device. Run with `cargo test -- --ignored`.
+    /// Requires a CUDA device.
     #[test]
-    #[ignore = "requires a CUDA device"]
     fn a_shape_the_reduction_cannot_handle_is_rejected() {
         // Both guards are validation faults caught before any dispatch: a
         // channel count past the scratch-array bound, and a liveness channel

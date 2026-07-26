@@ -342,9 +342,8 @@ fn probe(format: &str) -> Vec<serde_json::Value> {
     devices
 }
 
-/// Requires a Vulkan device. Run with `cargo test -- --ignored`.
+/// Requires a Vulkan device.
 #[test]
-#[ignore = "requires a Vulkan device"]
 fn the_enumerate_probe_prints_one_json_device_per_line() {
     // The remote-resolution probe: `--enumerate <format>` prints the devices
     // that format's program can run on as JSON, one per line, and exits zero.

@@ -90,9 +90,8 @@ fn manifest_states(config: &LoadedConfig) -> Result<Vec<(Hash, Grid)>> {
         .collect()
 }
 
-/// Requires a real GPU. Run with `cargo test -- --ignored`.
+/// Requires a real GPU.
 #[test]
-#[ignore = "requires a GPU"]
 fn a_ca_evolution_config_runs_the_full_spine() -> Result<()> {
     let dir = tempfile::tempdir().expect("temp dir");
     let config = ca_evolution_config(dir.path(), "sima.toml", "./store", 4, 100, None)?;
@@ -111,9 +110,8 @@ fn a_ca_evolution_config_runs_the_full_spine() -> Result<()> {
     Ok(())
 }
 
-/// Requires a real GPU. Run with `cargo test -- --ignored`.
+/// Requires a real GPU.
 #[test]
-#[ignore = "requires a GPU"]
 fn a_segment_boundary_leaves_the_trajectory_byte_identical() -> Result<()> {
     let dir = tempfile::tempdir().expect("temp dir");
     // One candidate as a chain of two 50-step segments.

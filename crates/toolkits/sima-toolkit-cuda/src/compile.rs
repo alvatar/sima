@@ -107,10 +107,8 @@ extern \"C\" __global__ void __launch_bounds__(64) main_kernel(
         );
     }
 
-    /// Requires `libnvrtc`. Run with `cargo test -- --ignored` on a machine
-    /// that has it.
+    /// Requires `libnvrtc`.
     #[test]
-    #[ignore = "requires libnvrtc"]
     fn compile_produces_ptx_for_the_declared_architecture() {
         let ptx = compile(SAMPLE).expect("compile the sample");
         assert!(
@@ -123,10 +121,8 @@ extern \"C\" __global__ void __launch_bounds__(64) main_kernel(
         );
     }
 
-    /// Requires `libnvrtc`. Run with `cargo test -- --ignored` on a machine
-    /// that has it.
+    /// Requires `libnvrtc`.
     #[test]
-    #[ignore = "requires libnvrtc"]
     fn compile_rejects_malformed_cuda_c() {
         let result = compile("__global__ void broken() { let x = ; }");
         match result {
@@ -137,10 +133,8 @@ extern \"C\" __global__ void __launch_bounds__(64) main_kernel(
         }
     }
 
-    /// Requires `libnvrtc`. Run with `cargo test -- --ignored` on a machine
-    /// that has it.
+    /// Requires `libnvrtc`.
     #[test]
-    #[ignore = "requires libnvrtc"]
     fn compilation_is_reproducible() {
         // Committing generated PTX rests on this: the same source under the
         // same options yields the same text, so the regeneration test compares

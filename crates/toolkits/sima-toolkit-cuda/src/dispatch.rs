@@ -64,9 +64,8 @@ mod tests {
         (kernel, buffer)
     }
 
-    /// Requires an NVIDIA device. Run with `cargo test -- --ignored`.
+    /// Requires an NVIDIA device.
     #[test]
-    #[ignore = "requires a CUDA device"]
     fn dispatch_applies_the_kernel() {
         let context = Context::new().expect("create compute context");
         let (kernel, count) = smoke(&context, 4);
@@ -85,14 +84,13 @@ mod tests {
         assert_eq!(output, [3, 5, 7, 9]);
     }
 
-    /// Requires an NVIDIA device. Run with `cargo test -- --ignored`.
+    /// Requires an NVIDIA device.
     ///
     /// A dispatch that reads a buffer a prior dispatch wrote must observe that
     /// output: both launches go to the same stream, which orders them, and
     /// each dispatch drains before returning. Applying `out = in * 2 + 1`
     /// twice, ping-ponging the two buffers, yields `in * 4 + 3`.
     #[test]
-    #[ignore = "requires a CUDA device"]
     fn a_dispatch_observes_a_prior_dispatchs_writes() {
         let context = Context::new().expect("create compute context");
         let (kernel, count) = smoke(&context, 4);
@@ -115,9 +113,8 @@ mod tests {
         assert_eq!(output, [7, 11, 15, 19]);
     }
 
-    /// Requires an NVIDIA device. Run with `cargo test -- --ignored`.
+    /// Requires an NVIDIA device.
     #[test]
-    #[ignore = "requires a CUDA device"]
     fn a_launch_covering_more_threads_than_elements_writes_only_the_elements() {
         // The block width is fixed at 64, so a 4-element buffer is covered by
         // one block of 64 threads and 60 of them must fall out on the bounds

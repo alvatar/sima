@@ -100,17 +100,15 @@ impl Context {
 mod tests {
     use super::*;
 
-    /// Requires an NVIDIA device. Run with `cargo test -- --ignored`.
+    /// Requires an NVIDIA device.
     #[test]
-    #[ignore = "requires a CUDA device"]
     fn buffer_rejects_zero_size() {
         let context = Context::new().expect("create compute context");
         assert!(matches!(context.buffer(0), Err(Error::Gpu(_))));
     }
 
-    /// Requires an NVIDIA device. Run with `cargo test -- --ignored`.
+    /// Requires an NVIDIA device.
     #[test]
-    #[ignore = "requires a CUDA device"]
     fn buffer_round_trips_bytes() {
         let context = Context::new().expect("create compute context");
         let data: Vec<u8> = (0..=255).collect();
@@ -120,18 +118,16 @@ mod tests {
         assert_eq!(read_back, data);
     }
 
-    /// Requires an NVIDIA device. Run with `cargo test -- --ignored`.
+    /// Requires an NVIDIA device.
     #[test]
-    #[ignore = "requires a CUDA device"]
     fn a_fresh_buffer_reads_back_zeroed() {
         let context = Context::new().expect("create compute context");
         let buffer = context.buffer(64).expect("allocate buffer");
         assert_eq!(context.download(&buffer).expect("download"), vec![0u8; 64]);
     }
 
-    /// Requires an NVIDIA device. Run with `cargo test -- --ignored`.
+    /// Requires an NVIDIA device.
     #[test]
-    #[ignore = "requires a CUDA device"]
     fn an_upload_larger_than_its_destination_is_rejected() {
         let context = Context::new().expect("create compute context");
         let mut buffer = context.buffer(4).expect("allocate buffer");
@@ -141,9 +137,8 @@ mod tests {
         ));
     }
 
-    /// Requires an NVIDIA device. Run with `cargo test -- --ignored`.
+    /// Requires an NVIDIA device.
     #[test]
-    #[ignore = "requires a CUDA device"]
     fn a_partial_upload_leaves_the_tail_untouched() {
         // Uploads are sized by what they carry, not by the destination, because
         // the dimensions and parameter buffers a dispatch binds are smaller

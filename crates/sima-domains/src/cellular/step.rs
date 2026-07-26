@@ -194,9 +194,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             .expect("build smoke kernel")
     }
 
-    /// Requires a real Vulkan device. Run with `cargo test -- --ignored`.
+    /// Requires a real Vulkan device.
     #[test]
-    #[ignore = "requires a Vulkan device"]
     fn run_advances_one_step() {
         let context = Context::new().expect("create compute context");
         let kernel = smoke(&context);
@@ -212,9 +211,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         assert_eq!(result.data(), &[4.0, 4.0, 5.0, 5.0, 5.0]);
     }
 
-    /// Requires a real Vulkan device. Run with `cargo test -- --ignored`.
+    /// Requires a real Vulkan device.
     #[test]
-    #[ignore = "requires a Vulkan device"]
     fn run_reduces_each_channel_independently() {
         let context = Context::new().expect("create compute context");
         let kernel = smoke(&context);
@@ -229,9 +227,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         assert_eq!(result.data(), &[7.0, 9.0, 7.0, 9.0, 7.0, 9.0]);
     }
 
-    /// Requires a real Vulkan device. Run with `cargo test -- --ignored`.
+    /// Requires a real Vulkan device.
     #[test]
-    #[ignore = "requires a Vulkan device"]
     fn run_composes_across_steps() {
         let context = Context::new().expect("create compute context");
         let kernel = smoke(&context);
@@ -265,9 +262,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         assert_eq!(three.to_bytes(), two_then_one.to_bytes());
     }
 
-    /// Requires a real Vulkan device. Run with `cargo test -- --ignored`.
+    /// Requires a real Vulkan device.
     #[test]
-    #[ignore = "requires a Vulkan device"]
     fn run_zero_steps_returns_the_input() {
         let context = Context::new().expect("create compute context");
         let kernel = smoke(&context);
@@ -279,9 +275,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         assert_eq!(result.to_bytes(), initial.to_bytes());
     }
 
-    /// Requires a real Vulkan device. Run with `cargo test -- --ignored`.
+    /// Requires a real Vulkan device.
     #[test]
-    #[ignore = "requires a Vulkan device"]
     fn run_transports_the_per_step_index() {
         // A kernel reading the step buffer observes `base + i` on dispatch `i`.
         // The probe accumulates, so after `steps` dispatches from `base` every

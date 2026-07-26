@@ -410,9 +410,8 @@ mod tests {
         enumerate_devices().expect("enumeration answers on any machine");
     }
 
-    /// Requires an NVIDIA device. Run with `cargo test -- --ignored`.
+    /// Requires an NVIDIA device.
     #[test]
-    #[ignore = "requires a CUDA device"]
     fn enumeration_reports_every_cuda_device() {
         let devices = enumerate_devices().expect("enumerate devices");
         assert!(!devices.is_empty(), "at least one CUDA device");
@@ -429,9 +428,8 @@ mod tests {
         }
     }
 
-    /// Requires an NVIDIA device. Run with `cargo test -- --ignored`.
+    /// Requires an NVIDIA device.
     #[test]
-    #[ignore = "requires a CUDA device"]
     fn naming_an_absent_device_fails_to_resolve() {
         // A worker answers `Ready` with this name, so this is where a binding
         // onto hardware the machine does not have is caught: executor

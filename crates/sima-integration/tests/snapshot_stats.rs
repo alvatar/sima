@@ -182,9 +182,8 @@ fn a_stub_run_journals_scalars_and_report_renders_them() -> Result<()> {
     Ok(())
 }
 
-/// Requires a real GPU. Run with `cargo test -- --ignored`.
+/// Requires a real GPU.
 #[test]
-#[ignore = "requires a GPU"]
 fn a_failing_predicate_drops_every_snapshot_but_journals_scalars() -> Result<()> {
     // population is a fraction, so a minimum of 2.0 can never be met: every
     // candidate commits a record with no state artifact, yet every task still
@@ -212,9 +211,8 @@ fn a_failing_predicate_drops_every_snapshot_but_journals_scalars() -> Result<()>
     Ok(())
 }
 
-/// Requires a real GPU. Run with `cargo test -- --ignored`.
+/// Requires a real GPU.
 #[test]
-#[ignore = "requires a GPU"]
 fn a_passing_predicate_keeps_every_snapshot() -> Result<()> {
     // A minimum of 0.0 is met by every candidate, so each commits its snapshot,
     // and every task journals scalars.
@@ -241,9 +239,8 @@ fn a_passing_predicate_keeps_every_snapshot() -> Result<()> {
     Ok(())
 }
 
-/// Requires a real GPU. Run with `cargo test -- --ignored`.
+/// Requires a real GPU.
 #[test]
-#[ignore = "requires a GPU"]
 fn a_no_predicate_run_keeps_every_snapshot() -> Result<()> {
     // The pre-milestone behavior: without a predicate every candidate commits
     // its state artifact, unchanged.
@@ -259,9 +256,8 @@ fn a_no_predicate_run_keeps_every_snapshot() -> Result<()> {
     Ok(())
 }
 
-/// Requires a real GPU. Run with `cargo test -- --ignored`.
+/// Requires a real GPU.
 #[test]
-#[ignore = "requires a GPU"]
 fn a_predicate_run_finalizes_a_deterministic_manifest() -> Result<()> {
     // The same predicate config run twice into fresh stores finalizes
     // byte-identical manifests: the predicate verdict is a pure function of the

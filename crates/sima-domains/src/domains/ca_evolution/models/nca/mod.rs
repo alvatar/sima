@@ -233,9 +233,8 @@ mod tests {
             decode_continuation(bytes).expect("framed continuation state")
         }
 
-        /// Requires a real Vulkan device. Run with `cargo test -- --ignored`.
+        /// Requires a real Vulkan device.
         #[test]
-        #[ignore = "requires a Vulkan device"]
         fn repeated_runs_are_byte_identical() {
             // The async mask is deterministic in (seed, cell, step), so two runs
             // of the same task commit byte-identical framed states.
@@ -246,9 +245,8 @@ mod tests {
             assert_eq!(first, second);
         }
 
-        /// Requires a real Vulkan device. Run with `cargo test -- --ignored`.
+        /// Requires a real Vulkan device.
         #[test]
-        #[ignore = "requires a Vulkan device"]
         fn segment_continuation_is_cadence_invariant() {
             // Ignite + 50 -> A; continue A + 50 -> B; ignite + 100 -> C. The framed
             // step makes the committed state a complete continuation, so B is
@@ -269,9 +267,8 @@ mod tests {
             assert_eq!(c_grid.channels(), 8);
         }
 
-        /// Requires a real Vulkan device. Run with `cargo test -- --ignored`.
+        /// Requires a real Vulkan device.
         #[test]
-        #[ignore = "requires a Vulkan device"]
         fn a_smoke_run_yields_a_finite_grid() {
             // A small scale keeps the residual dynamics bounded over a few steps,
             // so every committed value is finite; the framed step equals the step
