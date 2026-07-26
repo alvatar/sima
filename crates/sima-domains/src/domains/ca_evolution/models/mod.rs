@@ -3,4 +3,5 @@
 //! registry arm in [`super`].
 
 pub(crate) mod gray_scott;
+pub(crate) mod gray_scott_cuda;
 pub(crate) mod nca;

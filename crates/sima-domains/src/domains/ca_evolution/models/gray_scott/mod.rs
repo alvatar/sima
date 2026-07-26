@@ -19,9 +19,11 @@ use super::super::model::CaModel;
 use super::super::params::CaParams;
 use crate::cellular::Grid;
 
-use gen_config::GrayScottGenConfig;
-use genome::GrayScottGenome;
-use ignition::GrayScottIgnition;
+// The rule's own types, re-exported: the CUDA program is the same rule on
+// another substrate and binds these unchanged.
+pub(crate) use gen_config::GrayScottGenConfig;
+pub(crate) use genome::GrayScottGenome;
+pub(crate) use ignition::GrayScottIgnition;
 
 /// The Gray-Scott reaction-diffusion model. Zero-sized: the generic machinery is
 /// monomorphized over it, and every rule-specific value is a genome, ignition,

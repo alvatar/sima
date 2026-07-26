@@ -26,10 +26,11 @@ use sima_contracts::Generator;
 use sima_core::Result;
 use sima_model::{FormatId, GeneratorId, Params};
 
-use crate::cellular::WgslEngine;
+use crate::cellular::{CudaEngine, WgslEngine};
 use crate::domain::Domain;
 use model::CaModel;
 use models::gray_scott::GrayScott;
+use models::gray_scott_cuda::GrayScottCuda;
 use models::nca::Nca;
 
 /// Resolves a format id to one of this domain's models, binding its [`Domain`],
@@ -41,6 +42,7 @@ use models::nca::Nca;
 pub(crate) fn domain_for(format: &FormatId) -> Option<Result<Domain>> {
     match format.as_str() {
         GrayScott::FORMAT_ID => Some(domain::build_domain::<GrayScott, WgslEngine>()),
+        GrayScottCuda::FORMAT_ID => Some(domain::build_domain::<GrayScottCuda, CudaEngine>()),
         Nca::FORMAT_ID => Some(domain::build_domain::<Nca, WgslEngine>()),
         _ => None,
     }
@@ -56,6 +58,7 @@ pub(crate) fn params_for(
 ) -> Option<Result<Params>> {
     match format.as_str() {
         GrayScott::FORMAT_ID => Some(params::translate::<GrayScott>(table, segmented)),
+        GrayScottCuda::FORMAT_ID => Some(params::translate::<GrayScottCuda>(table, segmented)),
         Nca::FORMAT_ID => Some(params::translate::<Nca>(table, segmented)),
         _ => None,
     }
@@ -66,6 +69,10 @@ pub(crate) fn generator_for(id: &GeneratorId) -> Option<Result<Box<dyn Generator
     match id.as_str() {
         GrayScott::FORMAT_ID => Some(
             generator::CaGenerator::<GrayScott>::new().map(|g| Box::new(g) as Box<dyn Generator>),
+        ),
+        GrayScottCuda::FORMAT_ID => Some(
+            generator::CaGenerator::<GrayScottCuda>::new()
+                .map(|g| Box::new(g) as Box<dyn Generator>),
         ),
         Nca::FORMAT_ID => {
             Some(generator::CaGenerator::<Nca>::new().map(|g| Box::new(g) as Box<dyn Generator>))
@@ -81,6 +88,7 @@ pub(crate) fn generator_params_for(
 ) -> Option<Result<Vec<u8>>> {
     match id.as_str() {
         GrayScott::FORMAT_ID => Some(generator::translate::<GrayScott>(table)),
+        GrayScottCuda::FORMAT_ID => Some(generator::translate::<GrayScottCuda>(table)),
         Nca::FORMAT_ID => Some(generator::translate::<Nca>(table)),
         _ => None,
     }
@@ -98,10 +106,14 @@ mod tests {
     /// table rather than a silent consequence of touching the code that
     /// assembles environments. A new program adds a row; an edited kernel
     /// changes one.
-    const PINNED_ENVIRONMENT_IDS: [(&str, &str); 2] = [
+    const PINNED_ENVIRONMENT_IDS: [(&str, &str); 3] = [
         (
             "ca_evolution.gray_scott.v1",
             "bc6086ce7e256cd95cb1cc6849bce7db4c29ad30eff1684837042231c1d3c7ed",
+        ),
+        (
+            "ca_evolution.gray_scott_cuda.v1",
+            "be97bae9519182ba8dac5d510ded2fdba74d48e7e6e27fb76f53f974d4e6ae5a",
         ),
         (
             "ca_evolution.nca.v1",
