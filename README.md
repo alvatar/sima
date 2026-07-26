@@ -128,6 +128,13 @@ forces a deliberate update in the same change:
 | Toolkit | Canonical id | Tier | Guard |
 |---|---|---|---|
 | `sima-toolkit-wgsl` | `naga 30.0.0; spirv=1.5; opt=none` | 1 | SPIR-V known-answer test (`compile.rs`) |
+| `sima-toolkit-cuda` | `ptx; arch=compute_75` | 1 | PTX regeneration test per kernel |
+
+The two toolkits reach the same tier by opposite routes. WGSL is lowered during
+the run, so a domain records the shader source and names the compiler that
+lowers it. CUDA kernels are compiled ahead of time and their PTX is committed,
+so a domain records the digest of that artifact and the canonical id states only
+what it targets.
 
 ## Design principles
 
