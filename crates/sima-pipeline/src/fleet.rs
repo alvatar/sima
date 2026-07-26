@@ -72,6 +72,12 @@ pub(crate) fn endpoint_target(endpoint: SshEndpoint) -> SshTarget {
 /// probe against a fresh host may be refused.
 const PROBE_ATTEMPTS: u32 = 6;
 
+/// How many machines one instance's acquisition may burn through before it
+/// gives up. Each attempt is a paid rental torn down again, so the bound
+/// stays small; a machine that fails twice across runs is blacklisted by
+/// its incidents and stops being offered at all.
+const PROBE_ACQUIRE_ATTEMPTS: usize = 4;
+
 /// One acquired fleet instance: the guard that owns and tears it down, the
 /// transport its pool spawns workers through, and the worker slots its probe
 /// derived (one per enumerated GPU, or one deviceless slot when it reports
@@ -140,7 +146,9 @@ pub(crate) fn acquire_fleet<'a>(
 
 /// Acquires one instance, probes it, and builds its transport and slots. On a
 /// probe failure the guard drops here, tearing the instance down, so no
-/// half-acquired instance leaks.
+/// half-acquired instance leaks, and the acquisition moves to another
+/// machine: a marketplace serves hosts that come up but never accept a
+/// session, and one of them must cost an instance rather than the run.
 #[allow(clippy::too_many_arguments)]
 fn acquire_one<'a>(
     provider: &'a (dyn Provider + Sync),
@@ -152,60 +160,77 @@ fn acquire_one<'a>(
     format: &FormatId,
     exec: &ExecutionConfig,
 ) -> Result<FleetInstance<'a>> {
-    // Pin the trait object to `Sync`, which the supervisor thread's shared
-    // borrow of the provider needs; without it inference drops the bound.
-    let guard = acquire::<dyn Provider + Sync>(
-        provider,
-        store,
-        lock,
-        &fleet.constraints,
-        Objective::CheapestPerHour,
-        limits,
-        &fleet.budget,
-        // Run-start acquisition has nothing to cancel: the run is not yet
-        // driving, so no wind-down is in flight.
-        never_cancelled(),
-    )?;
-    let target = endpoint_target(guard.endpoint().clone());
-    let host = target.host.clone();
-    // The probe drives the instance's device enumeration; a failure drops the
-    // guard, tearing the instance down.
-    let slots = match probe_slots(mode, &target, fleet.ready_poll, format) {
-        Ok(slots) => slots,
-        Err(error) => {
-            // The machine reported ready but cannot run work: an incident
-            // against it, recorded before the guard drops and tears it down.
-            // The probe error is what fails the acquisition; a store failure
-            // recording the incident supersedes it.
-            record_incident(
-                store,
-                provider.id(),
-                guard.machine(),
-                guard.tag(),
-                IncidentKind::ProbeFailed,
-                now_ms(),
-            )?;
-            return Err(error);
-        }
-    };
-    let transport = FleetTransport::new(
-        mode.clone(),
-        target,
-        format.clone(),
-        exec.checkpoint_interval,
-        exec.checkpoint_interval_steps,
-        // The transport waits out a respawn against a dead host on the same
-        // readiness bounds the fleet acquires under, bridging the window until
-        // the supervisor swaps a replacement in.
-        fleet.ready_timeout,
-        fleet.ready_poll,
-    );
-    Ok(FleetInstance {
-        guard: Mutex::new(Some(guard)),
-        transport,
-        host,
-        slots,
-    })
+    // A machine that fails its probe is excluded from the attempts that
+    // follow, so the retry reaches a different machine instead of renting
+    // the same broken one again. The exclusion is local to this
+    // acquisition; the durable incident it also records is what carries
+    // the machine's reputation across runs.
+    let mut constraints = fleet.constraints.clone();
+    let mut refused: Option<Error> = None;
+    for _ in 0..PROBE_ACQUIRE_ATTEMPTS {
+        // Pin the trait object to `Sync`, which the supervisor thread's shared
+        // borrow of the provider needs; without it inference drops the bound.
+        let guard = acquire::<dyn Provider + Sync>(
+            provider,
+            store,
+            lock,
+            &constraints,
+            Objective::CheapestPerHour,
+            limits,
+            &fleet.budget,
+            // Run-start acquisition has nothing to cancel: the run is not yet
+            // driving, so no wind-down is in flight.
+            never_cancelled(),
+        )?;
+        let target = endpoint_target(guard.endpoint().clone());
+        let host = target.host.clone();
+        // The probe drives the instance's device enumeration; a failure drops
+        // the guard, tearing the instance down.
+        let slots = match probe_slots(mode, &target, fleet.ready_poll, format) {
+            Ok(slots) => slots,
+            Err(error) => {
+                // The machine reported ready but cannot run work: an incident
+                // against it, recorded before the guard drops and tears it
+                // down. A store failure recording the incident supersedes the
+                // probe error.
+                record_incident(
+                    store,
+                    provider.id(),
+                    guard.machine(),
+                    guard.tag(),
+                    IncidentKind::ProbeFailed,
+                    now_ms(),
+                )?;
+                if !guard.machine().is_empty() {
+                    constraints
+                        .excluded_machines
+                        .push(guard.machine().to_string());
+                }
+                refused = Some(error);
+                continue;
+            }
+        };
+        let transport = FleetTransport::new(
+            mode.clone(),
+            target,
+            format.clone(),
+            exec.checkpoint_interval,
+            exec.checkpoint_interval_steps,
+            // The transport waits out a respawn against a dead host on the
+            // same readiness bounds the fleet acquires under, bridging the
+            // window until the supervisor swaps a replacement in.
+            fleet.ready_timeout,
+            fleet.ready_poll,
+        );
+        return Ok(FleetInstance {
+            guard: Mutex::new(Some(guard)),
+            transport,
+            host,
+            slots,
+        });
+    }
+    Err(refused
+        .unwrap_or_else(|| Error::Provider("the instance acquisition never ran".to_string())))
 }
 
 /// Probes an instance for the devices `format`'s program can run on and derives
@@ -1049,6 +1074,7 @@ mod tests {
         );
         assert!(result.is_err(), "a probe failure fails the acquisition");
         assert_eq!(provider.destroyed().len(), 1, "the instance is torn down");
+        // The market held one machine, so the retry has nowhere to go.
         assert!(provider.live().is_empty());
         // A machine that reported ready but failed the probe cannot run work:
         // one ProbeFailed incident against its machine.
@@ -1056,6 +1082,38 @@ mod tests {
         assert_eq!(incidents.len(), 1);
         assert_eq!(incidents[0].kind, IncidentKind::ProbeFailed);
         assert_eq!(incidents[0].machine, "machine-a");
+        Ok(())
+    }
+
+    #[test]
+    fn a_machine_that_refuses_its_probe_costs_an_instance_not_the_acquisition() -> Result<()> {
+        // A marketplace serves hosts that come up but never accept a session.
+        // The acquisition moves to the next machine instead of failing the
+        // run, and does not rent the refusing machine again: both offers are
+        // tried, each torn down, each carrying its own incident.
+        let (_dir, store, run) = acquisition_env();
+        let lock = store.acquire_run_lock(&run)?;
+        let provider = StubProvider::new(vec![offer("a", 100_000), offer("b", 200_000)]);
+        let format = FormatId::new("stub.v1")?;
+        let result = acquire_fleet(
+            &fleet_config(1, FillPolicy::Strict),
+            &provider,
+            &store,
+            &lock,
+            &FleetMode::Local(PathBuf::from("/nonexistent/sima-worker")),
+            &format,
+            &exec(),
+        );
+        assert!(result.is_err(), "no machine in the market could be probed");
+        assert_eq!(provider.destroyed().len(), 2, "each attempt is torn down");
+        assert!(provider.live().is_empty());
+        let mut machines: Vec<String> = store
+            .machine_incidents()?
+            .into_iter()
+            .map(|incident| incident.machine)
+            .collect();
+        machines.sort();
+        assert_eq!(machines, vec!["machine-a", "machine-b"]);
         Ok(())
     }
 
