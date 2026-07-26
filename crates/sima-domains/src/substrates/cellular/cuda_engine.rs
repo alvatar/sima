@@ -1,22 +1,22 @@
-//! [`CudaEngine`]: the CUDA substrate behind the [`CellularEngine`] seam.
+//! [`CudaEngine`]: the CUDA backend behind the [`CellularEngine`] seam.
 
 use sima_contracts::DeviceBinding;
 use sima_core::{Hash, Result, hash_bytes};
 use sima_toolkit_cuda::{Buffer, Context, Kernel, selected_device_desc};
 
-use crate::devices::Substrate;
-use crate::shared::cellular::cuda::reduce::{
+use crate::devices::Backend;
+use crate::substrates::cellular::cuda::reduce::{
     GridPair, REDUCE_PTX, ReduceKernels, reduce as reduce_pair,
 };
-use crate::shared::cellular::cuda::step::{BLOCK_WIDTH, Trajectory, run};
-use crate::shared::cellular::{CellularEngine, CellularEvaluation, EvaluationInput, Grid};
+use crate::substrates::cellular::cuda::step::{BLOCK_WIDTH, Trajectory, run};
+use crate::substrates::cellular::{CellularEngine, CellularEvaluation, EvaluationInput, Grid};
 
 /// The entry point every cellular CUDA kernel declares. `main` is spoken for in
 /// C++, so the convention's single entry point takes the name the toolkit's own
 /// kernels use.
 const ENTRY: &str = "main_kernel";
 
-/// The CUDA substrate: an NVIDIA device, the model's update kernel loaded onto
+/// The CUDA backend: an NVIDIA device, the model's update kernel loaded onto
 /// it, and the four reduction passes.
 pub(crate) struct CudaEngine {
     /// Declared before `context` so they drop first: struct fields drop in
@@ -29,7 +29,7 @@ pub(crate) struct CudaEngine {
 }
 
 impl CellularEngine for CudaEngine {
-    const SUBSTRATE: Substrate = Substrate::Cuda;
+    const BACKEND: Backend = Backend::Cuda;
     const COMPILER_COMPONENT: &'static str = "cuda.compiler";
     const COMPILER_ID: &'static str = sima_toolkit_cuda::COMPILER_ID;
 
@@ -81,7 +81,7 @@ impl CellularEngine for CudaEngine {
         // Parameter 4, present only for a kernel that consumes the candidate
         // seed: the u64 as two u32 words (low, high). Integers travel as
         // integers, matching the WGSL side, so one model's genome decodes the
-        // same on either substrate. Held in this scope so it outlives the
+        // same on either backend. Held in this scope so it outlives the
         // dispatch.
         let seed = match input.seed {
             Some(seed) => {
@@ -155,12 +155,12 @@ impl CellularEvaluation for CudaEvaluation<'_> {
 mod tests {
     use super::*;
 
-    /// The smoke kernel both substrates ship: a toroidal neighborhood max over
+    /// The smoke kernel both backends ship: a toroidal neighborhood max over
     /// the cellular convention's first three parameters.
     const SMOKE_PTX: &str = include_str!("../../../kernels/smoke.ptx");
     const SMOKE_WGSL: &str = include_str!("../../../shaders/smoke.wgsl");
 
-    /// The relative tolerance the two substrates' scalars are held to. Loose
+    /// The relative tolerance the two backends' scalars are held to. Loose
     /// enough to survive a fused multiply-add and a reassociation the two
     /// compilers make differently, tight enough to catch a transcription error
     /// in the port.
@@ -170,7 +170,7 @@ mod tests {
     fn the_reduction_digest_hashes_the_committed_ptx() {
         // The environment component this feeds is what makes a regenerated
         // reduction invalidate every task key of every domain on this
-        // substrate, so it must cover the artifact that executes.
+        // backend, so it must cover the artifact that executes.
         assert_eq!(
             CudaEngine::reduce_digest(),
             hash_bytes(REDUCE_PTX.as_bytes())
@@ -178,20 +178,20 @@ mod tests {
     }
 
     #[test]
-    fn the_compiler_component_is_distinct_from_the_other_substrates() {
-        // The component name enters the environment, so two substrates must
-        // name different ones: that is what keeps one substrate's stored
+    fn the_compiler_component_is_distinct_from_the_other_backends() {
+        // The component name enters the environment, so two backends must
+        // name different ones: that is what keeps one backend's stored
         // results out of the other's task keys.
         assert_eq!(CudaEngine::COMPILER_COMPONENT, "cuda.compiler");
         assert_ne!(
             CudaEngine::COMPILER_COMPONENT,
-            crate::shared::cellular::WgslEngine::COMPILER_COMPONENT
+            crate::substrates::cellular::WgslEngine::COMPILER_COMPONENT
         );
         assert_eq!(CudaEngine::COMPILER_ID, sima_toolkit_cuda::COMPILER_ID);
     }
 
     /// A grid whose values are distinct and exactly representable, so a
-    /// substrate that read the wrong cell shows up as a different maximum.
+    /// backend that read the wrong cell shows up as a different maximum.
     fn a_grid() -> Grid {
         Grid::new(8, 8, 2, (0..128).map(|i| (i % 13) as f32).collect()).expect("grid")
     }
@@ -247,15 +247,15 @@ mod tests {
 
     /// Requires both a CUDA device and a Vulkan device.
     #[test]
-    fn both_substrates_agree_on_the_same_grid() {
+    fn both_backends_agree_on_the_same_grid() {
         // The port's exit criterion: the same kernel transcribed for the two
-        // substrates, advanced over the same grid, reduces to the same scalars.
+        // backends, advanced over the same grid, reduces to the same scalars.
         // A transcription error in either the step kernel or the reduction —
         // a swapped neighbor, a wrong partition boundary, a misplaced output
         // slot — moves a scalar far past the tolerance.
         let initial = a_grid();
         let cuda = CudaEngine::build(None, SMOKE_PTX).expect("build the CUDA engine");
-        let wgsl = crate::shared::cellular::WgslEngine::build(None, SMOKE_WGSL)
+        let wgsl = crate::substrates::cellular::WgslEngine::build(None, SMOKE_WGSL)
             .expect("build the WGSL engine");
         let cuda_scalars = cuda
             .evaluate(&an_input(&initial, 4))
@@ -270,7 +270,7 @@ mod tests {
         assert_eq!(
             cuda_scalars.iter().map(|(n, _)| n).collect::<Vec<_>>(),
             wgsl_scalars.iter().map(|(n, _)| n).collect::<Vec<_>>(),
-            "both substrates emit the same scalars in the same order"
+            "both backends emit the same scalars in the same order"
         );
         for ((name, cuda_value), (_, wgsl_value)) in cuda_scalars.iter().zip(&wgsl_scalars) {
             let scale = wgsl_value.abs().max(1.0);
@@ -301,9 +301,9 @@ mod tests {
 
     /// Requires a CUDA device.
     #[test]
-    fn a_device_the_substrate_cannot_open_fails_naming_it() {
+    fn a_device_the_backend_cannot_open_fails_naming_it() {
         // The binding names a class this machine's CUDA driver does not have —
-        // an Intel integrated GPU is the live case, since the WGSL substrate
+        // an Intel integrated GPU is the live case, since the WGSL backend
         // reaches it and this one cannot. The failure names the device.
         let binding = DeviceBinding {
             vendor_id: 0x8086,

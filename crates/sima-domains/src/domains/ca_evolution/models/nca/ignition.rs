@@ -6,7 +6,7 @@ use sima_core::{Codec, Dec, Enc, Error, Result};
 use super::super::super::ignition::{PatchSpec, seeded_patch};
 use super::CHANNELS;
 use crate::domains::translate::{self, TomlConfig};
-use crate::shared::cellular::Grid;
+use crate::substrates::cellular::Grid;
 
 /// The ignition configuration of the Neural CA's initial grid: the amplitude
 /// seeded into every state channel of a centered square patch, the divisor of

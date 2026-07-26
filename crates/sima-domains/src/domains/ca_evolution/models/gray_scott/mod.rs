@@ -17,10 +17,10 @@ use sima_core::Result;
 use super::super::ignition::{PatchSpec, seeded_patch};
 use super::super::model::CaModel;
 use super::super::params::CaParams;
-use crate::shared::cellular::Grid;
+use crate::substrates::cellular::Grid;
 
 // The rule's own types, re-exported: the CUDA program is the same rule on
-// another substrate and binds these unchanged.
+// another backend and binds these unchanged.
 pub(crate) use gen_config::GrayScottGenConfig;
 pub(crate) use genome::GrayScottGenome;
 pub(crate) use ignition::GrayScottIgnition;
@@ -85,7 +85,7 @@ mod tests {
 
     use super::super::super::domain::build_domain;
     use super::*;
-    use crate::shared::cellular::WgslEngine;
+    use crate::substrates::cellular::WgslEngine;
 
     #[test]
     fn the_kernel_compiles_device_free() {

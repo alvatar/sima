@@ -12,7 +12,7 @@ use sima_contracts::{DeviceBinding, Executor, Generator};
 use sima_core::{Error, Result};
 use sima_model::{Environment, FormatId, GeneratorId, Params};
 
-use crate::devices::Substrate;
+use crate::devices::Backend;
 use crate::domains::{ca_evolution, stub};
 
 /// Everything a format id binds: the executor that evaluates specs of the
@@ -45,7 +45,7 @@ pub struct Domain {
     /// can hold the domain's work, so
     /// [`enumerate_devices`](crate::devices::enumerate_devices) resolves a
     /// format to a domain and reads this.
-    pub substrate: Substrate,
+    pub backend: Backend,
     /// The environment entering every task's identity.
     pub environment: Environment,
 }

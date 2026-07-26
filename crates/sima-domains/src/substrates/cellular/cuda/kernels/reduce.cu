@@ -2,7 +2,7 @@
 //
 // A transcription of `cellular/shaders/reduce.wgsl`: the same four entry
 // points dispatched in order, the same fixed partition count, the same chunk
-// boundaries, and the same output layout. Both substrates therefore fold every
+// boundaries, and the same output layout. Both backends therefore fold every
 // sum in the same order, and their scalars agree to the tolerance the
 // cross-program test holds them to.
 //
@@ -88,7 +88,7 @@ extern "C" __global__ void __launch_bounds__(64) pass1(
             float v = grid_n[base + c];
             sum[c] = sum[c] + v;
             // fminf and fmaxf return the non-NaN operand, where WGSL's min and
-            // max leave the choice to the backend. Neither substrate is relied
+            // max leave the choice to the backend. Neither backend is relied
             // on for NaN handling: the snapshot predicate's all-finite check at
             // the Rust layer is what catches a diverged grid.
             lo[c] = fminf(lo[c], v);

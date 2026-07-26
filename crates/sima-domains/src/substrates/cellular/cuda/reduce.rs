@@ -1,11 +1,11 @@
 //! The CUDA reduction of a final grid pair into the per-candidate stat scalars.
 //!
-//! The CUDA counterpart of [`cellular::reduce`](crate::shared::cellular::reduce), pass
+//! The CUDA counterpart of [`cellular::reduce`](crate::substrates::cellular::reduce), pass
 //! for pass: the same four entry points in the same order over the same fixed
-//! partition topology, so both substrates fold every sum identically. The
+//! partition topology, so both backends fold every sum identically. The
 //! scalars are named by the shared
-//! [`scalar_names`](crate::shared::cellular::scalar_names) — the naming authority is
-//! one copy for both substrates.
+//! [`scalar_names`](crate::substrates::cellular::scalar_names) — the naming authority is
+//! one copy for both backends.
 //!
 //! The kernel ships as [`REDUCE_PTX`], compiled once from `kernels/reduce.cu`
 //! and committed beside it. Its digest, not the CUDA C source's, is what enters
@@ -14,8 +14,8 @@
 use sima_core::{Error, Result};
 use sima_toolkit_cuda::{Buffer, Context, Kernel};
 
-use crate::shared::cellular::cuda::step::BLOCK_WIDTH;
-use crate::shared::cellular::{MAX_CHANNELS, PARTITIONS, name_scalars};
+use crate::substrates::cellular::cuda::step::BLOCK_WIDTH;
+use crate::substrates::cellular::{MAX_CHANNELS, PARTITIONS, name_scalars};
 
 /// The committed PTX of the reduction kernel. Its digest joins the environment
 /// because the reduction's output gates committed bytes, so regenerating it
@@ -354,9 +354,9 @@ mod tests {
                 BLOCK_WIDTH,
             )
             .expect("smoke kernel");
-        let initial = crate::shared::cellular::Grid::new(4, 4, 1, vec![2.0; 16]).expect("grid");
+        let initial = crate::substrates::cellular::Grid::new(4, 4, 1, vec![2.0; 16]).expect("grid");
         let trajectory =
-            crate::shared::cellular::cuda::step::run(&context, &kernel, &initial, 3, &[], None)
+            crate::substrates::cellular::cuda::step::run(&context, &kernel, &initial, 3, &[], None)
                 .expect("run");
         let map: HashMap<String, f64> = reduce(
             &context,

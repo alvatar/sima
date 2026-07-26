@@ -2,7 +2,7 @@
 //! snapshot object: the address the store returns equals the grid's content
 //! id, and the bytes read back decode to a byte-identical grid.
 
-use sima_domains::shared::cellular::Grid;
+use sima_domains::substrates::cellular::Grid;
 use sima_store::Store;
 
 #[test]

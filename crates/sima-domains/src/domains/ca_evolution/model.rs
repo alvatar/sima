@@ -4,7 +4,7 @@ use sima_core::{Codec, Result};
 
 use super::params::CaParams;
 use crate::domains::translate::TomlConfig;
-use crate::shared::cellular::Grid;
+use crate::substrates::cellular::Grid;
 
 /// The rule-specific pieces the generic CA machinery needs. The domain owns the
 /// substrate (grid, harness, executor/generator skeleton, environment, shared
@@ -49,7 +49,7 @@ pub(crate) trait CaModel: 'static {
     const ALIVE_MIN: f32;
     /// The update kernel the engine compiles (`include_str!` of the co-located
     /// file). What language it is written in is the engine's business: the
-    /// registration arm pairs a model with the substrate that can compile it.
+    /// registration arm pairs a model with the backend that can compile it.
     const KERNEL_SOURCE: &'static str;
     /// Whether the kernel declares the binding-4 seed buffer: the candidate's
     /// u64 seed as two u32 words, low then high. A model consuming the seed at

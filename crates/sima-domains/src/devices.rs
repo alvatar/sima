@@ -10,8 +10,8 @@
 //! initialize the NVIDIA driver offers a WGSL program the CPU rasterizer alone
 //! while CUDA opens the card there, and a laptop's Intel integrated GPU is a
 //! Vulkan device that CUDA cannot open at all. A list of everything present
-//! would therefore hand a program devices its substrate faults on, so each
-//! domain names its [`Substrate`] and the enumeration follows the program.
+//! would therefore hand a program devices its backend faults on, so each
+//! domain names its [`Backend`] and the enumeration follows the program.
 
 use serde::{Deserialize, Serialize};
 use sima_core::Result;
@@ -52,7 +52,7 @@ pub enum DeviceType {
 /// Every domain names one. It is what turns a format id into an enumeration,
 /// and it is a property of the program rather than of the host.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Substrate {
+pub enum Backend {
     /// Computes in the worker process itself, opening no device.
     Host,
     /// The WGSL toolkit, over any Vulkan driver present.
@@ -64,23 +64,23 @@ pub enum Substrate {
 /// Every device the program bound to `format` can run on.
 ///
 /// Resolving the format is what selects the backend: the registration table
-/// pairs each program with the substrate it executes through, so nothing above
+/// pairs each program with the backend it executes through, so nothing above
 /// this crate has to know which backends the build compiles in.
 pub fn enumerate_devices(format: &FormatId) -> Result<Vec<DeviceInfo>> {
-    devices_of(crate::domain_for(format)?.substrate)
+    devices_of(crate::domain_for(format)?.backend)
 }
 
 /// One backend's devices in this module's vocabulary.
-fn devices_of(substrate: Substrate) -> Result<Vec<DeviceInfo>> {
-    match substrate {
+fn devices_of(backend: Backend) -> Result<Vec<DeviceInfo>> {
+    match backend {
         // A program that opens no device enumerates none, and the layers above
         // read that as a worker needing no device rather than as a bare host.
-        Substrate::Host => Ok(Vec::new()),
-        Substrate::Wgsl => Ok(sima_toolkit_wgsl::enumerate_devices()?
+        Backend::Host => Ok(Vec::new()),
+        Backend::Wgsl => Ok(sima_toolkit_wgsl::enumerate_devices()?
             .into_iter()
             .map(from_wgsl)
             .collect()),
-        Substrate::Cuda => Ok(sima_toolkit_cuda::enumerate_devices()?
+        Backend::Cuda => Ok(sima_toolkit_cuda::enumerate_devices()?
             .into_iter()
             .map(from_cuda)
             .collect()),
@@ -131,11 +131,11 @@ mod tests {
         FormatId::new(name).expect("format id")
     }
 
-    /// The substrate the program bound to `name` runs on.
-    fn substrate_of(name: &str) -> Substrate {
+    /// The backend the program bound to `name` runs on.
+    fn backend_of(name: &str) -> Backend {
         crate::domain_for(&format(name))
             .expect("a registered format")
-            .substrate
+            .backend
     }
 
     #[test]
@@ -234,18 +234,18 @@ mod tests {
         // The rented-host case: Vulkan there reaches the CPU rasterizer alone
         // while CUDA opens the card. Enumerating anything CUDA-only for this
         // program would bind its worker to a device Vulkan cannot open.
-        assert_eq!(substrate_of("ca_evolution.gray_scott.v1"), Substrate::Wgsl);
-        assert_eq!(substrate_of("ca_evolution.nca.v1"), Substrate::Wgsl);
+        assert_eq!(backend_of("ca_evolution.gray_scott.v1"), Backend::Wgsl);
+        assert_eq!(backend_of("ca_evolution.nca.v1"), Backend::Wgsl);
     }
 
     #[test]
     fn a_program_that_opens_no_device_enumerates_none() {
         // The stub computes in the worker process, so it has no device to be
         // placed on and the layers above derive a deviceless worker.
-        assert_eq!(substrate_of("stub.v1"), Substrate::Host);
+        assert_eq!(backend_of("stub.v1"), Backend::Host);
         assert!(
-            devices_of(Substrate::Host)
-                .expect("the host substrate always answers")
+            devices_of(Backend::Host)
+                .expect("the host backend always answers")
                 .is_empty()
         );
     }

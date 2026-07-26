@@ -11,7 +11,7 @@ use std::path::Path;
 
 use common::loaded_text;
 use sima_core::{Error, Hash, Result};
-use sima_domains::shared::cellular::Grid;
+use sima_domains::substrates::cellular::Grid;
 use sima_domains::{decode_continuation, encode_continuation};
 use sima_pipeline::{LoadedConfig, RunControl, RunOutcome, orchestrate};
 use sima_store::Store;

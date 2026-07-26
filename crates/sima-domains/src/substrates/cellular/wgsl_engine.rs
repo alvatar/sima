@@ -1,16 +1,16 @@
-//! [`WgslEngine`]: the WGSL substrate behind the [`CellularEngine`] seam.
+//! [`WgslEngine`]: the WGSL backend behind the [`CellularEngine`] seam.
 
 use sima_contracts::DeviceBinding;
 use sima_core::{Hash, Result, hash_bytes};
 use sima_toolkit_wgsl::{Buffer, Context, Kernel, selected_device_desc};
 
-use crate::devices::Substrate;
-use crate::shared::cellular::{
+use crate::devices::Backend;
+use crate::substrates::cellular::{
     CellularEngine, CellularEvaluation, EvaluationInput, Grid, GridPair, REDUCE_WGSL,
     ReduceKernels, Trajectory, reduce as reduce_pair, run,
 };
 
-/// The WGSL substrate: a Vulkan device, the model's update kernel compiled for
+/// The WGSL backend: a Vulkan device, the model's update kernel compiled for
 /// it, and the four reduction passes.
 pub(crate) struct WgslEngine {
     /// Declared before `context` so they drop first: struct fields drop in
@@ -23,7 +23,7 @@ pub(crate) struct WgslEngine {
 }
 
 impl CellularEngine for WgslEngine {
-    const SUBSTRATE: Substrate = Substrate::Wgsl;
+    const BACKEND: Backend = Backend::Wgsl;
     const COMPILER_COMPONENT: &'static str = "wgsl.compiler";
     const COMPILER_ID: &'static str = sima_toolkit_wgsl::COMPILER_ID;
 
@@ -147,7 +147,7 @@ mod tests {
     fn the_reduction_digest_hashes_the_shader_source() {
         // The environment component this feeds is what makes an edit to the
         // reduction invalidate every task key of every domain on this
-        // substrate, so it must cover the shader text exactly.
+        // backend, so it must cover the shader text exactly.
         assert_eq!(
             WgslEngine::reduce_digest(),
             hash_bytes(REDUCE_WGSL.as_bytes())
@@ -157,7 +157,7 @@ mod tests {
     #[test]
     fn the_compiler_component_pins_the_toolkit_identity() {
         // The value is the toolkit's own pinned constant, so a naga upgrade
-        // that changes emitted SPIR-V moves every task key on this substrate.
+        // that changes emitted SPIR-V moves every task key on this backend.
         assert_eq!(WgslEngine::COMPILER_COMPONENT, "wgsl.compiler");
         assert_eq!(WgslEngine::COMPILER_ID, sima_toolkit_wgsl::COMPILER_ID);
     }

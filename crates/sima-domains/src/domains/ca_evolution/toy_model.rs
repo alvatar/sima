@@ -12,7 +12,7 @@ use super::ignition::{PatchSpec, seeded_patch};
 use super::model::CaModel;
 use super::params::CaParams;
 use crate::domains::translate::{self, TomlConfig};
-use crate::shared::cellular::Grid;
+use crate::substrates::cellular::Grid;
 
 /// A one-channel toy model: the genome is a single value, the ignition a single
 /// base value, the generator config a single sampling range.
@@ -180,7 +180,7 @@ mod tests {
     use super::super::generator::{CaGenerator, translate as translate_generator};
     use super::super::params::{decode_params, translate as translate_params};
     use super::*;
-    use crate::shared::cellular::WgslEngine;
+    use crate::substrates::cellular::WgslEngine;
 
     #[test]
     fn the_environment_names_derive_from_the_model() -> Result<()> {

@@ -3,7 +3,7 @@
 use sima_core::Result;
 use sima_toolkit_wgsl::{Buffer, Context, Kernel};
 
-use crate::shared::cellular::Grid;
+use crate::substrates::cellular::Grid;
 
 /// The result of a [`run`]: the two ping-pong buffers left resident on the
 /// device — the final grid $G_N$ and the step before it $G_{N-1}$ — over the

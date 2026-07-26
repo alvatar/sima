@@ -1,13 +1,13 @@
 //! The double-buffered CUDA dispatch harness that advances a [`Grid`].
 //!
-//! The CUDA counterpart of [`cellular::step`](crate::shared::cellular::step), dispatch
+//! The CUDA counterpart of [`cellular::step`](crate::substrates::cellular::step), dispatch
 //! for dispatch: the same ping-pong over two device buffers, the same argument
 //! order, and the same per-step index transport.
 
 use sima_core::Result;
 use sima_toolkit_cuda::{Buffer, Context, Kernel};
 
-use crate::shared::cellular::Grid;
+use crate::substrates::cellular::Grid;
 
 /// The threads per block every cellular kernel is launched with, matching the
 /// WGSL side's `@workgroup_size(64)`. CUDA takes the block dimensions at launch

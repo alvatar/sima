@@ -8,8 +8,8 @@
 //! solely to cross-check the harness against an independent implementation in
 //! tests. Each family supplies its own kernel and genome, not a reference.
 //!
-//! Which compute substrate a kernel runs on is the `CellularEngine` seam: one
-//! operation wide, with one implementation per substrate. The dispatch harness
+//! Which compute backend a kernel runs on is the `CellularEngine` seam: one
+//! operation wide, with one implementation per backend. The dispatch harness
 //! in `step` and the stats reduction in `reduce` are the WGSL implementation's
 //! half of it, reached through `WgslEngine`; their CUDA counterparts live in
 //! `cuda`, reached through `CudaEngine`. What the two share rather than

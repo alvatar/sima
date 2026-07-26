@@ -1,37 +1,37 @@
 //! [`CellularEngine`]: the seam between a cellular evaluation and the compute
-//! substrate it runs on.
+//! backend it runs on.
 
 use sima_contracts::DeviceBinding;
 use sima_core::{Hash, Result};
 
-use crate::devices::Substrate;
-use crate::shared::cellular::Grid;
+use crate::devices::Backend;
+use crate::substrates::cellular::Grid;
 
-/// A compute substrate an evaluation runs on: it holds a device and the kernels
+/// A compute backend an evaluation runs on: it holds a device and the kernels
 /// compiled for it, it advances a grid, and it reduces the result.
 ///
 /// The trait is one operation wide on purpose. Everything a candidate needs
 /// around that operation — decoding its spec, igniting or resuming its grid,
 /// deciding whether to keep a snapshot — belongs to the executor and is written
-/// once for every substrate.
+/// once for every backend.
 ///
-/// A substrate also answers for its own identity: the digest of the reduction
+/// A backend also answers for its own identity: the digest of the reduction
 /// kernel it runs and the component that pins its compiler both enter the
-/// environment of every domain built on it, so two substrates give a domain two
+/// environment of every domain built on it, so two backends give a domain two
 /// distinct environments and neither invalidates the other's stored results.
 ///
 /// The trait is defined here rather than in a toolkit because the toolkits know
 /// nothing of grids or scalars: they are compute libraries, and this is the
-/// vocabulary of the cellular kind. Implementing it for a foreign substrate
+/// vocabulary of the cellular kind. Implementing it for a foreign backend
 /// violates no orphan rule, since the trait itself is local.
 pub(crate) trait CellularEngine: Send + Sized + 'static {
     /// The execution backend behind this engine, which is also the one whose
     /// devices can hold its work: a domain built on it enumerates that backend
     /// alone.
-    const SUBSTRATE: Substrate;
+    const BACKEND: Backend;
 
-    /// The name of the environment component that pins this substrate's
-    /// compiler. Each substrate names its own, so a domain's environment says
+    /// The name of the environment component that pins this backend's
+    /// compiler. Each backend names its own, so a domain's environment says
     /// which compiler it depends on rather than only what that compiler is.
     const COMPILER_COMPONENT: &'static str;
 
@@ -40,14 +40,14 @@ pub(crate) trait CellularEngine: Send + Sized + 'static {
     const COMPILER_ID: &'static str;
 
     /// Opens `device` — or, for `None`, the toolkit's default selection — and
-    /// compiles `kernel` along with this substrate's stats reduction.
+    /// compiles `kernel` along with this backend's stats reduction.
     fn build(device: Option<&DeviceBinding>, kernel: &'static str) -> Result<Self>;
 
     /// The device's name and driver version, resolved without opening a device,
     /// for the worker handshake.
     fn device_desc(device: Option<&DeviceBinding>) -> Result<(String, String)>;
 
-    /// The digest of this substrate's reduction kernel, an environment
+    /// The digest of this backend's reduction kernel, an environment
     /// component of every domain that runs on it.
     fn reduce_digest() -> Hash;
 

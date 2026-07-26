@@ -1,4 +1,4 @@
-//! The Gray-Scott reaction-diffusion model on the CUDA substrate: the same rule
+//! The Gray-Scott reaction-diffusion model on the CUDA backend: the same rule
 //! as [`GrayScott`](super::gray_scott::GrayScott), evaluated through committed
 //! PTX instead of a compiled shader.
 //!
@@ -12,16 +12,16 @@
 //! It is a distinct program rather than a second backend for one program.
 //! Numerical agreement between the two is a tolerance, not an equality, so
 //! sharing an identity would let a task key resolve to a result the other
-//! substrate produced.
+//! backend produced.
 
 use sima_core::Result;
 
 use super::super::model::CaModel;
 use super::super::params::CaParams;
 use super::gray_scott::{GrayScott, GrayScottGenConfig, GrayScottGenome, GrayScottIgnition};
-use crate::shared::cellular::Grid;
+use crate::substrates::cellular::Grid;
 
-/// The Gray-Scott model bound to the CUDA substrate. Zero-sized, like every
+/// The Gray-Scott model bound to the CUDA backend. Zero-sized, like every
 /// model: the generic machinery is monomorphized over it.
 pub(crate) struct GrayScottCuda;
 
@@ -60,7 +60,7 @@ mod tests {
 
     use super::super::super::domain::build_domain;
     use super::*;
-    use crate::shared::cellular::{CudaEngine, WgslEngine};
+    use crate::substrates::cellular::{CudaEngine, WgslEngine};
 
     /// The CUDA C the committed PTX is generated from.
     const KERNEL_CU: &str = include_str!("gray_scott.cu");
@@ -114,7 +114,7 @@ mod tests {
     #[test]
     fn the_two_programs_are_separate_identities() -> Result<()> {
         // The rule is shared, the identity is not: a task key from one program
-        // must never resolve to a result the other substrate produced, since
+        // must never resolve to a result the other backend produced, since
         // the two agree only to a tolerance.
         let cuda = build_domain::<GrayScottCuda, CudaEngine>()?;
         let wgsl = build_domain::<GrayScott, WgslEngine>()?;

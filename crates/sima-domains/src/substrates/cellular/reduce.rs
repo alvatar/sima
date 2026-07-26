@@ -25,7 +25,7 @@ pub const REDUCE_WGSL: &str = include_str!("shaders/reduce.wgsl");
 /// rejected before dispatch.
 pub(crate) const MAX_CHANNELS: u32 = 16;
 
-/// The fixed number of level-1 partitions, shared by both substrates'
+/// The fixed number of level-1 partitions, shared by both backends'
 /// reductions. The topology is fixed so the reduction is deterministic per
 /// backend: every sum folds in the same order. Both kernels read it from their
 /// parameter buffer, so one constant drives both and they accumulate alike.
@@ -157,7 +157,7 @@ pub fn scalar_names(channels: u32) -> Vec<String> {
 
 /// Pairs the reduction's flat output with its names, widening each `f32` to
 /// `f64`. The output layout matches [`scalar_names`] element for element, and
-/// is the same for every substrate.
+/// is the same for every backend.
 pub(crate) fn name_scalars(channels: u32, values: &[f32]) -> Vec<(String, f64)> {
     scalar_names(channels)
         .into_iter()
@@ -360,11 +360,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             .expect("add-one kernel");
 
         let cells = 16u32;
-        let initial =
-            crate::shared::cellular::Grid::new(4, 4, 1, vec![0.0; cells as usize]).expect("grid");
+        let initial = crate::substrates::cellular::Grid::new(4, 4, 1, vec![0.0; cells as usize])
+            .expect("grid");
         let steps = 3u32;
         let trajectory =
-            crate::shared::cellular::run(&context, &kernel, &initial, steps, &[], None)
+            crate::substrates::cellular::run(&context, &kernel, &initial, steps, &[], None)
                 .expect("run");
 
         // The two resident buffers, downloaded as the reduction reads them.

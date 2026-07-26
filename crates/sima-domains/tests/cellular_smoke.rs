@@ -4,7 +4,7 @@
 
 mod common;
 
-use sima_domains::shared::cellular::{CellularRule, Grid};
+use sima_domains::substrates::cellular::{CellularRule, Grid};
 use sima_toolkit_wgsl::Context;
 
 /// The CPU reference matching `shaders/smoke.wgsl`: a 5-point neighborhood max

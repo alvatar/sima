@@ -15,13 +15,13 @@
 //! resolve device selectors against, asked about a format id.
 //!
 //! Below the concrete domains — the stub and `ca_evolution` — the
-//! [`shared`] layer holds executor machinery reused across domains. Today that
-//! is the [`cellular`](shared::cellular) kind: the
-//! [`Grid`](shared::cellular::Grid) state, the [`run`](shared::cellular::run)
-//! double-buffered dispatch harness, and the
-//! [`CellularRule`](shared::cellular::CellularRule) CPU-reference contract used
-//! solely to cross-check that harness against an independent implementation in
-//! tests.
+//! [`substrates`] layer holds the structural kinds a domain's executor is built
+//! on. Today that is the [`cellular`](substrates::cellular) substrate: the
+//! [`Grid`](substrates::cellular::Grid) state, the
+//! [`run`](substrates::cellular::run) double-buffered dispatch harness, and the
+//! [`CellularRule`](substrates::cellular::CellularRule) CPU-reference contract
+//! used solely to cross-check that harness against an independent implementation
+//! in tests.
 //!
 //! The pipeline calls this crate to resolve a config's format and generator
 //! ids to code; the scheduler tests use the stub domain as a deterministic,
@@ -31,7 +31,7 @@
 pub mod devices;
 mod domain;
 mod domains;
-pub mod shared;
+pub mod substrates;
 
 pub use domain::{Domain, domain_for, generator_for, generator_params_for, params_for};
 pub use domains::ca_evolution::continuation::{decode_continuation, encode_continuation};

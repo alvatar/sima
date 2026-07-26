@@ -1,5 +1,5 @@
 //! [`CaExecutor<M, E>`]: evaluates a CA candidate of the model `M` on the
-//! substrate `E`.
+//! backend `E`.
 
 use std::marker::PhantomData;
 use std::sync::Mutex;
@@ -14,9 +14,9 @@ use sima_model::FormatId;
 use super::continuation::{decode_continuation, encode_continuation};
 use super::model::CaModel;
 use super::params::decode_params;
-use crate::shared::cellular::{CellularEngine, EvaluationInput, Grid};
+use crate::substrates::cellular::{CellularEngine, EvaluationInput, Grid};
 
-/// Evaluates a candidate of the model `M` on the substrate `E`, under format
+/// Evaluates a candidate of the model `M` on the backend `E`, under format
 /// `M::FORMAT_ID`: the spec's genome and the run params frame one task — ignite
 /// (or continue) a grid, advance it `steps` kernel dispatches, reduce the final
 /// grid pair into the observational stat scalars, and commit the final state as
@@ -24,8 +24,8 @@ use crate::shared::cellular::{CellularEngine, EvaluationInput, Grid};
 /// stepped model commits framed continuation state, the reached step ahead of
 /// the grid.
 ///
-/// Everything above is written once for every substrate. What differs between
-/// substrates — opening a device, compiling kernels, dispatching, reducing —
+/// Everything above is written once for every backend. What differs between
+/// backends — opening a device, compiling kernels, dispatching, reducing —
 /// sits behind [`CellularEngine`], so a model runs on a second backend by being
 /// registered against a second engine and nothing here changes.
 ///
@@ -257,7 +257,7 @@ mod tests {
     use super::super::params::{CaParams, encode_params};
     use super::super::toy_model::Toy;
     use super::*;
-    use crate::shared::cellular::WgslEngine;
+    use crate::substrates::cellular::WgslEngine;
 
     /// The models' constructor-bearing types. The model submodules are private,
     /// so the genome, ignition, and sampling-config types are reachable here
@@ -393,7 +393,7 @@ mod tests {
 
     /// The scalar names the reduction emits for a `channels`-channel model.
     fn expected_scalar_names(channels: u32) -> Vec<String> {
-        crate::shared::cellular::scalar_names(channels)
+        crate::substrates::cellular::scalar_names(channels)
     }
 
     /// A stat list carrying one scalar at `value`.

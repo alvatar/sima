@@ -27,7 +27,7 @@ use sima_core::Result;
 use sima_model::{FormatId, GeneratorId, Params};
 
 use crate::domain::Domain;
-use crate::shared::cellular::{CudaEngine, WgslEngine};
+use crate::substrates::cellular::{CudaEngine, WgslEngine};
 use model::CaModel;
 use models::gray_scott::GrayScott;
 use models::gray_scott_cuda::GrayScottCuda;
@@ -36,8 +36,8 @@ use models::nca::Nca;
 /// Resolves a format id to one of this domain's models, binding its [`Domain`],
 /// or `None` if no model claims it.
 ///
-/// Each arm names both the model and the substrate it runs on: the model
-/// declares no engine, so a rule ported to a second substrate is a second arm
+/// Each arm names both the model and the backend it runs on: the model
+/// declares no engine, so a rule ported to a second backend is a second arm
 /// beside the first, and a mismatched pairing is visible on one line.
 pub(crate) fn domain_for(format: &FormatId) -> Option<Result<Domain>> {
     match format.as_str() {
