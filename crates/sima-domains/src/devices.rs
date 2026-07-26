@@ -239,6 +239,14 @@ mod tests {
     }
 
     #[test]
+    fn a_cuda_program_enumerates_the_cuda_backend() {
+        // The mirror case: the laptop's Intel integrated GPU is a Vulkan device
+        // CUDA cannot open at all. Enumerating anything Vulkan-only for this
+        // program would bind its worker to a device the CUDA driver faults on.
+        assert_eq!(backend_of("ca_evolution.gray_scott_cuda.v1"), Backend::Cuda);
+    }
+
+    #[test]
     fn a_program_that_opens_no_device_enumerates_none() {
         // The stub computes in the worker process, so it has no device to be
         // placed on and the layers above derive a deviceless worker.
@@ -254,7 +262,11 @@ mod tests {
     fn enumeration_answers_on_a_machine_with_no_device_at_all() {
         // No backend faults for want of a driver, so the probe the worker runs
         // answers rather than failing, whichever program it is asked about.
-        for name in ["stub.v1", "ca_evolution.gray_scott.v1"] {
+        for name in [
+            "stub.v1",
+            "ca_evolution.gray_scott.v1",
+            "ca_evolution.gray_scott_cuda.v1",
+        ] {
             enumerate_devices(&format(name)).expect("enumeration answers on any machine");
         }
     }

@@ -1,24 +1,25 @@
 //! End-to-end acceptance of the Gray-Scott CUDA program through the pipeline
 //! API: a `ca_evolution.gray_scott_cuda` `sima.toml` runs generate → execute →
 //! commit → inspect to a finalized manifest, a segment boundary leaves the
-//! committed trajectory byte-identical, and the same genome evaluated by the
-//! two substrates lands on the same grid within tolerance.
+//! committed trajectory byte-identical, the same genome evaluated by the two
+//! backends lands on the same grid within tolerance, and a malformed
+//! `[run.params]` section fails at load — before any store or GPU work.
 //!
-//! Some tests here drive a real device; the program's identity and the shipped
-//! config are checked device-free.
+//! Some tests here drive a real device; the program's identity, its params
+//! validation, and the shipped config are checked device-free.
 
 mod common;
 
 use std::path::Path;
 
 use common::loaded_text;
-use sima_core::{Hash, Result};
+use sima_core::{Error, Hash, Result};
 use sima_domains::substrates::cellular::Grid;
 use sima_pipeline::{LoadedConfig, RunControl, RunOutcome, orchestrate};
 use sima_store::Store;
 
-/// The relative tolerance the two substrates' grids are held to: the same
-/// figure their engines' own cross-substrate comparison uses. A fused
+/// The relative tolerance the two backends' grids are held to: the same
+/// figure their engines' own cross-backend comparison uses. A fused
 /// multiply-add one compiler emits and the other does not moves a cell within
 /// this envelope; a transcription error moves it far outside.
 const TOLERANCE: f64 = 1e-3;
@@ -141,7 +142,7 @@ fn a_gray_scott_cuda_config_runs_the_full_spine() -> Result<()> {
 /// Requires a CUDA device.
 #[test]
 fn a_segment_boundary_leaves_the_trajectory_byte_identical() -> Result<()> {
-    // Resume across a segment boundary is substrate-independent machinery, and
+    // Resume across a segment boundary is backend-independent machinery, and
     // this is what proves the CUDA engine's resident state survives it: the
     // second segment must continue from the first segment's committed grid and
     // land exactly where an unsegmented run of the same length lands.
@@ -190,10 +191,10 @@ fn a_segment_boundary_leaves_the_trajectory_byte_identical() -> Result<()> {
 /// Requires both a CUDA device and a Vulkan device.
 #[test]
 fn both_programs_evolve_the_same_rule_to_the_same_grid() -> Result<()> {
-    // The port's acceptance at program level: one genome, two substrates, two
+    // The port's acceptance at program level: one genome, two backends, two
     // full runs through the spine, and grids that agree cell for cell within
     // tolerance. The step count is deliberately short — a rounding difference
-    // one substrate makes and the other does not compounds with every step, so
+    // one backend makes and the other does not compounds with every step, so
     // a long run measures divergence growth rather than transcription
     // fidelity, which is what this test is for.
     let dir = tempfile::tempdir().expect("temp dir");
@@ -269,6 +270,30 @@ fn the_two_programs_are_separately_addressable() -> Result<()> {
 }
 
 #[test]
+fn a_malformed_params_section_fails_at_load() -> Result<()> {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let valid = config_text(CUDA_FORMAT, "./store", 1, 10, None);
+    // Each case malforms one aspect of [run.params]; the load fails with
+    // Validation naming the key, before any store or GPU work.
+    let cases = [
+        ("width = 32", "", "width"), // missing key
+        ("width = 32", "width = 32\n        surprise = 1", "surprise"), // unknown key
+        ("dt = 1.0", "dt = 0.0", "dt"), // zero dt
+        ("width = 32", "width = 0", "width"), // zero extent
+    ];
+    for (original, bad, key) in cases {
+        let text = valid.replace(original, bad);
+        match loaded_text(dir.path(), "malformed.toml", &text) {
+            Err(Error::Validation(message)) => {
+                assert!(message.contains(key), "the error names {key}: {message}");
+            }
+            other => panic!("expected Validation for {bad:?}, got {other:?}"),
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn the_shipped_cuda_search_config_loads() -> Result<()> {
     // The committed `examples/gray-scott-cuda-search.toml` parses cleanly
     // through the full load path, device-free — a guard on the shipped file
@@ -279,5 +304,39 @@ fn the_shipped_cuda_search_config_loads() -> Result<()> {
     let loaded = sima_pipeline::load(&path)?;
     assert_eq!(loaded.run.format.as_str(), CUDA_FORMAT);
     assert_eq!(loaded.execution.workers, 2);
+    Ok(())
+}
+
+#[test]
+fn the_shipped_search_config_loads_with_the_snapshot_predicate_enabled() -> Result<()> {
+    // The example ships the `snapshot_when` line commented, so no test parses
+    // the template's predicate syntax or its scalar vocabulary, and both can
+    // drift unnoticed. Enabling the line and loading pins both: translation
+    // validates the scalar against the reduction's names, so a load that
+    // succeeds proves the shipped syntax parses and the scalar is one the
+    // reduction emits.
+    let path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/gray-scott-cuda-search.toml");
+    let text = std::fs::read_to_string(&path).expect("read the example");
+    // Strip the leading comment marker from the predicate line alone; the
+    // surrounding explanatory comments stay commented.
+    let enabled = text.replace("# snapshot_when =", "snapshot_when =");
+    assert!(
+        enabled.contains("\nsnapshot_when ="),
+        "the predicate line was uncommented"
+    );
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config = dir.path().join("gray-scott-cuda-search.toml");
+    std::fs::write(&config, &enabled).expect("write the enabled config");
+    sima_pipeline::load(&config)?;
+
+    // Gray-Scott is a two-channel model (u, v); the example's scalar must be a
+    // name the reduction emits for it.
+    let names = sima_domains::substrates::cellular::scalar_names(2);
+    assert!(
+        names.iter().any(|name| name == "activity"),
+        "the example's scalar is a reduction name: {names:?}"
+    );
     Ok(())
 }
