@@ -314,9 +314,10 @@ fn an_executor_panic_crosses_as_a_correlated_diagnostic_event() {
     assert!(task_key.is_some(), "the diagnostic names the task");
 }
 
-/// Requires a Vulkan device. Run with `cargo test -- --ignored`.
+/// Requires a compute device on any backend. Run with
+/// `cargo test -- --ignored`.
 #[test]
-#[ignore = "requires a Vulkan device"]
+#[ignore = "requires a compute device"]
 fn the_enumerate_probe_prints_one_json_device_per_line() {
     // The remote-resolution probe: `--enumerate` prints the machine's devices
     // as JSON, one per line, and exits zero. Each line parses as a device.
@@ -342,13 +343,14 @@ fn the_enumerate_probe_prints_one_json_device_per_line() {
 }
 
 #[test]
-fn the_enumerate_probe_answers_none_on_a_machine_without_a_driver() {
-    // A driverless machine — a CI runner, a fleet instance with a broken
-    // driver — has zero compute devices, and "none" is the probe's answer
-    // there, never a failure: the fleet derives one deviceless worker from an
-    // empty probe. `VK_DRIVER_FILES` naming a nonexistent manifest makes the
-    // loader's driver search come up empty, the same condition as a machine
-    // with no driver installed.
+fn the_enumerate_probe_answers_when_a_backend_finds_no_driver() {
+    // A backend whose driver search comes up empty — a CI runner, a fleet
+    // instance with a broken driver — contributes no devices and no failure:
+    // the probe still exits zero and prints what the other backends found, and
+    // the fleet derives one deviceless worker from an empty answer.
+    // `VK_DRIVER_FILES` naming a nonexistent manifest makes the Vulkan loader's
+    // driver search come up empty, the same condition as a machine with no
+    // Vulkan driver installed.
     let output = Command::new(env!("CARGO_BIN_EXE_sima-worker"))
         .arg("--enumerate")
         .env("VK_DRIVER_FILES", "/nonexistent/no_driver.json")
@@ -356,13 +358,19 @@ fn the_enumerate_probe_answers_none_on_a_machine_without_a_driver() {
         .expect("run the probe");
     assert!(
         output.status.success(),
-        "a driverless probe exits zero: {}",
+        "the probe exits zero: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(
-        output.stdout.is_empty(),
-        "a driverless machine enumerates no devices"
-    );
+    let text = String::from_utf8(output.stdout).expect("probe output is UTF-8");
+    for line in text.lines().filter(|line| !line.trim().is_empty()) {
+        let device: serde_json::Value =
+            serde_json::from_str(line).expect("each line is a JSON device");
+        assert!(
+            device.get("vendor_id").is_some(),
+            "a device names its vendor"
+        );
+        assert!(device.get("device_id").is_some(), "a device names its id");
+    }
 }
 
 #[test]

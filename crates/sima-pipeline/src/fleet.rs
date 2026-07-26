@@ -13,7 +13,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use sima_contracts::DeviceBinding;
 use sima_core::{Error, Result};
-use sima_domains::devices::DeviceInfo;
+use sima_domains::devices::{DeviceInfo, DeviceType};
 use sima_model::FormatId;
 use sima_provider::stub::StubProvider;
 use sima_provider::{
@@ -235,12 +235,22 @@ fn probe_slots(
 /// One worker slot per enumerated GPU, each bound to its own device; a probe
 /// reporting no GPU yields a single deviceless worker — the stub testing path,
 /// and any device-free instance.
+///
+/// A software rasterizer is skipped whenever a real GPU is present. A rented
+/// host enumerates the CPU rasterizer beside its card, and an instance is
+/// rented for its GPU: placing a worker on the rasterizer would spend the
+/// rental running the slowest device on the machine. When every enumerated
+/// device is a CPU, they are all slots — a host with no GPU still gets workers.
 fn fleet_slots(devices: &[DeviceInfo]) -> Vec<Option<DeviceBinding>> {
     if devices.is_empty() {
         return vec![None];
     }
+    let has_gpu = devices
+        .iter()
+        .any(|device| device.device_type != DeviceType::Cpu);
     devices
         .iter()
+        .filter(|device| !has_gpu || device.device_type != DeviceType::Cpu)
         .map(|device| {
             Some(DeviceBinding {
                 vendor_id: device.vendor_id,
@@ -824,6 +834,100 @@ mod tests {
     /// derives a single deviceless slot without a real worker binary or GPU.
     fn deviceless_probe() -> FleetMode {
         FleetMode::Local(PathBuf::from("/bin/true"))
+    }
+
+    /// One enumerated device of the given category.
+    fn device(vendor_id: u32, device_id: u32, name: &str, device_type: DeviceType) -> DeviceInfo {
+        DeviceInfo {
+            vendor_id,
+            device_id,
+            name: name.to_string(),
+            device_type,
+            member: 0,
+        }
+    }
+
+    #[test]
+    fn a_host_with_no_device_gets_one_deviceless_slot() {
+        assert_eq!(fleet_slots(&[]), vec![None]);
+    }
+
+    #[test]
+    fn every_gpu_gets_a_slot_bound_to_it() {
+        let devices = [
+            device(
+                0x10de,
+                0x2684,
+                "NVIDIA GeForce RTX 4090",
+                DeviceType::Discrete,
+            ),
+            device(0x8086, 0x7d51, "Intel(R) Graphics", DeviceType::Integrated),
+        ];
+        let slots = fleet_slots(&devices);
+        assert_eq!(slots.len(), 2);
+        assert_eq!(
+            slots[0],
+            Some(DeviceBinding {
+                vendor_id: 0x10de,
+                device_id: 0x2684,
+                member: 0
+            })
+        );
+        assert_eq!(
+            slots[1],
+            Some(DeviceBinding {
+                vendor_id: 0x8086,
+                device_id: 0x7d51,
+                member: 0
+            })
+        );
+    }
+
+    #[test]
+    fn a_software_rasterizer_beside_a_gpu_gets_no_slot() {
+        // What a rented host reports: its card, and the CPU rasterizer the
+        // graphics stack falls back to. The instance was rented for the card.
+        let devices = [
+            device(0x10005, 0x0000, "llvmpipe (LLVM 19)", DeviceType::Cpu),
+            device(
+                0x10de,
+                0x2684,
+                "NVIDIA GeForce RTX 4090",
+                DeviceType::Discrete,
+            ),
+        ];
+        let slots = fleet_slots(&devices);
+        assert_eq!(slots.len(), 1, "one slot, on the GPU");
+        assert_eq!(
+            slots[0],
+            Some(DeviceBinding {
+                vendor_id: 0x10de,
+                device_id: 0x2684,
+                member: 0
+            })
+        );
+    }
+
+    #[test]
+    fn a_host_with_only_a_rasterizer_still_gets_a_slot() {
+        // With no GPU to prefer, the rasterizer is the machine's compute
+        // device and takes its slot.
+        let devices = [device(
+            0x10005,
+            0x0000,
+            "llvmpipe (LLVM 19)",
+            DeviceType::Cpu,
+        )];
+        let slots = fleet_slots(&devices);
+        assert_eq!(slots.len(), 1);
+        assert_eq!(
+            slots[0],
+            Some(DeviceBinding {
+                vendor_id: 0x10005,
+                device_id: 0x0000,
+                member: 0
+            })
+        );
     }
 
     #[test]

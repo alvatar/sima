@@ -1119,6 +1119,7 @@ dependencies = [
  "sima-core",
  "sima-model",
  "sima-store",
+ "sima-toolkit-cuda",
  "sima-toolkit-wgsl",
  "tempfile",
  "toml",

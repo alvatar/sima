@@ -12,6 +12,7 @@ crash-injection = ["sima-core/crash-injection"]
 sima-core = { path = "../sima-core" }
 sima-model = { path = "../sima-model" }
 sima-contracts = { path = "../sima-contracts" }
+sima-toolkit-cuda = { path = "../toolkits/sima-toolkit-cuda" }
 sima-toolkit-wgsl = { path = "../toolkits/sima-toolkit-wgsl" }
 bytemuck.workspace = true
 serde.workspace = true
