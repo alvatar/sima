@@ -93,6 +93,59 @@ impl Context {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sima_core::hash_bytes;
+
+    /// The shipped compute kernel's committed PTX: `out[i] = in[i] * 2 + 1`.
+    const SMOKE_PTX: &str = include_str!("../kernels/smoke.ptx");
+
+    /// Requires `libnvrtc`. Run with `cargo test -- --ignored` on a machine
+    /// that has it.
+    #[test]
+    #[ignore = "requires libnvrtc"]
+    fn the_committed_ptx_reproduces_from_its_source() {
+        // The committed artifact is what a device loads, so it must be exactly
+        // what the committed source compiles to.
+        assert_eq!(
+            crate::compile(include_str!("../kernels/smoke.cu")).expect("compile the kernel"),
+            SMOKE_PTX
+        );
+    }
+
+    #[test]
+    fn the_committed_ptx_is_what_the_toolkit_promises_a_caller() {
+        // Both identities a kernel reports come from the artifact and the
+        // pinned target, so they can be checked without a device.
+        assert!(SMOKE_PTX.contains(".entry main_kernel("));
+        assert!(SMOKE_PTX.contains(".target sm_75"));
+        assert_eq!(COMPILER_ID, "ptx; arch=compute_75");
+    }
+
+    /// Requires an NVIDIA device. Run with `cargo test -- --ignored`.
+    #[test]
+    #[ignore = "requires a CUDA device"]
+    fn kernel_reports_identity_inputs() {
+        let context = Context::new().expect("create compute context");
+        let kernel = context
+            .kernel(SMOKE_PTX, "main_kernel", 64)
+            .expect("build kernel");
+        assert_eq!(kernel.ptx_digest(), hash_bytes(SMOKE_PTX.as_bytes()));
+        assert_eq!(kernel.compiler_id(), COMPILER_ID);
+        assert_eq!(kernel.block_width(), 64);
+    }
+
+    /// Requires an NVIDIA device. Run with `cargo test -- --ignored`.
+    #[test]
+    #[ignore = "requires a CUDA device"]
+    fn an_entry_point_the_module_does_not_declare_is_rejected() {
+        let context = Context::new().expect("create compute context");
+        match context.kernel(SMOKE_PTX, "no_such_entry", 64) {
+            Err(Error::Gpu(message)) => {
+                assert!(message.contains("no_such_entry"), "{message}");
+            }
+            Err(other) => panic!("expected a Gpu lookup error, got {other:?}"),
+            Ok(_) => panic!("expected an unknown entry point to be rejected"),
+        }
+    }
 
     /// Requires an NVIDIA device. Run with `cargo test -- --ignored`.
     #[test]

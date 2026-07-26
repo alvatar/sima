@@ -16,11 +16,22 @@
 //! compiles CUDA C while a run executes, so no worker needs the CUDA toolkit —
 //! only the driver, which arrives with the card.
 //!
-//! Regenerating the committed PTX needs `libnvrtc`, and only that: it is a
+//! Regenerating a committed PTX needs `libnvrtc`, and only that: it is a
 //! userspace compiler that opens no device and needs no driver. It comes with
 //! the CUDA toolkit, or on its own from the `nvidia-cuda-nvrtc-cu12` wheel, in
 //! which case point `LD_LIBRARY_PATH` at the directory holding
-//! `libnvrtc.so.12`.
+//! `libnvrtc.so.12`. The `compile-ptx` example is the regeneration step:
+//!
+//! ```text
+//! LD_LIBRARY_PATH=<dir> cargo run -p sima-toolkit-cuda --example compile-ptx \
+//!   -- path/to/kernel.cu > path/to/kernel.ptx
+//! ```
+//!
+//! Each kernel carries a regeneration test asserting its committed artifact is
+//! exactly what its committed source compiles to. NVRTC stamps its own version
+//! into the PTX header, so that test also pins which NVRTC produced the commit:
+//! regenerating with a different one is a real change to what the device runs,
+//! and it moves the digest the environment records.
 //!
 //! # Block dimensions
 //!
