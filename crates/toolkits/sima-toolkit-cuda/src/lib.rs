@@ -16,14 +16,22 @@
 //! compiles CUDA C while a run executes, so no worker needs the CUDA toolkit —
 //! only the driver, which arrives with the card.
 //!
+//! Regenerating the committed PTX needs `libnvrtc`, and only that: it is a
+//! userspace compiler that opens no device and needs no driver. It comes with
+//! the CUDA toolkit, or on its own from the `nvidia-cuda-nvrtc-cu12` wheel, in
+//! which case point `LD_LIBRARY_PATH` at the directory holding
+//! `libnvrtc.so.12`.
+//!
 //! # Block dimensions
 //!
-//! Launches are one-dimensional. A kernel declares the width of its thread
-//! block with `__launch_bounds__`, the toolkit reads that width back from the
-//! loaded function, and [`Context::dispatch`] launches blocks of exactly that
-//! width — so the block size lives in the kernel source, the way a WGSL
-//! `@workgroup_size` does, and a caller sizing a grid reads it from
-//! [`Kernel::block_width`] rather than repeating it.
+//! Launches are one-dimensional. CUDA takes block dimensions at launch rather
+//! than from the compiled artifact, so the width is stated twice and the
+//! toolkit ties the two together: a kernel declares it in source with
+//! `__launch_bounds__`, the caller passes the matching width to
+//! [`Context::kernel`], and that call rejects a width the device cannot launch.
+//! [`Context::dispatch`] then launches blocks of exactly that width, and a
+//! caller sizing a grid reads it back from [`Kernel::block_width`] rather than
+//! repeating the literal a third time.
 //!
 //! # Tests
 //!
@@ -36,8 +44,8 @@
 //! cargo test -p sima-toolkit-cuda -- --ignored
 //! ```
 //!
-//! Tests that call [`compile`] additionally need the CUDA toolkit installed for
-//! `libnvrtc`, and say so in their own `#[ignore]` reason.
+//! Tests that call [`compile`] need `libnvrtc` instead of a device, and say so
+//! in their own `#[ignore]` reason.
 //!
 //! `cudarc` opens the CUDA libraries at run time, so the crate builds with no
 //! CUDA toolkit and no driver present.
