@@ -189,9 +189,8 @@ mod tests {
     /// The shipped compute kernel: `out[i] = in[i] * 2 + 1`.
     const SMOKE_WGSL: &str = include_str!("../shaders/smoke.wgsl");
 
-    /// Requires a real Vulkan device. Run with `cargo test -- --ignored`.
+    /// Requires a real Vulkan device.
     #[test]
-    #[ignore = "requires a Vulkan device"]
     fn dispatch_applies_the_kernel() {
         let context = Context::new().expect("create compute context");
         let kernel = context.kernel(SMOKE_WGSL, "main").expect("build kernel");
@@ -210,7 +209,7 @@ mod tests {
         assert_eq!(output, [3, 5, 7, 9]);
     }
 
-    /// Requires a real Vulkan device. Run with `cargo test -- --ignored`.
+    /// Requires a real Vulkan device.
     ///
     /// A dispatch that reads a buffer a prior dispatch wrote must observe that
     /// output: the toolkit orders cross-dispatch shader-write to shader-read
@@ -218,7 +217,6 @@ mod tests {
     /// `out = in * 2 + 1` twice, ping-ponging the two buffers, yields
     /// `in * 4 + 3`.
     #[test]
-    #[ignore = "requires a Vulkan device"]
     fn a_dispatch_observes_a_prior_dispatchs_writes() {
         let context = Context::new().expect("create compute context");
         let kernel = context.kernel(SMOKE_WGSL, "main").expect("build kernel");

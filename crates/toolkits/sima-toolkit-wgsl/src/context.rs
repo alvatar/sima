@@ -358,18 +358,16 @@ impl Drop for OneTimeSubmit {
 mod tests {
     use super::*;
 
-    /// Requires a real Vulkan device. Run with `cargo test -- --ignored`.
+    /// Requires a real Vulkan device.
     #[test]
-    #[ignore = "requires a Vulkan device"]
     fn context_reports_device_provenance() {
         let context = Context::new().expect("create compute context");
         assert!(!context.device_name().is_empty());
         assert!(!context.driver_version().is_empty());
     }
 
-    /// Requires a real Vulkan device. Run with `cargo test -- --ignored`.
+    /// Requires a real Vulkan device.
     #[test]
-    #[ignore = "requires a Vulkan device"]
     fn a_context_opens_on_every_enumerated_device() {
         let devices = crate::enumerate_devices().expect("enumerate devices");
         assert!(!devices.is_empty(), "at least one compute-capable device");
@@ -382,9 +380,8 @@ mod tests {
         }
     }
 
-    /// Requires a real Vulkan device. Run with `cargo test -- --ignored`.
+    /// Requires a real Vulkan device.
     #[test]
-    #[ignore = "requires a Vulkan device"]
     fn opening_an_absent_device_class_fails() {
         assert!(matches!(
             Context::for_device(0xdead, 0xbeef, 0),

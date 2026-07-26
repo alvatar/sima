@@ -1,6 +1,6 @@
 //! Shared support for the sima-domains integration tests.
 
-use sima_domains::cellular::{CellularRule, Grid, run};
+use sima_domains::substrates::cellular::{CellularRule, Grid, run};
 use sima_toolkit_wgsl::{Context, Kernel};
 
 /// Advances `initial` by `steps` both ways — through the CPU `rule` and through

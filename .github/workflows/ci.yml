@@ -5,10 +5,31 @@ on:
   pull_request:
 
 jobs:
+  # Format and lint touch no hardware, so they stay on a hosted runner.
   check:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - run: cargo fmt --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
+
+  # The suite drives real GPUs and compiles CUDA C with NVRTC, so it needs a
+  # runner with a Vulkan device, an NVIDIA device, and libnvrtc on the loader
+  # path. There is no device-free lane: green here means the device tests ran.
+  #
+  # This job stays queued until a self-hosted runner labelled `gpu` is
+  # registered on a machine with those devices. Until then the badge is red
+  # because the suite has nowhere to run, which is an infrastructure gap and
+  # not a test being skipped.
+  test:
+    runs-on: [self-hosted, gpu]
+    steps:
+      - uses: actions/checkout@v4
       - run: cargo test --workspace
+        env:
+          # Where NVRTC is staged on the runner, configured as a repository
+          # variable so the location lives with the runner's registration. Only
+          # the PTX-regeneration tests need it, to check a committed `.ptx`
+          # still reproduces from its `.cu`; running the CUDA program itself
+          # needs the driver's libcuda alone, which the runner supplies.
+          LD_LIBRARY_PATH: ${{ vars.NVRTC_PATH }}

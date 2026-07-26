@@ -351,7 +351,7 @@ impl FleetMode {
     /// local binary directly.
     fn spawn_argv(&self, target: &SshTarget) -> Vec<String> {
         match self {
-            FleetMode::Ssh => ssh_argv(target, false),
+            FleetMode::Ssh => ssh_argv(target, None),
             FleetMode::Local(program) => vec![program.to_string_lossy().into_owned()],
         }
     }
@@ -375,14 +375,14 @@ const SSH_CONNECT_TIMEOUT_SECS: u64 = 10;
 /// The argv that runs `sima-worker` on a fleet instance over ssh:
 /// `ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new
 /// -o ConnectTimeout=<secs> -p <port> <user>@<host> -- sima-worker`, with
-/// `--enumerate` appended when `probe` is set.
+/// `--enumerate <format>` appended when `probe` names the run's format.
 ///
 /// `StrictHostKeyChecking=accept-new` accepts a freshly provisioned host's key
 /// on first contact and pins it afterwards — the trust model for disposable
 /// machines never present in `known_hosts`. `BatchMode=yes` never prompts, so
 /// an unreachable host is a clean spawn error rather than a hang.
 /// `ConnectTimeout` bounds a host that drops packets to a clean error.
-pub fn ssh_argv(target: &SshTarget, probe: bool) -> Vec<String> {
+pub fn ssh_argv(target: &SshTarget, probe: Option<&FormatId>) -> Vec<String> {
     let mut argv = vec![
         "ssh".to_string(),
         "-o".to_string(),
@@ -397,21 +397,28 @@ pub fn ssh_argv(target: &SshTarget, probe: bool) -> Vec<String> {
         "--".to_string(),
         WORKER_ENTRYPOINT.to_string(),
     ];
-    if probe {
+    if let Some(format) = probe {
         argv.push("--enumerate".to_string());
+        argv.push(format.as_str().to_string());
     }
     argv
 }
 
-/// The argv that enumerates devices for a fleet instance, so the orchestrator
-/// derives one worker slot per GPU: the ssh spawn argv with `--enumerate`, or
-/// the local binary with `--enumerate` in [`FleetMode::Local`].
-pub fn probe_argv(mode: &FleetMode, target: &SshTarget) -> Vec<String> {
+/// The argv that enumerates a fleet instance's devices for `format`, so the
+/// orchestrator derives one worker slot per usable GPU: the ssh spawn argv with
+/// `--enumerate <format>`, or the local binary with the same in
+/// [`FleetMode::Local`].
+///
+/// The format travels with the probe because the answer depends on it: the
+/// instance enumerates the backend the run's program executes through, and a
+/// device another backend reaches is not a place this run can put a worker.
+pub fn probe_argv(mode: &FleetMode, target: &SshTarget, format: &FormatId) -> Vec<String> {
     match mode {
-        FleetMode::Ssh => ssh_argv(target, true),
+        FleetMode::Ssh => ssh_argv(target, Some(format)),
         FleetMode::Local(program) => vec![
             program.to_string_lossy().into_owned(),
             "--enumerate".to_string(),
+            format.as_str().to_string(),
         ],
     }
 }
@@ -434,6 +441,11 @@ mod tests {
             port: 41022,
             user: "root".to_string(),
         }
+    }
+
+    /// The format a probe argv is built for.
+    fn a_format() -> FormatId {
+        FormatId::new("stub.v1").expect("format id")
     }
 
     /// A transport whose readiness bound is generous and whose poll is short,
@@ -492,7 +504,7 @@ mod tests {
     #[test]
     fn the_ssh_spawn_argv_carries_the_disposable_host_key_policy() {
         assert_eq!(
-            ssh_argv(&a_target(), false),
+            ssh_argv(&a_target(), None),
             [
                 "ssh",
                 "-o",
@@ -515,16 +527,18 @@ mod tests {
         // A packet-dropping host must fail within the transport's own bounds,
         // not stall for the kernel TCP timeout: both spawn and probe argv carry
         // the connect timeout.
-        assert!(ssh_argv(&a_target(), false).contains(&"ConnectTimeout=10".to_string()));
-        assert!(ssh_argv(&a_target(), true).contains(&"ConnectTimeout=10".to_string()));
+        assert!(ssh_argv(&a_target(), None).contains(&"ConnectTimeout=10".to_string()));
+        assert!(
+            ssh_argv(&a_target(), Some(&a_format())).contains(&"ConnectTimeout=10".to_string())
+        );
     }
 
     #[test]
-    fn the_ssh_probe_argv_appends_enumerate() {
-        let argv = ssh_argv(&a_target(), true);
-        assert_eq!(argv.last().expect("a last element"), "--enumerate");
+    fn the_ssh_probe_argv_appends_enumerate_and_the_format() {
+        let argv = ssh_argv(&a_target(), Some(&a_format()));
+        assert_eq!(&argv[argv.len() - 2..], ["--enumerate", "stub.v1"]);
         // Otherwise identical to the spawn argv.
-        assert_eq!(&argv[..argv.len() - 1], ssh_argv(&a_target(), false));
+        assert_eq!(&argv[..argv.len() - 2], ssh_argv(&a_target(), None));
     }
 
     #[test]
@@ -537,9 +551,27 @@ mod tests {
     fn a_local_mode_probe_argv_appends_enumerate_to_the_bare_binary() {
         let mode = FleetMode::Local(PathBuf::from("/opt/sima/sima-worker"));
         assert_eq!(
-            probe_argv(&mode, &a_target()),
-            ["/opt/sima/sima-worker", "--enumerate"]
+            probe_argv(&mode, &a_target(), &a_format()),
+            ["/opt/sima/sima-worker", "--enumerate", "stub.v1"]
         );
+    }
+
+    #[test]
+    fn the_probe_argv_names_the_format_it_is_asked_about() {
+        // The instance answers for one backend, so the probe carries which
+        // program is asking rather than assuming every device on the host is a
+        // place this run can put a worker.
+        let format = FormatId::new("ca_evolution.gray_scott.v1").expect("format id");
+        for mode in [
+            FleetMode::Ssh,
+            FleetMode::Local(PathBuf::from("/opt/sima/sima-worker")),
+        ] {
+            let argv = probe_argv(&mode, &a_target(), &format);
+            assert_eq!(
+                &argv[argv.len() - 2..],
+                ["--enumerate", "ca_evolution.gray_scott.v1"]
+            );
+        }
     }
 
     #[test]

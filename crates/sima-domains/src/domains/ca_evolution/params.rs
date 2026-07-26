@@ -245,7 +245,7 @@ fn parse_snapshot_when<M: CaModel>(value: &toml::Value, segmented: bool) -> Resu
             M::FORMAT_ID
         ))
     })?;
-    let valid = crate::cellular::scalar_names(M::CHANNELS);
+    let valid = crate::substrates::cellular::scalar_names(M::CHANNELS);
     if !valid.contains(&scalar) {
         return Err(Error::Validation(format!(
             "{} params snapshot_when.scalar {scalar:?} is not a stat this model emits; \

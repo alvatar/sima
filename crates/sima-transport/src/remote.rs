@@ -207,14 +207,16 @@ pub(crate) fn kill_argv(host: Option<&str>, runtime: &str, container: &str) -> V
 
 /// The argv that runs the one-shot enumeration probe in a throwaway container,
 /// ssh-wrapped when `host` is set: `[ssh …] <runtime> run --rm -i <run_args>
-/// <image> sima-worker --enumerate`. It carries the pool's `run_args` so the
-/// probe sees the same devices the workers will. The orchestrator runs it at
-/// run start to resolve a remote's device selectors.
+/// <image> sima-worker --enumerate <format>`. It carries the pool's `run_args`
+/// so the probe sees the same devices the workers will, and the run's format so
+/// it reports the backend those workers execute through. The orchestrator runs
+/// it at run start to resolve a remote's device selectors.
 pub fn probe_argv(
     host: Option<&str>,
     runtime: &str,
     image: &str,
     run_args: &[String],
+    format: &FormatId,
 ) -> Vec<String> {
     let mut argv = ssh_prefix(host);
     argv.extend([
@@ -227,6 +229,7 @@ pub fn probe_argv(
     argv.push(image.to_string());
     argv.push(WORKER_ENTRYPOINT.to_string());
     argv.push("--enumerate".to_string());
+    argv.push(format.as_str().to_string());
     argv
 }
 
@@ -380,6 +383,7 @@ mod tests {
             "docker",
             "sima-worker:latest",
             &["--gpus".to_string(), "all".to_string()],
+            &FormatId::new("ca_evolution.gray_scott.v1").expect("format id"),
         );
         assert_eq!(
             argv,
@@ -398,13 +402,20 @@ mod tests {
                 "sima-worker:latest",
                 "sima-worker",
                 "--enumerate",
+                "ca_evolution.gray_scott.v1",
             ]
         );
     }
 
     #[test]
     fn the_probe_command_omits_the_ssh_prefix_when_local() {
-        let argv = probe_argv(None, "podman", "img", &[]);
+        let argv = probe_argv(
+            None,
+            "podman",
+            "img",
+            &[],
+            &FormatId::new("stub.v1").expect("format id"),
+        );
         assert_eq!(
             argv,
             [
@@ -414,7 +425,8 @@ mod tests {
                 "-i",
                 "img",
                 "sima-worker",
-                "--enumerate"
+                "--enumerate",
+                "stub.v1"
             ]
         );
     }

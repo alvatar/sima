@@ -112,14 +112,13 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         sima_toolkit_wgsl::check(&probe_source(), "main").expect("probe kernel compiles");
     }
 
-    /// Requires a real Vulkan device. Run with `cargo test -- --ignored`.
+    /// Requires a real Vulkan device.
     ///
     /// Proves the WGSL PRNG equals [`sima_core::prng`] bit-for-bit: it runs
     /// `prng_next`/`prng_derive` on the GPU for a spread of inputs, including the
     /// three published known answers, and compares every 64-bit result against
     /// the CPU implementation and the pinned values.
     #[test]
-    #[ignore = "requires a Vulkan device"]
     fn the_wgsl_prng_matches_sima_core() {
         // op 0 = next(seed, counter); op 1 = derive(seed, tag). The first three
         // rows are the published known answers; the rest are a spread.
@@ -162,7 +161,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         assert_eq!(results[2], 0x83EC_686C_1600_460A, "derive(1, 1)");
     }
 
-    /// Requires a real Vulkan device. Run with `cargo test -- --ignored`.
+    /// Requires a real Vulkan device.
     ///
     /// Probes each u64 emulation helper at its engineered corners against Rust's
     /// own `u64` arithmetic — the language semantics the WGSL emulation
@@ -170,7 +169,6 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     /// helper that mishandles a carry, a shift-amount mask, or a cross-term
     /// diverges from a bit-exact reference.
     #[test]
-    #[ignore = "requires a Vulkan device"]
     fn the_wgsl_u64_helpers_match_native() {
         // Each row is (op, a, b, expected) with expected computed by Rust's own
         // wrapping/shift arithmetic. `shr` carries its shift amount in b; the two

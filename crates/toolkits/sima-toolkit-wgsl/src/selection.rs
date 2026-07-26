@@ -500,9 +500,8 @@ mod tests {
         assert!(message.contains('1'), "names the member count: {message}");
     }
 
-    /// Requires a real Vulkan device. Run with `cargo test -- --ignored`.
+    /// Requires a real Vulkan device.
     #[test]
-    #[ignore = "requires a Vulkan device"]
     fn naming_an_absent_device_fails_to_resolve() {
         // A worker answers `Ready` with this name, so this is where a binding
         // onto hardware the machine does not have is caught: executor
@@ -513,9 +512,8 @@ mod tests {
         ));
     }
 
-    /// Requires a real Vulkan device. Run with `cargo test -- --ignored`.
+    /// Requires a real Vulkan device.
     #[test]
-    #[ignore = "requires a Vulkan device"]
     fn enumeration_reports_compute_capable_devices() {
         let devices = enumerate_devices().expect("enumerate devices");
         assert!(!devices.is_empty(), "at least one compute-capable device");

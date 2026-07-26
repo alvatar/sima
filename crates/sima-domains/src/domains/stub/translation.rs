@@ -13,6 +13,7 @@ use sima_core::{Error, Result};
 use sima_model::{Environment, EnvironmentComponent, EnvironmentValue, FormatId, Params};
 
 use super::{StubBehavior, StubExecutor, StubGeneratorConfig};
+use crate::devices::Backend;
 use crate::domain::Domain;
 use crate::domains::translate::reject_unknown_keys;
 
@@ -28,6 +29,7 @@ pub(crate) fn domain() -> Result<Domain> {
         // and no device or driver to name.
         executor: |_| Ok(Box::new(StubExecutor::new()?)),
         device_desc: |_| Ok((String::new(), String::new())),
+        backend: Backend::Host,
         environment: Environment::new(vec![EnvironmentComponent::new(
             "stub.executor",
             EnvironmentValue::Version("v1".to_string()),

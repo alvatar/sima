@@ -10,7 +10,7 @@ use std::path::Path;
 
 use common::loaded_text;
 use sima_core::{Error, Hash, Result};
-use sima_domains::cellular::Grid;
+use sima_domains::substrates::cellular::Grid;
 use sima_pipeline::{LoadedConfig, RunControl, RunOutcome, orchestrate};
 use sima_store::Store;
 
@@ -90,9 +90,8 @@ fn manifest_states(config: &LoadedConfig) -> Result<Vec<(Hash, Grid)>> {
         .collect()
 }
 
-/// Requires a real GPU. Run with `cargo test -- --ignored`.
+/// Requires a real GPU.
 #[test]
-#[ignore = "requires a GPU"]
 fn a_ca_evolution_config_runs_the_full_spine() -> Result<()> {
     let dir = tempfile::tempdir().expect("temp dir");
     let config = ca_evolution_config(dir.path(), "sima.toml", "./store", 4, 100, None)?;
@@ -111,9 +110,8 @@ fn a_ca_evolution_config_runs_the_full_spine() -> Result<()> {
     Ok(())
 }
 
-/// Requires a real GPU. Run with `cargo test -- --ignored`.
+/// Requires a real GPU.
 #[test]
-#[ignore = "requires a GPU"]
 fn a_segment_boundary_leaves_the_trajectory_byte_identical() -> Result<()> {
     let dir = tempfile::tempdir().expect("temp dir");
     // One candidate as a chain of two 50-step segments.
@@ -217,7 +215,7 @@ fn the_shipped_search_config_loads_with_the_snapshot_predicate_enabled() -> Resu
 
     // Gray-Scott is a two-channel model (u, v); the example's scalar must be a
     // name the reduction emits for it.
-    let names = sima_domains::cellular::scalar_names(2);
+    let names = sima_domains::substrates::cellular::scalar_names(2);
     assert!(
         names.iter().any(|name| name == "activity"),
         "the example's scalar is a reduction name: {names:?}"

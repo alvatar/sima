@@ -1,4 +1,5 @@
-//! [`CaExecutor<M>`]: evaluates a CA candidate on the GPU for the model `M`.
+//! [`CaExecutor<M, E>`]: evaluates a CA candidate of the model `M` on the
+//! backend `E`.
 
 use std::marker::PhantomData;
 use std::sync::Mutex;
@@ -9,14 +10,13 @@ use sima_contracts::{
 };
 use sima_core::{Codec, Error, Result};
 use sima_model::FormatId;
-use sima_toolkit_wgsl::{Buffer, Context, Kernel};
 
 use super::continuation::{decode_continuation, encode_continuation};
 use super::model::CaModel;
 use super::params::decode_params;
-use crate::cellular::{Grid, GridPair, ReduceKernels, reduce, run};
+use crate::substrates::cellular::{CellularEngine, EvaluationInput, Grid};
 
-/// Evaluates a candidate of the model `M` on the GPU, under format
+/// Evaluates a candidate of the model `M` on the backend `E`, under format
 /// `M::FORMAT_ID`: the spec's genome and the run params frame one task — ignite
 /// (or continue) a grid, advance it `steps` kernel dispatches, reduce the final
 /// grid pair into the observational stat scalars, and commit the final state as
@@ -24,7 +24,12 @@ use crate::cellular::{Grid, GridPair, ReduceKernels, reduce, run};
 /// stepped model commits framed continuation state, the reached step ahead of
 /// the grid.
 ///
-/// The GPU engine is created lazily on the first execute, never at construction,
+/// Everything above is written once for every backend. What differs between
+/// backends — opening a device, compiling kernels, dispatching, reducing —
+/// sits behind [`CellularEngine`], so a model runs on a second backend by being
+/// registered against a second engine and nothing here changes.
+///
+/// The engine is created lazily on the first execute, never at construction,
 /// so [`build_domain`](super::domain::build_domain) stays device-free —
 /// orchestrate calls it before any store mutation, and unit tests run with no
 /// GPU. A `Mutex` serializes the GPU section: the scheduler runs `workers`
@@ -38,7 +43,7 @@ use crate::cellular::{Grid, GridPair, ReduceKernels, reduce, run};
 /// input — bounded by `steps`, which `segments` controls. A config that sets a
 /// checkpoint interval simply never gets a save for this model. Ignoring the
 /// channel cannot change committed bytes.
-pub(crate) struct CaExecutor<M: CaModel> {
+pub(crate) struct CaExecutor<M: CaModel, E: CellularEngine> {
     format: FormatId,
     /// The device the engine opens, or `None` for the toolkit's default
     /// selection. Read once, at engine initialization.
@@ -46,38 +51,26 @@ pub(crate) struct CaExecutor<M: CaModel> {
     /// The lazily initialized engine: `None` until the first execute, then a
     /// fully constructed engine for the process's lifetime. A failed
     /// initialization leaves `None`, so a later attempt retries.
-    gpu: Mutex<Option<GpuEngine>>,
+    engine: Mutex<Option<E>>,
     /// `M` is used only through its associated items in the methods below, never
     /// stored; `fn() -> M` keeps the executor `Send + Sync` regardless of `M`.
     model: PhantomData<fn() -> M>,
 }
 
-/// The device context and the compiled kernels, created together once: the
-/// update kernel that advances the grid and the reduction that summarizes it.
-struct GpuEngine {
-    /// Declared before `context` so they drop first: struct fields drop in
-    /// declaration order, and the kernels' pipeline handles belong to the
-    /// context's device, so a kernel must be destroyed before the context. A
-    /// reorder would drop the device first and segfault at engine drop.
-    kernel: Kernel,
-    reduce: ReduceKernels,
-    context: Context,
-}
-
-impl<M: CaModel> CaExecutor<M> {
+impl<M: CaModel, E: CellularEngine> CaExecutor<M, E> {
     /// Constructs the executor for `M::FORMAT_ID` on `device` — or, for `None`,
     /// on the toolkit's default selection — performing no GPU work.
-    pub(crate) fn new(device: Option<&DeviceBinding>) -> Result<CaExecutor<M>> {
+    pub(crate) fn new(device: Option<&DeviceBinding>) -> Result<CaExecutor<M, E>> {
         Ok(CaExecutor {
             format: FormatId::new(M::FORMAT_ID)?,
             device: device.copied(),
-            gpu: Mutex::new(None),
+            engine: Mutex::new(None),
             model: PhantomData,
         })
     }
 }
 
-impl<M: CaModel> Executor for CaExecutor<M> {
+impl<M: CaModel, E: CellularEngine> Executor for CaExecutor<M, E> {
     fn format(&self) -> &FormatId {
         &self.format
     }
@@ -131,83 +124,33 @@ impl<M: CaModel> Executor for CaExecutor<M> {
             }
         };
         // The lock spans the whole GPU section — engine init here, then the
-        // uniform upload, dispatch loop, and download below — because Vulkan
-        // queues and command pools require external synchronization and the
-        // worker threads share this one executor. Initializing the engine inside
-        // the lock is why `domain_for` needs no device: nothing touches the GPU
-        // until the first execute. A poisoned lock is safe to enter: the slot
-        // only ever holds None or a fully constructed engine, assigned after
-        // construction completes.
-        let mut gpu = self
-            .gpu
+        // evaluation below — because a device's queues and command pools
+        // require external synchronization and the worker threads share this
+        // one executor. Initializing the engine inside the lock is why
+        // `domain_for` needs no device: nothing touches the GPU until the first
+        // execute. A poisoned lock is safe to enter: the slot only ever holds
+        // None or a fully constructed engine, assigned after construction
+        // completes.
+        let mut slot = self
+            .engine
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if gpu.is_none() {
-            // The binding names the device to open; without one, the toolkit's
-            // default selection applies.
-            let context = match self.device {
-                Some(device) => {
-                    Context::for_device(device.vendor_id, device.device_id, device.member)?
-                }
-                None => Context::new()?,
-            };
-            let kernel = context.kernel(M::KERNEL_WGSL, "main")?;
-            let reduce = ReduceKernels::build(&context)?;
-            *gpu = Some(GpuEngine {
-                context,
-                kernel,
-                reduce,
-            });
+        if slot.is_none() {
+            *slot = Some(E::build(self.device.as_ref(), M::KERNEL_SOURCE)?);
         }
-        let engine = gpu.as_ref().expect("gpu engine initialized above");
-        // The model's uniform buffer — binding 3 of the cellular convention,
-        // bound after dims.
-        let uniforms = M::uniforms(&genome, &shared);
-        let uniform_bytes: &[u8] = bytemuck::cast_slice(&uniforms);
-        let uniforms_buffer = engine.context.buffer(uniform_bytes.len())?;
-        engine.context.upload(&uniforms_buffer, uniform_bytes)?;
-        // Binding 4, opted into per model via `M::SEED_BUFFER`: the candidate's
-        // u64 seed as two u32 words (low, high). A kernel consuming the seed at
-        // runtime — an asynchronous update mask — reads it here; integers must
-        // travel as integers, since a driver may rewrite a raw bit pattern
-        // parked in an f32 slot. Held in this scope so it outlives the dispatch.
-        let seed_buffer = if M::SEED_BUFFER {
-            let words = [input.seed as u32, (input.seed >> 32) as u32];
-            let seed_bytes: &[u8] = bytemuck::cast_slice(&words);
-            let buffer = engine.context.buffer(seed_bytes.len())?;
-            engine.context.upload(&buffer, seed_bytes)?;
-            Some(buffer)
-        } else {
-            None
-        };
-        let mut params: Vec<&Buffer> = vec![&uniforms_buffer];
-        if let Some(seed_buffer) = seed_buffer.as_ref() {
-            params.push(seed_buffer);
-        }
-        let trajectory = run(
-            &engine.context,
-            &engine.kernel,
-            &initial,
-            shared.steps(),
-            &params,
+        let engine = slot.as_ref().expect("engine initialized above");
+        let evaluation = engine.evaluate(&EvaluationInput {
+            initial: &initial,
+            steps: shared.steps(),
+            uniforms: &M::uniforms(&genome, &shared),
+            // The candidate seed reaches the kernel only for a model that
+            // declares it consumes one.
+            seed: M::SEED_BUFFER.then_some(input.seed),
             step_base,
-        )?;
-        // Per-candidate stats, reduced on the GPU over the two resident grids
-        // ($G_N$ and $G_{N-1}$) before any readback. The alive rule is the
-        // model's own.
-        let reduced = reduce(
-            &engine.context,
-            &engine.reduce,
-            &GridPair {
-                current: trajectory.current(),
-                previous: trajectory.previous(),
-                channels: trajectory.channels(),
-                cell_count: trajectory.cell_count(),
-                alive_channel: M::ALIVE_CHANNEL,
-                alive_min: M::ALIVE_MIN,
-            },
-        );
-        let scalars = stats_or_propagate(reduced, shared.snapshot_when())?;
+            alive_channel: M::ALIVE_CHANNEL,
+            alive_min: M::ALIVE_MIN,
+        })?;
+        let scalars = stats_or_propagate(evaluation.scalars(), shared.snapshot_when())?;
         let keep = keep_snapshot(shared.snapshot_when(), &scalars, M::NAME)?;
         // The committed artifact is the segment's final state. A stepped model
         // frames it as (step reached, grid) so a successor resumes the absolute
@@ -216,7 +159,7 @@ impl<M: CaModel> Executor for CaExecutor<M> {
         // own. A dropped snapshot commits an empty artifact list — and skips the
         // full-grid readback entirely, which is the bandwidth the predicate saves.
         let artifacts = if keep {
-            let last = trajectory.grid()?;
+            let last = evaluation.grid()?;
             let bytes = match step_base {
                 Some(base) => encode_continuation(base + u64::from(shared.steps()), &last),
                 None => last.to_bytes(),
@@ -273,11 +216,11 @@ fn stats_or_propagate(
 /// an infrastructure fault, unreachable after translation-time validation.
 ///
 /// The all-finite conjunct lives here because IEEE semantics are reliable at the
-/// Rust layer. In the shader they are not: WGSL `min`/`max` skip a NaN operand
-/// and the population test counts a NaN cell as dead, so a predicate on
-/// `population`, `c<i>.min`, or `c<i>.max` could otherwise commit a partially
-/// diverged grid. The finite check catches divergence a sum-derived scalar
-/// (mean, variance, activity) would surface but those scalars would not.
+/// Rust layer. In a reduction kernel they are not: a shader's `min` and `max`
+/// may skip a NaN operand and the population test counts a NaN cell as dead, so
+/// a predicate on `population`, `c<i>.min`, or `c<i>.max` could otherwise commit
+/// a partially diverged grid. The finite check catches divergence a sum-derived
+/// scalar (mean, variance, activity) would surface but those scalars would not.
 fn keep_snapshot(
     predicate: Option<&(String, f64)>,
     scalars: &[(String, f64)],
@@ -314,6 +257,7 @@ mod tests {
     use super::super::params::{CaParams, encode_params};
     use super::super::toy_model::Toy;
     use super::*;
+    use crate::substrates::cellular::WgslEngine;
 
     /// The models' constructor-bearing types. The model submodules are private,
     /// so the genome, ignition, and sampling-config types are reachable here
@@ -368,7 +312,7 @@ mod tests {
     #[test]
     fn format_answers_the_model_id() -> Result<()> {
         assert_eq!(
-            CaExecutor::<Toy>::new(None)?.format().as_str(),
+            CaExecutor::<Toy, WgslEngine>::new(None)?.format().as_str(),
             Toy::FORMAT_ID
         );
         Ok(())
@@ -377,7 +321,7 @@ mod tests {
     #[test]
     fn a_malformed_spec_is_an_error() -> Result<()> {
         // The error paths stay device-free: they precede any GPU touch.
-        let exec = CaExecutor::<Toy>::new(None)?;
+        let exec = CaExecutor::<Toy, WgslEngine>::new(None)?;
         let params = params();
         for bytes in [vec![0xFF], Vec::new()] {
             let spec = Spec {
@@ -399,7 +343,7 @@ mod tests {
 
     #[test]
     fn malformed_params_are_an_error() -> Result<()> {
-        let exec = CaExecutor::<Toy>::new(None)?;
+        let exec = CaExecutor::<Toy, WgslEngine>::new(None)?;
         let spec = spec();
         let params = Params {
             bytes: vec![1, 2, 3],
@@ -415,7 +359,7 @@ mod tests {
     fn a_mismatched_input_state_is_an_error() -> Result<()> {
         // An 8x8 predecessor grid against 64x64 run params: the error names both
         // dimension triples. The toy model has one channel.
-        let exec = CaExecutor::<Toy>::new(None)?;
+        let exec = CaExecutor::<Toy, WgslEngine>::new(None)?;
         let spec = spec();
         let params = params();
         let state = Grid::new(8, 8, 1, vec![0.0; 64])?.to_bytes();
@@ -433,7 +377,7 @@ mod tests {
 
     #[test]
     fn a_non_grid_input_state_is_an_error() -> Result<()> {
-        let exec = CaExecutor::<Toy>::new(None)?;
+        let exec = CaExecutor::<Toy, WgslEngine>::new(None)?;
         let spec = spec();
         let params = params();
         assert!(matches!(
@@ -449,7 +393,7 @@ mod tests {
 
     /// The scalar names the reduction emits for a `channels`-channel model.
     fn expected_scalar_names(channels: u32) -> Vec<String> {
-        crate::cellular::scalar_names(channels)
+        crate::substrates::cellular::scalar_names(channels)
     }
 
     /// A stat list carrying one scalar at `value`.
@@ -602,13 +546,12 @@ mod tests {
         }
     }
 
-    /// Requires a real Vulkan device. Run with `cargo test -- --ignored`.
+    /// Requires a real Vulkan device.
     #[test]
-    #[ignore = "requires a Vulkan device"]
     fn a_bare_grid_evaluation_reduces_to_named_scalars() {
         // A bare-grid model reduces its final grid pair into the named scalars;
         // the family blob stays empty. Gray-Scott, two channels, is the vehicle.
-        let exec = CaExecutor::<GrayScott>::new(None).expect("executor");
+        let exec = CaExecutor::<GrayScott, WgslEngine>::new(None).expect("executor");
         let spec = Spec {
             format: FormatId::new(GrayScott::FORMAT_ID).expect("format id"),
             bytes: Genome::<GrayScott>::new(0.055, 0.062, 0.16, 0.08)
@@ -648,14 +591,13 @@ mod tests {
         }
     }
 
-    /// Requires a real Vulkan device. Run with `cargo test -- --ignored`.
+    /// Requires a real Vulkan device.
     #[test]
-    #[ignore = "requires a Vulkan device"]
     fn a_stepped_evaluation_reduces_the_decoded_grid() {
         // A stepped model frames its committed state, but the reduction runs over
         // the resident grid pair, so it names the same scalars. NCA, eight
         // channels, is the vehicle.
-        let exec = CaExecutor::<Nca>::new(None).expect("executor");
+        let exec = CaExecutor::<Nca, WgslEngine>::new(None).expect("executor");
         let genome = Nca::sample(&GenConfig::<Nca>::new(0.5).expect("config"), 42, 0);
         let spec = Spec {
             format: FormatId::new(Nca::FORMAT_ID).expect("format id"),
@@ -687,14 +629,13 @@ mod tests {
         }
     }
 
-    /// Requires a real Vulkan device. Run with `cargo test -- --ignored`.
+    /// Requires a real Vulkan device.
     #[test]
-    #[ignore = "requires a Vulkan device"]
     fn a_failed_predicate_drops_the_snapshot_but_keeps_the_stats() {
         // `population` is a fraction, so a minimum of 2.0 can never be met: the
         // state artifact is dropped, the outcome still completes, and the stats
         // are journaled regardless.
-        let exec = CaExecutor::<GrayScott>::new(None).expect("executor");
+        let exec = CaExecutor::<GrayScott, WgslEngine>::new(None).expect("executor");
         let spec = Spec {
             format: FormatId::new(GrayScott::FORMAT_ID).expect("format id"),
             bytes: Genome::<GrayScott>::new(0.055, 0.062, 0.16, 0.08)

@@ -9,26 +9,29 @@
 //! entries) are the crate's surface; each domain's pieces live in its own
 //! module under `domains/`.
 //!
-//! Because this crate knows which execution backends the build compiles in, it
-//! also answers what devices exist: the [`devices`] module carries the
-//! enumeration the layers above resolve device selectors against.
+//! Because this crate knows which execution backends the build compiles in and
+//! which one each format runs through, it also answers what devices a program
+//! can use: the [`devices`] module carries the enumeration the layers above
+//! resolve device selectors against, asked about a format id.
 //!
-//! Beside the concrete domains — the stub and `ca_evolution` — the
-//! [`cellular`] module holds the shared substrate of the cellular executor
-//! kind: the [`Grid`](cellular::Grid) state, the [`run`](cellular::run)
-//! double-buffered dispatch harness, and the
-//! [`CellularRule`](cellular::CellularRule) CPU-reference contract used solely
-//! to cross-check that harness against an independent implementation in tests.
+//! Below the concrete domains — the stub and `ca_evolution` — the
+//! [`substrates`] layer holds the structural kinds a domain's executor is built
+//! on. Today that is the [`cellular`](substrates::cellular) substrate: the
+//! [`Grid`](substrates::cellular::Grid) state, the
+//! [`run`](substrates::cellular::run) double-buffered dispatch harness, and the
+//! [`CellularRule`](substrates::cellular::CellularRule) CPU-reference contract
+//! used solely to cross-check that harness against an independent implementation
+//! in tests.
 //!
 //! The pipeline calls this crate to resolve a config's format and generator
 //! ids to code; the scheduler tests use the stub domain as a deterministic,
 //! programmable substrate through a dev-dependency. `sima-contracts` sits
 //! below and holds the traits alone.
 
-pub mod cellular;
 pub mod devices;
 mod domain;
 mod domains;
+pub mod substrates;
 
 pub use domain::{Domain, domain_for, generator_for, generator_params_for, params_for};
 pub use domains::ca_evolution::continuation::{decode_continuation, encode_continuation};

@@ -559,8 +559,10 @@ leaked instances are leaked money.
       foreign code and require cross-hardware determinism the float
       families do not promise.
 - [ ] M6.7 CUDA execution toolkit: a second real execution backend,
-      `sima-toolkit-cuda`, compiling kernels at run time through NVRTC and
-      driving them through the CUDA driver API. Motivated by the rented
+      `sima-toolkit-cuda`, driving kernels through the CUDA driver API. A
+      kernel is authored in CUDA C and compiled to PTX once with NVRTC; the
+      PTX is committed beside its source and the driver's just-in-time
+      compiler takes it from there, so no worker ships a compiler. Motivated by the rented
       market: Vast containers expose CUDA on every host but Vulkan on none —
       the host injection omits or breaks the graphics stack, and the one
       workaround (installing the matching driver userspace at instance boot)
@@ -573,8 +575,9 @@ leaked instances are leaked money.
       the new toolkit crate and the domain's kernel selection, and anything
       that forces a contract above the toolkit seam to change is the
       milestone's real finding, reported rather than absorbed.
-      Worker enumeration covers CUDA devices beside Vulkan ones and slots
-      bind per GPU; the determinism tier is declared per family as always,
+      Worker enumeration answers per format rather than per machine, since
+      each backend reaches only the devices its own driver stack exposes, and
+      slots bind per GPU; the determinism tier is declared per family as always,
       and results are compared against the CPU reference per backend, never
       across backends. Ships with an example config and end-to-end coverage
       in `sima-integration`; the reduced M6.5 acceptance (CPU-class remote

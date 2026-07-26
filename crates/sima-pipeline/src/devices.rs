@@ -1,5 +1,6 @@
 //! Device selectors: naming the devices a run spreads its workers over, and
-//! resolving those names against the hardware that is actually here.
+//! resolving those names against the devices its program can actually open
+//! here.
 //!
 //! Resolution happens where a run starts, never where a config is read: a
 //! selector names real hardware, and reading a config must work on a machine

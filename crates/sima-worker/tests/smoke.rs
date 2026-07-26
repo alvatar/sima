@@ -314,24 +314,24 @@ fn an_executor_panic_crosses_as_a_correlated_diagnostic_event() {
     assert!(task_key.is_some(), "the diagnostic names the task");
 }
 
-/// Requires a Vulkan device. Run with `cargo test -- --ignored`.
-#[test]
-#[ignore = "requires a Vulkan device"]
-fn the_enumerate_probe_prints_one_json_device_per_line() {
-    // The remote-resolution probe: `--enumerate` prints the machine's devices
-    // as JSON, one per line, and exits zero. Each line parses as a device.
+/// Runs the enumeration probe for `format` and returns the devices it printed,
+/// asserting it exited zero and that every line is a well-formed device.
+fn probe(format: &str) -> Vec<serde_json::Value> {
     let output = Command::new(env!("CARGO_BIN_EXE_sima-worker"))
-        .arg("--enumerate")
+        .args(["--enumerate", format])
         .output()
         .expect("run the probe");
-    assert!(output.status.success(), "the probe exits zero");
+    assert!(
+        output.status.success(),
+        "the probe exits zero: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let text = String::from_utf8(output.stdout).expect("probe output is UTF-8");
     let devices: Vec<serde_json::Value> = text
         .lines()
         .filter(|line| !line.trim().is_empty())
         .map(|line| serde_json::from_str(line).expect("each line is a JSON device"))
         .collect();
-    assert!(!devices.is_empty(), "this machine has a compute device");
     for device in &devices {
         assert!(
             device.get("vendor_id").is_some(),
@@ -339,29 +339,85 @@ fn the_enumerate_probe_prints_one_json_device_per_line() {
         );
         assert!(device.get("device_id").is_some(), "a device names its id");
     }
+    devices
+}
+
+/// Requires a Vulkan device.
+#[test]
+fn the_enumerate_probe_prints_one_json_device_per_line() {
+    // The remote-resolution probe: `--enumerate <format>` prints the devices
+    // that format's program can run on as JSON, one per line, and exits zero.
+    assert!(
+        !probe("ca_evolution.gray_scott.v1").is_empty(),
+        "this machine has a Vulkan device"
+    );
 }
 
 #[test]
-fn the_enumerate_probe_answers_none_on_a_machine_without_a_driver() {
-    // A driverless machine — a CI runner, a fleet instance with a broken
-    // driver — has zero compute devices, and "none" is the probe's answer
-    // there, never a failure: the fleet derives one deviceless worker from an
-    // empty probe. `VK_DRIVER_FILES` naming a nonexistent manifest makes the
-    // loader's driver search come up empty, the same condition as a machine
-    // with no driver installed.
+fn the_enumerate_probe_answers_per_format_rather_than_per_machine() {
+    // A device list is a claim about what a program can run on. The stub
+    // computes in the worker process and opens no device, so it enumerates
+    // none however much hardware this machine has — and the orchestrator reads
+    // that as a deviceless worker rather than as a bare host.
+    assert!(
+        probe("stub.v1").is_empty(),
+        "a program that opens no device enumerates none"
+    );
+}
+
+#[test]
+fn the_enumerate_probe_refuses_a_format_it_cannot_resolve() {
+    // The backend to ask comes from the format, so an unknown one has no
+    // answer: it fails loudly rather than reporting an empty device list, which
+    // the orchestrator would read as a machine with no hardware.
+    let output = Command::new(env!("CARGO_BIN_EXE_sima-worker"))
+        .args(["--enumerate", "no-such-domain.v1"])
+        .output()
+        .expect("run the probe");
+    assert!(!output.status.success(), "the probe exits nonzero");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("no-such-domain.v1"),
+        "the diagnostic names the format"
+    );
+}
+
+#[test]
+fn the_enumerate_probe_needs_the_format_to_answer_for() {
     let output = Command::new(env!("CARGO_BIN_EXE_sima-worker"))
         .arg("--enumerate")
+        .output()
+        .expect("run the probe");
+    assert!(!output.status.success(), "the probe exits nonzero");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("format id"),
+        "the diagnostic says what is missing"
+    );
+}
+
+#[test]
+fn the_enumerate_probe_answers_when_the_backend_finds_no_driver() {
+    // A backend whose driver search comes up empty — a CI runner, a fleet
+    // instance with a broken driver — reports no devices and no failure: the
+    // probe still exits zero, and the fleet derives one deviceless worker from
+    // an empty answer. `VK_DRIVER_FILES` naming a nonexistent manifest makes
+    // the Vulkan loader's driver search come up empty, the same condition as a
+    // machine with no Vulkan driver installed.
+    let output = Command::new(env!("CARGO_BIN_EXE_sima-worker"))
+        .args(["--enumerate", "ca_evolution.gray_scott.v1"])
         .env("VK_DRIVER_FILES", "/nonexistent/no_driver.json")
         .output()
         .expect("run the probe");
     assert!(
         output.status.success(),
-        "a driverless probe exits zero: {}",
+        "the probe exits zero: {}",
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(
-        output.stdout.is_empty(),
-        "a driverless machine enumerates no devices"
+        String::from_utf8(output.stdout)
+            .expect("probe output is UTF-8")
+            .trim()
+            .is_empty(),
+        "a driverless backend enumerates nothing"
     );
 }
 

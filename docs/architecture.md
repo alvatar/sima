@@ -777,12 +777,31 @@ scheduler library never depends on `sima-domains`.
 ### The cellular kind
 
 The float families — reaction-diffusion, Neural CA, Lenia — share one executor
-kind, the **cellular kind**: a multi-channel float grid advanced by
-a WGSL update kernel dispatched over it, each output cell a function of a
-neighborhood of the input. Its state, dispatch harness, and cross-check
-scaffold live once in the `cellular` module; a family supplies the update
-kernel, the genome, and the CPU reference, differing in those and the channel
-count, not in the state shape or the harness.
+kind, the **cellular kind**: a multi-channel float grid advanced by an update
+kernel dispatched over it, each output cell a function of a neighborhood of the
+input. Its state, dispatch harness, and cross-check scaffold live once in the
+`cellular` module; a family supplies the update kernel, the genome, and the CPU
+reference, differing in those and the channel count, not in the state shape or
+the harness.
+
+**The substrate seam.** Which execution toolkit a kernel runs on is the
+`CellularEngine` trait, one operation wide: advance a grid on a device and hold
+the result, with the reduced scalars and the final grid as separate calls on the
+handle it returns. Everything around that operation — decoding a spec, igniting
+or resuming a grid, deciding whether to keep a snapshot — is written once above
+the seam and shared by every substrate. Below it sit one implementation per
+toolkit: `WgslEngine` over `step` and `reduce`, and `CudaEngine` over their
+transcriptions in `cellular/cuda`. The two dispatch loops are duplicated
+deliberately; what would drift if duplicated — the scalar naming, the channel
+bound, the partition count the two reductions must fold by — stays shared.
+
+A model declares no engine. The pairing is made where a format id is
+registered, one line naming both, so a rule ported to a second substrate is a
+second program beside the first rather than a mode of the first. The two carry
+distinct format ids and distinct environments: they agree numerically to a
+tolerance rather than bit for bit, so a shared identity would let one program's
+task key resolve to a result the other produced. A domain also names its
+substrate, and that is what the device enumeration follows.
 
 **Grid state.** `Grid` is a 2D, multi-channel `f32` field: extent
 $(width, height)$, a channel count, and a cell-major interleaved payload where
@@ -811,18 +830,21 @@ Downloading the final grid and reducing over the pair are separate operations
 on the handle, so a caller that only needs stats never pays for the full-grid
 readback.
 
-**Binding and dispatch convention.** The kind's kernels bind group-0 storage
-buffers in a fixed order:
+**Binding and dispatch convention.** The kind's kernels take their buffers in a
+fixed order — group-0 storage bindings in WGSL, pointer parameters in CUDA C:
 
 - binding 0 the input grid,
 - binding 1 the output grid,
 - binding 2 the dimensions `[width, height, channels]`,
 - bindings 3+ the family parameters.
 
-A kernel runs one invocation per cell under `@workgroup_size(64)`, guards the
-cell index against the cell count, and loops its channels internally. The
-harness ping-pongs bindings 0 and 1 each step and holds the dimensions and
-parameters fixed.
+A kernel runs one invocation per cell over a fixed width of 64, guards the cell
+index against the cell count, and loops its channels internally. The harness
+ping-pongs the first two each step and holds the dimensions and parameters
+fixed. WGSL states the width in the kernel with `@workgroup_size`; CUDA takes
+block dimensions at launch rather than from the compiled module, so its kernels
+declare `__launch_bounds__` and the caller passes the matching width, which the
+toolkit checks against the device.
 
 **CPU reference and cross-check.** `CellularRule` is the CPU reference a family's
 kernel is checked against: one step maps a whole input grid to a whole output
@@ -844,9 +866,10 @@ mean absolute per-cell change between the final two steps. Accumulation is
 its non-finite values into the scalars as-is, handled at the journal and the
 predicate. The reduction has a fixed two-level topology — a constant partition
 count folded in index order, with variance a second pass after the mean — so
-its result is deterministic per backend. Its source digest joins the
-environment: the reduction's output gates committed bytes, so editing it must
-change task keys exactly as editing a step kernel does.
+its result is deterministic per backend, and so both substrates' reductions
+accumulate in the same order. Its digest joins the environment: the reduction's
+output gates committed bytes, so editing it must change task keys exactly as
+editing a step kernel does.
 
 **The snapshot predicate.** A run may gate the committed state snapshot on a
 stat, so a dead candidate returns its scalars alone and no megabytes of grid.
@@ -937,6 +960,58 @@ content-reproducible tier (README, Determinism): its identity is the shader
 source plus the compiler that produced it. A known-answer test pins the emitted
 SPIR-V so a `naga` change that shifts output fails the build and forces a
 deliberate compiler-id update.
+
+### `sima-toolkit-cuda`
+
+Runs CUDA compute kernels on NVIDIA devices without a domain author writing raw
+driver-API calls. `cudarc` provides the driver-API and NVRTC bindings and opens
+the CUDA libraries at run time, so the crate builds with no CUDA toolkit and no
+driver present. The surface mirrors the WGSL toolkit's — `Context`, `Buffer`,
+`Kernel` — so a reader who knows one knows the other.
+
+**Kernels ship as PTX.** A kernel is authored in CUDA C and compiled once with
+NVRTC under pinned options; the PTX is committed beside its source and the
+driver's just-in-time compiler lowers it to machine code for whatever card
+loads it. Nothing compiles CUDA C while a run executes, so a worker image needs
+only the driver, which arrives with the card. Each kernel carries a regeneration
+test asserting its committed artifact is exactly what its committed source
+compiles to; regenerating needs `libnvrtc` alone, which opens no device.
+
+**Two compatibility axes.** A committed artifact must both target an
+architecture the card implements and carry a PTX ISA version the driver
+understands, and the two are set by different things:
+
+- The **architecture** is a compile option, pinned to `compute_75` — old enough
+  to be broadly supported, and forward compatible, so the driver lowers it to
+  any newer card.
+- The **ISA version** is stamped into the artifact's header by whichever NVRTC
+  compiled it, and no flag moves it. A driver older than the ISA rejects the
+  module with `CUDA_ERROR_UNSUPPORTED_PTX_VERSION` however old the architecture
+  it targets.
+
+Regeneration is therefore pinned to NVRTC 12.0.x, which emits ISA 8.0 and loads
+on r525 and newer, below the driver branch of any host a run rents. Later
+toolkits raise it: 12.9 emits ISA 8.8 and needs r575.
+
+**Identity surface.** What a domain records for a CUDA kernel is the digest of
+the **PTX** — the artifact that executes — rather than a source digest paired
+with a compiler version the run has to trust. The compiler id therefore states
+only what that PTX targets. This is the same content-reproducible tier the WGSL
+toolkit reaches by the other route: there the lowering happens during the run,
+so the source is hashed and the compiler that lowers it is named.
+
+**Device identity.** CUDA addresses devices by ordinal and reports a PCI bus
+identifier for each. The `(vendor_id, device_id)` class a device binding names
+comes from the PCI configuration under `/sys/bus/pci/devices`, and `member` is
+the position within the class in enumeration order — the WGSL toolkit's
+convention, so one binding vocabulary covers both substrates.
+
+**Launch model.** Launches are one-dimensional: a kernel declares its block
+width with `__launch_bounds__`, the caller passes the matching width, and a
+dispatch binds one buffer per pointer parameter in declaration order. Every
+dispatch is submitted to the context's one stream and drained before returning,
+which both orders a dispatch's writes against the next one's reads and surfaces
+a failure at the call that caused it.
 
 ## `sima-scheduler` (L6)
 
@@ -1176,10 +1251,20 @@ mechanism minus the ssh hop.
 
 - **Remote device selection.** `[[execution.remote]]` entries carry the same
   device tables as a local pool. Resolving them needs the remote's device
-  list, so `sima-worker` doubles as the probe: `sima-worker --enumerate` prints
-  the enumerated devices as JSON and exits. At run start the orchestrator
-  verifies each remote's image is present, then runs the probe through the
-  remote's container and reuses the local selector resolution unchanged.
+  list, so `sima-worker` doubles as the probe: `sima-worker --enumerate
+  <format>` prints the devices that format's program can run on as JSON and
+  exits. At run start the orchestrator verifies each remote's image is present,
+  then runs the probe through the remote's container and reuses the local
+  selector resolution unchanged.
+
+  The probe answers for a format rather than for a machine, because each domain
+  runs through one execution backend and a backend reaches only the devices its
+  own driver stack exposes. The two disagree on real hosts: a rented instance
+  whose Vulkan loader cannot initialize the NVIDIA driver offers a WGSL program
+  the CPU rasterizer alone while CUDA opens the card there, and a laptop's Intel
+  integrated GPU is a Vulkan device CUDA cannot open. Enumerating everything
+  present would bind workers to devices their substrate faults on, so the format
+  travels with the probe and `sima-domains` resolves it to the backend to ask.
 
 - **The image.** A multi-stage `Containerfile` builds `sima-worker` in a
   `rust:<pinned>-bookworm` stage whose glibc matches the `debian:bookworm-slim`
@@ -1458,8 +1543,9 @@ config's dollar figures to micro-USD.
 **Lifecycle.** Orchestration takes the store and lock first, then rents the
 fleet under the held lock: `count` instances, each through
 [`acquire`](#the-acquisition-loop) behind a teardown guard, each probed over
-ssh (`sima-worker --enumerate`) to derive one worker slot per GPU — or a
-single deviceless slot where the probe reports none. The `fill` policy
+ssh (`sima-worker --enumerate <format>`) to derive one worker slot per GPU the
+run's program can open — or a single deviceless slot where the probe reports
+none. The `fill` policy
 decides a shortfall: **strict** tears down whatever was acquired and fails
 before any task runs; **best-effort** proceeds on what came up, down to one
 instance. The provider backend is built before the store, so a `vast` fleet

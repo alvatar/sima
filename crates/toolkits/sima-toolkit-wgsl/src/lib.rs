@@ -10,14 +10,10 @@
 //! # Tests
 //!
 //! Tests split by whether they touch a real device. Compilation and identity
-//! tests run anywhere and are covered by `cargo test`. Tests that create a
-//! [`Context`] need a Vulkan device and are marked `#[ignore]`, so `cargo test`
-//! skips them and hosted CI stays green with no device present. Run them on a
-//! machine with a device:
-//!
-//! ```text
-//! cargo test -p sima-toolkit-wgsl -- --ignored
-//! ```
+//! tests run anywhere; tests that create a [`Context`] need a Vulkan device.
+//! Both run under a plain `cargo test`, so the device path is exercised on
+//! every machine that has one and a device fault surfaces as a test failure
+//! rather than a skipped test.
 //!
 //! `ash` loads the system Vulkan loader at runtime, so the crate builds with no
 //! native toolchain and the device tests are the only part that needs hardware.

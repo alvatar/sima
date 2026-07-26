@@ -1,7 +1,6 @@
 //! End-to-end smoke test spanning context, buffer, kernel, and dispatch.
 //!
-//! Requires a real Vulkan device, so it is `#[ignore]`d and runs on a dev
-//! machine with `cargo test -p sima-toolkit-wgsl -- --ignored`.
+//! Requires a real Vulkan device.
 
 use sima_toolkit_wgsl::{COMPILER_ID, Context, source_digest};
 
@@ -9,7 +8,6 @@ use sima_toolkit_wgsl::{COMPILER_ID, Context, source_digest};
 const SMOKE_WGSL: &str = include_str!("../shaders/smoke.wgsl");
 
 #[test]
-#[ignore = "requires a Vulkan device"]
 fn smoke_kernel_runs_end_to_end() {
     let context = Context::new().expect("create compute context");
     let kernel = context.kernel(SMOKE_WGSL, "main").expect("build kernel");

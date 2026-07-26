@@ -4,7 +4,7 @@
 
 mod common;
 
-use sima_domains::cellular::{CellularRule, Grid};
+use sima_domains::substrates::cellular::{CellularRule, Grid};
 use sima_toolkit_wgsl::Context;
 
 /// The CPU reference matching `shaders/smoke.wgsl`: a 5-point neighborhood max
@@ -41,9 +41,8 @@ impl CellularRule for SmokeMax {
 /// The kernel the reference mirrors.
 const SMOKE_WGSL: &str = include_str!("../shaders/smoke.wgsl");
 
-/// Requires a real Vulkan device. Run with `cargo test -- --ignored`.
+/// Requires a real Vulkan device.
 #[test]
-#[ignore = "requires a Vulkan device"]
 fn harness_matches_reference_over_k_steps() {
     let context = Context::new().expect("create compute context");
     let kernel = context
