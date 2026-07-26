@@ -26,8 +26,8 @@ use sima_contracts::Generator;
 use sima_core::Result;
 use sima_model::{FormatId, GeneratorId, Params};
 
-use crate::cellular::{CudaEngine, WgslEngine};
 use crate::domain::Domain;
+use crate::shared::cellular::{CudaEngine, WgslEngine};
 use model::CaModel;
 use models::gray_scott::GrayScott;
 use models::gray_scott_cuda::GrayScottCuda;

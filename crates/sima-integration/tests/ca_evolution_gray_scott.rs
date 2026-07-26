@@ -10,7 +10,7 @@ use std::path::Path;
 
 use common::loaded_text;
 use sima_core::{Error, Hash, Result};
-use sima_domains::cellular::Grid;
+use sima_domains::shared::cellular::Grid;
 use sima_pipeline::{LoadedConfig, RunControl, RunOutcome, orchestrate};
 use sima_store::Store;
 
@@ -215,7 +215,7 @@ fn the_shipped_search_config_loads_with_the_snapshot_predicate_enabled() -> Resu
 
     // Gray-Scott is a two-channel model (u, v); the example's scalar must be a
     // name the reduction emits for it.
-    let names = sima_domains::cellular::scalar_names(2);
+    let names = sima_domains::shared::cellular::scalar_names(2);
     assert!(
         names.iter().any(|name| name == "activity"),
         "the example's scalar is a reduction name: {names:?}"

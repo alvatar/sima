@@ -1,13 +1,13 @@
 //! The double-buffered CUDA dispatch harness that advances a [`Grid`].
 //!
-//! The CUDA counterpart of [`cellular::step`](crate::cellular::step), dispatch
+//! The CUDA counterpart of [`cellular::step`](crate::shared::cellular::step), dispatch
 //! for dispatch: the same ping-pong over two device buffers, the same argument
 //! order, and the same per-step index transport.
 
 use sima_core::Result;
 use sima_toolkit_cuda::{Buffer, Context, Kernel};
 
-use crate::cellular::Grid;
+use crate::shared::cellular::Grid;
 
 /// The threads per block every cellular kernel is launched with, matching the
 /// WGSL side's `@workgroup_size(64)`. CUDA takes the block dimensions at launch
@@ -175,13 +175,13 @@ mod tests {
     /// whose parameters and dispatch match the cellular-kind convention the
     /// harness encodes. The CUDA transcription of `shaders/smoke.wgsl`, loaded
     /// from committed PTX exactly as a model's kernel is.
-    const SMOKE_PTX: &str = include_str!("../../../kernels/smoke.ptx");
+    const SMOKE_PTX: &str = include_str!("../../../../kernels/smoke.ptx");
 
     /// Requires `libnvrtc`.
     #[test]
     fn the_committed_ptx_reproduces_from_its_source() {
         assert_eq!(
-            sima_toolkit_cuda::compile(include_str!("../../../kernels/smoke.cu"))
+            sima_toolkit_cuda::compile(include_str!("../../../../kernels/smoke.cu"))
                 .expect("compile the smoke kernel"),
             SMOKE_PTX
         );

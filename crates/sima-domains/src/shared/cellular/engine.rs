@@ -4,8 +4,8 @@
 use sima_contracts::DeviceBinding;
 use sima_core::{Hash, Result};
 
-use crate::cellular::Grid;
 use crate::devices::Substrate;
+use crate::shared::cellular::Grid;
 
 /// A compute substrate an evaluation runs on: it holds a device and the kernels
 /// compiled for it, it advances a grid, and it reduces the result.

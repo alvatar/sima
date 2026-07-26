@@ -4,10 +4,12 @@ use sima_contracts::DeviceBinding;
 use sima_core::{Hash, Result, hash_bytes};
 use sima_toolkit_cuda::{Buffer, Context, Kernel, selected_device_desc};
 
-use crate::cellular::cuda::reduce::{GridPair, REDUCE_PTX, ReduceKernels, reduce as reduce_pair};
-use crate::cellular::cuda::step::{BLOCK_WIDTH, Trajectory, run};
-use crate::cellular::{CellularEngine, CellularEvaluation, EvaluationInput, Grid};
 use crate::devices::Substrate;
+use crate::shared::cellular::cuda::reduce::{
+    GridPair, REDUCE_PTX, ReduceKernels, reduce as reduce_pair,
+};
+use crate::shared::cellular::cuda::step::{BLOCK_WIDTH, Trajectory, run};
+use crate::shared::cellular::{CellularEngine, CellularEvaluation, EvaluationInput, Grid};
 
 /// The entry point every cellular CUDA kernel declares. `main` is spoken for in
 /// C++, so the convention's single entry point takes the name the toolkit's own
@@ -155,8 +157,8 @@ mod tests {
 
     /// The smoke kernel both substrates ship: a toroidal neighborhood max over
     /// the cellular convention's first three parameters.
-    const SMOKE_PTX: &str = include_str!("../../kernels/smoke.ptx");
-    const SMOKE_WGSL: &str = include_str!("../../shaders/smoke.wgsl");
+    const SMOKE_PTX: &str = include_str!("../../../kernels/smoke.ptx");
+    const SMOKE_WGSL: &str = include_str!("../../../shaders/smoke.wgsl");
 
     /// The relative tolerance the two substrates' scalars are held to. Loose
     /// enough to survive a fused multiply-add and a reassociation the two
@@ -183,7 +185,7 @@ mod tests {
         assert_eq!(CudaEngine::COMPILER_COMPONENT, "cuda.compiler");
         assert_ne!(
             CudaEngine::COMPILER_COMPONENT,
-            crate::cellular::WgslEngine::COMPILER_COMPONENT
+            crate::shared::cellular::WgslEngine::COMPILER_COMPONENT
         );
         assert_eq!(CudaEngine::COMPILER_ID, sima_toolkit_cuda::COMPILER_ID);
     }
@@ -253,8 +255,8 @@ mod tests {
         // slot — moves a scalar far past the tolerance.
         let initial = a_grid();
         let cuda = CudaEngine::build(None, SMOKE_PTX).expect("build the CUDA engine");
-        let wgsl =
-            crate::cellular::WgslEngine::build(None, SMOKE_WGSL).expect("build the WGSL engine");
+        let wgsl = crate::shared::cellular::WgslEngine::build(None, SMOKE_WGSL)
+            .expect("build the WGSL engine");
         let cuda_scalars = cuda
             .evaluate(&an_input(&initial, 4))
             .expect("CUDA evaluation")

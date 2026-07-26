@@ -18,7 +18,7 @@ use sima_core::Result;
 
 use super::super::model::CaModel;
 use super::super::params::CaParams;
-use crate::cellular::Grid;
+use crate::shared::cellular::Grid;
 
 use gen_config::NcaGenConfig;
 use genome::NcaGenome;
@@ -60,7 +60,7 @@ impl CaModel for Nca {
     // kernel's source digest covers both, which is correct: both determine the
     // compiled SPIR-V.
     const KERNEL_SOURCE: &'static str = concat!(
-        include_str!("../../../../cellular/shaders/prng.wgsl"),
+        include_str!("../../../../shared/cellular/shaders/prng.wgsl"),
         include_str!("nca.wgsl"),
     );
     // The kernel reads the candidate seed at runtime for the async mask, so the
@@ -98,7 +98,7 @@ mod tests {
     use super::super::super::domain::build_domain;
     use super::super::super::params::CaParams;
     use super::*;
-    use crate::cellular::WgslEngine;
+    use crate::shared::cellular::WgslEngine;
 
     #[test]
     fn the_kernel_compiles_device_free() {

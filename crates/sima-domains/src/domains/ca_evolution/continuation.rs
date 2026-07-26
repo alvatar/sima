@@ -12,7 +12,7 @@
 
 use sima_core::{Dec, Enc, Result};
 
-use crate::cellular::Grid;
+use crate::shared::cellular::Grid;
 
 /// Encodes a stepped model's committed state: the `step` the trajectory has
 /// reached as a little-endian `u64`, then the grid's canonical bytes.

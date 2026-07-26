@@ -2,7 +2,7 @@
 
 use sima_core::{Result, prng};
 
-use crate::cellular::Grid;
+use crate::shared::cellular::Grid;
 
 /// What a model stamps into its seeded grid: the per-channel `background` (the
 /// model's fixed point) filling the whole grid, and the per-channel `patch`

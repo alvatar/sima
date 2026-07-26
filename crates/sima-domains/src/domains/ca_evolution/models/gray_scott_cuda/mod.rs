@@ -19,7 +19,7 @@ use sima_core::Result;
 use super::super::model::CaModel;
 use super::super::params::CaParams;
 use super::gray_scott::{GrayScott, GrayScottGenConfig, GrayScottGenome, GrayScottIgnition};
-use crate::cellular::Grid;
+use crate::shared::cellular::Grid;
 
 /// The Gray-Scott model bound to the CUDA substrate. Zero-sized, like every
 /// model: the generic machinery is monomorphized over it.
@@ -60,7 +60,7 @@ mod tests {
 
     use super::super::super::domain::build_domain;
     use super::*;
-    use crate::cellular::{CudaEngine, WgslEngine};
+    use crate::shared::cellular::{CudaEngine, WgslEngine};
 
     /// The CUDA C the committed PTX is generated from.
     const KERNEL_CU: &str = include_str!("gray_scott.cu");

@@ -6,8 +6,8 @@ use sima_model::{Environment, EnvironmentComponent, EnvironmentValue, FormatId};
 
 use super::executor::CaExecutor;
 use super::model::CaModel;
-use crate::cellular::CellularEngine;
 use crate::domain::Domain;
+use crate::shared::cellular::CellularEngine;
 
 /// Assembles the [`Domain`] for the model `M` running on the substrate `E`: the
 /// executor and a four-component environment — the executor's own version, the

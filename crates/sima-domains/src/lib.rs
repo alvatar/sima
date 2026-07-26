@@ -14,22 +14,24 @@
 //! can use: the [`devices`] module carries the enumeration the layers above
 //! resolve device selectors against, asked about a format id.
 //!
-//! Beside the concrete domains — the stub and `ca_evolution` — the
-//! [`cellular`] module holds the shared substrate of the cellular executor
-//! kind: the [`Grid`](cellular::Grid) state, the [`run`](cellular::run)
+//! Below the concrete domains — the stub and `ca_evolution` — the
+//! [`shared`] layer holds executor machinery reused across domains. Today that
+//! is the [`cellular`](shared::cellular) kind: the
+//! [`Grid`](shared::cellular::Grid) state, the [`run`](shared::cellular::run)
 //! double-buffered dispatch harness, and the
-//! [`CellularRule`](cellular::CellularRule) CPU-reference contract used solely
-//! to cross-check that harness against an independent implementation in tests.
+//! [`CellularRule`](shared::cellular::CellularRule) CPU-reference contract used
+//! solely to cross-check that harness against an independent implementation in
+//! tests.
 //!
 //! The pipeline calls this crate to resolve a config's format and generator
 //! ids to code; the scheduler tests use the stub domain as a deterministic,
 //! programmable substrate through a dev-dependency. `sima-contracts` sits
 //! below and holds the traits alone.
 
-pub mod cellular;
 pub mod devices;
 mod domain;
 mod domains;
+pub mod shared;
 
 pub use domain::{Domain, domain_for, generator_for, generator_params_for, params_for};
 pub use domains::ca_evolution::continuation::{decode_continuation, encode_continuation};

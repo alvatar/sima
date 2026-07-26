@@ -14,7 +14,7 @@ use sima_model::FormatId;
 use super::continuation::{decode_continuation, encode_continuation};
 use super::model::CaModel;
 use super::params::decode_params;
-use crate::cellular::{CellularEngine, EvaluationInput, Grid};
+use crate::shared::cellular::{CellularEngine, EvaluationInput, Grid};
 
 /// Evaluates a candidate of the model `M` on the substrate `E`, under format
 /// `M::FORMAT_ID`: the spec's genome and the run params frame one task — ignite
@@ -257,7 +257,7 @@ mod tests {
     use super::super::params::{CaParams, encode_params};
     use super::super::toy_model::Toy;
     use super::*;
-    use crate::cellular::WgslEngine;
+    use crate::shared::cellular::WgslEngine;
 
     /// The models' constructor-bearing types. The model submodules are private,
     /// so the genome, ignition, and sampling-config types are reachable here
@@ -393,7 +393,7 @@ mod tests {
 
     /// The scalar names the reduction emits for a `channels`-channel model.
     fn expected_scalar_names(channels: u32) -> Vec<String> {
-        crate::cellular::scalar_names(channels)
+        crate::shared::cellular::scalar_names(channels)
     }
 
     /// A stat list carrying one scalar at `value`.

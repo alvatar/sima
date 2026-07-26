@@ -17,7 +17,7 @@ use sima_core::Result;
 use super::super::ignition::{PatchSpec, seeded_patch};
 use super::super::model::CaModel;
 use super::super::params::CaParams;
-use crate::cellular::Grid;
+use crate::shared::cellular::Grid;
 
 // The rule's own types, re-exported: the CUDA program is the same rule on
 // another substrate and binds these unchanged.
@@ -85,7 +85,7 @@ mod tests {
 
     use super::super::super::domain::build_domain;
     use super::*;
-    use crate::cellular::WgslEngine;
+    use crate::shared::cellular::WgslEngine;
 
     #[test]
     fn the_kernel_compiles_device_free() {

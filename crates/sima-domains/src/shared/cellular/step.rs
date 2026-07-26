@@ -3,7 +3,7 @@
 use sima_core::Result;
 use sima_toolkit_wgsl::{Buffer, Context, Kernel};
 
-use crate::cellular::Grid;
+use crate::shared::cellular::Grid;
 
 /// The result of a [`run`]: the two ping-pong buffers left resident on the
 /// device — the final grid $G_N$ and the step before it $G_{N-1}$ — over the
@@ -164,7 +164,7 @@ mod tests {
 
     /// The neighborhood-max kernel that exercises the path. Its bindings and
     /// dispatch match the cellular-kind convention the harness encodes.
-    const SMOKE_WGSL: &str = include_str!("../../shaders/smoke.wgsl");
+    const SMOKE_WGSL: &str = include_str!("../../../shaders/smoke.wgsl");
 
     /// A one-channel probe kernel that adds the low word of the per-step index to
     /// every cell. It declares the step buffer at binding 3 (no params), so after

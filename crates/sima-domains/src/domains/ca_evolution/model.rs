@@ -3,8 +3,8 @@
 use sima_core::{Codec, Result};
 
 use super::params::CaParams;
-use crate::cellular::Grid;
 use crate::domains::translate::TomlConfig;
+use crate::shared::cellular::Grid;
 
 /// The rule-specific pieces the generic CA machinery needs. The domain owns the
 /// substrate (grid, harness, executor/generator skeleton, environment, shared

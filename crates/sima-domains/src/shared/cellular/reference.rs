@@ -1,6 +1,6 @@
 //! [`CellularRule`]: the CPU-reference contract the harness is validated against.
 
-use crate::cellular::Grid;
+use crate::shared::cellular::Grid;
 
 /// A synchronous cellular update: one step maps a whole input grid to a whole
 /// output grid, each output cell a pure function of a neighborhood of the

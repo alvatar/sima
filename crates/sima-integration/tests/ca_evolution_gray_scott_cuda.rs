@@ -13,7 +13,7 @@ use std::path::Path;
 
 use common::loaded_text;
 use sima_core::{Hash, Result};
-use sima_domains::cellular::Grid;
+use sima_domains::shared::cellular::Grid;
 use sima_pipeline::{LoadedConfig, RunControl, RunOutcome, orchestrate};
 use sima_store::Store;
 

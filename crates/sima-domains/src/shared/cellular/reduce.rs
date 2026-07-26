@@ -360,10 +360,12 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             .expect("add-one kernel");
 
         let cells = 16u32;
-        let initial = crate::cellular::Grid::new(4, 4, 1, vec![0.0; cells as usize]).expect("grid");
+        let initial =
+            crate::shared::cellular::Grid::new(4, 4, 1, vec![0.0; cells as usize]).expect("grid");
         let steps = 3u32;
         let trajectory =
-            crate::cellular::run(&context, &kernel, &initial, steps, &[], None).expect("run");
+            crate::shared::cellular::run(&context, &kernel, &initial, steps, &[], None)
+                .expect("run");
 
         // The two resident buffers, downloaded as the reduction reads them.
         let read = |buffer: &Buffer| -> Vec<f32> {

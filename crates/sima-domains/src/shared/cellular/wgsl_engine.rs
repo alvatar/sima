@@ -4,11 +4,11 @@ use sima_contracts::DeviceBinding;
 use sima_core::{Hash, Result, hash_bytes};
 use sima_toolkit_wgsl::{Buffer, Context, Kernel, selected_device_desc};
 
-use crate::cellular::{
+use crate::devices::Substrate;
+use crate::shared::cellular::{
     CellularEngine, CellularEvaluation, EvaluationInput, Grid, GridPair, REDUCE_WGSL,
     ReduceKernels, Trajectory, reduce as reduce_pair, run,
 };
-use crate::devices::Substrate;
 
 /// The WGSL substrate: a Vulkan device, the model's update kernel compiled for
 /// it, and the four reduction passes.
@@ -186,7 +186,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         // no uniform block, which is what a model with no uniform values gets.
         // Binding a buffer the shader never declared is what this guards
         // against, and a zero-sized one is what Vulkan rejects outright.
-        let engine = WgslEngine::build(None, include_str!("../../shaders/smoke.wgsl"))
+        let engine = WgslEngine::build(None, include_str!("../../../shaders/smoke.wgsl"))
             .expect("build the engine");
         let initial = Grid::new(4, 4, 1, (0..16).map(|i| i as f32).collect()).expect("grid");
         let scalars: std::collections::HashMap<String, f64> = engine
