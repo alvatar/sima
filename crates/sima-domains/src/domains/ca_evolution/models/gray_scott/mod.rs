@@ -41,7 +41,7 @@ impl CaModel for GrayScott {
     // meaningfully above the near-zero background.
     const ALIVE_CHANNEL: u32 = 1;
     const ALIVE_MIN: f32 = 0.1;
-    const KERNEL_WGSL: &'static str = include_str!("gray_scott.wgsl");
+    const KERNEL_SOURCE: &'static str = include_str!("gray_scott.wgsl");
 
     fn uniforms(genome: &GrayScottGenome, shared: &CaParams) -> Vec<f32> {
         // Binding 3 of the cellular convention: [f, k, du, dv, dt].
@@ -83,11 +83,12 @@ mod tests {
 
     use super::super::super::domain::build_domain;
     use super::*;
+    use crate::cellular::WgslEngine;
 
     #[test]
     fn the_kernel_compiles_device_free() {
         // Hosted CI catches a kernel that fails to compile without a device.
-        sima_toolkit_wgsl::check(GrayScott::KERNEL_WGSL, "main").expect("kernel compiles");
+        sima_toolkit_wgsl::check(GrayScott::KERNEL_SOURCE, "main").expect("kernel compiles");
     }
 
     #[test]
@@ -95,7 +96,7 @@ mod tests {
         // build_domain derives the model's environment device-free, hashing the
         // kernel source rather than compiling it. The kernel component carries
         // that digest, so editing the shader changes every task key.
-        let domain = build_domain::<GrayScott>()?;
+        let domain = build_domain::<GrayScott, WgslEngine>()?;
         assert_eq!(domain.format.as_str(), GrayScott::FORMAT_ID);
         let components = domain.environment.components();
         assert_eq!(components.len(), 4);
@@ -103,7 +104,7 @@ mod tests {
         assert_eq!(components[1].name(), "ca_evolution.gray_scott.kernel");
         assert_eq!(
             *components[1].value(),
-            EnvironmentValue::Digest(source_digest(GrayScott::KERNEL_WGSL))
+            EnvironmentValue::Digest(source_digest(GrayScott::KERNEL_SOURCE))
         );
         assert_eq!(components[2].name(), "ca_evolution.gray_scott.reduce");
         assert_eq!(components[3].name(), "wgsl.compiler");

@@ -47,8 +47,10 @@ pub(crate) trait CaModel: 'static {
     /// The minimum value on [`ALIVE_CHANNEL`](CaModel::ALIVE_CHANNEL) a live
     /// cell holds. See [`ALIVE_CHANNEL`](CaModel::ALIVE_CHANNEL).
     const ALIVE_MIN: f32;
-    /// The WGSL update kernel source (`include_str!` of the co-located file).
-    const KERNEL_WGSL: &'static str;
+    /// The update kernel the engine compiles (`include_str!` of the co-located
+    /// file). What language it is written in is the engine's business: the
+    /// registration arm pairs a model with the substrate that can compile it.
+    const KERNEL_SOURCE: &'static str;
     /// Whether the kernel declares the binding-4 seed buffer: the candidate's
     /// u64 seed as two u32 words, low then high. A model consuming the seed at
     /// runtime (an asynchronous update mask) opts in; the default keeps the

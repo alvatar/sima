@@ -59,7 +59,7 @@ impl CaModel for Nca {
     // only within this crate — the reason both files live in `sima-domains`. The
     // kernel's source digest covers both, which is correct: both determine the
     // compiled SPIR-V.
-    const KERNEL_WGSL: &'static str = concat!(
+    const KERNEL_SOURCE: &'static str = concat!(
         include_str!("../../../../cellular/shaders/prng.wgsl"),
         include_str!("nca.wgsl"),
     );
@@ -98,13 +98,14 @@ mod tests {
     use super::super::super::domain::build_domain;
     use super::super::super::params::CaParams;
     use super::*;
+    use crate::cellular::WgslEngine;
 
     #[test]
     fn the_kernel_compiles_device_free() {
         // Hosted CI catches a kernel that fails to compile without a device. This
         // also proves the shared PRNG snippet and the update kernel compose into
         // a valid module.
-        sima_toolkit_wgsl::check(Nca::KERNEL_WGSL, "main").expect("kernel compiles");
+        sima_toolkit_wgsl::check(Nca::KERNEL_SOURCE, "main").expect("kernel compiles");
     }
 
     #[test]
@@ -112,7 +113,7 @@ mod tests {
         // build_domain derives the model's environment device-free, hashing the
         // composed kernel source. The kernel component carries that digest, so
         // editing either shader file changes every task key.
-        let domain = build_domain::<Nca>()?;
+        let domain = build_domain::<Nca, WgslEngine>()?;
         assert_eq!(domain.format.as_str(), Nca::FORMAT_ID);
         let components = domain.environment.components();
         assert_eq!(components.len(), 4);
@@ -120,7 +121,7 @@ mod tests {
         assert_eq!(components[1].name(), "ca_evolution.nca.kernel");
         assert_eq!(
             *components[1].value(),
-            EnvironmentValue::Digest(source_digest(Nca::KERNEL_WGSL))
+            EnvironmentValue::Digest(source_digest(Nca::KERNEL_SOURCE))
         );
         assert_eq!(components[2].name(), "ca_evolution.nca.reduce");
         assert_eq!(components[3].name(), "wgsl.compiler");
@@ -140,7 +141,7 @@ mod tests {
         Ok(())
     }
 
-    /// Executor fixtures driving the real [`CaExecutor<Nca>`]: the GPU-gated
+    /// Executor fixtures driving the real [`CaExecutor<Nca, WgslEngine>`]: the GPU-gated
     /// tests run the async kernel through the seed and step buffers exactly as a
     /// live run does, and the device-free tests exercise the executor's
     /// validation of a stepped input state before any GPU work. Neither touches
@@ -206,7 +207,7 @@ mod tests {
 
         /// Runs the executor and returns the committed `state` artifact bytes.
         fn run_state(
-            exec: &CaExecutor<Nca>,
+            exec: &CaExecutor<Nca, WgslEngine>,
             spec: &Spec,
             params: &Params,
             input_state: Option<&[u8]>,
@@ -238,7 +239,7 @@ mod tests {
         fn repeated_runs_are_byte_identical() {
             // The async mask is deterministic in (seed, cell, step), so two runs
             // of the same task commit byte-identical framed states.
-            let exec = CaExecutor::<Nca>::new(None).expect("executor");
+            let exec = CaExecutor::<Nca, WgslEngine>::new(None).expect("executor");
             let (spec, params) = (spec(0.5), params(50));
             let first = run_state(&exec, &spec, &params, None);
             let second = run_state(&exec, &spec, &params, None);
@@ -253,7 +254,7 @@ mod tests {
             // step makes the committed state a complete continuation, so B is
             // byte-identical to C: splitting the trajectory at a segment boundary
             // changes nothing.
-            let exec = CaExecutor::<Nca>::new(None).expect("executor");
+            let exec = CaExecutor::<Nca, WgslEngine>::new(None).expect("executor");
             let spec = spec(0.5);
             let a = run_state(&exec, &spec, &params(50), None);
             let b = run_state(&exec, &spec, &params(50), Some(&a));
@@ -275,7 +276,7 @@ mod tests {
             // A small scale keeps the residual dynamics bounded over a few steps,
             // so every committed value is finite; the framed step equals the step
             // count over an 8-channel grid.
-            let exec = CaExecutor::<Nca>::new(None).expect("executor");
+            let exec = CaExecutor::<Nca, WgslEngine>::new(None).expect("executor");
             let steps = 8;
             let bytes = run_state(&exec, &spec(0.02), &params(steps), None);
             let (step, grid) = framed(&bytes);
@@ -295,7 +296,7 @@ mod tests {
             // A stepped model decodes its input state as (step, grid); a buffer
             // too short for even the eight-byte step header is Validation before
             // any GPU work.
-            let exec = CaExecutor::<Nca>::new(None).expect("executor");
+            let exec = CaExecutor::<Nca, WgslEngine>::new(None).expect("executor");
             let (spec, params) = (spec(0.5), params(50));
             match exec.execute(
                 &input(&spec, &params, Some(&[0u8; 4])),
@@ -315,7 +316,7 @@ mod tests {
             // A well-framed state whose grid is 8x8x8 against 32x32 run params:
             // the header decodes, the grid dimensions do not match, and the error
             // names both triples before any GPU work.
-            let exec = CaExecutor::<Nca>::new(None).expect("executor");
+            let exec = CaExecutor::<Nca, WgslEngine>::new(None).expect("executor");
             let (spec, params) = (spec(0.5), params(50));
             let wrong =
                 encode_continuation(0, &Grid::new(8, 8, 8, vec![0.0; 8 * 8 * 8]).expect("grid"));

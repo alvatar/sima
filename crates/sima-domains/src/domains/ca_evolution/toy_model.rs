@@ -136,7 +136,7 @@ impl CaModel for Toy {
     // The toy has one channel; a cell counts as alive at half scale.
     const ALIVE_CHANNEL: u32 = 0;
     const ALIVE_MIN: f32 = 0.5;
-    const KERNEL_WGSL: &'static str = "// toy kernel";
+    const KERNEL_SOURCE: &'static str = "// toy kernel";
 
     fn uniforms(genome: &ToyGenome, shared: &CaParams) -> Vec<f32> {
         vec![genome.value, shared.dt()]
@@ -180,12 +180,13 @@ mod tests {
     use super::super::generator::{CaGenerator, translate as translate_generator};
     use super::super::params::{decode_params, translate as translate_params};
     use super::*;
+    use crate::cellular::WgslEngine;
 
     #[test]
     fn the_environment_names_derive_from_the_model() -> Result<()> {
         // build_domain forms the component names from M::NAME, so a different
         // model yields different names with no change to the builder.
-        let domain = build_domain::<Toy>()?;
+        let domain = build_domain::<Toy, WgslEngine>()?;
         assert_eq!(domain.format.as_str(), "toy.v1");
         let names: Vec<&str> = domain
             .environment
