@@ -70,7 +70,8 @@ pub(crate) struct EvaluationInput<'a> {
     /// Steps to advance.
     pub steps: u32,
     /// The model's uniform values, the kernel's first parameter after the grids
-    /// and their dimensions.
+    /// and their dimensions. Empty for a model whose kernel declares no such
+    /// parameter, in which case none is bound.
     pub uniforms: &'a [f32],
     /// The candidate's seed, for a kernel that consumes it.
     pub seed: Option<u64>,

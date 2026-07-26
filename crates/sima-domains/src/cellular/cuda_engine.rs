@@ -64,10 +64,18 @@ impl CellularEngine for CudaEngine {
 
     fn evaluate(&self, input: &EvaluationInput<'_>) -> Result<Box<dyn CellularEvaluation + '_>> {
         // The model's uniform buffer — parameter 3 of the cellular convention,
-        // passed after dims.
-        let uniform_bytes: &[u8] = bytemuck::cast_slice(input.uniforms);
-        let mut uniforms = self.context.buffer(uniform_bytes.len())?;
-        self.context.upload(&mut uniforms, uniform_bytes)?;
+        // passed after dims. A model with no uniform values declares no such
+        // parameter, so none is built: the argument list must match the
+        // parameters the kernel declares.
+        let uniforms = match input.uniforms {
+            [] => None,
+            values => {
+                let bytes: &[u8] = bytemuck::cast_slice(values);
+                let mut buffer = self.context.buffer(bytes.len())?;
+                self.context.upload(&mut buffer, bytes)?;
+                Some(buffer)
+            }
+        };
         // Parameter 4, present only for a kernel that consumes the candidate
         // seed: the u64 as two u32 words (low, high). Integers travel as
         // integers, matching the WGSL side, so one model's genome decodes the
@@ -83,7 +91,10 @@ impl CellularEngine for CudaEngine {
             }
             None => None,
         };
-        let mut params: Vec<&Buffer> = vec![&uniforms];
+        let mut params: Vec<&Buffer> = Vec::with_capacity(2);
+        if let Some(uniforms) = uniforms.as_ref() {
+            params.push(uniforms);
+        }
         if let Some(seed) = seed.as_ref() {
             params.push(seed);
         }

@@ -55,10 +55,18 @@ impl CellularEngine for WgslEngine {
 
     fn evaluate(&self, input: &EvaluationInput<'_>) -> Result<Box<dyn CellularEvaluation + '_>> {
         // The model's uniform buffer — binding 3 of the cellular convention,
-        // bound after dims.
-        let uniform_bytes: &[u8] = bytemuck::cast_slice(input.uniforms);
-        let uniforms = self.context.buffer(uniform_bytes.len())?;
-        self.context.upload(&uniforms, uniform_bytes)?;
+        // bound after dims. A model with no uniform values declares no such
+        // binding, so none is built: the bind group must match the bindings the
+        // shader declares.
+        let uniforms = match input.uniforms {
+            [] => None,
+            values => {
+                let bytes: &[u8] = bytemuck::cast_slice(values);
+                let buffer = self.context.buffer(bytes.len())?;
+                self.context.upload(&buffer, bytes)?;
+                Some(buffer)
+            }
+        };
         // Binding 4, present only for a kernel that consumes the candidate
         // seed: the u64 as two u32 words (low, high). Integers must travel as
         // integers, since a driver may rewrite a raw bit pattern parked in an
@@ -73,7 +81,10 @@ impl CellularEngine for WgslEngine {
             }
             None => None,
         };
-        let mut params: Vec<&Buffer> = vec![&uniforms];
+        let mut params: Vec<&Buffer> = Vec::with_capacity(2);
+        if let Some(uniforms) = uniforms.as_ref() {
+            params.push(uniforms);
+        }
         if let Some(seed) = seed.as_ref() {
             params.push(seed);
         }
@@ -167,6 +178,38 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     out_grid[cell] = in_grid[cell] + uniforms[0];
 }
 "#;
+
+    /// Requires a real Vulkan device. Run with `cargo test -- --ignored`.
+    #[test]
+    #[ignore = "requires a Vulkan device"]
+    fn a_kernel_that_declares_no_uniforms_evaluates() {
+        // The smoke shader declares the convention's first three bindings and
+        // no uniform block, which is what a model with no uniform values gets.
+        // Binding a buffer the shader never declared is what this guards
+        // against, and a zero-sized one is what Vulkan rejects outright.
+        let engine = WgslEngine::build(None, include_str!("../../shaders/smoke.wgsl"))
+            .expect("build the engine");
+        let initial = Grid::new(4, 4, 1, (0..16).map(|i| i as f32).collect()).expect("grid");
+        let scalars: std::collections::HashMap<String, f64> = engine
+            .evaluate(&EvaluationInput {
+                initial: &initial,
+                steps: 2,
+                uniforms: &[],
+                seed: None,
+                step_base: None,
+                alive_channel: 0,
+                alive_min: 1.0,
+            })
+            .expect("evaluate")
+            .scalars()
+            .expect("reduce")
+            .into_iter()
+            .collect();
+        // A neighborhood max can only raise a cell, so the maximum is the one
+        // the grid started with and the mean has risen off its own start.
+        assert_eq!(scalars["c0.max"], 15.0);
+        assert!(scalars["c0.mean"] > 7.5, "{scalars:?}");
+    }
 
     /// Requires a real Vulkan device. Run with `cargo test -- --ignored`.
     #[test]
