@@ -4,6 +4,8 @@
 //! image a rental boots, the disk it gets, and the credentials the API
 //! demands are configuration of the backend itself.
 
+use std::collections::BTreeMap;
+
 use sima_core::{Error, Result};
 
 /// The marketplace's public API root.
@@ -28,9 +30,11 @@ pub struct VastConfig {
     pub image: String,
     /// Disk to give the rental, in gigabytes.
     pub disk_gb: u64,
-    /// Environment declaration passed to the created instance, in the
-    /// marketplace's own `-e KEY=value` syntax. `None` passes none.
-    pub env: Option<String>,
+    /// Environment variables passed to the created instance. The API
+    /// accepts only a JSON object of name-value pairs and rejects the
+    /// CLI's `-e KEY=value` string form with `invalid_args`. `None`
+    /// passes none.
+    pub env: Option<BTreeMap<String, String>>,
 }
 
 impl VastConfig {

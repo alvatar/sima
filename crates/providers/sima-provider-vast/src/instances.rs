@@ -58,11 +58,24 @@ pub(crate) struct InstanceRow {
     pub(crate) dph_total: Option<f64>,
 }
 
-/// The API's envelope around a single instance.
+/// The API's envelope around a single instance. The row is null in the
+/// window right after a rental is created, before the API materializes the
+/// read — a pending row, distinct from the 404 of an instance the account
+/// does not hold.
 #[derive(Deserialize)]
 struct InstanceEnvelope {
-    /// The instance itself.
-    instances: InstanceRow,
+    /// The instance itself, or null while the row is still materializing.
+    instances: Option<InstanceRow>,
+}
+
+/// What the API answers when one instance is read.
+pub(crate) enum ShowAnswer {
+    /// The instance's row.
+    Row(InstanceRow),
+    /// The rental exists but its row has not materialized yet.
+    Pending,
+    /// The account holds no such instance.
+    Absent,
 }
 
 /// One page of the listing.
@@ -75,25 +88,31 @@ struct InstancePage {
     next_token: Option<String>,
 }
 
-/// The instance `id`, or `None` when the account holds no such instance.
-/// A failure of any other kind reaches the caller as `operation` failing.
-pub(crate) fn show(client: &VastClient, id: &str, operation: &str) -> Result<Option<InstanceRow>> {
+/// The API's answer for the instance `id`. A failure of any other kind
+/// reaches the caller as `operation` failing.
+pub(crate) fn show(client: &VastClient, id: &str, operation: &str) -> Result<ShowAnswer> {
     let answer = client.get(&show_path(id), operation)?;
     if answer.status == NOT_FOUND {
-        return Ok(None);
+        return Ok(ShowAnswer::Absent);
     }
     let body = answer.ok(operation)?;
     let envelope: InstanceEnvelope = serde_json::from_value(body)
         .map_err(|failure| Error::Provider(format!("{operation}: {failure}")))?;
-    Ok(Some(envelope.instances))
+    Ok(match envelope.instances {
+        Some(row) => ShowAnswer::Row(row),
+        None => ShowAnswer::Pending,
+    })
 }
 
-/// The state the API reports for `id`.
+/// The state the API reports for `id`. A pending row is an instance still
+/// coming up: only the 404 of an instance the account does not hold reads
+/// as gone, and readiness polling bounds how long pending may last.
 pub(crate) fn status(client: &VastClient, id: &InstanceId) -> Result<InstanceStatus> {
-    let Some(row) = show(client, &id.0, SHOW_OPERATION)? else {
-        return Ok(InstanceStatus::Gone);
-    };
-    Ok(row.state())
+    match show(client, &id.0, SHOW_OPERATION)? {
+        ShowAnswer::Row(row) => Ok(row.state()),
+        ShowAnswer::Pending => Ok(InstanceStatus::Provisioning),
+        ShowAnswer::Absent => Ok(InstanceStatus::Gone),
+    }
 }
 
 /// Every instance the account holds, with the tag it was created under.
@@ -233,6 +252,18 @@ mod tests {
             r#"{"instances": {"id": 555, "actual_status": "running",
                 "ssh_host": null, "ssh_port": null, "dph_total": 0.412}}"#,
         )]);
+        let client = VastClient::new(&server.url(), "k-secret");
+        assert_eq!(status(&client, &instance())?, InstanceStatus::Provisioning);
+        Ok(())
+    }
+
+    #[test]
+    fn a_pending_row_is_provisioning() -> Result<()> {
+        // The API answers a null row in the window right after a rental is
+        // created, before it materializes the read. Only a 404 reads as
+        // gone: a pending row taken for gone would record an incident
+        // against a healthy machine and churn its instance.
+        let server = TestServer::new(vec![answer(200, r#"{"instances": null}"#)]);
         let client = VastClient::new(&server.url(), "k-secret");
         assert_eq!(status(&client, &instance())?, InstanceStatus::Provisioning);
         Ok(())
