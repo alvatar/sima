@@ -514,7 +514,7 @@ leaked instances are leaked money.
       for anything richer — decide the shape here, consumed at M7.2
 - [x] M6.4 Budget guard: total spend cap and rental-phase wall-clock limit
       per run, durable spend accounting
-- [ ] M6.5 Distributed run: one local orchestrator drives a provisioned
+- [x] M6.5 Distributed run: one local orchestrator drives a provisioned
       fleet beside the local devices. Run config declares (provider,
       constraints, objective, machine count); at run start the pipeline
       acquires through M6.1's loop against the M6.2 backend and registers
