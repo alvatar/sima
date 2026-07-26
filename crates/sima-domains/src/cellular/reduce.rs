@@ -20,14 +20,16 @@ use sima_toolkit_wgsl::{Buffer, Context, Kernel};
 /// keys exactly as editing a step kernel does.
 pub const REDUCE_WGSL: &str = include_str!("shaders/reduce.wgsl");
 
-/// The upper bound on channels the reduction handles; the shader's per-channel
-/// scratch arrays are sized to it, so a model exceeding it is rejected before
-/// dispatch.
+/// The upper bound on channels the reduction handles; each kernel's
+/// per-channel scratch arrays are sized to it, so a model exceeding it is
+/// rejected before dispatch.
 pub(crate) const MAX_CHANNELS: u32 = 16;
 
-/// The fixed number of level-1 partitions. The topology is fixed so the
-/// reduction is deterministic per backend: every sum folds in the same order.
-const PARTITIONS: u32 = 64;
+/// The fixed number of level-1 partitions, shared by both substrates'
+/// reductions. The topology is fixed so the reduction is deterministic per
+/// backend: every sum folds in the same order. Both kernels read it from their
+/// parameter buffer, so one constant drives both and they accumulate alike.
+pub(crate) const PARTITIONS: u32 = 64;
 
 /// The four compiled reduction passes, built once and held for the engine's
 /// lifetime alongside the step kernel.
@@ -154,8 +156,9 @@ pub fn scalar_names(channels: u32) -> Vec<String> {
 }
 
 /// Pairs the reduction's flat output with its names, widening each `f32` to
-/// `f64`. The output layout matches [`scalar_names`] element for element.
-fn name_scalars(channels: u32, values: &[f32]) -> Vec<(String, f64)> {
+/// `f64`. The output layout matches [`scalar_names`] element for element, and
+/// is the same for every substrate.
+pub(crate) fn name_scalars(channels: u32, values: &[f32]) -> Vec<(String, f64)> {
     scalar_names(channels)
         .into_iter()
         .zip(values.iter().map(|&v| f64::from(v)))

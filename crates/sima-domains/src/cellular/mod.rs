@@ -11,8 +11,13 @@
 //! Which compute substrate a kernel runs on is the `CellularEngine` seam: one
 //! operation wide, with one implementation per substrate. The dispatch harness
 //! in `step` and the stats reduction in `reduce` are the WGSL implementation's
-//! half of it, reached through `WgslEngine`.
+//! half of it, reached through `WgslEngine`; their CUDA counterparts live in
+//! `cuda`, reached through `CudaEngine`. What the two share rather than
+//! transcribe — the scalar naming, the channel bound, the partition count —
+//! lives in `reduce` and is used by both.
 
+mod cuda;
+mod cuda_engine;
 mod engine;
 mod grid;
 mod prng;
@@ -26,6 +31,9 @@ pub use reduce::scalar_names;
 pub use reference::CellularRule;
 pub use step::{Trajectory, run};
 
+pub(crate) use cuda_engine::CudaEngine;
 pub(crate) use engine::{CellularEngine, CellularEvaluation, EvaluationInput};
-pub(crate) use reduce::{GridPair, REDUCE_WGSL, ReduceKernels, reduce};
+pub(crate) use reduce::{
+    GridPair, MAX_CHANNELS, PARTITIONS, REDUCE_WGSL, ReduceKernels, name_scalars, reduce,
+};
 pub(crate) use wgsl_engine::WgslEngine;
