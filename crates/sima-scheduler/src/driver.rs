@@ -57,6 +57,52 @@ pub enum RunOutcome {
     },
 }
 
+/// The task source the run's work division calls for: a segment count means
+/// per-candidate chains walked through committed state, its absence one
+/// stateless task per candidate.
+///
+/// Constructing a source generates the run's specs and writes each object to
+/// the store, which is idempotent — a spec's address is the hash of its own
+/// bytes, so a second construction over the same store rewrites the same
+/// content under the same key and materializes the same frontier.
+fn task_source<'a>(
+    store: &'a Store,
+    config: &RunConfig,
+    environment: &Environment,
+    generator: &dyn Generator,
+) -> Result<Box<dyn TaskSource + 'a>> {
+    Ok(match config.segments {
+        Some(_) => Box::new(SegmentChain::new(generator, config, environment, store)?),
+        None => Box::new(StaticBatch::new(generator, config, environment, store)?),
+    })
+}
+
+/// The task keys the run comprises, as the store's current state materializes
+/// them, derived without driving anything.
+///
+/// This is the frontier's own derivation, so it answers whatever the store
+/// currently supports: over an empty store the keys a run starts from, over a
+/// partly-committed segment chain its committed prefix plus the successors
+/// those commits made runnable, and over a finalized run exactly what its
+/// manifest lists. A chain is traversable forward only — segment k's key
+/// derives from segment k−1's produced state — so the set grows as the store
+/// answers more of it.
+///
+/// Deriving the keys **writes the run's spec objects to the store**, since
+/// constructing a source generates them. The write is idempotent and the
+/// derivation is otherwise read-only: no run is registered, no record is
+/// committed, and no journal line is appended.
+pub fn run_keys(
+    store: &Store,
+    config: &RunConfig,
+    environment: &Environment,
+    generator: &dyn Generator,
+) -> Result<Vec<TaskKey>> {
+    Ok(task_source(store, config, environment, generator)?
+        .all_keys()
+        .to_vec())
+}
+
 /// Runs a search to completion.
 ///
 /// Registers the run, materializes the runnable frontier from `(config,
@@ -96,13 +142,7 @@ pub fn run(
     store.put(&config.params.to_bytes())?;
     store.put(&environment.to_bytes())?;
 
-    // The work-division quantity selects the source: a segment count means
-    // per-candidate chains walked through committed state, its absence one
-    // stateless task per candidate.
-    let mut source: Box<dyn TaskSource + '_> = match config.segments {
-        Some(_) => Box::new(SegmentChain::new(generator, config, environment, store)?),
-        None => Box::new(StaticBatch::new(generator, config, environment, store)?),
-    };
+    let mut source = task_source(store, config, environment, generator)?;
     let writer = store.journal_writer(&run)?;
     // Placement resumes from the store: a chain that already ran returns to
     // its class, and a slot naming a class the run no longer has rebinds when
