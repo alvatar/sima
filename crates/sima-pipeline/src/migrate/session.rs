@@ -380,13 +380,22 @@ impl Session<'_> {
     /// far run that has exited since is pulled normally, and one still holding
     /// the lock makes the pull fail cleanly naming the lock, with both facts in
     /// the journal.
+    ///
+    /// The signal is re-sent on every poll rather than once, because a far run
+    /// is not signallable from the instant it starts. A shell starts an
+    /// asynchronous command with `SIGINT` ignored and the disposition survives
+    /// the exec, so the far run becomes signallable only once its own handler
+    /// replaces the inherited ignore — which is after it has loaded its config.
+    /// A wind-down that begins inside that window would otherwise signal into
+    /// nothing and wait out the whole bound. Re-sending is idempotent against a
+    /// run already winding down and costs one signal per poll interval.
     fn wind_down(&self, pid: u32, signal: bool, events: &Emitter) -> Result<()> {
-        if signal {
-            self.far.interrupt(pid)?;
-        }
         let (bound, poll) = self.wind_down_bounds();
         let deadline = Instant::now() + bound;
         loop {
+            if signal {
+                self.far.interrupt(pid)?;
+            }
             if self.far.driving()?.is_none() {
                 return Ok(());
             }
@@ -508,8 +517,12 @@ mod tests {
         devices: Vec<DeviceInfo>,
         /// The far-side run's pid while it is alive.
         alive: Arc<Mutex<Option<u32>>>,
-        /// A far run that never exits.
+        /// A far run that never exits, however it is asked to.
         stubborn: bool,
+        /// How many signals the far run discards before it winds down: a run
+        /// that has not yet installed its own handler is not signallable, and
+        /// the disposition it inherited discards what it is sent.
+        deaf: Mutex<usize>,
         /// The records the follow feed delivers, one batch per poll.
         polls: Arc<Mutex<VecDeque<Vec<Record>>>>,
         /// The far side's own store and the run it holds, when a sync is to be
@@ -533,6 +546,7 @@ mod tests {
                 }],
                 alive: Arc::new(Mutex::new(None)),
                 stubborn: false,
+                deaf: Mutex::new(0),
                 polls: Arc::new(Mutex::new(VecDeque::new())),
                 far: None,
                 steps: Mutex::new(Vec::new()),
@@ -549,6 +563,13 @@ mod tests {
         /// A far run that never exits, however it is asked to.
         fn stubborn(mut self) -> Scripted<'a> {
             self.stubborn = true;
+            self
+        }
+
+        /// A far run that discards its first `signals` before it becomes
+        /// signallable.
+        fn deaf_for(self, signals: usize) -> Scripted<'a> {
+            *self.deaf.lock().expect("the deafness lock") = signals;
             self
         }
 
@@ -599,6 +620,13 @@ mod tests {
 
         fn interrupt(&self, pid: u32) -> Result<()> {
             self.record(Step::Interrupt(pid));
+            let mut deaf = self.deaf.lock().expect("the deafness lock");
+            if *deaf > 0 {
+                // Sent into the window before the run's own handler replaced
+                // the disposition it inherited: discarded, with no trace.
+                *deaf -= 1;
+                return Ok(());
+            }
             if !self.stubborn {
                 *self.alive.lock().expect("the pid lock") = None;
             }
@@ -1074,6 +1102,39 @@ mod tests {
             far.steps().last(),
             Some(&Step::Pull),
             "the pull is attempted anyway"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_far_run_that_discards_its_first_signals_is_signalled_again() -> Result<()> {
+        // A shell starts an asynchronous command with `SIGINT` ignored and the
+        // disposition survives the exec, so a wind-down beginning before the far
+        // run installed its own handler signals into nothing. Re-sending on
+        // every poll is what closes that window.
+        let local = local(RENTED, PROMPT, Some(3));
+        let run = local.config.run.id();
+        let far = Scripted::new()
+            .deaf_for(2)
+            .delivering(vec![vec![started(&run), committed("aa")]]);
+
+        let (outcome, records) = session_over(&local, &far, None, &AtomicBool::new(true));
+        assert!(matches!(outcome?, MigrateOutcome::Interrupted { .. }));
+        assert_eq!(
+            far.steps()
+                .iter()
+                .filter(|step| **step == Step::Interrupt(PID))
+                .count(),
+            3,
+            "two discarded, the third heard: {:?}",
+            far.steps()
+        );
+        // The run went away well inside the bound, so nothing was reported.
+        assert!(
+            !records
+                .iter()
+                .any(|record| matches!(record.event, Event::Diagnostic { .. })),
+            "no timeout was reported: {records:?}"
         );
         Ok(())
     }
