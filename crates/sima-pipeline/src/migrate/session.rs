@@ -57,10 +57,11 @@ use sima_provider::{
 use sima_store::{ObjectScope, Rental as RentalRole, RunLock, Store};
 use sima_trace::{Collector, Emitter, Event, Level, Observer};
 
-use crate::config::{
-    DEFAULT_READY_POLL_MS, DEFAULT_READY_TIMEOUT_MS, FillPolicy, HostForm, LoadedConfig, Rented,
-    load,
-};
+use crate::config::{FillPolicy, HostForm, LoadedConfig, Rented, load};
+// The readiness defaults are what a destination stating none falls back on,
+// which under test comes from the session's seams instead.
+#[cfg(not(test))]
+use crate::config::{DEFAULT_READY_POLL_MS, DEFAULT_READY_TIMEOUT_MS};
 use crate::feed::RunFeed;
 use crate::fleet::Rental;
 use crate::migrate::destination::{Destination, destination_for};
@@ -149,6 +150,8 @@ pub fn migrate(
                 rental: None,
                 observer,
                 interrupt,
+                #[cfg(test)]
+                seams: Seams::default(),
             }
             .drive()
         }
@@ -186,6 +189,8 @@ pub fn migrate(
                 rental: Some(guard),
                 observer,
                 interrupt,
+                #[cfg(test)]
+                seams: Seams::default(),
             }
             .drive()
         }
@@ -233,6 +238,26 @@ fn hold<'a>(
 /// Split from [`migrate`] so the choreography is driven against a recording
 /// [`FarSide`] with no machine at all, and so every path out of it passes back
 /// through the teardown.
+/// The session's test-only overrides, in one struct on the type rather than
+/// scattered across its fields.
+#[cfg(test)]
+#[derive(Debug, Clone, Copy)]
+struct Seams {
+    /// What a destination stating no readiness bounds falls back on. The suite
+    /// takes the same tolerance production takes — the attempts and what each
+    /// records are what its tests fix — at a poll that costs no wall clock.
+    stated_nowhere: (Duration, Duration),
+}
+
+#[cfg(test)]
+impl Default for Seams {
+    fn default() -> Seams {
+        Seams {
+            stated_nowhere: (Duration::from_millis(200), Duration::from_millis(1)),
+        }
+    }
+}
+
 struct Session<'a> {
     far: &'a dyn FarSide,
     store: &'a Store,
@@ -245,6 +270,8 @@ struct Session<'a> {
     rental: Option<InstanceGuard<'a, dyn Provider + Sync + 'a>>,
     observer: Observer<'a>,
     interrupt: &'a AtomicBool,
+    #[cfg(test)]
+    seams: Seams,
 }
 
 impl Session<'_> {
@@ -545,11 +572,29 @@ impl Session<'_> {
     fn ready_bounds(&self) -> (Duration, Duration) {
         match self.destination.form {
             HostForm::Rented(spec) => (spec.ready_timeout, spec.ready_poll),
-            HostForm::Owned(_) => (
-                Duration::from_millis(DEFAULT_READY_TIMEOUT_MS),
-                Duration::from_millis(DEFAULT_READY_POLL_MS),
-            ),
+            HostForm::Owned(_) => self.stated_nowhere_bounds(),
         }
+    }
+
+    /// The bounds a destination that states none falls back on. A machine of
+    /// yours is the only such destination: the config admits the readiness keys
+    /// on a rented entry alone.
+    ///
+    /// The suite reads them from a seam instead, so it spends no wall clock
+    /// waiting out a tolerance whose attempts are what its tests fix. The
+    /// values below are therefore exercised by the config's own tests rather
+    /// than by anything here.
+    #[cfg(not(test))]
+    fn stated_nowhere_bounds(&self) -> (Duration, Duration) {
+        (
+            Duration::from_millis(DEFAULT_READY_TIMEOUT_MS),
+            Duration::from_millis(DEFAULT_READY_POLL_MS),
+        )
+    }
+
+    #[cfg(test)]
+    fn stated_nowhere_bounds(&self) -> (Duration, Duration) {
+        self.seams.stated_nowhere
     }
 }
 
@@ -980,6 +1025,7 @@ mod tests {
             rental,
             observer: &observer,
             interrupt,
+            seams: Seams::default(),
         }
         .drive();
         let records = std::mem::take(&mut *captured.lock().expect("the capture lock"));
@@ -1150,6 +1196,31 @@ mod tests {
             far.steps(),
             vec![Step::Devices; PROBE_ATTEMPTS as usize],
             "the contact is bounded and nothing past it ran"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_machine_of_yours_that_never_answers_is_given_the_same_attempts() -> Result<()> {
+        // A destination of yours states no readiness bounds — the config
+        // rejects rental keys on it — so it falls back on what states none.
+        // The attempts are the subject; the waiting between them is not, and
+        // the suite does not spend it.
+        let local = local(OWNED, "", Some(3));
+        let far = Scripted::new().refusing(usize::MAX);
+
+        let started = Instant::now();
+        let (outcome, _) = session_over(&local, &far, None, &AtomicBool::new(false));
+        outcome.expect_err("a machine that never answers fails");
+        assert_eq!(
+            far.steps(),
+            vec![Step::Devices; PROBE_ATTEMPTS as usize],
+            "the same tolerance a destination stating its own bounds gets"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "the tolerance costs the suite nothing: {:?}",
+            started.elapsed()
         );
         Ok(())
     }
