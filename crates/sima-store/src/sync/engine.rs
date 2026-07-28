@@ -74,9 +74,12 @@ impl Store {
     ///
     /// Only records and objects move — checkpoints, placement, journals, and
     /// manifests stay with their orchestrator. A received object is re-hashed
-    /// against its advertised digest ([`Error::Validation`] on mismatch, with
-    /// nothing from that frame committed); a record held on both sides under
-    /// one key with differing bytes is [`Error::Validation`] naming the key.
+    /// against its advertised digest, and a received record is matched against
+    /// the key and digest it was requested under, so bytes altered between the
+    /// advertisement and the delivery fail the session
+    /// ([`Error::Validation`], with nothing from that frame committed); a
+    /// record held on both sides under one key with differing bytes is
+    /// [`Error::Validation`] naming the key.
     /// Writes go through the store's atomic path, so a torn session leaves the
     /// store valid — some records and objects transferred, all intact. Run
     /// twice over identical stores it transfers nothing.
@@ -132,11 +135,13 @@ impl Store {
             }
         }
 
-        // want = theirs − mine, in the peer's advertised order.
-        let want_records: Vec<TaskKey> = peer_records
+        // want = theirs − mine, in the peer's advertised order. The record
+        // wants keep the digest each key was advertised under, which the
+        // fulfillment is then checked against; the wire carries the keys alone.
+        let want_records: Vec<(TaskKey, Hash)> = peer_records
             .iter()
-            .map(|(k, _)| *k)
-            .filter(|k| !my_records.contains_key(k))
+            .copied()
+            .filter(|(k, _)| !my_records.contains_key(k))
             .collect();
         let want_objects: Vec<Hash> = peer_objects
             .iter()
@@ -144,7 +149,7 @@ impl Store {
             .filter(|h| !my_objects.contains(h))
             .collect();
         let my_want = SyncMessage::Want {
-            records: want_records.clone(),
+            records: want_records.iter().map(|(k, _)| *k).collect(),
             objects: want_objects.clone(),
         };
 
@@ -257,14 +262,16 @@ impl Store {
         Ok(())
     }
 
-    /// Takes a fulfillment stream: objects first — each re-hashed and put —
-    /// then records, each committed once its objects are durable. The counts
-    /// are this side's own want, so the stream needs no terminator.
+    /// Takes a fulfillment stream: objects first — each re-hashed against the
+    /// digest its frame carries and put — then records, each matched against the
+    /// key and digest it was requested under before it is committed. Both loops
+    /// walk this side's own want, in the order it was sent, so the stream needs
+    /// no terminator and the records arrive in a known order.
     fn receive_fulfillment(
         &self,
         reader: &mut dyn Read,
         objects: &[Hash],
-        records: &[TaskKey],
+        records: &[(TaskKey, Hash)],
     ) -> Result<()> {
         for _ in objects {
             match recv(reader)? {
@@ -280,10 +287,28 @@ impl Store {
                 other => return Err(unexpected("object", &other)),
             }
         }
-        for _ in records {
+        for (requested, digest) in records {
             match recv(reader)? {
                 SyncMessage::Record { key, bytes } => {
+                    // The want list is this side's, so a key outside it is one
+                    // the peer was never asked for.
+                    if key != *requested {
+                        return Err(Error::Validation(format!(
+                            "sync record for task {key} arrived where task {requested} was requested"
+                        )));
+                    }
+                    // The bytes must be the ones the digest was advertised
+                    // for, which catches a channel that altered them in
+                    // transit — the same guarantee the object loop gives.
+                    let actual = hash_bytes(&bytes);
+                    if actual != *digest {
+                        return Err(Error::Validation(format!(
+                            "sync record for task {key} was advertised as {digest} and arrived with bytes hashing to {actual}"
+                        )));
+                    }
                     let record = TaskRecord::from_bytes(&bytes)?;
+                    // The digest is the peer's own claim, so the decoded record
+                    // is still held to answering for the key it arrived under.
                     if record.identity.key() != key {
                         return Err(Error::Validation(format!(
                             "sync record labelled task {key} answers for task {}",
@@ -363,7 +388,9 @@ fn unexpected(expected: &str, got: &SyncMessage) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testutil::temp_store;
+    use crate::testutil::{
+        record_with_stored_artifact, sample_identity, store_identity_components, temp_store,
+    };
 
     /// Drives `store` as a responder against a hand-built peer whose every
     /// frame is precomputed, so the session runs synchronously against a byte
@@ -454,5 +481,72 @@ mod tests {
                 .has(&hash_bytes(&tampered))
                 .expect("has tampered bytes")
         );
+    }
+
+    #[test]
+    fn a_record_that_misses_its_advertised_digest_is_rejected_and_nothing_is_committed() {
+        // The peer advertises a record under a digest that is not the digest of
+        // the bytes it then serves. The record itself is well formed and
+        // answers for the key it arrives under, so the digest comparison is the
+        // only check that can fire.
+        let (_dir, store) = temp_store();
+        store_identity_components(&store);
+        let record = record_with_stored_artifact(&store, sample_identity(1));
+        let key = record.identity.key();
+        let bytes = record.to_bytes();
+        let advertised = hash_bytes(b"a digest these bytes do not have");
+        assert_ne!(hash_bytes(&bytes), advertised);
+
+        let frames = peer_offering(vec![(key, advertised)], Vec::new())
+            .into_iter()
+            .chain([SyncMessage::Record { key, bytes }, SyncMessage::Done]);
+        match responder_reads(&store, frames) {
+            Err(Error::Validation(msg)) => {
+                assert!(
+                    msg.contains("hashing to") && msg.contains(&key.to_string()),
+                    "{msg}"
+                );
+            }
+            other => panic!("expected a digest-mismatch rejection, got {other:?}"),
+        }
+        assert!(store.record(&key).expect("record lookup").is_none());
+    }
+
+    #[test]
+    fn a_record_for_an_unwanted_key_is_rejected_and_nothing_is_committed() {
+        // The peer advertises one record and serves another. The served record
+        // is well formed and hashes to its own digest; what disqualifies it is
+        // that this side never asked for its key.
+        let (_dir, store) = temp_store();
+        store_identity_components(&store);
+        let wanted = record_with_stored_artifact(&store, sample_identity(1));
+        let served = record_with_stored_artifact(&store, sample_identity(2));
+        let (wanted_key, served_key) = (wanted.identity.key(), served.identity.key());
+        assert_ne!(wanted_key, served_key);
+
+        let frames = peer_offering(
+            vec![(wanted_key, hash_bytes(&wanted.to_bytes()))],
+            Vec::new(),
+        )
+        .into_iter()
+        .chain([
+            SyncMessage::Record {
+                key: served_key,
+                bytes: served.to_bytes(),
+            },
+            SyncMessage::Done,
+        ]);
+        match responder_reads(&store, frames) {
+            Err(Error::Validation(msg)) => {
+                assert!(
+                    msg.contains(&served_key.to_string()) && msg.contains(&wanted_key.to_string()),
+                    "{msg}"
+                );
+            }
+            other => panic!("expected an unwanted-key rejection, got {other:?}"),
+        }
+        for key in [wanted_key, served_key] {
+            assert!(store.record(&key).expect("record lookup").is_none());
+        }
     }
 }
