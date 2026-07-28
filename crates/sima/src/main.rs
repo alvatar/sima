@@ -48,6 +48,7 @@ use sima_pipeline::{
     report_task_records, status, status_records, sync_serve, task_history_records,
     timeline_records,
 };
+use sima_provider::ReconcileScope;
 
 /// Exit code for a definitive candidate failure.
 pub(crate) const EXIT_FAILED: u8 = 2;
@@ -73,7 +74,10 @@ fn main() -> ExitCode {
         }
         ["rm", config] if host.is_none() => rm_command(&resolve_config(config)),
         ["reconcile", config] if host.is_none() => {
-            reconcile::reconcile_command(&resolve_config(config))
+            reconcile::reconcile_command(&resolve_config(config), ReconcileScope::Workers)
+        }
+        ["reconcile", config, "--hosted"] if host.is_none() => {
+            reconcile::reconcile_command(&resolve_config(config), ReconcileScope::Hosted)
         }
         // The far half of the follow transport, invoked over ssh by another
         // machine's read command. It is not a user-facing verb.
@@ -119,6 +123,7 @@ fn main() -> ExitCode {
                  \x20      sima report <config> --machines    report machine reputation and blacklisting\n\
                  \x20      sima rm <config>                   delete the run and what only it references\n\
                  \x20      sima reconcile <config>            destroy the machines a crashed run left running\n\
+                 \x20      sima reconcile <config> --hosted   destroy the machines hosting a migrated run too\n\
                  \x20      sima tui <config> [--fleet]        drive the run in a full-screen terminal UI\n\
                  \x20      sima follow <config>               stream the run's events until it ends\n\
                  \x20      <config> is a sima.toml path; the .toml extension may be omitted\n\

@@ -12,13 +12,13 @@ use std::time::{Duration, Instant};
 
 use sima_core::{Error, Result};
 use sima_model::RunId;
-use sima_store::{InstanceRecord, InstanceRecordState, RunLock, Store};
+use sima_store::{InstanceRecord, InstanceRecordState, Rental, RunLock, Store};
 
 use crate::budget::{Budget, Exhaustion, Verdict, assess, now_ms};
 use crate::guard::{InstanceGuard, teardown};
 use crate::offer::{Constraints, Objective, Offer, select};
 use crate::provider::{Instance, InstanceStatus, Provider, Provision, SshEndpoint};
-use crate::reconcile::reconcile;
+use crate::reconcile::{ReconcileScope, reconcile};
 use crate::reputation::{IncidentKind, excluded_machines, record_incident};
 
 /// Bounds on waiting for a provisioned instance to become ready.
@@ -78,6 +78,7 @@ pub fn acquire<'a, P: Provider + ?Sized>(
     provider: &'a P,
     store: &'a Store,
     lock: &RunLock,
+    role: Rental,
     constraints: &Constraints,
     objective: Objective,
     limits: &AcquireLimits,
@@ -88,7 +89,7 @@ pub fn acquire<'a, P: Provider + ?Sized>(
     // Orphans of an earlier crash are destroyed before a new machine is
     // paid for. This comes before the budget check: destroying orphans
     // stops spending, which matters most when the budget is exhausted.
-    reconcile(provider, store)?;
+    reconcile(provider, store, ReconcileScope::Workers)?;
     // An exhausted budget refuses before the marketplace is even listed.
     admit(store, owner, budget)?;
     // Every offer selection, initial and every supervisor replacement, flows
@@ -129,6 +130,7 @@ pub fn acquire<'a, P: Provider + ?Sized>(
             &offer,
             None,
             created_ms,
+            role,
         ))?;
         // A death here leaves an intent record naming a tag no machine yet
         // carries: reconcile clears it, and nothing leaks.
@@ -160,6 +162,7 @@ pub fn acquire<'a, P: Provider + ?Sized>(
             &offer,
             Some(&instance),
             created_ms,
+            role,
         ))?;
         if let Some(endpoint) = wait_ready(provider, &instance, limits, cancel)? {
             return Ok(InstanceGuard::new(
@@ -261,6 +264,7 @@ fn wait_ready<P: Provider + ?Sized>(
 /// The ledger record for one attempt: the intent record while `instance` is
 /// `None`, the live record once the provider named the machine. Both writes
 /// carry the attempt's single `created_ms` stamp.
+#[allow(clippy::too_many_arguments)]
 fn record(
     tag: &str,
     provider: &str,
@@ -268,6 +272,7 @@ fn record(
     offer: &Offer,
     instance: Option<&Instance>,
     created_ms: u64,
+    role: Rental,
 ) -> InstanceRecord {
     InstanceRecord {
         tag: tag.to_string(),
@@ -275,6 +280,9 @@ fn record(
         // The offer's machine at intent, carried unchanged by the live write.
         machine: offer.machine.clone(),
         owner: owner.to_string(),
+        // Written at intent, so no window exists in which a hosting rental is
+        // recorded as an ordinary one and reconciliation reaps it.
+        role,
         state: match instance {
             Some(instance) => InstanceRecordState::Live {
                 instance: instance.id.0.clone(),
@@ -321,7 +329,8 @@ mod tests {
     use sima_core::{Error, Result};
     use sima_model::RunId;
     use sima_store::{
-        IncidentKind, InstanceRecord, InstanceRecordState, MachineIncident, SpendEntry, Store,
+        IncidentKind, InstanceRecord, InstanceRecordState, MachineIncident, Rental, SpendEntry,
+        Store,
     };
 
     use super::{AcquireLimits, Ordering, acquire, attempt_tag};
@@ -329,7 +338,7 @@ mod tests {
     use crate::guard::InstanceGuard;
     use crate::offer::{Constraints, Objective, Offer, OfferId, Price};
     use crate::provider::{InstanceId, InstanceStatus, Provider, Provision, TaggedInstance};
-    use crate::reconcile::reconcile;
+    use crate::reconcile::{ReconcileScope, reconcile};
     use crate::stub::StubProvider;
     use crate::testutil::{
         acquire_any, instance_record, live_state, never_cancelled, prompt_limits, sample_run,
@@ -522,6 +531,7 @@ mod tests {
             &stub,
             &store,
             &lock,
+            Rental::Worker,
             &Constraints::default(),
             Objective::CheapestPerHour,
             &limits,
@@ -553,6 +563,7 @@ mod tests {
             &stub,
             &store,
             &lock,
+            Rental::Worker,
             &Constraints::default(),
             Objective::CheapestPerHour,
             &limits,
@@ -583,6 +594,7 @@ mod tests {
             &stub,
             &store,
             &lock,
+            Rental::Worker,
             &Constraints::default(),
             Objective::CheapestPerHour,
             &limits,
@@ -619,6 +631,7 @@ mod tests {
             &stub,
             &store,
             &lock,
+            Rental::Worker,
             &Constraints::default(),
             Objective::CheapestPerHour,
             &limits,
@@ -722,6 +735,7 @@ mod tests {
                 stub,
                 &store,
                 &lock,
+                Rental::Worker,
                 &Constraints::default(),
                 Objective::CheapestPerHour,
                 &limits,
@@ -794,6 +808,7 @@ mod tests {
             provider,
             store,
             &lock,
+            Rental::Worker,
             &Constraints::default(),
             Objective::CheapestPerHour,
             &prompt_limits(),
@@ -877,6 +892,7 @@ mod tests {
             &watching,
             &store,
             &lock,
+            Rental::Worker,
             &Constraints::default(),
             Objective::CheapestPerHour,
             // At least one poll sleeps, so the abandoned machine's charged
@@ -933,6 +949,7 @@ mod tests {
             &stub,
             &store,
             &lock,
+            Rental::Worker,
             &Constraints::default(),
             Objective::CheapestPerHour,
             &limits,
@@ -978,6 +995,7 @@ mod tests {
             &stub,
             &store,
             &lock,
+            Rental::Worker,
             &constraints,
             Objective::CheapestPerHour,
             &prompt_limits(),
@@ -1033,7 +1051,7 @@ mod tests {
         // The owner holds no lock, and the provider created nothing under
         // the tag, so the record is all there was to clean up.
         let provider = StubProvider::new(Vec::new());
-        let report = reconcile(&provider, &store)?;
+        let report = reconcile(&provider, &store, ReconcileScope::Workers)?;
         assert!(report.destroyed.is_empty());
         assert_eq!(report.cleared, vec![tag.clone()]);
         assert!(store.instances()?.is_empty());
@@ -1054,7 +1072,7 @@ mod tests {
         // under the attempt's tag, which the intent record leads to.
         let landed = InstanceId("stub-landed".to_string());
         let provider = StubProvider::new(Vec::new()).with_instance(landed.clone(), &tag);
-        let report = reconcile(&provider, &store)?;
+        let report = reconcile(&provider, &store, ReconcileScope::Workers)?;
         assert_eq!(report.destroyed, vec![landed]);
         assert_eq!(report.cleared, vec![tag]);
         assert!(provider.live().is_empty());
@@ -1079,6 +1097,7 @@ mod tests {
             &stub,
             &store,
             &lock,
+            Rental::Worker,
             &Constraints::default(),
             Objective::CheapestPerHour,
             &prompt_limits(),
@@ -1173,6 +1192,7 @@ mod tests {
             &stub,
             &store,
             &lock,
+            Rental::Worker,
             &Constraints::default(),
             Objective::CheapestPerHour,
             &prompt_limits(),
@@ -1204,6 +1224,7 @@ mod tests {
             &provider,
             &store,
             &lock,
+            Rental::Worker,
             &Constraints::default(),
             Objective::CheapestPerHour,
             // A generous window the wait would sit through if it were not

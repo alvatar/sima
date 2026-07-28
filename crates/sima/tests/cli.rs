@@ -9,7 +9,9 @@ use std::time::{Duration, Instant};
 
 use common::{manifest_of, sima_command, worker_processes};
 use sima_pipeline::{Event, RunObserver, load};
-use sima_store::{IncidentKind, InstanceRecord, InstanceRecordState, MachineIncident, Store};
+use sima_store::{
+    IncidentKind, InstanceRecord, InstanceRecordState, MachineIncident, Rental, Store,
+};
 
 /// Writes a `sima.toml` under `dir` whose store lives beside it.
 fn write_config(dir: &Path, behaviors: &str) -> PathBuf {
@@ -1220,6 +1222,7 @@ fn reconcile_over_a_record_naming_an_unknown_provider_fails_naming_it() {
             provider: "nowhere".to_string(),
             machine: "m-0".to_string(),
             owner: loaded.run.id().to_string(),
+            role: Rental::Worker,
             state: InstanceRecordState::Live {
                 instance: "i-1".to_string(),
             },

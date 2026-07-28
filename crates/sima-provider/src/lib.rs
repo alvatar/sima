@@ -43,7 +43,7 @@ pub use offer::{Constraints, Objective, Offer, OfferId, Price, select};
 pub use provider::{
     Instance, InstanceId, InstanceStatus, Provider, Provision, SshEndpoint, TaggedInstance,
 };
-pub use reconcile::{ReconcileReport, reconcile};
+pub use reconcile::{ReconcileReport, ReconcileScope, reconcile};
 pub use reputation::{
     IncidentKind, MachineReport, MachineSummary, machine_report, record_incident,
 };

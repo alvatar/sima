@@ -39,6 +39,8 @@ pub struct InstanceRecord {
     /// The owning run, full 64-character hex. Its orchestrator lock answers
     /// whether the owner is still alive.
     pub owner: String,
+    /// What the rental carries for the run that rented it.
+    pub role: Rental,
     /// How far the attempt got, and the instance once there is one.
     pub state: InstanceRecordState,
     /// The offer's rate at intent, the instance's rate once live.
@@ -69,6 +71,25 @@ impl InstanceRecord {
 /// How far one acquisition attempt got. The instance id lives in the live
 /// variant, so a record names a machine exactly when the attempt reached
 /// one, and the type carries that pairing.
+/// What a rented instance carries for the run that rented it.
+///
+/// Reconciliation decides from it. A run's orchestrator holds its lock while it
+/// drives, so a record whose owner holds no lock is normally an orphan of a
+/// crash and is destroyed. A migration breaks that inference: it detaches the
+/// far side deliberately and the local process may be gone while the rental is
+/// working and paid for, so a hosting rental has exactly the shape
+/// reconciliation reaps.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Rental {
+    /// Workers the local orchestrator drives. Its owner holds the run lock for
+    /// as long as the rental is wanted, so a lock-less record is an orphan.
+    Worker,
+    /// The run's orchestrator itself. Nothing local holds a lock while it runs,
+    /// so reconciliation spares it unless a caller asks for it by name.
+    Orchestrator,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum InstanceRecordState {
@@ -204,7 +225,7 @@ mod tests {
     use sima_core::{Error, Result};
 
     use crate::testutil::{sample_run_config, temp_store};
-    use crate::{InstanceRecord, InstanceRecordState, Store};
+    use crate::{InstanceRecord, InstanceRecordState, Rental, Store};
 
     /// An intent record under `tag`, owned by the run for `root_seed`.
     fn intent(tag: &str, root_seed: u64) -> InstanceRecord {
@@ -213,6 +234,7 @@ mod tests {
             provider: "stub".to_string(),
             machine: "m-0".to_string(),
             owner: sample_run_config(root_seed).id().to_string(),
+            role: Rental::Worker,
             state: InstanceRecordState::Intent,
             price_micro_usd_hour: 82_400,
             created_ms: 1_700_000_000_000,
@@ -256,6 +278,7 @@ mod tests {
         let (dir, store) = temp_store();
         let tag = "sima-0123456789abcdef-42-0";
         let record = InstanceRecord {
+            role: Rental::Worker,
             state: InstanceRecordState::Live {
                 instance: "i-9".to_string(),
             },
@@ -287,6 +310,7 @@ mod tests {
         let tag = "sima-0123456789abcdef-42-0";
         store.put_instance(&intent(tag, 7))?;
         let live = InstanceRecord {
+            role: Rental::Worker,
             state: InstanceRecordState::Live {
                 instance: "i-9".to_string(),
             },

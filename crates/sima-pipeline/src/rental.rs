@@ -23,7 +23,7 @@ use sima_provider::{
 };
 use sima_provider_vast::{VastConfig, VastProvider};
 use sima_scheduler::ExecutionConfig;
-use sima_store::{RunLock, Store};
+use sima_store::{Rental as RentalRole, RunLock, Store};
 use sima_trace::{Emitter, Event};
 use sima_transport::{SpawnMode, SshDestination, SshTransport};
 
@@ -200,6 +200,7 @@ fn acquire_one<'a>(
             provider,
             store,
             lock,
+            RentalRole::Worker,
             &constraints,
             Objective::CheapestPerHour,
             limits,
@@ -653,6 +654,7 @@ impl<'a, 'b> Supervisor<'a, 'b> {
             group.provider,
             self.store,
             self.lock,
+            RentalRole::Worker,
             &constraints,
             Objective::CheapestPerHour,
             &limits,

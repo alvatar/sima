@@ -4,7 +4,7 @@ use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
 use sima_model::{FormatId, GeneratorConfig, GeneratorId, Params, RunConfig, RunId};
-use sima_store::{InstanceRecord, InstanceRecordState, SpendEntry, Store};
+use sima_store::{InstanceRecord, InstanceRecordState, Rental, SpendEntry, Store};
 use tempfile::TempDir;
 
 use sima_core::Result;
@@ -47,7 +47,19 @@ pub(crate) fn instance_record(
     state: InstanceRecordState,
     owner: RunId,
 ) -> InstanceRecord {
+    instance_record_as(tag, state, owner, Rental::Worker)
+}
+
+/// The same record in a stated role, for the tests that turn on what a rental
+/// carries.
+pub(crate) fn instance_record_as(
+    tag: &str,
+    state: InstanceRecordState,
+    owner: RunId,
+    role: Rental,
+) -> InstanceRecord {
     InstanceRecord {
+        role,
         tag: tag.to_string(),
         provider: "stub".to_string(),
         machine: "m-stub".to_string(),
@@ -117,6 +129,7 @@ pub(crate) fn acquire_any<'a, P: Provider>(
         provider,
         store,
         &lock,
+        Rental::Worker,
         &Constraints::default(),
         Objective::CheapestPerHour,
         &prompt_limits(),

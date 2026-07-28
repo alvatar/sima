@@ -217,7 +217,7 @@ mod tests {
 
     use sima_core::Result;
     use sima_model::RunId;
-    use sima_store::{InstanceRecord, InstanceRecordState, SpendEntry, Store};
+    use sima_store::{InstanceRecord, InstanceRecordState, Rental, SpendEntry, Store};
 
     use super::{Budget, Cost, Exhaustion, Verdict, assess, spend_report};
     use crate::offer::Price;
@@ -234,6 +234,7 @@ mod tests {
             provider: "stub".to_string(),
             machine: "m-0".to_string(),
             owner: owner.to_string(),
+            role: Rental::Worker,
             state: live_state("i-1"),
             price_micro_usd_hour: rate,
             created_ms,

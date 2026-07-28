@@ -9,9 +9,9 @@ use sima_model::{FormatId, GeneratorConfig, GeneratorId, Params, RunConfig, RunI
 use sima_provider::stub::StubProvider;
 use sima_provider::{
     AcquireLimits, Budget, Constraints, Cost, InstanceId, Objective, Offer, OfferId, Price,
-    Provider, Verdict, acquire, assess, reconcile, spend_report,
+    Provider, ReconcileScope, Verdict, acquire, assess, reconcile, spend_report,
 };
-use sima_store::{RunLock, Store};
+use sima_store::{Rental, RunLock, Store};
 
 /// An offer at `price` micro-USD per hour, ample enough for constraints
 /// that disqualify nothing.
@@ -86,6 +86,7 @@ fn rent_within<'a, P: Provider>(
         provider,
         store,
         &lock,
+        Rental::Worker,
         &Constraints::default(),
         Objective::CheapestPerHour,
         &limits(),
@@ -137,7 +138,7 @@ fn a_machine_a_dead_process_left_running_is_destroyed_by_reconciliation() -> Res
     // A later invocation, over the same store root.
     let store = Store::open(dir.path())?;
     assert_eq!(store.instances()?.len(), 1, "the orphan's record survived");
-    let report = reconcile(&provider, &store)?;
+    let report = reconcile(&provider, &store, ReconcileScope::Workers)?;
     assert_eq!(report.destroyed, vec![leaked.clone()]);
     assert_eq!(provider.destroyed(), vec![leaked]);
     assert!(provider.live().is_empty());
@@ -195,7 +196,7 @@ fn a_runs_own_leftover_survives_its_next_acquisition_while_it_holds_the_lock() -
     // Once the run's lock is free, the leftover is reaped like any orphan.
     std::mem::forget(guard);
     drop(lock);
-    let report = reconcile(&provider, &store)?;
+    let report = reconcile(&provider, &store, ReconcileScope::Workers)?;
     assert_eq!(report.destroyed.len(), 2);
     assert!(report.destroyed.contains(&leaked));
     assert!(store.instances()?.is_empty());
@@ -252,7 +253,7 @@ fn a_machine_a_dead_process_left_running_is_charged_by_reconciliation() -> Resul
     };
 
     let store = Store::open(dir.path())?;
-    reconcile(&provider, &store)?;
+    reconcile(&provider, &store, ReconcileScope::Workers)?;
     assert!(store.instances()?.is_empty());
     let entries = store.spend_entries(&owner(11).to_string())?;
     assert_eq!(entries.len(), 1);

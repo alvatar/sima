@@ -46,7 +46,7 @@ mod sync;
 #[cfg(test)]
 mod testutil;
 
-pub use instances::{InstanceRecord, InstanceRecordState};
+pub use instances::{InstanceRecord, InstanceRecordState, Rental};
 pub use journal::JournalWriter;
 pub use lock::RunLock;
 pub use machines::{IncidentKind, MachineIncident};
