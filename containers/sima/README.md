@@ -28,6 +28,25 @@ podman build -t localhost/sima:latest -f containers/sima/Containerfile .
 Both binaries are compiled inside the image against bookworm's glibc, so they
 match the runtime stage regardless of the host's glibc.
 
+**Build and publish it from an interactive shell**, not from an agent session.
+An agent runs with `/usr` mounted `nosuid`, which makes the kernel ignore the
+`cap_setuid` file capability on `/usr/sbin/newuidmap`, so rootless podman cannot
+map its subuid range and every build fails at `newuidmap: Could not set caps`.
+Substituting a single-uid namespace with `unshare -Ur` gets past that and then
+fails mounting an overlay over the build context. Neither is a property of the
+machine, so an interactive shell builds normally:
+
+```
+cd <workspace root>
+podman build -t ghcr.io/alvatar/sima:latest -f containers/sima/Containerfile .
+podman login ghcr.io -u <user>          # a token carrying write:packages
+podman push ghcr.io/alvatar/sima:latest
+```
+
+Pushing to `ghcr.io` costs nothing. What a private repository pays for is
+Actions compute, which is why the workflow below is a convenience over this
+path rather than the only way to publish.
+
 ## Device access
 
 The Vulkan loader and the Mesa ICDs (Intel and AMD) are baked into the image.
@@ -83,9 +102,11 @@ push that touches the image or its inputs and on demand with
 present and executable, and `sima-worker --enumerate stub.v1` answering from
 inside it. A published image that fails that check fails the workflow.
 
-Publishing from CI rather than from a workstation is not a preference: the
-registry copy is what every rented machine pulls, so it must come from the
-repository's own source at a known commit.
+CI publishing is preferred where it is available, because the registry copy is
+what every rented machine pulls and CI builds it from the repository's own
+source at a known commit. It is not the only path: an interactive shell pushes
+the same image with the commands under **Build**, and does so without the
+Actions minutes a private repository is billed for.
 
 ## Delivery to a manually provisioned host
 
