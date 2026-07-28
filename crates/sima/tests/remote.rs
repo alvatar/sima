@@ -19,11 +19,11 @@
 //!
 //! ```text
 //! # Tier A, on a machine with podman and the image:
-//! SIMA_TEST_IMAGE=localhost/sima-worker:latest \
+//! SIMA_TEST_IMAGE=localhost/sima:latest \
 //!   cargo test -p sima --test remote -- --ignored
 //!
 //! # Tier B additionally, with an ssh destination:
-//! SIMA_TEST_REMOTE=gpubox SIMA_TEST_IMAGE=localhost/sima-worker:latest \
+//! SIMA_TEST_REMOTE=gpubox SIMA_TEST_IMAGE=localhost/sima:latest \
 //!   cargo test -p sima --test remote -- --ignored
 //! ```
 //!
@@ -31,7 +31,7 @@
 //! local runtime, a provisioned localhost, or a real remote unchanged:
 //!
 //! - `SIMA_TEST_IMAGE` — the worker image; unset skips Tier A, and defaults to
-//!   `localhost/sima-worker:latest` for Tier B.
+//!   `localhost/sima:latest` for Tier B.
 //! - `SIMA_TEST_REMOTE` — the ssh destination; unset skips Tier B.
 //! - `SIMA_TEST_RUNTIME` — `docker` or `podman`; defaults to `podman` locally,
 //!   `docker` across ssh.
@@ -85,7 +85,7 @@ impl ContainerEnv {
     fn remote() -> Option<ContainerEnv> {
         let host = std::env::var("SIMA_TEST_REMOTE").ok()?;
         let image = std::env::var("SIMA_TEST_IMAGE")
-            .unwrap_or_else(|_| "localhost/sima-worker:latest".to_string());
+            .unwrap_or_else(|_| "localhost/sima:latest".to_string());
         Some(ContainerEnv {
             host: Some(host),
             image,
@@ -490,7 +490,7 @@ fn an_unreachable_host_fails_cleanly() {
     // under BatchMode, a clean non-zero exit rather than a prompt or a hang.
     let unreachable = ContainerEnv {
         host: Some("sima-nonexistent.invalid".to_string()),
-        image: "localhost/sima-worker:latest".to_string(),
+        image: "localhost/sima:latest".to_string(),
         runtime: "docker".to_string(),
         run_args: vec!["--gpus".to_string(), "all".to_string()],
     };

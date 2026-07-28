@@ -288,7 +288,7 @@ mod tests {
         let argv = run_argv(
             None,
             "podman",
-            "localhost/sima-worker:latest",
+            "localhost/sima:latest",
             &["--device".to_string(), "/dev/dri".to_string()],
             "sima-w-run-0",
         );
@@ -303,7 +303,7 @@ mod tests {
                 "sima-w-run-0",
                 "--device",
                 "/dev/dri",
-                "localhost/sima-worker:latest",
+                "localhost/sima:latest",
                 "sima-worker",
             ]
         );
