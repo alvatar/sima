@@ -171,7 +171,7 @@
 //! A device `select` names real hardware, so it resolves when a run starts and
 //! never at load — reading a config needs no GPU.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -651,6 +651,8 @@ pub fn load(path: &Path) -> Result<LoadedConfig> {
         }
     }
 
+    reject_repeated_machines(path, &hosts, &host_classes, &fleet)?;
+
     let budget = resolve_budget(path, file.budget)?;
     let execution = resolve_execution(path, &file.config, &orchestrator)?;
     // Relative to the config file's directory, never the working directory;
@@ -668,6 +670,75 @@ pub fn load(path: &Path) -> Result<LoadedConfig> {
         budget,
         store,
     })
+}
+
+/// Rejects a fleet that would engage one machine twice.
+///
+/// Two entries may name one ssh destination — alternative worker profiles for a
+/// box, picked by which one `members` names — but engaging both in one run puts
+/// two pools on one machine: it over-subscribes it, and both pools journal
+/// under the same host label, so the run's per-host attribution stops meaning
+/// anything. A member listed twice is the same fault said differently.
+///
+/// Only machines of yours are checked. A rented entry carries no destination
+/// until it is acquired, and two rentals are two machines by construction.
+fn reject_repeated_machines(
+    path: &Path,
+    hosts: &BTreeMap<String, Host>,
+    host_classes: &BTreeMap<String, HostClass>,
+    fleet: &Fleet,
+) -> Result<()> {
+    // The member that first engaged each ssh destination, so a collision can
+    // name both entries — the two lines the reader has to reconcile.
+    let mut engaged: BTreeMap<&str, &str> = BTreeMap::new();
+    let mut listed: BTreeSet<&str> = BTreeSet::new();
+    for member in &fleet.members {
+        if !listed.insert(member.as_str()) {
+            return Err(Error::Validation(format!(
+                "{}: fleet member {member:?} is listed twice; a run engages a machine once",
+                path.display()
+            )));
+        }
+        for destination in destinations(member, hosts, host_classes) {
+            let Some(first) = engaged.insert(destination, member) else {
+                continue;
+            };
+            return Err(Error::Validation(if first == member {
+                format!(
+                    "{}: host_class {member:?} lists the ssh destination {destination:?} twice; \
+                     a run engages a machine once",
+                    path.display()
+                )
+            } else {
+                format!(
+                    "{}: fleet members {first:?} and {member:?} both engage the ssh destination \
+                     {destination:?}; a run puts one worker pool on a machine — name one of them",
+                    path.display()
+                )
+            }));
+        }
+    }
+    Ok(())
+}
+
+/// The ssh destinations a member is reached at: one for a host of yours, one
+/// per machine for a class of yours, and none for a rented entry, whose
+/// address the provider answers with at acquisition.
+fn destinations<'a>(
+    member: &str,
+    hosts: &'a BTreeMap<String, Host>,
+    host_classes: &'a BTreeMap<String, HostClass>,
+) -> Vec<&'a str> {
+    if let Some(host) = hosts.get(member) {
+        return match &host.form {
+            HostForm::Owned(owned) => vec![owned.ssh.as_str()],
+            HostForm::Rented(_) => Vec::new(),
+        };
+    }
+    match host_classes.get(member).map(|class| &class.form) {
+        Some(HostClassForm::Owned(owned)) => owned.ssh.iter().map(String::as_str).collect(),
+        _ => Vec::new(),
+    }
 }
 
 /// Reads the config file, mapping an I/O failure onto the path that caused it.
@@ -2095,6 +2166,110 @@ mod tests {
         // A machine you have written down, which is the point of naming them.
         let loaded = load_text(&format!("{BASE}\n[host.gpubox]\nworkers = 4\n"))?;
         assert!(loaded.hosts.contains_key("gpubox"));
+        assert!(loaded.fleet.members.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn a_member_listed_twice_is_rejected() {
+        let text = format!(
+            "{BASE}\n[host.gpubox]\nworkers = 4\n[fleet]\nmembers = [\"gpubox\", \"gpubox\"]\n"
+        );
+        let message = rejection(&text);
+        assert!(message.contains("gpubox"), "{message}");
+        assert!(message.contains("twice"), "{message}");
+    }
+
+    #[test]
+    fn two_engaged_entries_on_one_destination_are_rejected_naming_both() {
+        // Two pools on one machine over-subscribe it and journal under one
+        // host label, so the run's per-host attribution stops meaning anything.
+        let text = format!(
+            r#"{BASE}
+            [host.gpubox]
+            workers = 4
+
+            [host_class.spare]
+            ssh = ["gpubox", "sparebox"]
+            workers = 9
+
+            [fleet]
+            members = ["gpubox", "spare"]
+            "#
+        );
+        let message = rejection(&text);
+        assert!(
+            message.contains("gpubox"),
+            "names the destination: {message}"
+        );
+        assert!(
+            message.contains("spare"),
+            "names the other entry: {message}"
+        );
+    }
+
+    #[test]
+    fn a_class_repeating_a_destination_in_its_own_list_is_rejected() {
+        let text = format!(
+            "{BASE}\n[host_class.lab]\nssh = [\"fermi\", \"fermi\"]\nworkers = 1\n\
+             [fleet]\nmembers = [\"lab\"]\n"
+        );
+        let message = rejection(&text);
+        assert!(message.contains("fermi"), "{message}");
+        assert!(message.contains("twice"), "{message}");
+    }
+
+    #[test]
+    fn two_profiles_for_one_machine_load_when_the_fleet_names_one() -> Result<()> {
+        // Two entries may describe one box under different worker layouts and
+        // be picked between by membership; only engaging both at once is a
+        // fault.
+        let text = format!(
+            r#"{BASE}
+            [host.gpubox]
+            workers = 4
+
+            [host.gpubox_full]
+            ssh     = "gpubox"
+            workers = 16
+
+            [fleet]
+            members = ["gpubox_full"]
+            "#
+        );
+        let loaded = load_text(&text)?;
+        assert_eq!(loaded.hosts.len(), 2, "both profiles are declared");
+        assert_eq!(loaded.fleet.members, ["gpubox_full"], "one is engaged");
+        Ok(())
+    }
+
+    #[test]
+    fn two_rented_entries_are_two_machines_however_they_are_named() -> Result<()> {
+        // A rented entry carries no destination until it is acquired, so two
+        // rentals are two machines by construction and neither collides.
+        let loaded = load_text(&format!(
+            r#"{BASE}
+            [host.first]
+            provider = "stub"
+
+            [host.second]
+            provider = "stub"
+
+            [fleet]
+            members = ["first", "second"]
+            "#
+        ))?;
+        assert_eq!(loaded.fleet.members, ["first", "second"]);
+        Ok(())
+    }
+
+    #[test]
+    fn a_declared_collision_the_fleet_does_not_engage_loads() -> Result<()> {
+        // The check is on the engaged set, not the declared one: an unnamed
+        // entry is a machine written down, whatever it points at.
+        let loaded = load_text(&format!(
+            "{BASE}\n[host.gpubox]\nworkers = 4\n[host.alias]\nssh = \"gpubox\"\nworkers = 9\n"
+        ))?;
         assert!(loaded.fleet.members.is_empty());
         Ok(())
     }
