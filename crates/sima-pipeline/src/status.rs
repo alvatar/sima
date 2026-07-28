@@ -35,7 +35,7 @@ pub struct RunStatus {
     /// Degraded checkpoint saves or loads across the whole journal.
     pub checkpoint_degraded: usize,
     /// Committed tasks per device, keyed by the composition label: the device
-    /// name for a local pool, or `device @ host` when a remote pool ran it, so
+    /// name for a local pool, or `device @ host` when another machine ran it, so
     /// one device name on two machines counts separately. The run's
     /// composition: which hardware, on which machine, actually did the work,
     /// joined from each commit and the device its worker was bound to. Empty
@@ -210,7 +210,7 @@ impl RunStatus {
             // Diagnostics are observational text: no counter, no state
             // change.
             Event::Diagnostic { .. } => {}
-            // Fleet lifecycle is operational — rentals coming and going — and
+            // Rental lifecycle is operational — rentals coming and going — and
             // states nothing about task progress or worker occupancy.
             Event::InstanceOnline { .. }
             | Event::InstanceLost { .. }

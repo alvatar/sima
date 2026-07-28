@@ -34,10 +34,15 @@ beyond it as an elastic, heterogeneous extension.
   domain binds a spec format to its executor and generator, and
   cellular-automata evolution (Gray-Scott, asynchronous neural CA) is the
   first domain in-tree.
-- **Scale from one GPU to many machines.** Multi-GPU on one host through
-  device classes; remote workers run in containers over ssh from a
-  `[[execution.remote]]` entry, speaking the same wire protocol — task inputs
-  and results cross inline, and the store never leaves the orchestrator.
+- **Scale from one GPU to many machines.** A run declares the machines it can
+  use by naming them once: `[host.<name>]` is one machine, `[host_class.<name>]`
+  several identical ones scaled by a count, `[fleet]` lists the members a run
+  may draw on, and `[orchestrator]` is the machine you typed the command on.
+  Multi-GPU on one host through device classes; a declared host runs its workers
+  in a container over ssh, speaking the same wire protocol — task inputs and
+  results cross inline, and the store never leaves the orchestrator. `sima run`
+  uses the orchestrator alone and `sima run --fleet` adds every member, so
+  declaring a machine says a run *may* use it and the invocation says it does.
   Worker faults converge through idempotent retry.
 - **Slingshot a run.** Start a search on the laptop, then carry it to rented
   GPU machines: a have/want store-sync protocol transfers exactly the missing

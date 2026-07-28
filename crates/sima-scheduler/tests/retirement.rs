@@ -1,4 +1,4 @@
-//! Worker retirement: a fleet transport that yields no worker winds the run
+//! Worker retirement: an ssh transport that yields no worker winds the run
 //! down by faulting under strict fill, degrading to the survivors under
 //! best-effort, and faulting rather than hanging when the last worker leaves.
 
@@ -16,7 +16,7 @@ use sima_transport::loopback::LoopbackTransport;
 use sima_transport::{SpawnOutcome, WorkerTransport};
 
 /// A transport that spawns no worker: every spawn reports retirement. Models a
-/// fleet instance that is gone, so the scheduler's retirement handling can be
+/// rented machine that is gone, so the scheduler's retirement handling can be
 /// driven without a provider.
 struct RetiringTransport {
     fatal: bool,

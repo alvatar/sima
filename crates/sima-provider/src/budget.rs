@@ -47,7 +47,7 @@ impl Cost {
 
 /// A run's rental budget. Both limits are optional, and an absent one is
 /// unlimited, which is what the default states.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct Budget {
     /// Ceiling on the run's total spend, across every rental it made, live
     /// and past.

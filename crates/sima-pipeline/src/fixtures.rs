@@ -1,15 +1,17 @@
 //! Test fixtures shared by the crate's unit tests: the stub run every
 //! synthetic journal is written under, and the store it lives in.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
 use sima_core::Result;
 use sima_model::{FormatId, GeneratorConfig, GeneratorId, Params, RunConfig};
+use sima_provider::Budget;
 use sima_scheduler::{ExecutionConfig, Record};
 use sima_store::Store;
 
-use crate::config::LoadedConfig;
+use crate::config::{Fleet, LoadedConfig, Orchestrator, Pool};
 
 /// A minimal stub run config; its id addresses the test's run.
 pub(crate) fn stub_config() -> Result<RunConfig> {
@@ -25,16 +27,33 @@ pub(crate) fn stub_config() -> Result<RunConfig> {
     })
 }
 
-/// A loaded config over `store` for the stub run.
+/// A loaded config over `store` for the stub run: one orchestrator worker and
+/// no other machine.
 pub(crate) fn loaded(store: PathBuf) -> Result<LoadedConfig> {
     Ok(LoadedConfig {
         run: stub_config()?,
-        devices: Vec::new(),
-        remotes: Vec::new(),
-        fleet: None,
         execution: ExecutionConfig::new(1, 1, Duration::MAX, Duration::MAX, None)?,
+        orchestrator: Orchestrator {
+            migrate: None,
+            container: None,
+            pool: Some(Pool::Workers(1)),
+        },
+        hosts: BTreeMap::new(),
+        host_classes: BTreeMap::new(),
+        fleet: Fleet::default(),
+        budget: Budget::default(),
         store,
     })
+}
+
+/// Loads `text` as a config file in a fresh temporary directory, for the unit
+/// tests that exercise the loaded shape rather than the file's location. The
+/// directory is removed at once: nothing here opens the store the config names.
+pub(crate) fn load_str(text: &str) -> LoadedConfig {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("sima.toml");
+    std::fs::write(&path, text).expect("write the config file");
+    crate::config::load(&path).expect("the config loads")
 }
 
 /// The config text a served run is written from: a stub run over a store
@@ -48,10 +67,12 @@ const SERVED_CONFIG: &str = r#"
     id = "stub.v1"
     behaviors = ["succeed", "succeed"]
 
-    [execution]
+    [config]
     store = "./store"
-    workers = 2
     max_attempts = 3
+
+    [orchestrator]
+    workers = 2
 "#;
 
 /// Writes a config file under `dir` and returns its path, without touching

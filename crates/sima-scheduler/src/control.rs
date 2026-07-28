@@ -6,7 +6,7 @@ use sima_trace::{Emitter, Observer};
 
 /// A hook invoked once, on the driver thread, with a clone of the run's
 /// emitter as the run starts — immediately after the collector spawns. It
-/// carries the emitter to a caller that emits alongside the run — the fleet
+/// carries the emitter to a caller that emits alongside the run — the rental
 /// supervisor — without a scheduler edge to that caller: the closure is opaque.
 pub type StartHook<'a> = &'a (dyn Fn(Emitter) + Send + Sync);
 

@@ -123,7 +123,7 @@ pub fn run(
         let collector = Collector::spawn(scope, writer, control.observer);
         let events = collector.emitter();
         // Hand the run's emitter to a caller that emits alongside it — the
-        // fleet supervisor — once, as the collector comes up.
+        // rental supervisor — once, as the collector comes up.
         if let Some(hook) = control.on_start {
             hook(events.clone());
         }

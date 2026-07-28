@@ -28,6 +28,7 @@ mod machines;
 mod observe;
 mod orchestrate;
 mod remove;
+mod rental;
 mod report;
 mod spend;
 mod stats;
@@ -35,12 +36,16 @@ mod status;
 mod task_history;
 mod timeline;
 
-pub use config::{LoadedConfig, RemoteConfig, load};
+pub use config::{
+    Container, Fleet, Host, HostClass, HostClassForm, HostForm, LoadedConfig, Orchestrator,
+    OwnedClass, OwnedHost, Pool, ProviderId, Rented, RentedClass, load,
+};
 pub use devices::DeviceSelector;
 pub use feed::{
     FOLLOW_PROTOCOL_VERSION, FeedInfo, FollowFrame, LocalFeed, RemoteFeed, RunFeed, follow_serve,
     local_snapshot, remote_snapshot,
 };
+pub use fleet::Engagement;
 pub use machines::machines;
 pub use observe::RunObserver;
 pub use orchestrate::orchestrate;

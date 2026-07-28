@@ -34,9 +34,10 @@ use sima_pipeline::Event;
 const CANDIDATES: u32 = 12;
 const SEGMENTS: u64 = 3;
 
-/// A Gray-Scott config over `devices` — the rendered `[[execution.device]]`
-/// entries — with `count` candidates, each divided into `segments`.
-fn config_text(store: &str, count: u32, segments: u64, devices: &str) -> String {
+/// A Gray-Scott config over `orchestrator` — this machine's worker layout, a
+/// plain count or the rendered `[[orchestrator.device]]` entries — with `count`
+/// candidates, each divided into `segments`.
+fn config_text(store: &str, count: u32, segments: u64, orchestrator: &str) -> String {
     format!(
         r#"
         [run]
@@ -62,28 +63,28 @@ fn config_text(store: &str, count: u32, segments: u64, devices: &str) -> String 
         side_divisor = 8
         noise_width = 0.02
 
-        [execution]
+        [config]
         store = "{store}"
         max_attempts = 3
-        {devices}
+        {orchestrator}
     "#
     )
 }
 
 /// Both of this machine's classes, two workers each.
 const BOTH_DEVICES: &str = r#"
-        [[execution.device]]
+        [[orchestrator.device]]
         select = "nvidia"
         workers = 2
 
-        [[execution.device]]
+        [[orchestrator.device]]
         select = "intel"
         workers = 2
     "#;
 
 /// The NVIDIA class alone, two workers.
 const NVIDIA_ONLY: &str = r#"
-        [[execution.device]]
+        [[orchestrator.device]]
         select = "nvidia"
         workers = 2
     "#;
@@ -301,7 +302,12 @@ fn a_single_device_run_commits_the_same_manifest_as_a_plain_worker_count() {
     let reference = common::write_config_text(
         dir.path(),
         "reference.toml",
-        &config_text("./reference-store", 4, 2, "workers = 4"),
+        &config_text(
+            "./reference-store",
+            4,
+            2,
+            "[orchestrator]\n        workers = 4",
+        ),
     );
     run_to_completion(&reference);
 
@@ -315,7 +321,7 @@ fn a_single_device_run_commits_the_same_manifest_as_a_plain_worker_count() {
             4,
             2,
             r#"
-        [[execution.device]]
+        [[orchestrator.device]]
         select = "nvidia"
         workers = 4
     "#,

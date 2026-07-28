@@ -4,14 +4,17 @@
 
 mod common;
 
+use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use common::{journal_events, loaded};
 use sima_core::{Error, Result};
 use sima_model::{FormatId, GeneratorConfig, GeneratorId, Params, RunConfig};
 use sima_pipeline::{
-    Event, LoadedConfig, Record, RunControl, RunOutcome, RunState, orchestrate, status,
+    Engagement, Event, Fleet, LoadedConfig, Orchestrator, Pool, Record, RunControl, RunOutcome,
+    RunState, orchestrate, status,
 };
+use sima_provider::Budget;
 use sima_scheduler::ExecutionConfig;
 use sima_store::Store;
 
@@ -21,7 +24,7 @@ fn a_config_orchestrates_to_finalized_and_status_reports_it() -> Result<()> {
     let config = loaded(dir.path(), r#""succeed", "succeed", "flaky:2""#, 2)?;
 
     assert!(matches!(
-        orchestrate(&config, &RunControl::detached())?,
+        orchestrate(&config, &RunControl::detached(), Engagement::Orchestrator)?,
         RunOutcome::Finalized { .. }
     ));
 
@@ -45,13 +48,13 @@ fn re_evaluation_finalizes_again_without_touching_an_executor() -> Result<()> {
     let config = loaded(dir.path(), r#""succeed", "succeed""#, 2)?;
 
     assert!(matches!(
-        orchestrate(&config, &RunControl::detached())?,
+        orchestrate(&config, &RunControl::detached(), Engagement::Orchestrator)?,
         RunOutcome::Finalized { .. }
     ));
     let first = journal_events(&config).len();
 
     assert!(matches!(
-        orchestrate(&config, &RunControl::detached())?,
+        orchestrate(&config, &RunControl::detached(), Engagement::Orchestrator)?,
         RunOutcome::Finalized { .. }
     ));
     let events = journal_events(&config);
@@ -77,7 +80,7 @@ fn a_rejected_candidate_fails_the_run_and_status_carries_the_reason() -> Result<
     let dir = tempfile::tempdir().expect("temp dir");
     let config = loaded(dir.path(), r#""succeed", "reject""#, 1)?;
 
-    let outcome = orchestrate(&config, &RunControl::detached())?;
+    let outcome = orchestrate(&config, &RunControl::detached(), Engagement::Orchestrator)?;
     let reason = match outcome {
         RunOutcome::Failed { reason, .. } => reason,
         other => panic!("expected Failed, got {other:?}"),
@@ -103,7 +106,7 @@ fn a_held_lock_keeps_a_second_orchestrator_out() -> Result<()> {
     let store = Store::open(&config.store)?;
     let _lock = store.acquire_run_lock(&config.run.id())?;
     assert!(matches!(
-        orchestrate(&config, &RunControl::detached()),
+        orchestrate(&config, &RunControl::detached(), Engagement::Orchestrator),
         Err(Error::Validation(_))
     ));
     Ok(())
@@ -129,7 +132,7 @@ fn an_interrupt_through_the_pipeline_stays_resumable() -> Result<()> {
         on_start: None,
     };
     assert!(matches!(
-        orchestrate(&config, &control)?,
+        orchestrate(&config, &control, Engagement::Orchestrator)?,
         RunOutcome::Interrupted { .. }
     ));
 
@@ -141,7 +144,7 @@ fn an_interrupt_through_the_pipeline_stays_resumable() -> Result<()> {
     // The lock released with the interrupted call; the following
     // orchestration completes the abandoned work.
     assert!(matches!(
-        orchestrate(&config, &RunControl::detached())?,
+        orchestrate(&config, &RunControl::detached(), Engagement::Orchestrator)?,
         RunOutcome::Finalized { .. }
     ));
     assert!(store.manifest(&run)?.is_some());
@@ -156,9 +159,15 @@ fn an_undispatchable_config_orchestrates_to_validation_without_touching_the_stor
     // where it is observable.
     let dir = tempfile::tempdir().expect("temp dir");
     let config = LoadedConfig {
-        devices: Vec::new(),
-        remotes: Vec::new(),
-        fleet: None,
+        orchestrator: Orchestrator {
+            migrate: None,
+            container: None,
+            pool: Some(Pool::Workers(1)),
+        },
+        hosts: BTreeMap::new(),
+        host_classes: BTreeMap::new(),
+        fleet: Fleet::default(),
+        budget: Budget::default(),
         run: RunConfig {
             root_seed: 1,
             segments: None,
@@ -179,7 +188,7 @@ fn an_undispatchable_config_orchestrates_to_validation_without_touching_the_stor
         store: dir.path().join("store"),
     };
     assert!(matches!(
-        orchestrate(&config, &RunControl::detached()),
+        orchestrate(&config, &RunControl::detached(), Engagement::Orchestrator),
         Err(Error::Validation(_))
     ));
     // Dispatch precedes every store mutation: no store, no run directory,
@@ -212,6 +221,50 @@ fn status_on_a_missing_store_is_validation_and_creates_nothing() -> Result<()> {
         !config.store.exists(),
         "status created {}",
         config.store.display()
+    );
+    Ok(())
+}
+
+#[test]
+fn a_run_with_nowhere_to_execute_is_a_validation_error_before_the_store() -> Result<()> {
+    // An orchestrator that declares no worker layout has nothing to execute on
+    // by itself. Without the flag the error names it, since engaging the fleet
+    // is what would give the run somewhere to go; with the flag, and a fleet
+    // that names no machine, it names that instead. Either way the failure
+    // precedes Store::open.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config = common::loaded_text(
+        dir.path(),
+        "empty.toml",
+        r#"
+        [run]
+        root_seed = 1
+        format = "stub.v1"
+
+        [run.generator]
+        id = "stub.v1"
+        behaviors = ["succeed"]
+
+        [config]
+        store = "./store"
+        max_attempts = 1
+    "#,
+    )?;
+    for (engagement, expected) in [
+        (Engagement::Orchestrator, "--fleet"),
+        (Engagement::Fleet, "[fleet] names no machine"),
+    ] {
+        match orchestrate(&config, &RunControl::detached(), engagement) {
+            Err(Error::Validation(message)) => assert!(
+                message.contains(expected),
+                "{engagement:?}: the error names {expected:?}: {message}"
+            ),
+            other => panic!("{engagement:?}: expected a validation error, got {other:?}"),
+        }
+    }
+    assert!(
+        !config.store.exists(),
+        "a run with nowhere to execute creates no store"
     );
     Ok(())
 }

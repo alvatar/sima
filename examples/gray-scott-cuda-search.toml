@@ -22,15 +22,10 @@ noise_width = 0.02
 # Commit the final-grid snapshot only when a stat clears a threshold; absent,
 # every candidate's snapshot is committed. The scalar names one the reduction
 # emits — population, activity, or c<i>.{mean,var,min,max}. Requires an
-# unsegmented run. On a fleet of mixed device classes a threshold adjacent to a
-# float scalar's rounding envelope can decide differently per class; a
-# population threshold set away from an exact cell-count boundary is robust.
+# unsegmented run. Across mixed device classes a threshold adjacent to a float
+# scalar's rounding envelope can decide differently per class; a population
+# threshold set away from an exact cell-count boundary is robust.
 # snapshot_when = { scalar = "activity", min = 1e-4 }
-
-[execution]
-store = "./store"
-workers = 2
-max_attempts = 3
 
 # The same Gray-Scott rule as `gray-scott-search.toml`, evaluated through CUDA
 # instead of Vulkan. It is a separate program with its own identity: the two
@@ -38,22 +33,33 @@ max_attempts = 3
 # the other's stored results, and a run of this config schedules only onto
 # NVIDIA devices — the enumeration a worker answers with follows the format id.
 #
-# Rent GPU instances to run beside the local workers. Uncomment to enable; the
-# provider's API key is read from the environment (VAST_API_KEY), never from
-# config, which is content-addressed. "strict" fill fails the run unless the
-# full count is acquired; "best-effort" runs on whatever came up. The budget
-# caps total spend and the rental phase's wall-clock; either arm is optional.
-# [fleet]
+# A migration must keep the backend the same on both ends. Moving a run from a
+# Vulkan config onto a machine that runs it under CUDA changes every task key,
+# so the far side restarts from segment 0 rather than continuing the chain.
+
+[config]
+store = "./store"
+max_attempts = 3
+
+[orchestrator]
+workers = 2
+# The host `sima migrate` moves the run onto. It names a [host.*] entry and
+# never a class: a migration moves the orchestrator onto exactly one machine.
+# migrate = "slingshot"
+
+# The machine a migration rents for the occasion, and the ceiling it runs under.
+# `sima migrate` acquires it; `sima run --fleet` would too if [fleet] named it.
+# [host.slingshot]
 # provider = "vast"
-# count = 2
-# fill = "strict"
-# image = "ghcr.io/alvatar/sima-worker:latest"
-#
-# [fleet.constraints]
-# gpu_models = ["RTX 4090"]
-# min_vram_mb = 16000
-# max_price_usd_hour = 0.5
-#
-# [fleet.budget]
-# max_spend_usd = 5.0
+# disk_gb  = 64
+# root     = "~/sima-runs"
+# binary   = "sima"
+# [host.slingshot.constraints]
+# gpu_models         = ["RTX 4090"]
+# min_vram_mb        = 16000
+# max_price_usd_hour = 0.45
+# verified_only      = true
+
+# [budget]
+# max_spend_usd     = 5.0
 # max_wall_clock_ms = 3600000

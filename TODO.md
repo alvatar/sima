@@ -72,7 +72,8 @@ disposable at any instant.
 Phase sections below are numbered by when they were conceived, not by when they
 run. The remaining order is:
 
-1. **P6** — finish the slingshot (M6.8, the phase acceptance).
+1. **P6** — the machine configuration model (M6.8), then finish the
+   slingshot (M6.9, the phase acceptance).
 2. **P10** — out-of-tree executors.
 3. **P11** — store scale and environment provenance.
 
@@ -424,7 +425,7 @@ difference.
       I/O lifted into `sima-core`: records and referenced CAS objects only
       (checkpoints are mid-segment scratch, placement re-binds, journals
       stay home), caller supplies the task-key set, content addressing is
-      the transfer integrity check; first production consumer is M6.8's
+      the transfer integrity check; first production consumer is M6.9's
       migrate;
       (c) the remote worker: the existing framed stdio protocol runs
       unchanged through `ssh <host> docker run -i` (the store never leaves
@@ -603,13 +604,47 @@ leaked instances are leaked money.
       in `sima-integration`; the reduced M6.5 acceptance (CPU-class remote
       workers) is superseded by a full GPU-fleet acceptance run on this
       toolkit
-- [ ] M6.8 End-to-end slingshot consolidation (phase acceptance): start a
+- [x] M6.8 Machine configuration model: a run declares the machines it can use
+      by naming them once. `[host.<name>]` is one machine — reached over ssh at
+      the entry's own name unless `ssh` overrides it, or rented when it names a
+      `provider`; `[host_class.<name>]` declares several identical machines in
+      one entry, scaled by `count` alone, with addresses derived from the name
+      unseparated and unpadded (`lab1 … lab200`), or by an explicit `ssh` list
+      that is then itself the count; `[fleet]` lists the members a run may draw
+      on, so a fleet is the collective and never names an element;
+      `[orchestrator]` is this machine, one per run by construction, and its
+      `migrate` key names the host a migration moves the run onto. `[execution]`
+      became `[config]`, carrying the global settings alone; the worker layout
+      it used to hold moved onto `[orchestrator]`. Owned and rented is the
+      absence or presence of `provider`, not a separate concept, and each form
+      is one enum variant past the load, so a key belonging to the other form is
+      rejected naming the key and the form. Machines beyond the orchestrator are
+      engaged by `sima run --fleet` (and `sima tui --fleet`), so a config
+      declares what a run may use and the invocation decides what it does;
+      without the flag the fleet is never resolved, so no provider is
+      constructed and no credential is read. Replaced `[[execution.remote]]` and
+      the renting `[fleet]`, which described one subject in three shapes none of
+      which could be referred to by name. `fleet.rs` is now membership
+      resolution alone; renting moved to `rental.rs`, generalised from one
+      fleet-wide policy to any number of rented entries, each under its own
+      provider and shortfall policy and all under the run's single budget, which
+      the supervisor assesses once per heartbeat. The transports are named for
+      how a worker is launched rather than for the section that used to reach
+      them — `ContainerTransport`, `SshTransport`, `SpawnMode`,
+      `SshDestination` — with the marketplace vocabulary in `sima-provider`
+      deliberately left alone. One recorded loss: a machine runs one worker
+      layout, so a bare pool and a container pool on the orchestrator at once,
+      which a hostless `[[execution.remote]]` used to allow, is no longer
+      expressible. No backwards compatibility: examples, tests, and documents
+      moved with it
+- [ ] M6.9 End-to-end slingshot consolidation (phase acceptance): start a
       search locally; interrupt it mid-simulation (inside a segment chain);
-      `sima migrate` to a freshly provisioned instance — sync closure, resume
-      remotely, follow events live; sync results home; teardown verified. The
-      have/want store sync `sima migrate` composes already exists in
+      `sima migrate` to the host `[orchestrator].migrate` names — sync closure,
+      resume remotely, follow events live; sync results home; teardown verified.
+      The have/want store sync `sima migrate` composes already exists in
       `sima-store` (built and tested standalone in M4.3); this milestone wires
-      it into the migrate command.
+      it into the migrate command, and gives it an object scope so a push
+      carries each chain's frontier state rather than every earlier one.
       Assert the final manifest and segment states are identical to an
       uninterrupted local reference run
 

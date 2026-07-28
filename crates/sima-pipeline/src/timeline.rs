@@ -196,7 +196,7 @@ pub fn timeline_records(run: RunId, records: &[Record]) -> RunTimeline {
             | Event::RunFinalized { .. }
             | Event::RunFailed { .. }
             | Event::RunInterrupted { .. }
-            // Fleet lifecycle states nothing about worker timing or rates.
+            // Rental lifecycle states nothing about worker timing or rates.
             | Event::InstanceOnline { .. }
             | Event::InstanceLost { .. }
             | Event::InstanceReplaced { .. }

@@ -396,9 +396,9 @@ fn the_enumerate_probe_needs_the_format_to_answer_for() {
 
 #[test]
 fn the_enumerate_probe_answers_when_the_backend_finds_no_driver() {
-    // A backend whose driver search comes up empty — a CI runner, a fleet
+    // A backend whose driver search comes up empty — a CI runner, a rented
     // instance with a broken driver — reports no devices and no failure: the
-    // probe still exits zero, and the fleet derives one deviceless worker from
+    // probe still exits zero, and the rental derives one deviceless worker from
     // an empty answer. `VK_DRIVER_FILES` naming a nonexistent manifest makes
     // the Vulkan loader's driver search come up empty, the same condition as a
     // machine with no Vulkan driver installed.

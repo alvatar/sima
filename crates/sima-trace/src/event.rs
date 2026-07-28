@@ -153,7 +153,7 @@ pub enum Event {
     /// The caller interrupted the run: in-flight attempts drained and
     /// committed, and no manifest was written, so the store is resumable.
     RunInterrupted { run: String },
-    /// A rented fleet instance came online: reported at supervisor start for
+    /// A rented machine came online: reported at supervisor start for
     /// each instance, and again for each replacement. `tag` is the rental's
     /// ledger key, `instance` the provider's id, `rate_microusd_hour` its
     /// hourly rate in micro-USD.
@@ -165,7 +165,7 @@ pub enum Event {
         rate_microusd_hour: u64,
         host: String,
     },
-    /// A fleet instance was polled `Gone`: the provider no longer holds it.
+    /// A rented machine was polled `Gone`: the provider no longer holds it.
     InstanceLost { tag: String, instance: String },
     /// A lost instance's replacement succeeded: the pool's target moved from
     /// the `from` instance to the `to` instance.
@@ -296,10 +296,10 @@ mod tests {
             },
         ];
         for event in events {
-            let json = serde_json::to_string(&event).expect("serialize a fleet event");
+            let json = serde_json::to_string(&event).expect("serialize a rental event");
             // One JSON line, tagged by the variant.
             assert!(json.contains("\"event\":"), "{json}");
-            let back: Event = serde_json::from_str(&json).expect("parse a fleet event");
+            let back: Event = serde_json::from_str(&json).expect("parse a rental event");
             assert_eq!(back, event);
         }
     }

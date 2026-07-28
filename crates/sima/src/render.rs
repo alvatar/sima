@@ -86,7 +86,7 @@ pub fn describe(event: &Event, committed: usize, tasks: usize) -> Option<String>
                 None => format!("{level} {source}: {message}"),
             }
         }
-        // A fleet instance came online: reported at supervisor start and for
+        // A rented machine came online: reported at supervisor start and for
         // each replacement, naming where the work will run.
         Event::InstanceOnline {
             instance,
@@ -658,7 +658,7 @@ fn percent(n: usize, of: usize) -> String {
 
 /// One worker's cells, in [`WORKER_COLUMNS`] order. Spawn is the provisioning
 /// cost the worker's first binding past the session's start states, which is
-/// the ssh and container startup for a remote pool and near zero for a local
+/// the ssh and container startup for a pool on another machine and near zero for a local
 /// one; utilization is over the worker's own lifespan, so provisioning time
 /// is not charged as idleness. A local worker's host and a deviceless domain's
 /// device render as the same placeholders the attempt table uses.

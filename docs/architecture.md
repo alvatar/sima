@@ -893,10 +893,11 @@ The predicate must live where it cannot break the invariant that **committed
 artifacts are single-valued per task key**: within a store each key maps to one
 record, with cross-class float divergence the recorded exception (a fresh re-run
 on another device class may differ in the last bits). So it rides in the
-identity-bearing params blob, never in `[execution]`, and it is confined to
-**unsegmented runs**: all segments of a chain share one params blob, and a
-chain successor faults on a predecessor whose state a predicate dropped, so a
-params-carried predicate would gate every segment identically and break the
+identity-bearing params blob, never in an operational section, and it is
+confined to **unsegmented runs**: all segments of a chain share one params
+blob, and a chain successor faults on a predecessor whose state a predicate
+dropped, so a params-carried predicate would gate every segment identically and
+break the
 chain. A predicate on a segmented run is a config-load validation error, and
 the scalar name is validated at translation against the names the model's
 reduction emits.
@@ -1204,14 +1205,14 @@ Nothing from the execution context reaches a committed record: the parent
 carries only identity into the `TaskRecord`, and the attempt and worker
 travel solely to the journal.
 
-### Remote workers
+### Workers on another machine
 
-A run's worker pool extends to manually provisioned remote machines over SSH.
-The wire protocol already ships every task input and output inline — the store
-never leaves the orchestrator — so a remote worker is the subprocess transport
-with a longer command line. The subprocess transport takes a command vector, a
-program and its arguments: a local worker runs the bare `sima-worker`, and a
-remote worker runs
+A run's worker pool extends to the machines its config declares, reached over
+ssh. The wire protocol already ships every task input and output inline — the
+store never leaves the orchestrator — so such a worker is the subprocess
+transport with a longer command line. The subprocess transport takes a command
+vector, a program and its arguments: a local worker runs the bare
+`sima-worker`, and a worker on another machine runs
 
 ```
 ssh -o BatchMode=yes <host> -- <runtime> run --rm -i --name <container>
@@ -1221,17 +1222,18 @@ ssh -o BatchMode=yes <host> -- <runtime> run --rm -i --name <container>
 The same framed stdio protocol flows through `ssh → sshd → the container
 runtime → the worker`, unchanged. `BatchMode=yes` turns an unauthenticated
 host into a clean spawn error rather than a hang; the system `ssh` binary
-carries authentication, so there is no ssh library dependency. A
-`[[execution.remote]]` entry with no `host` runs its container on this machine:
-the transport omits the ssh prefix and runs the runtime directly, the same
-mechanism minus the ssh hop.
+carries authentication, so there is no ssh library dependency. An
+`[orchestrator]` that names an `image` runs its container on this machine: the
+transport omits the ssh prefix and runs the runtime directly, the same mechanism
+minus the ssh hop.
 
-- **Worker pools.** A run drives a slice of pools: the local pool first, then
-  one pool per remote in config order. Each pool pairs a transport with the
-  host its workers run on and the device slots to spawn against it; worker ids
-  stay global and sequential across pools. Placement is untouched — a device
-  class is `(vendor_id, device_id)` regardless of machine, so a chain bound to
-  a class runs on whichever pool holds it, exactly as within one pool.
+- **Worker pools.** A run drives a slice of pools: the orchestrator's first,
+  then one per machine the fleet resolved to, in member order. Each pool pairs a
+  transport with the machine its workers run on and the device slots to spawn
+  against it; worker ids stay global and sequential across pools. Placement is
+  untouched — a device class is `(vendor_id, device_id)` regardless of machine,
+  so a chain bound to a class runs on whichever pool holds it, exactly as
+  within one pool.
 
 - **Preemption is two-stage.** Closing the pipe alone would let a mid-compute
   container run until its next write, so `kill` first fires
@@ -1245,16 +1247,16 @@ mechanism minus the ssh hop.
   reports it, and `WorkerBound` records the host and driver alongside the
   device, so a cross-machine divergence within a class is diagnosable from the
   journal alone. `sima status` composes the device line by `(device, host)`,
-  rendering `device @ host` for a remote pool. Driver parity within a class is
-  the operator's responsibility, as it is across a driver upgrade on one
-  machine.
+  rendering `device @ host` for a pool on another machine. Driver parity within
+  a class is the operator's responsibility, as it is across a driver upgrade on
+  one machine.
 
-- **Remote device selection.** `[[execution.remote]]` entries carry the same
-  device tables as a local pool. Resolving them needs the remote's device
-  list, so `sima-worker` doubles as the probe: `sima-worker --enumerate
+- **Device selection on another machine.** A declared host carries the same
+  device tables the orchestrator does. Resolving them needs that machine's
+  device list, so `sima-worker` doubles as the probe: `sima-worker --enumerate
   <format>` prints the devices that format's program can run on as JSON and
-  exits. At run start the orchestrator verifies each remote's image is present,
-  then runs the probe through the remote's container and reuses the local
+  exits. At run start the orchestrator verifies each machine's image is present,
+  then runs the probe through that machine's container and reuses the same
   selector resolution unchanged.
 
   The probe answers for a format rather than for a machine, because each domain
@@ -1272,7 +1274,7 @@ mechanism minus the ssh hop.
   so the binary is built inside. The runtime stage bakes the Vulkan loader and
   the Mesa ICDs; NVIDIA user-space libraries are not baked, since they must
   match the host kernel driver, and the host's nvidia-container-toolkit injects
-  them at container start through CDI. Delivery to a manual remote is
+  them at container start through CDI. Delivery to a declared host is
   `podman save | ssh <host> docker load`.
 
 **Store synchronization** is a separate, standalone piece built here for
@@ -1296,7 +1298,8 @@ narrow:
 ### Device placement
 
 A machine's GPUs are rarely equal, and a run spreads its pool across them.
-The `[[execution.device]]` config entries name the devices and how many
+A machine's device tables — `[[orchestrator.device]]` for this one,
+`[[host.<name>.device]]` for a declared one — name the devices and how many
 workers each carries; the pool is their sum, and one slot per (entry, worker)
 round-robins over the class's cards. A **device class** is the `(vendor id,
 device id)` pair the backend reports — two identical cards are one class with
@@ -1485,7 +1488,7 @@ The layer a person's configuration enters: it loads `sima.toml`, translates
 it through the domain and generator the config names, and drives the
 scheduler over the configured store.
 
-### Identity and execution in the file
+### Identity and operation in the file
 
 The config file carries the same split the model enforces:
 
@@ -1493,22 +1496,93 @@ The config file carries the same split the model enforces:
   its fields define the `RunId`: the root seed, the format, the optional
   segment count (at least 1; absent means a static batch), the generator
   (its id plus the generator-owned keys), and the domain-owned run params.
-- **`[execution]`** — the operational section: the store path (resolved
-  relative to the config file's directory), worker count, attempt cap, an
-  optional attempt timeout whose absence disables the enforced attempt
-  deadline, and an optional checkpoint interval whose absence disables
-  checkpointing.
-  Never hashed — a run resumed with different execution settings keeps its
-  id.
-- **`[[execution.device]]`** — one entry per device the run spreads over:
-  `select` names it (a case-insensitive substring of its name, or its exact
-  `vendor:device` hex pair) and `workers` says how many workers it carries.
-  With entries present the pool is their sum, so the top-level `workers` key
-  must be absent; without them it is required. Absent entries leave the
-  device to the backend's own selection.
+- **`[config]`** — the global operational settings: the store path (resolved
+  relative to the config file's directory), the attempt cap, an optional
+  attempt timeout whose absence disables the enforced attempt deadline, and two
+  optional checkpoint cadences whose absence disables checkpointing.
 
-The structural keys are strict: an unknown key at any level is a validation
-error naming it.
+Every section below `[run]` is operational and never hashed — a run resumed
+with different parallelism, a different store path, or a different set of
+machines keeps its id. The structural keys are strict: an unknown key at any
+level is a validation error naming it.
+
+### Declaring machines
+
+A run declares each machine it can use once, names it, and refers to it by name
+everywhere else.
+
+- **`[host.<name>]`** — one machine.
+- **`[host_class.<name>]`** — several identical machines in one entry.
+- **`[fleet]`** — a `members` list naming the hosts and classes a run may draw
+  on. A collective, so it never declares an element.
+- **`[orchestrator]`** — this machine. A table, not an array, so the "one
+  orchestrator per run" invariant is the config's shape rather than a paragraph
+  asserting it. Besides its own worker layout it names `migrate`, the
+  `[host.*]` entry a migration moves the run onto.
+- **`[budget]`** — the spend and wall-clock ceilings over every rental in the
+  run. Run-global, because a run may draw on several rented entries under one
+  ceiling.
+
+**Addressing.** An entry's name is its ssh destination unless `ssh` says
+otherwise, so a class scales by changing one number and nothing has to be kept
+in step. A class appends the index to the name with no separator and no
+padding — `lab1 … lab6`, `lab1 … lab200` — so there is no width to choose and
+nothing breaks at a power of ten. A class may give an explicit `ssh` list
+instead, for addresses that follow no pattern; whichever of `count` and the list
+is present *is* the count, and naming both is an error.
+
+**The two forms.** An entry is **yours** when it names no `provider` and
+**rented** when it does. How a machine is obtained is a property of it, not a
+different kind of thing, so the distinction does not fork the vocabulary — but
+the key sets are disjoint, and a key belonging to the other form is a validation
+error naming the key and the form.
+
+| Key | Yours | Rented |
+|---|---|---|
+| `ssh` | yes | no |
+| `count` | class only | class only |
+| `image` | yes | yes |
+| `runtime`, `run_args` | yes | no |
+| `workers`, `[[….device]]` | yes | no |
+| `provider` | no | yes |
+| `fill` | no | class only |
+| `disk_gb`, `ready_timeout_ms`, `ready_poll_ms`, `[….constraints]` | no | yes |
+| `root`, `binary` | yes | yes |
+
+A rented machine states no worker layout: it did not exist when the config was
+written, so its devices come from the enumeration probe. `root` and `binary`
+describe where a migrated run's directory goes on a machine and which `sima`
+drives it there; they belong to the machine because any host may become a
+migration target.
+
+`[orchestrator]` is a machine of yours, implicitly this one, so it takes the
+same worker-side keys an owned host does. It takes no `ssh` and no `provider`,
+being where the command was typed, and no `root` or `binary`, the run already
+being here. One asymmetry follows from the defaults: a host's `image` defaults,
+so it always runs its workers in a container and `runtime` and `run_args` are
+always meaningful there; the orchestrator's `image` does not, so naming one is
+what asks for a container here, and without it `runtime` and `run_args` describe
+a container that does not exist and are rejected.
+
+**A machine runs one worker layout.** Either a plain `workers` count or device
+tables, never both and — on a machine of yours — never neither.
+
+### What a run uses
+
+```
+sima run           the orchestrator alone
+sima run --fleet   the orchestrator plus every member of [fleet]
+```
+
+Declaring a machine says a run *may* use it; the invocation says it *does*.
+Renting in particular must be asked for, since a config that declares a rented
+entry would otherwise make every later run spend money. Without the flag the
+fleet is never resolved, so no provider is constructed and no credential is
+read. A config whose orchestrator declares no worker layout has nothing to
+execute on without the flag, which is a validation error naming it rather than a
+run that starts and stalls. A declared host or class that no `members` list
+names is valid and unused — it is a machine you have written down, which is the
+point of naming them.
 
 ### Config routing
 
@@ -1531,54 +1605,62 @@ Resume and re-evaluation are this same call — the frontier re-derives from
 store state, so an interrupted or failed run continues where it stopped,
 and a finalized one re-finalizes idempotently without touching an executor.
 
-### Distributed run
+### Renting
 
-A `[fleet]` section adds a pool of rented instances beside the local and
-manual remote pools. It is operational — it decides where tasks run, never
-what they produce — so it never enters the run id, the same rule the manual
-remote pools follow. Its constraints and budget are the
+A rented entry — a `[host.*]` or `[host_class.*]` naming a `provider` — adds
+machines the run acquires for its own duration, beside the orchestrator's own
+pool and any machine of yours the fleet names. Renting is operational, so it
+never enters the run id, the same rule every other machine follows. The
+constraints and the run's `[budget]` are the
 [`sima-provider`](#sima-provider) control plane's own types, mapped from the
 config's dollar figures to micro-USD.
 
-**Lifecycle.** Orchestration takes the store and lock first, then rents the
-fleet under the held lock: `count` instances, each through
+**Lifecycle.** Orchestration takes the store and lock first, then acquires under
+the held lock: each rented entry's `count` machines, each through
 [`acquire`](#the-acquisition-loop) behind a teardown guard, each probed over
 ssh (`sima-worker --enumerate <format>`) to derive one worker slot per GPU the
 run's program can open — or a single deviceless slot where the probe reports
 none. The `fill` policy
 decides a shortfall: **strict** tears down whatever was acquired and fails
 before any task runs; **best-effort** proceeds on what came up, down to one
-instance. The provider backend is built before the store, so a `vast` fleet
-missing its `VAST_API_KEY` fails before any store mutation. The `stub`
+machine. The provider backend is built before the store, so a `vast` entry
+missing its `VAST_API_KEY` fails before any store mutation — and only when the
+invocation asked for the fleet at all. The `stub`
 provider is an in-process marketplace reached through the transport's local
 mode, so the whole spine exercises with no network.
 
-**The fleet transport is swappable.** Each instance's pool spawns workers
+A run may draw on several rented entries, each with its own control plane, its
+own specification, and its own shortfall policy. The budget is not theirs but
+the run's: one ceiling over every rental, assessed once per heartbeat however
+many entries the run drew on.
+
+**The ssh transport is swappable.** Each rented machine's pool spawns workers
 over `ssh -o StrictHostKeyChecking=accept-new … -- sima-worker` — no
-container wrapper, since ssh already lands inside the instance's container.
-The transport's target is a `Live`/`Replacing`/`Retired` state machine: a
+container wrapper, since ssh already lands inside the machine's own container.
+The transport's destination is a `Live`/`Replacing`/`Retired` state machine: a
 spawn against `Replacing` blocks until the target settles, so the worker
-loop's existing respawn machinery lands on a swapped instance without the
+loop's existing respawn machinery lands on a swapped machine without the
 scheduler, the driver, or the pool's slot list ever changing.
 
 **The supervisor** is one thread beside the scheduler, both in one scope so
-it borrows the store, lock, and guards. Each heartbeat it assesses the
-budget from the ledger and polls each instance's status. **Budget
+it borrows the store, lock, and guards. Each heartbeat it assesses the run's
+budget from the ledger once, then polls every rented machine's status. **Budget
 exhaustion behaves as an interrupt**: it sets the same flag SIGINT sets, so
-the run winds down gracefully, the guards tear the fleet down, and the store
-stays resumable. An instance polled `Gone` is **replaced**: its record is
-closed out, a replacement is acquired under the same constraints raised to
-the slots in use, and the transport's target swaps to it. A replacement
+the run winds down gracefully, the guards tear the rentals down, and the store
+stays resumable. A machine polled `Gone` is **replaced**: its record is
+closed out, a replacement is acquired under its own entry's constraints raised
+to the slots in use, and the transport's destination swaps to it. A replacement
 that cannot be made retires the transport — fatally under strict fill, a
 clean degradation under best-effort. A supervisor panic retires every
-transport, so no worker is left blocked on a target that will never swap.
+transport, so no worker is left blocked on a destination that will never
+swap.
 
 **Journal coverage matches the run window.** The journal is per-run and
 observational, but rental lifecycle extends beyond it: acquisition precedes
 the run's creation, and destruction follows its end. The events cover what
-happens while the run exists — the fleet's composition at start, an instance
-lost, a replacement, budget exhaustion — carried through a start hook that
-hands the supervisor the run's emitter when the collector spawns, so fleet
+happens while the run exists — the composition at start, a machine lost, a
+replacement, budget exhaustion — carried through a start hook that
+hands the supervisor the run's emitter when the collector spawns, so rental
 events cross the same single-writer seam as every other event with no
 scheduler edge to the provider. Acquisition intent and final spend live in
 the durable provider records and the ledger, which `sima report --spend`
@@ -1590,7 +1672,7 @@ influence is operational, and results need no cross-checking apparatus. Three
 behaviors are recorded durably per marketplace machine, keyed by the provider's
 stable machine identifier:
 
-- **Lost** — a live instance the supervisor polled `Gone` mid-run.
+- **Lost** — a live machine the supervisor polled `Gone` mid-run.
 - **NeverReady** — a provisioned machine that never reported a usable endpoint
   within the readiness timeout, including one that went `Gone` while
   provisioning. A cancelled wait is a wind-down of ours, never an incident.
@@ -1602,7 +1684,7 @@ selection. The blacklist is never materialized: the excluded set is derived
 from the incident records at each acquisition, so there is one source of truth.
 The records live beside the instance ledger, keyed by machine and shared by
 every run using the store, so a machine that misbehaved for one run is avoided
-by the next. Both the initial fleet acquisition and every supervisor
+by the next. Both the run-start acquisition and every supervisor
 replacement flow through [`acquire`](#the-acquisition-loop), so one derivation
 point covers both. A machine the provider reports no identifier for normalizes
 to an empty machine, which records no incidents and is never excluded.
@@ -1673,9 +1755,9 @@ command form keeps its shape whether or not a host is named:
     Rates and per-worker figures cover the **latest run session** — a resumed
     run's journal spans downtime that would collapse them — while the commit
     count is run-wide. Utilization is over each worker's **own lifespan**, from
-    its first binding to the session's end, so the cost of provisioning a
-    remote pool reads as spawn latency rather than as idleness. Every duration
-    is elapsed wall-clock as the journal stamped it.
+    its first binding to the session's end, so the cost of provisioning a pool
+    on another machine reads as spawn latency rather than as idleness. Every
+    duration is elapsed wall-clock as the journal stamped it.
   - `--spend` reports the run's rental spend from the local store's ledger:
     each closed rental with its duration, rate, and cost, each rental still
     open with what it has accrued, and the total, all in dollars. The ledger is

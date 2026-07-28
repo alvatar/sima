@@ -15,7 +15,7 @@ use std::path::Path;
 use common::loaded_text;
 use sima_core::{Error, Hash, Result};
 use sima_domains::substrates::cellular::Grid;
-use sima_pipeline::{LoadedConfig, RunControl, RunOutcome, orchestrate};
+use sima_pipeline::{Engagement, LoadedConfig, RunControl, RunOutcome, orchestrate};
 use sima_store::Store;
 
 /// The relative tolerance the two backends' grids are held to: the same
@@ -55,10 +55,12 @@ fn config_text(format: &str, store: &str, count: u32, steps: u32, segments: Opti
         side_divisor = 8
         noise_width = 0.02
 
-        [execution]
+        [config]
         store = "{store}"
-        workers = 2
         max_attempts = 3
+
+        [orchestrator]
+        workers = 2
     "#
     )
 }
@@ -125,7 +127,7 @@ fn a_gray_scott_cuda_config_runs_the_full_spine() -> Result<()> {
         None,
     )?;
     assert!(matches!(
-        orchestrate(&config, &RunControl::detached())?,
+        orchestrate(&config, &RunControl::detached(), Engagement::Orchestrator)?,
         RunOutcome::Finalized { .. }
     ));
     // Four candidates, one manifest entry each, every committed state a
@@ -157,7 +159,11 @@ fn a_segment_boundary_leaves_the_trajectory_byte_identical() -> Result<()> {
         Some(2),
     )?;
     assert!(matches!(
-        orchestrate(&segmented, &RunControl::detached())?,
+        orchestrate(
+            &segmented,
+            &RunControl::detached(),
+            Engagement::Orchestrator
+        )?,
         RunOutcome::Finalized { .. }
     ));
     assert_eq!(manifest_states(&segmented)?.len(), 2);
@@ -172,7 +178,7 @@ fn a_segment_boundary_leaves_the_trajectory_byte_identical() -> Result<()> {
         None,
     )?;
     assert!(matches!(
-        orchestrate(&whole, &RunControl::detached())?,
+        orchestrate(&whole, &RunControl::detached(), Engagement::Orchestrator)?,
         RunOutcome::Finalized { .. }
     ));
     let whole_states = manifest_states(&whole)?;
@@ -218,7 +224,7 @@ fn both_programs_evolve_the_same_rule_to_the_same_grid() -> Result<()> {
     )?;
     for config in [&cuda, &wgsl] {
         assert!(matches!(
-            orchestrate(config, &RunControl::detached())?,
+            orchestrate(config, &RunControl::detached(), Engagement::Orchestrator)?,
             RunOutcome::Finalized { .. }
         ));
     }

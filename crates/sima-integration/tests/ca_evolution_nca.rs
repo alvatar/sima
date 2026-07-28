@@ -13,7 +13,7 @@ use common::loaded_text;
 use sima_core::{Error, Hash, Result};
 use sima_domains::substrates::cellular::Grid;
 use sima_domains::{decode_continuation, encode_continuation};
-use sima_pipeline::{LoadedConfig, RunControl, RunOutcome, orchestrate};
+use sima_pipeline::{Engagement, LoadedConfig, RunControl, RunOutcome, orchestrate};
 use sima_store::Store;
 
 /// The ca_evolution.nca config text: `count` candidates, each a network sampled
@@ -43,10 +43,12 @@ fn config_text(store: &str, count: u32, steps: u32, segments: Option<u64>) -> St
         side_divisor = 8
         noise_width = 0.0
 
-        [execution]
+        [config]
         store = "{store}"
-        workers = 2
         max_attempts = 3
+
+        [orchestrator]
+        workers = 2
     "#
     )
 }
@@ -96,7 +98,7 @@ fn a_ca_evolution_nca_config_runs_the_full_spine() -> Result<()> {
     let dir = tempfile::tempdir().expect("temp dir");
     let config = nca_config(dir.path(), "sima.toml", "./store", 4, 100, None)?;
     assert!(matches!(
-        orchestrate(&config, &RunControl::detached())?,
+        orchestrate(&config, &RunControl::detached(), Engagement::Orchestrator)?,
         RunOutcome::Finalized { .. }
     ));
     // Four candidates, one manifest entry each, every committed state framed at
@@ -124,7 +126,11 @@ fn a_segment_boundary_leaves_the_trajectory_byte_identical() -> Result<()> {
         Some(2),
     )?;
     assert!(matches!(
-        orchestrate(&segmented, &RunControl::detached())?,
+        orchestrate(
+            &segmented,
+            &RunControl::detached(),
+            Engagement::Orchestrator
+        )?,
         RunOutcome::Finalized { .. }
     ));
     let segment_states = manifest_states(&segmented)?;
@@ -136,7 +142,7 @@ fn a_segment_boundary_leaves_the_trajectory_byte_identical() -> Result<()> {
     // The same trajectory as one unsegmented 100-step task, fresh store.
     let whole = nca_config(dir.path(), "whole.toml", "./store-whole", 1, 100, None)?;
     assert!(matches!(
-        orchestrate(&whole, &RunControl::detached())?,
+        orchestrate(&whole, &RunControl::detached(), Engagement::Orchestrator)?,
         RunOutcome::Finalized { .. }
     ));
     let whole_states = manifest_states(&whole)?;

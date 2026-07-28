@@ -13,24 +13,29 @@
 //!   [`WorkerLink`] traits the scheduler is written against.
 //! - [`subprocess`] — the production transport: one process per worker,
 //!   SIGKILL preemption.
-//! - [`remote`] — a worker inside a container runtime, optionally across an
+//! - [`container`] — a worker inside a container runtime, optionally across an
 //!   ssh hop, over the same spawn and handshake machinery.
-//! - [`fleet`] — a worker on a rented instance reached over ssh, whose target
-//!   the orchestrator swaps under the running pool as instances are replaced.
+//! - [`ssh`] — a worker launched as the ssh command itself, with no container
+//!   wrapper, whose destination the orchestrator can swap under the running
+//!   pool as machines are replaced.
 //! - [`loopback`] — the test transport: the real host loop and wire protocol
 //!   over in-memory pipes, for tests that need workers without processes.
+//!
+//! The two remote transports differ by **how a worker is launched**, which is
+//! what their names state: one nests the worker in a container the transport
+//! runs, the other hands the worker to ssh as the command to execute.
 
-pub mod fleet;
+pub mod container;
 pub mod host;
 pub mod link;
 pub mod loopback;
 pub mod protocol;
-pub mod remote;
+pub mod ssh;
 pub mod subprocess;
 
 mod checkpoint_cadence;
 
-pub use fleet::{FleetMode, FleetTransport, SshTarget};
+pub use container::ContainerTransport;
 pub use link::{LinkEvent, SpawnOutcome, WorkerLink, WorkerTransport};
-pub use remote::RemoteTransport;
+pub use ssh::{SpawnMode, SshDestination, SshTransport};
 pub use subprocess::SubprocessTransport;

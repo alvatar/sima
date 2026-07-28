@@ -22,32 +22,103 @@ noise_width = 0.02
 # Commit the final-grid snapshot only when a stat clears a threshold; absent,
 # every candidate's snapshot is committed. The scalar names one the reduction
 # emits — population, activity, or c<i>.{mean,var,min,max}. Requires an
-# unsegmented run. On a fleet of mixed device classes a threshold adjacent to a
-# float scalar's rounding envelope can decide differently per class; a
-# population threshold set away from an exact cell-count boundary is robust.
+# unsegmented run. Across mixed device classes a threshold adjacent to a float
+# scalar's rounding envelope can decide differently per class; a population
+# threshold set away from an exact cell-count boundary is robust.
 # snapshot_when = { scalar = "activity", min = 1e-4 }
 
-[execution]
+[config]
 store = "./store"
-workers = 2
 max_attempts = 3
+# attempt_timeout_ms        = 300000      # absent disables the attempt deadline
+# checkpoint_interval_ms    = 30000       # wall-clock checkpoint cadence
+# checkpoint_interval_steps = 500         # step-count cadence, >= 1
+# Both cadences are unioned: a save is due when either fires, and with both
+# absent no checkpoint is ever written.
 
-# Rent GPU instances to run beside the local workers. Uncomment to enable; the
-# provider's API key is read from the environment (VAST_API_KEY), never from
-# config, which is content-addressed. "strict" fill fails the run unless the
-# full count is acquired; "best-effort" runs on whatever came up. The budget
-# caps total spend and the rental phase's wall-clock; either arm is optional.
-# [fleet]
+# This machine. Its workers run as plain subprocesses unless it names an image,
+# in which case they run in a container here.
+[orchestrator]
+workers = 2
+# migrate  = "slingshot"                  # the host `sima migrate` moves the run onto
+# image    = "localhost/sima:latest"      # run this machine's workers in a container
+# runtime  = "podman"                     # docker | podman; default docker, needs an image
+# run_args = ["--device", "/dev/dri"]     # verbatim container-run flags, needs an image
+# Device tables replace `workers` and are exclusive with it; the pool is their
+# sum, and each `select` is a case-insensitive substring of the device name or
+# its exact vendor:device hex pair.
+# [[orchestrator.device]]
+# select  = "nvidia"
+# workers = 2
+
+# A machine you have, reached over ssh at the entry's own name. Its workers run
+# in a container, so two lines is a whole declaration.
+# [host.gpubox]
+# workers = 4
+# ssh      = "user@10.0.0.5"              # override the address
+# image    = "localhost/sima:latest"      # default as shown
+# runtime  = "podman"                     # docker | podman; default docker
+# run_args = ["--gpus", "all"]            # verbatim container-run flags
+# root     = "~/sima-runs"                # where a migrated run lives here; default as shown
+# binary   = "sima"                       # the sima binary here; default as shown
+# [[host.gpubox.device]]                  # exclusive with `workers`
+# select  = "nvidia"
+# workers = 2
+
+# Several identical machines in one entry. The addresses derive from the name
+# and the count, unseparated and unpadded — lab1 … lab6 — so growing the class
+# is one number.
+# [host_class.lab]
+# count   = 6
+# workers = 8
+
+# Addresses that follow no pattern: the list is the count, so `count` is
+# rejected beside it.
+# [host_class.oldlab]
+# ssh     = ["fermi", "pauli", "dirac"]
+# workers = 4
+
+# One machine rented for the run. Naming a provider makes an entry rented: it
+# then takes no ssh and no worker layout, since it does not exist until the run
+# asks for it and its devices come from the enumeration probe. The provider's
+# API key is read from the environment (VAST_API_KEY), never from config, which
+# is content-addressed.
+# [host.slingshot]
+# provider         = "vast"               # vast | stub (stub: in-process, for tests)
+# image            = "ghcr.io/alvatar/sima-worker:latest"   # default as shown
+# disk_gb          = 64                   # default 32
+# ready_timeout_ms = 600000               # default as shown
+# ready_poll_ms    = 5000                 # default as shown
+# [host.slingshot.constraints]            # every key optional
+# gpu_models         = ["RTX 4090"]
+# min_gpu_count      = 1
+# min_vram_mb        = 16000
+# max_price_usd_hour = 0.45
+# min_reliability    = 0.95
+# verified_only      = true
+# min_disk_gb        = 32
+# min_bandwidth_mbps = 100
+
+# Several machines rented to one specification.
+# [host_class.rtx4090]
 # provider = "vast"
-# count = 2
-# fill = "strict"
-# image = "ghcr.io/alvatar/sima-worker:latest"
-#
-# [fleet.constraints]
-# gpu_models = ["RTX 4090"]
+# count    = 4
+# fill     = "best-effort"                # strict | best-effort; default strict.
+                                          # strict fails the run unless the full
+                                          # count is acquired; best-effort runs
+                                          # on whatever came up.
+# [host_class.rtx4090.constraints]
+# gpu_models  = ["RTX 4090"]
 # min_vram_mb = 16000
-# max_price_usd_hour = 0.5
-#
-# [fleet.budget]
-# max_spend_usd = 5.0
-# max_wall_clock_ms = 3600000
+
+# The machines a run may draw on. `sima run` uses the orchestrator alone;
+# `sima run --fleet` adds every member listed here. Without the flag no provider
+# is constructed and no rental credential is read, so a declared rented class
+# never makes a later run spend money by itself.
+# [fleet]
+# members = ["gpubox", "lab", "rtx4090"]
+
+# The ceilings over every rental in the run; either arm is optional.
+# [budget]
+# max_spend_usd     = 20.0
+# max_wall_clock_ms = 21600000
