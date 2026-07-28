@@ -10,7 +10,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Condvar, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use sima_contracts::DeviceBinding;
 use sima_core::{Error, Result};
@@ -116,19 +116,6 @@ pub(crate) fn transport_mode(provider: &(dyn Provider + Sync)) -> Result<SpawnMo
 pub(crate) fn endpoint_target(endpoint: SshEndpoint) -> SshDestination {
     SshDestination::rented(endpoint.host, endpoint.port, endpoint.user)
 }
-
-/// How many times a first contact with a machine is retried before it is given
-/// up on: sshd can lag the provider's `Ready`, so the first connection to a
-/// fresh host may be refused. Both paths that reach a machine for the first
-/// time take this bound — the enumeration probe an acquisition runs, and the
-/// migration's own first contact with its destination.
-pub(crate) const PROBE_ATTEMPTS: u32 = 6;
-
-/// The longest wait between those attempts, whatever readiness poll the
-/// destination states. A poll is stated for a machine coming up and can be far
-/// longer than the lag this covers, so waiting a full one between connection
-/// attempts would spend the whole bound on a machine that was ready early.
-pub(crate) const PROBE_INTERVAL_CAP: Duration = Duration::from_secs(5);
 
 /// How many machines one instance's acquisition may burn through before it
 /// gives up. Each attempt is a paid rental torn down again, so the bound
@@ -273,7 +260,7 @@ fn acquire_one<'a>(
         let host = target.host().to_string();
         // The probe drives the machine's device enumeration; a failure drops
         // the guard, tearing the machine down.
-        let slots = match probe_slots(mode, &target, spec.ready_poll, format) {
+        let slots = match probe_slots(mode, &target, spec.ready_timeout, spec.ready_poll, format) {
             Ok(slots) => slots,
             Err(error) => {
                 // The machine reported ready but cannot run work: an incident
@@ -320,29 +307,36 @@ fn acquire_one<'a>(
 }
 
 /// Probes a machine for the devices `format`'s program can run on and derives
-/// its worker slots, retrying briefly because sshd can lag the provider's
-/// `Ready`.
+/// its worker slots, retrying under the machine's own readiness bounds.
+///
+/// A provider reports an instance ready when its container is running, which is
+/// before the route to it carries an ssh, so the first probes against a fresh
+/// machine are refused. `ready_timeout` is what the entry describing the
+/// machine says about how long it may take to become usable, so it is what
+/// bounds the wait rather than a count of attempts chosen here; a machine that
+/// answers at once costs nothing. Giving up destroys this rental and takes the
+/// next offer, so the bound is what separates a machine that is slow from one
+/// that is broken.
 fn probe_slots(
     mode: &SpawnMode,
     target: &SshDestination,
+    bound: Duration,
     poll: Duration,
     format: &FormatId,
 ) -> Result<Vec<Option<DeviceBinding>>> {
     let argv = sima_transport::ssh::probe_argv(mode, target, format);
-    let mut last: Option<Error> = None;
-    for attempt in 0..PROBE_ATTEMPTS {
+    let deadline = Instant::now() + bound;
+    loop {
         match command_stdout(&argv).and_then(|stdout| parse_enumeration(&stdout)) {
             Ok(devices) => return Ok(rented_slots(&devices)),
             Err(error) => {
-                last = Some(error);
-                // No sleep after the final attempt.
-                if attempt + 1 < PROBE_ATTEMPTS {
-                    thread::sleep(poll.min(PROBE_INTERVAL_CAP));
+                if Instant::now() >= deadline {
+                    return Err(error);
                 }
             }
         }
+        thread::sleep(poll);
     }
-    Err(last.unwrap_or_else(|| Error::Provider("the machine probe never ran".to_string())))
 }
 
 /// One worker slot per usable device, each bound to it; a probe reporting no

@@ -68,7 +68,7 @@ use crate::migrate::destination::{Destination, destination_for};
 use crate::migrate::far_config::{FarWorkers, far_config};
 use crate::migrate::far_side::{Contact, FarSide, Remote};
 use crate::migrate::objects::push_objects;
-use crate::rental::{PROBE_ATTEMPTS, PROBE_INTERVAL_CAP, budget_exhausted, provider_for};
+use crate::rental::{budget_exhausted, provider_for};
 use crate::status::{RunState, RunStatus};
 use crate::task_keys::task_keys;
 
@@ -435,37 +435,36 @@ impl Session<'_> {
     /// Step 3: the destination answers that it can drive this run, and a rented
     /// one answers with the devices its far-side workers will run on.
     ///
-    /// This is the first contact with the machine, and it is retried: sshd can
-    /// lag the provider's `Ready`, so a freshly rented host refuses the first
-    /// connection, and a machine of yours can be rebooting. It takes the bound
-    /// an acquisition's own probe takes, for the same reason and from the same
-    /// constant. A migration that failed here would have paid for a machine and
-    /// then walked away from it.
+    /// This is the first contact with the machine, and it is retried under the
+    /// destination's own readiness bounds: a provider reports an instance ready
+    /// when its container is running, which is before the route to it carries
+    /// an ssh, so a freshly rented host refuses the first connections, and a
+    /// machine of yours can be rebooting. `ready_timeout` is what the entry
+    /// describing the machine says about how long it may take to become usable,
+    /// so it is what bounds the wait; a machine that answers at once costs
+    /// nothing, since the loop ends on the first connection that lands.
     ///
     /// Only this step retries. Every later operation runs against a machine
     /// that has already answered, so a failure there states something real —
     /// the run's directory could not be written, the far side could not be
     /// started, a sync broke mid-session — and repeating it would hide that.
     fn reach(&self) -> Result<Vec<DeviceInfo>> {
-        let (_, poll) = self.ready_bounds();
-        let mut last = None;
-        for attempt in 0..PROBE_ATTEMPTS {
+        let (bound, poll) = self.ready_bounds();
+        let deadline = Instant::now() + bound;
+        loop {
             // A machine that answered has answered: what it said is the result,
             // whether that is its devices or a reason the run cannot proceed.
             // Only a machine that could not be reached is worth asking again.
             match self.far.devices()? {
                 Contact::Answered(devices) => return Ok(devices),
                 Contact::Unreachable(error) => {
-                    last = Some(error);
-                    // No sleep after the final attempt, so a destination that is
-                    // simply not there fails as promptly as the attempts allow.
-                    if attempt + 1 < PROBE_ATTEMPTS {
-                        sleep(poll.min(PROBE_INTERVAL_CAP));
+                    if Instant::now() >= deadline {
+                        return Err(error);
                     }
                 }
             }
+            sleep(poll);
         }
-        Err(last.expect("every attempt that did not return recorded its error"))
     }
 
     /// Step 9: asks the far run to wind down when this side ended the follow,
@@ -1200,45 +1199,88 @@ mod tests {
     #[test]
     fn a_machine_that_never_answers_fails_the_migration_within_the_bound() -> Result<()> {
         // The tolerance is for a machine coming up, not for one that is not
-        // there: the attempts are bounded and the last refusal is the error.
+        // there: the wait ends at the destination's stated bound and the
+        // refusal itself is the error. How many attempts fit in that bound is
+        // the machine's business, so the count is not what this fixes.
         let local = local(RENTED, PROMPT, Some(3));
         let far = Scripted::new().refusing(usize::MAX);
 
+        let started = Instant::now();
         let (outcome, _) = session_over(&local, &far, None, &AtomicBool::new(false));
         let error = outcome.expect_err("a machine that never answers fails");
         assert!(
             error.to_string().contains("Connection refused"),
             "the refusal itself is reported: {error}"
         );
-        assert_eq!(
-            far.steps(),
-            vec![Step::Devices; PROBE_ATTEMPTS as usize],
-            "the contact is bounded and nothing past it ran"
+        let steps = far.steps();
+        assert!(steps.len() > 1, "it was asked more than once: {steps:?}");
+        assert!(
+            steps.iter().all(|step| *step == Step::Devices),
+            "nothing past the contact ran: {steps:?}"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "it gave up at the stated bound: {:?}",
+            started.elapsed()
         );
         Ok(())
     }
 
     #[test]
-    fn a_machine_of_yours_that_never_answers_is_given_the_same_attempts() -> Result<()> {
+    fn a_machine_of_yours_that_never_answers_is_given_the_same_tolerance() -> Result<()> {
         // A destination of yours states no readiness bounds — the config
-        // rejects rental keys on it — so it falls back on what states none.
-        // The attempts are the subject; the waiting between them is not, and
-        // the suite does not spend it.
+        // rejects rental keys on it — so it falls back on what states none,
+        // and is waited for exactly as a destination that states its own is.
+        // The suite spends none of that wall clock.
         let local = local(OWNED, "", Some(3));
         let far = Scripted::new().refusing(usize::MAX);
 
         let started = Instant::now();
         let (outcome, _) = session_over(&local, &far, None, &AtomicBool::new(false));
         outcome.expect_err("a machine that never answers fails");
-        assert_eq!(
-            far.steps(),
-            vec![Step::Devices; PROBE_ATTEMPTS as usize],
-            "the same tolerance a destination stating its own bounds gets"
+        let steps = far.steps();
+        assert!(steps.len() > 1, "it was asked more than once: {steps:?}");
+        assert!(
+            steps.iter().all(|step| *step == Step::Devices),
+            "nothing past the contact ran: {steps:?}"
         );
         assert!(
             started.elapsed() < Duration::from_secs(1),
             "the tolerance costs the suite nothing: {:?}",
             started.elapsed()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_machine_that_answers_late_within_its_stated_bound_is_still_reached() -> Result<()> {
+        // The live failure in miniature: the machine does answer, later than a
+        // fixed count of attempts allows. Its entry states how long it may take
+        // to become usable, and the contact is bounded by that rather than by a
+        // count — here a bound wide enough for far more attempts than the six a
+        // count would have given.
+        let local = local(
+            RENTED,
+            "ready_timeout_ms = 2000\nready_poll_ms = 1",
+            Some(3),
+        );
+        let run = local.config.run.id();
+        let far = Scripted::new()
+            .refusing(40)
+            .delivering(vec![vec![started(&run), finalized(&run)]]);
+
+        let (outcome, _) = session_over(&local, &far, None, &AtomicBool::new(false));
+        outcome?;
+        let steps = far.steps();
+        assert_eq!(
+            steps.iter().filter(|step| **step == Step::Devices).count(),
+            41,
+            "every refusal inside the bound was tried again: {steps:?}"
+        );
+        assert_eq!(
+            steps.last(),
+            Some(&PULL),
+            "the whole choreography ran past it: {steps:?}"
         );
         Ok(())
     }
