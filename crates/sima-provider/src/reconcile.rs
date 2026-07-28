@@ -215,15 +215,16 @@ fn owner_alive(store: &Store, record: &InstanceRecord) -> Result<bool> {
 #[cfg(test)]
 mod tests {
     use sima_core::{Error, Result};
-    use sima_store::{InstanceRecord, InstanceRecordState, Rental};
+    use sima_store::{InstanceRecord, InstanceRecordState, Rental, Store};
 
     use super::{ReconcileScope, reconcile};
     use crate::guard::teardown;
     use crate::offer::Price;
-    use crate::provider::InstanceId;
+    use crate::provider::{InstanceId, Provider};
     use crate::stub::StubProvider;
     use crate::testutil::{
-        acquire_any, instance_record, live_state, sample_run, spend_entries, stub_offer, temp_store,
+        acquire_any, instance_record, instance_record_as, live_state, sample_run, spend_entries,
+        stub_offer, temp_store,
     };
 
     /// A record for `tag` in `state`, owned by the run for seed 7.
@@ -563,6 +564,77 @@ mod tests {
         let records = store.instances()?;
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].tag, guard.tag());
+        Ok(())
+    }
+
+    /// Provisions the stub's `nth` offer under `tag`, returning its instance
+    /// id. A rented offer never returns to the stub's marketplace, so two
+    /// rentals name two offers.
+    fn provisioned(stub: &StubProvider, nth: usize, tag: &str) -> String {
+        let offer = stub
+            .offers()
+            .expect("offers")
+            .into_iter()
+            .nth(nth)
+            .expect("an offer");
+        match stub.provision(&offer.id, tag).expect("provision") {
+            crate::provider::Provision::Provisioned(instance) => instance.id.0,
+            crate::provider::Provision::OfferGone => panic!("the stub offer is available"),
+        }
+    }
+
+    /// A stub holding one worker rental and one hosting rental, both owned by a
+    /// run holding no lock — the shape a pass reaps — with their records in the
+    /// ledger.
+    fn one_of_each(store: &Store) -> StubProvider {
+        let stub = StubProvider::new(vec![stub_offer("a", 100_000), stub_offer("b", 200_000)]);
+        for (nth, tag, role) in [
+            (0, "sima-worker-0", Rental::Worker),
+            (1, "sima-hosting-0", Rental::Orchestrator),
+        ] {
+            let instance = provisioned(&stub, nth, tag);
+            store
+                .put_instance(&instance_record_as(
+                    tag,
+                    live_state(&instance),
+                    sample_run(7),
+                    role,
+                ))
+                .expect("put the ledger record");
+        }
+        stub
+    }
+
+    #[test]
+    fn a_default_pass_spares_a_hosting_rental_and_reaps_a_worker_one() -> Result<()> {
+        // Both records have the shape a pass reaps, and only one of them is an
+        // orphan. The other is a detached migration, working and paid for.
+        let (_dir, store) = temp_store();
+        let stub = one_of_each(&store);
+
+        let report = reconcile(&stub, &store, ReconcileScope::Workers)?;
+        assert_eq!(report.cleared, vec!["sima-worker-0".to_string()]);
+        let left: Vec<String> = store.instances()?.into_iter().map(|r| r.tag).collect();
+        assert_eq!(
+            left,
+            vec!["sima-hosting-0".to_string()],
+            "the hosting rental keeps its record"
+        );
+        assert_eq!(stub.live().len(), 1, "and keeps its machine");
+        Ok(())
+    }
+
+    #[test]
+    fn the_hosted_scope_reaps_both() -> Result<()> {
+        // What `sima reconcile --hosted` asks for, when the operator knows no
+        // migration is running.
+        let (_dir, store) = temp_store();
+        let stub = one_of_each(&store);
+
+        let report = reconcile(&stub, &store, ReconcileScope::Hosted)?;
+        assert_eq!(report.cleared.len(), 2);
+        assert!(store.instances()?.is_empty());
+        assert!(stub.live().is_empty());
         Ok(())
     }
 }

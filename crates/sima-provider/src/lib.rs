@@ -26,6 +26,7 @@
 //! refuses to rent once they are reached.
 
 mod acquire;
+mod adopt;
 mod budget;
 mod guard;
 mod offer;
@@ -37,6 +38,7 @@ pub mod stub;
 mod testutil;
 
 pub use acquire::{AcquireLimits, acquire};
+pub use adopt::adopt;
 pub use budget::{Budget, Cost, Exhaustion, OpenSpend, SpendReport, Verdict, assess, spend_report};
 pub use guard::InstanceGuard;
 pub use offer::{Constraints, Objective, Offer, OfferId, Price, select};
