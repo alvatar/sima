@@ -33,7 +33,7 @@ use crate::feed::{RemoteFeed, RunFeed};
 use crate::migrate::destination::Destination;
 use crate::migrate::far_config::FarLayout;
 use crate::migrate::sync::{Reach, sync_over};
-use crate::orchestrate::{bootstrap_image, command_stdout};
+use crate::orchestrate::{ImageCheck, bootstrap_image, command_stdout};
 use crate::rental::{endpoint_target, transport_mode};
 
 /// The far side of a migration: the machine the run moves onto, and every
@@ -49,7 +49,11 @@ pub(crate) trait FarSide {
     /// worker image its entry names being present, and reports no device: its
     /// worker layout is declared, not probed. A rented machine answers with its
     /// enumeration probe, which is also where its layout comes from.
-    fn devices(&self) -> Result<Vec<DeviceInfo>>;
+    ///
+    /// A machine that could not be reached at all is [`Contact::Unreachable`]
+    /// rather than an error, so the caller can wait for one that is still
+    /// coming up while reporting at once what waiting cannot fix.
+    fn devices(&self) -> Result<Contact>;
 
     /// Creates the run's directory and writes `config` into it.
     fn place(&self, config: &str) -> Result<()>;
@@ -78,6 +82,16 @@ pub(crate) trait FarSide {
 
     /// Opens a live follow of the far run.
     fn follow(&self) -> Result<Box<dyn RunFeed>>;
+}
+
+/// What a first contact with the destination found.
+pub(crate) enum Contact {
+    /// The machine answered, offering these devices — none for a machine of
+    /// yours, whose worker layout is declared rather than probed.
+    Answered(Vec<DeviceInfo>),
+    /// The machine could not be reached, which a fresh or rebooting one answers
+    /// until it is up. The error is what to report if it never comes up.
+    Unreachable(Error),
 }
 
 /// How a destination answers that it can drive the run, which is the one thing
@@ -185,19 +199,27 @@ impl Remote {
 }
 
 impl FarSide for Remote {
-    fn devices(&self) -> Result<Vec<DeviceInfo>> {
+    fn devices(&self) -> Result<Contact> {
         match &self.readiness {
-            Readiness::Image { host, container } => {
-                bootstrap_image(Some(host), container)?;
-                Ok(Vec::new())
-            }
+            Readiness::Image { host, container } => match bootstrap_image(Some(host), container)? {
+                ImageCheck::Present => Ok(Contact::Answered(Vec::new())),
+                ImageCheck::Unreachable(error) => Ok(Contact::Unreachable(error)),
+            },
             Readiness::Enumerate {
                 mode,
                 target,
                 format,
             } => {
                 let argv = sima_transport::ssh::probe_argv(mode, target, format);
-                parse_enumeration(&command_stdout(&argv)?)
+                // The probe's stdout is what carries its answer, so a failure
+                // here states only that no answer came back — a connection that
+                // was refused and a probe that ran and said nothing usable read
+                // the same. Both are answered as unreachable, which is what
+                // this arm has always done with them.
+                match command_stdout(&argv).and_then(|stdout| parse_enumeration(&stdout)) {
+                    Ok(devices) => Ok(Contact::Answered(devices)),
+                    Err(error) => Ok(Contact::Unreachable(error)),
+                }
             }
         }
     }

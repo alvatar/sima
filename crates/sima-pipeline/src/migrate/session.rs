@@ -66,7 +66,7 @@ use crate::feed::RunFeed;
 use crate::fleet::Rental;
 use crate::migrate::destination::{Destination, destination_for};
 use crate::migrate::far_config::{FarWorkers, far_config};
-use crate::migrate::far_side::{FarSide, Remote};
+use crate::migrate::far_side::{Contact, FarSide, Remote};
 use crate::migrate::objects::push_objects;
 use crate::rental::{PROBE_ATTEMPTS, PROBE_INTERVAL_CAP, budget_exhausted, provider_for};
 use crate::status::{RunState, RunStatus};
@@ -450,9 +450,12 @@ impl Session<'_> {
         let (_, poll) = self.ready_bounds();
         let mut last = None;
         for attempt in 0..PROBE_ATTEMPTS {
-            match self.far.devices() {
-                Ok(devices) => return Ok(devices),
-                Err(error) => {
+            // A machine that answered has answered: what it said is the result,
+            // whether that is its devices or a reason the run cannot proceed.
+            // Only a machine that could not be reached is worth asking again.
+            match self.far.devices()? {
+                Contact::Answered(devices) => return Ok(devices),
+                Contact::Unreachable(error) => {
                     last = Some(error);
                     // No sleep after the final attempt, so a destination that is
                     // simply not there fails as promptly as the attempts allow.
@@ -681,6 +684,9 @@ mod tests {
         /// answers: a freshly rented host's sshd can lag its provider's
         /// `Ready`, and the connection is refused until it is up.
         refusals: Mutex<usize>,
+        /// A machine that answers, without the worker image its pool needs —
+        /// a failure no amount of waiting resolves.
+        image_absent: bool,
         /// How many signals the far run discards before it winds down: a run
         /// that has not yet installed its own handler is not signallable, and
         /// the disposition it inherited discards what it is sent.
@@ -709,6 +715,7 @@ mod tests {
                 alive: Arc::new(Mutex::new(None)),
                 ending: Ending::OnInterrupt,
                 refusals: Mutex::new(0),
+                image_absent: false,
                 deaf: Mutex::new(0),
                 polls: Arc::new(Mutex::new(VecDeque::new())),
                 far: None,
@@ -733,6 +740,12 @@ mod tests {
         /// when it is terminated.
         fn outlasting_the_wind_down(mut self) -> Scripted<'a> {
             self.ending = Ending::OnTermination;
+            self
+        }
+
+        /// A machine that answers but does not hold the worker image.
+        fn without_the_image(mut self) -> Scripted<'a> {
+            self.image_absent = true;
             self
         }
 
@@ -773,16 +786,21 @@ mod tests {
     }
 
     impl FarSide for Scripted<'_> {
-        fn devices(&self) -> Result<Vec<DeviceInfo>> {
+        fn devices(&self) -> Result<Contact> {
             self.record(Step::Devices);
             let mut refusals = self.refusals.lock().expect("the refusal lock");
             if *refusals > 0 {
                 *refusals -= 1;
-                return Err(Error::Validation(
+                return Ok(Contact::Unreachable(Error::Validation(
                     "ssh: connect to host: Connection refused".to_string(),
+                )));
+            }
+            if self.image_absent {
+                return Err(Error::Validation(
+                    "worker image \"sima:latest\" is not present on \"gpubox\"".to_string(),
                 ));
             }
-            Ok(self.devices.clone())
+            Ok(Contact::Answered(self.devices.clone()))
         }
 
         fn place(&self, config: &str) -> Result<()> {
@@ -1226,6 +1244,27 @@ mod tests {
     }
 
     #[test]
+    fn a_contact_that_fails_for_a_reason_waiting_cannot_fix_is_attempted_once() -> Result<()> {
+        // The machine answered; what it said is that it does not hold the
+        // worker image, and it will not come to hold one by being asked again.
+        let local = local(OWNED, "", Some(3));
+        let far = Scripted::new().without_the_image();
+
+        let (outcome, _) = session_over(&local, &far, None, &AtomicBool::new(false));
+        let error = outcome.expect_err("a machine without the image cannot drive the run");
+        assert!(
+            error.to_string().contains("image"),
+            "the reason reaches the caller unchanged: {error}"
+        );
+        assert_eq!(
+            far.steps(),
+            vec![Step::Devices],
+            "the tolerance is for a machine coming up, not for this"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn the_config_the_far_side_is_given_is_the_same_run() -> Result<()> {
         // The whole move rests on it: a far side driving another run would
         // start the chain again from segment zero.
@@ -1551,7 +1590,7 @@ mod tests {
         // The failure path: the machine could not answer that it can drive.
         struct Unreachable;
         impl FarSide for Unreachable {
-            fn devices(&self) -> Result<Vec<DeviceInfo>> {
+            fn devices(&self) -> Result<Contact> {
                 Err(Error::Validation("the machine is unreachable".to_string()))
             }
             fn place(&self, _: &str) -> Result<()> {
@@ -1623,8 +1662,8 @@ mod tests {
         let error = migrate(&path, &observer, &AtomicBool::new(false))
             .expect_err("the machine cannot be reached");
         assert!(
-            error.to_string().contains("image"),
-            "the reach check is what failed: {error}"
+            error.to_string().contains("sima.invalid.test"),
+            "the reach check is what failed, naming what it could not reach: {error}"
         );
         let loaded = crate::config::load(&path)?;
         let store = Store::open(&loaded.store)?;
