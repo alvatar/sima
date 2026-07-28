@@ -45,7 +45,8 @@ use sima_pipeline::{
     Engagement, FeedInfo, LoadedConfig, LocalFeed, Record, RemoteFeed, RemovalReport, ReportRow,
     RunControl, RunFeed, RunId, RunOutcome, RunStatus, RunTimeline, TaskHistory, failures_records,
     follow_serve, load, local_snapshot, orchestrate, remote_snapshot, report_records,
-    report_task_records, status, status_records, task_history_records, timeline_records,
+    report_task_records, status, status_records, sync_serve, task_history_records,
+    timeline_records,
 };
 
 /// Exit code for a definitive candidate failure.
@@ -78,6 +79,9 @@ fn main() -> ExitCode {
         // machine's read command. It is not a user-facing verb.
         ["follow-serve", config] if host.is_none() => serve_command(config, false),
         ["follow-serve", config, "--once"] if host.is_none() => serve_command(config, true),
+        // The far half of a store sync, invoked over ssh by a migration. Not a
+        // user-facing verb either.
+        ["sync-serve", config] if host.is_none() => sync_serve_command(config),
         ["status", config] => status_command(&Target::new(config, host)),
         ["status", config, "--failed"] => status_failed_command(&Target::new(config, host)),
         ["status", config, "--task", key] => status_task_command(&Target::new(config, host), key),
@@ -511,6 +515,24 @@ fn serve_command(config: &str, once: bool) -> ExitCode {
     let mut out = stdout.lock();
     match follow_serve(&resolve_config(config), once, &mut out) {
         Ok(()) => ExitCode::SUCCESS,
+        Err(e) => report(e),
+    }
+}
+
+/// `sima sync-serve <config>`: serves one store-sync session over stdin and
+/// stdout, which carry protocol frames and nothing else — every diagnostic goes
+/// to stderr, which ssh keeps on its own channel. A migration spawns this over
+/// ssh; it is not a user-facing verb and stays out of the usage text.
+///
+/// It takes the run lock for the session, so a `sima run` driving this run on
+/// this machine makes the sync fail cleanly on the lock rather than writing
+/// underneath it.
+fn sync_serve_command(config: &str) -> ExitCode {
+    let stdin = std::io::stdin();
+    let stdout = std::io::stdout();
+    let (mut input, mut output) = (stdin.lock(), stdout.lock());
+    match sync_serve(&resolve_config(config), &mut input, &mut output) {
+        Ok(_) => ExitCode::SUCCESS,
         Err(e) => report(e),
     }
 }

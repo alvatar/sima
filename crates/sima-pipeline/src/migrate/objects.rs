@@ -238,4 +238,179 @@ mod tests {
         assert!(push_objects(&store, &[])?.is_empty());
         Ok(())
     }
+
+    /// A generator-derived chain, run partway, then pushed under the named
+    /// scope into a fresh store — the shape a migration produces.
+    mod over_a_real_chain {
+        use std::io::pipe;
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        use std::thread;
+
+        use sima_contracts::Executor;
+        use sima_domains::{StubBehavior, StubExecutor, StubGenerator, StubGeneratorConfig};
+        use sima_model::{
+            Environment, EnvironmentComponent, EnvironmentValue, GeneratorConfig, GeneratorId,
+            RunConfig,
+        };
+        use sima_scheduler::{
+            Event, ExecutionConfig, Record, RunControl, RunOutcome, WorkerPool, run, run_keys,
+            worker_slots,
+        };
+        use sima_store::{ObjectScope, SyncRole};
+        use sima_transport::loopback::LoopbackTransport;
+
+        use super::*;
+
+        /// The environment the stub domain's tasks depend on.
+        fn stub_environment() -> Environment {
+            Environment::new(vec![
+                EnvironmentComponent::new(
+                    "executor",
+                    EnvironmentValue::Version("stub.v1".to_string()),
+                )
+                .expect("component"),
+            ])
+            .expect("environment")
+        }
+
+        /// A run of one candidate over twenty accumulating segments.
+        fn chained_run() -> RunConfig {
+            RunConfig {
+                root_seed: 5,
+                segments: std::num::NonZeroU64::new(20),
+                format: FormatId::new("stub.v1").expect("format id"),
+                generator: GeneratorConfig {
+                    id: GeneratorId::new("stub.v1").expect("generator id"),
+                    params: StubGeneratorConfig {
+                        behaviors: vec![StubBehavior::Accumulate(2)],
+                    }
+                    .to_bytes(),
+                },
+                params: Params { bytes: vec![1] },
+            }
+        }
+
+        /// Runs `config` into `store` over in-memory workers, stopping shortly
+        /// after it starts committing so the chain is left partway.
+        fn run_partway(store: &Store, config: &RunConfig) {
+            let exec = ExecutionConfig::new(
+                1,
+                1,
+                std::time::Duration::MAX,
+                std::time::Duration::MAX,
+                None,
+            )
+            .expect("execution config");
+            let transport = LoopbackTransport::new(
+                config.format.clone(),
+                exec.checkpoint_interval,
+                exec.checkpoint_interval_steps,
+                std::sync::Arc::new(|_, _| {
+                    let executor: Box<dyn Executor> = Box::new(StubExecutor::new()?);
+                    Ok((executor, String::new(), String::new()))
+                }),
+            );
+            let pools = [WorkerPool {
+                transport: &transport,
+                host: String::new(),
+                slots: worker_slots(&exec),
+            }];
+            let interrupt = AtomicBool::new(false);
+            let committed = AtomicUsize::new(0);
+            let control = RunControl {
+                observer: &|record: &Record| {
+                    if matches!(record.event, Event::Committed { .. })
+                        && committed.fetch_add(1, Ordering::Relaxed) + 1 >= 3
+                    {
+                        interrupt.store(true, Ordering::Relaxed);
+                    }
+                },
+                interrupt: &interrupt,
+                on_start: None,
+            };
+            let outcome = run(
+                store,
+                config,
+                &stub_environment(),
+                &StubGenerator::new().expect("stub generator"),
+                &pools,
+                &exec,
+                &control,
+            )
+            .expect("the run drives");
+            assert!(matches!(outcome, RunOutcome::Interrupted { .. }));
+        }
+
+        /// Pushes `keys` from `from` into `to` under the named scope, over a
+        /// duplex pipe.
+        fn push(from: &Store, to: &Store, keys: &[TaskKey], named: &[Hash]) {
+            let (from_read, to_write) = pipe().expect("pipe");
+            let (to_read, from_write) = pipe().expect("pipe");
+            thread::scope(|threads| {
+                let responder = threads.spawn(|| {
+                    let (mut r, mut w) = (to_read, to_write);
+                    to.sync(
+                        keys,
+                        ObjectScope::Referenced,
+                        &mut r,
+                        &mut w,
+                        SyncRole::Responder,
+                    )
+                });
+                let (mut r, mut w) = (from_read, from_write);
+                from.sync(
+                    keys,
+                    ObjectScope::Named(named),
+                    &mut r,
+                    &mut w,
+                    SyncRole::Initiator,
+                )
+                .expect("the push succeeds");
+                responder
+                    .join()
+                    .expect("thread")
+                    .expect("the far half succeeds");
+            });
+        }
+
+        #[test]
+        fn a_store_that_took_a_named_push_derives_the_same_frontier() -> Result<()> {
+            // The claim the whole partial transfer rests on. The far side holds
+            // every record and only the frontier's state bytes, and derives
+            // exactly the frontier the complete store derives — a chain is
+            // located from its records, and the state bytes are what the
+            // frontier segment *runs on*, not what finds it.
+            let here = tempfile::tempdir().expect("temp dir");
+            let there = tempfile::tempdir().expect("temp dir");
+            let local = Store::open(here.path())?;
+            let far = Store::open(there.path())?;
+            let config = chained_run();
+            run_partway(&local, &config);
+
+            let generator = StubGenerator::new()?;
+            let keys = run_keys(&local, &config, &stub_environment(), &generator)?;
+            let named = push_objects(&local, &keys)?;
+            assert!(keys.len() > 2, "the chain got past its first segment");
+
+            push(&local, &far, &keys, &named);
+
+            // Every record travelled.
+            for key in &keys[..keys.len() - 1] {
+                assert!(far.record(key)?.is_some(), "record {key} must travel");
+            }
+            // The frontier the far side derives is the one this side derives.
+            assert_eq!(
+                run_keys(&far, &config, &stub_environment(), &generator)?,
+                keys,
+                "the gapped store derives the frontier the complete one does"
+            );
+            // And it is genuinely gapped: an earlier segment's state never came.
+            let earlier = *local.record(&keys[0])?.expect("committed").artifacts()[0].object();
+            assert!(
+                !far.has(&earlier)?,
+                "an earlier segment's state is bytes nobody opens"
+            );
+            Ok(())
+        }
+    }
 }

@@ -11,7 +11,11 @@
 //!   arrives.
 //! - [`objects`] — which objects a push carries, of those its records
 //!   reference.
+//! - [`sync`] — the two halves of a store sync, joined by a spawned process.
 
 pub(crate) mod destination;
 pub(crate) mod far_config;
 pub(crate) mod objects;
+pub(crate) mod sync;
+
+pub use sync::sync_serve;
