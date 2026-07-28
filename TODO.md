@@ -635,7 +635,7 @@ leaked instances are leaked money.
       which a hostless `[[execution.remote]]` used to allow, is no longer
       expressible. No backwards compatibility: examples, tests, and documents
       moved with it
-- [x] M6.9 End-to-end slingshot consolidation (phase acceptance): `sima migrate`
+- [ ] M6.9 End-to-end slingshot consolidation (phase acceptance): `sima migrate`
       moves a run's orchestrator onto the machine `[orchestrator].migrate` names
       — push the closure, resume there, follow live, pull the results, tear the
       rental down — with the manifest byte-identical to a run that was never
@@ -660,7 +660,18 @@ leaked instances are leaked money.
       the operator's `known_hosts`, where it accumulates and where a later
       rental at a recycled address is then refused. The acceptance runs in the
       ordinary gate twice over — once reached in process, once over a real ssh
-      hop against a throwaway server the test stands up and tears down
+      hop against a throwaway server the test stands up and tears down. Three
+      tiers of the phase acceptance have not executed: migration onto a machine
+      of yours end to end, whose far side runs a container pool built from that
+      host's declaration and whose containers this environment does not execute,
+      so the pieces are covered at unit level and the composition has never run;
+      the container image, whose `Containerfile` and publishing workflow are
+      written and stay unverified until the workflow's own check of the pushed
+      copy runs; and the live acceptance on rented hardware, prepared under
+      `work/` and not run. P6 promises one command that sends an experiment to rented
+      hardware and brings results home with teardown guaranteed, so its phase
+      acceptance is that live proof, and this entry stays unchecked until the
+      three run
 
 Expected to be re-split when reached; provider APIs and trust mechanisms hide
 surprises.
