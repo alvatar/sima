@@ -1295,12 +1295,11 @@ minus the ssh hop.
 **Store synchronization** is a separate, standalone piece built here for
 `sima migrate` to compose: a have/want protocol over any byte pipe, living in
 `sima-store` over `sima-core`'s framing. Each side advertises what it holds,
-computes `want = theirs − mine`, and streams the difference; received objects
-are re-hashed against their advertised digest and received records against the
-key and digest they were requested under (content addressing is the integrity
-check), and a record held on both sides under one key must be byte-identical or
-the sync fails naming the key. Its scope is deliberately
-narrow:
+computes `want = theirs − mine`, and streams the difference; every received
+object and record is matched against the item requested at that position and
+the digest it was advertised under (content addressing is the integrity check),
+and a record held on both sides under one key must be byte-identical or the
+sync fails naming the key. Its scope is deliberately narrow:
 
 | Data              | Synced? | Why                                              |
 |-------------------|---------|--------------------------------------------------|
@@ -1683,18 +1682,19 @@ operator's file, which is where its declaration says it is reached from.
 
 What that exposes is bounded by what a sync verifies on receipt:
 
-- **Objects** are re-hashed against the digest they were advertised under, so
-  artifact bytes cannot be altered in flight without failing the session.
-- **Records** are held against the key and the digest they were requested
-  under, and are checked to answer for the key they arrive labelled with, so
-  one cannot be filed under another task.
+- **Every arrival**, object and record alike, must be the item requested at
+  that position and must hash to the digest it was advertised under, so a peer
+  cannot substitute what it was asked for and bytes cannot be altered in flight
+  without failing the session.
+- **Records** are additionally checked to answer for the key they arrive
+  labelled with, so one cannot be filed under another task.
 
 The reach of those checks follows from who supplies each side of the
 comparison. A digest is the peer's own advertisement, so comparing bytes
 against it catches a channel that altered them in transit and leaves the peer
 free to advertise whatever it likes; a peer that lies can still hand over a
-self-consistent record naming objects of its own. The wanted key comes from
-this side's want, so a peer is held to answering what it was asked for.
+self-consistent record naming objects of its own. The want comes from this
+side, so a peer is held to answering what it was asked for.
 
 So the confidentiality of specs, params, and results is exposed, and so is the
 authenticity of a result on a channel with an active attacker in it. Against a

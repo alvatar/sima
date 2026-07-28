@@ -73,13 +73,13 @@ impl Store {
     /// peer, which runs `sync` with the opposite [`SyncRole`].
     ///
     /// Only records and objects move — checkpoints, placement, journals, and
-    /// manifests stay with their orchestrator. A received object is re-hashed
-    /// against its advertised digest, and a received record is matched against
-    /// the key and digest it was requested under, so bytes altered between the
-    /// advertisement and the delivery fail the session
-    /// ([`Error::Validation`], with nothing from that frame committed); a
-    /// record held on both sides under one key with differing bytes is
-    /// [`Error::Validation`] naming the key.
+    /// manifests stay with their orchestrator. Every arriving object and record
+    /// is matched against the want it answers, both the item requested at that
+    /// position and the digest it was advertised under, so an item this side
+    /// never asked for and bytes altered after their advertisement each fail
+    /// the session ([`Error::Validation`], with nothing from that frame
+    /// committed); a record held on both sides under one key with differing
+    /// bytes is [`Error::Validation`] naming the key.
     /// Writes go through the store's atomic path, so a torn session leaves the
     /// store valid — some records and objects transferred, all intact. Run
     /// twice over identical stores it transfers nothing.
@@ -262,20 +262,32 @@ impl Store {
         Ok(())
     }
 
-    /// Takes a fulfillment stream: objects first — each re-hashed against the
-    /// digest its frame carries and put — then records, each matched against the
-    /// key and digest it was requested under before it is committed. Both loops
-    /// walk this side's own want, in the order it was sent, so the stream needs
-    /// no terminator and the records arrive in a known order.
+    /// Takes a fulfillment stream: objects first, then records, each committed
+    /// once its objects are durable. Both loops walk this side's own want in
+    /// the order it was sent, so the stream needs no terminator, and both hold
+    /// every arrival to that want twice over: it must be the item requested at
+    /// its position, and its bytes must hash to the digest it was advertised
+    /// under. The want is this side's, so the first check binds what the peer
+    /// may deliver; the digest is the peer's own advertisement, so the second
+    /// catches bytes altered between the advertisement and the delivery.
     fn receive_fulfillment(
         &self,
         reader: &mut dyn Read,
         objects: &[Hash],
         records: &[(TaskKey, Hash)],
     ) -> Result<()> {
-        for _ in objects {
+        for requested in objects {
             match recv(reader)? {
                 SyncMessage::Object { hash, bytes } => {
+                    // An unrequested object would consume the arrival the
+                    // wanted one was to occupy, so the session would end with
+                    // the store short of bytes it asked for and no error to say
+                    // so — records replicate without their artifacts present.
+                    if hash != *requested {
+                        return Err(Error::Validation(format!(
+                            "sync object {hash} arrived where object {requested} was requested"
+                        )));
+                    }
                     let actual = hash_bytes(&bytes);
                     if actual != hash {
                         return Err(Error::Validation(format!(
@@ -290,16 +302,11 @@ impl Store {
         for (requested, digest) in records {
             match recv(reader)? {
                 SyncMessage::Record { key, bytes } => {
-                    // The want list is this side's, so a key outside it is one
-                    // the peer was never asked for.
                     if key != *requested {
                         return Err(Error::Validation(format!(
                             "sync record for task {key} arrived where task {requested} was requested"
                         )));
                     }
-                    // The bytes must be the ones the digest was advertised
-                    // for, which catches a channel that altered them in
-                    // transit — the same guarantee the object loop gives.
                     let actual = hash_bytes(&bytes);
                     if actual != *digest {
                         return Err(Error::Validation(format!(
@@ -481,6 +488,41 @@ mod tests {
                 .has(&hash_bytes(&tampered))
                 .expect("has tampered bytes")
         );
+    }
+
+    #[test]
+    fn an_object_that_was_not_requested_is_rejected_and_nothing_is_committed() {
+        // The peer advertises one object and serves another. The served object
+        // hashes to the digest its own frame carries; what disqualifies it is
+        // that this side never asked for it, and accepting it would consume the
+        // arrival the wanted object was to occupy.
+        let (_dir, store) = temp_store();
+        let requested = hash_bytes(b"the object this side wants");
+        let served = b"an object nobody asked for".to_vec();
+        let served_hash = hash_bytes(&served);
+        assert_ne!(served_hash, requested);
+
+        let frames = peer_offering(Vec::new(), vec![requested])
+            .into_iter()
+            .chain([
+                SyncMessage::Object {
+                    hash: served_hash,
+                    bytes: served,
+                },
+                SyncMessage::Done,
+            ]);
+        match responder_reads(&store, frames) {
+            Err(Error::Validation(msg)) => {
+                assert!(
+                    msg.contains(&served_hash.to_string()) && msg.contains(&requested.to_string()),
+                    "{msg}"
+                );
+            }
+            other => panic!("expected an unrequested-object rejection, got {other:?}"),
+        }
+        for hash in [requested, served_hash] {
+            assert!(!store.has(&hash).expect("object lookup"));
+        }
     }
 
     #[test]
