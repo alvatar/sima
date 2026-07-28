@@ -809,17 +809,10 @@ fn resolve_orchestrator(path: &Path, section: Option<OrchestratorSection>) -> Re
 
 /// Validates one `[host.*]` entry and resolves it into a [`Host`], its form
 /// decided by the presence of `provider`.
-fn resolve_host(path: &Path, name: &str, section: MachineSection) -> Result<Host> {
+fn resolve_host(path: &Path, name: &str, mut section: MachineSection) -> Result<Host> {
     let subject = subject(Entry::Host, name);
     reject_cross_form(path, &subject, Entry::Host, &section)?;
-    let root = section
-        .root
-        .clone()
-        .unwrap_or_else(|| DEFAULT_ROOT.to_string());
-    let binary = section
-        .binary
-        .clone()
-        .unwrap_or_else(|| DEFAULT_BINARY.to_string());
+    let (root, binary) = migration_paths(&mut section);
     let form = match &section.provider {
         Some(_) => HostForm::Rented(resolve_rented(path, &subject, section)?),
         None => {
@@ -858,17 +851,10 @@ fn resolve_host(path: &Path, name: &str, section: MachineSection) -> Result<Host
 /// Validates one `[host_class.*]` entry and resolves it into a [`HostClass`],
 /// its form decided by the presence of `provider` and its size by `count` or the
 /// length of its `ssh` list.
-fn resolve_host_class(path: &Path, name: &str, section: MachineSection) -> Result<HostClass> {
+fn resolve_host_class(path: &Path, name: &str, mut section: MachineSection) -> Result<HostClass> {
     let subject = subject(Entry::Class, name);
     reject_cross_form(path, &subject, Entry::Class, &section)?;
-    let root = section
-        .root
-        .clone()
-        .unwrap_or_else(|| DEFAULT_ROOT.to_string());
-    let binary = section
-        .binary
-        .clone()
-        .unwrap_or_else(|| DEFAULT_BINARY.to_string());
+    let (root, binary) = migration_paths(&mut section);
     let form = match &section.provider {
         Some(_) => {
             let count = class_count(path, &subject, section.count)?.ok_or_else(|| {
@@ -946,6 +932,22 @@ fn resolve_host_class(path: &Path, name: &str, section: MachineSection) -> Resul
         }
     };
     Ok(HostClass { form, root, binary })
+}
+
+/// Where a migrated run's directory goes on a machine and which `sima` drives it
+/// there, defaulted. Both are host keys on either form, since any host may
+/// become a migration destination, so both are read before the form is decided.
+fn migration_paths(section: &mut MachineSection) -> (String, String) {
+    (
+        section
+            .root
+            .take()
+            .unwrap_or_else(|| DEFAULT_ROOT.to_string()),
+        section
+            .binary
+            .take()
+            .unwrap_or_else(|| DEFAULT_BINARY.to_string()),
+    )
 }
 
 /// How a machine entry is named in an error: the section it is written under and
