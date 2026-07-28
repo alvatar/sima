@@ -604,24 +604,39 @@ leaked instances are leaked money.
       in `sima-integration`; the reduced M6.5 acceptance (CPU-class remote
       workers) is superseded by a full GPU-fleet acceptance run on this
       toolkit
-- [ ] M6.8 Machine configuration model: a run declares the machines it can use
+- [x] M6.8 Machine configuration model: a run declares the machines it can use
       by naming them once. `[host.<name>]` is one machine — reached over ssh at
       the entry's own name unless `ssh` overrides it, or rented when it names a
       `provider`; `[host_class.<name>]` declares several identical machines in
-      one entry, scaled by `count` alone, with addresses derived from the name;
-      `[fleet]` lists the members a run may draw on, so a fleet is the
-      collective and never names an element; `[orchestrator]` is this machine,
-      one per run by construction, and its `migrate` key names the host a
-      migration moves the run onto. Owned and rented is the absence or presence
-      of `provider`, not a separate concept. Machines beyond the orchestrator
-      are engaged by `sima run --fleet`, so a config declares what a run may use
-      and the invocation decides what it does; without the flag no provider is
-      constructed and no credential is read. Replaces `[[execution.remote]]` and
+      one entry, scaled by `count` alone, with addresses derived from the name
+      unseparated and unpadded (`lab1 … lab200`), or by an explicit `ssh` list
+      that is then itself the count; `[fleet]` lists the members a run may draw
+      on, so a fleet is the collective and never names an element;
+      `[orchestrator]` is this machine, one per run by construction, and its
+      `migrate` key names the host a migration moves the run onto. `[execution]`
+      became `[config]`, carrying the global settings alone; the worker layout
+      it used to hold moved onto `[orchestrator]`. Owned and rented is the
+      absence or presence of `provider`, not a separate concept, and each form
+      is one enum variant past the load, so a key belonging to the other form is
+      rejected naming the key and the form. Machines beyond the orchestrator are
+      engaged by `sima run --fleet` (and `sima tui --fleet`), so a config
+      declares what a run may use and the invocation decides what it does;
+      without the flag the fleet is never resolved, so no provider is
+      constructed and no credential is read. Replaced `[[execution.remote]]` and
       the renting `[fleet]`, which described one subject in three shapes none of
-      which could be referred to by name. The Rust vocabulary is brought into
-      line with the TOML in the same change, with the marketplace vocabulary in
-      `sima-provider` deliberately left alone. No backwards compatibility:
-      examples, tests, and documents move with it
+      which could be referred to by name. `fleet.rs` is now membership
+      resolution alone; renting moved to `rental.rs`, generalised from one
+      fleet-wide policy to any number of rented entries, each under its own
+      provider and shortfall policy and all under the run's single budget, which
+      the supervisor assesses once per heartbeat. The transports are named for
+      how a worker is launched rather than for the section that used to reach
+      them — `ContainerTransport`, `SshTransport`, `SpawnMode`,
+      `SshDestination` — with the marketplace vocabulary in `sima-provider`
+      deliberately left alone. One recorded loss: a machine runs one worker
+      layout, so a bare pool and a container pool on the orchestrator at once,
+      which a hostless `[[execution.remote]]` used to allow, is no longer
+      expressible. No backwards compatibility: examples, tests, and documents
+      moved with it
 - [ ] M6.9 End-to-end slingshot consolidation (phase acceptance): start a
       search locally; interrupt it mid-simulation (inside a segment chain);
       `sima migrate` to the host `[orchestrator].migrate` names — sync closure,

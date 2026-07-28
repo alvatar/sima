@@ -18,7 +18,7 @@ use sima_store::Store;
 
 /// A segmented `accumulate` config: `chains` candidates, `k` steps per
 /// segment. `segments` renders the optional `[run]` key, `checkpoint` the
-/// optional `[execution]` key.
+/// optional `[config]` key.
 fn accumulate_config(
     dir: &Path,
     name: &str,
