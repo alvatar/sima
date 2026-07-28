@@ -72,10 +72,8 @@ disposable at any instant.
 Phase sections below are numbered by when they were conceived, not by when they
 run. The remaining order is:
 
-1. **P6** — the machine configuration model (M6.8), then finish the
-   slingshot (M6.9, the phase acceptance).
-2. **P10** — out-of-tree executors.
-3. **P11** — store scale and environment provenance.
+1. **P10** — out-of-tree executors.
+2. **P11** — store scale and environment provenance.
 
 Then the ladder pauses.
 
@@ -637,16 +635,32 @@ leaked instances are leaked money.
       which a hostless `[[execution.remote]]` used to allow, is no longer
       expressible. No backwards compatibility: examples, tests, and documents
       moved with it
-- [ ] M6.9 End-to-end slingshot consolidation (phase acceptance): start a
-      search locally; interrupt it mid-simulation (inside a segment chain);
-      `sima migrate` to the host `[orchestrator].migrate` names — sync closure,
-      resume remotely, follow events live; sync results home; teardown verified.
-      The have/want store sync `sima migrate` composes already exists in
-      `sima-store` (built and tested standalone in M4.3); this milestone wires
-      it into the migrate command, and gives it an object scope so a push
-      carries each chain's frontier state rather than every earlier one.
-      Assert the final manifest and segment states are identical to an
-      uninterrupted local reference run
+- [x] M6.9 End-to-end slingshot consolidation (phase acceptance): `sima migrate`
+      moves a run's orchestrator onto the machine `[orchestrator].migrate` names
+      — push the closure, resume there, follow live, pull the results, tear the
+      rental down — with the manifest byte-identical to a run that was never
+      interrupted. The have/want store sync it composes existed already (M4.3,
+      standalone); it gains an object scope, so a push carries every record plus
+      each chain's frontier state rather than every earlier one, and the two
+      halves are joined by a new `sima sync-serve` over the same hop. The far
+      run is detached with `setsid` and its pid recorded, so a dropped
+      connection leaves the destination computing: re-running reattaches, by the
+      instance ledger for a rented machine and by `run.pid` for a machine of
+      yours. The ledger gained the role a rental was taken for, so
+      reconciliation spares a machine hosting a migrated run unless
+      `sima reconcile --hosted` asks for it, and `adopt` rebuilds a guard over
+      one without rewriting the record its charged window is anchored in.
+      Journals do not sync, so each record the follow delivers is forwarded into
+      the local journal through the collector every other event crosses. A
+      backend now says how its machines are reached (`Reachability`) rather than
+      the pipeline inferring it from the provider id. Two defects the acceptance
+      exposed: a run's journal and its lock become observable at different
+      moments, so a follow attaching the instant it started the far run was told
+      the run was never started, and a rental's host key was being written into
+      the operator's `known_hosts`, where it accumulates and where a later
+      rental at a recycled address is then refused. The acceptance runs in the
+      ordinary gate twice over — once reached in process, once over a real ssh
+      hop against a throwaway server the test stands up and tears down
 
 Expected to be re-split when reached; provider APIs and trust mechanisms hide
 surprises.

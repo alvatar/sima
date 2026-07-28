@@ -633,7 +633,15 @@ when it reports exhaustion.
 
 `StubProvider` is an in-memory marketplace with scriptable behavior — a lost
 offer, a machine that stays provisioning, a failing API — and is public so
-that the layers above can test their acquisition paths against it.
+that the layers above can test their acquisition paths against it. Its
+instances report a fabricated endpoint naming no machine, and its
+`Reachability` says so, which is what makes the spine exercisable with no
+network. Pointed at a real endpoint it reports that one instead and is reached
+over ssh like any other rental, which is how the ssh path is exercised against a
+server a test stood up. The pointing is the `SIMA_STUB_SSH` environment
+variable, read where the backend is constructed and nowhere else: a key valid
+only under one provider would be an exception carved into a configuration schema
+that has none.
 
 ### Image delivery
 
@@ -1289,11 +1297,24 @@ narrow:
 | Data              | Synced? | Why                                              |
 |-------------------|---------|--------------------------------------------------|
 | task records      | yes     | the run's durable results and closure            |
-| CAS objects       | yes     | the artifact bytes records reference             |
+| CAS objects       | by scope | the caller chooses; see below                   |
 | checkpoint slots  | no      | mid-segment scratch; segments are the resume point |
 | placement slots   | no      | advisory; re-binds greedily on the other side    |
 | journal           | no      | observational; stays with its orchestrator       |
 | manifest          | no      | finalize re-derives it from records              |
+
+**The object scope is the caller's.** A side advertises either every object its
+records reference or a named set of them, and records travel in full either way
+— a chain is traversable forward only, so without the prefix records the other
+side cannot locate the frontier at all. A named set is how a sender skips bytes
+nobody will open: [migration](#migration) pushes the identity components plus
+each chain's frontier state, since those are the only states the far side reads.
+
+A store that took a named set therefore holds records whose artifacts it does
+not have. Two things such a store cannot do: answer `run_closure`, which
+enumerates everything a run references, and serve those objects to a third
+machine. It can still derive the frontier and run it, which is what it was sent
+for.
 
 ### Device placement
 
@@ -1518,7 +1539,8 @@ everywhere else.
 - **`[orchestrator]`** — this machine. A table, not an array, so the "one
   orchestrator per run" invariant is the config's shape rather than a paragraph
   asserting it. Besides its own worker layout it names `migrate`, the
-  `[host.*]` entry a migration moves the run onto.
+  `[host.*]` entry a migration moves the run onto — never a class, and the named
+  entry's own form decides whether anything is rented.
 - **`[budget]`** — the spend and wall-clock ceilings over every rental in the
   run. Run-global, because a run may draw on several rented entries under one
   ceiling.
@@ -1618,16 +1640,52 @@ config's dollar figures to micro-USD.
 **Lifecycle.** Orchestration takes the store and lock first, then acquires under
 the held lock: each rented entry's `count` machines, each through
 [`acquire`](#the-acquisition-loop) behind a teardown guard, each probed over
-ssh (`sima-worker --enumerate <format>`) to derive one worker slot per GPU the
-run's program can open — or a single deviceless slot where the probe reports
-none. The `fill` policy
+ssh (`sima-worker --enumerate <format>`) to derive one worker slot per usable
+device — or a single deviceless slot where the probe reports none. **Usable**
+drops CPU devices when the probe reports any non-CPU one: a machine rented for
+its card would otherwise spend the rental running the slowest device on it,
+while a machine offering nothing else still gets the one device its program can
+open. One function answers this, shared with the far-side layout a
+[migration](#migration) synthesizes, since both derive a worker layout from one
+enumeration and must agree on what the machine offers. The `fill` policy
 decides a shortfall: **strict** tears down whatever was acquired and fails
 before any task runs; **best-effort** proceeds on what came up, down to one
 machine. The provider backend is built before the store, so a `vast` entry
 missing its `VAST_API_KEY` fails before any store mutation — and only when the
 invocation asked for the fleet at all. The `stub`
-provider is an in-process marketplace reached through the transport's local
-mode, so the whole spine exercises with no network.
+provider is an in-process marketplace, reached by spawning workers on this
+machine, so the whole spine exercises with no network.
+
+**A backend says how its machines are reached.** `Reachability` is `Ssh` or
+`Local`, defaulted to `Ssh` on the provider contract because a control plane
+hands back a machine somewhere else; the stub answers `Local` unless it was
+pointed at a real endpoint, in which case its machines are reached exactly as a
+rented one's are. The pipeline maps that answer onto a spawn mode, so the worker
+binary a local spawn needs stays this layer's and never enters the provider
+crate.
+
+**What the ssh channel to a rental protects, and what it does not.** A rented
+machine's host key cannot be known before the machine exists, so the connection
+accepts whatever key answers and remembers none — the key would otherwise
+accumulate in the operator's `known_hosts` forever, and a later rental at an
+address the marketplace recycled would present a key of its own and be refused,
+failing the run. The channel is therefore not protected against an active
+man-in-the-middle. A machine of yours is unaffected: its key belongs in the
+operator's file, which is where its declaration says it is reached from.
+
+What that exposes is bounded by what a sync verifies on receipt, and the two
+halves differ:
+
+- **Objects** are re-hashed against the digest they were advertised under, so
+  artifact bytes cannot be altered in flight without failing the session.
+- **Records** are checked to answer for the key they arrive labelled with, so
+  one cannot be filed under another task. Their bytes are not compared against
+  the digest the peer advertised, so a peer that lies can hand over a
+  self-consistent record naming objects of its own.
+
+So the confidentiality of specs, params, and results is exposed, and so is the
+authenticity of a result on a channel with an active attacker in it. Against a
+passive one, or on the local network a machine of yours sits on, neither is.
 
 A run may draw on several rented entries, each with its own control plane, its
 own specification, and its own shortfall policy. The budget is not theirs but
@@ -1689,6 +1747,194 @@ replacement flow through [`acquire`](#the-acquisition-loop), so one derivation
 point covers both. A machine the provider reports no identifier for normalizes
 to an empty machine, which records no incidents and is never excluded.
 
+### Migration
+
+Everything below this composes to distribute **workers**: the store and the
+orchestrator stay on the operator's machine, and task inputs and results cross
+the wire inline. `sima migrate` moves the **orchestrator**. The run's durable
+state travels to another machine, a `sima run` process drives it there, and the
+results come back.
+
+```
+   fleet — workers elsewhere              migrate — the run elsewhere
+
+ ┌────────────────────────┐              ┌────────────────────────┐
+ │ operator's machine     │              │ operator's machine     │
+ │  ┌──────────────────┐  │              │  ┌──────────────────┐  │
+ │  │ STORE            │  │              │  │ STORE            │  │
+ │  │ orchestrator ────┼──┼── inputs ──▶ │  │ (holds the lock, │  │
+ │  │                  │◀─┼── results    │  │  follows, idle)  │  │
+ │  └──────────────────┘  │              │  └──────────────────┘  │
+ └────────────────────────┘              └───────┬───────▲────────┘
+              ▲                                  │       │
+              │                        ① push closure    │ ④ pull results
+   ┌──────────┴───────────┐                      ▼       │
+   │ rented machine       │              ┌───────┴───────┴────────┐
+   │   sima-worker only   │              │ destination machine    │
+   │   no store           │              │  ┌──────────────────┐  │
+   └──────────────────────┘              │  │ STORE (its own)  │  │
+                                         │  │ orchestrator ──▶ │  │
+                                         │  │ sima-worker × N  │  │
+                                         │  └──────────────────┘  │
+                                         └────────────────────────┘
+                                            ② run  ③ follow live
+```
+
+**Why the far side continues this run rather than starting another.** Two
+identity facts, and the whole capability rests on them:
+
+- **The run id survives the move.** `[run]` is the only hashed section, so a far
+  side holding a different store path, a different worker layout, and no
+  machines at all is still the same run.
+- **The environment hash survives the move.** A domain's environment components
+  name the executor version and its program digests — no device, no driver, no
+  hostname — so two machines running the same backend mint identical
+  `EnvironmentId`, identical `TaskKey`s, and the far side's frontier is the
+  continuation of the local one.
+
+The consequence to hold on to: a migration must keep the backend the same on
+both ends. Starting on WGSL and moving to CUDA changes every task key, and the
+far side restarts from segment 0. That is a configuration error and nothing
+detects it.
+
+**The destination is a declared host**, named by `[orchestrator].migrate`. A
+migration adds no section and no key of its own, and the host's own form decides
+what happens: a machine of yours is used as it stands, so nothing is rented and
+nothing torn down; a rented one is acquired for the run and destroyed on every
+exit path. `[fleet]` is not consulted — a migration moves the orchestrator onto
+one machine, and the members a run may draw on are a different question.
+
+|  | a machine of yours | a rented machine |
+|---|---|---|
+| Destination | the host's `ssh` destination, or its own name | the endpoint of the machine it rents |
+| Far-side workers | that host's own `workers` or device tables | one device entry per class the probe reports |
+| `sima` must be | at the host's `binary` path | inside the image |
+| `sima-worker` must be | inside the host's `image` | inside the image |
+| Teardown | nothing to tear down | destroyed on every exit path |
+
+**The far-side directory** is derived from the run id, so a second invocation
+finds it without remembering anything and two runs on one machine never collide:
+
+```
+<host.root>/<64-hex run id>/
+    sima.toml       the synthesized config
+    store/          the far side's store
+    run.log         the far-side `sima run` output
+    run.pid         the far-side `sima run` process id
+```
+
+It is left in place. On a rented machine it dies with the instance; on a machine
+of yours it is scratch a later migration of the same run reuses, so removing it
+would only force the transfer again.
+
+**The far-side config** is the local one with everything about here removed.
+`[run]` travels verbatim as a parsed value, so the run id is preserved by
+construction. `[config]` travels with its store path rewritten to `./store`,
+which the load resolves against the config file's own directory. The local
+`[orchestrator]` is dropped whole — its worker layout names this machine's
+hardware, and its `migrate` key names a destination the far side must not carry
+onward, since a run that has arrived does not migrate again. Every `[host.*]`,
+`[host_class.*]`, `[fleet]`, and `[budget]` is dropped: they name machines
+reachable from here, which says nothing about what the destination can reach.
+
+The far side's own `[orchestrator]` is rebuilt from the destination's form:
+
+- **A machine of yours** contributes its `image`, `runtime`, `run_args`, and its
+  `workers` or device tables, which makes them a container pool on the machine
+  the config now sits on. Nothing is probed — the operator wrote the layout
+  down.
+- **A rented machine** contributes what its enumeration probe reported, grouped
+  into classes by `(vendor_id, device_id)`, as an `[orchestrator]` naming no
+  image: ssh lands inside the instance's own container, so there is nothing to
+  nest inside. A probe reporting no device at all yields one worker bound to
+  nothing. Which devices count is the rule a rented machine's own worker slots
+  follow — see [Renting](#renting) — so the two derivations from one enumeration
+  agree.
+
+**A migrated run declares no machine beyond itself**, so its `sima run` is
+invoked without `--fleet` and it rents nothing, whatever the local config
+declared. The reason is the credential: renting needs the provider key, and the
+key never leaves this machine. An operator should expect a run drawing on four
+rented machines while driven from here to execute on the destination alone once
+moved.
+
+**The steps.**
+
+```
+ ┌────────────────────────────────────────────────────────────────────────┐
+ │  1  open the local store; acquire the run lock, held to the end        │
+ │  2  destination, by the form the named host takes:                     │
+ │       yours    ──▶ that machine; no rental, no teardown                │
+ │       rented   ──▶ adopt the rental already hosting this run, or       │
+ │                      acquire one per the host entry                    │
+ │  3  reach it: a machine of yours answers an image check, a rented one  │
+ │       answers its enumeration probe                                    │
+ │  4  create the far-side directory; write the synthesized config        │
+ │  5  already driving this run? yes ──▶ skip to 7                        │
+ │       no ──▶ PUSH: records in full, plus the frontier states           │
+ │  6  START: setsid the far `sima run`, capture its pid                  │
+ │  7  FOLLOW: render each record and forward it into the local journal;  │
+ │       poll the budget verdict when this is a rental                    │
+ │  8  end on: a terminal run event | local interrupt | budget exhaustion │
+ │  9  WIND DOWN: signal the far run, wait for it to exit (bounded)       │
+ │ 10  PULL: everything the far side's records reference                  │
+ │ 11  re-derive the key set; finalize when every key is committed        │
+ │ 12  TEARDOWN: release the guard (rental only)                          │
+ └────────────────────────────────────────────────────────────────────────┘
+```
+
+Push and pull are one `Store::sync` at two moments, differing only in the
+[object scope](#workers-on-another-machine) each side advertises. The key set is
+derived independently on each side from (config, store state) — the rule the
+scheduler's frontier already follows — so no key list crosses the wire and the
+protocol is unchanged. It converges because whichever side holds more also
+derives more keys, and advertises the records the other lacks. The far half of
+each session is `sima sync-serve <config>`, spawned over the same hop, which
+takes its own run lock for the session's duration.
+
+**The far run is detached.** It is started with `setsid` and its pid recorded,
+so a laptop that sleeps, a network that drops, or a `sima migrate` that is
+killed leaves the destination computing. Re-running reattaches, and the two
+destination kinds reattach by different evidence: a rented machine is found in
+the instance ledger and adopted, which is what stops a second invocation renting
+a second machine; a machine of yours has no ledger record, so `run.pid` naming a
+live process is the whole of it. The `run.pid` check applies to a rental too —
+adopting the machine says nothing about whether the run on it is still going.
+Either way the push and the start are skipped.
+
+**Signalling a detached run.** A shell starts an asynchronous command with
+`SIGINT` set to ignored, and the disposition survives the exec, so the far run
+becomes signallable only once `sima run` installs its own handler over it —
+which is after it has loaded its config. A wind-down that begins inside that
+window would signal into nothing. The wait therefore re-sends the signal on
+every poll, which is idempotent against a run already winding down. A reader
+replacing the signal library, or moving the far start off a shell, needs this.
+
+**What reconciliation must not destroy.** Reconciliation destroys a rented
+machine whose owning run does not hold its lock here, and a detached migration
+whose local process died has exactly that shape. The ledger therefore records
+what a rental is *for*: `Worker` for machines the local orchestrator drives,
+`Orchestrator` for the machine hosting the run itself. The role is written at
+intent, so no window exists in which a hosting rental is recorded as an ordinary
+one. A pass spares `Orchestrator` records by default and destroys them when the
+operator asks, which `sima reconcile <config> --hosted` does. Adoption
+reconstructs a guard from such a record without rewriting it, since the rental's
+charged window is anchored at the record's creation and a rewrite would mis-bill
+it.
+
+**Journals do not sync**, so each record the follow delivers is forwarded into
+the local journal through the collector every other event crosses; without it
+the local journal would hold a gap for every segment executed remotely, and
+`sima status`, `sima report`, and `sima report --timeline` would under-report
+after a migration. One rule handles the replay a reattaching migration receives,
+since a feed's first poll returns the far run's whole history: a migration that
+**started** the far run forwards everything, and one that **reattached** discards
+that first history and forwards only what arrives after it. A reattaching
+migration therefore loses, from the local journal, the far records produced while
+nothing was attached. Journals are observational and excluded from every identity
+criterion, so the cost is diagnostic detail; the records, the manifest, and the
+run's identity are unaffected.
+
 ### Run status
 
 `status` computes a run's observable state from its journal alone. The
@@ -1720,9 +1966,19 @@ command form keeps its shape whether or not a host is named:
   interrupt flag for a graceful wind-down; a second SIGINT falls through
   to default death, which is exactly the crash the recovery guarantees
   cover.
+- **`sima migrate <config.toml>`** — moves the run onto the machine
+  `[orchestrator].migrate` names, follows it there through the same renderer
+  `run` uses, and brings the results home; see
+  [Migration](#migration). It takes no destination argument, since where a run
+  executes belongs in the file that describes it, and no `--on`, since it drives
+  a run rather than observing one. SIGINT winds the far run down, pulls what it
+  committed, and destroys any rental.
 - **`sima reconcile <config.toml>`** — destroys the machines the config's
   store still holds instance records for, and prints how many machines it
-  destroyed and how many records it cleared. The instance ledger decides
+  destroyed and how many records it cleared. `--hosted` includes the machines
+  hosting a migrated run's orchestrator, which a pass spares by default because
+  a detached migration is indistinguishable from an abandoned rental by the lock
+  alone. The instance ledger decides
   which providers it touches: each distinct provider id its records name
   resolves to that backend, keyed from the environment, and a store holding
   no record reaches no provider API and needs no credentials. An id no
@@ -1854,13 +2110,14 @@ unreachable, or that would ask for a password, fails promptly with a named
 cause. A host that authenticates and then stalls before its first frame is a
 live connection, and the near side waits on it.
 
-Exit codes (shared across `run`, `tui`, and `follow`):
+Exit codes (shared across `run`, `migrate`, `tui`, and `follow`):
 
 - **0** — the run finalized, `status` answered, or `follow` reached the end of
   a run nobody is driving, which is resumable rather than failed;
 - **2** — a definitive candidate failure;
 - **130** — interrupted, store resumable;
-- **1** — everything else: infrastructure fault, config error, usage error.
+- **1** — everything else: infrastructure fault, config error, usage error, and
+  a `migrate` that came home with tasks outstanding.
 
 ## Determinism proof obligations
 
