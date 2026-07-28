@@ -133,12 +133,23 @@ impl SshDestination {
     /// workspace starts here; the caller appends the remote command.
     ///
     /// `BatchMode=yes` never prompts, so an unauthenticated or unreachable
-    /// destination is a clean spawn error rather than a hang. A fresh
-    /// destination adds `StrictHostKeyChecking=accept-new`, which accepts its
-    /// key on first contact and pins it afterwards — the trust model for
-    /// disposable machines never present in `known_hosts` — and a
-    /// `ConnectTimeout`, without which a host that drops packets stalls for the
-    /// kernel's TCP timeout instead of failing inside the caller's own bounds.
+    /// destination is a clean spawn error rather than a hang.
+    ///
+    /// A fresh destination — a machine rented for this run — adds three more.
+    /// `StrictHostKeyChecking=accept-new` accepts its key on first contact
+    /// without prompting, the trust model for a machine never present in
+    /// `known_hosts`. `UserKnownHostsFile=/dev/null` keeps that key out of the
+    /// operator's file: a rental's key lives as long as the rental, so
+    /// remembering it accumulates entries nothing ever removes, and a later
+    /// rental at a reused address with a key of its own would then be refused
+    /// and fail the run. What is given up is detecting a key change within one
+    /// rental, which `accept-new` against an empty file could never have caught
+    /// on first contact either. `ConnectTimeout` bounds a host that drops
+    /// packets, which would otherwise stall for the kernel's TCP timeout instead
+    /// of failing inside the caller's own bounds. `LogLevel=ERROR` drops ssh's
+    /// own first-contact notice, which every connection to a rental would
+    /// otherwise print; a far side's diagnostics come from the remote command
+    /// and are unaffected.
     pub fn prefix(&self) -> Vec<String> {
         let mut argv = vec![
             "ssh".to_string(),
@@ -151,6 +162,10 @@ impl SshDestination {
                 argv.extend([
                     "-o".to_string(),
                     "StrictHostKeyChecking=accept-new".to_string(),
+                    "-o".to_string(),
+                    "UserKnownHostsFile=/dev/null".to_string(),
+                    "-o".to_string(),
+                    "LogLevel=ERROR".to_string(),
                     "-o".to_string(),
                     format!("ConnectTimeout={SSH_CONNECT_TIMEOUT_SECS}"),
                     "-p".to_string(),
@@ -595,6 +610,10 @@ mod tests {
                 "-o",
                 "StrictHostKeyChecking=accept-new",
                 "-o",
+                "UserKnownHostsFile=/dev/null",
+                "-o",
+                "LogLevel=ERROR",
+                "-o",
                 "ConnectTimeout=10",
                 "-p",
                 "41022",
@@ -641,6 +660,10 @@ mod tests {
                 "BatchMode=yes",
                 "-o",
                 "StrictHostKeyChecking=accept-new",
+                "-o",
+                "UserKnownHostsFile=/dev/null",
+                "-o",
+                "LogLevel=ERROR",
                 "-o",
                 "ConnectTimeout=10",
                 "-p",
