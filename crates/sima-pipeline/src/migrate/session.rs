@@ -60,6 +60,7 @@ use crate::config::{
     DEFAULT_READY_POLL_MS, DEFAULT_READY_TIMEOUT_MS, FillPolicy, HostForm, LoadedConfig, Rented,
     load,
 };
+use crate::feed::RunFeed;
 use crate::fleet::Rental;
 use crate::migrate::destination::{Destination, destination_for};
 use crate::migrate::far_config::{FarWorkers, far_config};
@@ -77,6 +78,16 @@ const TICK: Duration = Duration::from_millis(100);
 /// assessing it on every record poll would read the spend ledger ten times a
 /// second for an answer that changes on the scale of minutes.
 const BUDGET_INTERVAL: Duration = Duration::from_secs(10);
+
+/// How long the follow waits for the far run to journal its first line before
+/// reporting why it could not attach.
+///
+/// `sima follow-serve` refuses a run that has journaled nothing — the right
+/// answer for a view of a run nobody drove — and the far `sima run` journals
+/// only once it has loaded its config, opened its store, and taken its lock. The
+/// bound therefore covers a process start rather than a machine coming up, and
+/// a far run that has exited ends the wait at once whatever is left of it.
+const ATTACH_BOUND: Duration = Duration::from_secs(30);
 
 /// What a migration came home with.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -325,7 +336,7 @@ impl Session<'_> {
     /// rental's budget runs out, forwarding each record into the run's journal.
     fn follow(&self, run: &RunId, reattached: bool, events: &Emitter) -> Result<(RunState, bool)> {
         let budget = self.budget();
-        let mut feed = self.far.follow()?;
+        let mut feed = self.attach()?;
         let mut status = RunStatus::new(*run);
         let mut replay = reattached;
         // Unset, so the first tick assesses: a migration re-run under a ceiling
@@ -367,6 +378,28 @@ impl Session<'_> {
                     return Ok((status.state, false));
                 }
                 sleep(TICK);
+            }
+        }
+    }
+
+    /// Opens the follow, waiting out the window between the far run being
+    /// started and its first journal line.
+    ///
+    /// A migration knows the run is coming up, because it started it, so it
+    /// waits for that rather than reporting the refusal a view of an unjournaled
+    /// run gets. The wait ends the moment the far run is gone: one that has
+    /// exited will never journal, and its refusal is then the answer.
+    fn attach(&self) -> Result<Box<dyn RunFeed>> {
+        let deadline = Instant::now() + ATTACH_BOUND;
+        loop {
+            match self.far.follow() {
+                Ok(feed) => return Ok(feed),
+                Err(error) => {
+                    if Instant::now() >= deadline || self.far.driving()?.is_none() {
+                        return Err(error);
+                    }
+                    sleep(TICK);
+                }
             }
         }
     }
