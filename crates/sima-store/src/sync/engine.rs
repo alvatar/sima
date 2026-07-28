@@ -363,14 +363,44 @@ fn unexpected(expected: &str, got: &SyncMessage) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Store;
+    use crate::testutil::temp_store;
 
-    /// Opens a store over a fresh temporary directory, keeping the guard
-    /// alive for the test's duration.
-    fn temp_store() -> (tempfile::TempDir, Store) {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let store = Store::open(dir.path()).expect("open store");
-        (dir, store)
+    /// Drives `store` as a responder against a hand-built peer whose every
+    /// frame is precomputed, so the session runs synchronously against a byte
+    /// slice with no peer thread. The responder holds no key set of its own, so
+    /// it advertises nothing and the peer's `Have` alone decides its want.
+    fn responder_reads(
+        store: &Store,
+        frames: impl IntoIterator<Item = SyncMessage>,
+    ) -> Result<SyncReport> {
+        let mut incoming = Vec::new();
+        for message in frames {
+            write_frame(&mut incoming, &message.encode()).expect("frame");
+        }
+        let mut reader = incoming.as_slice();
+        let mut sink = Vec::new();
+        store.sync(
+            &[],
+            ObjectScope::Referenced,
+            &mut reader,
+            &mut sink,
+            SyncRole::Responder,
+        )
+    }
+
+    /// The handshake and the empty want that precede a peer's fulfillment,
+    /// advertising `records` and `objects` as the peer's inventory.
+    fn peer_offering(records: Vec<(TaskKey, Hash)>, objects: Vec<Hash>) -> [SyncMessage; 3] {
+        [
+            SyncMessage::Hello {
+                protocol: SYNC_PROTOCOL_VERSION,
+            },
+            SyncMessage::Have { records, objects },
+            SyncMessage::Want {
+                records: Vec::new(),
+                objects: Vec::new(),
+            },
+        ]
     }
 
     #[test]
@@ -378,21 +408,7 @@ mod tests {
         // A hand-framed hello at a future version: the responder reads it
         // first and refuses before writing anything.
         let (_dir, store) = temp_store();
-        let mut incoming = Vec::new();
-        write_frame(
-            &mut incoming,
-            &SyncMessage::Hello { protocol: 999 }.encode(),
-        )
-        .expect("frame hello");
-        let mut reader = incoming.as_slice();
-        let mut sink = Vec::new();
-        match store.sync(
-            &[],
-            ObjectScope::Referenced,
-            &mut reader,
-            &mut sink,
-            SyncRole::Responder,
-        ) {
+        match responder_reads(&store, [SyncMessage::Hello { protocol: 999 }]) {
             Err(Error::Validation(msg)) => {
                 assert!(msg.contains("999") && msg.contains('1'), "{msg}");
             }
@@ -403,67 +419,31 @@ mod tests {
     #[test]
     fn an_unexpected_first_message_is_a_protocol_error() {
         let (_dir, store) = temp_store();
-        let mut incoming = Vec::new();
-        write_frame(&mut incoming, &SyncMessage::Done.encode()).expect("frame");
-        let mut reader = incoming.as_slice();
-        let mut sink = Vec::new();
         assert!(matches!(
-            store.sync(
-                &[],
-                ObjectScope::Referenced,
-                &mut reader,
-                &mut sink,
-                SyncRole::Responder
-            ),
+            responder_reads(&store, [SyncMessage::Done]),
             Err(Error::Validation(_))
         ));
     }
 
     #[test]
     fn a_tampered_object_is_rejected_and_nothing_is_committed() {
-        // A hand-built initiator drives a real responder to want one object,
-        // then serves a frame whose bytes do not hash to the advertised
-        // digest. The responder must reject it and commit nothing. Every frame
-        // the responder reads is precomputed, so the responder runs
-        // synchronously against a byte slice — no peer thread.
+        // The peer advertises one object the responder lacks, then serves a
+        // frame whose bytes do not hash to the advertised digest.
         let (_dir, store) = temp_store();
         let advertised = hash_bytes(b"the real object bytes");
         let tampered = b"tampered".to_vec();
         assert_ne!(hash_bytes(&tampered), advertised);
 
-        let mut incoming = Vec::new();
-        // Handshake, then advertise the object the responder lacks with no
-        // records, then a want of nothing, then the tampered fulfillment for
-        // the responder's own want.
-        for message in [
-            SyncMessage::Hello {
-                protocol: SYNC_PROTOCOL_VERSION,
-            },
-            SyncMessage::Have {
-                records: Vec::new(),
-                objects: vec![advertised],
-            },
-            SyncMessage::Want {
-                records: Vec::new(),
-                objects: Vec::new(),
-            },
-            SyncMessage::Object {
-                hash: advertised,
-                bytes: tampered.clone(),
-            },
-        ] {
-            write_frame(&mut incoming, &message.encode()).expect("frame");
-        }
-
-        let mut reader = incoming.as_slice();
-        let mut sink = Vec::new();
-        match store.sync(
-            &[],
-            ObjectScope::Referenced,
-            &mut reader,
-            &mut sink,
-            SyncRole::Responder,
-        ) {
+        let frames = peer_offering(Vec::new(), vec![advertised])
+            .into_iter()
+            .chain([
+                SyncMessage::Object {
+                    hash: advertised,
+                    bytes: tampered.clone(),
+                },
+                SyncMessage::Done,
+            ]);
+        match responder_reads(&store, frames) {
             Err(Error::Validation(msg)) => assert!(msg.contains("hashing to"), "{msg}"),
             other => panic!("expected a hash-mismatch rejection, got {other:?}"),
         }
