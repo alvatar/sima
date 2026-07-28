@@ -173,6 +173,47 @@ impl Reach {
         self.verb_argv(&["sync-serve", far_config])
     }
 
+    /// The argv that serves the live follow stream of the run `far_config`
+    /// names.
+    pub(crate) fn follow_serve_argv(&self, far_config: &str) -> Vec<String> {
+        self.verb_argv(&["follow-serve", far_config])
+    }
+
+    /// The argv that runs a shell on the far side, reading its script from
+    /// stdin.
+    ///
+    /// Feeding the script over stdin is what keeps the far-side operations free
+    /// of quoting: an ssh command line is re-parsed by the far shell, so a
+    /// script passed as an argument would have to survive two rounds of word
+    /// splitting, while one arriving on stdin is read verbatim.
+    pub(crate) fn shell_argv(&self) -> Vec<String> {
+        match self {
+            Reach::Ssh { destination, .. } => {
+                let mut argv = destination.prefix();
+                argv.push("sh".to_string());
+                argv
+            }
+            Reach::Here(_) => vec!["/bin/sh".to_string()],
+        }
+    }
+
+    /// The `sima` binary that drives the run on the far side.
+    pub(crate) fn binary(&self) -> String {
+        match self {
+            Reach::Ssh { binary, .. } => binary.clone(),
+            Reach::Here(binary) => binary.to_string_lossy().into_owned(),
+        }
+    }
+
+    /// How the destination is named in an error: the ssh destination, or the
+    /// binary standing in for a far side reached without a hop.
+    pub(crate) fn label(&self) -> String {
+        match self {
+            Reach::Ssh { destination, .. } => destination.host().to_string(),
+            Reach::Here(binary) => binary.to_string_lossy().into_owned(),
+        }
+    }
+
     /// The argv that runs `sima <args…>` on the destination.
     pub(crate) fn verb_argv(&self, args: &[&str]) -> Vec<String> {
         let mut argv = match self {
@@ -245,6 +286,51 @@ mod tests {
         assert_eq!(
             argv.last().map(String::as_str),
             Some("~/sima-runs/abc/sima.toml")
+        );
+    }
+
+    #[test]
+    fn a_shell_argv_reaches_a_far_shell_that_reads_its_script_from_stdin() {
+        // No script on the command line, in either form: the far-side
+        // operations write theirs to the shell's stdin, so nothing is quoted
+        // for the hop.
+        let over_ssh = Reach::new(&SpawnMode::Ssh, &SshDestination::known("gpubox"), "sima");
+        assert_eq!(
+            over_ssh.shell_argv(),
+            ["ssh", "-o", "BatchMode=yes", "gpubox", "--", "sh"]
+        );
+        let here = Reach::new(
+            &SpawnMode::Local("/tmp/sima-worker".into()),
+            &SshDestination::known("unused"),
+            "/build/sima",
+        );
+        assert_eq!(here.shell_argv(), ["/bin/sh"]);
+    }
+
+    #[test]
+    fn the_binary_and_the_label_read_the_same_two_forms() {
+        let over_ssh = Reach::new(&SpawnMode::Ssh, &SshDestination::known("gpubox"), "sima");
+        assert_eq!(over_ssh.binary(), "sima");
+        assert_eq!(over_ssh.label(), "gpubox");
+        let here = Reach::new(
+            &SpawnMode::Local("/tmp/sima-worker".into()),
+            &SshDestination::known("unused"),
+            "/build/sima",
+        );
+        assert_eq!(here.binary(), "/build/sima");
+        // A far side reached without a hop has no destination to name, so its
+        // binary is what an error identifies it by.
+        assert_eq!(here.label(), "/build/sima");
+    }
+
+    #[test]
+    fn a_follow_argv_serves_the_run_the_far_config_names() {
+        let reach = Reach::new(&SpawnMode::Ssh, &SshDestination::known("gpubox"), "sima");
+        let argv = reach.follow_serve_argv("~/sima-runs/abc/sima.toml");
+        let binary = argv.iter().position(|a| a == "sima").expect("the binary");
+        assert_eq!(
+            &argv[binary..],
+            ["sima", "follow-serve", "~/sima-runs/abc/sima.toml"]
         );
     }
 

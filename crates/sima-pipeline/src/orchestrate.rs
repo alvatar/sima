@@ -376,7 +376,7 @@ fn container_pool(
 /// puts it there. A missing image must be a clean error, not a hanging
 /// handshake. The fix differs by where the container runs: build it locally, or
 /// ship the local build to the machine.
-fn bootstrap_image(host: Option<&str>, container: &Container) -> Result<()> {
+pub(crate) fn bootstrap_image(host: Option<&str>, container: &Container) -> Result<()> {
     let argv = image_inspect_argv(host, &container.runtime, &container.image);
     if command_succeeds(&argv)? {
         return Ok(());

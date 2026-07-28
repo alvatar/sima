@@ -197,10 +197,10 @@ const DEFAULT_DISK_GB: u64 = 32;
 /// How long a rental waits for an instance to become reachable when its entry
 /// names no timeout: the provider host pulls the image before the container
 /// exists, which takes minutes.
-const DEFAULT_READY_TIMEOUT_MS: u64 = 600_000;
+pub(crate) const DEFAULT_READY_TIMEOUT_MS: u64 = 600_000;
 /// How often a rental polls an instance for readiness when its entry names no
 /// interval.
-const DEFAULT_READY_POLL_MS: u64 = 5_000;
+pub(crate) const DEFAULT_READY_POLL_MS: u64 = 5_000;
 /// Where a migrated run's directory goes on a machine whose entry names no
 /// root.
 const DEFAULT_ROOT: &str = "~/sima-runs";

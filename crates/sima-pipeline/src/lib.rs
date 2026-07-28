@@ -49,7 +49,7 @@ pub use feed::{
 };
 pub use fleet::Engagement;
 pub use machines::machines;
-pub use migrate::sync_serve;
+pub use migrate::{MigrateOutcome, migrate, sync_serve};
 pub use observe::RunObserver;
 pub use orchestrate::orchestrate;
 pub use remove::remove;

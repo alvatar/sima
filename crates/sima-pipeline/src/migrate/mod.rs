@@ -12,10 +12,16 @@
 //! - [`objects`] — which objects a push carries, of those its records
 //!   reference.
 //! - [`sync`] — the two halves of a store sync, joined by a spawned process.
+//! - [`far_side`] — every operation the migration performs on the destination,
+//!   behind one seam.
+//! - [`session`] — the choreography that joins them.
 
 pub(crate) mod destination;
 pub(crate) mod far_config;
+pub(crate) mod far_side;
 pub(crate) mod objects;
+pub(crate) mod session;
 pub(crate) mod sync;
 
+pub use session::{MigrateOutcome, migrate};
 pub use sync::sync_serve;

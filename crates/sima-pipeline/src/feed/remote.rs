@@ -45,7 +45,19 @@ impl RemoteFeed {
     /// path on that host, passed through unresolved — the far side interprets
     /// it, which is the whole reason the stream exists.
     pub fn open(host: &str, config: &str) -> Result<RemoteFeed> {
-        RemoteFeed::over(Stream::spawn(host, config, false)?)
+        RemoteFeed::over(Stream::spawn(
+            &follow_serve_argv(host, config, false),
+            host,
+        )?)
+    }
+
+    /// Opens a live follow over an explicit invocation of `sima follow-serve`,
+    /// for a destination the caller reaches its own way — a migration follows
+    /// the run it started, whose destination may be an ssh hop at an explicit
+    /// port or a `sima` on this machine. `label` names the destination in the
+    /// errors that report it.
+    pub(crate) fn open_over(argv: &[String], label: &str) -> Result<RemoteFeed> {
+        RemoteFeed::over(Stream::spawn(argv, label)?)
     }
 
     /// The feed over an open stream, once its `Hello` is read and accepted.
@@ -112,7 +124,7 @@ impl RunFeed for RemoteFeed {
 /// Reads the run `config` names on `host` once: its metadata and every record
 /// its journal holds, for the one-shot views that render and exit.
 pub fn remote_snapshot(host: &str, config: &str) -> Result<(FeedInfo, Vec<Record>)> {
-    snapshot_over(Stream::spawn(host, config, true)?)
+    snapshot_over(Stream::spawn(&follow_serve_argv(host, config, true), host)?)
 }
 
 /// The snapshot over an open stream, read to its `Complete`. The boundary the
@@ -222,10 +234,9 @@ struct Stream {
 }
 
 impl Stream {
-    /// Spawns `ssh … sima follow-serve <config> [--once]` on `host` and reads
-    /// its stdout as frames.
-    fn spawn(host: &str, config: &str, once: bool) -> Result<Stream> {
-        let argv = follow_serve_argv(host, config, once);
+    /// Spawns the invocation that serves a run's follow stream and reads its
+    /// stdout as frames. `label` is what the errors name the far side by.
+    fn spawn(argv: &[String], label: &str) -> Result<Stream> {
         let (program, args) = argv.split_first().expect("the argv names a program");
         let mut child = Command::new(program)
             .args(args)
@@ -233,18 +244,20 @@ impl Stream {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .map_err(|e| Error::Validation(format!("cannot run ssh to follow {host}: {e}")))?;
+            .map_err(|e| {
+                Error::Validation(format!("cannot run {program:?} to follow {label}: {e}"))
+            })?;
         // The pipes exist iff the spawn configured them; taking them cannot
         // fail past a successful spawn.
         let (Some(stdout), Some(stderr)) = (child.stdout.take(), child.stderr.take()) else {
             return Err(Error::Validation(format!(
-                "the ssh process following {host} has no piped output"
+                "the process following {label} has no piped output"
             )));
         };
         let mut stream = Stream::over(stdout);
         stream.stderr = Some(std::thread::spawn(move || capture(stderr)));
         stream.child = Some(child);
-        stream.host = host.to_string();
+        stream.host = label.to_string();
         Ok(stream)
     }
 
