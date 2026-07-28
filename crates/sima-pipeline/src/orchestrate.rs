@@ -10,8 +10,8 @@ use sima_domains::{domain_for, generator_for};
 use sima_model::{FormatId, RunId};
 use sima_scheduler::{ExecutionConfig, RunControl, RunOutcome, WorkerPool, worker_slots};
 use sima_store::Store;
-use sima_transport::remote::{image_inspect_argv, probe_argv};
-use sima_transport::{RemoteTransport, SubprocessTransport};
+use sima_transport::container::{image_inspect_argv, probe_argv};
+use sima_transport::{ContainerTransport, SubprocessTransport};
 
 use crate::config::{Container, LoadedConfig, Pool};
 use crate::devices;
@@ -247,7 +247,7 @@ struct LocalPool {
 /// A resolved container pool on one machine: its transport, the machine it runs
 /// on, and its slots.
 struct ContainerPool {
-    transport: RemoteTransport,
+    transport: ContainerTransport,
     host: String,
     slots: Vec<Option<DeviceBinding>>,
 }
@@ -355,7 +355,7 @@ fn container_pool(
     let stem = run.to_string();
     let prefix = format!("sima-w-{}-{index}", &stem[..stem.len().min(12)]);
     Ok(ContainerPool {
-        transport: RemoteTransport::new(
+        transport: ContainerTransport::new(
             host.map(str::to_string),
             container.runtime.clone(),
             container.image.clone(),

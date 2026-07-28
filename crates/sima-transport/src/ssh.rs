@@ -1,15 +1,16 @@
-//! [`FleetTransport`]: a worker on a rented instance, reached over ssh, whose
-//! target the orchestrator can swap under a running pool.
+//! [`SshTransport`]: a worker launched as the ssh command itself, whose
+//! destination the orchestrator can swap under a running pool.
 //!
-//! ssh lands inside the instance's container, so the worker runs as the ssh
-//! command directly — no container-run wrapper, unlike [`RemoteTransport`].
-//! The framed stdio protocol flows through ssh into the worker unchanged, so
-//! the spawn, handshake, and reader machinery is the subprocess transport's,
-//! reused verbatim through [`spawn_worker`].
+//! The worker is the command ssh executes, with no container-run wrapper: on a
+//! rented machine ssh already lands inside the machine's own container, so
+//! nesting a second one would have nothing to add. The framed stdio protocol
+//! flows through ssh into the worker unchanged, so the spawn, handshake, and
+//! reader machinery is the subprocess transport's, reused verbatim through
+//! [`spawn_worker`].
 //!
-//! The transport's target is a small state machine the supervisor drives:
+//! The transport's destination is a small state machine the supervisor drives:
 //!
-//! - `Live(SshTarget)` — spawn builds the ssh argv and proceeds.
+//! - `Live(SshDestination)` — spawn builds the ssh argv and proceeds.
 //! - `Replacing` — spawn blocks on a condvar until the target changes, so a
 //!   worker thread waits out an instance replacement instead of spawning
 //!   against a dead host.
@@ -23,8 +24,8 @@
 //! replacement in. A worker's child dies with its instance and the worker loop
 //! respawns at once, up to a heartbeat before the supervisor notices; without
 //! the retry the respawn's ssh to the dead host would fail and fault the run.
-//! An ssh spawn failure therefore waits — bounded by the fleet's
-//! `ready_timeout`, paced by its `ready_poll` — retrying the same target until
+//! An ssh spawn failure therefore waits — bounded by the readiness timeout the
+//! machine was acquired under, paced by its poll — retrying the same target until
 //! the supervisor swaps a replacement in (which restarts the attempt on the new
 //! host with a fresh bound) or retires the transport. A target that stays dead
 //! past the bound faults the run, the same outcome as failing fast, delayed by
@@ -38,7 +39,7 @@
 //! instance at teardown. So the subprocess link's own `kill` — which kills the
 //! local ssh client — is the whole kill, and no wrapper is needed.
 //!
-//! The stub-provider testing path is the same transport in [`FleetMode::Local`]:
+//! The stub-provider testing path is the same transport in [`SpawnMode::Local`]:
 //! it spawns a `sima-worker` binary directly with no ssh hop, so every layer
 //! above the transport exercises identically without a network.
 
@@ -56,15 +57,15 @@ use crate::link::{SpawnOutcome, WorkerLink, WorkerTransport};
 use crate::protocol::Hello;
 use crate::subprocess::{EventContext, hello, spawn_worker};
 
-/// The command a fleet worker runs as: `sima-worker`, over ssh the remote
-/// command, in local mode the binary's own name is its path instead.
+/// The command the worker runs as: `sima-worker`, over ssh the remote command,
+/// in local mode the binary's own name is its path instead.
 const WORKER_ENTRYPOINT: &str = "sima-worker";
 
-/// An ssh destination on a rented instance: the host, port, and login user.
-/// A plain value defined here so the transport never depends on the provider
-/// crate; the pipeline maps a provider `SshEndpoint` into it.
+/// Where an ssh spawn lands: the host, port, and login user. Named for the TOML
+/// key it answers to. A plain value defined here so the transport never depends
+/// on the provider crate; the pipeline maps a provider `SshEndpoint` into it.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SshTarget {
+pub struct SshDestination {
     /// The instance's host or address.
     pub host: String,
     /// The ssh port.
@@ -74,22 +75,22 @@ pub struct SshTarget {
     pub user: String,
 }
 
-/// How a fleet transport reaches its worker.
+/// Whether a spawn crosses ssh or runs here.
 #[derive(Debug, Clone)]
-pub enum FleetMode {
-    /// ssh to a rented instance; the worker runs as the ssh command.
+pub enum SpawnMode {
+    /// ssh to the destination; the worker runs as the ssh command.
     Ssh,
     /// Spawn the `sima-worker` binary at this path directly, no ssh hop — the
     /// stub-provider testing path.
     Local(PathBuf),
 }
 
-/// Where a fleet transport currently sends its workers, and the lifecycle of
-/// that target. `spawn` reads it; the supervisor swaps it.
+/// Where the transport currently sends its workers, and the lifecycle of that
+/// destination. `spawn` reads it; the supervisor swaps it.
 enum TargetState {
-    /// The instance to spawn on. In [`FleetMode::Local`] the endpoint is
+    /// The instance to spawn on. In [`SpawnMode::Local`] the endpoint is
     /// carried for uniformity but the local spawn ignores it.
-    Live(SshTarget),
+    Live(SshDestination),
     /// An instance is being replaced: `spawn` blocks until the target settles.
     Replacing,
     /// The transport has retired: `spawn` reports it rather than a worker.
@@ -111,14 +112,19 @@ struct TargetSlot {
 /// What awaiting a spawnable target resolved to: an instance to spawn on and
 /// the generation it belongs to, or a retirement to report.
 enum Spawnable {
-    Live { target: SshTarget, generation: u64 },
-    Retired { fatal: bool },
+    Live {
+        target: SshDestination,
+        generation: u64,
+    },
+    Retired {
+        fatal: bool,
+    },
 }
 
-/// Spawns workers on a rented instance whose ssh target the supervisor can
-/// swap under the running pool. One transport serves one instance's pool.
-pub struct FleetTransport {
-    mode: FleetMode,
+/// Spawns workers over ssh at a destination the supervisor can swap under the
+/// running pool. One transport serves one machine's pool.
+pub struct SshTransport {
+    mode: SpawnMode,
     /// The current target and its lifecycle, guarded so the supervisor's swaps
     /// and the worker threads' spawns serialize.
     state: Mutex<TargetSlot>,
@@ -127,7 +133,8 @@ pub struct FleetTransport {
     settled: Condvar,
     hello: Hello,
     /// How long an ssh spawn keeps retrying a failing target before it gives
-    /// up and faults the run — the fleet's readiness bound, so a broken host
+    /// up and faults the run — the readiness bound the machine was acquired
+    /// under, so a broken host
     /// faults only after the same wait a fresh one is given to come up. A swap
     /// restarts this bound on the new host.
     ready_timeout: Duration,
@@ -136,22 +143,22 @@ pub struct FleetTransport {
     ready_poll: Duration,
 }
 
-impl FleetTransport {
+impl SshTransport {
     /// A transport spawning workers on `initial` under `mode`, for a run over
     /// `format` with the given checkpoint cadence ([`Duration::MAX`] and `None`
     /// disable an axis). `ready_timeout` and `ready_poll` bound and pace an
     /// ssh spawn's wait for a replacement, matching the readiness bounds the
-    /// fleet acquires under.
+    /// machine was acquired under.
     pub fn new(
-        mode: FleetMode,
-        initial: SshTarget,
+        mode: SpawnMode,
+        initial: SshDestination,
         format: FormatId,
         checkpoint_interval: Duration,
         checkpoint_interval_steps: Option<NonZeroU64>,
         ready_timeout: Duration,
         ready_poll: Duration,
-    ) -> FleetTransport {
-        FleetTransport {
+    ) -> SshTransport {
+        SshTransport {
             mode,
             state: Mutex::new(TargetSlot {
                 state: TargetState::Live(initial),
@@ -181,7 +188,7 @@ impl FleetTransport {
 
     /// Swaps the target to `target` and releases any spawn blocked while
     /// replacing or waiting out a failed attempt. A no-op once retired.
-    pub fn swap_to_live(&self, target: SshTarget) {
+    pub fn swap_to_live(&self, target: SshDestination) {
         let mut slot = self.lock();
         if !matches!(slot.state, TargetState::Retired { .. }) {
             slot.state = TargetState::Live(target);
@@ -227,7 +234,7 @@ impl FleetTransport {
                     slot = self
                         .settled
                         .wait(slot)
-                        .expect("the fleet target lock is never poisoned");
+                        .expect("the destination lock is never poisoned");
                 }
             }
         }
@@ -245,7 +252,7 @@ impl FleetTransport {
         let (slot, _) = self
             .settled
             .wait_timeout(slot, poll)
-            .expect("the fleet target lock is never poisoned");
+            .expect("the destination lock is never poisoned");
         slot.generation != generation
     }
 
@@ -254,11 +261,11 @@ impl FleetTransport {
     fn lock(&self) -> std::sync::MutexGuard<'_, TargetSlot> {
         self.state
             .lock()
-            .expect("the fleet target lock is never poisoned")
+            .expect("the destination lock is never poisoned")
     }
 }
 
-impl WorkerTransport for FleetTransport {
+impl WorkerTransport for SshTransport {
     fn spawn(
         &self,
         worker: u64,
@@ -267,22 +274,22 @@ impl WorkerTransport for FleetTransport {
     ) -> Result<SpawnOutcome> {
         // Each attempt takes a fresh emitter clone: a failed spawn drops its
         // clone, so a retry never reuses a spent one.
-        self.spawn_retrying(matches!(self.mode, FleetMode::Ssh), |target| {
+        self.spawn_retrying(matches!(self.mode, SpawnMode::Ssh), |target| {
             self.attempt_spawn(target, worker, device, events.clone())
         })
     }
 }
 
-impl FleetTransport {
+impl SshTransport {
     /// Resolves a spawnable target and runs `attempt` against it, retrying a
     /// failure in `retry_mode` until the attempt spawns, the target moves on,
     /// or the readiness bound elapses. Factored from
-    /// [`spawn`](FleetTransport::spawn) so the wait-and-retry control flow is
+    /// [`spawn`](SshTransport::spawn) so the wait-and-retry control flow is
     /// testable with a scripted attempt in place of a real process spawn.
     fn spawn_retrying(
         &self,
         retry_mode: bool,
-        mut attempt: impl FnMut(&SshTarget) -> Result<Box<dyn WorkerLink>>,
+        mut attempt: impl FnMut(&SshDestination) -> Result<Box<dyn WorkerLink>>,
     ) -> Result<SpawnOutcome> {
         loop {
             let (target, generation) = match self.await_spawnable() {
@@ -319,7 +326,7 @@ impl FleetTransport {
     /// worker process over it.
     fn attempt_spawn(
         &self,
-        target: &SshTarget,
+        target: &SshDestination,
         worker: u64,
         device: Option<&DeviceBinding>,
         events: Emitter,
@@ -346,22 +353,22 @@ impl FleetTransport {
     }
 }
 
-impl FleetMode {
+impl SpawnMode {
     /// The argv that spawns a worker on `target`: the ssh invocation, or the
     /// local binary directly.
-    fn spawn_argv(&self, target: &SshTarget) -> Vec<String> {
+    fn spawn_argv(&self, target: &SshDestination) -> Vec<String> {
         match self {
-            FleetMode::Ssh => ssh_argv(target, None),
-            FleetMode::Local(program) => vec![program.to_string_lossy().into_owned()],
+            SpawnMode::Ssh => ssh_argv(target, None),
+            SpawnMode::Local(program) => vec![program.to_string_lossy().into_owned()],
         }
     }
 
     /// The host label the child's events are attributed under: the instance
     /// host over ssh, empty for a local spawn.
-    fn host_label(&self, target: &SshTarget) -> String {
+    fn host_label(&self, target: &SshDestination) -> String {
         match self {
-            FleetMode::Ssh => target.host.clone(),
-            FleetMode::Local(_) => String::new(),
+            SpawnMode::Ssh => target.host.clone(),
+            SpawnMode::Local(_) => String::new(),
         }
     }
 }
@@ -372,7 +379,7 @@ impl FleetMode {
 /// own bounds, where the wait-and-retry loop can act on it.
 const SSH_CONNECT_TIMEOUT_SECS: u64 = 10;
 
-/// The argv that runs `sima-worker` on a fleet instance over ssh:
+/// The argv that runs `sima-worker` at a destination over ssh:
 /// `ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new
 /// -o ConnectTimeout=<secs> -p <port> <user>@<host> -- sima-worker`, with
 /// `--enumerate <format>` appended when `probe` names the run's format.
@@ -382,7 +389,7 @@ const SSH_CONNECT_TIMEOUT_SECS: u64 = 10;
 /// machines never present in `known_hosts`. `BatchMode=yes` never prompts, so
 /// an unreachable host is a clean spawn error rather than a hang.
 /// `ConnectTimeout` bounds a host that drops packets to a clean error.
-pub fn ssh_argv(target: &SshTarget, probe: Option<&FormatId>) -> Vec<String> {
+pub fn ssh_argv(target: &SshDestination, probe: Option<&FormatId>) -> Vec<String> {
     let mut argv = vec![
         "ssh".to_string(),
         "-o".to_string(),
@@ -404,18 +411,18 @@ pub fn ssh_argv(target: &SshTarget, probe: Option<&FormatId>) -> Vec<String> {
     argv
 }
 
-/// The argv that enumerates a fleet instance's devices for `format`, so the
+/// The argv that enumerates a machine's devices for `format`, so the
 /// orchestrator derives one worker slot per usable GPU: the ssh spawn argv with
 /// `--enumerate <format>`, or the local binary with the same in
-/// [`FleetMode::Local`].
+/// [`SpawnMode::Local`].
 ///
 /// The format travels with the probe because the answer depends on it: the
-/// instance enumerates the backend the run's program executes through, and a
+/// machine enumerates the backend the run's program executes through, and a
 /// device another backend reaches is not a place this run can put a worker.
-pub fn probe_argv(mode: &FleetMode, target: &SshTarget, format: &FormatId) -> Vec<String> {
+pub fn probe_argv(mode: &SpawnMode, target: &SshDestination, format: &FormatId) -> Vec<String> {
     match mode {
-        FleetMode::Ssh => ssh_argv(target, Some(format)),
-        FleetMode::Local(program) => vec![
+        SpawnMode::Ssh => ssh_argv(target, Some(format)),
+        SpawnMode::Local(program) => vec![
             program.to_string_lossy().into_owned(),
             "--enumerate".to_string(),
             format.as_str().to_string(),
@@ -435,8 +442,8 @@ mod tests {
     use super::*;
     use crate::link::LinkEvent;
 
-    fn a_target() -> SshTarget {
-        SshTarget {
+    fn a_target() -> SshDestination {
+        SshDestination {
             host: "203.0.113.7".to_string(),
             port: 41022,
             user: "root".to_string(),
@@ -450,18 +457,18 @@ mod tests {
 
     /// A transport whose readiness bound is generous and whose poll is short,
     /// so a retry test that drives a swap in never sleeps out a long wait.
-    fn a_transport(mode: FleetMode) -> FleetTransport {
+    fn a_transport(mode: SpawnMode) -> SshTransport {
         bounded_transport(mode, Duration::from_secs(5), Duration::from_millis(2))
     }
 
     /// A transport under explicit readiness bounds, for the retry-and-wait
     /// tests that pin how long a failing ssh spawn persists.
     fn bounded_transport(
-        mode: FleetMode,
+        mode: SpawnMode,
         ready_timeout: Duration,
         ready_poll: Duration,
-    ) -> FleetTransport {
-        FleetTransport::new(
+    ) -> SshTransport {
+        SshTransport::new(
             mode,
             a_target(),
             FormatId::new("stub.v1").expect("format id"),
@@ -543,13 +550,13 @@ mod tests {
 
     #[test]
     fn a_local_mode_spawn_argv_is_the_bare_binary() {
-        let mode = FleetMode::Local(PathBuf::from("/opt/sima/sima-worker"));
+        let mode = SpawnMode::Local(PathBuf::from("/opt/sima/sima-worker"));
         assert_eq!(mode.spawn_argv(&a_target()), ["/opt/sima/sima-worker"]);
     }
 
     #[test]
     fn a_local_mode_probe_argv_appends_enumerate_to_the_bare_binary() {
-        let mode = FleetMode::Local(PathBuf::from("/opt/sima/sima-worker"));
+        let mode = SpawnMode::Local(PathBuf::from("/opt/sima/sima-worker"));
         assert_eq!(
             probe_argv(&mode, &a_target(), &a_format()),
             ["/opt/sima/sima-worker", "--enumerate", "stub.v1"]
@@ -563,8 +570,8 @@ mod tests {
         // place this run can put a worker.
         let format = FormatId::new("ca_evolution.gray_scott.v1").expect("format id");
         for mode in [
-            FleetMode::Ssh,
-            FleetMode::Local(PathBuf::from("/opt/sima/sima-worker")),
+            SpawnMode::Ssh,
+            SpawnMode::Local(PathBuf::from("/opt/sima/sima-worker")),
         ] {
             let argv = probe_argv(&mode, &a_target(), &format);
             assert_eq!(
@@ -576,7 +583,7 @@ mod tests {
 
     #[test]
     fn a_spawn_blocks_while_replacing_and_releases_on_a_swap() {
-        let transport = Arc::new(a_transport(FleetMode::Ssh));
+        let transport = Arc::new(a_transport(SpawnMode::Ssh));
         transport.mark_replacing();
         let (tx, rx) = mpsc::channel();
         let waiter = {
@@ -594,7 +601,7 @@ mod tests {
             rx.recv_timeout(Duration::from_millis(100)).is_err(),
             "the spawn is blocked while replacing"
         );
-        let replacement = SshTarget {
+        let replacement = SshDestination {
             host: "198.51.100.9".to_string(),
             port: 50022,
             user: "root".to_string(),
@@ -615,7 +622,7 @@ mod tests {
 
     #[test]
     fn a_retire_releases_a_blocked_spawn_with_the_retirement() {
-        let transport = Arc::new(a_transport(FleetMode::Ssh));
+        let transport = Arc::new(a_transport(SpawnMode::Ssh));
         transport.mark_replacing();
         let (tx, rx) = mpsc::channel();
         {
@@ -644,7 +651,7 @@ mod tests {
 
     #[test]
     fn a_swap_after_retirement_does_not_revive_the_transport() {
-        let transport = a_transport(FleetMode::Ssh);
+        let transport = a_transport(SpawnMode::Ssh);
         transport.retire(false);
         transport.swap_to_live(a_target());
         // Retirement is terminal: a later swap is ignored.
@@ -658,7 +665,7 @@ mod tests {
     fn a_first_spawn_against_a_live_target_proceeds_at_once() {
         // The healthy path: a live target and an attempt that succeeds first
         // try returns a link with no wait.
-        let transport = a_transport(FleetMode::Ssh);
+        let transport = a_transport(SpawnMode::Ssh);
         let attempts = AtomicUsize::new(0);
         let outcome = transport.spawn_retrying(true, |_| {
             attempts.fetch_add(1, Ordering::Relaxed);
@@ -672,7 +679,7 @@ mod tests {
     fn a_local_spawn_failure_propagates_without_retrying() {
         // Local mode has no supervisor swapping a replacement behind it, so a
         // failure is the first and only attempt.
-        let transport = a_transport(FleetMode::Ssh);
+        let transport = a_transport(SpawnMode::Ssh);
         let attempts = AtomicUsize::new(0);
         let outcome = transport.spawn_retrying(false, |_| {
             attempts.fetch_add(1, Ordering::Relaxed);
@@ -688,7 +695,7 @@ mod tests {
 
     #[test]
     fn a_retired_transport_spawn_reports_the_retirement_without_attempting() {
-        let transport = a_transport(FleetMode::Ssh);
+        let transport = a_transport(SpawnMode::Ssh);
         transport.retire(true);
         let outcome =
             transport.spawn_retrying(true, |_| panic!("a retired transport never attempts"));
@@ -700,14 +707,14 @@ mod tests {
         // The respawn race: the first attempt fails against the dead host, the
         // supervisor swaps a replacement in, and the retry lands on the new
         // target instead of faulting the run.
-        let transport = a_transport(FleetMode::Ssh);
-        let replacement = SshTarget {
+        let transport = a_transport(SpawnMode::Ssh);
+        let replacement = SshDestination {
             host: "198.51.100.9".to_string(),
             port: 50022,
             user: "root".to_string(),
         };
         let attempts = AtomicUsize::new(0);
-        let seen: Mutex<Vec<SshTarget>> = Mutex::new(Vec::new());
+        let seen: Mutex<Vec<SshDestination>> = Mutex::new(Vec::new());
         let outcome = transport.spawn_retrying(true, |target| {
             seen.lock().expect("seen lock").push(target.clone());
             if attempts.fetch_add(1, Ordering::Relaxed) == 0 {
@@ -735,7 +742,7 @@ mod tests {
         // A best-effort pool whose replacement cannot be made retires the
         // transport while a spawn is waiting: the spawn reports it rather than
         // erroring or spinning to the bound.
-        let transport = a_transport(FleetMode::Ssh);
+        let transport = a_transport(SpawnMode::Ssh);
         let outcome = transport.spawn_retrying(true, |_| {
             transport.retire(false);
             Err(Error::Transport("ssh to the dead host failed".to_string()))
@@ -752,7 +759,7 @@ mod tests {
         // gives up after ready_timeout and the failure propagates, faulting the
         // run — the same outcome as failing fast, delayed by the bound.
         let transport = bounded_transport(
-            FleetMode::Ssh,
+            SpawnMode::Ssh,
             Duration::from_millis(60),
             Duration::from_millis(5),
         );

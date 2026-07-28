@@ -25,7 +25,7 @@ use sima_provider_vast::{VastConfig, VastProvider};
 use sima_scheduler::ExecutionConfig;
 use sima_store::{RunLock, Store};
 use sima_trace::{Emitter, Event};
-use sima_transport::{FleetMode, FleetTransport, SshTarget};
+use sima_transport::{SpawnMode, SshDestination, SshTransport};
 
 use crate::config::{FillPolicy, ProviderId, Rented};
 use crate::devices::parse_enumeration;
@@ -52,17 +52,17 @@ pub(crate) fn provider_for(rental: &Rental<'_>) -> Result<Box<dyn Provider + Syn
 /// The transport mode a rental's machines are reached through: ssh to a real
 /// rented instance, or a local `sima-worker` spawn for the stub, so the stub
 /// exercises every layer above the transport with no network.
-pub(crate) fn transport_mode(spec: &Rented) -> Result<FleetMode> {
+pub(crate) fn transport_mode(spec: &Rented) -> Result<SpawnMode> {
     match spec.provider {
-        ProviderId::Vast => Ok(FleetMode::Ssh),
-        ProviderId::Stub => Ok(FleetMode::Local(worker_binary()?)),
+        ProviderId::Vast => Ok(SpawnMode::Ssh),
+        ProviderId::Stub => Ok(SpawnMode::Local(worker_binary()?)),
     }
 }
 
 /// Maps a provider's ssh endpoint into the transport's target, the seam that
 /// keeps the transport free of any dependency on the provider crate.
-pub(crate) fn endpoint_target(endpoint: SshEndpoint) -> SshTarget {
-    SshTarget {
+pub(crate) fn endpoint_target(endpoint: SshEndpoint) -> SshDestination {
+    SshDestination {
         host: endpoint.host,
         port: endpoint.port,
         user: endpoint.user,
@@ -92,7 +92,7 @@ pub(crate) struct RentedHost<'a> {
     pub(crate) guard: Mutex<Option<InstanceGuard<'a, dyn Provider + Sync + 'a>>>,
     /// The transport spawning this machine's workers, its target swappable
     /// under the running pool.
-    pub(crate) transport: FleetTransport,
+    pub(crate) transport: SshTransport,
     /// The machine's host label, for the journal.
     pub(crate) host: String,
     /// One slot per enumerated GPU, or a single deviceless slot. Fixed for the
@@ -130,7 +130,7 @@ pub(crate) fn acquire_hosts<'a>(
     provider: &'a (dyn Provider + Sync),
     store: &'a Store,
     lock: &RunLock,
-    mode: &FleetMode,
+    mode: &SpawnMode,
     format: &FormatId,
     exec: &ExecutionConfig,
 ) -> Result<Vec<RentedHost<'a>>> {
@@ -186,7 +186,7 @@ fn acquire_one<'a>(
     spec: &Rented,
     budget: &Budget,
     limits: &AcquireLimits,
-    mode: &FleetMode,
+    mode: &SpawnMode,
     format: &FormatId,
     exec: &ExecutionConfig,
 ) -> Result<RentedHost<'a>> {
@@ -240,7 +240,7 @@ fn acquire_one<'a>(
                 continue;
             }
         };
-        let transport = FleetTransport::new(
+        let transport = SshTransport::new(
             mode.clone(),
             target,
             format.clone(),
@@ -266,12 +266,12 @@ fn acquire_one<'a>(
 /// its worker slots, retrying briefly because sshd can lag the provider's
 /// `Ready`.
 fn probe_slots(
-    mode: &FleetMode,
-    target: &SshTarget,
+    mode: &SpawnMode,
+    target: &SshDestination,
     poll: Duration,
     format: &FormatId,
 ) -> Result<Vec<Option<DeviceBinding>>> {
-    let argv = sima_transport::fleet::probe_argv(mode, target, format);
+    let argv = sima_transport::ssh::probe_argv(mode, target, format);
     let mut last: Option<Error> = None;
     for attempt in 0..PROBE_ATTEMPTS {
         match command_stdout(&argv).and_then(|stdout| parse_enumeration(&stdout)) {
@@ -920,8 +920,8 @@ mod tests {
 
     /// A local probe that enumerates no device, so every acquired machine
     /// derives a single deviceless slot without a real worker binary or GPU.
-    fn deviceless_probe() -> FleetMode {
-        FleetMode::Local(PathBuf::from("/bin/true"))
+    fn deviceless_probe() -> SpawnMode {
+        SpawnMode::Local(PathBuf::from("/bin/true"))
     }
 
     /// One enumerated device of the given category.
@@ -1132,7 +1132,7 @@ mod tests {
             &provider,
             &store,
             &lock,
-            &FleetMode::Local(PathBuf::from("/nonexistent/sima-worker")),
+            &SpawnMode::Local(PathBuf::from("/nonexistent/sima-worker")),
             &format,
             &exec(),
         );
@@ -1166,7 +1166,7 @@ mod tests {
             &provider,
             &store,
             &lock,
-            &FleetMode::Local(PathBuf::from("/nonexistent/sima-worker")),
+            &SpawnMode::Local(PathBuf::from("/nonexistent/sima-worker")),
             &format,
             &exec(),
         );
@@ -1192,7 +1192,7 @@ mod tests {
             provider: ProviderId::Vast,
             ..spec()
         };
-        assert!(matches!(transport_mode(&spec)?, FleetMode::Ssh));
+        assert!(matches!(transport_mode(&spec)?, SpawnMode::Ssh));
         Ok(())
     }
 

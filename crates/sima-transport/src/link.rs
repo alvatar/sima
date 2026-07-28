@@ -2,7 +2,7 @@
 //! [`WorkerLink`] converses with one.
 //!
 //! A spawn resolves to one of three outcomes: a live [`WorkerLink`] to
-//! converse with, a [`SpawnOutcome::Retired`] when a fleet transport's
+//! converse with, a [`SpawnOutcome::Retired`] when an ssh transport's
 //! instances are gone with no replacement, or an `Err` — an infrastructure
 //! spawn failure the caller faults on. The retirement is a spawn-time channel
 //! distinct from the conversation's [`LinkEvent`] outcomes below.
@@ -35,7 +35,7 @@ pub trait WorkerTransport: Sync {
     /// through it, and drop their clones when the child dies, so the
     /// collector's channel closes when the run's last worker does.
     ///
-    /// A successful spawn yields [`SpawnOutcome::Link`]; a fleet transport
+    /// A successful spawn yields [`SpawnOutcome::Link`]; an ssh transport
     /// whose instances are gone yields [`SpawnOutcome::Retired`] instead of a
     /// link. An `Err` is a spawn failure — an infrastructure error, never a
     /// task outcome.
@@ -52,9 +52,9 @@ pub enum SpawnOutcome {
     /// A live worker to converse with.
     Link(Box<dyn WorkerLink>),
     /// The slot's transport retired: no worker was spawned, and none will be.
-    /// `fatal` marks a retirement the run must fault on — a strict-fill fleet
+    /// `fatal` marks a retirement the run must fault on — a strict-fill rental
     /// that lost the instances it depends on; a non-fatal retirement lets the
-    /// worker thread exit cleanly, the best-effort degradation of a fleet that
+    /// worker thread exit cleanly, the best-effort degradation of a rental that
     /// runs on whatever instances remain.
     Retired {
         /// Whether the retirement must fault the run.

@@ -1,5 +1,5 @@
-//! [`RemoteTransport`]: a worker inside a container runtime, optionally across
-//! an ssh hop.
+//! [`ContainerTransport`]: a worker inside a container the transport launches,
+//! here or across an ssh hop.
 //!
 //! The worker runs inside a container the transport launches with
 //! `<runtime> run --rm -i --name <container> <run_args> <image> sima-worker`.
@@ -34,9 +34,9 @@ use crate::subprocess::{EventContext, hello, spawn_worker};
 const WORKER_ENTRYPOINT: &str = "sima-worker";
 
 /// Spawns workers inside a container runtime for one run. Each spawn launches a
-/// fresh container with a unique name; when [`host`](RemoteTransport::host) is
+/// fresh container with a unique name; when [`host`](ContainerTransport::host) is
 /// set the launch and the kill both cross ssh to that destination.
-pub struct RemoteTransport {
+pub struct ContainerTransport {
     /// The ssh destination, or `None` for a container runtime on this machine
     /// (no ssh hop).
     host: Option<String>,
@@ -56,7 +56,7 @@ pub struct RemoteTransport {
     counter: AtomicU64,
 }
 
-impl RemoteTransport {
+impl ContainerTransport {
     /// A transport launching `image` under `runtime` for a run over `format`
     /// with the given checkpoint cadence ([`Duration::MAX`] and `None` disable
     /// an axis). `host` is the ssh destination, or `None` for a local runtime.
@@ -70,8 +70,8 @@ impl RemoteTransport {
         format: FormatId,
         checkpoint_interval: Duration,
         checkpoint_interval_steps: Option<std::num::NonZeroU64>,
-    ) -> RemoteTransport {
-        RemoteTransport {
+    ) -> ContainerTransport {
+        ContainerTransport {
             host,
             runtime,
             image,
@@ -83,7 +83,7 @@ impl RemoteTransport {
     }
 }
 
-impl WorkerTransport for RemoteTransport {
+impl WorkerTransport for ContainerTransport {
     fn spawn(
         &self,
         worker: u64,
@@ -120,7 +120,7 @@ impl WorkerTransport for RemoteTransport {
             context,
         )?;
         let kill_command = kill_argv(self.host.as_deref(), &self.runtime, &container);
-        Ok(SpawnOutcome::Link(Box::new(RemoteLink {
+        Ok(SpawnOutcome::Link(Box::new(ContainerLink {
             inner,
             kill_command,
         })))
@@ -130,13 +130,13 @@ impl WorkerTransport for RemoteTransport {
 /// A live worker whose real body is a container: the subprocess link to the
 /// runtime client, plus the second-channel kill that stops the container the
 /// client's death would otherwise leave running.
-struct RemoteLink {
+struct ContainerLink {
     inner: Box<dyn WorkerLink>,
     /// The container-kill argv, fired before the local kill.
     kill_command: Vec<String>,
 }
 
-impl WorkerLink for RemoteLink {
+impl WorkerLink for ContainerLink {
     fn device_name(&self) -> &str {
         self.inner.device_name()
     }
@@ -235,7 +235,7 @@ pub fn probe_argv(
 
 /// The argv that checks a worker image is present, ssh-wrapped when `host` is
 /// set: `[ssh …] <runtime> image inspect <image>`. The orchestrator runs it
-/// before spawning a remote pool, so a missing image is a clean error rather
+/// before spawning a container pool, so a missing image is a clean error rather
 /// than a hanging handshake.
 pub fn image_inspect_argv(host: Option<&str>, runtime: &str, image: &str) -> Vec<String> {
     let mut argv = ssh_prefix(host);
