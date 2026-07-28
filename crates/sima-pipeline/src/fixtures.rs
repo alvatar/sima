@@ -49,7 +49,6 @@ pub(crate) fn loaded(store: PathBuf) -> Result<LoadedConfig> {
 /// Loads `text` as a config file in a fresh temporary directory, for the unit
 /// tests that exercise the loaded shape rather than the file's location. The
 /// directory is removed at once: nothing here opens the store the config names.
-#[allow(dead_code)]
 pub(crate) fn load_str(text: &str) -> LoadedConfig {
     let dir = tempfile::tempdir().expect("temp dir");
     let path = dir.path().join("sima.toml");
