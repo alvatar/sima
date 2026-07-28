@@ -22,6 +22,7 @@ use std::thread::JoinHandle;
 use sima_core::{Error, Result, read_frame};
 use sima_model::RunId;
 use sima_scheduler::Record;
+use sima_transport::SshDestination;
 
 use crate::feed::protocol::{FOLLOW_PROTOCOL_VERSION, FollowFrame};
 use crate::feed::{FeedInfo, RunFeed};
@@ -181,21 +182,16 @@ fn parse(run: &RunId, lines: &[String]) -> Result<Vec<Record>> {
         .collect()
 }
 
-/// The argv that serves a run's follow stream from `host`: ssh with
-/// `BatchMode=yes` so an unreachable or unauthenticated host exits rather
-/// than prompting, then the far side's own `sima`. `--` ends ssh's options;
-/// `config` is a path on the far side and travels unresolved.
+/// The argv that serves a run's follow stream from `host`: the destination's
+/// own ssh invocation, then the far side's own `sima`. `config` is a path on
+/// the far side and travels unresolved.
 fn follow_serve_argv(host: &str, config: &str, once: bool) -> Vec<String> {
-    let mut argv = vec![
-        "ssh".to_string(),
-        "-o".to_string(),
-        "BatchMode=yes".to_string(),
-        host.to_string(),
-        "--".to_string(),
+    let mut argv = SshDestination::known(host).prefix();
+    argv.extend([
         "sima".to_string(),
         "follow-serve".to_string(),
         config.to_string(),
-    ];
+    ]);
     if once {
         argv.push("--once".to_string());
     }

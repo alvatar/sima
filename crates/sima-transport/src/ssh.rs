@@ -61,18 +61,107 @@ use crate::subprocess::{EventContext, hello, spawn_worker};
 /// in local mode the binary's own name is its path instead.
 const WORKER_ENTRYPOINT: &str = "sima-worker";
 
-/// Where an ssh spawn lands: the host, port, and login user. Named for the TOML
-/// key it answers to. A plain value defined here so the transport never depends
-/// on the provider crate; the pipeline maps a provider `SshEndpoint` into it.
+/// Where an ssh command lands, and the trust policy for getting there. Named
+/// for the TOML key it answers to. A plain value defined here so the transport
+/// never depends on the provider crate; the pipeline maps a provider
+/// `SshEndpoint` into it.
+///
+/// Two policies, one per constructor, because the two kinds of destination
+/// differ in what ssh already knows about them:
+///
+/// - [`SshDestination::known`] — a destination the operator configured. The
+///   local ssh configuration supplies the port, the user, and the key, and the
+///   host is already in `known_hosts`, so the invocation adds nothing but
+///   `BatchMode=yes`.
+/// - [`SshDestination::rented`] — a machine that did not exist a minute ago.
+///   Its port and user are stated explicitly, its key is accepted on first
+///   contact and pinned afterwards, and the connection wait is bounded.
+///
+/// The fields are private so a caller cannot assemble a third policy by hand:
+/// every ssh command line in the workspace comes from
+/// [`SshDestination::prefix`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SshDestination {
-    /// The instance's host or address.
-    pub host: String,
+    /// The destination as ssh resolves it: an alias, a `user@host`, or an
+    /// address.
+    host: String,
+    /// The port, login user, and first-contact policy of a machine ssh knows
+    /// nothing about yet; `None` for a destination the operator configured.
+    fresh: Option<Fresh>,
+}
+
+/// What a destination ssh has never seen needs stated on the command line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Fresh {
     /// The ssh port.
-    pub port: u16,
+    port: u16,
     /// The login user; `root` for a Vast instance, where ssh lands inside the
     /// container.
-    pub user: String,
+    user: String,
+}
+
+impl SshDestination {
+    /// A destination the operator already configured: an alias or a `user@host`
+    /// the local ssh configuration resolves, whose key is already trusted.
+    pub fn known(host: impl Into<String>) -> SshDestination {
+        SshDestination {
+            host: host.into(),
+            fresh: None,
+        }
+    }
+
+    /// A machine rented for the run, reached at an explicit port as an explicit
+    /// user, whose key is accepted on first contact.
+    pub fn rented(host: impl Into<String>, port: u16, user: impl Into<String>) -> SshDestination {
+        SshDestination {
+            host: host.into(),
+            fresh: Some(Fresh {
+                port,
+                user: user.into(),
+            }),
+        }
+    }
+
+    /// The destination as ssh resolves it — the label a pool's workers are
+    /// journaled under.
+    pub fn host(&self) -> &str {
+        &self.host
+    }
+
+    /// The ssh invocation that reaches this destination, up to and including
+    /// the `--` that ends ssh's own options. Every ssh command line in the
+    /// workspace starts here; the caller appends the remote command.
+    ///
+    /// `BatchMode=yes` never prompts, so an unauthenticated or unreachable
+    /// destination is a clean spawn error rather than a hang. A fresh
+    /// destination adds `StrictHostKeyChecking=accept-new`, which accepts its
+    /// key on first contact and pins it afterwards — the trust model for
+    /// disposable machines never present in `known_hosts` — and a
+    /// `ConnectTimeout`, without which a host that drops packets stalls for the
+    /// kernel's TCP timeout instead of failing inside the caller's own bounds.
+    pub fn prefix(&self) -> Vec<String> {
+        let mut argv = vec![
+            "ssh".to_string(),
+            "-o".to_string(),
+            "BatchMode=yes".to_string(),
+        ];
+        match &self.fresh {
+            None => argv.push(self.host.clone()),
+            Some(fresh) => {
+                argv.extend([
+                    "-o".to_string(),
+                    "StrictHostKeyChecking=accept-new".to_string(),
+                    "-o".to_string(),
+                    format!("ConnectTimeout={SSH_CONNECT_TIMEOUT_SECS}"),
+                    "-p".to_string(),
+                    fresh.port.to_string(),
+                    format!("{}@{}", fresh.user, self.host),
+                ]);
+            }
+        }
+        argv.push("--".to_string());
+        argv
+    }
 }
 
 /// Whether a spawn crosses ssh or runs here.
@@ -210,7 +299,7 @@ impl SshTransport {
     /// spawn, for diagnostics and for observing a replacement's target swap.
     pub fn live_host(&self) -> Option<String> {
         match &self.lock().state {
-            TargetState::Live(target) => Some(target.host.clone()),
+            TargetState::Live(target) => Some(target.host().to_string()),
             TargetState::Replacing | TargetState::Retired { .. } => None,
         }
     }
@@ -366,7 +455,7 @@ impl SpawnMode {
     /// host over ssh, empty for a local spawn.
     fn host_label(&self, target: &SshDestination) -> String {
         match self {
-            SpawnMode::Ssh => target.host.clone(),
+            SpawnMode::Ssh => target.host().to_string(),
             SpawnMode::Local(_) => String::new(),
         }
     }
@@ -378,31 +467,12 @@ impl SpawnMode {
 /// own bounds, where the wait-and-retry loop can act on it.
 const SSH_CONNECT_TIMEOUT_SECS: u64 = 10;
 
-/// The argv that runs `sima-worker` at a destination over ssh:
-/// `ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new
-/// -o ConnectTimeout=<secs> -p <port> <user>@<host> -- sima-worker`, with
+/// The argv that runs `sima-worker` at `destination` over ssh: the
+/// destination's own [`prefix`](SshDestination::prefix), then the worker, with
 /// `--enumerate <format>` appended when `probe` names the run's format.
-///
-/// `StrictHostKeyChecking=accept-new` accepts a freshly provisioned host's key
-/// on first contact and pins it afterwards — the trust model for disposable
-/// machines never present in `known_hosts`. `BatchMode=yes` never prompts, so
-/// an unreachable host is a clean spawn error rather than a hang.
-/// `ConnectTimeout` bounds a host that drops packets to a clean error.
-pub fn ssh_argv(target: &SshDestination, probe: Option<&FormatId>) -> Vec<String> {
-    let mut argv = vec![
-        "ssh".to_string(),
-        "-o".to_string(),
-        "BatchMode=yes".to_string(),
-        "-o".to_string(),
-        "StrictHostKeyChecking=accept-new".to_string(),
-        "-o".to_string(),
-        format!("ConnectTimeout={SSH_CONNECT_TIMEOUT_SECS}"),
-        "-p".to_string(),
-        target.port.to_string(),
-        format!("{}@{}", target.user, target.host),
-        "--".to_string(),
-        WORKER_ENTRYPOINT.to_string(),
-    ];
+pub fn ssh_argv(destination: &SshDestination, probe: Option<&FormatId>) -> Vec<String> {
+    let mut argv = destination.prefix();
+    argv.push(WORKER_ENTRYPOINT.to_string());
     if let Some(format) = probe {
         argv.push("--enumerate".to_string());
         argv.push(format.as_str().to_string());
@@ -442,11 +512,7 @@ mod tests {
     use crate::link::LinkEvent;
 
     fn a_target() -> SshDestination {
-        SshDestination {
-            host: "203.0.113.7".to_string(),
-            port: 41022,
-            user: "root".to_string(),
-        }
+        SshDestination::rented("203.0.113.7", 41022, "root")
     }
 
     /// The format a probe argv is built for.
@@ -505,6 +571,64 @@ mod tests {
     /// A boxed [`StubLink`] as an `Ok` attempt result.
     fn stub_link() -> Result<Box<dyn WorkerLink>> {
         Ok(Box::new(StubLink))
+    }
+
+    #[test]
+    fn a_known_destination_adds_nothing_but_batch_mode() {
+        // The operator configured it: the local ssh configuration supplies the
+        // port, the user, and the key, so stating any of them here would
+        // override what the operator wrote.
+        assert_eq!(
+            SshDestination::known("gpubox").prefix(),
+            ["ssh", "-o", "BatchMode=yes", "gpubox", "--"]
+        );
+    }
+
+    #[test]
+    fn a_rented_destination_states_its_port_user_and_first_contact_policy() {
+        assert_eq!(
+            SshDestination::rented("203.0.113.7", 41022, "root").prefix(),
+            [
+                "ssh",
+                "-o",
+                "BatchMode=yes",
+                "-o",
+                "StrictHostKeyChecking=accept-new",
+                "-o",
+                "ConnectTimeout=10",
+                "-p",
+                "41022",
+                "root@203.0.113.7",
+                "--",
+            ]
+        );
+    }
+
+    #[test]
+    fn every_prefix_ends_at_the_option_terminator() {
+        // The caller appends the remote command, so a prefix that did not end
+        // ssh's own options would let a command argument be read as one.
+        for destination in [
+            SshDestination::known("gpubox"),
+            SshDestination::rented("203.0.113.7", 41022, "root"),
+        ] {
+            let prefix = destination.prefix();
+            assert_eq!(prefix.last().map(String::as_str), Some("--"));
+            assert_eq!(prefix.first().map(String::as_str), Some("ssh"));
+            assert!(
+                prefix.contains(&"BatchMode=yes".to_string()),
+                "an unauthenticated destination must fail rather than prompt"
+            );
+        }
+    }
+
+    #[test]
+    fn a_destination_names_the_host_its_workers_are_journaled_under() {
+        assert_eq!(SshDestination::known("gpubox").host(), "gpubox");
+        assert_eq!(
+            SshDestination::rented("203.0.113.7", 41022, "root").host(),
+            "203.0.113.7"
+        );
     }
 
     #[test]
@@ -600,11 +724,7 @@ mod tests {
             rx.recv_timeout(Duration::from_millis(100)).is_err(),
             "the spawn is blocked while replacing"
         );
-        let replacement = SshDestination {
-            host: "198.51.100.9".to_string(),
-            port: 50022,
-            user: "root".to_string(),
-        };
+        let replacement = SshDestination::rented("198.51.100.9", 50022, "root");
         transport.swap_to_live(replacement.clone());
         assert!(
             rx.recv_timeout(Duration::from_secs(5))
@@ -707,11 +827,7 @@ mod tests {
         // supervisor swaps a replacement in, and the retry lands on the new
         // target instead of faulting the run.
         let transport = a_transport(SpawnMode::Ssh);
-        let replacement = SshDestination {
-            host: "198.51.100.9".to_string(),
-            port: 50022,
-            user: "root".to_string(),
-        };
+        let replacement = SshDestination::rented("198.51.100.9", 50022, "root");
         let attempts = AtomicUsize::new(0);
         let seen: Mutex<Vec<SshDestination>> = Mutex::new(Vec::new());
         let outcome = transport.spawn_retrying(true, |target| {

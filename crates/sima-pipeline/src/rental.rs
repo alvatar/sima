@@ -62,11 +62,7 @@ pub(crate) fn transport_mode(spec: &Rented) -> Result<SpawnMode> {
 /// Maps a provider's ssh endpoint into the transport's target, the seam that
 /// keeps the transport free of any dependency on the provider crate.
 pub(crate) fn endpoint_target(endpoint: SshEndpoint) -> SshDestination {
-    SshDestination {
-        host: endpoint.host,
-        port: endpoint.port,
-        user: endpoint.user,
-    }
+    SshDestination::rented(endpoint.host, endpoint.port, endpoint.user)
 }
 
 /// How many times an instance's enumeration probe is retried before its
@@ -213,7 +209,7 @@ fn acquire_one<'a>(
             never_cancelled(),
         )?;
         let target = endpoint_target(guard.endpoint().clone());
-        let host = target.host.clone();
+        let host = target.host().to_string();
         // The probe drives the machine's device enumeration; a failure drops
         // the guard, tearing the machine down.
         let slots = match probe_slots(mode, &target, spec.ready_poll, format) {
@@ -1220,9 +1216,13 @@ mod tests {
             panic!("the stub instance is ready at once");
         };
         let target = endpoint_target(endpoint.clone());
-        assert_eq!(target.host, endpoint.host);
-        assert_eq!(target.port, endpoint.port);
-        assert_eq!(target.user, endpoint.user);
+        assert_eq!(target.host(), endpoint.host);
+        // The endpoint's port and user reach the invocation, which is where
+        // they are observable: a rented destination states both explicitly.
+        assert_eq!(
+            target.prefix(),
+            SshDestination::rented(&endpoint.host, endpoint.port, &endpoint.user).prefix()
+        );
         Ok(())
     }
 

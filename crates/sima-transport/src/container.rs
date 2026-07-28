@@ -27,6 +27,7 @@ use sima_trace::Emitter;
 
 use crate::link::{LinkEvent, SpawnOutcome, WorkerLink, WorkerTransport};
 use crate::protocol::{Assignment, Hello};
+use crate::ssh::SshDestination;
 use crate::subprocess::{EventContext, hello, spawn_worker};
 
 /// The container command the worker runs as; the runtime execs it as the
@@ -248,18 +249,13 @@ pub fn image_inspect_argv(host: Option<&str>, runtime: &str, image: &str) -> Vec
     argv
 }
 
-/// The ssh wrapper prefixing a remote command, or an empty vector for a local
-/// runtime. `BatchMode=yes` never prompts, so an unauthenticated host is a
-/// clean spawn error rather than a hang; `--` ends ssh's own options.
+/// The ssh wrapper prefixing a command on another machine, or an empty vector
+/// for a container runtime here. The destination builds its own invocation, so
+/// this is the one place the container transport decides whether there is a hop
+/// at all.
 fn ssh_prefix(host: Option<&str>) -> Vec<String> {
     match host {
-        Some(host) => vec![
-            "ssh".to_string(),
-            "-o".to_string(),
-            "BatchMode=yes".to_string(),
-            host.to_string(),
-            "--".to_string(),
-        ],
+        Some(host) => SshDestination::known(host).prefix(),
         None => Vec::new(),
     }
 }
