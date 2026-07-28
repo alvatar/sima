@@ -391,7 +391,7 @@ pub(crate) fn bootstrap_image(host: Option<&str>, container: &Container) -> Resu
         None => (
             "locally".to_string(),
             format!(
-                "podman build -t {} -f containers/worker/Containerfile .",
+                "podman build -t {} -f containers/sima/Containerfile .",
                 container.image
             ),
         ),

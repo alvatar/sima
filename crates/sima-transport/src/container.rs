@@ -310,7 +310,7 @@ mod tests {
         let argv = run_argv(
             Some("gpubox"),
             "docker",
-            "sima-worker:latest",
+            "sima:latest",
             &["--gpus".to_string(), "all".to_string()],
             "sima-w-run-3",
         );
@@ -330,7 +330,7 @@ mod tests {
                 "sima-w-run-3",
                 "--gpus",
                 "all",
-                "sima-worker:latest",
+                "sima:latest",
                 "sima-worker",
             ]
         );
@@ -377,7 +377,7 @@ mod tests {
         let argv = probe_argv(
             Some("gpubox"),
             "docker",
-            "sima-worker:latest",
+            "sima:latest",
             &["--gpus".to_string(), "all".to_string()],
             &FormatId::new("ca_evolution.gray_scott.v1").expect("format id"),
         );
@@ -395,7 +395,7 @@ mod tests {
                 "-i",
                 "--gpus",
                 "all",
-                "sima-worker:latest",
+                "sima:latest",
                 "sima-worker",
                 "--enumerate",
                 "ca_evolution.gray_scott.v1",

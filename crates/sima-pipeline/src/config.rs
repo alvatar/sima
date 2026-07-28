@@ -190,8 +190,10 @@ use crate::devices::DeviceSelector;
 const DEFAULT_IMAGE: &str = "localhost/sima:latest";
 /// The container runtime a machine of yours uses when its entry names none.
 const DEFAULT_RUNTIME: &str = "docker";
-/// The worker image a rented machine runs when its entry names none.
-const DEFAULT_RENTED_IMAGE: &str = "ghcr.io/alvatar/sima-worker:latest";
+/// The image a rented machine runs when its entry names none. It carries both
+/// binaries: `sima-worker` for the machine's workers, and `sima` for the
+/// orchestrator of a run migrated onto it.
+const DEFAULT_RENTED_IMAGE: &str = "ghcr.io/alvatar/sima:latest";
 /// The disk a rented machine is provisioned with when its entry names none.
 const DEFAULT_DISK_GB: u64 = 32;
 /// How long a rental waits for an instance to become reachable when its entry
@@ -324,7 +326,8 @@ pub struct OwnedClass {
 pub struct Rented {
     /// The control-plane backend to acquire through.
     pub provider: ProviderId,
-    /// The worker image each instance runs.
+    /// The image each instance runs: `sima-worker` for its workers, and the
+    /// `sima` a run migrated onto it is driven by.
     pub image: String,
     /// The disk each instance is provisioned with, in gigabytes.
     pub disk_gb: u64,
@@ -1962,7 +1965,7 @@ mod tests {
             panic!("expected a rented machine");
         };
         assert_eq!(rented.provider, ProviderId::Vast);
-        assert_eq!(rented.image, "ghcr.io/alvatar/sima-worker:latest");
+        assert_eq!(rented.image, "ghcr.io/alvatar/sima:latest");
         assert_eq!(rented.disk_gb, 32);
         assert_eq!(rented.ready_timeout, Duration::from_millis(600_000));
         assert_eq!(rented.ready_poll, Duration::from_millis(5_000));

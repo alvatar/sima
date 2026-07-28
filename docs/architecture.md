@@ -645,10 +645,13 @@ that has none.
 
 ### Image delivery
 
-A rented machine boots the worker image, and the host pulls it from a
+A rented machine boots the sima image, and the host pulls it from a
 registry before the container exists: the image is published to ghcr.io
 under the repository owner's account, public, so a create request carries no
-pull credentials and no registry credential ever reaches a provider.
+pull credentials and no registry credential ever reaches a provider. It is
+built and pushed by the repository's own workflow, from source at a known
+commit, and the workflow then checks the copy it pushed — both binaries
+present, and the enumeration probe answering from inside it.
 Shipping the image to each instance after boot is rejected because the pull
 happens before there is anything to ship it to, and because a
 multi-gigabyte transfer per instance is bounded by the uplink it would leave
@@ -1276,10 +1279,14 @@ minus the ssh hop.
   present would bind workers to devices their substrate faults on, so the format
   travels with the probe and `sima-domains` resolves it to the backend to ask.
 
-- **The image.** A multi-stage `Containerfile` builds `sima-worker` in a
-  `rust:<pinned>-bookworm` stage whose glibc matches the `debian:bookworm-slim`
-  runtime stage — the development host's glibc is newer than any stable base,
-  so the binary is built inside. The runtime stage bakes the Vulkan loader and
+- **The image.** A multi-stage `Containerfile` builds `sima-worker` and `sima`
+  in a `rust:<pinned>-bookworm` stage whose glibc matches the
+  `debian:bookworm-slim` runtime stage — the development host's glibc is newer
+  than any stable base, so the binaries are built inside. `sima-worker` is the
+  entrypoint, so a worker starts as it always has; `sima` is on the path beside
+  it because a machine rented to host a [migrated](#migration) run drives it
+  from inside this image. One image serves both, so there is one thing to build
+  and one thing to publish. The runtime stage bakes the Vulkan loader and
   the Mesa ICDs; NVIDIA user-space libraries are not baked, since they must
   match the host kernel driver, and the host's nvidia-container-toolkit injects
   them at container start through CDI. Delivery to a declared host is

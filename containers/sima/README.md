@@ -1,10 +1,17 @@
-# sima-worker container image
+# sima container image
 
 A stateless executor host. It runs `sima-worker` as its entrypoint and speaks
 the framed stdio protocol over the container's stdin/stdout, so the
 orchestrator drives it exactly as a local worker — `docker run --rm -i` (or
 `podman run --rm -i`) is the whole invocation. The image carries no store and
 no run state; every task input and output crosses the pipe.
+
+`sima` is on the path beside the worker, because a machine rented to host a
+migrated run drives it from inside this image: the far side runs `sima run`
+there, and answers `sima sync-serve` and `sima follow-serve` over the hop the
+migration arrived on. A machine of yours does not need it — its own `sima` runs
+outside the container, on the machine itself — but one image serves both, so
+there is one thing to build and one thing to publish.
 
 `podman` and `docker` accept the same arguments here, so every single-runtime
 example below runs verbatim under either — read `podman` as `docker` throughout.
@@ -15,11 +22,11 @@ Delivery names both together, one per machine.
 From the workspace root:
 
 ```
-podman build -t localhost/sima:latest -f containers/worker/Containerfile .
+podman build -t localhost/sima:latest -f containers/sima/Containerfile .
 ```
 
-The worker is compiled inside the image against bookworm's glibc, so the
-binary matches the runtime stage regardless of the host's glibc.
+Both binaries are compiled inside the image against bookworm's glibc, so they
+match the runtime stage regardless of the host's glibc.
 
 ## Device access
 
@@ -63,8 +70,22 @@ instead, with no ssh hop. There the image has no default: naming one is what
 asks for a container, and without it the workers are plain subprocesses.
 
 A rented machine names its image too, but as a registry reference the provider
-host can pull — `ghcr.io/alvatar/sima-worker:latest` by default — since nothing
-is delivered to a machine that did not exist a minute ago.
+host can pull — `ghcr.io/alvatar/sima:latest` by default — since nothing is
+delivered to a machine that did not exist a minute ago. That is also the image a
+migration onto a rented machine expects to find `sima` in.
+
+## Publishing
+
+The registry copy is built and pushed by `.github/workflows/image.yml`, on a
+push that touches the image or its inputs and on demand with
+`gh workflow run image.yml`. It builds for `linux/amd64`, pushes to
+`ghcr.io/<owner>/sima`, and then checks the image it just pushed: both binaries
+present and executable, and `sima-worker --enumerate stub.v1` answering from
+inside it. A published image that fails that check fails the workflow.
+
+Publishing from CI rather than from a workstation is not a preference: the
+registry copy is what every rented machine pulls, so it must come from the
+repository's own source at a known commit.
 
 ## Delivery to a manually provisioned host
 

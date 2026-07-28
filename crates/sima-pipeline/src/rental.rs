@@ -880,7 +880,7 @@ mod tests {
     fn spec() -> Rented {
         Rented {
             provider: ProviderId::Stub,
-            image: "ghcr.io/alvatar/sima-worker:latest".to_string(),
+            image: "ghcr.io/alvatar/sima:latest".to_string(),
             disk_gb: 32,
             ready_timeout: Duration::from_millis(500),
             ready_poll: Duration::ZERO,
