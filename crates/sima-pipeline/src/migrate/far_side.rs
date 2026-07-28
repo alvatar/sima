@@ -67,6 +67,11 @@ pub(crate) trait FarSide {
     /// on `SIGINT` and leaves the far store resumable.
     fn interrupt(&self, pid: u32) -> Result<()>;
 
+    /// Ends the far run outright, for a run that outlasted the wind-down it was
+    /// asked for. The store it leaves is resumable, which is what a run that
+    /// dies without winding down always leaves.
+    fn terminate(&self, pid: u32) -> Result<()>;
+
     /// Runs one store sync session against the far side, over this side's own
     /// key set and the object scope the direction calls for.
     fn sync(&self, store: &Store, keys: &[TaskKey], scope: ObjectScope<'_>) -> Result<SyncReport>;
@@ -268,6 +273,15 @@ impl FarSide for Remote {
         // A run that exited between the poll and the signal is not a failure:
         // the wind-down wanted it gone, and it is.
         self.shell(&format!("kill -INT {pid} 2>/dev/null\nexit 0\n"))?;
+        Ok(())
+    }
+
+    fn terminate(&self, pid: u32) -> Result<()> {
+        // `SIGKILL` rather than `SIGTERM`: the graceful request has already been
+        // made and re-made for the whole wind-down bound, so what is wanted here
+        // is the signal a process cannot decline. A run already gone is the
+        // outcome, not a fault.
+        self.shell(&format!("kill -KILL {pid} 2>/dev/null\nexit 0\n"))?;
         Ok(())
     }
 

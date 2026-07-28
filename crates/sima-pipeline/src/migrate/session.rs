@@ -297,8 +297,10 @@ impl Session<'_> {
         let (state, wound_down) = self.watch(pid, reattached.is_some())?;
 
         // The pull takes everything the far side's records reference, so the
-        // store that comes home is complete. The far run has been waited out,
-        // so the far side's run lock is free for `sima sync-serve` to take.
+        // store that comes home is complete. The far run has ended by now on
+        // every path that reaches here — of its own accord, on the wind-down's
+        // signal, or on the termination the wind-down escalates to — so the far
+        // side's run lock is free for `sima sync-serve` to take.
         let keys = task_keys(self.config, self.store)?;
         self.far.sync(self.store, &keys, ObjectScope::Referenced)?;
         self.settle(state, wound_down)
@@ -409,10 +411,10 @@ impl Session<'_> {
     ///
     /// `sima sync-serve` takes the far side's run lock and the far `sima run`
     /// holds it while running, so the pull cannot proceed until the far run is
-    /// gone. A wait that runs out is recorded and the pull attempted anyway: a
-    /// far run that has exited since is pulled normally, and one still holding
-    /// the lock makes the pull fail cleanly naming the lock, with both facts in
-    /// the journal.
+    /// gone. A wait that runs out is recorded and then escalated: the run is
+    /// ended outright, and one that survives even that fails the migration by
+    /// name. Either way the far run does not outlive the migration that started
+    /// it.
     ///
     /// The signal is re-sent on every poll rather than once, because a far run
     /// is not signallable from the instant it starts. A shell starts an
@@ -438,7 +440,7 @@ impl Session<'_> {
                     source: "migrate".to_string(),
                     message: format!(
                         "the run on {:?} did not exit within {}ms of the wind-down; \
-                         pulling anyway",
+                         terminating it",
                         self.destination.name,
                         bound.as_millis()
                     ),
@@ -446,6 +448,22 @@ impl Session<'_> {
                     host: Some(self.destination.name.to_string()),
                     task: None,
                 });
+                // Ending it outright is safe by the same invariant crash
+                // recovery rests on: a run that dies without winding down leaves
+                // a resumable store. Abandoning it is what is not safe — an
+                // owned destination has no rental to destroy, so the run would
+                // keep computing, and the pull it is left in front of cannot
+                // take a lock the survivor still holds.
+                self.far.terminate(pid)?;
+                // One interval for the far side to reap it, then the answer is
+                // final: nothing here can end a process that survived that.
+                sleep(poll);
+                if self.far.driving()?.is_some() {
+                    return Err(Error::Validation(format!(
+                        "the run on {:?} is still there as pid {pid} after being terminated",
+                        self.destination.name
+                    )));
+                }
                 return Ok(());
             }
             sleep(poll);
@@ -538,6 +556,7 @@ mod tests {
         Sync(Scope),
         Follow,
         Interrupt(u32),
+        Terminate(u32),
     }
 
     /// The object scope a sync was handed.
@@ -547,6 +566,18 @@ mod tests {
         Named,
         /// Everything the records reference: a pull.
         Referenced,
+    }
+
+    /// What ends a scripted far run, which is what the wind-down's escalation
+    /// is measured against.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Ending {
+        /// Winds down on the first signal it hears, as `sima run` does.
+        OnInterrupt,
+        /// Outlasts the wind-down and ends when it is terminated.
+        OnTermination,
+        /// Never exits, however it is asked to.
+        Never,
     }
 
     /// The push, named where a step sequence reads it.
@@ -565,8 +596,8 @@ mod tests {
         devices: Vec<DeviceInfo>,
         /// The far-side run's pid while it is alive.
         alive: Arc<Mutex<Option<u32>>>,
-        /// A far run that never exits, however it is asked to.
-        stubborn: bool,
+        /// What ends this far run.
+        ending: Ending,
         /// How many signals the far run discards before it winds down: a run
         /// that has not yet installed its own handler is not signallable, and
         /// the disposition it inherited discards what it is sent.
@@ -593,7 +624,7 @@ mod tests {
                     member: 0,
                 }],
                 alive: Arc::new(Mutex::new(None)),
-                stubborn: false,
+                ending: Ending::OnInterrupt,
                 deaf: Mutex::new(0),
                 polls: Arc::new(Mutex::new(VecDeque::new())),
                 far: None,
@@ -610,7 +641,14 @@ mod tests {
 
         /// A far run that never exits, however it is asked to.
         fn stubborn(mut self) -> Scripted<'a> {
-            self.stubborn = true;
+            self.ending = Ending::Never;
+            self
+        }
+
+        /// A far run that keeps going through the whole wind-down and ends only
+        /// when it is terminated.
+        fn outlasting_the_wind_down(mut self) -> Scripted<'a> {
+            self.ending = Ending::OnTermination;
             self
         }
 
@@ -675,7 +713,17 @@ mod tests {
                 *deaf -= 1;
                 return Ok(());
             }
-            if !self.stubborn {
+            if self.ending == Ending::OnInterrupt {
+                *self.alive.lock().expect("the pid lock") = None;
+            }
+            Ok(())
+        }
+
+        fn terminate(&self, pid: u32) -> Result<()> {
+            self.record(Step::Terminate(pid));
+            // A termination is not declinable, so only a far run scripted to
+            // outlast everything survives it.
+            if self.ending != Ending::Never {
                 *self.alive.lock().expect("the pid lock") = None;
             }
             Ok(())
@@ -712,7 +760,7 @@ mod tests {
                 },
                 polls: Arc::clone(&self.polls),
                 alive: Arc::clone(&self.alive),
-                stubborn: self.stubborn,
+                ending: self.ending,
             }))
         }
     }
@@ -723,7 +771,7 @@ mod tests {
         info: FeedInfo,
         polls: Arc<Mutex<VecDeque<Vec<Record>>>>,
         alive: Arc<Mutex<Option<u32>>>,
-        stubborn: bool,
+        ending: Ending,
     }
 
     impl RunFeed for ScriptedFeed {
@@ -746,7 +794,7 @@ mod tests {
                         | Event::RunInterrupted { .. }
                 )
             });
-            if terminal && !self.stubborn {
+            if terminal && self.ending != Ending::Never {
                 // A `sima run` that wrote its terminal event exits.
                 *self.alive.lock().expect("the pid lock") = None;
             }
@@ -1122,30 +1170,73 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn a_far_run_that_never_exits_is_reported_and_the_pull_is_still_attempted() -> Result<()> {
-        let local = local(RENTED, PROMPT, Some(3));
-        let run = local.config.run.id();
-        let far = Scripted::new()
-            .stubborn()
-            .delivering(vec![vec![started(&run), committed("aa")]]);
-        let interrupt = AtomicBool::new(true);
-
-        let (outcome, records) = session_over(&local, &far, None, &interrupt);
-        assert!(matches!(outcome?, MigrateOutcome::Interrupted { .. }));
-        let report = records
+    /// The one diagnostic a session reported, of which the wind-down's expiry
+    /// is the only one these tests produce.
+    fn reported(records: &[Record]) -> String {
+        records
             .iter()
             .find_map(|record| match &record.event {
                 Event::Diagnostic { message, .. } => Some(message.clone()),
                 _ => None,
             })
-            .expect("the timeout is reported");
+            .expect("the timeout is reported")
+    }
+
+    #[test]
+    fn a_far_run_that_outlasts_the_wind_down_is_terminated_and_the_pull_follows() -> Result<()> {
+        let local = local(RENTED, PROMPT, Some(3));
+        let run = local.config.run.id();
+        let far = Scripted::new()
+            .outlasting_the_wind_down()
+            .delivering(vec![vec![started(&run), committed("aa")]]);
+
+        let (outcome, records) = session_over(&local, &far, None, &AtomicBool::new(true));
+        assert!(matches!(outcome?, MigrateOutcome::Interrupted { .. }));
+        // The graceful path was tried and reported before anything harder was
+        // reached for.
+        let report = reported(&records);
         assert!(report.contains("slingshot"), "names the machine: {report}");
         assert!(report.contains("did not exit"), "{report}");
+
+        let steps = far.steps();
+        let terminated = steps
+            .iter()
+            .position(|step| *step == Step::Terminate(PID))
+            .expect("the far run was terminated");
+        let signalled = steps
+            .iter()
+            .position(|step| *step == Step::Interrupt(PID))
+            .expect("the far run was signalled first");
+        assert!(signalled < terminated, "signalled before terminated");
         assert_eq!(
-            far.steps().last(),
+            steps.last(),
             Some(&PULL),
-            "the pull is attempted anyway"
+            "the pull follows a far run that is really gone: {steps:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_far_run_that_survives_termination_fails_the_migration_naming_it() -> Result<()> {
+        // Nothing ended it, so the far side's run lock is still held and the
+        // pull cannot succeed. Failing here names the cause; reaching the sync
+        // would report the lock instead.
+        let local = local(RENTED, PROMPT, Some(3));
+        let run = local.config.run.id();
+        let far = Scripted::new()
+            .stubborn()
+            .delivering(vec![vec![started(&run), committed("aa")]]);
+
+        let (outcome, records) = session_over(&local, &far, None, &AtomicBool::new(true));
+        let error = outcome.expect_err("a far run that will not end fails the migration");
+        let text = error.to_string();
+        assert!(text.contains("slingshot"), "names the machine: {text}");
+        assert!(text.contains(&PID.to_string()), "names the pid: {text}");
+        assert!(reported(&records).contains("did not exit"));
+        assert!(
+            !far.steps().contains(&PULL),
+            "the pull is not attempted: {:?}",
+            far.steps()
         );
         Ok(())
     }
@@ -1298,6 +1389,9 @@ mod tests {
             fn interrupt(&self, _: u32) -> Result<()> {
                 unreachable!("the migration never got past the reach check")
             }
+            fn terminate(&self, _: u32) -> Result<()> {
+                unreachable!("the migration never got past the reach check")
+            }
             fn sync(&self, _: &Store, _: &[TaskKey], _: ObjectScope<'_>) -> Result<SyncReport> {
                 unreachable!("the migration never got past the reach check")
             }
@@ -1317,6 +1411,17 @@ mod tests {
             run_to(&interrupted, true)?,
             1,
             "the interrupt path tears down"
+        );
+
+        // A far run that survived even termination fails the migration, and the
+        // teardown that destroys the machine it is on runs on that path too.
+        let unkillable = Scripted::new()
+            .stubborn()
+            .delivering(vec![vec![started(&run), committed("aa")]]);
+        assert_eq!(
+            run_to(&unkillable, true)?,
+            1,
+            "a far run that will not end still tears down"
         );
         Ok(())
     }
