@@ -381,18 +381,22 @@ fn bootstrap_image(host: Option<&str>, container: &Container) -> Result<()> {
     if command_succeeds(&argv)? {
         return Ok(());
     }
+    // Each verb runs where its runtime lives, so both name the entry's own
+    // runtime rather than assuming one: a docker machine must not be told to
+    // run podman.
+    let runtime = &container.runtime;
     let (place, fix) = match host {
         Some(host) => (
             format!("on {host:?}"),
             format!(
-                "podman save {} | ssh {host} {} load",
-                container.image, container.runtime
+                "{runtime} save {} | ssh {host} {runtime} load",
+                container.image
             ),
         ),
         None => (
             "locally".to_string(),
             format!(
-                "podman build -t {} -f containers/worker/Containerfile .",
+                "{runtime} build -t {} -f containers/worker/Containerfile .",
                 container.image
             ),
         ),
