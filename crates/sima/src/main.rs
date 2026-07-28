@@ -18,7 +18,9 @@
 //! A run executes on the machines the invocation asks for, never on every
 //! machine a config happens to declare: `run` and `tui` use `[orchestrator]`
 //! alone, and `--fleet` adds every member of `[fleet]`. Without it no provider
-//! is constructed and no rental credential is read.
+//! is constructed and no rental credential is read. `migrate` moves the whole
+//! run — its store and its orchestrator — onto the one machine
+//! `[orchestrator].migrate` names, and brings the results back.
 //!
 //! All orchestration lives in `sima-pipeline` — this binary parses arguments,
 //! renders output, registers the interrupt flag, and maps outcomes to exit
@@ -27,9 +29,11 @@
 //! - 0 — the run finalized (or `status` answered);
 //! - 2 — a definitive candidate failure;
 //! - 130 — interrupted by Ctrl-C, store resumable;
-//! - 1 — everything else: infrastructure fault, config error, usage error.
+//! - 1 — everything else: infrastructure fault, config error, usage error, and
+//!   a `migrate` that came home with tasks outstanding.
 
 mod follow;
+mod migrate;
 mod reconcile;
 mod render;
 mod tui;
@@ -72,6 +76,7 @@ fn main() -> ExitCode {
         ["run", config, "--fleet"] if host.is_none() => {
             run_command(&resolve_config(config), Engagement::Fleet)
         }
+        ["migrate", config] if host.is_none() => migrate::migrate_command(&resolve_config(config)),
         ["rm", config] if host.is_none() => rm_command(&resolve_config(config)),
         ["reconcile", config] if host.is_none() => {
             reconcile::reconcile_command(&resolve_config(config), ReconcileScope::Workers)
@@ -121,6 +126,7 @@ fn main() -> ExitCode {
                  \x20      sima report <config> --timeline    report the run's metrics and its timeline\n\
                  \x20      sima report <config> --spend       report the run's rental spend\n\
                  \x20      sima report <config> --machines    report machine reputation and blacklisting\n\
+                 \x20      sima migrate <config>              move the run onto the host [orchestrator] names\n\
                  \x20      sima rm <config>                   delete the run and what only it references\n\
                  \x20      sima reconcile <config>            destroy the machines a crashed run left running\n\
                  \x20      sima reconcile <config> --hosted   destroy the machines hosting a migrated run too\n\

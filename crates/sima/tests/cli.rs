@@ -774,6 +774,44 @@ fn a_malformed_config_exits_1() {
 }
 
 #[test]
+fn migrate_parses_and_reaches_the_pipeline() {
+    // A config whose `[orchestrator]` names no `migrate` key names no
+    // destination, which the pipeline refuses. Reaching that refusal is what
+    // says the arguments parsed: a form the binary does not know falls to the
+    // usage text instead.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config = write_config(dir.path(), r#""succeed""#);
+    let output = sima(&["migrate", config.to_str().expect("utf-8 path")]);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).expect("stderr is UTF-8");
+    assert!(
+        !stderr.contains("usage: sima"),
+        "the arguments parsed: {stderr}"
+    );
+    assert!(
+        stderr.contains("migrate"),
+        "the config names no destination: {stderr}"
+    );
+}
+
+#[test]
+fn migrate_refuses_a_host_because_it_drives_a_run() {
+    // `--on` observes a run on another machine; a migration drives one, and
+    // where it drives is the config's to say.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config = write_config(dir.path(), r#""succeed""#);
+    let output = sima(&[
+        "migrate",
+        config.to_str().expect("utf-8 path"),
+        "--on",
+        "gpubox",
+    ]);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).expect("stderr is UTF-8");
+    assert!(stderr.contains("usage: sima"), "{stderr}");
+}
+
+#[test]
 fn an_unknown_subcommand_exits_1_with_usage_on_stderr() {
     for args in [
         vec!["frobnicate"],
@@ -806,6 +844,9 @@ fn the_usage_text_names_every_command_form() {
         "--spend",
         "--machines",
         "sima rm",
+        "sima reconcile",
+        "--hosted",
+        "sima migrate",
         "sima tui",
         "sima follow",
         "--on",
