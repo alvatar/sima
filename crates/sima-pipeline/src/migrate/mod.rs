@@ -9,6 +9,9 @@
 //! - [`destination`] — which machine, read from `[orchestrator].migrate`.
 //! - [`far_config`] — where the run lives there, and what it reads when it
 //!   arrives.
+//! - [`objects`] — which objects a push carries, of those its records
+//!   reference.
 
 pub(crate) mod destination;
 pub(crate) mod far_config;
+pub(crate) mod objects;

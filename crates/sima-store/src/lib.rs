@@ -54,4 +54,4 @@ pub use manifest::{Manifest, ManifestEntry};
 pub use retention::RemovalReport;
 pub use spend::SpendEntry;
 pub use store::Store;
-pub use sync::{SYNC_PROTOCOL_VERSION, SyncReport, SyncRole};
+pub use sync::{ObjectScope, SYNC_PROTOCOL_VERSION, SyncReport, SyncRole};

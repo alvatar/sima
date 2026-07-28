@@ -17,6 +17,23 @@ use crate::catalog::referenced_objects;
 use crate::store::Store;
 use crate::sync::message::{SYNC_PROTOCOL_VERSION, SyncMessage};
 
+/// Which objects a side advertises, and therefore the most the peer can ask it
+/// for: the scope bounds the peer's want, since a want is `theirs − mine` over
+/// what was advertised.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ObjectScope<'a> {
+    /// Every object the records in the key set reference. A side that holds a
+    /// complete store advertises everything, which is what a pull wants: the
+    /// store that comes home must be complete.
+    Referenced,
+    /// Exactly the listed objects, of those this side holds. A push uses it to
+    /// send the records in full — a chain is traversable forward only, so
+    /// without the prefix records the far side cannot locate the frontier at
+    /// all — while sending only the state bytes the far side will actually
+    /// read.
+    Named(&'a [Hash]),
+}
+
 /// Which side of a sync session a store plays. The roles interlock the
 /// exchange so that at every step one side writes while the other reads,
 /// leaving the session deadlock-free over an unbuffered duplex pipe.
@@ -69,6 +86,7 @@ impl Store {
     pub fn sync(
         &self,
         keys: &[TaskKey],
+        scope: ObjectScope<'_>,
         reader: &mut dyn Read,
         writer: &mut dyn Write,
         role: SyncRole,
@@ -88,7 +106,7 @@ impl Store {
         }
 
         // Advertise this side's inventory within the key set; read the peer's.
-        let (my_records, my_objects) = self.inventory(keys)?;
+        let (my_records, my_objects) = self.have(keys, scope)?;
         let my_have = SyncMessage::Have {
             records: my_records.iter().map(|(k, h)| (*k, *h)).collect(),
             objects: my_objects.iter().copied().collect(),
@@ -164,18 +182,46 @@ impl Store {
         })
     }
 
-    /// This side's inventory within the key set: the held records as a
-    /// key→digest map, and the set of every object those records reference.
-    /// The object set is derived from the records, never a full CAS scan.
-    fn inventory(&self, keys: &[TaskKey]) -> Result<(BTreeMap<TaskKey, Hash>, BTreeSet<Hash>)> {
+    /// What this side advertises, filling the protocol's `Have`: the records it
+    /// holds within the key set as a key→digest map, and the objects it offers
+    /// under `scope`.
+    ///
+    /// Records are always every one this side holds — they are what makes a
+    /// chain traversable — and the object set is derived from them, never a
+    /// full CAS scan. The advertised objects are filtered to what this side
+    /// actually holds, so a store with gaps never offers bytes it cannot serve:
+    /// a peer's want is bounded by this, and a want it could not fulfil would
+    /// fail the session.
+    fn have(
+        &self,
+        keys: &[TaskKey],
+        scope: ObjectScope<'_>,
+    ) -> Result<(BTreeMap<TaskKey, Hash>, BTreeSet<Hash>)> {
         let mut records = BTreeMap::new();
-        let mut objects = BTreeSet::new();
+        let mut referenced = BTreeSet::new();
         // A BTreeSet dedups and orders the keys, so a caller's repeated key
-        // advertises once and the inventory is deterministic.
+        // advertises once and the advertisement is deterministic.
         for key in keys.iter().copied().collect::<BTreeSet<_>>() {
             if let Some(record) = self.record(&key)? {
-                objects.extend(referenced_objects(&record));
+                referenced.extend(referenced_objects(&record));
                 records.insert(key, hash_bytes(&record.to_bytes()));
+            }
+        }
+        let offered = match scope {
+            ObjectScope::Referenced => referenced,
+            // A named object outside the key set's references is not this
+            // side's to offer under these keys, so the named set intersects
+            // what the records reference.
+            ObjectScope::Named(named) => named
+                .iter()
+                .copied()
+                .filter(|hash| referenced.contains(hash))
+                .collect(),
+        };
+        let mut objects = BTreeSet::new();
+        for hash in offered {
+            if self.has(&hash)? {
+                objects.insert(hash);
             }
         }
         Ok((records, objects))
@@ -244,7 +290,7 @@ impl Store {
                             record.identity.key()
                         )));
                     }
-                    self.commit_record(&record)?;
+                    self.replicate(&record)?;
                 }
                 other => return Err(unexpected("record", &other)),
             }
@@ -340,7 +386,13 @@ mod tests {
         .expect("frame hello");
         let mut reader = incoming.as_slice();
         let mut sink = Vec::new();
-        match store.sync(&[], &mut reader, &mut sink, SyncRole::Responder) {
+        match store.sync(
+            &[],
+            ObjectScope::Referenced,
+            &mut reader,
+            &mut sink,
+            SyncRole::Responder,
+        ) {
             Err(Error::Validation(msg)) => {
                 assert!(msg.contains("999") && msg.contains('1'), "{msg}");
             }
@@ -356,7 +408,13 @@ mod tests {
         let mut reader = incoming.as_slice();
         let mut sink = Vec::new();
         assert!(matches!(
-            store.sync(&[], &mut reader, &mut sink, SyncRole::Responder),
+            store.sync(
+                &[],
+                ObjectScope::Referenced,
+                &mut reader,
+                &mut sink,
+                SyncRole::Responder
+            ),
             Err(Error::Validation(_))
         ));
     }
@@ -399,7 +457,13 @@ mod tests {
 
         let mut reader = incoming.as_slice();
         let mut sink = Vec::new();
-        match store.sync(&[], &mut reader, &mut sink, SyncRole::Responder) {
+        match store.sync(
+            &[],
+            ObjectScope::Referenced,
+            &mut reader,
+            &mut sink,
+            SyncRole::Responder,
+        ) {
             Err(Error::Validation(msg)) => assert!(msg.contains("hashing to"), "{msg}"),
             other => panic!("expected a hash-mismatch rejection, got {other:?}"),
         }
