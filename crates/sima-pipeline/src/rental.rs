@@ -117,10 +117,18 @@ pub(crate) fn endpoint_target(endpoint: SshEndpoint) -> SshDestination {
     SshDestination::rented(endpoint.host, endpoint.port, endpoint.user)
 }
 
-/// How many times an instance's enumeration probe is retried before its
-/// acquisition is abandoned: sshd can lag the provider's `Ready`, so the first
-/// probe against a fresh host may be refused.
-const PROBE_ATTEMPTS: u32 = 6;
+/// How many times a first contact with a machine is retried before it is given
+/// up on: sshd can lag the provider's `Ready`, so the first connection to a
+/// fresh host may be refused. Both paths that reach a machine for the first
+/// time take this bound — the enumeration probe an acquisition runs, and the
+/// migration's own first contact with its destination.
+pub(crate) const PROBE_ATTEMPTS: u32 = 6;
+
+/// The longest wait between those attempts, whatever readiness poll the
+/// destination states. A poll is stated for a machine coming up and can be far
+/// longer than the lag this covers, so waiting a full one between connection
+/// attempts would spend the whole bound on a machine that was ready early.
+pub(crate) const PROBE_INTERVAL_CAP: Duration = Duration::from_secs(5);
 
 /// How many machines one instance's acquisition may burn through before it
 /// gives up. Each attempt is a paid rental torn down again, so the bound
@@ -329,7 +337,7 @@ fn probe_slots(
                 last = Some(error);
                 // No sleep after the final attempt.
                 if attempt + 1 < PROBE_ATTEMPTS {
-                    thread::sleep(poll.min(Duration::from_secs(5)));
+                    thread::sleep(poll.min(PROBE_INTERVAL_CAP));
                 }
             }
         }

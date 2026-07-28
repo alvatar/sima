@@ -48,6 +48,7 @@ use std::thread::{self, sleep};
 use std::time::{Duration, Instant};
 
 use sima_core::{Error, Result};
+use sima_domains::devices::DeviceInfo;
 use sima_model::RunId;
 use sima_provider::{
     AcquireLimits, Budget, InstanceGuard, Objective, Provider, Verdict, acquire, adopt, assess,
@@ -66,7 +67,7 @@ use crate::migrate::destination::{Destination, destination_for};
 use crate::migrate::far_config::{FarWorkers, far_config};
 use crate::migrate::far_side::{FarSide, Remote};
 use crate::migrate::objects::push_objects;
-use crate::rental::{budget_exhausted, provider_for};
+use crate::rental::{PROBE_ATTEMPTS, PROBE_INTERVAL_CAP, budget_exhausted, provider_for};
 use crate::status::{RunState, RunStatus};
 use crate::task_keys::task_keys;
 
@@ -269,9 +270,7 @@ impl Session<'_> {
     /// Steps 3 through 11: reach the machine, place the run on it, push, start,
     /// follow, wind down, pull, and settle.
     fn run_to_end(&self) -> Result<MigrateOutcome> {
-        // The destination answers that it can drive this run, and a rented one
-        // answers with the devices its far-side workers will run on.
-        let probed = self.far.devices()?;
+        let probed = self.reach()?;
         let far_text = far_config(
             self.local_text,
             FarWorkers::for_form(self.destination.form, &probed),
@@ -406,6 +405,39 @@ impl Session<'_> {
         }
     }
 
+    /// Step 3: the destination answers that it can drive this run, and a rented
+    /// one answers with the devices its far-side workers will run on.
+    ///
+    /// This is the first contact with the machine, and it is retried: sshd can
+    /// lag the provider's `Ready`, so a freshly rented host refuses the first
+    /// connection, and a machine of yours can be rebooting. It takes the bound
+    /// an acquisition's own probe takes, for the same reason and from the same
+    /// constant. A migration that failed here would have paid for a machine and
+    /// then walked away from it.
+    ///
+    /// Only this step retries. Every later operation runs against a machine
+    /// that has already answered, so a failure there states something real —
+    /// the run's directory could not be written, the far side could not be
+    /// started, a sync broke mid-session — and repeating it would hide that.
+    fn reach(&self) -> Result<Vec<DeviceInfo>> {
+        let (_, poll) = self.ready_bounds();
+        let mut last = None;
+        for attempt in 0..PROBE_ATTEMPTS {
+            match self.far.devices() {
+                Ok(devices) => return Ok(devices),
+                Err(error) => {
+                    last = Some(error);
+                    // No sleep after the final attempt, so a destination that is
+                    // simply not there fails as promptly as the attempts allow.
+                    if attempt + 1 < PROBE_ATTEMPTS {
+                        sleep(poll.min(PROBE_INTERVAL_CAP));
+                    }
+                }
+            }
+        }
+        Err(last.expect("every attempt that did not return recorded its error"))
+    }
+
     /// Step 9: asks the far run to wind down when this side ended the follow,
     /// then waits for it to exit.
     ///
@@ -425,7 +457,7 @@ impl Session<'_> {
     /// nothing and wait out the whole bound. Re-sending is idempotent against a
     /// run already winding down and costs one signal per poll interval.
     fn wind_down(&self, pid: u32, signal: bool, events: &Emitter) -> Result<()> {
-        let (bound, poll) = self.wind_down_bounds();
+        let (bound, poll) = self.ready_bounds();
         let deadline = Instant::now() + bound;
         loop {
             if signal {
@@ -505,10 +537,12 @@ impl Session<'_> {
         matches!(self.destination.form, HostForm::Rented(_)).then_some(&self.config.budget)
     }
 
-    /// How long a wind-down waits for the far run to exit, and how often it
-    /// looks. A rented machine states its own readiness bounds; a machine of
-    /// yours states none, so it takes the same defaults a rental would.
-    fn wind_down_bounds(&self) -> (Duration, Duration) {
+    /// The destination's readiness bounds: how long to wait, and how often to
+    /// look. A rented machine states its own; a machine of yours states none,
+    /// so it takes the same defaults a rental would. The wind-down waits for
+    /// the far run to exit under them, and the first contact spaces its
+    /// attempts by the poll.
+    fn ready_bounds(&self) -> (Duration, Duration) {
         match self.destination.form {
             HostForm::Rented(spec) => (spec.ready_timeout, spec.ready_poll),
             HostForm::Owned(_) => (
@@ -598,6 +632,10 @@ mod tests {
         alive: Arc<Mutex<Option<u32>>>,
         /// What ends this far run.
         ending: Ending,
+        /// How many times the first contact is refused before the machine
+        /// answers: a freshly rented host's sshd can lag its provider's
+        /// `Ready`, and the connection is refused until it is up.
+        refusals: Mutex<usize>,
         /// How many signals the far run discards before it winds down: a run
         /// that has not yet installed its own handler is not signallable, and
         /// the disposition it inherited discards what it is sent.
@@ -625,6 +663,7 @@ mod tests {
                 }],
                 alive: Arc::new(Mutex::new(None)),
                 ending: Ending::OnInterrupt,
+                refusals: Mutex::new(0),
                 deaf: Mutex::new(0),
                 polls: Arc::new(Mutex::new(VecDeque::new())),
                 far: None,
@@ -649,6 +688,13 @@ mod tests {
         /// when it is terminated.
         fn outlasting_the_wind_down(mut self) -> Scripted<'a> {
             self.ending = Ending::OnTermination;
+            self
+        }
+
+        /// A machine that refuses its first `contacts` connections before it
+        /// answers at all.
+        fn refusing(self, contacts: usize) -> Scripted<'a> {
+            *self.refusals.lock().expect("the refusal lock") = contacts;
             self
         }
 
@@ -684,6 +730,13 @@ mod tests {
     impl FarSide for Scripted<'_> {
         fn devices(&self) -> Result<Vec<DeviceInfo>> {
             self.record(Step::Devices);
+            let mut refusals = self.refusals.lock().expect("the refusal lock");
+            if *refusals > 0 {
+                *refusals -= 1;
+                return Err(Error::Validation(
+                    "ssh: connect to host: Connection refused".to_string(),
+                ));
+            }
             Ok(self.devices.clone())
         }
 
@@ -1044,6 +1097,59 @@ mod tests {
                 Step::Driving,
                 PULL,
             ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_machine_that_refuses_the_first_connection_is_reached_on_the_next() -> Result<()> {
+        // A freshly rented machine reports ready before its sshd accepts, so
+        // the first contact is refused. The migration is what was paid for; it
+        // waits for the machine rather than failing in front of it.
+        let local = local(RENTED, PROMPT, Some(3));
+        let run = local.config.run.id();
+        let far = Scripted::new()
+            .refusing(1)
+            .delivering(vec![vec![started(&run), finalized(&run)]]);
+
+        let (outcome, _) = session_over(&local, &far, None, &AtomicBool::new(false));
+        outcome?;
+        let steps = far.steps();
+        assert_eq!(
+            steps.iter().filter(|step| **step == Step::Devices).count(),
+            2,
+            "the refused contact was tried again: {steps:?}"
+        );
+        assert_eq!(
+            steps.last(),
+            Some(&PULL),
+            "the whole choreography ran past it: {steps:?}"
+        );
+        assert_eq!(
+            steps.iter().filter(|step| **step == Step::Place).count(),
+            1,
+            "nothing past the contact was repeated: {steps:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_machine_that_never_answers_fails_the_migration_within_the_bound() -> Result<()> {
+        // The tolerance is for a machine coming up, not for one that is not
+        // there: the attempts are bounded and the last refusal is the error.
+        let local = local(RENTED, PROMPT, Some(3));
+        let far = Scripted::new().refusing(usize::MAX);
+
+        let (outcome, _) = session_over(&local, &far, None, &AtomicBool::new(false));
+        let error = outcome.expect_err("a machine that never answers fails");
+        assert!(
+            error.to_string().contains("Connection refused"),
+            "the refusal itself is reported: {error}"
+        );
+        assert_eq!(
+            far.steps(),
+            vec![Step::Devices; PROBE_ATTEMPTS as usize],
+            "the contact is bounded and nothing past it ran"
         );
         Ok(())
     }
