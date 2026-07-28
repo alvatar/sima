@@ -25,6 +25,19 @@ use sima_core::Result;
 
 use crate::offer::{Offer, OfferId, Price};
 
+/// How a machine acquired from a control plane is reached.
+///
+/// A control plane hands back a machine somewhere else, so ssh is the answer
+/// for every backend that rents real hardware. The in-process backend has no
+/// machine to reach, and says so.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reachability {
+    /// Over ssh, at the endpoint the control plane reports.
+    Ssh,
+    /// By spawning a process on this machine.
+    Local,
+}
+
 /// A provider-scoped instance identifier.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InstanceId(pub String);
@@ -125,4 +138,14 @@ pub trait Provider {
     /// Destroys an instance. Destroying one already gone is `Ok`: guards
     /// and reconciliation may race each other and provider-side expiry.
     fn destroy(&self, id: &InstanceId) -> Result<()>;
+
+    /// How this backend's machines are reached. Defaulted, because a control
+    /// plane hands back a machine somewhere else; a backend whose machines are
+    /// this machine overrides it.
+    ///
+    /// The answer is the backend's own — it knows whether the endpoint it
+    /// reports names anything — so no caller infers it from the provider id.
+    fn reachability(&self) -> Reachability {
+        Reachability::Ssh
+    }
 }

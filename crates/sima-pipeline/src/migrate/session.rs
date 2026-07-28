@@ -171,7 +171,7 @@ pub fn migrate(
             )?;
             let far = Remote::rented(
                 &destination,
-                spec,
+                provider.as_ref(),
                 guard.endpoint(),
                 &run,
                 &loaded.run.format,
@@ -533,11 +533,26 @@ mod tests {
         Place,
         Driving,
         Start,
-        Push,
+        /// A sync, under the object scope the session chose for it — which is
+        /// the whole of what makes one direction a push and the other a pull.
+        Sync(Scope),
         Follow,
         Interrupt(u32),
-        Pull,
     }
+
+    /// The object scope a sync was handed.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Scope {
+        /// The identity components and each chain's frontier state: a push.
+        Named,
+        /// Everything the records reference: a pull.
+        Referenced,
+    }
+
+    /// The push, named where a step sequence reads it.
+    const PUSH: Step = Step::Sync(Scope::Named);
+    /// The pull.
+    const PULL: Step = Step::Sync(Scope::Referenced);
 
     /// A far side that records what it was asked to do and answers from a
     /// script, so the choreography is driven with no machine at all.
@@ -673,8 +688,8 @@ mod tests {
             scope: ObjectScope<'_>,
         ) -> Result<SyncReport> {
             self.record(match scope {
-                ObjectScope::Named(_) => Step::Push,
-                ObjectScope::Referenced => Step::Pull,
+                ObjectScope::Named(_) => PUSH,
+                ObjectScope::Referenced => PULL,
             });
             match self.far {
                 // The far side derives its own key set over its own store, as
@@ -973,13 +988,13 @@ mod tests {
                 Step::Devices,
                 Step::Place,
                 Step::Driving,
-                Step::Push,
+                PUSH,
                 Step::Start,
                 Step::Follow,
                 // The wind-down finds the run already gone: it wrote its
                 // terminal event and exited.
                 Step::Driving,
-                Step::Pull,
+                PULL,
             ]
         );
         Ok(())
@@ -1023,12 +1038,12 @@ mod tests {
                 Step::Devices,
                 Step::Place,
                 Step::Driving,
-                Step::Push,
+                PUSH,
                 Step::Start,
                 Step::Follow,
                 Step::Interrupt(PID),
                 Step::Driving,
-                Step::Pull,
+                PULL,
             ],
             "signal, wait, pull — in that order"
         );
@@ -1069,11 +1084,7 @@ mod tests {
             "the far run is asked to wind down: {:?}",
             far.steps()
         );
-        assert_eq!(
-            far.steps().last(),
-            Some(&Step::Pull),
-            "the results come home"
-        );
+        assert_eq!(far.steps().last(), Some(&PULL), "the results come home");
         assert!(
             records
                 .iter()
@@ -1133,7 +1144,7 @@ mod tests {
         assert!(report.contains("did not exit"), "{report}");
         assert_eq!(
             far.steps().last(),
-            Some(&Step::Pull),
+            Some(&PULL),
             "the pull is attempted anyway"
         );
         Ok(())
@@ -1240,7 +1251,7 @@ mod tests {
         assert!(local.store.manifest(&run)?.is_none());
         assert_eq!(
             far.steps().last(),
-            Some(&Step::Pull),
+            Some(&PULL),
             "a failed run's results still come home"
         );
         Ok(())
@@ -1401,7 +1412,7 @@ mod tests {
         let (outcome, _) = session_over(&local, &far, Some(guard), &AtomicBool::new(false));
         outcome?;
         let steps = far.steps();
-        assert!(!steps.contains(&Step::Push), "nothing is pushed: {steps:?}");
+        assert!(!steps.contains(&PUSH), "nothing is pushed: {steps:?}");
         assert!(
             !steps.contains(&Step::Start),
             "nothing is started: {steps:?}"
@@ -1426,7 +1437,7 @@ mod tests {
         let (outcome, _) = session_over(&local, &far, None, &AtomicBool::new(false));
         outcome?;
         let steps = far.steps();
-        assert!(!steps.contains(&Step::Push), "nothing is pushed: {steps:?}");
+        assert!(!steps.contains(&PUSH), "nothing is pushed: {steps:?}");
         assert!(
             !steps.contains(&Step::Start),
             "nothing is started: {steps:?}"

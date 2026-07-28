@@ -13,7 +13,8 @@ use sima_core::{Error, Result};
 
 use crate::offer::{Offer, OfferId, Price};
 use crate::provider::{
-    Instance, InstanceId, InstanceStatus, Provider, Provision, SshEndpoint, TaggedInstance,
+    Instance, InstanceId, InstanceStatus, Provider, Provision, Reachability, SshEndpoint,
+    TaggedInstance,
 };
 
 /// The stub's scripted behavior and its market state, together under one
@@ -46,6 +47,9 @@ struct StubState {
     instance_failure: Option<String>,
     /// Every instance the stub ever created or was seeded with, by id.
     instances: HashMap<String, StubInstance>,
+    /// The endpoint every ready instance reports, when the stub was pointed at
+    /// a real one. `None` fabricates an endpoint that names no machine.
+    endpoint: Option<SshEndpoint>,
     /// Instance ids passed to `destroy`, in call order.
     destroyed: Vec<InstanceId>,
     /// Source of the next instance id.
@@ -100,6 +104,23 @@ impl StubProvider {
     /// own rate looks like.
     pub fn charging_instances_at(self, price: Price) -> StubProvider {
         self.edit(|state| state.instance_price = Some(price));
+        self
+    }
+
+    /// Points every instance at a machine that is really there, so a caller
+    /// reaches it over ssh as it reaches a rented one.
+    ///
+    /// Without it the stub fabricates an endpoint naming no machine, and its
+    /// [`Provider::reachability`] says so: the in-process path spawns on this
+    /// machine instead of connecting to a host that does not exist.
+    pub fn endpoint(self, host: &str, port: u16, user: &str) -> StubProvider {
+        self.edit(|state| {
+            state.endpoint = Some(SshEndpoint {
+                host: host.to_string(),
+                port,
+                user: user.to_string(),
+            })
+        });
         self
     }
 
@@ -261,7 +282,11 @@ impl Provider for StubProvider {
             instance.polls += 1;
             return Ok(InstanceStatus::Provisioning);
         }
-        Ok(InstanceStatus::Ready(endpoint(id)))
+        let reported = state
+            .endpoint
+            .clone()
+            .unwrap_or_else(|| fabricated_endpoint(id));
+        Ok(InstanceStatus::Ready(reported))
     }
 
     fn instances(&self) -> Result<Vec<TaggedInstance>> {
@@ -292,10 +317,21 @@ impl Provider for StubProvider {
         });
         Ok(())
     }
+
+    /// Over ssh exactly when this stub was pointed at a machine that is really
+    /// there; otherwise there is nothing to connect to.
+    fn reachability(&self) -> Reachability {
+        self.read(|state| match state.endpoint {
+            Some(_) => Reachability::Ssh,
+            None => Reachability::Local,
+        })
+    }
 }
 
-/// The endpoint a stub instance reports once it is ready.
-fn endpoint(id: &InstanceId) -> SshEndpoint {
+/// The endpoint a stub instance reports when the stub was pointed at no real
+/// one: a host that names no machine, which is why such a stub is reached
+/// locally.
+fn fabricated_endpoint(id: &InstanceId) -> SshEndpoint {
     SshEndpoint {
         host: format!("stub-{}", id.0),
         port: 22,
@@ -307,7 +343,9 @@ fn endpoint(id: &InstanceId) -> SshEndpoint {
 mod tests {
     use super::StubProvider;
     use crate::offer::Price;
-    use crate::provider::{InstanceId, InstanceStatus, Provider, Provision, SshEndpoint};
+    use crate::provider::{
+        InstanceId, InstanceStatus, Provider, Provision, Reachability, SshEndpoint,
+    };
     use crate::testutil::stub_offer;
     use sima_core::{Error, Result};
 
@@ -502,6 +540,41 @@ mod tests {
             renting.provision(&offer.id, "sima-tag-0"),
             Err(Error::Provider(message)) if message == "create instance: 429"
         ));
+    }
+
+    #[test]
+    fn a_stub_pointed_at_no_machine_is_reached_locally() {
+        // The endpoint it fabricates names a host nothing resolves, so there is
+        // nothing to connect to and the caller spawns here instead.
+        let stub = StubProvider::new(Vec::new()).with_instance(InstanceId("i-1".into()), "tag");
+        assert_eq!(stub.reachability(), Reachability::Local);
+        let InstanceStatus::Ready(endpoint) =
+            stub.instance(&InstanceId("i-1".into())).expect("ready")
+        else {
+            panic!("a seeded instance is ready");
+        };
+        assert_eq!(endpoint.host, "stub-i-1");
+    }
+
+    #[test]
+    fn a_stub_pointed_at_a_machine_reports_it_and_is_reached_over_ssh() {
+        let stub = StubProvider::new(Vec::new())
+            .with_instance(InstanceId("i-1".into()), "tag")
+            .endpoint("127.0.0.1", 41022, "tester");
+        assert_eq!(stub.reachability(), Reachability::Ssh);
+        let InstanceStatus::Ready(endpoint) =
+            stub.instance(&InstanceId("i-1".into())).expect("ready")
+        else {
+            panic!("a seeded instance is ready");
+        };
+        assert_eq!(
+            endpoint,
+            SshEndpoint {
+                host: "127.0.0.1".to_string(),
+                port: 41022,
+                user: "tester".to_string(),
+            }
+        );
     }
 
     #[test]

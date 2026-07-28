@@ -23,11 +23,11 @@ use std::process::{Command, Stdio};
 use sima_core::{Error, Result};
 use sima_domains::devices::DeviceInfo;
 use sima_model::{FormatId, RunId, TaskKey};
-use sima_provider::SshEndpoint;
+use sima_provider::{Provider, SshEndpoint};
 use sima_store::{ObjectScope, Store, SyncReport};
 use sima_transport::{SpawnMode, SshDestination};
 
-use crate::config::{Container, OwnedHost, Rented};
+use crate::config::{Container, OwnedHost};
 use crate::devices::parse_enumeration;
 use crate::feed::{RemoteFeed, RunFeed};
 use crate::migrate::destination::Destination;
@@ -118,17 +118,17 @@ impl Remote {
     }
 
     /// The far side of a rented machine, reached at the endpoint its provider
-    /// reported. The spawn mode is the provider's own — ssh for a real rental,
-    /// a local spawn for the stub — so both the probe and the far-side commands
-    /// land where that provider's machines are.
+    /// reported and the way that provider says its machines are reached — over
+    /// ssh, or on this machine for an in-process backend — so both the probe
+    /// and the far-side commands land where the machine actually is.
     pub(crate) fn rented(
         destination: &Destination<'_>,
-        spec: &Rented,
+        provider: &(dyn Provider + Sync),
         endpoint: &SshEndpoint,
         run: &RunId,
         format: &FormatId,
     ) -> Result<Remote> {
-        let mode = transport_mode(spec)?;
+        let mode = transport_mode(provider)?;
         let target = endpoint_target(endpoint.clone());
         Ok(Remote {
             reach: Reach::new(&mode, &target, destination.binary),
@@ -340,12 +340,12 @@ mod tests {
             binary = binary.to_string_lossy(),
         ));
         let destination = destination_for(&loaded).expect("the host is declared");
-        let crate::config::HostForm::Rented(spec) = destination.form else {
-            panic!("the fixture declares a rented machine");
-        };
+        // A control plane pointed at no machine, which is what makes the far
+        // side this machine.
+        let provider = sima_provider::stub::StubProvider::new(Vec::new());
         Remote::rented(
             &destination,
-            spec,
+            &provider,
             &SshEndpoint {
                 host: "unreached".to_string(),
                 port: 22,

@@ -45,7 +45,8 @@ pub use budget::{
 pub use guard::InstanceGuard;
 pub use offer::{Constraints, Objective, Offer, OfferId, Price, select};
 pub use provider::{
-    Instance, InstanceId, InstanceStatus, Provider, Provision, SshEndpoint, TaggedInstance,
+    Instance, InstanceId, InstanceStatus, Provider, Provision, Reachability, SshEndpoint,
+    TaggedInstance,
 };
 pub use reconcile::{ReconcileReport, ReconcileScope, reconcile};
 pub use reputation::{

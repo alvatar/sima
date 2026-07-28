@@ -78,10 +78,9 @@ pub fn orchestrate(
         .iter()
         .map(provider_for)
         .collect::<Result<Vec<_>>>()?;
-    let modes = members
-        .rentals
+    let modes = providers
         .iter()
-        .map(|rental| transport_mode(rental.spec))
+        .map(|provider| transport_mode(provider.as_ref()))
         .collect::<Result<Vec<_>>>()?;
     // Machines of yours resolve at run start too, over each machine's own
     // hardware: the image is verified present, then the enumeration probe

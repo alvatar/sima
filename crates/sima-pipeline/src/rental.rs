@@ -19,7 +19,7 @@ use sima_model::FormatId;
 use sima_provider::stub::StubProvider;
 use sima_provider::{
     AcquireLimits, Budget, Exhaustion, IncidentKind, InstanceGuard, InstanceStatus, Objective,
-    Offer, OfferId, Price, Provider, SshEndpoint, Verdict, acquire, assess, now_ms,
+    Offer, OfferId, Price, Provider, Reachability, SshEndpoint, Verdict, acquire, assess, now_ms,
     record_incident,
 };
 use sima_provider_vast::{VastConfig, VastProvider};
@@ -50,13 +50,18 @@ pub(crate) fn provider_for(rental: &Rental<'_>) -> Result<Box<dyn Provider + Syn
     }
 }
 
-/// The transport mode a rental's machines are reached through: ssh to a real
-/// rented instance, or a local `sima-worker` spawn for the stub, so the stub
-/// exercises every layer above the transport with no network.
-pub(crate) fn transport_mode(spec: &Rented) -> Result<SpawnMode> {
-    match spec.provider {
-        ProviderId::Vast => Ok(SpawnMode::Ssh),
-        ProviderId::Stub => Ok(SpawnMode::Local(worker_binary()?)),
+/// The transport mode a control plane's machines are reached through, from what
+/// the control plane says about them: ssh to a machine that is really there, or
+/// a local spawn for a backend whose machines are this machine.
+///
+/// The answer is the provider's, not the config's. A backend knows whether the
+/// endpoint it reports names anything, and the worker binary a local spawn
+/// needs is this layer's to supply — which is why [`Reachability`] and not
+/// [`SpawnMode`] is what crosses the seam.
+pub(crate) fn transport_mode(provider: &(dyn Provider + Sync)) -> Result<SpawnMode> {
+    match provider.reachability() {
+        Reachability::Ssh => Ok(SpawnMode::Ssh),
+        Reachability::Local => Ok(SpawnMode::Local(worker_binary()?)),
     }
 }
 
@@ -1168,15 +1173,13 @@ mod tests {
     }
 
     #[test]
-    fn a_vast_rental_is_reached_over_ssh() -> Result<()> {
-        // The transport mode is a pure function of the provider: vast over ssh,
-        // read without touching the environment (only the provider itself reads
-        // the key).
-        let spec = Rented {
-            provider: ProviderId::Vast,
-            ..spec()
-        };
-        assert!(matches!(transport_mode(&spec)?, SpawnMode::Ssh));
+    fn each_reachability_routes_onto_its_spawn_mode() -> Result<()> {
+        // A stub pointed at a machine that is really there is reached over ssh,
+        // exactly as a rented one is; one pointed at nothing spawns here.
+        let reached = StubProvider::new(Vec::new()).endpoint("127.0.0.1", 41022, "tester");
+        assert!(matches!(transport_mode(&reached)?, SpawnMode::Ssh));
+        let in_process = StubProvider::new(Vec::new());
+        assert!(matches!(transport_mode(&in_process)?, SpawnMode::Local(_)));
         Ok(())
     }
 
