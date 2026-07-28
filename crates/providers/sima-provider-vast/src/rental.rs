@@ -5,7 +5,7 @@ use serde_json::{Value, json};
 use sima_core::{Error, Result};
 use sima_provider::{Instance, InstanceId, OfferId, Provision};
 
-use crate::client::VastClient;
+use crate::client::{Answer, VastClient};
 use crate::config::VastConfig;
 use crate::instances;
 use crate::instances::ShowAnswer;
@@ -33,6 +33,10 @@ const SHOW_RETRY: std::time::Duration = std::time::Duration::from_secs(2);
 /// The error an offer already taken names.
 const NO_SUCH_ASK: &str = "no_such_ask";
 
+/// The marketplace's own code for an offer that is no longer available, which
+/// it states in the detail text alongside the token.
+const NO_SUCH_ASK_CODE: &str = "404/3603";
+
 /// Rents `offer` under `tag`, returning the created instance at the rate
 /// the account is charged for it.
 ///
@@ -45,9 +49,7 @@ pub(crate) fn create(
     tag: &str,
 ) -> Result<Provision> {
     let answer = client.put(&create_path(offer), &request(config, tag), OPERATION)?;
-    // The marketplace states a lost offer both ways: as the status and as
-    // the body's error.
-    if answer.status == GONE || answer.error() == Some(NO_SUCH_ASK) {
+    if offer_gone(&answer) {
         return Ok(Provision::OfferGone);
     }
     let body = answer.ok(OPERATION)?;
@@ -100,6 +102,25 @@ pub(crate) fn create(
         )));
     };
     Ok(Provision::Provisioned(Instance { id, price }))
+}
+
+/// Whether `answer` states that the offer was taken before this create reached
+/// it, which is ordinary marketplace traffic rather than a fault.
+///
+/// The marketplace states it in three shapes, and a create meets all three. The
+/// status is `410` on some answers. On others the body's `error` is the token
+/// itself; on the answer a lost race actually produces, `error` is the generic
+/// `invalid_args` and both the token and the marketplace's own code sit in the
+/// detail text. Matching the token and the code keeps a genuinely malformed
+/// request — which the API also rejects as `invalid_args` — a fault.
+fn offer_gone(answer: &Answer) -> bool {
+    if answer.status == GONE {
+        return true;
+    }
+    let detail = answer.msg().unwrap_or_default();
+    answer.error() == Some(NO_SUCH_ASK)
+        || detail.contains(NO_SUCH_ASK)
+        || detail.contains(NO_SUCH_ASK_CODE)
 }
 
 /// The path renting `offer`.
@@ -271,6 +292,39 @@ mod tests {
             Provision::OfferGone
         ));
         Ok(())
+    }
+
+    #[test]
+    fn an_offer_the_body_names_as_taken_by_code_is_gone() -> Result<()> {
+        // What the marketplace answers when the offer went to another renter
+        // between the listing and the create: `error` is the generic rejection
+        // and the offer's own code and token are in `msg`.
+        let server = TestServer::new(vec![answer(
+            400,
+            r#"{"success": false, "error": "invalid_args", "msg": "error 404/3603: no_such_ask  Instance type by id 43933061 is not available."}"#,
+        )]);
+        let client = VastClient::new(&server.url(), "k-secret");
+        assert!(matches!(
+            create(&client, &config(&server.url()), &offer(), "sima-tag-0")?,
+            Provision::OfferGone
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn a_request_the_api_rejects_as_invalid_is_a_fault_rather_than_a_lost_offer() {
+        // `invalid_args` is the marketplace's generic rejection: only the
+        // offer's own code or token makes one of them a lost offer.
+        let server = TestServer::new(vec![answer(
+            400,
+            r#"{"success": false, "error": "invalid_args", "msg": "disk too small"}"#,
+        )]);
+        let client = VastClient::new(&server.url(), "k-secret");
+        assert!(matches!(
+            create(&client, &config(&server.url()), &offer(), "sima-tag-0"),
+            Err(Error::Provider(message))
+                if message == "create instance: HTTP 400: invalid_args: disk too small"
+        ));
     }
 
     #[test]
