@@ -14,7 +14,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use sima_contracts::DeviceBinding;
 use sima_core::{Error, Result};
-use sima_domains::devices::{DeviceInfo, DeviceType};
+use sima_domains::devices::DeviceInfo;
 use sima_model::FormatId;
 use sima_provider::stub::StubProvider;
 use sima_provider::{
@@ -28,7 +28,7 @@ use sima_trace::{Emitter, Event};
 use sima_transport::{SpawnMode, SshDestination, SshTransport};
 
 use crate::config::{FillPolicy, ProviderId, Rented};
-use crate::devices::parse_enumeration;
+use crate::devices::{parse_enumeration, usable};
 use crate::fleet::Rental;
 use crate::orchestrate::{command_stdout, worker_binary};
 
@@ -284,30 +284,18 @@ fn probe_slots(
     Err(last.unwrap_or_else(|| Error::Provider("the machine probe never ran".to_string())))
 }
 
-/// One worker slot per enumerated GPU, each bound to its own device; a probe
-/// reporting no GPU yields a single deviceless worker — the stub testing path,
-/// and any device-free machine.
+/// One worker slot per usable device, each bound to it; a probe reporting no
+/// device at all yields a single deviceless worker — the stub testing path, and
+/// any device-free machine.
 ///
-/// The devices are the ones the run's program can open, since the probe asked
-/// about its format, so every slot here is a place this run can actually put a
-/// worker.
-///
-/// A software rasterizer is skipped whenever a real GPU is present. A rented
-/// host whose graphics stack works enumerates the CPU rasterizer beside its
-/// card, and a machine is rented for its GPU: placing a worker on the
-/// rasterizer would spend the rental running the slowest device on the machine.
-/// When every enumerated device is a CPU, they are all slots — a host that
-/// offers this program no GPU still gets workers.
+/// Which devices are usable is [`devices::usable`]'s rule, shared with the
+/// far-side config a migration synthesizes: both are deriving a worker layout
+/// from one enumeration, and they must agree on what the machine offers.
 fn rented_slots(devices: &[DeviceInfo]) -> Vec<Option<DeviceBinding>> {
     if devices.is_empty() {
         return vec![None];
     }
-    let has_gpu = devices
-        .iter()
-        .any(|device| device.device_type != DeviceType::Cpu);
-    devices
-        .iter()
-        .filter(|device| !has_gpu || device.device_type != DeviceType::Cpu)
+    usable(devices)
         .map(|device| {
             Some(DeviceBinding {
                 vendor_id: device.vendor_id,
@@ -792,6 +780,7 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::Arc;
 
+    use sima_domains::devices::DeviceType;
     use sima_model::{GeneratorConfig, GeneratorId, Params, RunConfig, RunId};
     use sima_provider::stub::StubProvider;
     use sima_provider::{Constraints, Cost, InstanceStatus, Provision};

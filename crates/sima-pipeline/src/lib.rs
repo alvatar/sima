@@ -25,6 +25,7 @@ mod fixtures;
 mod fleet;
 mod journal;
 mod machines;
+mod migrate;
 mod observe;
 mod orchestrate;
 mod remove;
