@@ -35,7 +35,8 @@ driver — so the host's nvidia-container-toolkit injects them at container
 start through CDI:
 
 ```
-podman run --rm -i --device nvidia.com/gpu=all localhost/sima:latest --enumerate <format>
+podman run --rm -i --device nvidia.com/gpu=all localhost/sima:latest \
+  --enumerate <format>
 ```
 
 `--enumerate` prints one JSON device per line and exits; it is the probe the

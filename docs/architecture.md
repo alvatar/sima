@@ -894,10 +894,10 @@ artifacts are single-valued per task key**: within a store each key maps to one
 record, with cross-class float divergence the recorded exception (a fresh re-run
 on another device class may differ in the last bits). So it rides in the
 identity-bearing params blob, never in an operational section, and it is
-confined to
-**unsegmented runs**: all segments of a chain share one params blob, and a
-chain successor faults on a predecessor whose state a predicate dropped, so a
-params-carried predicate would gate every segment identically and break the
+confined to **unsegmented runs**: all segments of a chain share one params
+blob, and a chain successor faults on a predecessor whose state a predicate
+dropped, so a params-carried predicate would gate every segment identically and
+break the
 chain. A predicate on a segmented run is a config-load validation error, and
 the scalar name is validated at translation against the names the model's
 reduction emits.
@@ -1210,9 +1210,9 @@ travel solely to the journal.
 A run's worker pool extends to the machines its config declares, reached over
 ssh. The wire protocol already ships every task input and output inline — the
 store never leaves the orchestrator — so such a worker is the subprocess
-transport with a longer command line. The subprocess transport takes a command vector, a
-program and its arguments: a local worker runs the bare `sima-worker`, and a
-remote worker runs
+transport with a longer command line. The subprocess transport takes a command
+vector, a program and its arguments: a local worker runs the bare
+`sima-worker`, and a worker on another machine runs
 
 ```
 ssh -o BatchMode=yes <host> -- <runtime> run --rm -i --name <container>
@@ -1230,9 +1230,10 @@ minus the ssh hop.
 - **Worker pools.** A run drives a slice of pools: the orchestrator's first,
   then one per machine the fleet resolved to, in member order. Each pool pairs a
   transport with the machine its workers run on and the device slots to spawn
-  against it; worker ids stay global and sequential across pools. Placement is untouched — a device
-  class is `(vendor_id, device_id)` regardless of machine, so a chain bound to
-  a class runs on whichever pool holds it, exactly as within one pool.
+  against it; worker ids stay global and sequential across pools. Placement is
+  untouched — a device class is `(vendor_id, device_id)` regardless of machine,
+  so a chain bound to a class runs on whichever pool holds it, exactly as
+  within one pool.
 
 - **Preemption is two-stage.** Closing the pipe alone would let a mid-compute
   container run until its next write, so `kill` first fires
@@ -1247,9 +1248,8 @@ minus the ssh hop.
   device, so a cross-machine divergence within a class is diagnosable from the
   journal alone. `sima status` composes the device line by `(device, host)`,
   rendering `device @ host` for a pool on another machine. Driver parity within
-  a class is
-  the operator's responsibility, as it is across a driver upgrade on one
-  machine.
+  a class is the operator's responsibility, as it is across a driver upgrade on
+  one machine.
 
 - **Device selection on another machine.** A declared host carries the same
   device tables the orchestrator does. Resolving them needs that machine's
@@ -1756,8 +1756,8 @@ command form keeps its shape whether or not a host is named:
     run's journal spans downtime that would collapse them — while the commit
     count is run-wide. Utilization is over each worker's **own lifespan**, from
     its first binding to the session's end, so the cost of provisioning a pool
-    on another machine reads as spawn latency rather than as idleness. Every duration
-    is elapsed wall-clock as the journal stamped it.
+    on another machine reads as spawn latency rather than as idleness. Every
+    duration is elapsed wall-clock as the journal stamped it.
   - `--spend` reports the run's rental spend from the local store's ledger:
     each closed rental with its duration, rate, and cost, each rental still
     open with what it has accrued, and the total, all in dollars. The ledger is

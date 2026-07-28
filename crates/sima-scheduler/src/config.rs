@@ -63,10 +63,9 @@ impl ExecutionConfig {
     /// Validates the settings and wraps them, over the backend's default
     /// device selection. `workers` is the local pool size; `0` is a run with
     /// no local pool, valid only when a pool on another machine carries the
-    /// work — the
-    /// "at least one worker" requirement is a whole-run property the pool
-    /// assembly enforces, not a per-config one. `max_attempts` must be at
-    /// least 1 ([`Error::Validation`] otherwise).
+    /// work — the "at least one worker" requirement is a whole-run property
+    /// the pool assembly enforces, not a per-config one. `max_attempts` must
+    /// be at least 1 ([`Error::Validation`] otherwise).
     pub fn new(
         workers: usize,
         max_attempts: u32,
@@ -152,8 +151,9 @@ mod tests {
 
     #[test]
     fn new_accepts_zero_local_workers() -> Result<()> {
-        // A run with no local pool: the workers come from another machine, so the
-        // "at least one worker" requirement is enforced across pools, not here.
+        // A run with no local pool: the workers come from another machine,
+        // so the "at least one worker" requirement is enforced across pools,
+        // not here.
         let config = ExecutionConfig::new(0, 1, Duration::from_millis(1), Duration::MAX, None)?;
         assert_eq!(config.workers, 0);
         Ok(())

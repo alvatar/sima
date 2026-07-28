@@ -134,9 +134,8 @@ pub struct SshTransport {
     hello: Hello,
     /// How long an ssh spawn keeps retrying a failing target before it gives
     /// up and faults the run — the readiness bound the machine was acquired
-    /// under, so a broken host
-    /// faults only after the same wait a fresh one is given to come up. A swap
-    /// restarts this bound on the new host.
+    /// under, so a broken host faults only after the same wait a fresh one is
+    /// given to come up. A swap restarts this bound on the new host.
     ready_timeout: Duration,
     /// How long a failed ssh spawn waits between retries; a target change wakes
     /// it early.
