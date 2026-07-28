@@ -150,6 +150,9 @@ pub fn migrate(
                 rental: None,
                 observer,
                 interrupt,
+                // Nothing asked for this machine before now, so the contact is
+                // what starts its clock.
+                usable_by: None,
                 #[cfg(test)]
                 seams: Seams::default(),
             }
@@ -165,11 +168,17 @@ pub fn migrate(
                 fill: FillPolicy::Strict,
             };
             let provider = provider_for(&rental)?;
+            // The clock on this machine starts here, where it is first asked
+            // for, and every stage that waits for it runs under the one
+            // deadline: its readiness and its reachability are stages of the
+            // single wait the entry states a budget for.
+            let usable_by = Instant::now() + spec.ready_timeout;
             let guard = hold(
                 provider.as_ref(),
                 &store,
                 &lock,
                 spec,
+                usable_by,
                 &loaded.budget,
                 interrupt,
             )?;
@@ -189,6 +198,7 @@ pub fn migrate(
                 rental: Some(guard),
                 observer,
                 interrupt,
+                usable_by: Some(usable_by),
                 #[cfg(test)]
                 seams: Seams::default(),
             }
@@ -209,11 +219,12 @@ fn hold<'a>(
     store: &'a Store,
     lock: &RunLock,
     spec: &Rented,
+    usable_by: Instant,
     budget: &Budget,
     interrupt: &AtomicBool,
 ) -> Result<InstanceGuard<'a, dyn Provider + Sync + 'a>> {
     let limits = AcquireLimits {
-        ready_timeout: spec.ready_timeout,
+        usable_by,
         ready_poll: spec.ready_poll,
     };
     if let Some(guard) = adopt(provider, store, lock, &limits)? {
@@ -270,6 +281,11 @@ struct Session<'a> {
     rental: Option<InstanceGuard<'a, dyn Provider + Sync + 'a>>,
     observer: Observer<'a>,
     interrupt: &'a AtomicBool,
+    /// When the destination must be usable by, established when the machine was
+    /// first asked for. `None` for a destination with no acquisition phase — a
+    /// machine of yours — whose contact is the first thing to ask for it and so
+    /// starts the deadline itself.
+    usable_by: Option<Instant>,
     #[cfg(test)]
     seams: Seams,
 }
@@ -450,7 +466,9 @@ impl Session<'_> {
     /// started, a sync broke mid-session — and repeating it would hide that.
     fn reach(&self) -> Result<Vec<DeviceInfo>> {
         let (bound, poll) = self.ready_bounds();
-        let deadline = Instant::now() + bound;
+        // A rented destination was asked for before this, and that is when its
+        // clock started; a machine of yours is first asked for here.
+        let deadline = self.usable_by.unwrap_or_else(|| Instant::now() + bound);
         loop {
             // A machine that answered has answered: what it said is the result,
             // whether that is its devices or a reason the run cannot proceed.
@@ -1025,6 +1043,18 @@ mod tests {
         rental: Option<InstanceGuard<'_, dyn Provider + Sync + '_>>,
         interrupt: &AtomicBool,
     ) -> (Result<MigrateOutcome>, Vec<Record>) {
+        session_over_by(local, far, rental, interrupt, None)
+    }
+
+    /// Drives one session whose destination must be usable by `usable_by`, as
+    /// a rented one is once its acquisition has started the clock.
+    fn session_over_by(
+        local: &Local,
+        far: &dyn FarSide,
+        rental: Option<InstanceGuard<'_, dyn Provider + Sync + '_>>,
+        interrupt: &AtomicBool,
+        usable_by: Option<Instant>,
+    ) -> (Result<MigrateOutcome>, Vec<Record>) {
         let captured: Mutex<Vec<Record>> = Mutex::new(Vec::new());
         let observer = |record: &Record| {
             captured
@@ -1042,6 +1072,7 @@ mod tests {
             rental,
             observer: &observer,
             interrupt,
+            usable_by,
             seams: Seams::default(),
         }
         .drive();
@@ -1109,7 +1140,7 @@ mod tests {
     /// Bounds that never wait.
     fn limits() -> AcquireLimits {
         AcquireLimits {
-            ready_timeout: Duration::from_millis(500),
+            usable_by: Instant::now() + Duration::from_millis(500),
             ready_poll: Duration::ZERO,
         }
     }
@@ -1281,6 +1312,27 @@ mod tests {
             steps.last(),
             Some(&PULL),
             "the whole choreography ran past it: {steps:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_contact_runs_under_the_deadline_the_acquisition_started() -> Result<()> {
+        // The entry states one budget for how long from asking for a machine
+        // until it is usable, and the readiness wait and this contact are
+        // stages of that one wait. An acquisition that spent it leaves the
+        // contact nothing, rather than starting a second wait of its own.
+        let local = local(RENTED, PROMPT, Some(3));
+        let far = Scripted::new().refusing(usize::MAX);
+
+        let spent = Instant::now();
+        let (outcome, _) =
+            session_over_by(&local, &far, None, &AtomicBool::new(false), Some(spent));
+        outcome.expect_err("a machine that never answers fails");
+        assert_eq!(
+            far.steps(),
+            vec![Step::Devices],
+            "one attempt under a budget already spent"
         );
         Ok(())
     }
@@ -1755,6 +1807,7 @@ mod tests {
             &local.store,
             &lock,
             spec,
+            Instant::now() + spec.ready_timeout,
             &Budget::default(),
             &AtomicBool::new(false),
         )?;

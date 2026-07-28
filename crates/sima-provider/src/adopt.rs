@@ -61,7 +61,6 @@ pub fn adopt<'a, P: Provider + ?Sized>(
             .expect("the search kept only records naming an instance")
             .to_string(),
     );
-    let started = Instant::now();
     loop {
         match provider.instance(&id)? {
             InstanceStatus::Ready(endpoint) => {
@@ -89,7 +88,7 @@ pub fn adopt<'a, P: Provider + ?Sized>(
                 return Ok(None);
             }
             InstanceStatus::Provisioning => {
-                if started.elapsed() >= limits.ready_timeout {
+                if Instant::now() >= limits.usable_by {
                     return Err(provisioning_past_the_bound(&record));
                 }
                 sleep(limits.ready_poll);
@@ -112,7 +111,7 @@ fn provisioning_past_the_bound(record: &InstanceRecord) -> Error {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     use sima_store::InstanceRecordState;
 
@@ -123,7 +122,7 @@ mod tests {
     /// Bounds that never wait: a provisioning rental fails at once.
     fn limits() -> AcquireLimits {
         AcquireLimits {
-            ready_timeout: Duration::ZERO,
+            usable_by: Instant::now(),
             ready_poll: Duration::ZERO,
         }
     }

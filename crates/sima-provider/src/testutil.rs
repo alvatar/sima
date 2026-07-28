@@ -1,7 +1,7 @@
 //! Fixtures shared by the crate's test modules.
 
 use std::sync::atomic::AtomicBool;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use sima_model::{FormatId, GeneratorConfig, GeneratorId, Params, RunConfig, RunId};
 use sima_store::{InstanceRecord, InstanceRecordState, Rental, SpendEntry, Store};
@@ -102,7 +102,7 @@ pub(crate) fn sample_run(root_seed: u64) -> RunId {
 /// Limits that poll without waiting, so no test sleeps.
 pub(crate) fn prompt_limits() -> AcquireLimits {
     AcquireLimits {
-        ready_timeout: Duration::from_millis(500),
+        usable_by: Instant::now() + Duration::from_millis(500),
         ready_poll: Duration::ZERO,
     }
 }

@@ -24,9 +24,11 @@ use crate::reputation::{IncidentKind, excluded_machines, record_incident};
 /// Bounds on waiting for a provisioned instance to become ready.
 #[derive(Debug, Clone, Copy)]
 pub struct AcquireLimits {
-    /// How long a machine may take to report itself ready before the offer
-    /// is abandoned.
-    pub ready_timeout: Duration,
+    /// When the machine must be usable by. A deadline rather than a duration,
+    /// because the readiness wait is one stage of a longer wait for the same
+    /// machine — a caller that goes on to reach it runs that under this same
+    /// deadline, so the machine gets one budget rather than one per stage.
+    pub usable_by: Instant,
     /// How long to wait between status calls.
     pub ready_poll: Duration,
 }
@@ -69,10 +71,12 @@ static NONCE: LazyLock<String> = LazyLock::new(|| {
 ///
 /// `cancel` aborts a walk in progress: it is read between ranked offers and
 /// inside the readiness poll, so a caller winding down — the fleet supervisor
-/// on interrupt or run teardown — abandons the acquisition promptly rather
-/// than sitting through `offers × ready_timeout`. A cancellation tears down any
-/// machine already provisioned and returns [`Error::Provider`] naming it. A
-/// caller with nothing to cancel passes a never-set flag.
+/// on interrupt or run teardown — abandons the acquisition promptly rather than
+/// sitting out the deadline. Every offer in the walk shares the one deadline
+/// `limits` carries, so a walk costs the budget for a usable machine once
+/// however many candidates it tries. A cancellation tears down any machine
+/// already provisioned and returns [`Error::Provider`] naming it. A caller with
+/// nothing to cancel passes a never-set flag.
 #[allow(clippy::too_many_arguments)]
 pub fn acquire<'a, P: Provider + ?Sized>(
     provider: &'a P,
@@ -231,17 +235,18 @@ fn admit(store: &Store, owner: &RunId, budget: &Budget) -> Result<()> {
 }
 
 /// Polls `instance` until it reports an endpoint, `None` when it is gone, the
-/// wait runs out, or `cancel` is set. The deadline is measured with
-/// [`Instant`], so a wall-clock adjustment cannot extend or cut the wait. A
-/// cancellation returns `None` — the same "no endpoint" the caller tears the
-/// pending machine down for — so the caller closes it out on one path.
+/// deadline passes, or `cancel` is set. The deadline is an [`Instant`], so a
+/// wall-clock adjustment cannot extend or cut the wait, and every offer in one
+/// walk shares it: the budget is for getting a usable machine, not for each
+/// candidate in turn. A cancellation returns `None` — the same "no endpoint"
+/// the caller tears the pending machine down for — so the caller closes it out
+/// on one path.
 fn wait_ready<P: Provider + ?Sized>(
     provider: &P,
     instance: &Instance,
     limits: &AcquireLimits,
     cancel: &AtomicBool,
 ) -> Result<Option<SshEndpoint>> {
-    let started = Instant::now();
     loop {
         // Checked before each status call, so a cancellation set while the
         // machine is still provisioning abandons the wait promptly.
@@ -252,7 +257,7 @@ fn wait_ready<P: Provider + ?Sized>(
             InstanceStatus::Ready(endpoint) => return Ok(Some(endpoint)),
             InstanceStatus::Gone => return Ok(None),
             InstanceStatus::Provisioning => {
-                if started.elapsed() >= limits.ready_timeout {
+                if Instant::now() >= limits.usable_by {
                     return Ok(None);
                 }
                 std::thread::sleep(limits.ready_poll);
@@ -324,7 +329,7 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicBool, AtomicUsize};
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     use sima_core::{Error, Result};
     use sima_model::RunId;
@@ -523,7 +528,7 @@ mod tests {
         let stub = StubProvider::new(vec![stalling.clone(), stub_offer("dearer", 200_000)])
             .never_ready(stalling.id.clone());
         let limits = AcquireLimits {
-            ready_timeout: Duration::ZERO,
+            usable_by: Instant::now(),
             ready_poll: Duration::ZERO,
         };
         let lock = store.acquire_run_lock(&sample_run(7))?;
@@ -555,7 +560,7 @@ mod tests {
         let stub = StubProvider::new(vec![stalling.clone(), stub_offer("dearer", 200_000)])
             .never_ready(stalling.id.clone());
         let limits = AcquireLimits {
-            ready_timeout: Duration::ZERO,
+            usable_by: Instant::now(),
             ready_poll: Duration::ZERO,
         };
         let lock = store.acquire_run_lock(&sample_run(7))?;
@@ -586,7 +591,7 @@ mod tests {
         let stub = StubProvider::new(vec![stalling.clone(), stub_offer("dearer", 200_000)])
             .never_ready(stalling.id.clone());
         let limits = AcquireLimits {
-            ready_timeout: Duration::ZERO,
+            usable_by: Instant::now(),
             ready_poll: Duration::ZERO,
         };
         let lock = store.acquire_run_lock(&sample_run(7))?;
@@ -623,7 +628,7 @@ mod tests {
         let stub = StubProvider::new(vec![stalling.clone(), stub_offer("dearer", 200_000)])
             .never_ready(stalling.id.clone());
         let limits = AcquireLimits {
-            ready_timeout: Duration::ZERO,
+            usable_by: Instant::now(),
             ready_poll: Duration::ZERO,
         };
         let lock = store.acquire_run_lock(&sample_run(7))?;
@@ -716,7 +721,7 @@ mod tests {
         // `acquire` alone.
         let (_dir, store) = temp_store();
         let limits = AcquireLimits {
-            ready_timeout: Duration::ZERO,
+            usable_by: Instant::now(),
             ready_poll: Duration::ZERO,
         };
         // One flaky offer sharing the machine `m-flaky` and a distinct clean
@@ -898,7 +903,7 @@ mod tests {
             // At least one poll sleeps, so the abandoned machine's charged
             // window is never empty.
             &AcquireLimits {
-                ready_timeout: Duration::from_millis(1),
+                usable_by: Instant::now() + Duration::from_millis(1),
                 ready_poll: Duration::from_millis(1),
             },
             &budget,
@@ -941,7 +946,7 @@ mod tests {
         // A window the wait reaches by elapsed time, over several polls, and
         // short enough to keep the suite quick.
         let limits = AcquireLimits {
-            ready_timeout: Duration::from_millis(10),
+            usable_by: Instant::now() + Duration::from_millis(10),
             ready_poll: Duration::from_millis(1),
         };
         let lock = store.acquire_run_lock(&sample_run(7))?;
@@ -1230,7 +1235,7 @@ mod tests {
             // A generous window the wait would sit through if it were not
             // cancelled from within the poll.
             &AcquireLimits {
-                ready_timeout: Duration::from_secs(5),
+                usable_by: Instant::now() + Duration::from_secs(5),
                 ready_poll: Duration::from_millis(1),
             },
             &Budget::default(),

@@ -2,7 +2,7 @@
 //! it, give it back — clean up after a process that never gave it back, and
 //! account for what every machine cost.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use sima_core::{Error, Result};
 use sima_model::{FormatId, GeneratorConfig, GeneratorId, Params, RunConfig, RunId};
@@ -51,7 +51,7 @@ fn owner(root_seed: u64) -> RunId {
 /// Limits that poll without waiting.
 fn limits() -> AcquireLimits {
     AcquireLimits {
-        ready_timeout: Duration::from_millis(500),
+        usable_by: Instant::now() + Duration::from_millis(500),
         ready_poll: Duration::ZERO,
     }
 }

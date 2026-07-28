@@ -121,6 +121,11 @@ pub(crate) fn endpoint_target(endpoint: SshEndpoint) -> SshDestination {
 /// gives up. Each attempt is a paid rental torn down again, so the bound
 /// stays small; a machine that fails twice across runs is blacklisted by
 /// its incidents and stops being offered at all.
+///
+/// Each attempt runs under one `ready_timeout` covering everything it waits
+/// for, so this is what the worst case multiplies: `PROBE_ACQUIRE_ATTEMPTS`
+/// machines at one `ready_timeout` each, however many offers a walk tries
+/// inside one of them.
 const PROBE_ACQUIRE_ATTEMPTS: usize = 4;
 
 /// One acquired machine: the guard that owns and tears it down, the transport
@@ -177,10 +182,6 @@ pub(crate) fn acquire_hosts<'a>(
     format: &FormatId,
     exec: &ExecutionConfig,
 ) -> Result<Vec<RentedHost<'a>>> {
-    let limits = AcquireLimits {
-        ready_timeout: rental.spec.ready_timeout,
-        ready_poll: rental.spec.ready_poll,
-    };
     let mut hosts: Vec<RentedHost<'a>> = Vec::with_capacity(rental.count);
     for _ in 0..rental.count {
         // A machine that fails to acquire or probe is torn down inside
@@ -191,7 +192,6 @@ pub(crate) fn acquire_hosts<'a>(
             lock,
             rental.spec,
             budget,
-            &limits,
             mode,
             format,
             exec,
@@ -228,7 +228,6 @@ fn acquire_one<'a>(
     lock: &RunLock,
     spec: &Rented,
     budget: &Budget,
-    limits: &AcquireLimits,
     mode: &SpawnMode,
     format: &FormatId,
     exec: &ExecutionConfig,
@@ -241,6 +240,15 @@ fn acquire_one<'a>(
     let mut constraints = spec.constraints.clone();
     let mut refused: Option<Error> = None;
     for _ in 0..PROBE_ACQUIRE_ATTEMPTS {
+        // The clock on this machine starts where it is first asked for, and
+        // both stages that wait for it — reporting ready, then answering a
+        // probe — run under the one deadline. Each attempt reaches a different
+        // machine, so each gets a whole budget and none gets two.
+        let usable_by = Instant::now() + spec.ready_timeout;
+        let limits = AcquireLimits {
+            usable_by,
+            ready_poll: spec.ready_poll,
+        };
         // Pin the trait object to `Sync`, which the supervisor thread's shared
         // borrow of the provider needs; without it inference drops the bound.
         let guard = acquire::<dyn Provider + Sync>(
@@ -250,7 +258,7 @@ fn acquire_one<'a>(
             RentalRole::Worker,
             &constraints,
             Objective::CheapestPerHour,
-            limits,
+            &limits,
             budget,
             // Run-start acquisition has nothing to cancel: the run is not yet
             // driving, so no wind-down is in flight.
@@ -260,7 +268,7 @@ fn acquire_one<'a>(
         let host = target.host().to_string();
         // The probe drives the machine's device enumeration; a failure drops
         // the guard, tearing the machine down.
-        let slots = match probe_slots(mode, &target, spec.ready_timeout, spec.ready_poll, format) {
+        let slots = match probe_slots(mode, &target, usable_by, spec.ready_poll, format) {
             Ok(slots) => slots,
             Err(error) => {
                 // The machine reported ready but cannot run work: an incident
@@ -311,21 +319,21 @@ fn acquire_one<'a>(
 ///
 /// A provider reports an instance ready when its container is running, which is
 /// before the route to it carries an ssh, so the first probes against a fresh
-/// machine are refused. `ready_timeout` is what the entry describing the
-/// machine says about how long it may take to become usable, so it is what
-/// bounds the wait rather than a count of attempts chosen here; a machine that
-/// answers at once costs nothing. Giving up destroys this rental and takes the
-/// next offer, so the bound is what separates a machine that is slow from one
-/// that is broken.
+/// machine are refused. `usable_by` is the deadline the machine was asked for
+/// under, which its readiness wait has already been spending: the entry states
+/// one budget for how long from asking for a machine until it is usable, and
+/// this is the second stage of that one wait. A machine that answers at once
+/// costs nothing. Giving up destroys this rental and takes the next offer, so
+/// the bound is what separates a machine that is slow from one that is broken.
 fn probe_slots(
     mode: &SpawnMode,
     target: &SshDestination,
-    bound: Duration,
+    usable_by: Instant,
     poll: Duration,
     format: &FormatId,
 ) -> Result<Vec<Option<DeviceBinding>>> {
     let argv = sima_transport::ssh::probe_argv(mode, target, format);
-    let deadline = Instant::now() + bound;
+    let deadline = usable_by;
     loop {
         match command_stdout(&argv).and_then(|stdout| parse_enumeration(&stdout)) {
             Ok(devices) => return Ok(rented_slots(&devices)),
@@ -696,8 +704,10 @@ impl<'a, 'b> Supervisor<'a, 'b> {
         let gpu_slots = host.slots.iter().filter(|slot| slot.is_some()).count() as u32;
         let mut constraints = group.spec.constraints.clone();
         constraints.min_gpu_count = Some(constraints.min_gpu_count.unwrap_or(0).max(gpu_slots));
+        // A replacement is a fresh machine being asked for, so its clock
+        // starts here; nothing probes it, the transport reaches it.
         let limits = AcquireLimits {
-            ready_timeout: group.spec.ready_timeout,
+            usable_by: Instant::now() + group.spec.ready_timeout,
             ready_poll: group.spec.ready_poll,
         };
         match acquire::<dyn Provider + Sync>(
