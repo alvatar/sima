@@ -37,11 +37,19 @@ fails mounting an overlay over the build context. Neither is a property of the
 machine, so an interactive shell builds normally:
 
 ```
-cd <workspace root>
-podman build -t ghcr.io/alvatar/sima:latest -f containers/sima/Containerfile .
-podman login ghcr.io -u <user>          # a token carrying write:packages
-podman push ghcr.io/alvatar/sima:latest
+podman login ghcr.io -u <user>          # once; a token carrying write:packages
+containers/sima/publish.sh              # every time the image needs rebuilding
 ```
+
+`publish.sh` builds from the working tree and pushes two tags, `latest` and the
+current commit, so a rented machine can be pointed at either. It handles no
+credential of its own: authentication is whatever `podman login` stored, and a
+refused push means that token lacks `write:packages`. `SIMA_IMAGE` and
+`SIMA_RUNTIME` override the registry path and the runtime.
+
+Rebuild whenever the image's contents change — a commit touching `crates/`,
+`Cargo.lock`, or the `Containerfile` — since a rented machine runs the published
+copy and nothing delivers a local build to it.
 
 Pushing to `ghcr.io` costs nothing. What a private repository pays for is
 Actions compute, which is why the workflow below is a convenience over this
