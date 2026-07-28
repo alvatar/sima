@@ -635,7 +635,7 @@ leaked instances are leaked money.
       which a hostless `[[execution.remote]]` used to allow, is no longer
       expressible. No backwards compatibility: examples, tests, and documents
       moved with it
-- [ ] M6.9 End-to-end slingshot consolidation (phase acceptance): `sima migrate`
+- [x] M6.9 End-to-end slingshot consolidation (phase acceptance): `sima migrate`
       moves a run's orchestrator onto the machine `[orchestrator].migrate` names
       — push the closure, resume there, follow live, pull the results, tear the
       rental down — with the manifest byte-identical to a run that was never
@@ -660,18 +660,25 @@ leaked instances are leaked money.
       the operator's `known_hosts`, where it accumulates and where a later
       rental at a recycled address is then refused. The acceptance runs in the
       ordinary gate twice over — once reached in process, once over a real ssh
-      hop against a throwaway server the test stands up and tears down. Three
-      tiers of the phase acceptance have not executed: migration onto a machine
-      of yours end to end, whose far side runs a container pool built from that
-      host's declaration and whose containers this environment does not execute,
-      so the pieces are covered at unit level and the composition has never run;
-      the container image, whose `Containerfile` and publishing workflow are
-      written and stay unverified until the workflow's own check of the pushed
-      copy runs; and the live acceptance on rented hardware, prepared under
-      `work/` and not run. P6 promises one command that sends an experiment to rented
-      hardware and brings results home with teardown guaranteed, so its phase
-      acceptance is that live proof, and this entry stays unchecked until the
-      three run
+      hop against a throwaway server the test stands up and tears down. The live
+      proof P6 promises is in: a run interrupted here after 24 of its tasks,
+      migrated onto a rented RTX 4090, resumed there for the remaining 74,
+      followed live, pulled home and finalized, with the manifest byte-identical
+      to an uninterrupted reference run across two different GPU parts, the
+      rental closed out at $0.057, and reconciliation finding nothing left with
+      or without `--hosted`. Renting it exposed three defects no local tier
+      reaches, each fixed before the run that passed: an offer lost to another
+      renter reported as `invalid_args` rather than by its own token aborted the
+      offer walk the marketplace exists to survive; a first ssh refused while a
+      ready instance's proxy was still routing failed the migration outright;
+      and the tolerance that then covered it counted attempts instead of reading
+      the readiness budget the entry states, which now bounds one machine from
+      the moment it is asked for until it is usable, across every stage that
+      waits for it. One tier of the acceptance stays unexecuted: migration onto
+      a machine of yours end to end, whose far side runs a container pool built
+      from that host's declaration and whose containers this environment does
+      not execute, so its pieces are covered at unit level and the composition
+      has never run
 
 Expected to be re-split when reached; provider APIs and trust mechanisms hide
 surprises.
