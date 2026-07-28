@@ -54,11 +54,18 @@ fn over_an_empty_store_a_chain_yields_one_key_per_candidate() -> Result<()> {
 
 #[test]
 fn a_partly_committed_chain_yields_the_keys_it_has_materialized() -> Result<()> {
-    // One candidate over six segments, interrupted after two commits: the store
-    // answers segments 0 and 1, so the chain materializes those two and the
-    // successor they make runnable — three keys, not six.
+    // One candidate over twenty segments, interrupted shortly after it starts
+    // committing. A chain is traversable forward only, so what the derivation
+    // can name is exactly the prefix the store answered plus the one successor
+    // those answers made runnable — never the whole chain, and never a segment
+    // beyond the frontier.
+    //
+    // How far the run got before the interrupt landed is not pinned: the
+    // observer sees a commit that is already durable, so a worker may commit
+    // once more before the driver reads the flag. The invariant is what this
+    // asserts.
     let (_dir, store) = temp_store();
-    let cfg = chained_config(7, vec![StubBehavior::Accumulate(2)], 6);
+    let cfg = chained_config(7, vec![StubBehavior::Accumulate(2)], 20);
     let interrupt = AtomicBool::new(false);
     let committed = AtomicUsize::new(0);
     let control = RunControl {
@@ -76,22 +83,22 @@ fn a_partly_committed_chain_yields_the_keys_it_has_materialized() -> Result<()> 
     assert!(matches!(outcome, RunOutcome::Interrupted { .. }));
 
     let derived = keys(&store, &cfg)?;
-    assert_eq!(
-        derived.len(),
-        3,
-        "two committed segments and the successor they make runnable"
-    );
-    // The committed prefix is part of the set: the far side of a sync needs the
-    // records to locate the frontier at all.
-    for key in derived.iter().take(2) {
+    let (frontier, answered) = derived.split_last().expect("at least one key");
+    // Every key but the last is a segment the store already answered — the
+    // records a far side needs to locate the frontier at all.
+    let mut prefix = 0;
+    for key in answered {
         assert!(
             store.record(key)?.is_some(),
             "the materialized prefix is what the store already answered"
         );
+        prefix += 1;
     }
+    assert!(prefix >= 2, "the run committed before it was interrupted");
+    assert!(prefix < 20, "the interrupt landed before the chain ran out");
     assert!(
-        store.record(&derived[2])?.is_none(),
-        "the third key is the frontier, not yet answered"
+        store.record(frontier)?.is_none(),
+        "the last key is the frontier, not yet answered"
     );
     Ok(())
 }
