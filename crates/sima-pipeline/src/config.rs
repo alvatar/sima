@@ -403,6 +403,14 @@ pub enum ProviderId {
     /// The in-process stub backend: scripted offers, instant readiness, and a
     /// local-spawn transport, so the rental spine is exercised without a network
     /// or real hardware. The testing path.
+    ///
+    /// Pointed at a machine that is really there by the `SIMA_STUB_SSH`
+    /// environment variable — `user@host:port` — its instances report that
+    /// endpoint and are reached over ssh instead, which is how the ssh path is
+    /// exercised against a throwaway server without renting anything. The
+    /// channel is an environment variable rather than a key here because a key
+    /// valid only under one provider would be an exception carved into a schema
+    /// that has none.
     Stub,
 }
 
