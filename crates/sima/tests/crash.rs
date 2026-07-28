@@ -27,19 +27,30 @@ fn write_config(dir: &Path, name: &str, store: &str) -> PathBuf {
     common::write_config(dir, name, BEHAVIORS, store)
 }
 
-/// Runs `sima run <config>`, armed with `crashpoint` when given, and
-/// returns the exit status. Output is discarded — the store carries the
-/// assertions.
-fn sima_run(config: &Path, crashpoint: Option<&str>) -> ExitStatus {
+/// Runs `sima run <config>` with `extra` appended, armed with `crashpoint` when
+/// given, and returns the exit status. Output is discarded — the store carries
+/// the assertions.
+fn sima_run_with(config: &Path, crashpoint: Option<&str>, extra: &[&str]) -> ExitStatus {
     let mut command = sima_command();
     command
         .args(["run", config.to_str().expect("utf-8 path")])
+        .args(extra)
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     if let Some(arming) = crashpoint {
         command.env("SIMA_CRASHPOINT", arming);
     }
     command.status().expect("spawn sima")
+}
+
+/// Runs `sima run <config>` on this machine alone.
+fn sima_run(config: &Path, crashpoint: Option<&str>) -> ExitStatus {
+    sima_run_with(config, crashpoint, &[])
+}
+
+/// Runs `sima run <config> --fleet`, so the config's rented machine is engaged.
+fn sima_run_fleet(config: &Path, crashpoint: Option<&str>) -> ExitStatus {
+    sima_run_with(config, crashpoint, &["--fleet"])
 }
 
 /// Runs `sima run <config>` unarmed and captures its output, for assertions
@@ -150,11 +161,13 @@ fn write_segmented_config(dir: &Path, name: &str, store: &str) -> PathBuf {
         id = "stub.v1"
         behaviors = ["accumulate:100"]
 
-        [execution]
+        [config]
         store = "STORE"
-        workers = 1
         max_attempts = 3
         checkpoint_interval_ms = 0
+
+        [orchestrator]
+        workers = 1
     "#
     .replace("STORE", store);
     common::write_config_text(dir, name, &text)
@@ -175,11 +188,13 @@ fn write_step_segmented_config(dir: &Path, name: &str, store: &str) -> PathBuf {
         id = "stub.v1"
         behaviors = ["accumulate:100"]
 
-        [execution]
+        [config]
         store = "STORE"
-        workers = 1
         max_attempts = 3
         checkpoint_interval_steps = 10
+
+        [orchestrator]
+        workers = 1
     "#
     .replace("STORE", store);
     common::write_config_text(dir, name, &text)
@@ -436,8 +451,9 @@ fn every_crashpoint_death_resumes_to_the_reference_manifest() {
     }
 }
 
-/// A stub-fleet config: a local pool plus one stub-provider instance, so a run
-/// exercises the provider's acquisition and teardown close-out windows.
+/// A config whose fleet is one rented stub machine beside the orchestrator's
+/// own worker, so a run exercises the provider's acquisition and teardown
+/// close-out windows.
 fn write_fleet_config(dir: &Path, name: &str, store: &str) -> PathBuf {
     let text = format!(
         r#"
@@ -449,14 +465,18 @@ fn write_fleet_config(dir: &Path, name: &str, store: &str) -> PathBuf {
         id = "stub.v1"
         behaviors = [{BEHAVIORS}]
 
-        [execution]
+        [config]
         store = "{store}"
-        workers = 1
         max_attempts = 3
 
-        [fleet]
+        [orchestrator]
+        workers = 1
+
+        [host.rented]
         provider = "stub"
-        count = 1
+
+        [fleet]
+        members = ["rented"]
     "#
     );
     common::write_config_text(dir, name, &text)
@@ -490,7 +510,7 @@ fn a_provider_crash_recovers_without_double_charging() {
         );
 
         // Armed: the orchestrator dies by SIGKILL at the window.
-        let status = sima_run(&config, Some(arming));
+        let status = sima_run_fleet(&config, Some(arming));
         assert_eq!(
             status.signal(),
             Some(9),
@@ -500,7 +520,7 @@ fn a_provider_crash_recovers_without_double_charging() {
         // Unarmed re-run: the run recovers and finalizes despite the crashed
         // attempt's record still standing.
         assert_eq!(
-            sima_run(&config, None).code(),
+            sima_run_fleet(&config, None).code(),
             Some(0),
             "{arming}: the re-run finalizes"
         );

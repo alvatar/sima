@@ -30,10 +30,12 @@ pub fn write_config(dir: &Path, name: &str, behaviors: &str, store: &str) -> Pat
         id = "stub.v1"
         behaviors = [{behaviors}]
 
-        [execution]
+        [config]
         store = "{store}"
-        workers = 2
         max_attempts = 3
+
+        [orchestrator]
+        workers = 2
     "#
     );
     let path = dir.join(name);

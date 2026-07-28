@@ -27,9 +27,8 @@ noise_width = 0.02
 # population threshold set away from an exact cell-count boundary is robust.
 # snapshot_when = { scalar = "activity", min = 1e-4 }
 
-[execution]
+[config]
 store = "./store"
-workers = 2
 max_attempts = 3
 
 # Rent GPU instances to run beside the local workers. Uncomment to enable; the
@@ -51,3 +50,6 @@ max_attempts = 3
 # [fleet.budget]
 # max_spend_usd = 5.0
 # max_wall_clock_ms = 3600000
+
+[orchestrator]
+workers = 2

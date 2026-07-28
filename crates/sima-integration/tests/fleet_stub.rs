@@ -1,11 +1,12 @@
 //! End-to-end acceptance of the distributed run over the stub provider: a
-//! `[fleet] provider = "stub"` config drives the full spine — acquire, probe,
+//! rented host class the fleet names drives the full spine — acquire, probe,
 //! run, teardown, ledger — with no GPU and no network. The stub domain carries
-//! the work, and the stub provider's instances are reached through the
+//! the work, and the stub provider's machines are reached through the
 //! transport's local mode, spawning `sima-worker` directly.
 //!
-//! This file is the milestone's regression net: it exercises the fleet path
-//! every layer above the transport shares with a real provider.
+//! It exercises the renting path every layer above the transport shares with a
+//! real provider, so every run here is engaged with [`Engagement::Fleet`] — the
+//! answer `sima run --fleet` gives.
 
 mod common;
 
@@ -13,11 +14,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use common::{journal_events, loaded_text};
 use sima_core::Result;
-use sima_pipeline::{Event, LoadedConfig, Record, RunControl, RunOutcome, orchestrate, spend};
+use sima_pipeline::{
+    Engagement, Event, LoadedConfig, Record, RunControl, RunOutcome, orchestrate, spend,
+};
 use sima_store::Store;
 
-/// A stub-fleet config: no local pool, so `count` rented instances carry the
-/// whole run; `behaviors` programs the stub candidates.
+/// A config whose fleet is one rented class of `count` machines and whose
+/// orchestrator declares no workers, so the rentals carry the whole run;
+/// `behaviors` programs the stub candidates.
 fn fleet_config(
     dir: &std::path::Path,
     name: &str,
@@ -35,13 +39,16 @@ fn fleet_config(
         id = "stub.v1"
         behaviors = [{behaviors}]
 
-        [execution]
+        [config]
         store = "{store}"
         max_attempts = 3
 
-        [fleet]
+        [host_class.rented]
         provider = "stub"
         count = {count}
+
+        [fleet]
+        members = ["rented"]
     "#
     );
     loaded_text(dir, name, &text)
@@ -58,7 +65,7 @@ fn a_stub_fleet_run_finalizes_with_records_from_fleet_workers() -> Result<()> {
         2,
     )?;
     assert!(matches!(
-        orchestrate(&config, &RunControl::detached())?,
+        orchestrate(&config, &RunControl::detached(), Engagement::Fleet)?,
         RunOutcome::Finalized { .. }
     ));
 
@@ -97,7 +104,7 @@ fn the_ledger_holds_one_closed_entry_per_instance() -> Result<()> {
         2,
     )?;
     assert!(matches!(
-        orchestrate(&config, &RunControl::detached())?,
+        orchestrate(&config, &RunControl::detached(), Engagement::Fleet)?,
         RunOutcome::Finalized { .. }
     ));
 
@@ -121,14 +128,14 @@ fn a_re_run_resumes_and_finalizes() -> Result<()> {
         1,
     )?;
     assert!(matches!(
-        orchestrate(&config, &RunControl::detached())?,
+        orchestrate(&config, &RunControl::detached(), Engagement::Fleet)?,
         RunOutcome::Finalized { .. }
     ));
     // The same store, re-run: the frontier is empty, so the run re-finalizes
     // without re-evaluating a candidate, and the fleet is acquired and torn
     // down again cleanly.
     assert!(matches!(
-        orchestrate(&config, &RunControl::detached())?,
+        orchestrate(&config, &RunControl::detached(), Engagement::Fleet)?,
         RunOutcome::Finalized { .. }
     ));
     let store = Store::open(&config.store)?;
@@ -159,7 +166,7 @@ fn an_interrupt_tears_the_fleet_down_and_leaves_the_ledger_closed() -> Result<()
         on_start: None,
     };
     assert!(matches!(
-        orchestrate(&config, &control)?,
+        orchestrate(&config, &control, Engagement::Fleet)?,
         RunOutcome::Interrupted { .. }
     ));
 
@@ -172,6 +179,103 @@ fn an_interrupt_tears_the_fleet_down_and_leaves_the_ledger_closed() -> Result<()
     assert!(
         !report.entries.is_empty(),
         "the torn-down rental left a closed entry"
+    );
+    Ok(())
+}
+
+/// A config declaring a rented class beside an orchestrator that can carry the
+/// run itself, so the invocation decides which machines are used.
+fn opt_in_config(dir: &std::path::Path, name: &str, store: &str) -> Result<LoadedConfig> {
+    let text = format!(
+        r#"
+        [run]
+        root_seed = 5
+        format = "stub.v1"
+
+        [run.generator]
+        id = "stub.v1"
+        behaviors = ["succeed", "succeed", "succeed", "succeed"]
+
+        [config]
+        store = "{store}"
+        max_attempts = 3
+
+        [orchestrator]
+        workers = 1
+
+        [host_class.rented]
+        provider = "stub"
+        count = 2
+
+        [fleet]
+        members = ["rented"]
+    "#
+    );
+    loaded_text(dir, name, &text)
+}
+
+/// The hosts the journal's `WorkerBound` events name; the orchestrator's own
+/// workers report the empty label.
+fn bound_hosts(events: &[Event]) -> std::collections::HashSet<String> {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            Event::WorkerBound { host, .. } => Some(host.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn without_the_flag_the_orchestrator_carries_the_run_and_nothing_is_rented() -> Result<()> {
+    // Declaring a rented class says a run *may* use it. This invocation does
+    // not ask for it, so no provider is constructed, nothing is acquired, and
+    // the orchestrator's own worker finalizes the run alone.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config = opt_in_config(dir.path(), "local.toml", "./store")?;
+    assert!(matches!(
+        orchestrate(&config, &RunControl::detached(), Engagement::Orchestrator)?,
+        RunOutcome::Finalized { .. }
+    ));
+
+    let report = spend(&config)?;
+    assert!(report.entries.is_empty(), "nothing was rented");
+    assert!(report.open.is_empty(), "no rental is left open");
+    assert_eq!(report.total.0, 0, "an unasked-for rental costs nothing");
+    assert_eq!(
+        bound_hosts(&journal_events(&config)),
+        std::collections::HashSet::from(["".to_string()]),
+        "every worker bound on this machine"
+    );
+    Ok(())
+}
+
+#[test]
+fn with_the_flag_the_declared_machines_join_the_orchestrator() -> Result<()> {
+    // The same config, asked for the fleet: the rented machines are acquired
+    // beside the orchestrator's own worker, and the ledger records them.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config = opt_in_config(dir.path(), "fleet.toml", "./store")?;
+    assert!(matches!(
+        orchestrate(&config, &RunControl::detached(), Engagement::Fleet)?,
+        RunOutcome::Finalized { .. }
+    ));
+
+    let report = spend(&config)?;
+    assert_eq!(
+        report.entries.len(),
+        2,
+        "one closed entry per rented machine"
+    );
+    assert!(report.open.is_empty(), "no rental is left open");
+    let hosts = bound_hosts(&journal_events(&config));
+    assert!(
+        hosts.contains(""),
+        "the orchestrator's own worker still bound: {hosts:?}"
+    );
+    assert!(
+        hosts.len() > 1,
+        "the rented machines bound workers of their own: {hosts:?}"
     );
     Ok(())
 }

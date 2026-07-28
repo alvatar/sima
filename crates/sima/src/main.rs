@@ -13,8 +13,14 @@
 //!   `--timeline`; the rental ledger under `--spend`; and machine reputation
 //!   under `--machines`. The view flags are mutually exclusive.
 //!
-//! A `<key>` is any prefix of a task key that names one task. All
-//! orchestration lives in `sima-pipeline` — this binary parses arguments,
+//! A `<key>` is any prefix of a task key that names one task.
+//!
+//! A run executes on the machines the invocation asks for, never on every
+//! machine a config happens to declare: `run` and `tui` use `[orchestrator]`
+//! alone, and `--fleet` adds every member of `[fleet]`. Without it no provider
+//! is constructed and no rental credential is read.
+//!
+//! All orchestration lives in `sima-pipeline` — this binary parses arguments,
 //! renders output, registers the interrupt flag, and maps outcomes to exit
 //! codes:
 //!
@@ -36,8 +42,8 @@ use std::sync::atomic::AtomicBool;
 
 use sima_core::{Error, Result};
 use sima_pipeline::{
-    FeedInfo, LoadedConfig, LocalFeed, Record, RemoteFeed, RemovalReport, ReportRow, RunControl,
-    RunFeed, RunId, RunOutcome, RunStatus, RunTimeline, TaskHistory, failures_records,
+    Engagement, FeedInfo, LoadedConfig, LocalFeed, Record, RemoteFeed, RemovalReport, ReportRow,
+    RunControl, RunFeed, RunId, RunOutcome, RunStatus, RunTimeline, TaskHistory, failures_records,
     follow_serve, load, local_snapshot, orchestrate, remote_snapshot, report_records,
     report_task_records, status, status_records, task_history_records, timeline_records,
 };
@@ -58,7 +64,12 @@ fn main() -> ExitCode {
         // The write commands never observe: `run` drives a run, which happens
         // where the hardware is, and `rm` and `reconcile` mutate a store. A
         // host on any of them falls through to the usage error.
-        ["run", config] if host.is_none() => run_command(&resolve_config(config)),
+        ["run", config] if host.is_none() => {
+            run_command(&resolve_config(config), Engagement::Orchestrator)
+        }
+        ["run", config, "--fleet"] if host.is_none() => {
+            run_command(&resolve_config(config), Engagement::Fleet)
+        }
         ["rm", config] if host.is_none() => rm_command(&resolve_config(config)),
         ["reconcile", config] if host.is_none() => {
             reconcile::reconcile_command(&resolve_config(config))
@@ -84,11 +95,15 @@ fn main() -> ExitCode {
         ["report", config, "--machines"] if host.is_none() => {
             machines_command(&resolve_config(config))
         }
-        ["tui", config] => tui::tui_command(&Target::new(config, host)),
+        ["tui", config] => tui::tui_command(&Target::new(config, host), Engagement::Orchestrator),
+        ["tui", config, "--fleet"] if host.is_none() => {
+            tui::tui_command(&Target::new(config, host), Engagement::Fleet)
+        }
         ["follow", config] => follow::follow_command(&Target::new(config, host)),
         _ => {
             eprint!(
-                "usage: sima run <config>                  drive the configured run\n\
+                "usage: sima run <config>                  drive the run on this machine\n\
+                 \x20      sima run <config> --fleet          drive it on this machine and [fleet]\n\
                  \x20      sima status <config>               report the run's state\n\
                  \x20      sima status <config> --task <key>  print one task's attempt timeline\n\
                  \x20      sima status <config> --failed      digest the tasks that did not commit\n\
@@ -100,7 +115,7 @@ fn main() -> ExitCode {
                  \x20      sima report <config> --machines    report machine reputation and blacklisting\n\
                  \x20      sima rm <config>                   delete the run and what only it references\n\
                  \x20      sima reconcile <config>            destroy the machines a crashed run left running\n\
-                 \x20      sima tui <config>                  drive the run in a full-screen terminal UI\n\
+                 \x20      sima tui <config> [--fleet]        drive the run in a full-screen terminal UI\n\
                  \x20      sima follow <config>               stream the run's events until it ends\n\
                  \x20      <config> is a sima.toml path; the .toml extension may be omitted\n\
                  \x20      <key> is any prefix of a task key that names one task\n\
@@ -207,11 +222,12 @@ fn resolve_config(arg: &str) -> PathBuf {
     path
 }
 
-/// `sima run <config.toml>`: loads, prints the run id, orchestrates with
-/// progress rendering and the SIGINT flag installed, and maps the outcome
-/// to the exit code.
-fn run_command(config: &Path) -> ExitCode {
-    match drive(config) {
+/// `sima run <config.toml> [--fleet]`: loads, prints the run id, orchestrates
+/// with progress rendering and the SIGINT flag installed, and maps the outcome
+/// to the exit code. `engagement` is what the invocation asked for: this
+/// machine alone, or this machine and the fleet.
+fn run_command(config: &Path, engagement: Engagement) -> ExitCode {
+    match drive(config, engagement) {
         Ok(outcome) => ExitCode::from(outcome_exit_code(&outcome)),
         Err(e) => report(e),
     }
@@ -221,7 +237,7 @@ fn run_command(config: &Path) -> ExitCode {
 /// before any output, so Ctrl-C is graceful from the first line on; a
 /// second Ctrl-C falls through to default death — which is safe, since
 /// that is exactly the crash the recovery guarantees cover.
-fn drive(config: &Path) -> Result<RunOutcome> {
+fn drive(config: &Path, engagement: Engagement) -> Result<RunOutcome> {
     let loaded = load(config)?;
     let interrupt = Arc::new(AtomicBool::new(false));
     signal_hook::flag::register_conditional_default(signal_hook::consts::SIGINT, interrupt.clone())
@@ -238,7 +254,7 @@ fn drive(config: &Path) -> Result<RunOutcome> {
         interrupt: &interrupt,
         on_start: None,
     };
-    orchestrate(&loaded, &control)
+    orchestrate(&loaded, &control, engagement)
 }
 
 /// `sima report <config.toml> --spend`: the run's rental ledger — closed

@@ -42,11 +42,13 @@ fn preemption_kills_an_overrunning_attempt_and_exhausts_the_run() {
         id = "stub.v1"
         behaviors = ["sleep:60000"]
 
-        [execution]
+        [config]
         store = "./store"
-        workers = 1
         max_attempts = 2
         attempt_timeout_ms = 150
+
+        [orchestrator]
+        workers = 1
     "#;
     let config = common::write_config_text(dir.path(), "preempt.toml", text);
 
@@ -105,10 +107,12 @@ fn write_sleep_config(dir: &Path, name: &str, store: &str, sleep_ms: u64) -> Pat
         id = "stub.v1"
         behaviors = ["sleep:{sleep_ms}", "sleep:{sleep_ms}"]
 
-        [execution]
+        [config]
         store = "{store}"
-        workers = 2
         max_attempts = 3
+
+        [orchestrator]
+        workers = 2
     "#
     );
     common::write_config_text(dir, name, &text)
@@ -263,10 +267,12 @@ fn worker_count_never_reaches_the_manifest() {
             id = "stub.v1"
             behaviors = ["succeed", "flaky:1", "succeed", "succeed"]
 
-            [execution]
+            [config]
             store = "{store}"
-            workers = {workers}
             max_attempts = 3
+
+            [orchestrator]
+            workers = {workers}
         "#
         );
         common::write_config_text(dir.path(), name, &text)

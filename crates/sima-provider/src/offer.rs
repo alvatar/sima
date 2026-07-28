@@ -60,7 +60,7 @@ pub struct Offer {
 
 /// Hard constraints: an offer either qualifies or is disqualified. The
 /// default disqualifies nothing.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct Constraints {
     /// Acceptable GPU models, any-of, matched case-insensitively by
     /// substring. An empty list admits every model.

@@ -807,6 +807,7 @@ fn the_usage_text_names_every_command_form() {
         "sima tui",
         "sima follow",
         "--on",
+        "--fleet",
     ] {
         assert!(stderr.contains(form), "usage names {form}: {stderr}");
     }

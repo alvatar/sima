@@ -1,22 +1,21 @@
 //! Remote-execution acceptance over the real binaries and the built worker
 //! image, in two tiers by carrier.
 //!
-//! **Tier A — a container pool on this machine, no ssh.** The four acceptance
-//! scenarios run against the real Task-10 image over a local container runtime:
-//! a `[[execution.remote]]` entry with no `host`, so the worker pool's transport
-//! is `podman run --rm -i --name <name> <run_args> <image> sima-worker` with no
-//! ssh prefix — every layer of the remote-worker mechanism except the ssh hop,
+//! **Tier A — a container pool on this machine, no ssh.** The acceptance
+//! scenarios run against the real worker image over a local container runtime:
+//! an `[orchestrator]` naming an `image`, so the worker pool's transport is
+//! `podman run --rm -i --name <name> <run_args> <image> sima-worker` with no ssh
+//! prefix — every layer of the container-worker mechanism except the ssh hop,
 //! which the transport cannot distinguish from any other pipe carrier. These are
 //! `#[ignore]` and skip clean when the image is absent (`SIMA_TEST_IMAGE`
-//! unset); they run in this stage's final gate set on any machine with a
-//! container runtime and the image.
+//! unset); they run on any machine with a container runtime and the image.
 //!
-//! **Tier B — a container pool across ssh.** The ssh-specific variants: the same
-//! mixed run with a real ssh hop, the two-stage kill through a second ssh
-//! connection, and the BatchMode refusal on an unreachable host. Double-gated —
-//! `#[ignore]` plus a `SIMA_TEST_REMOTE` ssh destination — so a blanket
-//! `--ignored` run passes clean where no remote is provisioned. They run
-//! unchanged the first time an SSH-reachable host exists.
+//! **Tier B — a container pool across ssh.** The ssh-specific variants: a mixed
+//! run over this machine and a declared host, the two-stage kill through a
+//! second ssh connection, and the BatchMode refusal on an unreachable host. A
+//! declared host is engaged only under `--fleet`, so every Tier B run passes it.
+//! Double-gated — `#[ignore]` plus a `SIMA_TEST_REMOTE` ssh destination — so a
+//! blanket `--ignored` run passes clean where no remote is provisioned.
 //!
 //! ```text
 //! # Tier A, on a machine with podman and the image:
@@ -59,7 +58,8 @@ const SEGMENTS: u64 = 3;
 
 /// The container pool the environment names: where its container runs, the
 /// image, the runtime, and its GPU-access run flags. `host` is `None` for a
-/// local runtime (Tier A) and the ssh destination for a remote (Tier B).
+/// local runtime (Tier A), where the pool is the orchestrator's own, and the ssh
+/// destination for a remote (Tier B), where it is a declared host.
 struct ContainerEnv {
     host: Option<String>,
     image: String,
@@ -94,34 +94,55 @@ impl ContainerEnv {
         })
     }
 
-    /// The `[[execution.remote]]` table for this pool, its device tables
-    /// resolving `select` on the hardware its container sees. A local pool omits
-    /// the `host` key, so the container runs here with no ssh hop.
-    fn remote_table(&self, select: &str, workers: u32) -> String {
+    /// The machine declaration for this pool, its device tables resolving
+    /// `select` on the hardware its container sees. A local pool is the
+    /// orchestrator's own container, so it needs no name and no fleet; a pool
+    /// across ssh is a declared host the fleet draws on, which `--fleet`
+    /// engages.
+    ///
+    /// `selects` is one `(select, workers)` pair per device class the pool
+    /// spreads over.
+    fn machine_tables(&self, selects: &[(&str, u32)]) -> String {
         let args = self
             .run_args
             .iter()
             .map(|a| format!("{a:?}"))
             .collect::<Vec<_>>()
             .join(", ");
-        let host_line = match &self.host {
-            Some(host) => format!("host = {host:?}\n"),
-            None => String::new(),
+        let (table, device_table, fleet) = match &self.host {
+            Some(host) => (
+                format!("[host.pool]\n        ssh = {host:?}\n"),
+                "[[host.pool.device]]",
+                "\n        [fleet]\n        members = [\"pool\"]\n",
+            ),
+            None => (
+                "[orchestrator]\n".to_string(),
+                "[[orchestrator.device]]",
+                "",
+            ),
         };
+        let devices = selects
+            .iter()
+            .map(|(select, workers)| {
+                format!("\n        {device_table}\n        select = \"{select}\"\n        workers = {workers}\n")
+            })
+            .collect::<String>();
         format!(
             r#"
-        [[execution.remote]]
-        {host_line}image = "{image}"
+        {table}image = "{image}"
         runtime = "{runtime}"
         run_args = [{args}]
-
-        [[execution.remote.device]]
-        select = "{select}"
-        workers = {workers}
-    "#,
+{devices}{fleet}    "#,
             image = self.image,
             runtime = self.runtime,
         )
+    }
+
+    /// Whether a run over this pool must ask for the fleet: a declared host is
+    /// engaged only under `--fleet`, and the orchestrator's own pool never
+    /// needs it.
+    fn engages_fleet(&self) -> bool {
+        self.host.is_some()
     }
 
     /// A command over the pool's runtime with `args`, ssh-wrapped when the pool
@@ -179,9 +200,9 @@ macro_rules! remote_or_skip {
     };
 }
 
-/// A Gray-Scott config with `count` candidates over `segments`, its execution
-/// section filled by `execution`.
-fn config_text(store: &str, count: u32, segments: u64, execution: &str) -> String {
+/// A Gray-Scott config with `count` candidates over `segments`, its machine
+/// declarations filled by `machines`.
+fn config_text(store: &str, count: u32, segments: u64, machines: &str) -> String {
     format!(
         r#"
         [run]
@@ -207,18 +228,31 @@ fn config_text(store: &str, count: u32, segments: u64, execution: &str) -> Strin
         side_divisor = 8
         noise_width = 0.02
 
-        [execution]
+        [config]
         store = "{store}"
         max_attempts = 3
-        {execution}
+        {machines}
     "#
     )
 }
 
+/// The `sima run` argument vector over `config`, asking for the fleet when the
+/// config declares a machine beyond this one.
+fn run_argv(config: &Path, fleet: bool) -> Vec<String> {
+    let mut argv = vec![
+        "run".to_string(),
+        config.to_str().expect("utf-8 path").to_string(),
+    ];
+    if fleet {
+        argv.push("--fleet".to_string());
+    }
+    argv
+}
+
 /// Runs `config` to completion, asserting it finalized.
-fn run_to_completion(config: &Path) {
+fn run_to_completion(config: &Path, fleet: bool) {
     let status = sima_command()
-        .args(["run", config.to_str().expect("utf-8 path")])
+        .args(run_argv(config, fleet))
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
@@ -251,37 +285,39 @@ fn assert_no_chain_split(events: &[Event]) {
 // Tier A — a container pool on this machine, no ssh.
 // ---------------------------------------------------------------------------
 
-/// A mixed run over a local bare pool and a local container pool commits from
-/// both, and no chain splits across the transport boundary. Both pools run on
-/// this machine, so the journal cannot tell them apart by host; the two pools
-/// carry distinct device classes, and commits on both prove both pulled work.
+/// A container pool spread over two device classes commits from both, and no
+/// chain splits across the class boundary. The pool runs on this machine, so the
+/// journal cannot tell its classes apart by host; commits on both prove both
+/// were scheduled onto.
 #[test]
 #[ignore = "requires a container runtime and the worker image (SIMA_TEST_IMAGE)"]
-fn a_mixed_bare_and_container_run_commits_from_both_pools() {
+fn a_two_class_container_run_commits_from_both_classes() {
     let env = local_or_skip!();
     let dir = tempfile::tempdir().expect("temp dir");
-    // The bare pool takes the Intel class; the container pool the NVIDIA class.
-    let execution = format!(
-        "[[execution.device]]\n        select = \"intel\"\n        workers = 2\n{}",
-        env.remote_table("nvidia", 2)
-    );
     let config = write_config_text(
         dir.path(),
         "mixed.toml",
-        &config_text("./store", CANDIDATES, SEGMENTS, &execution),
+        &config_text(
+            "./store",
+            CANDIDATES,
+            SEGMENTS,
+            &env.machine_tables(&[("intel", 2), ("nvidia", 2)]),
+        ),
     );
-    run_to_completion(&config);
+    run_to_completion(&config, env.engages_fleet());
 
     let events = journal_events(&config);
-    // Commits on two distinct device classes: the bare pool and the container
-    // pool each pulled work.
+    // Commits on two distinct device classes: both classes pulled work.
     assert!(
         devices_reported(&events).len() >= 2,
-        "both the bare pool and the container pool bound workers: {:?}",
+        "both device classes bound workers: {:?}",
         devices_reported(&events)
     );
     assert_no_chain_split(&events);
-    assert!(manifest_of(&config).is_some(), "the mixed run finalized");
+    assert!(
+        manifest_of(&config).is_some(),
+        "the two-class run finalized"
+    );
 }
 
 /// The same single-class run on a bare pool and on a container pool commits a
@@ -301,7 +337,7 @@ fn single_class_manifests_are_identical_bare_and_container() {
             "./bare-store",
             CANDIDATES,
             SEGMENTS,
-            "[[execution.device]]\n        select = \"nvidia\"\n        workers = 2",
+            "[orchestrator]\n        [[orchestrator.device]]\n        select = \"nvidia\"\n        workers = 2",
         ),
     );
     let container = write_config_text(
@@ -311,11 +347,11 @@ fn single_class_manifests_are_identical_bare_and_container() {
             "./container-store",
             CANDIDATES,
             SEGMENTS,
-            &env.remote_table("nvidia", 2),
+            &env.machine_tables(&[("nvidia", 2)]),
         ),
     );
-    run_to_completion(&bare);
-    run_to_completion(&container);
+    run_to_completion(&bare, false);
+    run_to_completion(&container, env.engages_fleet());
 
     let bare_manifest = manifest_bytes(&bare).expect("the bare run finalized");
     let container_manifest = manifest_bytes(&container).expect("the container run finalized");
@@ -334,27 +370,28 @@ fn a_killed_container_converges_through_retry() {
     converges_after_a_mid_lease_kill(&env, "kill-local.toml");
 }
 
-/// A run resumed without its container pool rebinds the chains bound to the
-/// container-only class and converges — the M4.2 rebind machinery composing with
-/// container pools.
+/// A run resumed without one of its container pool's device classes rebinds the
+/// chains bound to the absent class and converges — the rebind machinery
+/// composing with container pools.
 #[test]
 #[ignore = "requires a container runtime and the worker image (SIMA_TEST_IMAGE)"]
-fn a_resume_without_the_container_pool_rebinds_loudly() {
+fn a_resume_without_a_container_class_rebinds_loudly() {
     let env = local_or_skip!();
     let dir = tempfile::tempdir().expect("temp dir");
-    // First session: a bare Intel pool and a container NVIDIA pool. Chains bind
-    // across both classes.
-    let with_container = format!(
-        "[[execution.device]]\n        select = \"intel\"\n        workers = 2\n{}",
-        env.remote_table("nvidia", 2)
-    );
+    // First session: a container pool over the Intel and NVIDIA classes. Chains
+    // bind across both.
     let full = write_config_text(
         dir.path(),
         "full.toml",
-        &config_text("./store", CANDIDATES, SEGMENTS, &with_container),
+        &config_text(
+            "./store",
+            CANDIDATES,
+            SEGMENTS,
+            &env.machine_tables(&[("intel", 2), ("nvidia", 2)]),
+        ),
     );
     let mut child = sima_command()
-        .args(["run", full.to_str().expect("utf-8 path")])
+        .args(run_argv(&full, env.engages_fleet()))
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
@@ -371,20 +408,21 @@ fn a_resume_without_the_container_pool_rebinds_loudly() {
     child.kill().expect("kill the orchestrator");
     let _ = child.wait();
 
-    // Resume over the Intel class alone: the same store, no container pool.
-    // Chains bound to the absent NVIDIA class must rebind.
-    let local_only = write_config_text(
+    // Resume over the Intel class alone: the same store, the same container
+    // pool, one class fewer. Chains bound to the absent NVIDIA class must
+    // rebind.
+    let one_class = write_config_text(
         dir.path(),
-        "local-only.toml",
+        "one-class.toml",
         &config_text(
             "./store",
             CANDIDATES,
             SEGMENTS,
-            "[[execution.device]]\n        select = \"intel\"\n        workers = 2",
+            &env.machine_tables(&[("intel", 2)]),
         ),
     );
-    run_to_completion(&local_only);
-    let events = journal_events(&local_only);
+    run_to_completion(&one_class, env.engages_fleet());
+    let events = journal_events(&one_class);
     assert!(
         events
             .iter()
@@ -392,7 +430,7 @@ fn a_resume_without_the_container_pool_rebinds_loudly() {
         "a chain whose class was gone rebound loudly"
     );
     assert!(
-        manifest_of(&local_only).is_some(),
+        manifest_of(&one_class).is_some(),
         "the resumed run finalized"
     );
 }
@@ -410,16 +448,16 @@ fn a_mixed_local_and_ssh_run_commits_from_both_pools() {
     let env = remote_or_skip!();
     let host = env.host.clone().expect("Tier B names an ssh host");
     let dir = tempfile::tempdir().expect("temp dir");
-    let execution = format!(
-        "[[execution.device]]\n        select = \"nvidia\"\n        workers = 2\n{}",
-        env.remote_table("nvidia", 2)
+    let machines = format!(
+        "[orchestrator]\n        [[orchestrator.device]]\n        select = \"nvidia\"\n        workers = 2\n{}",
+        env.machine_tables(&[("nvidia", 2)])
     );
     let config = write_config_text(
         dir.path(),
         "mixed-ssh.toml",
-        &config_text("./store", CANDIDATES, SEGMENTS, &execution),
+        &config_text("./store", CANDIDATES, SEGMENTS, &machines),
     );
-    run_to_completion(&config);
+    run_to_completion(&config, true);
 
     let events = journal_events(&config);
     let hosts = bound_hosts(&events);
@@ -440,9 +478,9 @@ fn a_killed_ssh_container_converges_through_retry() {
     converges_after_a_mid_lease_kill(&env, "kill-ssh.toml");
 }
 
-/// An `[[execution.remote]]` naming an unreachable host fails cleanly at run
-/// start rather than hanging: `BatchMode=yes` turns an unauthenticated or
-/// unreachable destination into a spawn error the image bootstrap surfaces.
+/// A declared host that resolves nowhere fails cleanly at run start rather than
+/// hanging: `BatchMode=yes` turns an unauthenticated or unreachable destination
+/// into a spawn error the image bootstrap surfaces.
 #[test]
 #[ignore = "requires ssh present on the machine (SIMA_TEST_REMOTE gates the tier)"]
 fn an_unreachable_host_fails_cleanly() {
@@ -463,11 +501,11 @@ fn an_unreachable_host_fails_cleanly() {
             "./store",
             CANDIDATES,
             SEGMENTS,
-            &unreachable.remote_table("nvidia", 2),
+            &unreachable.machine_tables(&[("nvidia", 2)]),
         ),
     );
     let output = sima_command()
-        .args(["run", config.to_str().expect("utf-8 path")])
+        .args(run_argv(&config, true))
         .output()
         .expect("spawn sima");
     assert!(
@@ -496,11 +534,11 @@ fn converges_after_a_mid_lease_kill(env: &ContainerEnv, config_name: &str) {
             "./store",
             CANDIDATES,
             SEGMENTS,
-            &env.remote_table("nvidia", 2),
+            &env.machine_tables(&[("nvidia", 2)]),
         ),
     );
     let mut child = sima_command()
-        .args(["run", config.to_str().expect("utf-8 path")])
+        .args(run_argv(&config, env.engages_fleet()))
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()

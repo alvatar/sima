@@ -24,7 +24,8 @@ use ratatui::backend::CrosstermBackend;
 
 use sima_core::Error;
 use sima_pipeline::{
-    LoadedConfig, LocalFeed, Record, RemoteFeed, RunControl, RunFeed, RunStatus, load, orchestrate,
+    Engagement, LoadedConfig, LocalFeed, Record, RemoteFeed, RunControl, RunFeed, RunStatus, load,
+    orchestrate,
 };
 
 use crate::Target;
@@ -64,20 +65,20 @@ const PROBE_TICKS: u32 = 20;
 /// foreign orchestrator drives this run, and the session observes it; a free
 /// lock enters the drive session. A run on another host is observed and never
 /// driven — driving happens where the hardware is.
-pub fn tui_command(target: &Target) -> ExitCode {
+pub fn tui_command(target: &Target, engagement: Engagement) -> ExitCode {
     if !io::stdout().is_terminal() {
         eprintln!("sima tui requires a terminal");
         return ExitCode::from(crate::EXIT_ERROR);
     }
     match target {
-        Target::Local(config) => local_command(config),
+        Target::Local(config) => local_command(config, engagement),
         Target::Remote { host, config } => remote_command(host, config),
     }
 }
 
 /// The session over a run on this machine: observe while a foreign
 /// orchestrator holds it, otherwise drive it.
-fn local_command(config: &Path) -> ExitCode {
+fn local_command(config: &Path, engagement: Engagement) -> ExitCode {
     let loaded = match load(config) {
         Ok(loaded) => loaded,
         Err(e) => return crate::report(e),
@@ -86,7 +87,12 @@ fn local_command(config: &Path) -> ExitCode {
     // normal screen, as the seed below does for the drive session.
     match observed_holder(&loaded) {
         Ok(Some((feed, holder))) => {
-            return finish(observe_session(Box::new(feed), Some(holder), Some(loaded)));
+            return finish(observe_session(
+                Box::new(feed),
+                Some(holder),
+                Some(loaded),
+                engagement,
+            ));
         }
         Ok(None) => {}
         Err(e) => return crate::report(e),
@@ -97,7 +103,7 @@ fn local_command(config: &Path) -> ExitCode {
         Ok(status) => status,
         Err(e) => return crate::report(e),
     };
-    finish(run_session(loaded, status))
+    finish(run_session(loaded, status, engagement))
 }
 
 /// The session over a run on another host: always an observation, whatever
@@ -113,7 +119,14 @@ fn remote_command(host: &str, config: &str) -> ExitCode {
         Ok(holder) => holder,
         Err(e) => return crate::report(e),
     };
-    finish(observe_session(Box::new(feed), holder, None))
+    // A run on another host is never driven from here, so the engagement it
+    // would take never reaches an orchestrator.
+    finish(observe_session(
+        Box::new(feed),
+        holder,
+        None,
+        Engagement::Orchestrator,
+    ))
 }
 
 /// Maps a session's return to the process exit code. The terminal guard has
@@ -167,14 +180,14 @@ fn key_action(key: KeyEvent) -> Option<KeyAction> {
 
 /// Runs one drive session over `config`, returning its exit code: sets up
 /// the terminal and hands the seeded state to the drive loop.
-fn run_session(config: LoadedConfig, status: RunStatus) -> io::Result<u8> {
+fn run_session(config: LoadedConfig, status: RunStatus, engagement: Engagement) -> io::Result<u8> {
     // Mark this as the UI thread that owns the terminal, so the panic hook
     // restores it only for a panic here and stays inert on worker and
     // orchestrate threads.
     ON_UI_THREAD.with(|flag| flag.set(true));
     install_panic_hook();
     let mut guard = TerminalGuard::enter()?;
-    drive_loop(&mut guard, config, status, false)
+    drive_loop(&mut guard, config, status, false, engagement)
 }
 
 /// The drive loop: applies keys and run events to the state, drives the run
@@ -187,6 +200,7 @@ fn drive_loop(
     config: LoadedConfig,
     status: RunStatus,
     start: bool,
+    engagement: Engagement,
 ) -> io::Result<u8> {
     let workers = config.execution.workers;
     let mut state = TuiState::new(status, workers);
@@ -222,7 +236,7 @@ fn drive_loop(
         if state.take_start() {
             let flag = Arc::new(AtomicBool::new(false));
             interrupt = Some(Arc::clone(&flag));
-            spawn_run(Arc::clone(&config), tx.clone(), flag);
+            spawn_run(Arc::clone(&config), tx.clone(), flag, engagement);
         }
         if state.take_stop()
             && let Some(flag) = &interrupt
@@ -253,6 +267,7 @@ fn observe_session(
     feed: Box<dyn RunFeed>,
     holder: Option<String>,
     takeover: Option<LoadedConfig>,
+    engagement: Engagement,
 ) -> io::Result<u8> {
     ON_UI_THREAD.with(|flag| flag.set(true));
     install_panic_hook();
@@ -261,7 +276,7 @@ fn observe_session(
         ObserveEnd::Exit(code) => Ok(code),
         ObserveEnd::TakeOver(config) => {
             let status = crate::seed_status(&config).map_err(io::Error::other)?;
-            drive_loop(&mut guard, *config, status, true)
+            drive_loop(&mut guard, *config, status, true, engagement)
         }
     }
 }
@@ -357,7 +372,12 @@ fn apply_key(state: &mut TuiState) -> io::Result<bool> {
 /// Spawns the orchestrate thread for one run: its observer forwards every
 /// journal record into the channel, the shared flag carries interrupts in,
 /// and its return arrives as [`Msg::Finished`].
-fn spawn_run(config: Arc<LoadedConfig>, tx: SyncSender<Msg>, interrupt: Arc<AtomicBool>) {
+fn spawn_run(
+    config: Arc<LoadedConfig>,
+    tx: SyncSender<Msg>,
+    interrupt: Arc<AtomicBool>,
+    engagement: Engagement,
+) {
     thread::spawn(move || {
         let events = tx.clone();
         let observer = move |record: &Record| {
@@ -382,7 +402,7 @@ fn spawn_run(config: Arc<LoadedConfig>, tx: SyncSender<Msg>, interrupt: Arc<Atom
                 interrupt: &interrupt,
                 on_start: None,
             };
-            orchestrate(&config, &control)
+            orchestrate(&config, &control, engagement)
         }))
         .unwrap_or_else(|payload| Err(panic_fault(payload)));
         let _ = tx.send(Msg::Finished(outcome));

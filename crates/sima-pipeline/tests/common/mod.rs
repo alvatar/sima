@@ -27,11 +27,13 @@ pub fn loaded_with(
         id = "stub.v1"
         behaviors = [{behaviors}]
 
-        [execution]
+        [config]
         store = "{store}"
-        workers = {workers}
         max_attempts = 3
         attempt_timeout_ms = 5000
+
+        [orchestrator]
+        workers = {workers}
     "#
     );
     let path: PathBuf = dir.join(name);
