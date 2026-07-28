@@ -205,7 +205,11 @@ fn deadline(report: &SpendReport, budget: &Budget) -> Option<u64> {
 /// Wall-clock milliseconds since the epoch: the stamp a rental's charged
 /// window opens and closes on, and the stamp the ledger record carries. A
 /// clock behind the epoch stamps zero.
-pub(crate) fn now_ms() -> u64 {
+///
+/// Public because [`assess`] takes the stamp as a parameter — so a caller can
+/// drive an assessment without waiting on the clock — and every caller that is
+/// not doing that needs the same reading of it.
+pub fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |since| since.as_millis() as u64)

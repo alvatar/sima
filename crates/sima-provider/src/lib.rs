@@ -39,7 +39,9 @@ mod testutil;
 
 pub use acquire::{AcquireLimits, acquire};
 pub use adopt::adopt;
-pub use budget::{Budget, Cost, Exhaustion, OpenSpend, SpendReport, Verdict, assess, spend_report};
+pub use budget::{
+    Budget, Cost, Exhaustion, OpenSpend, SpendReport, Verdict, assess, now_ms, spend_report,
+};
 pub use guard::InstanceGuard;
 pub use offer::{Constraints, Objective, Offer, OfferId, Price, select};
 pub use provider::{

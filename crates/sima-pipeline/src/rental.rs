@@ -10,7 +10,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Condvar, Mutex};
 use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use sima_contracts::DeviceBinding;
 use sima_core::{Error, Result};
@@ -19,7 +19,8 @@ use sima_model::FormatId;
 use sima_provider::stub::StubProvider;
 use sima_provider::{
     AcquireLimits, Budget, Exhaustion, IncidentKind, InstanceGuard, InstanceStatus, Objective,
-    Offer, OfferId, Price, Provider, SshEndpoint, Verdict, acquire, assess, record_incident,
+    Offer, OfferId, Price, Provider, SshEndpoint, Verdict, acquire, assess, now_ms,
+    record_incident,
 };
 use sima_provider_vast::{VastConfig, VastProvider};
 use sima_scheduler::ExecutionConfig;
@@ -338,6 +339,18 @@ pub(crate) fn release_all(groups: Vec<RentalGroup<'_>>) -> Result<()> {
     }
 }
 
+/// The event a spent ceiling raises. A fleet's supervisor and a migration both
+/// report exhaustion, and one journal reads the two the same way.
+pub(crate) fn budget_exhausted(exhaustion: Exhaustion) -> Event {
+    match exhaustion {
+        Exhaustion::Spend { accrued, cap } => Event::BudgetSpendExhausted {
+            accrued_microusd: accrued.0,
+            cap_microusd: cap.0,
+        },
+        Exhaustion::WallClock { deadline_ms } => Event::BudgetWallClockExhausted { deadline_ms },
+    }
+}
+
 /// The supervisor's heartbeat period. Rental health is a low-frequency concern
 /// and the poll is cheap, so a fixed period suffices; no config knob.
 const HEARTBEAT: Duration = Duration::from_secs(10);
@@ -347,14 +360,6 @@ const HEARTBEAT: Duration = Duration::from_secs(10);
 fn never_cancelled() -> &'static AtomicBool {
     static NEVER: AtomicBool = AtomicBool::new(false);
     &NEVER
-}
-
-/// Milliseconds since the epoch, the clock the budget ledger is stamped in.
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
 }
 
 /// The stop signal the orchestrator raises when the scheduler returns, waking
@@ -539,15 +544,7 @@ impl<'a, 'b> Supervisor<'a, 'b> {
     fn wind_down_for_budget(&self, exhaustion: Exhaustion) {
         self.interrupt.store(true, Ordering::Relaxed);
         if !self.budget_announced.swap(true, Ordering::Relaxed) {
-            self.emit(match exhaustion {
-                Exhaustion::Spend { accrued, cap } => Event::BudgetSpendExhausted {
-                    accrued_microusd: accrued.0,
-                    cap_microusd: cap.0,
-                },
-                Exhaustion::WallClock { deadline_ms } => {
-                    Event::BudgetWallClockExhausted { deadline_ms }
-                }
-            });
+            self.emit(budget_exhausted(exhaustion));
         }
     }
 
