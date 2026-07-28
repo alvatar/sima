@@ -9,14 +9,21 @@
 //! The local halves are driven in-process, so the interrupt is raised from the
 //! run observer rather than by signalling a subprocess: a fixed number of
 //! commits, not a wall-clock guess.
+//!
+//! The last test moves a run over a real ssh hop, against a throwaway server
+//! the test stands up and tears down. It needs no root, changes nothing outside
+//! its temporary directory, and runs in the ordinary gate, because an ssh path
+//! nobody exercises is an ssh path nobody knows works.
 
 mod common;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Output};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
 
-use common::{manifest_bytes, worker_binary};
+use common::{manifest_bytes, sima_command, worker_binary};
 use sima_core::Result;
 use sima_model::{TaskKey, TaskRecord};
 use sima_pipeline::{
@@ -80,7 +87,7 @@ fn migrating(dir: &Path, root: &Path, segments: u64) -> PathBuf {
             ready_poll_ms = 20
             "#,
             root = root.to_string_lossy(),
-            binary = env!("CARGO_BIN_EXE_sima"),
+            binary = far_binary(),
         ),
     )
 }
@@ -170,6 +177,11 @@ const UNFINISHABLE: u64 = 400;
 /// far side's own `sima run` find it beside the test's executable.
 fn workers_built() {
     let _ = worker_binary();
+}
+
+/// Where the far side's `sima` is, for a config that names it.
+fn far_binary() -> &'static str {
+    env!("CARGO_BIN_EXE_sima")
 }
 
 #[test]
@@ -354,4 +366,374 @@ fn a_migration_interrupted_during_the_follow_still_pulls_and_tears_down() -> Res
         "the machine was torn down on the interrupt path"
     );
     Ok(())
+}
+
+// ---- The same acceptance, over a real ssh hop ----
+
+/// A throwaway sshd for the duration of a test: its own host key, its own
+/// authorized-keys file, a free high port, and a log of what it accepted.
+///
+/// It needs no root and writes nothing outside `dir`, so it changes no system
+/// state and leaves nothing behind. The `Drop` kills it on every path, including
+/// a panicking assertion.
+struct Sshd {
+    port: u16,
+    /// The private key a client authenticates with.
+    key: PathBuf,
+    /// What the server itself recorded, which is the only evidence a hop
+    /// happened that a local spawn cannot produce.
+    log: PathBuf,
+    pid: u32,
+    /// The agent holding the key the server authorizes, and its process. The
+    /// migration builds its own ssh invocations and names no identity —
+    /// correctly, since a rented machine is reached with the operator's own ssh
+    /// configuration — so an agent is how a test supplies one.
+    agent_sock: PathBuf,
+    agent_pid: u32,
+}
+
+impl Sshd {
+    /// Stands a server up under `dir`, with `path_prefix` prepended to the PATH
+    /// of every session it serves — which is how the far side's `sima-worker`
+    /// is found without touching anything outside the test.
+    fn start(dir: &Path, path_prefix: &Path) -> Sshd {
+        let host_key = dir.join("hostkey");
+        let key = dir.join("clientkey");
+        for path in [&host_key, &key] {
+            let generated = Command::new("ssh-keygen")
+                .args(["-q", "-t", "ed25519", "-N", "", "-f"])
+                .arg(path)
+                .status()
+                .expect("run ssh-keygen");
+            assert!(generated.success(), "ssh-keygen failed for {path:?}");
+        }
+        let authorized = dir.join("authorized_keys");
+        std::fs::copy(dir.join("clientkey.pub"), &authorized).expect("authorize the client key");
+
+        // Bound and released, so sshd takes a port nothing else is on.
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .expect("bind a free port")
+            .local_addr()
+            .expect("the bound address")
+            .port();
+        let log = dir.join("sshd.log");
+        let pid_file = dir.join("sshd.pid");
+        // `ForceCommand` runs through the login shell, whose word splitting is
+        // its own; routing the requested command through `/bin/sh -c` makes the
+        // split POSIX whatever that shell is.
+        let started = Command::new("/usr/sbin/sshd")
+            .args(["-f", "/dev/null", "-h"])
+            .arg(&host_key)
+            .arg("-p")
+            .arg(port.to_string())
+            .arg("-E")
+            .arg(&log)
+            .arg("-o")
+            .arg(format!("AuthorizedKeysFile={}", authorized.display()))
+            .args([
+                "-o",
+                "StrictModes=no",
+                "-o",
+                "UsePAM=no",
+                "-o",
+                "PasswordAuthentication=no",
+                "-o",
+            ])
+            .arg(format!("PidFile={}", pid_file.display()))
+            .arg("-o")
+            .arg(format!(
+                "ForceCommand=PATH={}:$PATH exec /bin/sh -c \"$SSH_ORIGINAL_COMMAND\"",
+                path_prefix.display()
+            ))
+            .status()
+            .expect("run sshd");
+        assert!(started.success(), "sshd refused to start");
+
+        let pid = poll_for(Duration::from_secs(10), || {
+            std::fs::read_to_string(&pid_file)
+                .ok()
+                .and_then(|text| text.trim().parse::<u32>().ok())
+        })
+        .expect("sshd wrote its pid");
+
+        // An agent of this test's own, on a socket inside `dir`, holding the one
+        // key the server authorizes.
+        let agent_sock = dir.join("agent.sock");
+        let agent = Command::new("ssh-agent")
+            .arg("-a")
+            .arg(&agent_sock)
+            .output()
+            .expect("run ssh-agent");
+        assert!(agent.status.success(), "ssh-agent refused to start");
+        let agent_pid = String::from_utf8_lossy(&agent.stdout)
+            .split("SSH_AGENT_PID=")
+            .nth(1)
+            .and_then(|rest| rest.split(';').next())
+            .and_then(|pid| pid.trim().parse::<u32>().ok())
+            .expect("ssh-agent reported its pid");
+        let added = Command::new("ssh-add")
+            .arg(&key)
+            .env("SSH_AUTH_SOCK", &agent_sock)
+            .output()
+            .expect("run ssh-add");
+        assert!(added.status.success(), "the agent refused the key");
+
+        let server = Sshd {
+            port,
+            key,
+            log,
+            pid,
+            agent_sock,
+            agent_pid,
+        };
+        // The server is up when it answers, not when it forked.
+        assert!(
+            poll_for(Duration::from_secs(10), || server.answers().then_some(())).is_some(),
+            "the server never accepted a session"
+        );
+        server
+    }
+
+    /// Whether a client can reach the server and run a command. The options
+    /// are the harness's own, naming the key explicitly and remembering no host
+    /// key, so the probe touches nothing outside the test either.
+    fn answers(&self) -> bool {
+        Command::new("ssh")
+            .args(["-p", &self.port.to_string(), "-i"])
+            .arg(&self.key)
+            .args([
+                "-o",
+                "BatchMode=yes",
+                "-o",
+                "StrictHostKeyChecking=accept-new",
+                "-o",
+                "UserKnownHostsFile=/dev/null",
+                "-o",
+                "LogLevel=ERROR",
+            ])
+            .arg(format!("{}@127.0.0.1", whoami()))
+            .args(["--", "true"])
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false)
+    }
+
+    /// The agent socket a client authenticates through.
+    fn agent(&self) -> &Path {
+        &self.agent_sock
+    }
+
+    /// The endpoint the stub backend is pointed at.
+    fn endpoint(&self) -> String {
+        format!("{}@127.0.0.1:{}", whoami(), self.port)
+    }
+
+    /// How many sessions the server itself recorded accepting.
+    fn accepted(&self) -> usize {
+        std::fs::read_to_string(&self.log)
+            .unwrap_or_default()
+            .lines()
+            .filter(|line| line.contains("Accepted publickey"))
+            .count()
+    }
+
+    /// Whether the server's process is still there.
+    fn alive(&self) -> bool {
+        process_alive(self.pid)
+    }
+}
+
+/// Whether a process is still there. Signal zero is the existence probe: it
+/// delivers nothing and reports whether it could have.
+fn process_alive(pid: u32) -> bool {
+    unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
+}
+
+impl Drop for Sshd {
+    fn drop(&mut self) {
+        // Both processes, on every path out — including a panicking assertion.
+        for pid in [self.pid, self.agent_pid] {
+            unsafe {
+                libc::kill(pid as libc::pid_t, libc::SIGTERM);
+            }
+        }
+    }
+}
+
+/// The user the test runs as, which is the user its own server authenticates.
+/// The environment names it on an interactive machine and `id` names it
+/// everywhere else.
+fn whoami() -> String {
+    if let Ok(user) = std::env::var("USER") {
+        return user;
+    }
+    let named = Command::new("id").arg("-un").output().expect("run id");
+    assert!(
+        named.status.success(),
+        "id could not name the invoking user"
+    );
+    String::from_utf8(named.stdout)
+        .expect("the user name is UTF-8")
+        .trim()
+        .to_string()
+}
+
+/// Polls `probe` every 20 ms until it yields a value or `deadline` elapses.
+fn poll_for<T>(deadline: Duration, probe: impl Fn() -> Option<T>) -> Option<T> {
+    let end = Instant::now() + deadline;
+    loop {
+        if let Some(value) = probe() {
+            return Some(value);
+        }
+        if Instant::now() >= end {
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// Runs `sima migrate <config>` with the stub backend pointed at `endpoint` and
+/// authenticating through `agent`, so every far-side operation crosses a real
+/// ssh hop and nothing outside the test's directory is read or written.
+fn migrate_over(config: &Path, endpoint: &str, agent: &Path) -> Output {
+    sima_command()
+        .args(["migrate", config.to_str().expect("utf-8 path")])
+        .env("SIMA_STUB_SSH", endpoint)
+        .env("SSH_AUTH_SOCK", agent)
+        .output()
+        .expect("spawn sima migrate")
+}
+
+#[test]
+fn a_run_migrated_over_a_real_ssh_hop_finalizes_and_the_server_saw_it() -> Result<()> {
+    workers_built();
+    let dir = tempfile::tempdir().expect("temp dir");
+    // The far side's `sima-worker` is found through the PATH the server sets
+    // for its sessions; the binary sits beside the `sima` the config names.
+    let binaries = Path::new(far_binary())
+        .parent()
+        .expect("a binary directory");
+    let sshd = Sshd::start(dir.path(), binaries);
+
+    let far_root = dir.path().join("far");
+    let migrated = migrating(dir.path(), &far_root, SEGMENTS);
+    assert!(matches!(
+        drive(&migrated, Some(2))?,
+        RunOutcome::Interrupted { .. }
+    ));
+    let before = committed_records(&migrated)?;
+    assert!(!before.is_empty(), "the local run committed something");
+
+    let output = migrate_over(&migrated, &sshd.endpoint(), sshd.agent());
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "the migration finalized: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    // It really crossed the hop: the server recorded every session, and a
+    // migration reached in process would have produced none.
+    assert!(
+        sshd.accepted() > 1,
+        "the server accepted the far-side sessions: {} in {:?}",
+        sshd.accepted(),
+        sshd.log
+    );
+
+    // And it is the same run, finished: every record carried, the rest
+    // committed on the far side, nothing left rented.
+    assert!(
+        manifest_bytes(&migrated).is_some(),
+        "the manifest is sealed"
+    );
+    let after = committed_records(&migrated)?;
+    for (key, record) in &before {
+        assert_eq!(after.get(key), Some(record), "task {key} was recomputed");
+    }
+    assert!(after.len() > before.len(), "the far side did the rest");
+    let store = Store::open(&load(&migrated)?.store)?;
+    assert!(store.instances()?.is_empty(), "nothing was left rented");
+    Ok(())
+}
+
+#[test]
+fn a_destination_that_cannot_be_reached_fails_rather_than_hanging() -> Result<()> {
+    // `BatchMode=yes` is what makes this prompt rather than block: a server that
+    // is not there refuses at once instead of waiting on a password.
+    workers_built();
+    let dir = tempfile::tempdir().expect("temp dir");
+    let far_root = dir.path().join("far");
+    let migrated = migrating(dir.path(), &far_root, SEGMENTS);
+    assert!(matches!(
+        drive(&migrated, Some(2))?,
+        RunOutcome::Interrupted { .. }
+    ));
+
+    // A port nothing listens on, taken and released.
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .expect("bind")
+        .local_addr()
+        .expect("address")
+        .port();
+    let started = Instant::now();
+    let output = migrate_over(
+        &migrated,
+        &format!("{}@127.0.0.1:{port}", whoami()),
+        &dir.path().join("no-such-agent"),
+    );
+    assert_ne!(
+        output.status.code(),
+        Some(0),
+        "an unreachable far side fails"
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(60),
+        "it failed rather than hanging: {:?}",
+        started.elapsed()
+    );
+    Ok(())
+}
+
+#[test]
+fn a_malformed_stub_endpoint_is_refused_by_name() -> Result<()> {
+    // Set but unparseable means the caller meant to cross a hop, so it fails
+    // instead of quietly falling back to the in-process path.
+    workers_built();
+    let dir = tempfile::tempdir().expect("temp dir");
+    let migrated = migrating(dir.path(), &dir.path().join("far"), SEGMENTS);
+    let output = migrate_over(
+        &migrated,
+        "not-an-endpoint",
+        &dir.path().join("no-such-agent"),
+    );
+    assert_ne!(output.status.code(), Some(0));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("SIMA_STUB_SSH"),
+        "names the variable: {stderr}"
+    );
+    Ok(())
+}
+
+#[test]
+fn the_harness_leaves_no_server_behind() {
+    // The guard is what makes the tier safe to run anywhere: a failing
+    // assertion must not leave a listening server on the machine.
+    workers_built();
+    let dir = tempfile::tempdir().expect("temp dir");
+    let binaries = Path::new(far_binary())
+        .parent()
+        .expect("a binary directory");
+    let pid = {
+        let sshd = Sshd::start(dir.path(), binaries);
+        assert!(sshd.alive(), "the server runs while the test holds it");
+        sshd.pid
+    };
+    assert!(
+        poll_for(Duration::from_secs(10), || (!process_alive(pid))
+            .then_some(()))
+        .is_some(),
+        "the server outlived its guard"
+    );
 }
