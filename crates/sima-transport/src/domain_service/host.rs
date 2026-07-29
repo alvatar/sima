@@ -138,8 +138,9 @@ fn answer(
     }
 }
 
-/// Confirms `format` is the one this program serves.
-fn served(domain: &dyn DomainPlug, format: &FormatId) -> Result<()> {
+/// Confirms `format` is the one this program serves. Shared with the role
+/// entry, which checks the same thing about the format it was spawned for.
+pub(crate) fn served(domain: &dyn DomainPlug, format: &FormatId) -> Result<()> {
     if domain.format() == format {
         return Ok(());
     }
