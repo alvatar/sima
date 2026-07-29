@@ -72,10 +72,16 @@ beyond it as an elastic, heterogeneous extension.
 - **Rust**, edition 2024 — `cargo build --release`.
 - **A Vulkan GPU** — the default execution backend (WGSL lowered to SPIR-V).
   Needs the Vulkan loader and a device ICD.
-- **NVIDIA CUDA** *(optional)* — the CUDA backend. Needs the NVIDIA driver
-  (`libcuda`) and the CUDA toolkit (`libnvrtc`), both opened at run time. The
-  workspace builds without it; it is required only to run the CUDA backend and
-  its tests.
+- **NVIDIA driver** *(optional)* — the CUDA backend. Needs `libcuda`, opened at
+  run time. The workspace builds without it; it is required only to run the CUDA
+  backend and its tests.
+
+  Kernel compilation is pinned to NVRTC 12.0.x, which emits the PTX ISA version
+  that keeps the committed artifacts loadable on r525 and newer drivers. The
+  build vendors that release beside its binaries and puts it on their `RUNPATH`,
+  so it is the one that compiles whatever CUDA toolkit the machine has installed
+  elsewhere. A build with no network, or one supplying its own copy, sets
+  `SIMA_NVRTC_DIR` to a directory holding `libnvrtc.so`.
 - **ssh and a container runtime** *(optional)* — remote and fleet execution
   (`sima run --fleet`, `sima migrate`) run workers on other machines.
 
