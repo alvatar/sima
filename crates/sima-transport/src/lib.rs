@@ -26,6 +26,7 @@
 //! runs, the other hands the worker to ssh as the command to execute.
 
 pub mod container;
+pub mod domain_service;
 pub mod host;
 pub mod link;
 pub mod loopback;
