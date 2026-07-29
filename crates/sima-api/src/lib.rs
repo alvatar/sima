@@ -16,7 +16,7 @@
 //! - the identity-bearing values a seam is handed: [`Spec`], [`Params`],
 //!   [`FormatId`], [`GeneratorId`], and the [`Environment`] vocabulary;
 //! - the foundations those values are built on: [`Error`] and [`Result`],
-//!   [`Hash`] and [`hash_bytes`], the [`Codec`]/[`Enc`]/[`Dec`] canonical
+//!   [`struct@Hash`] and [`hash_bytes`], the [`Codec`]/[`Enc`]/[`Dec`] canonical
 //!   encoding, and the [`prng`] module.
 //!
 //! [`prng`] is published because result-affecting randomness must be
@@ -40,7 +40,7 @@
 //!   a seam's values between processes and is the transport's own;
 //! - **crash injection** (`crashpoint`) is test-only failure injection;
 //! - **free-function hex** (`to_hex`, `from_hex`) is covered for a third party
-//!   by [`Hash::from_hex`] and [`Hash`]'s `Display`.
+//!   by [`Hash::from_hex`] and [`struct@Hash`]'s `Display`.
 
 pub use sima_contracts::{
     Artifact, Checkpoint, DeviceBinding, DeviceClass, ExecutionContext, Executor, Generator,

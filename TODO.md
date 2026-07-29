@@ -720,11 +720,30 @@ environment hash, so two machines that load the same custom executor agree and
 one that loads a different build is distinguished — determinism and store
 portability (P1 acceptance (d)) hold across the boundary.
 
-- [ ] M7.1 Public contract API: publish the executor/generator traits and their
+- [x] M7.1 Public contract API: publish the executor/generator traits and their
       wire types (spec, params, artifact, stats, task input, execution context)
       as a surface decoupled from internal crate churn. Audit it for anything
       that only admits cases we already built, and open those; the deliverable
-      is the audit and its fixes, not a frozen version stamp.
+      is the audit and its fixes, not a frozen version stamp. Settled: the
+      surface is the facade crate `sima-api`, holding re-exports and module
+      documentation and no logic — the two contract traits with their whole
+      vocabulary, the device binding and class, the identity-bearing values a
+      seam is handed, and the `sima-core` foundations including `prng`, which a
+      generator needs because the `rand` crate is barred from result paths. Run
+      configuration, task identity and commitment, content addresses, transport
+      framing, and crash injection stay internal, and the module docs carry each
+      omission with the responsibility it belongs to. `sima-example-executor`
+      pins the list: its manifest names `sima-api` as its only sima dependency,
+      so an item the facade stops naming is a build failure here rather than a
+      discovery made out of tree. `Error::Gpu` became `Error::Backend`
+      (`backend error: ...`): the variant named one backend family while
+      covering every execution backend, and a third-party executor returning
+      `sima_core::Result` had no other variant for a fault inside its own
+      compute. The device-identity and config-translation findings are recorded
+      against M7.2 and M7.3. Not done here: the device seam stays a PCI triple,
+      registration is M7.3 so an out-of-tree executor can be written and
+      compiled but not yet registered, and nothing is versioned or published to
+      a registry.
 - [ ] M7.2 Pluggable device backends: `Backend` is a closed enum
       (`Host | Wgsl | Cuda`) whose only job is selecting an enumeration
       function, so a third party bringing Metal, ROCm, or an accelerator we have
