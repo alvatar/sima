@@ -7,6 +7,9 @@ edition.workspace = true
 sima-contracts = { path = "../sima-contracts" }
 sima-core = { path = "../sima-core" }
 sima-model = { path = "../sima-model" }
+# For `serve` alone: the entry point that hosts a program's plugs over the two
+# conversations a run has with it.
+sima-transport = { path = "../sima-transport" }
 
 [lints]
 workspace = true

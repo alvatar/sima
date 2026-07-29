@@ -93,7 +93,7 @@ impl Generator for Sampler {
 
 #[cfg(test)]
 mod tests {
-    use sima_api::{DeviceClass, DeviceInfo, DeviceType};
+    use sima_api::{DeviceClass, DeviceInfo, DeviceType, DomainPlug, GeneratorPlug, serve};
 
     #[test]
     fn the_published_surface_names_a_device_list() {
@@ -110,5 +110,14 @@ mod tests {
         };
         assert_eq!(device.class.as_str(), "8086:7d51");
         assert_eq!(device.member, 0);
+    }
+
+    #[test]
+    fn the_published_surface_names_what_a_hosted_program_is() {
+        // The whole of a program outside the workspace: the two plugs it
+        // implements and the one call that hosts them. Naming them here is
+        // what keeps them reachable through the facade alone.
+        let host: fn(&dyn DomainPlug, &[&dyn GeneratorPlug]) -> sima_api::Result<()> = serve;
+        assert_eq!(std::mem::size_of_val(&host), std::mem::size_of::<fn()>());
     }
 }

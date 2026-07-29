@@ -1100,6 +1100,7 @@ dependencies = [
  "sima-contracts",
  "sima-core",
  "sima-model",
+ "sima-transport",
 ]
 
 [[package]]
