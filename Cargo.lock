@@ -1282,6 +1282,7 @@ dependencies = [
  "sima-model",
  "sima-trace",
  "sima-transport",
+ "toml",
 ]
 
 [[package]]
