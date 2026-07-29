@@ -822,13 +822,14 @@ smallest executor and generator that compile, and its manifest names `sima-api`
 as its only sima dependency, so an item the facade stops naming is a build
 failure in this workspace rather than a discovery made out of tree.
 
-Two seams the published surface does not reach:
+The device seam is open: `DeviceClass` is a name the execution backend mints,
+and `DeviceInfo` with `DeviceType` are how a domain answers what its work runs
+on, so a backend the workspace has never seen names its devices in the
+published vocabulary — see [Device placement](#device-placement) for what a
+class asserts.
 
-- **Device identity is a PCI triple.** `DeviceBinding` names a device by
-  `(vendor_id, device_id, member)`, so an executor whose devices the vocabulary
-  cannot name has no way to declare one — see
-  [`sima-scheduler`](#sima-scheduler-l6) for what the pair reaches and where it
-  stops.
+One seam the published surface does not reach:
+
 - **Config translation is in-tree.** Turning a format's `[run.params]` table
   into `Params` bytes is a static match over the formats this build knows,
   taking a `toml::Table`, so a format defined outside the workspace has no
@@ -837,9 +838,12 @@ Two seams the published surface does not reach:
 ## `sima-domains` (L5)
 
 The executable substance behind each format id. A `Domain` groups what a
-format id binds: the executor that evaluates the format's specs, the
-environment that enters task identity, and the translation of the
-domain-owned `[run.params]` section into the opaque canonical params bytes.
+format id binds: the executor that evaluates the format's specs, the devices
+that executor's work can run on, the environment that enters task identity,
+and the translation of the domain-owned `[run.params]` section into the opaque
+canonical params bytes. The device enumeration travels with the domain, so
+only its own execution backend's devices are ever offered to its work and
+adding a backend adds no case to any match.
 Generators dispatch separately — one format has one executor but many
 generators — and each generator owns the translation of its own
 `[run.generator]` keys. Both dispatches are static matches keyed on the id; an
@@ -1107,10 +1111,12 @@ toolkit reaches by the other route: there the lowering happens during the run,
 so the source is hashed and the compiler that lowers it is named.
 
 **Device identity.** CUDA addresses devices by ordinal and reports a PCI bus
-identifier for each. The `(vendor_id, device_id)` class a device binding names
-comes from the PCI configuration under `/sys/bus/pci/devices`, and `member` is
-the position within the class in enumeration order — the WGSL toolkit's
-convention, so one binding vocabulary covers both substrates.
+identifier for each. The class this toolkit mints comes from the PCI
+configuration under `/sys/bus/pci/devices`, spelled as the vendor and device
+identifiers in hex, and `member` is the position within the class in
+enumeration order. The WGSL toolkit mints the same spelling from what Vulkan
+reports directly, so one physical card is one class whichever backend reached
+it.
 
 **Launch model.** Launches are one-dimensional: a kernel declares its block
 width with `__launch_bounds__`, the caller passes the matching width, and a
@@ -1336,9 +1342,8 @@ minus the ssh hop.
   then one per machine the fleet resolved to, in member order. Each pool pairs a
   transport with the machine its workers run on and the device slots to spawn
   against it; worker ids stay global and sequential across pools. Placement is
-  untouched — a device class is `(vendor_id, device_id)` regardless of machine,
-  so a chain bound to a class runs on whichever pool holds it, exactly as
-  within one pool.
+  untouched — a class names a kind of device regardless of machine, so a chain
+  bound to a class runs on whichever pool holds it, exactly as within one pool.
 
 - **Preemption is two-stage.** Closing the pipe alone would let a mid-compute
   container run until its next write, so `kill` first fires
@@ -1371,7 +1376,8 @@ minus the ssh hop.
   the CPU rasterizer alone while CUDA opens the card there, and a laptop's Intel
   integrated GPU is a Vulkan device CUDA cannot open. Enumerating everything
   present would bind workers to devices their substrate faults on, so the format
-  travels with the probe and `sima-domains` resolves it to the backend to ask.
+  travels with the probe and `sima-domains` resolves it to the domain that
+  carries the enumeration.
 
 - **The image.** A multi-stage `Containerfile` builds `sima-worker` and `sima`
   in a `rust:<pinned>-bookworm` stage whose glibc matches the
@@ -1423,41 +1429,41 @@ A machine's GPUs are rarely equal, and a run spreads its pool across them.
 A machine's device tables — `[[orchestrator.device]]` for this one,
 `[[host.<name>.device]]` for a declared one — name the devices and how many
 workers each carries; the pool is their sum, and one slot per (entry, worker)
-round-robins over the class's cards. A **device class** is the `(vendor id,
-device id)` pair the backend reports — two identical cards are one class with
-two members, interchangeable by declaration, which is why a class carries no
-member and work bound to one may run on either card. A selector names a
-device by a case-insensitive substring of its name or by its exact
-`vendor:device` hex pair, and resolves against the machine's hardware when a
-run starts, never when a config is read: `sima status` and `sima report` work
-where no device exists.
+round-robins over the class's cards. A **device class** is a name the
+execution backend mints for a kind of device — two identical cards are one
+class with two members, interchangeable by declaration, which is why a class
+carries no member and work bound to one may run on either card. A selector
+names a device by a case-insensitive substring of its name or by its exact
+class, and resolves against the machine's hardware when a run starts, never
+when a config is read: `sima status` and `sima report` work where no device
+exists.
 
-**What a class identity is.** The `(vendor id, device id)` pair is PCI
-vocabulary, and the shape's reach is exactly the reach of PCI:
+**What a class identity is.** A class names what distinguishes devices that
+cannot stand in for each other, and nothing else. It is 1 to 64 bytes of
+`[a-z0-9._:-]`, and sima compares, hashes, and renders it without
+interpreting it.
 
-- **Scope.** The pair is what PCI-enumerating GPU APIs report, so it is
-  neutral across them: two backends looking at the same physical card mint the
-  same class. The identity belongs to the hardware, not to the API that found
-  it.
-- **Limit.** The shape assumes PCI-identified hardware. A backend whose
-  devices carry no PCI ids — integrated Apple devices, virtual or remote
-  device abstractions — falls outside it. Partitioned cards fall outside it
-  from the other direction: slices of one physical card report identical ids,
-  so slices of different sizes land in one class while not being
-  interchangeable, which is the substitutability a class asserts of its
-  members.
-- **Why holding it is safe.** The two integers are interpreted only at the
-  execution-backend seam. Above it, the scheduler compares and hashes classes,
-  the pipeline matches the rendered `vendor:device` string, the store holds
-  opaque bytes, and the transport encodes the fields.
-
-A backend without PCI ids turns class identity into an opaque token the
-backend mints, with today's classes remaining valid tokens in their rendered
-hex form. That costs a protocol version bump (both binaries ship together, so
-a bump is free), invalidation of the advisory per-run placement slots (an
-unbound chain binds again), and the config selector's exact-id form matching
-tokens. Nothing identity-bearing carries the shape, so the change migrates no
-durable state.
+- **The backend mints it.** The layer that enumerates a device is the one that
+  knows what tells two of them apart, so it also reads the name back: a class
+  is minted and resolved in one place. Both PCI backends mint `8086:7d51`,
+  the vendor and device identifiers of the configuration space in hex, so two
+  backends looking at one physical card mint one class.
+- **The distinguishing detail lives inside the string.** A card partitioned
+  into instances reports the same configuration-space pair for every slice
+  while the slices differ in memory by up to a factor of four, so a backend
+  that enumerates them mints the partition profile alongside —
+  `10de:2330:1g.10gb` — and the profiles are separate classes. A backend whose
+  devices carry no configuration space is under the same rule: it mints
+  whatever distinguishes its devices.
+- **No scheme is spelled into the name.** Classes are compared only within one
+  run, and a run has one format, one domain, one backend, so a prefix naming
+  the backend or the identity scheme would distinguish nothing that ever meets
+  while making every selector longer and coupling it to the backend a format
+  happens to use.
+- **Why holding it is safe.** The name is read only where it was minted.
+  Above that seam the scheduler compares and hashes classes, the pipeline
+  matches the rendered string, the store holds opaque bytes, and the transport
+  carries the name and the member.
 
 **The principle: device binding is derived operational state, never
 identity.** A run id never encodes devices; the store records what actually
@@ -1955,7 +1961,7 @@ The far side's own `[orchestrator]` is rebuilt from the destination's form:
   the config now sits on. Nothing is probed — the operator wrote the layout
   down.
 - **A rented machine** contributes what its enumeration probe reported, grouped
-  into classes by `(vendor_id, device_id)`, as an `[orchestrator]` naming no
+  by the class each device reported, as an `[orchestrator]` naming no
   image: ssh lands inside the instance's own container, so there is nothing to
   nest inside. A probe reporting no device at all yields one worker bound to
   nothing. Which devices count is the rule a rented machine's own worker slots
