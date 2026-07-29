@@ -2,9 +2,9 @@
 
 Roadmap. Read `AGENTS.md` (project rules), @docs/architecture.md (the
 implemented system; its RULES section holds the settled invariants and
-principles), and `README.md` (design document) before this file. Phases are large project stages;
-milestones are PR-sized units of work, each with a fully elaborated
-`work/TODO-<topic>.md` while in flight. `work/` is gitignored and
+principles), and `README.md` (design document) before this file. Phases are
+large project stages; milestones are PR-sized units of work, each with a fully
+elaborated `work/TODO-<topic>.md` while in flight. `work/` is gitignored and
 machine-local: elaborations are written fresh from this document's decisions,
 which must therefore carry everything durable. This document is living —
 structure and content evolve through discussion.
@@ -22,18 +22,18 @@ Run parameters (extent, steps, budgets) are a separate opaque params blob:
 generators produce specs, config produces params, and the spec's format id
 governs the interpretation of both. The research object is learned/evolved
 computation on data-parallel substrates; cellular automata are the first
-family, neural cellular automata the near-term target (Lenia in P10). Primary
-workload shape: huge grids, 3D included — a single simulation can saturate a
-GPU; small grids are supported via within-launch batching (P10), never the
-design driver. Families divide by executor kind — the compute shape their
-engine has:
+family, neural cellular automata the near-term target (Lenia is future work).
+Primary workload shape: huge grids, 3D included — a single simulation can
+saturate a GPU; small grids are supported via within-launch batching (future
+work), never the design driver. Families divide by executor kind — the compute
+shape their engine has:
 - Cellular kind: double-buffered grid state (extent × channels ×
   dtype); each output cell is a function of a neighborhood of the input grid.
   Covers reaction-diffusion, Lenia, and Neural CA (float, N channels — P3),
-  with Flow-Lenia and cross-substrate rigor in P10.
+  with Flow-Lenia and cross-substrate rigor as future work.
 - Agent-field kind: state is an agent population (position, heading) plus a
   field grid; agents sense the field, move, deposit onto it, and the field
-  diffuses and decays. Covers Physarum (P11).
+  diffuses and decays. Covers Physarum (future work).
 At the infra layer both are opaque content-addressed state; the domain owns
 serialization and the compute shape. Required families across the ladder:
 reaction-diffusion, Lenia/Flow-Lenia, Neural CA, Physarum.
@@ -70,15 +70,17 @@ disposable at any instant.
 
 ## Execution order
 
-Phases are numbered in the order they run. P1 through P6 are done; P7
-(out-of-tree executors) and P8 (store scale and environment provenance)
-remain, and then the ladder pauses.
+Phases are numbered in the order they run, and the ladder is P1 through P8:
+P1 through P6 are done, P7 (out-of-tree executors) and P8 (store scale and
+environment provenance) remain, and then it pauses. A phase or milestone
+number means work this version of sima will do.
 
-P9 (evaluation funnel), P10 (continuous-family rigor), and P11 (Physarum) are
-deferred: they are model-specific, evaluation included, since a verdict is a
-judgement about a family's behaviour. Infrastructure comes first, and P7 is
-the consequential one — it is how anything gets built on this without
-reopening the core, which matters most while the ladder is paused.
+Everything model-specific — the evaluation funnel, continuous-family rigor,
+Physarum — is future work, carried unnumbered at the end of this document.
+Evaluation is in there too, since a verdict is a judgement about a family's
+behaviour. Infrastructure comes first, and P7 is the consequential one — it is
+how anything gets built on this without reopening the core, which matters most
+while the ladder is paused.
 
 ## P1 — Infrastructure spine
 
@@ -236,7 +238,7 @@ equal length.
       opaque content-addressed snapshot object; the WGSL compute path for
       float stencils and convolutions; the CPU-reference pattern the families
       cross-check against. Minimal — enough to run the float families; the
-      cross-substrate tolerance policy is P10
+      cross-substrate tolerance policy is future work
 - [x] M2.3 Segmented execution and resume checkpoints: two distinct
       mechanisms, kept separate because one names committed work and the other
       is disposable resume state.
@@ -276,12 +278,13 @@ equal length.
 ## P3 — First model families
 
 The near-term research targets, running end to end and explorable: reaction-
-diffusion and Neural CA (Lenia is descoped to P10, M10.1). Each lands as a
+diffusion and Neural CA (Lenia is descoped to future work). Each lands as a
 domain (CPU reference + WGSL kernel + seeded generator) on the P2 toolkit and
 float foundation. Determinism
 is at the pragmatic per-backend level — deterministic run to run on one
 machine, exact where it is cheap — without the cross-substrate tolerance
-apparatus (P10). The point is having the families in hand and iterating.
+apparatus, which is future work. The point is having the families in hand and
+iterating.
 
 Phase acceptance: NCA runs through the full spine (generate → execute
 → commit → inspect) from a `sima.toml`; a local search over a float family
@@ -314,9 +317,9 @@ machine.
       rate ½ keyed on the per-step index the harness supplies, with committed
       state framed as that step ahead of the grid, so segments continue
       byte-identically; WGSL kernel over an in-shader SplitMix64 PRNG.
-      Training and mutation deferred to P10/M10.2, fitness scoring to P9; CPU
-      reference descoped as in M3.1d
-- M3.3 Lenia: descoped from P3 to P10, folded into M10.1 beside Flow-Lenia, so
+      Training and mutation deferred to future work, fitness scoring with it;
+      CPU reference descoped as in M3.1d
+- M3.3 Lenia: descoped from P3 to future work, folded in beside Flow-Lenia, so
       the whole Lenia line (plain and flow variants) lands in one place under
       the cross-substrate rigor apparatus
 - [x] M3.4 First real search: a family search of ≥1000 candidates on the local
@@ -325,7 +328,7 @@ machine.
       not a funnel); throughput numbers recorded here. Result snapshots are
       stored in full (re-evaluation and portability require them), so extent ×
       batch is chosen to a stated disk budget. The retention policy — what is
-      kept and for how long — is deferred to P9, but the reference-guarded
+      kept and for how long — is deferred to M8.2, but the reference-guarded
       deletion primitive it will drive lands here (see M2.3), because this is
       where object volume first fills disk. Revisit CAS cost here, where disk
       volume and write throughput first
@@ -518,16 +521,16 @@ leaked instances are leaked money.
       after boot
 - [x] M6.3 On-worker stats reduction: kernel-side population/activity counts
       so remote runs return stats always, snapshots only on a cheap predicate
-      (placed here as the bandwidth guard; P9's funnel metrics consume the
+      (placed here as the bandwidth guard; the funnel's metrics consume the
       same reduction — the mechanism is shared). "Stats always" covers the
       failed-evaluation case: M1.5 gave `Outcome::Failed` stats symmetric with
       `Completed`, so the reduction covers failures too and a failed evaluation
       returns its cheap counts over the wire like a success. This is also the first
       real producer of stats, so it forces the `Stats` type decision M1.4
       deferred: M1.4 ships `Stats` as opaque bytes, and here it should likely
-      become structured named scalars (population, activity, ...) the P9 funnel
-      can threshold family-agnostically, plus an optional opaque family blob
-      for anything richer — decide the shape here, consumed at M9.2
+      become structured named scalars (population, activity, ...) a funnel can
+      threshold family-agnostically, plus an optional opaque family blob for
+      anything richer — decide the shape here
 - [x] M6.4 Budget guard: total spend cap and rental-phase wall-clock limit
       per run, durable spend accounting
 - [x] M6.5 Distributed run: one local orchestrator drives a provisioned
@@ -771,101 +774,96 @@ model or metric. Last active phase before the pause.
       journal and record why. Scoped to the decision and its consequences —
       no tolerance policy, no strict-IEEE path
 
-## P9 — Evaluation funnel v1
+## Future work
 
-**Deferred.** Model-family and evaluation work is paused; the ladder stops
-after P8. This phase resumes by decision, not by sequence.
+Model-family and evaluation work is paused. Nothing below carries a phase or
+milestone number: these are shapes of work with their decisions recorded, and
+they are taken up by decision rather than by sequence. A number is assigned
+when one is.
+
+### Evaluation funnel
 
 Deliberately simple. The funnel machinery, with the cheapest deterministic
 metrics only; metric research lives in its own track.
 
-Phase acceptance: verdicts are pure functions of recorded data — re-running
-the funnel over a recorded run reproduces identical verdicts, and changing
+Acceptance: verdicts are pure functions of recorded data — re-running the
+funnel over a recorded run reproduces identical verdicts, and changing
 thresholds re-classifies without any re-execution.
 
-- [ ] M9.1 Periodic snapshot/stats recording: segment boundaries (M2.3) are
-      the natural sampling points; this milestone adds the recording policy,
-      not a new mechanism. Retention is M8.2
-- [ ] M9.2 Verdict classification: dead / frozen / exploding / cyclic,
-      thresholds from config. Classification reads named numeric metrics
-      generically, so it requires the structured `Stats` decided at M6.3 rather
-      than the opaque bytes M1.4 shipped — opaque stats would force a per-family
-      decoder here and defeat the funnel's family-agnostic design
-- [ ] M9.3 Staged cheapest-first funnel + re-evaluation from recorded runs
-      without re-execution
+- **Periodic snapshot/stats recording.** Segment boundaries (M2.3) are the
+  natural sampling points, so this is a recording policy rather than a new
+  mechanism. Retention is M8.2
+- **Verdict classification** — dead / frozen / exploding / cyclic, thresholds
+  from config. Classification reads named numeric metrics generically, so it
+  requires the structured `Stats` decided at M6.3 rather than the opaque bytes
+  M1.4 shipped: opaque stats would force a per-family decoder here and defeat
+  the funnel's family-agnostic design
+- **Staged cheapest-first funnel** plus re-evaluation from recorded runs
+  without re-execution
 
-## P10 — Continuous-family rigor
-
-**Deferred.** Model-family and evaluation work is paused; the ladder stops
-after P8. This phase resumes by decision, not by sequence.
+### Continuous-family rigor
 
 Final research on the float families: the hard determinism, the harder
 variants, and scale. The families already run and are explorable (P3); this
-phase makes them rigorous and complete.
+work makes them rigorous and complete.
 
-Phase acceptance: on one pinned backend class, every float family is
-bit-identical run-to-run, and a seeded search run reproduces its fitness
-trajectory exactly. Cross-backend bit-equality is explicitly not pursued: two
-backends are two program identities with two environments, so no result of one
-is ever reused for the other, and agreement between them is a transcription
-check at tolerance — which the cross-backend test shipped in M6.7 already
-performs. Driver provenance moved to M8.3.
+Acceptance: on one pinned backend class, every float family is bit-identical
+run-to-run, and a seeded search run reproduces its fitness trajectory exactly.
+Cross-backend bit-equality is explicitly not pursued: two backends are two
+program identities with two environments, so no result of one is ever reused
+for the other, and agreement between them is a transcription check at
+tolerance — which the cross-backend test shipped in M6.7 already performs.
+Driver provenance is M8.3.
 
-- [ ] M10.1 Lenia and Flow-Lenia (Lenia descoped here from P3). Lenia:
-      large-radius convolution kernel + growth function; genome = kernel /
-      growth parameters; seeded generator, CPU reference + WGSL kernel.
-      Flow-Lenia: mass-conserving advection (semi-Lagrangian transport —
-      the mass-redistribution scatter needs an order-independent scheme or it
-      is nondeterministic even on one device) and spatially localized
-      parameters (genome becomes a per-region field, not one global vector).
-      CPU reference + WGSL kernel + cross-substrate tolerance tests
-- [ ] M10.2 Search loop over continuous genomes (ES; gradient-based training is
-      a standing research track — it changes the executor contract from "run"
-      to "run + accumulate gradients")
-- [ ] M10.3 Within-launch population batching for small grids
+- **Lenia and Flow-Lenia** (Lenia descoped here from P3). Lenia: large-radius
+  convolution kernel + growth function; genome = kernel / growth parameters;
+  seeded generator, CPU reference + WGSL kernel. Flow-Lenia: mass-conserving
+  advection (semi-Lagrangian transport — the mass-redistribution scatter needs
+  an order-independent scheme or it is nondeterministic even on one device) and
+  spatially localized parameters (genome becomes a per-region field, not one
+  global vector). CPU reference + WGSL kernel + cross-substrate tolerance tests
+- **Search loop over continuous genomes** (ES; gradient-based training is a
+  standing research track — it changes the executor contract from "run" to
+  "run + accumulate gradients")
+- **Within-launch population batching** for small grids
 
-## P11 — Physarum (agent-field family)
-
-**Deferred.** Model-family and evaluation work is paused; the ladder stops
-after P8. This phase resumes by decision, not by sequence.
+### Physarum (agent-field family)
 
 The second executor kind: a stigmergic multi-agent model (Jones's slime-mould
 transport networks). State is an agent population plus a trail field; the step
 is sense → move → deposit → diffuse/decay, not a cell-local grid update.
-Everything below this phase on the ladder — store, scheduler, distribution,
-slingshot, funnel — is unchanged; the phase adds an executor kind in the
-families layer and nothing beneath it. It is the proof that the infra is
-family-agnostic.
+Everything beneath it — store, scheduler, distribution, slingshot, funnel — is
+unchanged; it adds an executor kind in the families layer and nothing below.
+It is the proof that the infra is family-agnostic.
 
-Determinism approach (integer tier, bit-exact everywhere — to confirm at
-M11.2): fixed-point agent state (position, heading) and nearest-cell sensing
-keep motion exact on any hardware; deposits accumulate as fixed-point integers
-via order-independent atomic add (integer addition is associative and exact,
-so scatter ordering cannot change the sum); the field diffuse/decay is an
-integer stencil. This keeps Physarum out of the P10 float-tolerance
-machinery. The alternative — float agent state — moves it into that tier; the
-tradeoff (dynamic range and motion smoothness vs bit-exactness) is the open
-decision resolved in M11.2.
+Determinism approach (integer tier, bit-exact everywhere — to confirm when the
+family is built): fixed-point agent state (position, heading) and nearest-cell
+sensing keep motion exact on any hardware; deposits accumulate as fixed-point
+integers via order-independent atomic add (integer addition is associative and
+exact, so scatter ordering cannot change the sum); the field diffuse/decay is
+an integer stencil. This keeps Physarum out of the float-tolerance machinery.
+The alternative — float agent state — moves it into that tier; the tradeoff
+(dynamic range and motion smoothness vs bit-exactness) is the open decision,
+resolved when the family is built.
 
-Phase acceptance: CPU/GPU bit-equality across an agent-count × field-extent ×
+Acceptance: CPU/GPU bit-equality across an agent-count × field-extent ×
 step-count matrix; a segmented agent-field run (compound segment state)
 resumed equals an unsegmented run of equal length, bit-exact.
 
-- [ ] M11.1 Agent-field executor kind (`sima-domains`): compound state (agent
-      buffer ‖ field grid) serialized as one opaque snapshot object;
-      segmentation composes — the segment boundary state is the compound
-      state, the task-key input-state-ref mechanism is unchanged
-- [ ] M11.2 Physarum family: fixed-point agent state, nearest-cell sensing,
-      order-independent integer deposit, field diffuse/decay stencil; genome =
-      sensor geometry (angles, distance), turn rate, deposit amount,
-      decay/diffusion rates; seeded generator, mutation, CPU reference with
-      known-answer tests; the fixed-point-vs-float determinism decision is
-      resolved here
-- [ ] M11.3 GPU kernels (agent update + field update) + CPU/GPU bit-equality
-      matrix
-- [ ] M11.4 First Physarum search through the full spine (funnel, slingshot,
-      distribution unchanged); network-structure interestingness metrics feed
-      the P9 funnel via the standing evaluation track
+- **Agent-field executor kind** (`sima-domains`): compound state (agent buffer
+  ‖ field grid) serialized as one opaque snapshot object; segmentation
+  composes — the segment boundary state is the compound state, the task-key
+  input-state-ref mechanism is unchanged
+- **The Physarum family**: fixed-point agent state, nearest-cell sensing,
+  order-independent integer deposit, field diffuse/decay stencil; genome =
+  sensor geometry (angles, distance), turn rate, deposit amount,
+  decay/diffusion rates; seeded generator, mutation, CPU reference with
+  known-answer tests; the fixed-point-vs-float determinism decision is
+  resolved here
+- **GPU kernels** (agent update + field update) + CPU/GPU bit-equality matrix
+- **A first Physarum search** through the full spine (funnel, slingshot,
+  distribution unchanged); network-structure interestingness metrics feed the
+  funnel via the standing evaluation track
 
 ## Research tracks (standing)
 
@@ -874,9 +872,9 @@ Parallel to the phase ladder, each eventually feeding it:
 - **Further model families** — graph CAs, attention-based update rules,
   program-shaped candidates; each lands as a rule family on unchanged infra.
   The ladder's own family phases (reaction-diffusion, Lenia/Flow-Lenia, Neural
-  CA in P3; Physarum in P11) are the first proof of that promise
+  CA in P3; Physarum in future work) are the first proof of that promise
 - **Evaluation / interestingness** — novelty, diversity, complexity metrics;
-  the funnel machinery (P9) is the harness, the metrics are open research
+  the funnel machinery is the harness, the metrics are open research
 - **Gradient-based training** — backprop through CA steps changes the executor
   contract from "run" to "run + accumulate gradients"; NCA literature
   precedent exists
