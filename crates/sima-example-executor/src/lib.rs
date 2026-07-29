@@ -90,3 +90,25 @@ impl Generator for Sampler {
             .collect())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use sima_api::{DeviceClass, DeviceInfo, DeviceType};
+
+    #[test]
+    fn the_published_surface_names_a_device_list() {
+        // What a domain answers when asked which devices its work runs on.
+        // These two executors compute in the worker process and open none, so
+        // the vocabulary is exercised rather than used: a domain that does open
+        // a device builds its answer out of exactly these types, and they reach
+        // it through the facade alone.
+        let device = DeviceInfo {
+            class: DeviceClass::new("8086:7d51").expect("class id"),
+            name: "Intel(R) Graphics (ARL)".to_string(),
+            device_type: DeviceType::Integrated,
+            member: 0,
+        };
+        assert_eq!(device.class.as_str(), "8086:7d51");
+        assert_eq!(device.member, 0);
+    }
+}

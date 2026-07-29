@@ -8,11 +8,10 @@
 //! translation of its own `[run.generator]` keys. Both dispatches are static
 //! matches; unknown ids are [`Error::Validation`].
 
-use sima_contracts::{DeviceBinding, Executor, Generator};
+use sima_contracts::{DeviceBinding, DeviceInfo, Executor, Generator};
 use sima_core::{Error, Result};
 use sima_model::{Environment, FormatId, GeneratorId, Params};
 
-use crate::devices::Backend;
 use crate::domains::{ca_evolution, stub};
 
 /// Everything a format id binds: the executor that evaluates specs of the
@@ -39,13 +38,15 @@ pub struct Domain {
     /// driver version is operational provenance the journal records: the one
     /// variable an environment hash cannot see across machines of one class.
     pub device_desc: fn(Option<&DeviceBinding>) -> Result<(String, String)>,
-    /// The execution backend this domain's executor runs through.
+    /// Every device this domain's work can run on, as its execution backend
+    /// enumerates them.
     ///
-    /// It is what the device enumeration follows: only this backend's devices
-    /// can hold the domain's work, so
-    /// [`enumerate_devices`](crate::devices::enumerate_devices) resolves a
-    /// format to a domain and reads this.
-    pub backend: Backend,
+    /// Only that backend's devices can hold the work, so the enumeration
+    /// travels with the domain rather than being selected from a list of
+    /// backends this build knows. A domain that opens no device answers with an
+    /// empty list, which the layers above read as a worker that needs no
+    /// device.
+    pub enumerate: fn() -> Result<Vec<DeviceInfo>>,
     /// The environment entering every task's identity.
     pub environment: Environment,
 }
@@ -111,6 +112,8 @@ pub fn generator_params_for(id: &GeneratorId, table: &toml::Table) -> Result<Vec
 
 #[cfg(test)]
 mod tests {
+    use sima_contracts::DeviceClass;
+
     use super::*;
 
     /// A validated format id.
@@ -226,8 +229,7 @@ mod tests {
         // mutation — runs on a machine with no GPU at all. The binding names a
         // class that need not exist here; nothing resolves it until execute.
         let binding = DeviceBinding {
-            vendor_id: 0xdead,
-            device_id: 0xbeef,
+            class: DeviceClass::new("dead:beef").expect("class id"),
             member: 0,
         };
         let domain = domain_for(&format("ca_evolution.gray_scott.v1"))?;
@@ -242,8 +244,7 @@ mod tests {
     fn the_stub_executor_ignores_the_binding() -> Result<()> {
         // The stub uses no device, so a binding changes nothing about it.
         let binding = DeviceBinding {
-            vendor_id: 0x8086,
-            device_id: 0x7d51,
+            class: DeviceClass::new("8086:7d51").expect("class id"),
             member: 0,
         };
         let domain = domain_for(&format("stub.v1"))?;

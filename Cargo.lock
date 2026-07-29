@@ -1106,6 +1106,7 @@ dependencies = [
 name = "sima-contracts"
 version = "0.1.0"
 dependencies = [
+ "serde",
  "sima-core",
  "sima-model",
 ]

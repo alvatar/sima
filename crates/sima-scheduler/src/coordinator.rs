@@ -102,43 +102,43 @@ impl Shared {
     /// The class a pending task's work is bound to, if any. A chained task
     /// reads the run's durable placement; a chain-less one reads the in-memory
     /// retry stickiness.
-    fn binding(&self, pending: &Pending) -> Option<DeviceClass> {
+    ///
+    /// Borrowed rather than owned: the queue scan calls this once per queued
+    /// task on every pull, and a class is a string.
+    fn binding(&self, pending: &Pending) -> Option<&DeviceClass> {
         match pending.task.chain {
-            Some(chain) => self.chains.get(&chain).copied(),
-            None => self.stateless.get(&pending.key).copied(),
+            Some(chain) => self.chains.get(&chain),
+            None => self.stateless.get(&pending.key),
         }
     }
 
-    /// Applies what a pull of `pending` by a worker of `class` decides, given
-    /// the class the task was `bound` to, and reports it for the caller to
-    /// persist and journal.
-    fn bind(
-        &mut self,
-        pending: &Pending,
-        bound: Option<DeviceClass>,
-        class: DeviceClass,
-    ) -> ChainPlacement {
+    /// Applies what a pull of `pending` by a worker of `class` decides, and
+    /// reports it for the caller to persist and journal.
+    ///
+    /// The class the task was bound to is read here rather than passed in, so
+    /// the one clone this needs happens only on the task that was taken.
+    fn bind(&mut self, pending: &Pending, class: &DeviceClass) -> ChainPlacement {
         match pending.task.chain {
             // A chain-less task places in memory alone: it is a chain of
             // length one, so nothing outlives the run to be coherent with.
             None => {
-                self.stateless.insert(pending.key, class);
+                self.stateless.insert(pending.key, class.clone());
                 ChainPlacement::Settled
             }
-            Some(chain) => match bound {
-                Some(bound) if bound == class => ChainPlacement::Settled,
-                Some(from) => {
-                    self.chains.insert(chain, class);
-                    ChainPlacement::Rebound {
-                        chain,
-                        from,
-                        to: class,
-                    }
-                }
-                None => {
-                    self.chains.insert(chain, class);
-                    ChainPlacement::Bound { chain, to: class }
-                }
+            // The common pull is of a chain already bound to the pulling
+            // class, so that case reads and returns without writing the map or
+            // cloning the class.
+            Some(chain) if self.chains.get(&chain) == Some(class) => ChainPlacement::Settled,
+            Some(chain) => match self.chains.insert(chain, class.clone()) {
+                Some(from) => ChainPlacement::Rebound {
+                    chain,
+                    from,
+                    to: class.clone(),
+                },
+                None => ChainPlacement::Bound {
+                    chain,
+                    to: class.clone(),
+                },
             },
         }
     }
@@ -208,7 +208,7 @@ impl Coordinator {
     /// The park is unconditional: a worker whose class has nothing eligible
     /// waits for the next state change rather than spinning, and settles,
     /// polls, and wind-down all wake it.
-    pub(crate) fn next_task(&self, class: Option<DeviceClass>) -> Option<Leased> {
+    pub(crate) fn next_task(&self, class: Option<&DeviceClass>) -> Option<Leased> {
         let mut shared = self.lock();
         loop {
             if !matches!(shared.state, RunState::Running) {
@@ -234,7 +234,7 @@ impl Coordinator {
     /// Removes the first queued task `class` may run and records what that
     /// pull decided about its placement, or `None` when the queue holds
     /// nothing for this class.
-    fn take_eligible(&self, shared: &mut Shared, class: Option<DeviceClass>) -> Option<Leased> {
+    fn take_eligible(&self, shared: &mut Shared, class: Option<&DeviceClass>) -> Option<Leased> {
         // The single implicit class: every task is eligible, so the head of
         // the queue wins and no placement state is touched at all.
         let Some(class) = class else {
@@ -243,6 +243,8 @@ impl Coordinator {
                 placement: ChainPlacement::Settled,
             });
         };
+        // The scan runs over every pending task on every pull, so it borrows
+        // each task's binding rather than cloning a class per entry.
         let position = shared.queue.iter().position(|pending| {
             !matches!(
                 eligibility(shared.binding(pending), class, &self.classes),
@@ -250,8 +252,7 @@ impl Coordinator {
             )
         })?;
         let pending = shared.queue.remove(position).expect("position is in range");
-        let bound = shared.binding(&pending);
-        let placement = shared.bind(&pending, bound, class);
+        let placement = shared.bind(&pending, class);
         Some(Leased { pending, placement })
     }
 
@@ -385,14 +386,20 @@ mod tests {
         TaskKey::from_hash(hash_bytes(b"fault-upgrade task"))
     }
 
-    const INTEL: DeviceClass = DeviceClass {
-        vendor_id: 0x8086,
-        device_id: 0x7d51,
-    };
-    const NVIDIA: DeviceClass = DeviceClass {
-        vendor_id: 0x10de,
-        device_id: 0x2d39,
-    };
+    /// A class that must be valid.
+    fn class(id: &str) -> DeviceClass {
+        DeviceClass::new(id).expect("a valid class id")
+    }
+
+    /// The Intel iGPU class.
+    fn intel() -> DeviceClass {
+        class("8086:7d51")
+    }
+
+    /// The NVIDIA dGPU class.
+    fn nvidia() -> DeviceClass {
+        class("10de:2d39")
+    }
 
     /// A queued task of `chain`, distinguishable by `seed`.
     fn pending(chain: Option<u64>, seed: u64) -> Pending {
@@ -419,13 +426,13 @@ mod tests {
 
     /// A coordinator over both classes, holding `queue`.
     fn placed(queue: Vec<Pending>, chains: HashMap<u64, DeviceClass>) -> Coordinator {
-        let coordinator = Coordinator::with_placement(vec![NVIDIA, INTEL], chains);
+        let coordinator = Coordinator::with_placement(vec![nvidia(), intel()], chains);
         coordinator.lock().queue = queue.into();
         coordinator
     }
 
     /// What `class` would take from `coordinator`'s queue right now.
-    fn take(coordinator: &Coordinator, class: DeviceClass) -> Option<Leased> {
+    fn take(coordinator: &Coordinator, class: &DeviceClass) -> Option<Leased> {
         let mut shared = coordinator.lock();
         coordinator.take_eligible(&mut shared, Some(class))
     }
@@ -434,8 +441,8 @@ mod tests {
     fn a_worker_runs_a_chain_bound_to_its_own_class() {
         let task = pending(Some(0), 1);
         let key = task.key;
-        let coordinator = placed(vec![task], HashMap::from([(0, NVIDIA)]));
-        let leased = take(&coordinator, NVIDIA).expect("its own chain");
+        let coordinator = placed(vec![task], HashMap::from([(0, nvidia())]));
+        let leased = take(&coordinator, &nvidia()).expect("its own chain");
         assert_eq!(leased.pending.key, key);
         // Already bound: nothing to persist or journal.
         assert_eq!(leased.placement, ChainPlacement::Settled);
@@ -445,11 +452,11 @@ mod tests {
     fn a_worker_never_takes_a_chain_bound_to_another_present_class() {
         // The invariant stickiness rests on: an idle worker of the wrong class
         // leaves the work for the class that owns it, however long that waits.
-        let coordinator = placed(vec![pending(Some(0), 1)], HashMap::from([(0, NVIDIA)]));
-        assert!(take(&coordinator, INTEL).is_none());
+        let coordinator = placed(vec![pending(Some(0), 1)], HashMap::from([(0, nvidia())]));
+        assert!(take(&coordinator, &intel()).is_none());
         // The task is still queued for the class that owns it.
         assert_eq!(coordinator.lock().queue.len(), 1);
-        assert!(take(&coordinator, NVIDIA).is_some());
+        assert!(take(&coordinator, &nvidia()).is_some());
     }
 
     #[test]
@@ -459,8 +466,11 @@ mod tests {
         let theirs = pending(Some(0), 1);
         let mine = pending(Some(1), 2);
         let mine_key = mine.key;
-        let coordinator = placed(vec![theirs, mine], HashMap::from([(0, NVIDIA), (1, INTEL)]));
-        let leased = take(&coordinator, INTEL).expect("its own chain, behind another's");
+        let coordinator = placed(
+            vec![theirs, mine],
+            HashMap::from([(0, nvidia()), (1, intel())]),
+        );
+        let leased = take(&coordinator, &intel()).expect("its own chain, behind another's");
         assert_eq!(leased.pending.key, mine_key);
         assert_eq!(coordinator.lock().queue.len(), 1, "the other's chain stays");
     }
@@ -468,16 +478,16 @@ mod tests {
     #[test]
     fn an_unbound_chain_binds_to_whichever_class_pulls_it() {
         let coordinator = placed(vec![pending(Some(3), 1)], HashMap::new());
-        let leased = take(&coordinator, INTEL).expect("an unbound chain is anyone's");
+        let leased = take(&coordinator, &intel()).expect("an unbound chain is anyone's");
         assert_eq!(
             leased.placement,
             ChainPlacement::Bound {
                 chain: 3,
-                to: INTEL
+                to: intel()
             }
         );
         // The binding is in the map before the task leaves the pull.
-        assert_eq!(coordinator.lock().chains.get(&3), Some(&INTEL));
+        assert_eq!(coordinator.lock().chains.get(&3), Some(&intel()));
     }
 
     #[test]
@@ -485,21 +495,21 @@ mod tests {
         // A run whose devices do not include the chain's class: the work
         // moves rather than stranding, and the decision comes back to be
         // journaled.
-        let gone = DeviceClass {
-            vendor_id: 0x1002,
-            device_id: 0x1234,
-        };
-        let coordinator = placed(vec![pending(Some(0), 1)], HashMap::from([(0, gone)]));
-        let leased = take(&coordinator, NVIDIA).expect("the run continues");
+        let gone = class("1002:1234");
+        let coordinator = placed(
+            vec![pending(Some(0), 1)],
+            HashMap::from([(0, gone.clone())]),
+        );
+        let leased = take(&coordinator, &nvidia()).expect("the run continues");
         assert_eq!(
             leased.placement,
             ChainPlacement::Rebound {
                 chain: 0,
                 from: gone,
-                to: NVIDIA
+                to: nvidia()
             }
         );
-        assert_eq!(coordinator.lock().chains.get(&0), Some(&NVIDIA));
+        assert_eq!(coordinator.lock().chains.get(&0), Some(&nvidia()));
     }
 
     #[test]
@@ -509,7 +519,7 @@ mod tests {
         let task = pending(None, 1);
         let key = task.key;
         let coordinator = placed(vec![task], HashMap::new());
-        let leased = take(&coordinator, INTEL).expect("unbound");
+        let leased = take(&coordinator, &intel()).expect("unbound");
         assert_eq!(
             leased.placement,
             ChainPlacement::Settled,
@@ -518,9 +528,9 @@ mod tests {
 
         // The attempt failed and requeued; only Intel may retry it.
         coordinator.lock().queue.push_back(pending(None, 1));
-        assert!(take(&coordinator, NVIDIA).is_none());
+        assert!(take(&coordinator, &nvidia()).is_none());
         assert_eq!(
-            take(&coordinator, INTEL)
+            take(&coordinator, &intel())
                 .expect("its own retry")
                 .pending
                 .key,

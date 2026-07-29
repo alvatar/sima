@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+serde.workspace = true
 sima-core = { path = "../sima-core" }
 sima-model = { path = "../sima-model" }
 

@@ -62,13 +62,10 @@ pub fn exec(workers: usize, max_attempts: u32, timeout_ms: u64) -> ExecutionConf
     exec_with_timeout(workers, max_attempts, Duration::from_millis(timeout_ms))
 }
 
-/// A device class named by its vendor id; the device id is fixed, so a test
+/// A device class named by its vendor id; the device half is fixed, so a test
 /// names a class with one number.
 pub fn class(vendor_id: u32) -> DeviceClass {
-    DeviceClass {
-        vendor_id,
-        device_id: 0x0001,
-    }
+    DeviceClass::new(format!("{vendor_id:04x}:0001")).expect("class id")
 }
 
 /// A resolved device entry: `workers` workers on one single-card class.

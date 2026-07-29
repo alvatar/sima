@@ -334,10 +334,12 @@ fn probe(format: &str) -> Vec<serde_json::Value> {
         .collect();
     for device in &devices {
         assert!(
-            device.get("vendor_id").is_some(),
-            "a device names its vendor"
+            device
+                .get("class")
+                .and_then(serde_json::Value::as_str)
+                .is_some(),
+            "a device names the class its backend minted"
         );
-        assert!(device.get("device_id").is_some(), "a device names its id");
     }
     devices
 }

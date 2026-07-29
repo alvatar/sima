@@ -86,7 +86,7 @@ impl WorkerTransport for LoopbackTransport {
         // The handshake, over the real wire protocol.
         let hello = Hello {
             worker,
-            device: device.copied(),
+            device: device.cloned(),
             ..self.hello.clone()
         };
         write_frame(&mut stdin, &ToChild::Hello(hello).encode())?;
@@ -216,7 +216,7 @@ impl Read for PipeReader {
 mod tests {
     use std::sync::Mutex;
 
-    use sima_contracts::Outcome;
+    use sima_contracts::{DeviceClass, Outcome};
     use sima_core::hash_bytes;
     use sima_domains::{StubBehavior, StubExecutor, StubProgram, StubState};
     use sima_model::EnvironmentId;
@@ -298,14 +298,13 @@ mod tests {
                 recorder
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .push(device.copied());
+                    .push(device.cloned());
                 let executor: Box<dyn Executor> = Box::new(StubExecutor::new()?);
                 Ok((executor, "loopback device".to_string(), String::new()))
             }),
         );
         let binding = DeviceBinding {
-            vendor_id: 0x8086,
-            device_id: 0x7d51,
+            class: DeviceClass::new("8086:7d51").expect("class id"),
             member: 0,
         };
         // The handshake completes inside spawn, so the resolver has already run.

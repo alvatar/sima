@@ -63,7 +63,7 @@ impl<M: CaModel, E: CellularEngine> CaExecutor<M, E> {
     pub(crate) fn new(device: Option<&DeviceBinding>) -> Result<CaExecutor<M, E>> {
         Ok(CaExecutor {
             format: FormatId::new(M::FORMAT_ID)?,
-            device: device.copied(),
+            device: device.cloned(),
             engine: Mutex::new(None),
             model: PhantomData,
         })
