@@ -1135,6 +1135,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "sima-example-executor"
+version = "0.1.0"
+dependencies = [
+ "sima-api",
+]
+
+[[package]]
 name = "sima-integration"
 version = "0.1.0"
 dependencies = [

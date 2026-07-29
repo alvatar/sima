@@ -1,0 +1,10 @@
+[package]
+name = "sima-example-executor"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+sima-api = { path = "../sima-api" }
+
+[lints]
+workspace = true
