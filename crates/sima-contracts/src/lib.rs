@@ -27,6 +27,12 @@
 //! under it; like the execution context, it is operational and never reaches a
 //! committed artifact or a task key.
 //!
+//! [`DomainPlug`] and [`GeneratorPlug`] are the construction side of the same
+//! pair: what a program hands over so a run can reach its executor and its
+//! generators. A plug carries the format's environment, the devices its work
+//! runs on, and the translation of the program's own configuration, which
+//! crosses as TOML text.
+//!
 //! The concrete implementations that satisfy these traits live in
 //! `sima-domains` — executors keyed by format, generators by generator id;
 //! this crate holds the traits and their shared vocabulary alone.
@@ -35,6 +41,7 @@ mod checkpoint;
 mod device;
 mod executor;
 mod generator;
+mod plug;
 
 pub use checkpoint::{Checkpoint, NoCheckpoint};
 pub use device::{DeviceBinding, DeviceClass, DeviceInfo, DeviceType};
@@ -42,3 +49,4 @@ pub use executor::{
     Artifact, ExecutionContext, Executor, Outcome, STATE_ARTIFACT, Stats, TaskInput, WorkerId,
 };
 pub use generator::Generator;
+pub use plug::{DomainPlug, GeneratorPlug};
