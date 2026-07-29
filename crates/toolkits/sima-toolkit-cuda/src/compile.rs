@@ -12,6 +12,7 @@
 //! a compiler version the run has to trust. [`COMPILER_ID`] states only what
 //! that PTX targets.
 
+use cudarc::nvrtc::sys;
 use cudarc::nvrtc::{CompileOptions, compile_ptx_with_opts};
 
 use sima_core::{Error, Result};
@@ -63,6 +64,11 @@ pub const PTX_OPTIONS: [&str; 2] = ["--gpu-architecture=compute_75", "--fmad=tru
 /// A later NVRTC raises the ISA and narrows that set: 12.9 emits ISA 8.8, which
 /// needs r575.
 pub fn compile(source: &str) -> Result<String> {
+    // NVRTC opens its own helper by bare name while it compiles, and answers
+    // that open from its own RUNPATH rather than this binary's, so the pinned
+    // helper is opened here first.
+    crate::vendored::preload_builtins();
+    require_pinned_nvrtc()?;
     let options = CompileOptions {
         options: PTX_OPTIONS
             .iter()
@@ -75,9 +81,65 @@ pub fn compile(source: &str) -> Result<String> {
     Ok(ptx.to_src())
 }
 
+/// The NVRTC release every committed artifact is produced under.
+pub const PINNED_NVRTC: (i32, i32) = (12, 0);
+
+/// The release of the NVRTC that this process loaded.
+pub fn nvrtc_version() -> Result<(i32, i32)> {
+    let (mut major, mut minor) = (0, 0);
+    // SAFETY: both pointers are to live locals, which is what the entry point
+    // writes its two integers through.
+    let status = unsafe { sys::nvrtcVersion(&mut major, &mut minor) };
+    if status == sys::nvrtcResult::NVRTC_SUCCESS {
+        return Ok((major, minor));
+    }
+    Err(Error::Backend(format!(
+        "read the NVRTC version: {status:?}"
+    )))
+}
+
+/// Confirms the loaded NVRTC is the pinned release.
+///
+/// The committed PTX is compared byte for byte against a fresh compilation, and
+/// a different NVRTC changes both those bytes and the ISA version stamped into
+/// them. Checking here names the two releases, which a diff of the artifacts
+/// leaves the reader to work out.
+fn require_pinned_nvrtc() -> Result<()> {
+    let loaded = nvrtc_version()?;
+    if loaded == PINNED_NVRTC {
+        return Ok(());
+    }
+    let ((major, minor), (want_major, want_minor)) = (loaded, PINNED_NVRTC);
+    Err(Error::Backend(format!(
+        "this build loaded NVRTC {major}.{minor}, and committed PTX is produced \
+         under {want_major}.{want_minor}. The pinned release is vendored beside \
+         the binaries and reached through their RUNPATH; a copy elsewhere on the \
+         library path shadows it. Set SIMA_NVRTC_DIR to the directory holding \
+         the pinned libnvrtc.so, or remove the shadowing copy from the path."
+    )))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_build_reaches_the_pinned_nvrtc() {
+        // The whole point of vendoring: this holds on a machine with a CUDA
+        // toolkit of another release installed, with nothing set in the
+        // environment, because the vendored copy sits on the binary's RUNPATH
+        // ahead of the loader cache. A failure here means the committed PTX
+        // would be compared against another compiler's output.
+        let (major, minor) = nvrtc_version().expect("NVRTC answers for its version");
+        assert_eq!(
+            (major, minor),
+            PINNED_NVRTC,
+            "loaded NVRTC {major}.{minor}; committed PTX is produced under \
+             {}.{}",
+            PINNED_NVRTC.0,
+            PINNED_NVRTC.1
+        );
+    }
 
     /// Fixed CUDA C sample for the compilation tests: one entry point over two
     /// buffers, matching the shape every kernel in this project has.
