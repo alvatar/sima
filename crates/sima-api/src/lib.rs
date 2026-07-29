@@ -11,8 +11,9 @@
 //!   exchange: [`TaskInput`], [`ExecutionContext`], [`Outcome`], [`Artifact`],
 //!   [`Stats`], [`WorkerId`], [`STATE_ARTIFACT`], and the [`Checkpoint`]
 //!   resume channel with its inert [`NoCheckpoint`] handle;
-//! - the device an executor is built for: [`DeviceBinding`] and
-//!   [`DeviceClass`];
+//! - the device vocabulary: [`DeviceBinding`] and [`DeviceClass`], which name
+//!   the device an executor is built for, and [`DeviceInfo`] with
+//!   [`DeviceType`], which are how a domain answers what its work runs on;
 //! - the identity-bearing values a seam is handed: [`Spec`], [`Params`],
 //!   [`FormatId`], [`GeneratorId`], and the [`Environment`] vocabulary;
 //! - the foundations those values are built on: [`Error`] and [`Result`],
@@ -43,8 +44,8 @@
 //!   by [`Hash::from_hex`] and [`struct@Hash`]'s `Display`.
 
 pub use sima_contracts::{
-    Artifact, Checkpoint, DeviceBinding, DeviceClass, ExecutionContext, Executor, Generator,
-    NoCheckpoint, Outcome, STATE_ARTIFACT, Stats, TaskInput, WorkerId,
+    Artifact, Checkpoint, DeviceBinding, DeviceClass, DeviceInfo, DeviceType, ExecutionContext,
+    Executor, Generator, NoCheckpoint, Outcome, STATE_ARTIFACT, Stats, TaskInput, WorkerId,
 };
 pub use sima_core::prng;
 pub use sima_core::{Codec, Dec, Enc, Error, Hash, Result, hash_bytes};

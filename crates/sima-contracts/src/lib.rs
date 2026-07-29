@@ -37,7 +37,7 @@ mod executor;
 mod generator;
 
 pub use checkpoint::{Checkpoint, NoCheckpoint};
-pub use device::{DeviceBinding, DeviceClass};
+pub use device::{DeviceBinding, DeviceClass, DeviceInfo, DeviceType};
 pub use executor::{
     Artifact, ExecutionContext, Executor, Outcome, STATE_ARTIFACT, Stats, TaskInput, WorkerId,
 };

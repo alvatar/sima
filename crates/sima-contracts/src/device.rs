@@ -101,6 +101,37 @@ fn is_class_char(c: char) -> bool {
     c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '_' | ':' | '-')
 }
 
+/// A compute-capable device as enumerated: what it is, what it is called, and
+/// which one it is among the interchangeable members of its class.
+///
+/// A domain answers with a list of these when asked what its work can run on,
+/// so the type is part of what a domain outside this workspace is written
+/// against.
+///
+/// The serde form is the device list's wire shape — human-readable, never
+/// identity-bearing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeviceInfo {
+    /// The class, as the backend that enumerated this device minted it.
+    pub class: DeviceClass,
+    /// The device's own reported name.
+    pub name: String,
+    pub device_type: DeviceType,
+    /// The position within the class, ordered as the backend enumerates.
+    pub member: u32,
+}
+
+/// The categories a device falls into.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeviceType {
+    Discrete,
+    Integrated,
+    Virtual,
+    Cpu,
+    Other,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
