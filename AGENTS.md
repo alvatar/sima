@@ -58,13 +58,16 @@
 The settled invariants and principles are the RULES section of
 @docs/architecture.md.
 
-## Documentation structure
+## Documentation
 
-Applies to `docs/` and long-form comments:
+Applies to `docs/`, long-form comments, and anything published on GitHub (pull
+request and issue bodies, review comments, commit messages):
+- Language is professional and dry throughout, headings included. Headings are declarative and descriptive.
 - Enumerations are written as bullet lists or subsections, never buried inside prose paragraphs.
 - Long paragraphs are broken at idea boundaries.
 - Bold is used for genuinely key short phrases that aid scanning.
 - Equations use proper math notation (GitHub-flavored LaTeX in markdown: `$...$` inline, `$$...$$` display), not ASCII character equations.
+- GitHub renders a single newline inside a pull request or issue body as a line break, so each paragraph and list item there is written on one line. Tables, code fences, and math blocks keep their own line structure.
 
 ## Code quality
 
