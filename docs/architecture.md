@@ -6,8 +6,8 @@ runs it, records the result under a content address, and never interprets
 what it computes. The current specialization is neural networks and
 cellular-automata-like programs. `README.md` records
 the motivation and design; `TODO.md` the roadmap; `AGENTS.md` the project
-rules and settled invariants. This document describes the implemented
-system.
+rules. This document describes the implemented system, and the rules that
+govern it are stated first.
 
 sima runs in three execution modes:
 
@@ -20,6 +20,33 @@ Local is implemented first. The store and identity model are designed so
 slingshot and distributed add transport over the same objects, not new
 semantics: a result computed on any machine carries the same content address
 and commits to the same catalog.
+
+## RULES
+
+`README.md` is the design document; the near-term work list is `TODO.md`.
+Rust; local execution first, distributed by design.
+
+Invariants below are settled in discussion before being recorded here; new
+ones are added the same way.
+
+### Settled invariants
+
+- Execution backends are implementation crates under `crates/toolkits/` (`sima-toolkit-*`), depending on `sima-core` (and `sima-contracts` when needed); `sima-domains` depends on the toolkits its domains use, and each toolkit isolates its own dependency set.
+- The store is the only durable state. Queues, schedulers, and orchestrators are ephemeral; a task source derives the currently-runnable frontier from (config, store state) — static batches and segment chains are two implementations of that one interface. Resume, crash-recovery, and re-run are one code path: re-derive the frontier, continue.
+- One orchestrator per run — the `sima run` process itself, no daemon; single-writer enforced by an OS file lock the kernel releases when the holder exits, so no staleness protocol exists; the lock file's content (pid, hostname) is diagnostic only. Workers are stateless leaseholders.
+- Executors are pure compute: they receive (spec, params, seed, env) and return artifacts + stats, never touching the store. Workers commit results through the catalog. The trust boundary lives on this seam.
+- Candidates are opaque at the infrastructure layer: a spec is (format id, opaque bytes), content-addressed. Domains interpret specs; "genome" is domain vocabulary. Run parameters are a second opaque content-addressed blob (params): generators produce specs, config produces params, and the spec's format id governs the interpretation of both — so one candidate stays addressable across evaluation stages and the generator contract never carries evaluation policy.
+- Two serialization worlds: identity-bearing bytes (anything hashed) go through the canonical `Enc`/`Dec` encoding exclusively; human-readable artifacts are serde and never identity-bearing.
+- Reproducibility is declared per domain across two tiers (README, Determinism), not assumed uniform. The infrastructure guarantees run identity regardless: manifests are canonicalized so run hashes are independent of worker completion order, and journals are observational, excluded from equality criteria.
+- Structured events are the `sima-trace` facade at L0.5, directly above `sima-core`: the typed event vocabulary, journal records, emitters, and one collector thread any layer emits into without an upward edge. The collector is the single-writer seam — it stamps each event, appends the journal line through a `DurableSink` the store implements (which keeps the facade below the store), then hands the record to the run's observer; the journal write precedes the observer, and a child's events cross the wire as opaque frames the parent forwards to the collector.
+
+### Principles
+
+- Clean, pristine architecture: clear spine, truthful boundaries, no split brain.
+- No unjustified repeated code; justify file count / splits; deliberate naming.
+- No bootstrapping garbage in the active path; isolate platform-specific code cleanly.
+- Maintain a clear, data-driven flow of information.
+- Every milestone serves the real search substrate, optimizing for correctness and architecture, not demos.
 
 ## Layering
 

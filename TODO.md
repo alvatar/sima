@@ -1,7 +1,8 @@
 # TODO
 
-Roadmap. Read `AGENTS.md` (project rules, settled invariants) and `README.md`
-(design document) before this file. Phases are large project stages;
+Roadmap. Read `AGENTS.md` (project rules), @docs/architecture.md (the
+implemented system; its RULES section holds the settled invariants and
+principles), and `README.md` (design document) before this file. Phases are large project stages;
 milestones are PR-sized units of work, each with a fully elaborated
 `work/TODO-<topic>.md` while in flight. `work/` is gitignored and
 machine-local: elaborations are written fresh from this document's decisions,
