@@ -907,7 +907,7 @@ mod tests {
     #[test]
     fn a_wire_fault_carries_the_far_side_classification_verbatim() -> Result<()> {
         // The child renders its executor error to the wire via `Display`, so a
-        // device fault crosses as "gpu error: device lost". The parent must
+        // device fault crosses as "backend error: device lost". The parent must
         // surface that rendering verbatim, never re-wrap it under a local
         // classification ("validation error: ..."), which is f_008.
         let dir = tempfile::tempdir().expect("temp dir");
@@ -973,13 +973,13 @@ mod tests {
                 attempt: 0,
             };
             let mut link = FaultLink {
-                message: Some("gpu error: device lost".to_string()),
+                message: Some("backend error: device lost".to_string()),
             };
             process(&ctx, WorkerId(0), pending, &mut link);
         }
         // The run faulted, and the fault renders exactly as the far side did.
         match &coordinator.lock().state {
-            RunState::Fault(e) => assert_eq!(e.to_string(), "gpu error: device lost"),
+            RunState::Fault(e) => assert_eq!(e.to_string(), "backend error: device lost"),
             _ => panic!("expected the run to fault"),
         }
         // The `Faulted` event carries the same verbatim rendering.
@@ -991,7 +991,7 @@ mod tests {
                 _ => None,
             })
             .expect("a Faulted event");
-        assert_eq!(faulted, "gpu error: device lost");
+        assert_eq!(faulted, "backend error: device lost");
         Ok(())
     }
 

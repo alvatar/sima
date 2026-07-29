@@ -45,8 +45,8 @@ impl Context {
     /// The class is the `(vendor_id, device_id)` pair and `member` counts within
     /// it, ordered by Vulkan enumeration index — the numbering
     /// [`enumerate_devices`](crate::enumerate_devices) reports. An absent class
-    /// or a member out of range is an [`Error::Gpu`] naming the request and what
-    /// exists.
+    /// or a member out of range is an [`Error::Backend`] naming the request and
+    /// what exists.
     pub fn for_device(vendor_id: u32, device_id: u32, member: u32) -> Result<Context> {
         Context::build(|instance| {
             selection::select_class_member(instance, vendor_id, device_id, member)
@@ -97,7 +97,7 @@ impl Context {
                 .get()?
                 .create_device(physical_device, &device_info, None)
         }
-        .map_err(|e| Error::Gpu(format!("create logical device: {e}")))?;
+        .map_err(|e| Error::Backend(format!("create logical device: {e}")))?;
         let device = DeviceGuard::new(device);
         // SAFETY: `device` was just created with one queue in `queue_family_index`
         // at priority index 0, so that queue is valid.
@@ -109,7 +109,7 @@ impl Context {
         // SAFETY: `pool_info` lives through the call; `queue_family_index` is the
         // family the device's queue was created from.
         let command_pool = unsafe { device.get()?.create_command_pool(&pool_info, None) }
-            .map_err(|e| Error::Gpu(format!("create command pool: {e}")))?;
+            .map_err(|e| Error::Backend(format!("create command pool: {e}")))?;
         let command_pool = CommandPoolGuard::new(device.get()?, command_pool);
 
         // Created after every other fallible step so a failure here is the last
@@ -168,12 +168,12 @@ impl Context {
             self.device
                 .begin_command_buffer(command_buffer, &begin_info)
         }
-        .map_err(|e| Error::Gpu(format!("begin command buffer: {e}")))?;
+        .map_err(|e| Error::Backend(format!("begin command buffer: {e}")))?;
         recorder(command_buffer);
         // SAFETY: the buffer is recording after `begin` and the recorder has run,
         // so ending it into the executable state is legal.
         unsafe { self.device.end_command_buffer(command_buffer) }
-            .map_err(|e| Error::Gpu(format!("end command buffer: {e}")))?;
+            .map_err(|e| Error::Backend(format!("end command buffer: {e}")))?;
         let submit_info =
             vk::SubmitInfo::default().command_buffers(std::slice::from_ref(&command_buffer));
         // SAFETY: the buffer is executable; `submit_info` borrows it via from_ref
@@ -185,7 +185,7 @@ impl Context {
                 submission.fence,
             )
         }
-        .map_err(|e| Error::Gpu(format!("submit command buffer: {e}")))?;
+        .map_err(|e| Error::Backend(format!("submit command buffer: {e}")))?;
         submission.submitted = true;
         // SAFETY: the fence was passed to the submit above and is the only wait
         // target; the slice lives through the call.
@@ -193,7 +193,7 @@ impl Context {
             self.device
                 .wait_for_fences(std::slice::from_ref(&submission.fence), true, u64::MAX)
         }
-        .map_err(|e| Error::Gpu(format!("wait for fence: {e}")))?;
+        .map_err(|e| Error::Backend(format!("wait for fence: {e}")))?;
         Ok(())
     }
 }
@@ -232,13 +232,13 @@ impl DeviceGuard {
     fn get(&self) -> Result<&ash::Device> {
         self.device
             .as_ref()
-            .ok_or_else(|| Error::Gpu("Vulkan device guard used after finish".to_string()))
+            .ok_or_else(|| Error::Backend("Vulkan device guard used after finish".to_string()))
     }
 
     fn finish(mut self) -> Result<ash::Device> {
         self.device
             .take()
-            .ok_or_else(|| Error::Gpu("Vulkan device guard finished twice".to_string()))
+            .ok_or_else(|| Error::Backend("Vulkan device guard finished twice".to_string()))
     }
 }
 
@@ -272,7 +272,7 @@ impl CommandPoolGuard {
     fn finish(mut self) -> Result<vk::CommandPool> {
         self.command_pool
             .take()
-            .ok_or_else(|| Error::Gpu("command pool guard finished twice".to_string()))
+            .ok_or_else(|| Error::Backend("command pool guard finished twice".to_string()))
     }
 }
 
@@ -309,10 +309,10 @@ impl OneTimeSubmit {
         // SAFETY: `command_pool` is owned by the caller's context; `alloc_info`
         // lives through the call and requests exactly one buffer.
         let command_buffers = unsafe { device.allocate_command_buffers(&alloc_info) }
-            .map_err(|e| Error::Gpu(format!("allocate command buffer: {e}")))?;
+            .map_err(|e| Error::Backend(format!("allocate command buffer: {e}")))?;
         let command_buffer = *command_buffers
             .first()
-            .ok_or_else(|| Error::Gpu("no command buffer allocated".to_string()))?;
+            .ok_or_else(|| Error::Backend("no command buffer allocated".to_string()))?;
         // SAFETY: default (unsignaled) fence create info is stack-local.
         let fence = match unsafe { device.create_fence(&vk::FenceCreateInfo::default(), None) } {
             Ok(fence) => fence,
@@ -323,7 +323,7 @@ impl OneTimeSubmit {
                     device
                         .free_command_buffers(command_pool, std::slice::from_ref(&command_buffer));
                 }
-                return Err(Error::Gpu(format!("create submit fence: {e}")));
+                return Err(Error::Backend(format!("create submit fence: {e}")));
             }
         };
         Ok(Self {
@@ -385,7 +385,7 @@ mod tests {
     fn opening_an_absent_device_class_fails() {
         assert!(matches!(
             Context::for_device(0xdead, 0xbeef, 0),
-            Err(Error::Gpu(_))
+            Err(Error::Backend(_))
         ));
     }
 }

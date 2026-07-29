@@ -44,7 +44,7 @@ impl Context {
     /// greater than zero: Vulkan rejects a zero-sized buffer.
     pub fn buffer(&self, size: usize) -> Result<Buffer> {
         if size == 0 {
-            return Err(Error::Gpu(
+            return Err(Error::Backend(
                 "buffer size must be greater than zero".to_string(),
             ));
         }
@@ -70,7 +70,7 @@ impl Context {
         }
         let byte_len = data.len() as vk::DeviceSize;
         if byte_len > dst.size {
-            return Err(Error::Gpu(format!(
+            return Err(Error::Backend(format!(
                 "upload of {byte_len} bytes exceeds buffer size {}",
                 dst.size
             )));
@@ -88,7 +88,7 @@ impl Context {
             self.device()
                 .map_memory(staging.memory, 0, byte_len, vk::MemoryMapFlags::empty())
         }
-        .map_err(|e| Error::Gpu(format!("map staging buffer: {e}")))?;
+        .map_err(|e| Error::Backend(format!("map staging buffer: {e}")))?;
         // SAFETY: `data.len()` bytes fit the mapped range (staging is sized to
         // exactly that); the unmap pairs with the successful map above.
         unsafe {
@@ -137,7 +137,7 @@ impl Context {
             self.device()
                 .map_memory(staging.memory, 0, src.size, vk::MemoryMapFlags::empty())
         }
-        .map_err(|e| Error::Gpu(format!("map staging buffer: {e}")))?;
+        .map_err(|e| Error::Backend(format!("map staging buffer: {e}")))?;
         let mut out = vec![0u8; src.size as usize];
         // SAFETY: `src.size` bytes fit both the mapped range and `out`; the unmap
         // pairs with the successful map above.
@@ -223,7 +223,7 @@ fn create_buffer(
         .sharing_mode(vk::SharingMode::EXCLUSIVE);
     // SAFETY: `buffer_info` is stack-local through the call; `device` is alive.
     let raw = unsafe { device.create_buffer(&buffer_info, None) }
-        .map_err(|e| Error::Gpu(format!("create buffer: {e}")))?;
+        .map_err(|e| Error::Backend(format!("create buffer: {e}")))?;
     // From here the partially-built value carries rollback: an early return
     // drops it and Drop releases whatever exists (memory is still null).
     let mut buffer = Buffer {
@@ -245,11 +245,11 @@ fn create_buffer(
     // SAFETY: `alloc_info` lives through the call; `memory_type_index` was
     // validated against `requirements.memory_type_bits` by find_memory_type.
     buffer.memory = unsafe { device.allocate_memory(&alloc_info, None) }
-        .map_err(|e| Error::Gpu(format!("allocate buffer memory: {e}")))?;
+        .map_err(|e| Error::Backend(format!("allocate buffer memory: {e}")))?;
     // SAFETY: buffer and memory were both created from `device`; offset 0 is
     // within the allocation.
     unsafe { device.bind_buffer_memory(buffer.buffer, buffer.memory, 0) }
-        .map_err(|e| Error::Gpu(format!("bind buffer memory: {e}")))?;
+        .map_err(|e| Error::Backend(format!("bind buffer memory: {e}")))?;
     Ok(buffer)
 }
 
@@ -261,7 +261,7 @@ mod tests {
     #[test]
     fn buffer_rejects_zero_size() {
         let context = Context::new().expect("create compute context");
-        assert!(matches!(context.buffer(0), Err(Error::Gpu(_))));
+        assert!(matches!(context.buffer(0), Err(Error::Backend(_))));
     }
 
     /// Requires a real Vulkan device.

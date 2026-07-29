@@ -91,7 +91,7 @@ impl ValidationMessenger {
         // SAFETY: `info` is stack-local through the call; the callback is a
         // plain function with no captured state.
         let messenger = unsafe { loader.create_debug_utils_messenger(&info, None) }
-            .map_err(|e| Error::Gpu(format!("create validation messenger: {e}")))?;
+            .map_err(|e| Error::Backend(format!("create validation messenger: {e}")))?;
         Ok(Self { loader, messenger })
     }
 

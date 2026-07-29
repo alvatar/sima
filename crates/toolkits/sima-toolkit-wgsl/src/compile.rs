@@ -32,7 +32,7 @@ pub fn source_digest(wgsl: &str) -> Hash {
 
 /// Compiles `wgsl` for `entry` and discards the result: a device-free
 /// validity check for kernels a domain embeds. Errors are the same
-/// [`Error::Gpu`] the full path produces.
+/// [`Error::Backend`] the full path produces.
 pub fn check(wgsl: &str, entry: &str) -> Result<()> {
     compile(wgsl, entry).map(|_| ())
 }
@@ -40,15 +40,15 @@ pub fn check(wgsl: &str, entry: &str) -> Result<()> {
 /// Compiles WGSL to SPIR-V for the named compute entry point.
 ///
 /// The three naga stages — parse, validate, emit — each map their failure to
-/// [`Error::Gpu`] with a context string. The emitter's writer flags are fixed
-/// so the output depends only on the source and the pinned compiler version,
-/// keeping [`COMPILER_ID`] and the known-answer test meaningful.
+/// [`Error::Backend`] with a context string. The emitter's writer flags are
+/// fixed so the output depends only on the source and the pinned compiler
+/// version, keeping [`COMPILER_ID`] and the known-answer test meaningful.
 pub(crate) fn compile(wgsl: &str, entry: &str) -> Result<Compiled> {
-    let module =
-        naga::front::wgsl::parse_str(wgsl).map_err(|e| Error::Gpu(format!("parse WGSL: {e}")))?;
+    let module = naga::front::wgsl::parse_str(wgsl)
+        .map_err(|e| Error::Backend(format!("parse WGSL: {e}")))?;
     let info = Validator::new(ValidationFlags::all(), Capabilities::default())
         .validate(&module)
-        .map_err(|e| Error::Gpu(format!("validate WGSL: {e}")))?;
+        .map_err(|e| Error::Backend(format!("validate WGSL: {e}")))?;
     let options = spv::Options {
         lang_version: SPIRV_VERSION,
         flags: spv::WriterFlags::empty(),
@@ -59,7 +59,7 @@ pub(crate) fn compile(wgsl: &str, entry: &str) -> Result<Compiled> {
         entry_point: entry.to_string(),
     };
     let spirv = spv::write_vec(&module, &info, &options, Some(&pipeline))
-        .map_err(|e| Error::Gpu(format!("emit SPIR-V for entry point '{entry}': {e}")))?;
+        .map_err(|e| Error::Backend(format!("emit SPIR-V for entry point '{entry}': {e}")))?;
     Ok(Compiled { module, spirv })
 }
 
@@ -122,7 +122,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 "@compute @workgroup_size(64) fn main() { let x = ; }",
                 "main"
             ),
-            Err(Error::Gpu(_))
+            Err(Error::Backend(_))
         ));
     }
 
@@ -157,28 +157,28 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
 
     #[test]
-    fn malformed_wgsl_maps_to_gpu_parse_error() {
+    fn malformed_wgsl_maps_to_a_backend_parse_error() {
         let result = compile(
             "@compute @workgroup_size(64) fn main() { let x = ; }",
             "main",
         );
         match result {
-            Err(Error::Gpu(msg)) => {
+            Err(Error::Backend(msg)) => {
                 assert!(msg.contains("parse WGSL"), "unexpected message: {msg}");
             }
-            Err(other) => panic!("expected a Gpu parse error, got {other:?}"),
+            Err(other) => panic!("expected a backend parse error, got {other:?}"),
             Ok(_) => panic!("expected compilation of malformed WGSL to fail"),
         }
     }
 
     #[test]
-    fn unknown_entry_point_maps_to_gpu_emit_error() {
+    fn unknown_entry_point_maps_to_a_backend_emit_error() {
         let result = compile(SAMPLE, "does_not_exist");
         match result {
-            Err(Error::Gpu(msg)) => {
+            Err(Error::Backend(msg)) => {
                 assert!(msg.contains("emit SPIR-V"), "unexpected message: {msg}");
             }
-            Err(other) => panic!("expected a Gpu emit error, got {other:?}"),
+            Err(other) => panic!("expected a backend emit error, got {other:?}"),
             Ok(_) => panic!("expected compilation for a missing entry point to fail"),
         }
     }

@@ -66,18 +66,18 @@ impl Context {
         let context = self.stream().context();
         let maximum = context
             .attribute(sys::CUdevice_attribute_enum::CU_DEVICE_ATTRIBUTE_MAX_THREADS_PER_BLOCK)
-            .map_err(|e| driver::gpu_error("read the device's maximum block width", e))?;
+            .map_err(|e| driver::backend_error("read the device's maximum block width", e))?;
         if block_width == 0 || i64::from(block_width) > i64::from(maximum) {
-            return Err(Error::Gpu(format!(
+            return Err(Error::Backend(format!(
                 "kernel entry point '{entry}' asks for {block_width} threads per block; this \
                  device takes 1..={maximum}"
             )));
         }
         let module = context
             .load_module(Ptx::from_src(ptx))
-            .map_err(|e| driver::gpu_error("load the PTX module", e))?;
+            .map_err(|e| driver::backend_error("load the PTX module", e))?;
         let function = module.load_function(entry).map_err(|e| {
-            driver::gpu_error(
+            driver::backend_error(
                 &format!("take entry point '{entry}' from the PTX module"),
                 e,
             )
@@ -135,10 +135,10 @@ mod tests {
     fn an_entry_point_the_module_does_not_declare_is_rejected() {
         let context = Context::new().expect("create compute context");
         match context.kernel(SMOKE_PTX, "no_such_entry", 64) {
-            Err(Error::Gpu(message)) => {
+            Err(Error::Backend(message)) => {
                 assert!(message.contains("no_such_entry"), "{message}");
             }
-            Err(other) => panic!("expected a Gpu lookup error, got {other:?}"),
+            Err(other) => panic!("expected a backend lookup error, got {other:?}"),
             Ok(_) => panic!("expected an unknown entry point to be rejected"),
         }
     }
@@ -148,10 +148,10 @@ mod tests {
     fn malformed_ptx_is_rejected_by_the_driver() {
         let context = Context::new().expect("create compute context");
         match context.kernel("this is not PTX", "main_kernel", 64) {
-            Err(Error::Gpu(message)) => {
+            Err(Error::Backend(message)) => {
                 assert!(message.contains("load the PTX module"), "{message}");
             }
-            Err(other) => panic!("expected a Gpu load error, got {other:?}"),
+            Err(other) => panic!("expected a backend load error, got {other:?}"),
             Ok(_) => panic!("expected malformed PTX to be rejected"),
         }
     }
@@ -164,10 +164,10 @@ mod tests {
         let context = Context::new().expect("create compute context");
         for width in [0, 1 << 20] {
             match context.kernel("", "main_kernel", width) {
-                Err(Error::Gpu(message)) => {
+                Err(Error::Backend(message)) => {
                     assert!(message.contains("threads per block"), "{message}");
                 }
-                Err(other) => panic!("expected a Gpu width error, got {other:?}"),
+                Err(other) => panic!("expected a backend width error, got {other:?}"),
                 Ok(_) => panic!("expected block width {width} to be rejected"),
             }
         }

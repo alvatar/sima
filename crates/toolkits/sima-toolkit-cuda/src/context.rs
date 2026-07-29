@@ -34,8 +34,9 @@ impl Context {
     /// The class is the `(vendor_id, device_id)` pair and `member` counts within
     /// it, ordered by CUDA ordinal — the numbering
     /// [`enumerate_devices`](crate::enumerate_devices) reports. An absent class
-    /// or a member out of range is an [`Error::Gpu`](sima_core::Error::Gpu)
-    /// naming the request and what exists.
+    /// or a member out of range is an
+    /// [`Error::Backend`](sima_core::Error::Backend) naming the request and
+    /// what exists.
     pub fn for_device(vendor_id: u32, device_id: u32, member: u32) -> Result<Context> {
         Context::build(Some((vendor_id, device_id, member)))
     }
@@ -45,10 +46,10 @@ impl Context {
     fn build(device: Option<(u32, u32, u32)>) -> Result<Context> {
         let ordinal = selection::resolve_ordinal(device)?;
         let context = CudaContext::new(ordinal)
-            .map_err(|e| driver::gpu_error("create the CUDA context", e))?;
+            .map_err(|e| driver::backend_error("create the CUDA context", e))?;
         let device_name = context
             .name()
-            .map_err(|e| driver::gpu_error("read the CUDA device name", e))?;
+            .map_err(|e| driver::backend_error("read the CUDA device name", e))?;
         Ok(Context {
             stream: context.default_stream(),
             device_name,
@@ -104,7 +105,7 @@ mod tests {
     fn opening_an_absent_device_class_fails() {
         assert!(matches!(
             Context::for_device(0xdead, 0xbeef, 0),
-            Err(Error::Gpu(_))
+            Err(Error::Backend(_))
         ));
     }
 }

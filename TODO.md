@@ -720,11 +720,30 @@ environment hash, so two machines that load the same custom executor agree and
 one that loads a different build is distinguished — determinism and store
 portability (P1 acceptance (d)) hold across the boundary.
 
-- [ ] M7.1 Public contract API: publish the executor/generator traits and their
+- [x] M7.1 Public contract API: publish the executor/generator traits and their
       wire types (spec, params, artifact, stats, task input, execution context)
       as a surface decoupled from internal crate churn. Audit it for anything
       that only admits cases we already built, and open those; the deliverable
-      is the audit and its fixes, not a frozen version stamp.
+      is the audit and its fixes, not a frozen version stamp. Settled: the
+      surface is the facade crate `sima-api`, holding re-exports and module
+      documentation and no logic — the two contract traits with their whole
+      vocabulary, the device binding and class, the identity-bearing values a
+      seam is handed, and the `sima-core` foundations including `prng`, which a
+      generator needs because the `rand` crate is barred from result paths. Run
+      configuration, task identity and commitment, content addresses, transport
+      framing, and crash injection stay internal, and the module docs carry each
+      omission with the responsibility it belongs to. `sima-example-executor`
+      pins the list: its manifest names `sima-api` as its only sima dependency,
+      so an item the facade stops naming is a build failure here rather than a
+      discovery made out of tree. `Error::Gpu` became `Error::Backend`
+      (`backend error: ...`): the variant named one backend family while
+      covering every execution backend, and a third-party executor returning
+      `sima_core::Result` had no other variant for a fault inside its own
+      compute. The device-identity and config-translation findings are recorded
+      against M7.2 and M7.3. Not done here: the device seam stays a PCI triple,
+      registration is M7.3 so an out-of-tree executor can be written and
+      compiled but not yet registered, and nothing is versioned or published to
+      a registry.
 - [ ] M7.2 Pluggable device backends: `Backend` is a closed enum
       (`Host | Wgsl | Cuda`) whose only job is selecting an enumeration
       function, so a third party bringing Metal, ROCm, or an accelerator we have
@@ -732,7 +751,20 @@ portability (P1 acceptance (d)) hold across the boundary.
       the enum and have `Domain` carry the enumeration directly, beside the
       `executor` and `device_desc` function pointers it already holds; the
       engine supplies it in place of `const BACKEND`. Removes a concept rather
-      than adding one, and needs no registry or backend id.
+      than adding one, and needs no registry or backend id. The same pass opens
+      `DeviceBinding`'s shape, today the PCI triple `(vendor_id, device_id,
+      member)` rendered as the `vendor:device` hex a config selector matches. It
+      must admit devices that have no PCI configuration space at all — Apple
+      Silicon under Metal or MoltenVK, ARM SoC GPUs such as Mali and Adreno,
+      whose drivers report a Khronos-assigned vendor id and frequently a device
+      id of zero, collapsing every such device into one class. It must admit the
+      identifiers CUDA does not report, which the toolkit reads out of Linux
+      sysfs to fill the triple in, a path that exists on Linux and for PCI
+      devices and nowhere else. And it must admit NVIDIA MIG, where slices of
+      one card carry identical ids: slices of different sizes are one class by
+      that pair while not being interchangeable, so the `DeviceClass` invariant
+      that members are substitutable is false for them and work placed on the
+      class can land on a slice with a fraction of the memory it expected.
 - [ ] M7.3 Runtime registration: an out-of-tree executor announces its format
       id and is selected without editing sima's dispatch — the static
       format-id match (M1.6) becomes a registry. Registration and loading
@@ -740,6 +772,10 @@ portability (P1 acceptance (d)) hold across the boundary.
       decision from M1.6: a third party registers the format-bound bundle
       (codec + executor + reference + kernel) as one object, with generators a
       separate plug targeting the format — do not fuse executor and generator.
+      The seam includes config translation: turning a format's `[run.params]`
+      table into `Params` bytes is today a static match taking a `toml::Table`,
+      so a third-party format has no published way to translate its own
+      configuration.
 - [ ] M7.4 Isolation and trust: run out-of-tree executors process-isolated so
       the pure-compute boundary is OS-enforced (foreign code cannot reach the
       store).

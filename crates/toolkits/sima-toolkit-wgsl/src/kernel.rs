@@ -96,7 +96,7 @@ impl Context {
         // SAFETY: `shader_info` and the SPIR-V slice it borrows live through the
         // call; the words came from the naga emitter for this module.
         let shader_module = unsafe { device.create_shader_module(&shader_info, None) }
-            .map_err(|e| Error::Gpu(format!("create shader module: {e}")))?;
+            .map_err(|e| Error::Backend(format!("create shader module: {e}")))?;
         let shader_module = ShaderModuleGuard::new(device, shader_module);
 
         // Partially-built value carrying rollback: an early return drops it and
@@ -133,7 +133,7 @@ fn create_set_layout(device: &ash::Device, bindings: &[u32]) -> Result<vk::Descr
     let info = vk::DescriptorSetLayoutCreateInfo::default().bindings(&layout_bindings);
     // SAFETY: `info` and the `layout_bindings` it borrows live through the call.
     unsafe { device.create_descriptor_set_layout(&info, None) }
-        .map_err(|e| Error::Gpu(format!("create descriptor set layout: {e}")))
+        .map_err(|e| Error::Backend(format!("create descriptor set layout: {e}")))
 }
 
 /// Builds a pipeline layout carrying the one descriptor set and no push
@@ -146,7 +146,7 @@ fn create_pipeline_layout(
         vk::PipelineLayoutCreateInfo::default().set_layouts(std::slice::from_ref(&set_layout));
     // SAFETY: `info` borrows `set_layout` via from_ref and lives through the call.
     unsafe { device.create_pipeline_layout(&info, None) }
-        .map_err(|e| Error::Gpu(format!("create pipeline layout: {e}")))
+        .map_err(|e| Error::Backend(format!("create pipeline layout: {e}")))
 }
 
 /// Builds the compute pipeline for `entry` from the shader module.
@@ -157,7 +157,7 @@ fn create_compute_pipeline(
     entry: &str,
 ) -> Result<vk::Pipeline> {
     let entry_name = CString::new(entry)
-        .map_err(|_| Error::Gpu(format!("entry point name '{entry}' contains a NUL byte")))?;
+        .map_err(|_| Error::Backend(format!("entry point name '{entry}' contains a NUL byte")))?;
     let stage = vk::PipelineShaderStageCreateInfo::default()
         .stage(vk::ShaderStageFlags::COMPUTE)
         .module(shader_module)
@@ -174,11 +174,11 @@ fn create_compute_pipeline(
             None,
         )
     }
-    .map_err(|(_, e)| Error::Gpu(format!("create compute pipeline: {e}")))?;
+    .map_err(|(_, e)| Error::Backend(format!("create compute pipeline: {e}")))?;
     pipelines
         .first()
         .copied()
-        .ok_or_else(|| Error::Gpu("compute pipeline creation returned no pipeline".to_string()))
+        .ok_or_else(|| Error::Backend("compute pipeline creation returned no pipeline".to_string()))
 }
 
 /// Owns a shader module for the duration of a pipeline build, destroying it on

@@ -2,9 +2,11 @@
 resolver = "3"
 members = [
     "crates/sima",
+    "crates/sima-api",
     "crates/sima-contracts",
     "crates/sima-core",
     "crates/sima-domains",
+    "crates/sima-example-executor",
     "crates/sima-integration",
     "crates/sima-model",
     "crates/sima-pipeline",

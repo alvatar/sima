@@ -188,12 +188,13 @@ impl<M: CaModel, E: CellularEngine> Executor for CaExecutor<M, E> {
 ///   as `M::CHANNELS` or `M::ALIVE_CHANNEL`) can never succeed for this model,
 ///   so it surfaces whether or not a predicate needs the scalars — never
 ///   silently blanking stats for every task of the misdeclared model.
-/// - A transient device fault (`Error::Gpu`, and any other variant) fails the
-///   evaluation only when a predicate is present, since the scalars then decide
-///   whether the snapshot commits and the verdict is uncomputable without them.
-///   Absent a predicate the scalars are purely observational — they travel the
-///   `Stats` channel to the journal and enter no record, manifest, or identity
-///   criterion — so the fault degrades to empty stats rather than failing.
+/// - A transient device fault (`Error::Backend`, and any other variant) fails
+///   the evaluation only when a predicate is present, since the scalars then
+///   decide whether the snapshot commits and the verdict is uncomputable
+///   without them. Absent a predicate the scalars are purely observational —
+///   they travel the `Stats` channel to the journal and enter no record,
+///   manifest, or identity criterion — so the fault degrades to empty stats
+///   rather than failing.
 fn stats_or_propagate(
     reduced: Result<Vec<(String, f64)>>,
     predicate: Option<&(String, f64)>,
@@ -506,23 +507,23 @@ mod tests {
 
     #[test]
     fn a_device_fault_propagates_under_a_predicate() {
-        // A transient device fault (`Error::Gpu`) with a predicate present: the
-        // predicate needs the scalars to decide the snapshot, so the fault
+        // A transient device fault (`Error::Backend`) with a predicate present:
+        // the predicate needs the scalars to decide the snapshot, so the fault
         // surfaces rather than a spurious missing-scalar fault.
         let predicate = ("population".to_string(), 0.5);
-        let fault: Result<Vec<(String, f64)>> = Err(Error::Gpu("device lost".to_string()));
+        let fault: Result<Vec<(String, f64)>> = Err(Error::Backend("device lost".to_string()));
         match stats_or_propagate(fault, Some(&predicate)) {
-            Err(Error::Gpu(message)) => assert_eq!(message, "device lost"),
+            Err(Error::Backend(message)) => assert_eq!(message, "device lost"),
             other => panic!("expected the device fault, got {other:?}"),
         }
     }
 
     #[test]
     fn a_device_fault_degrades_to_empty_without_a_predicate() -> Result<()> {
-        // A transient device fault (`Error::Gpu`) with no predicate: the scalars
-        // are observational, so the fault degrades to an empty list and the
-        // evaluation still completes.
-        let fault: Result<Vec<(String, f64)>> = Err(Error::Gpu("device lost".to_string()));
+        // A transient device fault (`Error::Backend`) with no predicate: the
+        // scalars are observational, so the fault degrades to an empty list and
+        // the evaluation still completes.
+        let fault: Result<Vec<(String, f64)>> = Err(Error::Backend("device lost".to_string()));
         assert!(stats_or_propagate(fault, None)?.is_empty());
         Ok(())
     }
