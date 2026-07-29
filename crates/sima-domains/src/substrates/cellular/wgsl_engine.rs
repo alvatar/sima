@@ -31,7 +31,7 @@ impl CellularEngine for WgslEngine {
         // The binding names the device to open; without one, the toolkit's
         // default selection applies.
         let context = match device {
-            Some(device) => Context::for_device(device.vendor_id, device.device_id, device.member)?,
+            Some(device) => Context::for_class(device.class().as_str(), device.member)?,
             None => Context::new()?,
         };
         let kernel = context.kernel(kernel, "main")?;
@@ -44,9 +44,9 @@ impl CellularEngine for WgslEngine {
     }
 
     fn device_desc(device: Option<&DeviceBinding>) -> Result<(String, String)> {
-        // The toolkit speaks plain device ids; this is where the binding maps
-        // to them.
-        selected_device_desc(device.map(|d| (d.vendor_id, d.device_id, d.member)))
+        // The toolkit reads back the class names it minted; this is where the
+        // binding maps onto them.
+        selected_device_desc(device.map(|d| (d.class().as_str(), d.member)))
     }
 
     fn reduce_digest() -> Hash {

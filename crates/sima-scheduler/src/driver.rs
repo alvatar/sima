@@ -146,10 +146,16 @@ pub fn run(
     let writer = store.journal_writer(&run)?;
     // Placement resumes from the store: a chain that already ran returns to
     // its class, and a slot naming a class the run no longer has rebinds when
-    // a worker first pulls it.
+    // a worker first pulls it. A slot the scheduler cannot read carries no
+    // usable placement, so it is read as an absent binding and its chain binds
+    // again — the stance the store takes one layer down for a slot whose frame
+    // is unusable. Placement is advisory coherence state, so one unreadable
+    // slot costs coherence for its chain rather than the whole resume.
     let mut chains = HashMap::new();
     for (chain, payload) in store.chain_bindings(&run)? {
-        chains.insert(chain, placement::decode_class(&payload)?);
+        if let Ok(class) = placement::decode_class(&payload) {
+            chains.insert(chain, class);
+        }
     }
     let coordinator = Coordinator::with_placement(eligible_classes(pools), chains);
     let coordinator = &coordinator;
@@ -191,7 +197,9 @@ pub fn run(
                         transport: pool.transport,
                         host: pool.host.clone(),
                         exec,
-                        device: *device,
+                        // One clone per worker at spawn, so the slot list stays
+                        // the pool's and each worker owns its binding.
+                        device: device.clone(),
                         events: events.clone(),
                     };
                     scope.spawn(move || worker_loop(WorkerId(worker), ctx));
@@ -262,8 +270,7 @@ pub fn worker_slots(exec: &ExecutionConfig) -> Vec<Option<DeviceBinding>> {
     for entry in &exec.devices {
         for slot in 0..entry.workers {
             slots.push(Some(DeviceBinding {
-                vendor_id: entry.class.vendor_id,
-                device_id: entry.class.device_id,
+                class: entry.class.clone(),
                 // An entry carries at least one card, which `ExecutionConfig`
                 // validates, so the remainder is over a positive count.
                 member: (slot as u32) % entry.members,
@@ -282,9 +289,8 @@ fn eligible_classes(pools: &[WorkerPool<'_>]) -> Vec<DeviceClass> {
     let mut classes = Vec::new();
     for pool in pools {
         for slot in pool.slots.iter().flatten() {
-            let class = slot.class();
-            if !classes.contains(&class) {
-                classes.push(class);
+            if !classes.contains(slot.class()) {
+                classes.push(slot.class().clone());
             }
         }
     }
@@ -505,21 +511,18 @@ mod tests {
     /// A resolved entry: `workers` workers over a class of `members` cards.
     fn entry(vendor_id: u32, workers: usize, members: u32) -> DeviceEntry {
         DeviceEntry {
-            class: DeviceClass {
-                vendor_id,
-                device_id: 1,
-            },
+            class: DeviceClass::new(format!("{vendor_id:04x}:0001")).expect("class id"),
             name: format!("device {vendor_id:04x}"),
             workers,
             members,
         }
     }
 
-    /// The slots as `(vendor id, member)` pairs, the part these tests pin.
-    fn slot_shape(exec: &ExecutionConfig) -> Vec<Option<(u32, u32)>> {
+    /// The slots as `(class, member)` pairs, the part these tests pin.
+    fn slot_shape(exec: &ExecutionConfig) -> Vec<Option<(String, u32)>> {
         worker_slots(exec)
             .into_iter()
-            .map(|slot| slot.map(|binding| (binding.vendor_id, binding.member)))
+            .map(|slot| slot.map(|binding| (binding.class.to_string(), binding.member)))
             .collect()
     }
 
@@ -538,10 +541,10 @@ mod tests {
         assert_eq!(
             slot_shape(&exec),
             vec![
-                Some((0x10de, 0)),
-                Some((0x10de, 1)),
-                Some((0x10de, 0)),
-                Some((0x8086, 0)),
+                Some(("10de:0001".to_string(), 0)),
+                Some(("10de:0001".to_string(), 1)),
+                Some(("10de:0001".to_string(), 0)),
+                Some(("8086:0001".to_string(), 0)),
             ]
         );
         Ok(())
@@ -559,10 +562,10 @@ mod tests {
         assert_eq!(
             slot_shape(&exec),
             vec![
-                Some((0x10de, 0)),
-                Some((0x10de, 1)),
-                Some((0x10de, 2)),
-                Some((0x10de, 3)),
+                Some(("10de:0001".to_string(), 0)),
+                Some(("10de:0001".to_string(), 1)),
+                Some(("10de:0001".to_string(), 2)),
+                Some(("10de:0001".to_string(), 3)),
             ]
         );
         Ok(())

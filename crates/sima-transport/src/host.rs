@@ -305,7 +305,7 @@ pub(crate) fn panic_reason(payload: Box<dyn std::any::Any + Send>) -> String {
 mod tests {
     use std::cell::Cell;
 
-    use sima_contracts::{Artifact, Outcome, Stats};
+    use sima_contracts::{Artifact, DeviceClass, Outcome, Stats};
     use sima_core::{Enc, hash_bytes};
     use sima_model::EnvironmentId;
 
@@ -434,7 +434,7 @@ mod tests {
     fn handshake(device: Option<DeviceBinding>) -> (Option<DeviceBinding>, Vec<ToParent>) {
         let seen = Cell::new(None);
         let resolve = |format: &FormatId, device: Option<&DeviceBinding>| {
-            seen.set(device.copied());
+            seen.set(device.cloned());
             let executor: Box<dyn Executor> = Box::new(TestExecutor {
                 format: format.clone(),
                 behavior: Behavior::Echo,
@@ -454,17 +454,16 @@ mod tests {
         while let Some(payload) = read_frame(&mut reader).expect("well-formed output") {
             frames.push(ToParent::decode(&payload).expect("decodable output"));
         }
-        (seen.get(), frames)
+        (seen.take(), frames)
     }
 
     #[test]
     fn the_resolver_receives_the_handshake_binding() {
         let binding = DeviceBinding {
-            vendor_id: 0x10de,
-            device_id: 0x2d39,
+            class: DeviceClass::new("10de:2d39").expect("class id"),
             member: 1,
         };
-        let (seen, frames) = handshake(Some(binding));
+        let (seen, frames) = handshake(Some(binding.clone()));
         assert_eq!(seen, Some(binding), "the binding reaches the resolver");
         // Ready reports the device and driver the resolver named, so the parent
         // journals what the child resolved rather than what it assumed.

@@ -623,6 +623,7 @@ mod tests {
     use std::collections::VecDeque;
     use std::sync::{Arc, Mutex};
 
+    use sima_contracts::DeviceClass;
     use sima_core::Result;
     use sima_domains::devices::{DeviceInfo, DeviceType};
     use sima_model::TaskKey;
@@ -723,8 +724,7 @@ mod tests {
         fn new() -> Scripted<'a> {
             Scripted {
                 devices: vec![DeviceInfo {
-                    vendor_id: 0x10de,
-                    device_id: 0x2684,
+                    class: DeviceClass::new("10de:2684").expect("class id"),
                     name: "NVIDIA GeForce RTX 4090".to_string(),
                     device_type: DeviceType::Discrete,
                     member: 0,

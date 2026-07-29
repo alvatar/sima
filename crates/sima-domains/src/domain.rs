@@ -111,6 +111,8 @@ pub fn generator_params_for(id: &GeneratorId, table: &toml::Table) -> Result<Vec
 
 #[cfg(test)]
 mod tests {
+    use sima_contracts::DeviceClass;
+
     use super::*;
 
     /// A validated format id.
@@ -226,8 +228,7 @@ mod tests {
         // mutation — runs on a machine with no GPU at all. The binding names a
         // class that need not exist here; nothing resolves it until execute.
         let binding = DeviceBinding {
-            vendor_id: 0xdead,
-            device_id: 0xbeef,
+            class: DeviceClass::new("dead:beef").expect("class id"),
             member: 0,
         };
         let domain = domain_for(&format("ca_evolution.gray_scott.v1"))?;
@@ -242,8 +243,7 @@ mod tests {
     fn the_stub_executor_ignores_the_binding() -> Result<()> {
         // The stub uses no device, so a binding changes nothing about it.
         let binding = DeviceBinding {
-            vendor_id: 0x8086,
-            device_id: 0x7d51,
+            class: DeviceClass::new("8086:7d51").expect("class id"),
             member: 0,
         };
         let domain = domain_for(&format("stub.v1"))?;
