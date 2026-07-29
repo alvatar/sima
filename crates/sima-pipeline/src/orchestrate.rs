@@ -5,8 +5,7 @@ use std::process::{Command, ExitStatus, Stdio};
 
 use sima_contracts::DeviceBinding;
 use sima_core::{Error, Result};
-use sima_domains::devices::{DeviceInfo, enumerate_devices};
-use sima_domains::{domain_for, generator_for};
+use sima_domains::devices::DeviceInfo;
 use sima_model::{FormatId, RunId};
 use sima_scheduler::{ExecutionConfig, RunControl, RunOutcome, WorkerPool, worker_slots};
 use sima_store::Store;
@@ -15,6 +14,7 @@ use sima_transport::{ContainerTransport, SubprocessTransport};
 
 use crate::config::{Container, LoadedConfig, Pool};
 use crate::devices;
+use crate::domain_registry::DomainSource;
 use crate::fleet::{Engagement, Members, OwnedMachine, members};
 use crate::rental::{
     RentalGroup, StopSignal, Supervisor, acquire_hosts, provider_for, release_all, transport_mode,
@@ -40,8 +40,9 @@ pub fn orchestrate(
     // unknown format or generator, a build without the worker binary, or a
     // rental whose provider cannot be reached, must not leave a store, a run
     // directory, or a lock file behind for a run that can never execute.
-    let domain = domain_for(&config.run.format)?;
-    let generator = generator_for(&config.run.generator.id)?;
+    let source = config.domains.source(&config.run.format);
+    let environment = source.environment(&config.run.format)?;
+    let generator = source.generator(&config.run.generator.id)?;
     let members = match engagement {
         Engagement::Orchestrator => Members::default(),
         Engagement::Fleet => members(config),
@@ -68,8 +69,8 @@ pub fn orchestrate(
     // A device selector names hardware, so it resolves here — where the run
     // starts and the hardware is at hand — and not at load, which must work on
     // a machine with no device.
-    let execution = resolve_devices(config)?;
-    let local = local_pool(config, &run, &execution)?;
+    let execution = resolve_devices(config, source)?;
+    let local = local_pool(config, &run, &execution, source)?;
     // The fleet's control planes and the modes their machines are reached
     // through are built before the store: a vast rental without its key fails
     // here, before any store mutation.
@@ -146,7 +147,7 @@ pub fn orchestrate(
         sima_scheduler::run(
             &store,
             &config.run,
-            &domain.environment,
+            &environment,
             generator.as_ref(),
             &pools,
             &execution,
@@ -207,7 +208,7 @@ pub fn orchestrate(
             let outcome = sima_scheduler::run(
                 &store,
                 &config.run,
-                &domain.environment,
+                &environment,
                 generator.as_ref(),
                 &pools,
                 &execution,
@@ -254,8 +255,9 @@ struct ContainerPool {
 /// Builds the orchestrator's own pool, or `None` when it declares no worker
 /// layout and the fleet carries the run.
 ///
-/// Without an image the workers are plain subprocesses and their device
-/// selectors resolve against this machine's own hardware. With one they run in a
+/// Without an image the workers are plain subprocesses of the binary `source`
+/// names, and their device selectors resolve against this machine's own
+/// hardware. With one they run in a
 /// container here, so the image is verified and the selectors resolve against
 /// what the enumeration probe reports from inside it — the same path a machine
 /// of yours follows, minus the ssh hop.
@@ -263,6 +265,7 @@ fn local_pool(
     config: &LoadedConfig,
     run: &RunId,
     execution: &ExecutionConfig,
+    source: &dyn DomainSource,
 ) -> Result<Option<LocalPool>> {
     let Some(pool) = &config.orchestrator.pool else {
         return Ok(None);
@@ -270,7 +273,9 @@ fn local_pool(
     match &config.orchestrator.container {
         None => Ok(Some(LocalPool {
             transport: Box::new(SubprocessTransport::new(
-                worker_binary()?,
+                // The binary the format's tasks execute in: sima's own worker,
+                // or the program the config routed this format to.
+                source.worker_binary()?,
                 // A local worker runs the bare binary: no arguments.
                 Vec::new(),
                 config.run.format.clone(),
@@ -493,7 +498,7 @@ pub(crate) fn command_stdout(argv: &[String]) -> Result<String> {
 /// passes through untouched, so a run that never asked about devices never
 /// enumerates them, and a containerized pool resolves inside its container
 /// instead.
-fn resolve_devices(config: &LoadedConfig) -> Result<ExecutionConfig> {
+fn resolve_devices(config: &LoadedConfig, source: &dyn DomainSource) -> Result<ExecutionConfig> {
     let selectors = match (&config.orchestrator.pool, &config.orchestrator.container) {
         (Some(pool), None) => pool.devices(),
         _ => &[],
@@ -501,7 +506,7 @@ fn resolve_devices(config: &LoadedConfig) -> Result<ExecutionConfig> {
     if selectors.is_empty() {
         return Ok(config.execution.clone());
     }
-    let entries = devices::resolve(selectors, &enumerate_devices(&config.run.format)?)?;
+    let entries = devices::resolve(selectors, &source.enumerate(&config.run.format)?)?;
     ExecutionConfig::with_devices(
         entries,
         config.execution.max_attempts,

@@ -19,6 +19,7 @@
 
 mod config;
 mod devices;
+mod domain_registry;
 mod feed;
 #[cfg(test)]
 mod fixtures;
@@ -43,6 +44,7 @@ pub use config::{
     OwnedClass, OwnedHost, Pool, ProviderId, Rented, RentedClass, load,
 };
 pub use devices::DeviceSelector;
+pub use domain_registry::DomainRegistry;
 pub use feed::{
     FOLLOW_PROTOCOL_VERSION, FeedInfo, FollowFrame, LocalFeed, RemoteFeed, RunFeed, follow_serve,
     local_snapshot, remote_snapshot,

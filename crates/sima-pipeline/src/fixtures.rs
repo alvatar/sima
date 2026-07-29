@@ -23,6 +23,7 @@ use sima_store::{ObjectScope, Store, SyncReport, SyncRole};
 use sima_transport::loopback::LoopbackTransport;
 
 use crate::config::{Fleet, LoadedConfig, Orchestrator, Pool};
+use crate::domain_registry::DomainRegistry;
 
 /// A minimal stub run config; its id addresses the test's run.
 pub(crate) fn stub_config() -> Result<RunConfig> {
@@ -54,7 +55,36 @@ pub(crate) fn loaded(store: PathBuf) -> Result<LoadedConfig> {
         fleet: Fleet::default(),
         budget: Budget::default(),
         store,
+        domains: DomainRegistry::builtin(),
     })
+}
+
+/// Builds the `sima-worker` binary once per test process and returns its path.
+///
+/// The tests that route a format to a program need a program that answers, and
+/// sima's own worker is one: it serves the in-tree formats over exactly the
+/// seam a binary outside the workspace does. Cargo builds another crate's
+/// binary only when it is in the build graph, so the build is asked for here.
+pub(crate) fn built_worker() -> PathBuf {
+    static BUILD: std::sync::Once = std::sync::Once::new();
+    BUILD.call_once(|| {
+        let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
+        let status = std::process::Command::new(cargo)
+            .args(["build", "-p", "sima-worker"])
+            .status()
+            .expect("run cargo build for sima-worker");
+        assert!(status.success(), "building sima-worker failed");
+    });
+    // Beside the test executable's directory: `target/<profile>/deps` holds the
+    // test binary and `target/<profile>` the built worker.
+    let exe = std::env::current_exe().expect("the test executable's path");
+    let dir = exe
+        .parent()
+        .and_then(std::path::Path::parent)
+        .expect("target/<profile> above the test executable");
+    let worker = dir.join("sima-worker");
+    assert!(worker.is_file(), "{} is built", worker.display());
+    worker
 }
 
 /// Loads `text` as a config file in a fresh temporary directory, for the unit

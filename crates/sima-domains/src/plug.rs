@@ -61,6 +61,21 @@ pub struct BuiltinGenerator {
     format: FormatId,
 }
 
+impl BuiltinGenerator {
+    /// The plug for `id`, or a validation error naming a generator this build
+    /// does not carry.
+    ///
+    /// Each program registers its generator under its format's id, so the
+    /// format its specs are of is the id itself.
+    pub fn new(id: &GeneratorId) -> Result<BuiltinGenerator> {
+        crate::generator_for(id)?;
+        Ok(BuiltinGenerator {
+            id: id.clone(),
+            format: FormatId::new(id.as_str())?,
+        })
+    }
+}
+
 impl GeneratorPlug for BuiltinGenerator {
     fn id(&self) -> &GeneratorId {
         &self.id
@@ -86,13 +101,10 @@ impl GeneratorPlug for BuiltinGenerator {
 /// here, so a format this build does not carry — or one whose generator is
 /// missing — fails naming the id rather than at the first question.
 pub fn generators_for(format: &FormatId) -> Result<Vec<BuiltinGenerator>> {
-    let id = GeneratorId::new(format.as_str())?;
     crate::domain_for(format)?;
-    crate::generator_for(&id)?;
-    Ok(vec![BuiltinGenerator {
-        id,
-        format: format.clone(),
-    }])
+    Ok(vec![BuiltinGenerator::new(&GeneratorId::new(
+        format.as_str(),
+    )?)?])
 }
 
 /// Parses a configuration section's text into the table its translation reads.

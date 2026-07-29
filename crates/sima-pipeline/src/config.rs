@@ -90,7 +90,18 @@
 //! [[orchestrator.device]]
 //! select  = "nvidia"
 //! workers = 1
+//!
+//! [domain."acme.thing.v1"]                # a format served by its own program
+//! binary = "/opt/acme/worker"             # resolved against this file's directory
 //! ```
+//!
+//! ## Where a format is answered from
+//!
+//! A `[domain.<format>]` entry names the binary that answers for that format:
+//! sima spawns it, asks it what the format binds, and spawns the run's workers
+//! from it. Every format without an entry is answered by this build, in
+//! process. The entry is read when the config loads, so a program that cannot
+//! answer for the format it is declared under fails there.
 //!
 //! ## Addressing
 //!
@@ -178,12 +189,12 @@ use std::time::Duration;
 
 use serde::Deserialize;
 use sima_core::{Error, Result};
-use sima_domains::{generator_params_for, params_for};
 use sima_model::{FormatId, GeneratorConfig, GeneratorId, RunConfig};
 use sima_provider::{Budget, Constraints, Cost, Price};
 use sima_scheduler::ExecutionConfig;
 
 use crate::devices::DeviceSelector;
+use crate::domain_registry::{DomainRegistry, section_text};
 
 /// The image a machine of yours runs its workers from when its entry names
 /// none.
@@ -235,6 +246,9 @@ pub struct LoadedConfig {
     pub budget: Budget,
     /// The store path, resolved against the config file's directory.
     pub store: PathBuf,
+    /// Where each of the run's format questions is answered from: this build,
+    /// or the program a `[domain.*]` entry routes the format to.
+    pub domains: DomainRegistry,
 }
 
 /// This machine: the worker layout a run executes on by default, and the host a
@@ -447,6 +461,20 @@ struct FileConfig {
     /// The `[orchestrator]` section; absent means this machine executes nothing
     /// and declares no migration destination.
     orchestrator: Option<OrchestratorSection>,
+    /// The `[domain.*]` entries, by format id; absent means every format this
+    /// run names is answered by this build.
+    #[serde(default)]
+    domain: BTreeMap<String, DomainSection>,
+}
+
+/// One `[domain.*]` entry: the program that answers for the format the entry is
+/// named after.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DomainSection {
+    /// The binary sima spawns, resolved against the config file's directory;
+    /// an absolute path is taken as written.
+    binary: String,
 }
 
 /// The `[run]` section: every field enters run identity.
@@ -610,7 +638,11 @@ pub fn load(path: &Path) -> Result<LoadedConfig> {
     let file: FileConfig =
         toml::from_str(&text).map_err(|e| Error::Validation(format!("{}: {e}", path.display())))?;
 
-    let run = resolve_run(path, file.run)?;
+    // The registry precedes the run's translation, which is answered through
+    // it: a program declared for a format is spawned and asked here, so an
+    // entry naming one that cannot answer fails before the run has a store.
+    let domains = resolve_domains(path, file.domain)?;
+    let run = resolve_run(path, file.run, &domains)?;
     let orchestrator = resolve_orchestrator(path, file.orchestrator)?;
 
     let mut hosts = BTreeMap::new();
@@ -680,7 +712,28 @@ pub fn load(path: &Path) -> Result<LoadedConfig> {
         fleet,
         budget,
         store,
+        domains,
     })
+}
+
+/// Builds the registry the `[domain.*]` entries declare: each entry's format id
+/// paired with the binary that answers for it, resolved against the config
+/// file's directory.
+fn resolve_domains(
+    path: &Path,
+    entries: BTreeMap<String, DomainSection>,
+) -> Result<DomainRegistry> {
+    let base = path.parent().unwrap_or(Path::new(""));
+    let declared = entries
+        .into_iter()
+        .map(|(format, section)| {
+            let format = FormatId::new(format).map_err(|e| {
+                Error::Validation(format!("{}: [domain.*] entry: {e}", path.display()))
+            })?;
+            Ok((format, base.join(section.binary)))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    DomainRegistry::new(declared).map_err(|e| Error::Validation(format!("{}: {e}", path.display())))
 }
 
 /// Rejects a fleet that would engage one machine twice.
@@ -763,7 +816,7 @@ fn fs_read(path: &Path) -> Result<String> {
 /// Translates the `[run]` section into the canonical [`RunConfig`] whose hash is
 /// the run id, dispatching the generator and domain translations that own the
 /// opaque tables.
-fn resolve_run(path: &Path, section: RunSection) -> Result<RunConfig> {
+fn resolve_run(path: &Path, section: RunSection, domains: &DomainRegistry) -> Result<RunConfig> {
     let root_seed = u64::try_from(section.root_seed).map_err(|_| {
         Error::Validation(format!(
             "{}: root_seed must be non-negative, got {}",
@@ -787,10 +840,15 @@ fn resolve_run(path: &Path, section: RunSection) -> Result<RunConfig> {
         .transpose()?;
     let format = FormatId::new(section.format)?;
     let generator_id = GeneratorId::new(section.generator.id)?;
-    // Identity flows through the dispatched-to code: the generator and the
-    // domain turn their tables into the canonical bytes the model hashes.
-    let generator_params = generator_params_for(&generator_id, &section.generator.rest)?;
-    let params = params_for(&format, &section.params, segments.is_some())?;
+    // Identity flows through the code the ids name: the generator and the
+    // domain turn their sections into the canonical bytes the model hashes.
+    // Each section crosses as its own text, so a program outside this
+    // workspace parses it with a TOML of its own.
+    let source = domains.source(&format);
+    let generator_params = source
+        .translate_generator_params(&generator_id, &section_text(&section.generator.rest)?)?;
+    let params =
+        source.translate_params(&format, &section_text(&section.params)?, segments.is_some())?;
     Ok(RunConfig {
         root_seed,
         segments,
@@ -2381,5 +2439,95 @@ mod tests {
             "#
         ));
         assert_eq!(base, declared, "machines decide where, never what");
+    }
+
+    // ---- Where a format is answered from ----
+
+    #[test]
+    fn a_format_routed_to_a_program_keeps_its_run_id() {
+        // The seam carries the configuration, so the identity a run has is the
+        // one it has by direct call: the same file with an entry and without it
+        // is the same run.
+        let entry = format!(
+            r#"{BASE}
+            [domain."stub.v1"]
+            binary = "{}"
+            "#,
+            crate::fixtures::built_worker().display()
+        );
+        assert_eq!(
+            id_of(BASE),
+            id_of(&entry),
+            "where it is answered from is operational"
+        );
+    }
+
+    #[test]
+    fn a_program_that_cannot_answer_for_its_format_fails_the_load() {
+        // The entry is read where the config resolves, so a program that cannot
+        // answer fails there — and nothing of the run exists yet.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = write_config(
+            dir.path(),
+            "sima.toml",
+            &format!(
+                r#"{BASE}
+                [domain."acme.thing.v1"]
+                binary = "{}"
+                "#,
+                crate::fixtures::built_worker().display()
+            ),
+        );
+        let Err(error) = load(&path) else {
+            panic!("expected a program that serves no such format to fail the load");
+        };
+        assert!(error.to_string().contains("acme.thing.v1"), "{error}");
+        assert!(
+            !dir.path().join("store").exists(),
+            "a config that does not resolve leaves no store"
+        );
+    }
+
+    #[test]
+    fn a_program_path_resolves_against_the_config_file() {
+        // Paths in a config are the file's, never the working directory's, so a
+        // run and its program travel together.
+        let dir = tempfile::tempdir().expect("temp dir");
+        std::os::unix::fs::symlink(crate::fixtures::built_worker(), dir.path().join("program"))
+            .expect("link the program beside the config");
+        let path = write_config(
+            dir.path(),
+            "sima.toml",
+            &format!(
+                r#"{BASE}
+                [domain."stub.v1"]
+                binary = "program"
+                "#
+            ),
+        );
+        assert_eq!(load(&path).expect("the config loads").run.id(), id_of(BASE));
+    }
+
+    #[test]
+    fn a_domain_entry_takes_the_binary_alone() {
+        let message = rejection(&format!(
+            r#"{BASE}
+            [domain."stub.v1"]
+            binary = "/opt/acme/worker"
+            workers = 4
+            "#
+        ));
+        assert!(message.contains("workers"), "{message}");
+    }
+
+    #[test]
+    fn a_domain_entry_named_outside_the_format_rule_is_rejected() {
+        let message = rejection(&format!(
+            r#"{BASE}
+            [domain."Bad Name"]
+            binary = "/opt/acme/worker"
+            "#
+        ));
+        assert!(message.contains("Bad Name"), "{message}");
     }
 }

@@ -305,7 +305,7 @@ mod session {
         )
         .expect_err("a program that serves no such format");
         assert!(
-            error.to_string().contains("ended before answering"),
+            error.to_string().contains("refused the handshake"),
             "{error}"
         );
     }

@@ -1,13 +1,12 @@
 //! `task_keys`: the task keys a loaded config's run comprises over a store.
 //!
-//! The pipeline half of the scheduler's own derivation: it dispatches the
-//! domain and the generator the config names, and hands them to
-//! [`sima_scheduler::run_keys`]. Both halves of a store sync need this set, and
+//! The pipeline half of the scheduler's own derivation: it reads the run's
+//! environment and generator from the source that answers for its format, and
+//! hands them to [`sima_scheduler::run_keys`]. Both halves of a store sync need this set, and
 //! each derives it independently from `(config, store state)` — no key list
 //! crosses the wire, so the sync protocol stays as it is.
 
 use sima_core::Result;
-use sima_domains::{domain_for, generator_for};
 use sima_model::TaskKey;
 use sima_store::Store;
 
@@ -22,9 +21,10 @@ use crate::config::LoadedConfig;
 /// committed, and no journal line is appended. `store` is the caller's, so a
 /// caller deriving over a far side's store passes that one.
 pub fn task_keys(config: &LoadedConfig, store: &Store) -> Result<Vec<TaskKey>> {
-    let domain = domain_for(&config.run.format)?;
-    let generator = generator_for(&config.run.generator.id)?;
-    sima_scheduler::run_keys(store, &config.run, &domain.environment, generator.as_ref())
+    let source = config.domains.source(&config.run.format);
+    let environment = source.environment(&config.run.format)?;
+    let generator = source.generator(&config.run.generator.id)?;
+    sima_scheduler::run_keys(store, &config.run, &environment, generator.as_ref())
 }
 
 #[cfg(test)]
@@ -60,16 +60,20 @@ mod tests {
 
     #[test]
     fn the_keys_agree_with_the_scheduler_s_own_derivation() -> Result<()> {
-        // One derivation, reached two ways: the pipeline dispatches the domain
+        // One derivation, reached two ways: the pipeline reads the environment
         // and generator the config names, and the scheduler does the rest.
         let dir = tempfile::tempdir().expect("temp dir");
         let store = Store::open(dir.path())?;
         let loaded = load_str(&config(None));
-        let domain = domain_for(&loaded.run.format)?;
         let generator = StubGenerator::new()?;
         assert_eq!(
             task_keys(&loaded, &store)?,
-            sima_scheduler::run_keys(&store, &loaded.run, &domain.environment, &generator)?
+            sima_scheduler::run_keys(
+                &store,
+                &loaded.run,
+                &crate::fixtures::stub_environment(),
+                &generator
+            )?
         );
         Ok(())
     }

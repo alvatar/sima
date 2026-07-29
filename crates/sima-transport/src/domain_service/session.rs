@@ -68,12 +68,18 @@ impl DomainService {
         };
         // The handshake: Hello out, Ready back. Any other answer is a spawn
         // failure, and the misbehaving program is killed and reaped before the
-        // error returns.
+        // error returns. A program that refuses the format it was spawned for
+        // exits at once, which the parent meets as a torn write or as an
+        // unanswered read depending on which side moved first; both are the
+        // handshake refused, so both read as that, with the cause behind it.
         match service.handshake() {
             Ok(()) => Ok(service),
             Err(e) => {
                 service.kill();
-                Err(e)
+                Err(Error::Transport(format!(
+                    "the domain service {} refused the handshake: {e}",
+                    binary.display()
+                )))
             }
         }
     }

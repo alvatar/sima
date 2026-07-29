@@ -1,0 +1,433 @@
+//! [`DomainRegistry`]: where a format's domain is answered from.
+//!
+//! A run asks one seam — [`DomainSource`] — for everything the orchestrator
+//! reads of a format: its environment, its devices, its configuration
+//! translations, its generator, and the binary its workers are spawned from.
+//! Two things answer it:
+//!
+//! - [`BuiltinSource`], for the formats this build carries. It calls
+//!   `sima-domains` directly, so the common path pays no process and no pipe.
+//! - [`BinarySource`], for a format a config routes to a program of its own. It
+//!   holds one session with that program for the life of the config.
+//!
+//! The registry is what a config resolves into, so a program that cannot answer
+//! for the format it is declared under fails there — before a run reaches a
+//! store.
+
+use std::collections::BTreeMap;
+use std::path::PathBuf;
+use std::sync::{Mutex, PoisonError};
+
+use sima_contracts::{DeviceInfo, DomainPlug, Generator, GeneratorPlug};
+use sima_core::Result;
+use sima_domains::{BuiltinDomain, BuiltinGenerator};
+use sima_model::{Environment, FormatId, GeneratorId, Params, Spec};
+use sima_transport::domain_service::DomainService;
+
+/// Where a format's domain is answered from.
+pub(crate) trait DomainSource: Send + Sync {
+    /// The environment the format's results depend on.
+    fn environment(&self, format: &FormatId) -> Result<Environment>;
+
+    /// The devices the format's work can run on.
+    fn enumerate(&self, format: &FormatId) -> Result<Vec<DeviceInfo>>;
+
+    /// The `[run.params]` section, as text, translated into the canonical
+    /// params bytes that enter the run id.
+    fn translate_params(&self, format: &FormatId, toml: &str, segmented: bool) -> Result<Params>;
+
+    /// The `[run.generator]` section, as text, translated into the generator's
+    /// opaque params blob.
+    fn translate_generator_params(&self, generator: &GeneratorId, toml: &str) -> Result<Vec<u8>>;
+
+    /// The generator the run produces its candidates from.
+    ///
+    /// Built here rather than at the first batch, so a run naming a generator
+    /// its source cannot answer for fails before its store exists.
+    fn generator(&self, generator: &GeneratorId) -> Result<Box<dyn Generator + '_>>;
+
+    /// The binary a worker for this format is spawned from.
+    fn worker_binary(&self) -> Result<PathBuf>;
+}
+
+/// The formats this build carries, answered in process.
+#[derive(Debug)]
+pub(crate) struct BuiltinSource;
+
+impl DomainSource for BuiltinSource {
+    fn environment(&self, format: &FormatId) -> Result<Environment> {
+        Ok(BuiltinDomain::new(format)?.environment().clone())
+    }
+
+    fn enumerate(&self, format: &FormatId) -> Result<Vec<DeviceInfo>> {
+        BuiltinDomain::new(format)?.enumerate()
+    }
+
+    fn translate_params(&self, format: &FormatId, toml: &str, segmented: bool) -> Result<Params> {
+        BuiltinDomain::new(format)?.translate_params(toml, segmented)
+    }
+
+    fn translate_generator_params(&self, generator: &GeneratorId, toml: &str) -> Result<Vec<u8>> {
+        BuiltinGenerator::new(generator)?.translate_params(toml)
+    }
+
+    fn generator(&self, generator: &GeneratorId) -> Result<Box<dyn Generator + '_>> {
+        BuiltinGenerator::new(generator)?.generator()
+    }
+
+    fn worker_binary(&self) -> Result<PathBuf> {
+        crate::orchestrate::worker_binary()
+    }
+}
+
+/// One format, answered by the program a config routes it to.
+#[derive(Debug)]
+pub(crate) struct BinarySource {
+    binary: PathBuf,
+    /// The open session. One conversation serves the whole config, so the
+    /// program pays its startup cost once; the lock is what makes that one
+    /// conversation reachable from the threads a run drives.
+    session: Mutex<DomainService>,
+}
+
+impl BinarySource {
+    /// Spawns `binary` for `format` and confirms it answers, so a program that
+    /// cannot be run or does not serve the format fails here.
+    fn spawn(format: &FormatId, binary: PathBuf) -> Result<BinarySource> {
+        // Both failures read as one thing to whoever wrote the entry: the
+        // program declared for this format does not answer for it. The
+        // program's own words follow.
+        let declared = |e: sima_core::Error| {
+            sima_core::Error::Validation(format!(
+                "the program {} declared for format {:?} cannot answer for it: {e}",
+                binary.display(),
+                format.as_str()
+            ))
+        };
+        let mut service = DomainService::spawn(&binary, format).map_err(declared)?;
+        service.environment(format).map_err(declared)?;
+        Ok(BinarySource {
+            binary,
+            session: Mutex::new(service),
+        })
+    }
+
+    /// The open session, past a lock a panicking thread may have poisoned: the
+    /// program is unaffected by a panic on this side, so the conversation
+    /// continues.
+    fn session(&self) -> std::sync::MutexGuard<'_, DomainService> {
+        self.session.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+impl DomainSource for BinarySource {
+    fn environment(&self, format: &FormatId) -> Result<Environment> {
+        self.session().environment(format)
+    }
+
+    fn enumerate(&self, format: &FormatId) -> Result<Vec<DeviceInfo>> {
+        self.session().enumerate(format)
+    }
+
+    fn translate_params(&self, format: &FormatId, toml: &str, segmented: bool) -> Result<Params> {
+        self.session().translate_params(format, toml, segmented)
+    }
+
+    fn translate_generator_params(&self, generator: &GeneratorId, toml: &str) -> Result<Vec<u8>> {
+        self.session().translate_generator_params(generator, toml)
+    }
+
+    fn generator(&self, generator: &GeneratorId) -> Result<Box<dyn Generator + '_>> {
+        Ok(Box::new(SessionGenerator {
+            source: self,
+            id: generator.clone(),
+        }))
+    }
+
+    fn worker_binary(&self) -> Result<PathBuf> {
+        Ok(self.binary.clone())
+    }
+}
+
+/// A generator that produces its specs over a program's session.
+struct SessionGenerator<'a> {
+    source: &'a BinarySource,
+    id: GeneratorId,
+}
+
+impl Generator for SessionGenerator<'_> {
+    fn id(&self) -> &GeneratorId {
+        &self.id
+    }
+
+    fn generate(&self, root_seed: u64, params: &[u8], format: &FormatId) -> Result<Vec<Spec>> {
+        self.source
+            .session()
+            .generate(&self.id, format, root_seed, params)
+    }
+}
+
+/// Which source answers for each format of a run.
+///
+/// Opaque to a caller: a loaded config carries one, and what it holds is the
+/// pipeline's own business.
+#[derive(Debug)]
+pub struct DomainRegistry {
+    builtin: BuiltinSource,
+    /// The formats a config routes to a program of their own, by format id.
+    configured: BTreeMap<String, BinarySource>,
+}
+
+impl DomainRegistry {
+    /// The registry `entries` declare: one program per format, each spawned and
+    /// asked to answer for the format it is declared under.
+    pub(crate) fn new(entries: Vec<(FormatId, PathBuf)>) -> Result<DomainRegistry> {
+        let mut configured = BTreeMap::new();
+        for (format, binary) in entries {
+            let source = BinarySource::spawn(&format, binary)?;
+            configured.insert(format.as_str().to_string(), source);
+        }
+        Ok(DomainRegistry {
+            builtin: BuiltinSource,
+            configured,
+        })
+    }
+
+    /// The registry of a config that routes no format to a program.
+    pub fn builtin() -> DomainRegistry {
+        DomainRegistry {
+            builtin: BuiltinSource,
+            configured: BTreeMap::new(),
+        }
+    }
+
+    /// The source answering for `format`: the program a config routed it to,
+    /// or this build itself.
+    pub(crate) fn source(&self, format: &FormatId) -> &dyn DomainSource {
+        match self.configured.get(format.as_str()) {
+            Some(source) => source,
+            None => &self.builtin,
+        }
+    }
+}
+
+/// The text of a configuration section, as the source that owns its keys
+/// receives it.
+///
+/// A section crosses the seam as TOML text rather than as a parsed table, so a
+/// program is free of sima's own TOML. The text is written from the table the
+/// file declared, so it parses back to that table.
+pub(crate) fn section_text(table: &toml::Table) -> Result<String> {
+    toml::to_string(table).map_err(|e| {
+        sima_core::Error::Validation(format!("the configuration section cannot be written: {e}"))
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use sima_core::Result;
+    use sima_model::{FormatId, GeneratorId};
+
+    use super::*;
+    use crate::fixtures::built_worker;
+
+    /// A validated format id.
+    fn format(name: &str) -> FormatId {
+        FormatId::new(name).expect("format id")
+    }
+
+    /// A validated generator id.
+    fn generator(name: &str) -> GeneratorId {
+        GeneratorId::new(name).expect("generator id")
+    }
+
+    /// A registry whose `stub.v1` is answered by the built worker binary,
+    /// which serves the in-tree formats over the same seam a program outside
+    /// the workspace does.
+    fn served_by_binary() -> Result<DomainRegistry> {
+        DomainRegistry::new(vec![(format("stub.v1"), built_worker())])
+    }
+
+    #[test]
+    fn a_format_with_no_entry_is_answered_in_process() -> Result<()> {
+        // Every format a config does not route stays a direct call, so the
+        // common path pays no process and no pipe.
+        let registry = DomainRegistry::builtin();
+        let source = registry.source(&format("stub.v1"));
+        assert_eq!(
+            source.environment(&format("stub.v1"))?,
+            sima_domains::domain_for(&format("stub.v1"))?.environment
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn an_entry_routes_its_format_to_the_binary_it_names() -> Result<()> {
+        // The declared format is answered by the program, and its worker
+        // spawns from that same binary.
+        let registry = served_by_binary()?;
+        let source = registry.source(&format("stub.v1"));
+        assert_eq!(source.worker_binary()?, built_worker());
+        assert_eq!(
+            source.environment(&format("stub.v1"))?,
+            sima_domains::domain_for(&format("stub.v1"))?.environment
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_format_beside_a_declared_one_stays_in_process() -> Result<()> {
+        // One entry routes one format; every other format of the same build is
+        // still a direct call. The session the entry opened serves `stub.v1`
+        // alone, so an answer about another format is one it never saw.
+        let registry = served_by_binary()?;
+        let nca = format("ca_evolution.nca.v1");
+        assert_eq!(
+            registry.source(&nca).environment(&nca)?,
+            sima_domains::domain_for(&nca)?.environment
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_binary_that_cannot_answer_for_its_format_fails_to_register() {
+        // The registry is what a config resolves into, so a program that
+        // cannot answer for the format it is declared under fails there —
+        // before a run reaches a store.
+        let Err(error) = DomainRegistry::new(vec![(format("acme.thing.v1"), built_worker())])
+        else {
+            panic!("expected a program that serves no such format to fail");
+        };
+        assert!(error.to_string().contains("acme.thing.v1"), "{error}");
+    }
+
+    #[test]
+    fn a_binary_that_cannot_be_run_names_itself() {
+        let Err(error) = DomainRegistry::new(vec![(
+            format("acme.thing.v1"),
+            PathBuf::from("/no/such/domain/binary"),
+        )]) else {
+            panic!("expected a binary that cannot be run to fail");
+        };
+        assert!(
+            error.to_string().contains("/no/such/domain/binary"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn an_unknown_format_with_no_entry_names_itself() {
+        let registry = DomainRegistry::builtin();
+        let Err(error) = registry
+            .source(&format("no-such-domain.v1"))
+            .environment(&format("no-such-domain.v1"))
+        else {
+            panic!("expected a format this build does not carry to fail");
+        };
+        assert!(error.to_string().contains("no-such-domain.v1"), "{error}");
+    }
+
+    #[test]
+    fn both_sources_translate_a_section_to_the_same_bytes() -> Result<()> {
+        // What proves the seam carries the configuration: the bytes that enter
+        // the run id are the same whichever side answered.
+        let registry = served_by_binary()?;
+        let builtin = DomainRegistry::builtin();
+        let text = "hex = \"00ff\"\n";
+        assert_eq!(
+            registry.source(&format("stub.v1")).translate_params(
+                &format("stub.v1"),
+                text,
+                false
+            )?,
+            builtin
+                .source(&format("stub.v1"))
+                .translate_params(&format("stub.v1"), text, false)?
+        );
+        let text = "behaviors = [\"succeed\", \"reject\"]\n";
+        assert_eq!(
+            registry
+                .source(&format("stub.v1"))
+                .translate_generator_params(&generator("stub.v1"), text)?,
+            builtin
+                .source(&format("stub.v1"))
+                .translate_generator_params(&generator("stub.v1"), text)?
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn both_sources_generate_the_same_specs() -> Result<()> {
+        let registry = served_by_binary()?;
+        let builtin = DomainRegistry::builtin();
+        let params = builtin
+            .source(&format("stub.v1"))
+            .translate_generator_params(&generator("stub.v1"), "behaviors = [\"succeed\"]\n")?;
+        assert_eq!(
+            registry
+                .source(&format("stub.v1"))
+                .generator(&generator("stub.v1"))?
+                .generate(42, &params, &format("stub.v1"))?,
+            builtin
+                .source(&format("stub.v1"))
+                .generator(&generator("stub.v1"))?
+                .generate(42, &params, &format("stub.v1"))?
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn both_sources_enumerate_the_same_devices() -> Result<()> {
+        let registry = served_by_binary()?;
+        assert_eq!(
+            registry
+                .source(&format("stub.v1"))
+                .enumerate(&format("stub.v1"))?,
+            sima_domains::devices::enumerate_devices(&format("stub.v1"))?
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn an_unknown_generator_binds_nothing_in_process() {
+        // The in-process source builds the generator where the run is set up,
+        // so a run naming a generator this build does not carry fails before
+        // its store exists.
+        let registry = DomainRegistry::builtin();
+        let Err(error) = registry
+            .source(&format("stub.v1"))
+            .generator(&generator("no-such-generator.v1"))
+        else {
+            panic!("expected a generator this build does not carry to bind nothing");
+        };
+        assert!(
+            error.to_string().contains("no-such-generator.v1"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_section_parses_back_to_the_table_it_was_written_from() -> Result<()> {
+        // Configuration crosses the seam as text, so the text a source is
+        // given must mean what the file declared — values, nested tables, and
+        // floats alike.
+        let declared: toml::Table = r#"
+            width = 128
+            dt = 1.0
+            noise_width = 0.02
+            names = ["a", "b"]
+            snapshot_when = { scalar = "activity", min = 1e-4 }
+        "#
+        .parse()
+        .expect("a table");
+        let text = section_text(&declared)?;
+        assert_eq!(text.parse::<toml::Table>().expect("a table"), declared);
+        Ok(())
+    }
+
+    #[test]
+    fn an_absent_section_is_empty_text() -> Result<()> {
+        assert_eq!(section_text(&toml::Table::new())?, "");
+        Ok(())
+    }
+}
