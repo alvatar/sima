@@ -1094,6 +1094,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "sima-api"
+version = "0.1.0"
+dependencies = [
+ "sima-contracts",
+ "sima-core",
+ "sima-model",
+]
+
+[[package]]
 name = "sima-contracts"
 version = "0.1.0"
 dependencies = [
