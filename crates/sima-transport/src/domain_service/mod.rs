@@ -11,10 +11,14 @@
 //! - [`protocol`] — the message vocabulary both endpoints share.
 //! - [`host`] — the child side: [`host::serve`] answers questions about the
 //!   format a program's plug binds, for the life of the session.
+//! - [`session`] — the parent side: [`session::DomainService`] spawns a
+//!   program and asks it.
 //!
 //! The session stays open for the run, so a program pays its startup cost once.
 
 pub mod host;
 pub mod protocol;
+pub mod session;
 
 pub use host::serve;
+pub use session::DomainService;
