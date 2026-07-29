@@ -46,7 +46,7 @@ mod sync;
 #[cfg(test)]
 mod testutil;
 
-pub use instances::{InstanceRecord, InstanceRecordState};
+pub use instances::{InstanceRecord, InstanceRecordState, Rental};
 pub use journal::JournalWriter;
 pub use lock::RunLock;
 pub use machines::{IncidentKind, MachineIncident};
@@ -54,4 +54,4 @@ pub use manifest::{Manifest, ManifestEntry};
 pub use retention::RemovalReport;
 pub use spend::SpendEntry;
 pub use store::Store;
-pub use sync::{SYNC_PROTOCOL_VERSION, SyncReport, SyncRole};
+pub use sync::{ObjectScope, SYNC_PROTOCOL_VERSION, SyncReport, SyncRole};

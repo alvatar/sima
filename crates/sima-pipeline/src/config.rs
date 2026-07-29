@@ -190,17 +190,19 @@ use crate::devices::DeviceSelector;
 const DEFAULT_IMAGE: &str = "localhost/sima:latest";
 /// The container runtime a machine of yours uses when its entry names none.
 const DEFAULT_RUNTIME: &str = "docker";
-/// The worker image a rented machine runs when its entry names none.
-const DEFAULT_RENTED_IMAGE: &str = "ghcr.io/alvatar/sima-worker:latest";
+/// The image a rented machine runs when its entry names none. It carries both
+/// binaries: `sima-worker` for the machine's workers, and `sima` for the
+/// orchestrator of a run migrated onto it.
+const DEFAULT_RENTED_IMAGE: &str = "ghcr.io/alvatar/sima:latest";
 /// The disk a rented machine is provisioned with when its entry names none.
 const DEFAULT_DISK_GB: u64 = 32;
 /// How long a rental waits for an instance to become reachable when its entry
 /// names no timeout: the provider host pulls the image before the container
 /// exists, which takes minutes.
-const DEFAULT_READY_TIMEOUT_MS: u64 = 600_000;
+pub(crate) const DEFAULT_READY_TIMEOUT_MS: u64 = 600_000;
 /// How often a rental polls an instance for readiness when its entry names no
 /// interval.
-const DEFAULT_READY_POLL_MS: u64 = 5_000;
+pub(crate) const DEFAULT_READY_POLL_MS: u64 = 5_000;
 /// Where a migrated run's directory goes on a machine whose entry names no
 /// root.
 const DEFAULT_ROOT: &str = "~/sima-runs";
@@ -324,7 +326,8 @@ pub struct OwnedClass {
 pub struct Rented {
     /// The control-plane backend to acquire through.
     pub provider: ProviderId,
-    /// The worker image each instance runs.
+    /// The image each instance runs: `sima-worker` for its workers, and the
+    /// `sima` a run migrated onto it is driven by.
     pub image: String,
     /// The disk each instance is provisioned with, in gigabytes.
     pub disk_gb: u64,
@@ -403,6 +406,14 @@ pub enum ProviderId {
     /// The in-process stub backend: scripted offers, instant readiness, and a
     /// local-spawn transport, so the rental spine is exercised without a network
     /// or real hardware. The testing path.
+    ///
+    /// Pointed at a machine that is really there by the `SIMA_STUB_SSH`
+    /// environment variable — `user@host:port` — its instances report that
+    /// endpoint and are reached over ssh instead, which is how the ssh path is
+    /// exercised against a throwaway server without renting anything. The
+    /// channel is an environment variable rather than a key here because a key
+    /// valid only under one provider would be an exception carved into a schema
+    /// that has none.
     Stub,
 }
 
@@ -1954,7 +1965,7 @@ mod tests {
             panic!("expected a rented machine");
         };
         assert_eq!(rented.provider, ProviderId::Vast);
-        assert_eq!(rented.image, "ghcr.io/alvatar/sima-worker:latest");
+        assert_eq!(rented.image, "ghcr.io/alvatar/sima:latest");
         assert_eq!(rented.disk_gb, 32);
         assert_eq!(rented.ready_timeout, Duration::from_millis(600_000));
         assert_eq!(rented.ready_poll, Duration::from_millis(5_000));

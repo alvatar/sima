@@ -292,7 +292,7 @@ mod tests {
         let mut keys = Vec::new();
         for &seed in seeds {
             let record = record_with_stored_artifact(store, sample_identity(seed));
-            store.commit_record(&record)?;
+            store.commit(&record)?;
             keys.push(record.identity.key());
         }
         let run = store.create_run(&sample_run_config(root_seed))?;
@@ -393,7 +393,7 @@ mod tests {
         let (dir, store) = temp_store();
         store_identity_components(&store);
         let record = record_with_stored_artifact(&store, sample_identity(1));
-        store.commit_record(&record)?;
+        store.commit(&record)?;
         let a = store.create_run(&sample_run_config(42))?;
         let report = store.remove_run(&a)?;
         // Spec, params, environment, record, artifact, config — six objects
@@ -418,7 +418,7 @@ mod tests {
         // index entry are shared with B, seed 1's and the config are its own.
         for seed in [1, 2] {
             let record = record_with_stored_artifact(&store, sample_identity(seed));
-            store.commit_record(&record)?;
+            store.commit(&record)?;
         }
         let a = store.create_run(&sample_run_config(42))?;
         let b_closure = store.run_closure(&b)?;
@@ -461,7 +461,7 @@ mod tests {
         let a = finalized_run(&store, 42, &[1])?;
         // A second run committed but never finalized.
         let record = record_with_stored_artifact(&store, sample_identity(2));
-        store.commit_record(&record)?;
+        store.commit(&record)?;
         store.create_run(&sample_run_config(43))?;
         match store.remove_run(&a) {
             Err(Error::Validation(msg)) => assert!(msg.contains("not finalized"), "{msg}"),

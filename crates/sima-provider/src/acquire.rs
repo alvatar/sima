@@ -12,21 +12,23 @@ use std::time::{Duration, Instant};
 
 use sima_core::{Error, Result};
 use sima_model::RunId;
-use sima_store::{InstanceRecord, InstanceRecordState, RunLock, Store};
+use sima_store::{InstanceRecord, InstanceRecordState, Rental, RunLock, Store};
 
 use crate::budget::{Budget, Exhaustion, Verdict, assess, now_ms};
 use crate::guard::{InstanceGuard, teardown};
 use crate::offer::{Constraints, Objective, Offer, select};
 use crate::provider::{Instance, InstanceStatus, Provider, Provision, SshEndpoint};
-use crate::reconcile::reconcile;
+use crate::reconcile::{ReconcileScope, reconcile};
 use crate::reputation::{IncidentKind, excluded_machines, record_incident};
 
 /// Bounds on waiting for a provisioned instance to become ready.
 #[derive(Debug, Clone, Copy)]
 pub struct AcquireLimits {
-    /// How long a machine may take to report itself ready before the offer
-    /// is abandoned.
-    pub ready_timeout: Duration,
+    /// When the machine must be usable by. A deadline rather than a duration,
+    /// because the readiness wait is one stage of a longer wait for the same
+    /// machine — a caller that goes on to reach it runs that under this same
+    /// deadline, so the machine gets one budget rather than one per stage.
+    pub usable_by: Instant,
     /// How long to wait between status calls.
     pub ready_poll: Duration,
 }
@@ -69,15 +71,18 @@ static NONCE: LazyLock<String> = LazyLock::new(|| {
 ///
 /// `cancel` aborts a walk in progress: it is read between ranked offers and
 /// inside the readiness poll, so a caller winding down — the fleet supervisor
-/// on interrupt or run teardown — abandons the acquisition promptly rather
-/// than sitting through `offers × ready_timeout`. A cancellation tears down any
-/// machine already provisioned and returns [`Error::Provider`] naming it. A
-/// caller with nothing to cancel passes a never-set flag.
+/// on interrupt or run teardown — abandons the acquisition promptly rather than
+/// sitting out the deadline. Every offer in the walk shares the one deadline
+/// `limits` carries, so a walk costs the budget for a usable machine once
+/// however many candidates it tries. A cancellation tears down any machine
+/// already provisioned and returns [`Error::Provider`] naming it. A caller with
+/// nothing to cancel passes a never-set flag.
 #[allow(clippy::too_many_arguments)]
 pub fn acquire<'a, P: Provider + ?Sized>(
     provider: &'a P,
     store: &'a Store,
     lock: &RunLock,
+    role: Rental,
     constraints: &Constraints,
     objective: Objective,
     limits: &AcquireLimits,
@@ -88,7 +93,7 @@ pub fn acquire<'a, P: Provider + ?Sized>(
     // Orphans of an earlier crash are destroyed before a new machine is
     // paid for. This comes before the budget check: destroying orphans
     // stops spending, which matters most when the budget is exhausted.
-    reconcile(provider, store)?;
+    reconcile(provider, store, ReconcileScope::Workers)?;
     // An exhausted budget refuses before the marketplace is even listed.
     admit(store, owner, budget)?;
     // Every offer selection, initial and every supervisor replacement, flows
@@ -129,6 +134,7 @@ pub fn acquire<'a, P: Provider + ?Sized>(
             &offer,
             None,
             created_ms,
+            role,
         ))?;
         // A death here leaves an intent record naming a tag no machine yet
         // carries: reconcile clears it, and nothing leaks.
@@ -160,6 +166,7 @@ pub fn acquire<'a, P: Provider + ?Sized>(
             &offer,
             Some(&instance),
             created_ms,
+            role,
         ))?;
         if let Some(endpoint) = wait_ready(provider, &instance, limits, cancel)? {
             return Ok(InstanceGuard::new(
@@ -228,17 +235,18 @@ fn admit(store: &Store, owner: &RunId, budget: &Budget) -> Result<()> {
 }
 
 /// Polls `instance` until it reports an endpoint, `None` when it is gone, the
-/// wait runs out, or `cancel` is set. The deadline is measured with
-/// [`Instant`], so a wall-clock adjustment cannot extend or cut the wait. A
-/// cancellation returns `None` — the same "no endpoint" the caller tears the
-/// pending machine down for — so the caller closes it out on one path.
+/// deadline passes, or `cancel` is set. The deadline is an [`Instant`], so a
+/// wall-clock adjustment cannot extend or cut the wait, and every offer in one
+/// walk shares it: the budget is for getting a usable machine, not for each
+/// candidate in turn. A cancellation returns `None` — the same "no endpoint"
+/// the caller tears the pending machine down for — so the caller closes it out
+/// on one path.
 fn wait_ready<P: Provider + ?Sized>(
     provider: &P,
     instance: &Instance,
     limits: &AcquireLimits,
     cancel: &AtomicBool,
 ) -> Result<Option<SshEndpoint>> {
-    let started = Instant::now();
     loop {
         // Checked before each status call, so a cancellation set while the
         // machine is still provisioning abandons the wait promptly.
@@ -249,7 +257,7 @@ fn wait_ready<P: Provider + ?Sized>(
             InstanceStatus::Ready(endpoint) => return Ok(Some(endpoint)),
             InstanceStatus::Gone => return Ok(None),
             InstanceStatus::Provisioning => {
-                if started.elapsed() >= limits.ready_timeout {
+                if Instant::now() >= limits.usable_by {
                     return Ok(None);
                 }
                 std::thread::sleep(limits.ready_poll);
@@ -261,6 +269,7 @@ fn wait_ready<P: Provider + ?Sized>(
 /// The ledger record for one attempt: the intent record while `instance` is
 /// `None`, the live record once the provider named the machine. Both writes
 /// carry the attempt's single `created_ms` stamp.
+#[allow(clippy::too_many_arguments)]
 fn record(
     tag: &str,
     provider: &str,
@@ -268,6 +277,7 @@ fn record(
     offer: &Offer,
     instance: Option<&Instance>,
     created_ms: u64,
+    role: Rental,
 ) -> InstanceRecord {
     InstanceRecord {
         tag: tag.to_string(),
@@ -275,6 +285,9 @@ fn record(
         // The offer's machine at intent, carried unchanged by the live write.
         machine: offer.machine.clone(),
         owner: owner.to_string(),
+        // Written at intent, so no window exists in which a hosting rental is
+        // recorded as an ordinary one and reconciliation reaps it.
+        role,
         state: match instance {
             Some(instance) => InstanceRecordState::Live {
                 instance: instance.id.0.clone(),
@@ -316,12 +329,13 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicBool, AtomicUsize};
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     use sima_core::{Error, Result};
     use sima_model::RunId;
     use sima_store::{
-        IncidentKind, InstanceRecord, InstanceRecordState, MachineIncident, SpendEntry, Store,
+        IncidentKind, InstanceRecord, InstanceRecordState, MachineIncident, Rental, SpendEntry,
+        Store,
     };
 
     use super::{AcquireLimits, Ordering, acquire, attempt_tag};
@@ -329,7 +343,7 @@ mod tests {
     use crate::guard::InstanceGuard;
     use crate::offer::{Constraints, Objective, Offer, OfferId, Price};
     use crate::provider::{InstanceId, InstanceStatus, Provider, Provision, TaggedInstance};
-    use crate::reconcile::reconcile;
+    use crate::reconcile::{ReconcileScope, reconcile};
     use crate::stub::StubProvider;
     use crate::testutil::{
         acquire_any, instance_record, live_state, never_cancelled, prompt_limits, sample_run,
@@ -514,7 +528,7 @@ mod tests {
         let stub = StubProvider::new(vec![stalling.clone(), stub_offer("dearer", 200_000)])
             .never_ready(stalling.id.clone());
         let limits = AcquireLimits {
-            ready_timeout: Duration::ZERO,
+            usable_by: Instant::now(),
             ready_poll: Duration::ZERO,
         };
         let lock = store.acquire_run_lock(&sample_run(7))?;
@@ -522,6 +536,7 @@ mod tests {
             &stub,
             &store,
             &lock,
+            Rental::Worker,
             &Constraints::default(),
             Objective::CheapestPerHour,
             &limits,
@@ -545,7 +560,7 @@ mod tests {
         let stub = StubProvider::new(vec![stalling.clone(), stub_offer("dearer", 200_000)])
             .never_ready(stalling.id.clone());
         let limits = AcquireLimits {
-            ready_timeout: Duration::ZERO,
+            usable_by: Instant::now(),
             ready_poll: Duration::ZERO,
         };
         let lock = store.acquire_run_lock(&sample_run(7))?;
@@ -553,6 +568,7 @@ mod tests {
             &stub,
             &store,
             &lock,
+            Rental::Worker,
             &Constraints::default(),
             Objective::CheapestPerHour,
             &limits,
@@ -575,7 +591,7 @@ mod tests {
         let stub = StubProvider::new(vec![stalling.clone(), stub_offer("dearer", 200_000)])
             .never_ready(stalling.id.clone());
         let limits = AcquireLimits {
-            ready_timeout: Duration::ZERO,
+            usable_by: Instant::now(),
             ready_poll: Duration::ZERO,
         };
         let lock = store.acquire_run_lock(&sample_run(7))?;
@@ -583,6 +599,7 @@ mod tests {
             &stub,
             &store,
             &lock,
+            Rental::Worker,
             &Constraints::default(),
             Objective::CheapestPerHour,
             &limits,
@@ -611,7 +628,7 @@ mod tests {
         let stub = StubProvider::new(vec![stalling.clone(), stub_offer("dearer", 200_000)])
             .never_ready(stalling.id.clone());
         let limits = AcquireLimits {
-            ready_timeout: Duration::ZERO,
+            usable_by: Instant::now(),
             ready_poll: Duration::ZERO,
         };
         let lock = store.acquire_run_lock(&sample_run(7))?;
@@ -619,6 +636,7 @@ mod tests {
             &stub,
             &store,
             &lock,
+            Rental::Worker,
             &Constraints::default(),
             Objective::CheapestPerHour,
             &limits,
@@ -703,7 +721,7 @@ mod tests {
         // `acquire` alone.
         let (_dir, store) = temp_store();
         let limits = AcquireLimits {
-            ready_timeout: Duration::ZERO,
+            usable_by: Instant::now(),
             ready_poll: Duration::ZERO,
         };
         // One flaky offer sharing the machine `m-flaky` and a distinct clean
@@ -722,6 +740,7 @@ mod tests {
                 stub,
                 &store,
                 &lock,
+                Rental::Worker,
                 &Constraints::default(),
                 Objective::CheapestPerHour,
                 &limits,
@@ -794,6 +813,7 @@ mod tests {
             provider,
             store,
             &lock,
+            Rental::Worker,
             &Constraints::default(),
             Objective::CheapestPerHour,
             &prompt_limits(),
@@ -877,12 +897,13 @@ mod tests {
             &watching,
             &store,
             &lock,
+            Rental::Worker,
             &Constraints::default(),
             Objective::CheapestPerHour,
             // At least one poll sleeps, so the abandoned machine's charged
             // window is never empty.
             &AcquireLimits {
-                ready_timeout: Duration::from_millis(1),
+                usable_by: Instant::now() + Duration::from_millis(1),
                 ready_poll: Duration::from_millis(1),
             },
             &budget,
@@ -925,7 +946,7 @@ mod tests {
         // A window the wait reaches by elapsed time, over several polls, and
         // short enough to keep the suite quick.
         let limits = AcquireLimits {
-            ready_timeout: Duration::from_millis(10),
+            usable_by: Instant::now() + Duration::from_millis(10),
             ready_poll: Duration::from_millis(1),
         };
         let lock = store.acquire_run_lock(&sample_run(7))?;
@@ -933,6 +954,7 @@ mod tests {
             &stub,
             &store,
             &lock,
+            Rental::Worker,
             &Constraints::default(),
             Objective::CheapestPerHour,
             &limits,
@@ -978,6 +1000,7 @@ mod tests {
             &stub,
             &store,
             &lock,
+            Rental::Worker,
             &constraints,
             Objective::CheapestPerHour,
             &prompt_limits(),
@@ -1033,7 +1056,7 @@ mod tests {
         // The owner holds no lock, and the provider created nothing under
         // the tag, so the record is all there was to clean up.
         let provider = StubProvider::new(Vec::new());
-        let report = reconcile(&provider, &store)?;
+        let report = reconcile(&provider, &store, ReconcileScope::Workers)?;
         assert!(report.destroyed.is_empty());
         assert_eq!(report.cleared, vec![tag.clone()]);
         assert!(store.instances()?.is_empty());
@@ -1054,7 +1077,7 @@ mod tests {
         // under the attempt's tag, which the intent record leads to.
         let landed = InstanceId("stub-landed".to_string());
         let provider = StubProvider::new(Vec::new()).with_instance(landed.clone(), &tag);
-        let report = reconcile(&provider, &store)?;
+        let report = reconcile(&provider, &store, ReconcileScope::Workers)?;
         assert_eq!(report.destroyed, vec![landed]);
         assert_eq!(report.cleared, vec![tag]);
         assert!(provider.live().is_empty());
@@ -1079,6 +1102,7 @@ mod tests {
             &stub,
             &store,
             &lock,
+            Rental::Worker,
             &Constraints::default(),
             Objective::CheapestPerHour,
             &prompt_limits(),
@@ -1173,6 +1197,7 @@ mod tests {
             &stub,
             &store,
             &lock,
+            Rental::Worker,
             &Constraints::default(),
             Objective::CheapestPerHour,
             &prompt_limits(),
@@ -1204,12 +1229,13 @@ mod tests {
             &provider,
             &store,
             &lock,
+            Rental::Worker,
             &Constraints::default(),
             Objective::CheapestPerHour,
             // A generous window the wait would sit through if it were not
             // cancelled from within the poll.
             &AcquireLimits {
-                ready_timeout: Duration::from_secs(5),
+                usable_by: Instant::now() + Duration::from_secs(5),
                 ready_poll: Duration::from_millis(1),
             },
             &Budget::default(),

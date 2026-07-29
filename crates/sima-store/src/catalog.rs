@@ -27,12 +27,45 @@ impl Store {
     /// index entry. Recommitting an equal record is a no-op — the retry
     /// path; a conflicting record for the same key is
     /// [`Error::Corruption`] — one result per task key, ever.
-    pub fn commit_record(&self, record: &TaskRecord) -> Result<Hash> {
+    pub fn commit(&self, record: &TaskRecord) -> Result<Hash> {
         for referenced in referenced_objects(record) {
             if !self.has(&referenced)? {
                 return Err(Error::MissingObject(referenced));
             }
         }
+        self.write_record(record)
+    }
+
+    /// Writes a record a peer sent, for the receiving half of a sync.
+    ///
+    /// Only the identity components — spec, params, environment — must be
+    /// durable; an absent input state and absent artifacts are accepted. A
+    /// store that took a partial object set therefore holds records whose
+    /// artifacts it does not have, which is a shape retention already produces:
+    /// retention drops objects under disk pressure while the records stay. It
+    /// costs that store the ability to answer `run_closure` or to serve those
+    /// objects onward, and nothing else — a chain is located from the records
+    /// alone.
+    ///
+    /// [`Store::commit`] keeps its rule that every referenced object must be
+    /// durable, so a record a run produced is never written this way.
+    pub fn replicate(&self, record: &TaskRecord) -> Result<Hash> {
+        let identity = &record.identity;
+        for component in [
+            *identity.spec.as_hash(),
+            *identity.params.as_hash(),
+            *identity.environment.as_hash(),
+        ] {
+            if !self.has(&component)? {
+                return Err(Error::MissingObject(component));
+            }
+        }
+        self.write_record(record)
+    }
+
+    /// The write both commit paths share: the record's canonical bytes, then
+    /// the index entry, atomically.
+    fn write_record(&self, record: &TaskRecord) -> Result<Hash> {
         let key = record.identity.key();
         let bytes = record.to_bytes();
         let record_hash = hash_bytes(&bytes);
@@ -269,7 +302,7 @@ mod tests {
         let (dir, store) = temp_store();
         store_identity_components(&store);
         let record = record_with_stored_artifact(&store, sample_identity(1));
-        let record_hash = store.commit_record(&record)?;
+        let record_hash = store.commit(&record)?;
         assert_eq!(record_hash, hash_bytes(&record.to_bytes()));
         // The index entry is the record hash as lowercase hex + newline,
         // at tasks/<task-key-hex> — both pinned layout contract.
@@ -285,10 +318,7 @@ mod tests {
     /// Asserts that committing `record` fails with `MissingObject` and
     /// writes nothing: no index entry, no record object.
     fn assert_commit_missing(store: &crate::Store, record: &TaskRecord) {
-        assert!(matches!(
-            store.commit_record(record),
-            Err(Error::MissingObject(_))
-        ));
+        assert!(matches!(store.commit(record), Err(Error::MissingObject(_))));
         let record_hash = hash_bytes(&record.to_bytes());
         assert!(!store.has(&record_hash).expect("has record object"));
         assert!(
@@ -348,13 +378,13 @@ mod tests {
         let (dir, store) = temp_store();
         store_identity_components(&store);
         let record = record_with_stored_artifact(&store, sample_identity(1));
-        let first = store.commit_record(&record)?;
+        let first = store.commit(&record)?;
         let entry_path = dir
             .path()
             .join("tasks")
             .join(record.identity.key().to_string());
         let before = fs::read(&entry_path).expect("read entry");
-        let second = store.commit_record(&record)?;
+        let second = store.commit(&record)?;
         assert_eq!(first, second);
         assert_eq!(fs::read(&entry_path).expect("read entry"), before);
         Ok(())
@@ -366,7 +396,7 @@ mod tests {
         store_identity_components(&store);
         let identity = sample_identity(1);
         let record = record_with_stored_artifact(&store, identity);
-        store.commit_record(&record)?;
+        store.commit(&record)?;
         // Same identity, different artifact set: a second result for one
         // task key is a determinism violation.
         let other_object = store.put(b"a different artifact")?;
@@ -375,7 +405,7 @@ mod tests {
             vec![sima_model::ArtifactRef::new("state-final", other_object)?],
         )?;
         assert!(matches!(
-            store.commit_record(&conflicting),
+            store.commit(&conflicting),
             Err(Error::Corruption(_))
         ));
         Ok(())
@@ -386,7 +416,7 @@ mod tests {
         let (_dir, store) = temp_store();
         store_identity_components(&store);
         let record = record_with_stored_artifact(&store, sample_identity(1));
-        store.commit_record(&record)?;
+        store.commit(&record)?;
         let key = record.identity.key();
         let read = store.record(&key)?.expect("committed record present");
         assert_eq!(read, record);
@@ -408,7 +438,7 @@ mod tests {
         let record = record_with_stored_artifact(&store, sample_identity(1));
         let key = record.identity.key();
         assert!(!store.has_record(&key)?);
-        store.commit_record(&record)?;
+        store.commit(&record)?;
         assert!(store.has_record(&key)?);
         Ok(())
     }
@@ -418,7 +448,7 @@ mod tests {
         let (dir, store) = temp_store();
         store_identity_components(&store);
         let record = record_with_stored_artifact(&store, sample_identity(1));
-        store.commit_record(&record)?;
+        store.commit(&record)?;
         let key = record.identity.key();
         let entry_path = dir.path().join("tasks").join(key.to_string());
         for garbage in ["not hex at all\n", "abc123\n", ""] {
@@ -446,7 +476,7 @@ mod tests {
         let (dir, store) = temp_store();
         store_identity_components(&store);
         let record = record_with_stored_artifact(&store, sample_identity(1));
-        store.commit_record(&record)?;
+        store.commit(&record)?;
         // Copy task 1's entry under task 2's key: the decoded record's
         // identity contradicts the index path it was found under.
         let entry_of =
@@ -492,7 +522,7 @@ mod tests {
         let mut keys = Vec::new();
         for seed in [1, 2] {
             let record = record_with_stored_artifact(store, sample_identity(seed));
-            store.commit_record(&record)?;
+            store.commit(&record)?;
             keys.push(record.identity.key());
         }
         let run = store.create_run(&sample_run_config(42))?;
@@ -697,7 +727,7 @@ mod tests {
             ..sample_identity(3)
         };
         let record = record_with_stored_artifact(&store, identity);
-        store.commit_record(&record)?;
+        store.commit(&record)?;
         let run = store.create_run(&sample_run_config(44))?;
         store.finalize_run(&run, &[identity.key()])?;
         assert!(store.run_closure(&run)?.contains(&input_state));
@@ -746,7 +776,7 @@ mod tests {
         let record = &record;
         std::thread::scope(|scope| {
             let handles: Vec<_> = (0..8)
-                .map(|_| scope.spawn(move || store.commit_record(record)))
+                .map(|_| scope.spawn(move || store.commit(record)))
                 .collect();
             for handle in handles {
                 handle.join().expect("committer thread panicked")?;
@@ -754,6 +784,72 @@ mod tests {
             Ok::<(), Error>(())
         })?;
         assert_eq!(store.record(&record.identity.key())?.as_ref(), Some(record));
+        Ok(())
+    }
+
+    /// A record whose artifact object was never stored: what a sync's receiving
+    /// half is handed under a named object scope.
+    fn record_with_absent_artifact(seed: u64) -> TaskRecord {
+        let object = hash_bytes(&seed.to_le_bytes());
+        let artifact = sima_model::ArtifactRef::new("state", object).expect("artifact ref");
+        TaskRecord::new(sample_identity(seed), vec![artifact]).expect("task record")
+    }
+
+    #[test]
+    fn replicate_accepts_a_record_whose_artifacts_never_travelled() -> Result<()> {
+        // The shape a named push produces: the record locates the chain, and
+        // the bytes behind it were deliberately not sent.
+        let (_dir, store) = temp_store();
+        store_identity_components(&store);
+        let record = record_with_absent_artifact(11);
+        store.replicate(&record)?;
+        let key = record.identity.key();
+        assert_eq!(store.record(&key)?, Some(record));
+        Ok(())
+    }
+
+    #[test]
+    fn replicate_rejects_a_record_whose_identity_components_are_absent() {
+        // Identity is what a record *is*; without it the record answers for a
+        // task the store cannot name.
+        let (_dir, store) = temp_store();
+        let record = record_with_absent_artifact(12);
+        assert!(matches!(
+            store.replicate(&record),
+            Err(Error::MissingObject(_))
+        ));
+    }
+
+    #[test]
+    fn commit_still_requires_every_referenced_object() {
+        // The rule a run's own commits keep: a record this store produced
+        // references bytes this store holds.
+        let (_dir, store) = temp_store();
+        store_identity_components(&store);
+        let record = record_with_absent_artifact(13);
+        assert!(matches!(
+            store.commit(&record),
+            Err(Error::MissingObject(_))
+        ));
+    }
+
+    #[test]
+    fn replicate_and_commit_write_the_same_record() -> Result<()> {
+        // The two differ in what they require durable, never in what they
+        // write, so a store that took a record by sync answers for it exactly
+        // as the store that ran it does.
+        let (_da, a) = temp_store();
+        let (_db, b) = temp_store();
+        for store in [&a, &b] {
+            store_identity_components(store);
+        }
+        let record = record_with_stored_artifact(&a, sample_identity(14));
+        b.put(&14u64.to_le_bytes())?;
+        assert_eq!(a.commit(&record)?, b.replicate(&record)?);
+        assert_eq!(
+            a.record(&record.identity.key())?,
+            b.record(&record.identity.key())?
+        );
         Ok(())
     }
 }

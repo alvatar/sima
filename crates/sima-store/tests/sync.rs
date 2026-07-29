@@ -2,13 +2,13 @@
 //! temp directories, joined by an in-memory duplex pipe, syncing over the
 //! public [`Store::sync`] API. Adversarial cases that require injecting a
 //! malformed frame (a tampered object) live beside the engine, where the wire
-//! vocabulary is reachable; here every peer is an honest `Store::sync`.
+//! vocabulary is reachable; here every peer is a real `Store::sync`.
 
 mod common;
 
-use common::{commit_record, run_sync, sample_identity, store_with};
+use common::{commit_record, empty_store, run_sync, run_sync_scoped, sample_identity, store_with};
 use sima_core::{Error, Result};
-use sima_store::SyncReport;
+use sima_store::{ObjectScope, SyncReport};
 
 /// A single sync carries records both ways: the disjoint halves converge to
 /// the union in each store.
@@ -140,5 +140,89 @@ fn keys_absent_from_both_sides_are_not_transferred() -> Result<()> {
             "a key neither side holds must not be transferred"
         );
     }
+    Ok(())
+}
+
+/// A push under a named scope: every record travels, and of the objects the
+/// records reference only the named ones do.
+#[test]
+fn a_named_scope_sends_the_named_objects_and_every_record() -> Result<()> {
+    let (_da, a, keys) = store_with(&[1, 2, 3]);
+    let (_db, b) = empty_store();
+    // Name one record's artifact: the object the far side will actually read.
+    let named = [*a
+        .record(&keys[2])?
+        .expect("the record is committed")
+        .artifacts()[0]
+        .object()];
+
+    let (ra, rb) = run_sync_scoped(&a, &keys, ObjectScope::Named(&named), &b, &keys);
+    ra?;
+    rb?;
+
+    // Every record crossed: a chain is traversable forward only, so the far
+    // side needs the prefix records to locate the frontier at all.
+    for key in &keys {
+        assert!(
+            b.record(key)?.is_some(),
+            "record {key} must travel whatever the object scope"
+        );
+    }
+    // Only the named artifact's bytes crossed with them.
+    assert!(b.has(&named[0])?, "the named object travelled");
+    for key in &keys[..2] {
+        let object = *a.record(key)?.expect("committed").artifacts()[0].object();
+        assert!(
+            !b.has(&object)?,
+            "an unnamed artifact is bandwidth nobody opens"
+        );
+    }
+    Ok(())
+}
+
+/// A store that took a named push advertises what it holds, never bytes it
+/// cannot serve, so a pull from it completes and converges.
+#[test]
+fn a_pull_from_a_gapped_store_completes_and_a_third_sync_moves_nothing() -> Result<()> {
+    let (_da, a, keys) = store_with(&[1, 2]);
+    let (_db, b) = empty_store();
+    let named = [*a.record(&keys[1])?.expect("committed").artifacts()[0].object()];
+
+    let (ra, rb) = run_sync_scoped(&a, &keys, ObjectScope::Named(&named), &b, &keys);
+    ra?;
+    rb?;
+
+    // The gapped store as the initiator of an ordinary sync: it advertises the
+    // one object it holds, asks for the one it lacks, and converges.
+    let (rb, ra) = run_sync(&b, &keys, &a, &keys);
+    rb?;
+    ra?;
+    for key in &keys {
+        let object = *a.record(key)?.expect("committed").artifacts()[0].object();
+        assert!(b.has(&object)?, "the pull completed the store");
+    }
+
+    // A third session over the converged pair moves nothing.
+    let (rb, ra) = run_sync(&b, &keys, &a, &keys);
+    assert_eq!(rb?, SyncReport::default());
+    assert_eq!(ra?, SyncReport::default());
+    Ok(())
+}
+
+/// A name for an object this side does not hold advertises nothing: a peer's
+/// want is bounded by what was advertised, and a want that could not be
+/// fulfilled would fail the session.
+#[test]
+fn a_named_object_this_side_lacks_is_never_advertised() -> Result<()> {
+    let (_da, a, keys) = store_with(&[1]);
+    let (_db, b) = empty_store();
+    let absent = sima_core::hash_bytes(b"an object neither side holds");
+
+    let (ra, rb) = run_sync_scoped(&a, &keys, ObjectScope::Named(&[absent]), &b, &keys);
+    let ra = ra?;
+    rb?;
+    assert_eq!(ra.objects_sent, 0, "nothing was offered, so nothing moved");
+    assert!(b.record(&keys[0])?.is_some(), "the record still travelled");
+    assert!(!b.has(&absent)?);
     Ok(())
 }

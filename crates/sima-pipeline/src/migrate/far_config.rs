@@ -1,0 +1,604 @@
+//! The far side's directory and the config written into it.
+//!
+//! Two things a migration needs before it can start anything on the
+//! destination: where the run lives there, and what the run reads when it does.
+//!
+//! **The directory is derived from the run id**, so a reattaching migration
+//! finds it without remembering anything and two runs on one machine never
+//! collide.
+//!
+//! **The config is the local one with everything about here removed.** `[run]`
+//! travels verbatim, so the run id is preserved by construction — identity is
+//! derived from the translated `RunConfig`, not from the file text, and a
+//! round trip through the parser and serializer preserves every value.
+//! `[config]` travels with its store path rewritten to a relative one, which
+//! the load resolves against the config file's own directory. Everything
+//! naming a machine is dropped: this machine's own worker layout names hardware
+//! the destination does not have, and the declared hosts, classes, fleet, and
+//! budget name machines reachable from here, which says nothing about what the
+//! destination can reach.
+//!
+//! The far side therefore declares no machine beyond itself. It rents nothing,
+//! whatever the local config declares — renting needs the provider key, and the
+//! key never leaves this machine — so a run drawing on four rented machines
+//! while driven from here executes on the destination alone once moved.
+
+use std::collections::BTreeMap;
+
+use sima_core::{Error, Result};
+use sima_domains::devices::DeviceInfo;
+use sima_model::RunId;
+
+use crate::config::{HostForm, OwnedHost, Pool};
+use crate::devices::{class_of, usable};
+
+/// The default `sima.toml` name the far side's `sima run` is pointed at.
+const CONFIG_FILE: &str = "sima.toml";
+/// The store path the synthesized config names, resolved by the load against
+/// the config file's own directory.
+const FAR_STORE: &str = "./store";
+
+/// Where a migrated run lives on its destination.
+///
+/// ```text
+/// <root>/<64-hex run id>/
+///     sima.toml       the synthesized config
+///     store/          the far side's store
+///     run.log         the far-side `sima run` stdout and stderr
+///     run.pid         the far-side `sima run` process id
+/// ```
+///
+/// The paths are the destination's, not this machine's, so they are strings
+/// rather than `PathBuf`s: `root` defaults to `~/sima-runs`, whose tilde the
+/// far side's own shell expands.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct FarLayout {
+    /// The run's directory on the destination.
+    dir: String,
+}
+
+impl FarLayout {
+    /// The layout for `run` under a destination's `root`.
+    pub(crate) fn new(root: &str, run: &RunId) -> FarLayout {
+        FarLayout {
+            dir: format!("{}/{run}", root.trim_end_matches('/')),
+        }
+    }
+
+    /// The run's directory.
+    pub(crate) fn dir(&self) -> &str {
+        &self.dir
+    }
+
+    /// The synthesized config.
+    pub(crate) fn config(&self) -> String {
+        format!("{}/{CONFIG_FILE}", self.dir)
+    }
+
+    /// The far-side `sima run` process id, what a second invocation reads to
+    /// tell a run still going from one that ended.
+    pub(crate) fn pid(&self) -> String {
+        format!("{}/run.pid", self.dir)
+    }
+
+    /// The far-side `sima run` stdout and stderr.
+    pub(crate) fn log(&self) -> String {
+        format!("{}/run.log", self.dir)
+    }
+}
+
+/// What the far side's `[orchestrator]` is built from, decided by the
+/// destination's form.
+pub(crate) enum FarWorkers<'a> {
+    /// A machine of yours: its own container and worker layout, moved onto the
+    /// far side's `[orchestrator]`, which makes them a container pool on the
+    /// machine the config now sits on. Nothing is probed — the operator wrote
+    /// the layout down.
+    Declared(&'a OwnedHost),
+    /// A rented machine: plain local workers derived from what the enumeration
+    /// probe reported. There is no container to nest inside, since ssh lands
+    /// within the instance's own container.
+    Probed(&'a [DeviceInfo]),
+}
+
+impl<'a> FarWorkers<'a> {
+    /// The layout a destination's form calls for. A machine of yours states
+    /// one; a rented one has the probe answer for it.
+    pub(crate) fn for_form(form: &'a HostForm, probed: &'a [DeviceInfo]) -> FarWorkers<'a> {
+        match form {
+            HostForm::Owned(owned) => FarWorkers::Declared(owned),
+            HostForm::Rented(_) => FarWorkers::Probed(probed),
+        }
+    }
+}
+
+/// The config the far side runs, synthesized from the local config's own text.
+///
+/// Working from the file text rather than the loaded value is what preserves
+/// `[run]` exactly: the section is carried across as a parsed value and never
+/// re-derived, so no translation this crate performs can perturb the run id.
+pub(crate) fn far_config(local_text: &str, workers: FarWorkers<'_>) -> Result<String> {
+    let local: toml::Table = toml::from_str(local_text)
+        .map_err(|e| Error::Validation(format!("the local config no longer parses: {e}")))?;
+
+    let mut far = toml::Table::new();
+    // `[run]` verbatim: the only hashed section, carried as a value so the far
+    // side's run is this run.
+    let run = local
+        .get("run")
+        .cloned()
+        .ok_or_else(|| Error::Validation("the local config names no [run] section".to_string()))?;
+    far.insert("run".to_string(), run);
+    far.insert(
+        "config".to_string(),
+        toml::Value::Table(far_settings(&local)?),
+    );
+    far.insert(
+        "orchestrator".to_string(),
+        toml::Value::Table(far_orchestrator(workers)),
+    );
+
+    toml::to_string_pretty(&far)
+        .map_err(|e| Error::Validation(format!("the far-side config cannot be written: {e}")))
+}
+
+/// The far side's `[config]`: the store beside its own file, and the settings
+/// that describe the run rather than this machine.
+fn far_settings(local: &toml::Table) -> Result<toml::Table> {
+    let settings = local
+        .get("config")
+        .and_then(toml::Value::as_table)
+        .ok_or_else(|| {
+            Error::Validation("the local config names no [config] section".to_string())
+        })?;
+    let mut far = toml::Table::new();
+    far.insert(
+        "store".to_string(),
+        toml::Value::String(FAR_STORE.to_string()),
+    );
+    // `max_attempts` is required, so its absence would already have failed the
+    // load; the cadences and the attempt deadline travel when present.
+    for key in [
+        "max_attempts",
+        "attempt_timeout_ms",
+        "checkpoint_interval_ms",
+        "checkpoint_interval_steps",
+    ] {
+        if let Some(value) = settings.get(key) {
+            far.insert(key.to_string(), value.clone());
+        }
+    }
+    Ok(far)
+}
+
+/// The far side's `[orchestrator]`: the destination's own worker layout, in
+/// whichever of the two shapes its form calls for.
+fn far_orchestrator(workers: FarWorkers<'_>) -> toml::Table {
+    let mut table = toml::Table::new();
+    match workers {
+        FarWorkers::Declared(owned) => {
+            table.insert(
+                "image".to_string(),
+                toml::Value::String(owned.container.image.clone()),
+            );
+            table.insert(
+                "runtime".to_string(),
+                toml::Value::String(owned.container.runtime.clone()),
+            );
+            if !owned.container.run_args.is_empty() {
+                table.insert(
+                    "run_args".to_string(),
+                    toml::Value::Array(
+                        owned
+                            .container
+                            .run_args
+                            .iter()
+                            .map(|arg| toml::Value::String(arg.clone()))
+                            .collect(),
+                    ),
+                );
+            }
+            match &owned.pool {
+                Pool::Workers(count) => {
+                    table.insert("workers".to_string(), toml::Value::Integer(*count as i64));
+                }
+                Pool::Devices(selectors) => {
+                    table.insert(
+                        "device".to_string(),
+                        toml::Value::Array(
+                            selectors
+                                .iter()
+                                .map(|selector| {
+                                    device_entry(&selector.select, selector.workers as i64)
+                                })
+                                .collect(),
+                        ),
+                    );
+                }
+            }
+        }
+        FarWorkers::Probed(devices) => {
+            let classes = probed_classes(devices);
+            if classes.is_empty() {
+                // A machine that reports no device this run can open still gets
+                // a worker, bound to nothing.
+                table.insert("workers".to_string(), toml::Value::Integer(1));
+            } else {
+                table.insert(
+                    "device".to_string(),
+                    toml::Value::Array(
+                        classes
+                            .into_iter()
+                            .map(|(class, members)| device_entry(&class, members))
+                            .collect(),
+                    ),
+                );
+            }
+        }
+    }
+    table
+}
+
+/// One device table: the selector and the workers on it.
+fn device_entry(select: &str, workers: i64) -> toml::Value {
+    let mut entry = toml::Table::new();
+    entry.insert(
+        "select".to_string(),
+        toml::Value::String(select.to_string()),
+    );
+    entry.insert("workers".to_string(), toml::Value::Integer(workers));
+    toml::Value::Table(entry)
+}
+
+/// The usable devices the probe reported, grouped into classes: one entry per
+/// `vendor:device` pair, carrying how many cards of that class the machine has.
+///
+/// The `BTreeMap` orders by the rendered class, so the same enumeration always
+/// synthesizes the same file whatever order the probe listed its devices in.
+fn probed_classes(devices: &[DeviceInfo]) -> Vec<(String, i64)> {
+    let mut classes: BTreeMap<String, i64> = BTreeMap::new();
+    for device in usable(devices) {
+        *classes.entry(class_of(device).to_string()).or_default() += 1;
+    }
+    classes.into_iter().collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use sima_domains::devices::DeviceType;
+    use sima_model::RunId;
+
+    use super::*;
+    use crate::config::LoadedConfig;
+    use crate::devices::DeviceSelector;
+    use crate::fixtures::load_str;
+
+    /// The local config text every synthesis test starts from.
+    const LOCAL: &str = r#"
+        [run]
+        root_seed = 9
+        format = "stub.v1"
+        segments = 6
+
+        [run.generator]
+        id = "stub.v1"
+        behaviors = ["succeed", "succeed"]
+
+        [run.params]
+        hex = "0a0b"
+
+        [config]
+        store = "/somewhere/else/store"
+        max_attempts = 3
+        attempt_timeout_ms = 300000
+        checkpoint_interval_steps = 500
+
+        [orchestrator]
+        migrate = "gpubox"
+
+        [[orchestrator.device]]
+        select = "intel"
+        workers = 2
+
+        [host.gpubox]
+        workers = 4
+        image = "localhost/sima:pinned"
+        runtime = "podman"
+        run_args = ["--gpus", "all"]
+
+        [host_class.lab]
+        count = 3
+        workers = 1
+
+        [host.rented]
+        provider = "stub"
+
+        [fleet]
+        members = ["lab", "rented"]
+
+        [budget]
+        max_spend_usd = 5.0
+    "#;
+
+    /// The synthesized config, loaded back.
+    fn synthesized(workers: FarWorkers<'_>) -> LoadedConfig {
+        load_str(&far_config(LOCAL, workers).expect("the synthesis succeeds"))
+    }
+
+    /// The `gpubox` entry `LOCAL` declares.
+    fn declared() -> LoadedConfig {
+        load_str(LOCAL)
+    }
+
+    /// One enumerated device of the given class and category.
+    fn device(vendor_id: u32, device_id: u32, member: u32, device_type: DeviceType) -> DeviceInfo {
+        DeviceInfo {
+            vendor_id,
+            device_id,
+            name: format!("device {vendor_id:04x}:{device_id:04x}"),
+            device_type,
+            member,
+        }
+    }
+
+    // ---- The directory ----
+
+    #[test]
+    fn the_layout_is_derived_from_the_run_id() {
+        let run = RunId::from_hash(sima_core::hash_bytes(b"a run"));
+        let layout = FarLayout::new("~/sima-runs", &run);
+        assert_eq!(layout.dir(), format!("~/sima-runs/{run}"));
+        assert_eq!(layout.config(), format!("~/sima-runs/{run}/sima.toml"));
+        assert_eq!(layout.pid(), format!("~/sima-runs/{run}/run.pid"));
+        assert_eq!(layout.log(), format!("~/sima-runs/{run}/run.log"));
+    }
+
+    #[test]
+    fn a_trailing_separator_on_the_root_yields_no_double_separator() {
+        let run = RunId::from_hash(sima_core::hash_bytes(b"a run"));
+        assert_eq!(
+            FarLayout::new("/scratch/", &run).dir(),
+            FarLayout::new("/scratch", &run).dir()
+        );
+    }
+
+    #[test]
+    fn two_runs_under_one_root_never_collide() {
+        let first = RunId::from_hash(sima_core::hash_bytes(b"first"));
+        let second = RunId::from_hash(sima_core::hash_bytes(b"second"));
+        assert_ne!(
+            FarLayout::new("~/sima-runs", &first).dir(),
+            FarLayout::new("~/sima-runs", &second).dir()
+        );
+    }
+
+    // ---- Identity, which the whole move rests on ----
+
+    #[test]
+    fn the_synthesized_config_is_the_same_run() {
+        let local = declared();
+        let HostForm::Owned(owned) = &local.hosts["gpubox"].form else {
+            panic!("gpubox is a machine of yours");
+        };
+        for workers in [
+            FarWorkers::Declared(owned),
+            FarWorkers::Probed(&[device(0x10de, 0x2684, 0, DeviceType::Discrete)]),
+        ] {
+            assert_eq!(
+                synthesized(workers).run.id(),
+                local.run.id(),
+                "the far side drives this run, not another"
+            );
+        }
+    }
+
+    #[test]
+    fn the_store_resolves_beside_the_synthesized_file() {
+        // A relative store path is resolved against the config file's own
+        // directory, so the far side needs no absolute path and the local
+        // store path — which names a directory on this machine — never travels.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("sima.toml");
+        let local = declared();
+        let HostForm::Owned(owned) = &local.hosts["gpubox"].form else {
+            panic!("gpubox is a machine of yours");
+        };
+        std::fs::write(
+            &path,
+            far_config(LOCAL, FarWorkers::Declared(owned)).expect("synthesis"),
+        )
+        .expect("write");
+        assert_eq!(
+            crate::config::load(&path).expect("loads").store,
+            dir.path().join("./store")
+        );
+    }
+
+    // ---- What travels and what does not ----
+
+    #[test]
+    fn nothing_naming_another_machine_survives() {
+        let local = declared();
+        let HostForm::Owned(owned) = &local.hosts["gpubox"].form else {
+            panic!("gpubox is a machine of yours");
+        };
+        let far = synthesized(FarWorkers::Declared(owned));
+        assert!(far.hosts.is_empty(), "no host travels");
+        assert!(far.host_classes.is_empty(), "no class travels");
+        assert!(far.fleet.members.is_empty(), "no fleet travels");
+        assert_eq!(
+            far.budget,
+            sima_provider::Budget::default(),
+            "no ceiling travels: the far side rents nothing"
+        );
+        assert_eq!(
+            far.orchestrator.migrate, None,
+            "a run that has arrived does not migrate onward"
+        );
+    }
+
+    #[test]
+    fn the_run_settings_travel_and_the_local_ones_do_not() {
+        let local = declared();
+        let HostForm::Owned(owned) = &local.hosts["gpubox"].form else {
+            panic!("gpubox is a machine of yours");
+        };
+        let far = synthesized(FarWorkers::Declared(owned));
+        assert_eq!(far.execution.max_attempts, 3);
+        assert_eq!(
+            far.execution.attempt_timeout,
+            std::time::Duration::from_millis(300_000)
+        );
+        assert_eq!(
+            far.execution.checkpoint_interval_steps,
+            std::num::NonZeroU64::new(500)
+        );
+        // This machine's own worker layout named its hardware, and does not.
+        assert_ne!(far.orchestrator.pool, local.orchestrator.pool);
+    }
+
+    // ---- A machine of yours ----
+
+    #[test]
+    fn a_machine_of_yours_carries_its_container_and_layout_onto_the_orchestrator() {
+        let local = declared();
+        let HostForm::Owned(owned) = &local.hosts["gpubox"].form else {
+            panic!("gpubox is a machine of yours");
+        };
+        let far = synthesized(FarWorkers::Declared(owned));
+        let container = far.orchestrator.container.expect("a container pool");
+        assert_eq!(container.image, "localhost/sima:pinned");
+        assert_eq!(container.runtime, "podman");
+        assert_eq!(container.run_args, vec!["--gpus", "all"]);
+        assert_eq!(far.orchestrator.pool, Some(Pool::Workers(4)));
+    }
+
+    #[test]
+    fn a_machine_of_yours_carries_its_device_tables() {
+        let mut local = declared();
+        let HostForm::Owned(owned) = &mut local.hosts.get_mut("gpubox").expect("declared").form
+        else {
+            panic!("gpubox is a machine of yours");
+        };
+        owned.pool = Pool::Devices(vec![
+            DeviceSelector {
+                select: "nvidia".to_string(),
+                workers: 2,
+            },
+            DeviceSelector {
+                select: "8086:7d67".to_string(),
+                workers: 1,
+            },
+        ]);
+        let far = synthesized(FarWorkers::Declared(owned));
+        assert_eq!(
+            far.orchestrator.pool,
+            Some(Pool::Devices(vec![
+                DeviceSelector {
+                    select: "nvidia".to_string(),
+                    workers: 2,
+                },
+                DeviceSelector {
+                    select: "8086:7d67".to_string(),
+                    workers: 1,
+                },
+            ]))
+        );
+    }
+
+    // ---- A rented machine ----
+
+    #[test]
+    fn a_rented_machine_runs_plain_workers_with_no_container() {
+        let far = synthesized(FarWorkers::Probed(&[device(
+            0x10de,
+            0x2684,
+            0,
+            DeviceType::Discrete,
+        )]));
+        assert_eq!(
+            far.orchestrator.container, None,
+            "ssh already lands inside the instance's own container"
+        );
+    }
+
+    #[test]
+    fn two_identical_cards_are_one_class_carrying_two_workers() {
+        let far = synthesized(FarWorkers::Probed(&[
+            device(0x10de, 0x2684, 0, DeviceType::Discrete),
+            device(0x10de, 0x2684, 1, DeviceType::Discrete),
+        ]));
+        assert_eq!(
+            far.orchestrator.pool,
+            Some(Pool::Devices(vec![DeviceSelector {
+                select: "10de:2684".to_string(),
+                workers: 2,
+            }]))
+        );
+    }
+
+    #[test]
+    fn two_different_cards_are_two_classes_carrying_one_worker_each() {
+        let far = synthesized(FarWorkers::Probed(&[
+            device(0x10de, 0x2684, 0, DeviceType::Discrete),
+            device(0x8086, 0x7d67, 0, DeviceType::Integrated),
+        ]));
+        assert_eq!(
+            far.orchestrator.pool,
+            Some(Pool::Devices(vec![
+                DeviceSelector {
+                    select: "10de:2684".to_string(),
+                    workers: 1,
+                },
+                DeviceSelector {
+                    select: "8086:7d67".to_string(),
+                    workers: 1,
+                },
+            ])),
+            "ordered by class, so one enumeration always writes one file"
+        );
+    }
+
+    #[test]
+    fn a_rasterizer_beside_a_card_gets_no_entry() {
+        // The machine was rented for the card; a worker on the rasterizer would
+        // spend the rental running the slowest device on it.
+        let far = synthesized(FarWorkers::Probed(&[
+            device(0x10005, 0x0000, 0, DeviceType::Cpu),
+            device(0x10de, 0x2684, 0, DeviceType::Discrete),
+        ]));
+        assert_eq!(
+            far.orchestrator.pool,
+            Some(Pool::Devices(vec![DeviceSelector {
+                select: "10de:2684".to_string(),
+                workers: 1,
+            }]))
+        );
+    }
+
+    #[test]
+    fn a_probe_reporting_nothing_still_gets_a_worker() {
+        let far = synthesized(FarWorkers::Probed(&[]));
+        assert_eq!(far.orchestrator.pool, Some(Pool::Workers(1)));
+        assert!(far.orchestrator.container.is_none());
+    }
+
+    #[test]
+    fn a_machine_offering_only_a_rasterizer_still_gets_it() {
+        // With no card to prefer, the rasterizer is the only device this run's
+        // program can open and takes the entry.
+        let far = synthesized(FarWorkers::Probed(&[device(
+            0x10005,
+            0x0000,
+            0,
+            DeviceType::Cpu,
+        )]));
+        assert_eq!(
+            far.orchestrator.pool,
+            Some(Pool::Devices(vec![DeviceSelector {
+                select: "10005:0000".to_string(),
+                workers: 1,
+            }]))
+        );
+    }
+}

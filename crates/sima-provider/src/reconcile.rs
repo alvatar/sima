@@ -48,11 +48,37 @@
 
 use sima_core::{Error, Result};
 use sima_model::RunId;
-use sima_store::{InstanceRecord, InstanceRecordState, Store};
+use sima_store::{InstanceRecord, InstanceRecordState, Rental, Store};
 
 use crate::guard::{close_out, teardown};
 use crate::offer::Price;
 use crate::provider::{InstanceId, InstanceStatus, Provider, TaggedInstance};
+
+/// Which rentals a reconciliation pass considers.
+///
+/// A hosting rental has the shape reconciliation reaps — its owner holds no
+/// lock, because a migration detaches the far side deliberately — so it is
+/// spared unless a caller says otherwise. Every other rental is an orphan when
+/// its owner's lock is free.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReconcileScope {
+    /// Rentals carrying workers alone. The default, and what every acquisition
+    /// runs: it must not destroy a working detached migration.
+    Workers,
+    /// Every rental, a hosting one included. What `sima reconcile --hosted`
+    /// asks for, when the operator knows no migration is running.
+    Hosted,
+}
+
+impl ReconcileScope {
+    /// Whether a rental in this role is this pass's to reap.
+    fn covers(self, role: Rental) -> bool {
+        match self {
+            ReconcileScope::Workers => role == Rental::Worker,
+            ReconcileScope::Hosted => true,
+        }
+    }
+}
 
 /// What one reconciliation pass did.
 #[derive(Debug, Default)]
@@ -63,17 +89,24 @@ pub struct ReconcileReport {
     pub cleared: Vec<String>,
 }
 
-/// Destroys the instances orphaned by a process that died without tearing
-/// them down, and clears their ledger records.
+/// Destroys the instances orphaned by a process that died without tearing them
+/// down, and clears their ledger records, within `scope`.
 ///
-/// Runs at the start of every acquisition, so orphans stop costing money
-/// before a new machine is rented. A ledger holding no record for this
-/// provider reaches no provider API at all.
-pub fn reconcile<P: Provider + ?Sized>(provider: &P, store: &Store) -> Result<ReconcileReport> {
+/// Runs at the start of every acquisition under [`ReconcileScope::Workers`], so
+/// orphans stop costing money before a new machine is rented — and so a
+/// detached migration, whose rental is working and paid for while nothing local
+/// holds a lock, is not destroyed by an unrelated command that happens to rent
+/// against the same store. A ledger holding no record for this provider reaches
+/// no provider API at all.
+pub fn reconcile<P: Provider + ?Sized>(
+    provider: &P,
+    store: &Store,
+    scope: ReconcileScope,
+) -> Result<ReconcileReport> {
     let records: Vec<InstanceRecord> = store
         .instances()?
         .into_iter()
-        .filter(|record| record.provider == provider.id())
+        .filter(|record| record.provider == provider.id() && scope.covers(record.role))
         .collect();
     if records.is_empty() {
         return Ok(ReconcileReport::default());
@@ -182,15 +215,16 @@ fn owner_alive(store: &Store, record: &InstanceRecord) -> Result<bool> {
 #[cfg(test)]
 mod tests {
     use sima_core::{Error, Result};
-    use sima_store::{InstanceRecord, InstanceRecordState};
+    use sima_store::{InstanceRecord, InstanceRecordState, Rental, Store};
 
-    use super::reconcile;
+    use super::{ReconcileScope, reconcile};
     use crate::guard::teardown;
     use crate::offer::Price;
-    use crate::provider::InstanceId;
+    use crate::provider::{InstanceId, Provider};
     use crate::stub::StubProvider;
     use crate::testutil::{
-        acquire_any, instance_record, live_state, sample_run, spend_entries, stub_offer, temp_store,
+        acquire_any, instance_record, instance_record_as, live_state, sample_run, spend_entries,
+        stub_offer, temp_store,
     };
 
     /// A record for `tag` in `state`, owned by the run for seed 7.
@@ -204,7 +238,7 @@ mod tests {
         let stub = StubProvider::new(Vec::new())
             .with_instance(InstanceId("i-1".to_string()), "sima-tag-0");
         store.put_instance(&record("sima-tag-0", live_state("i-1")))?;
-        let report = reconcile(&stub, &store)?;
+        let report = reconcile(&stub, &store, ReconcileScope::Workers)?;
         assert_eq!(report.destroyed, vec![InstanceId("i-1".to_string())]);
         assert_eq!(report.cleared, vec!["sima-tag-0".to_string()]);
         assert!(stub.live().is_empty());
@@ -219,7 +253,7 @@ mod tests {
             .with_instance(InstanceId("i-1".to_string()), "sima-tag-0");
         let orphan = record("sima-tag-0", live_state("i-1"));
         store.put_instance(&orphan)?;
-        reconcile(&stub, &store)?;
+        reconcile(&stub, &store, ReconcileScope::Workers)?;
         let entries = spend_entries(&store, &sample_run(7))?;
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].tag, "sima-tag-0");
@@ -237,7 +271,7 @@ mod tests {
         // what it ran for is charged.
         let orphan = record("sima-tag-0", live_state("expired"));
         store.put_instance(&orphan)?;
-        reconcile(&stub, &store)?;
+        reconcile(&stub, &store, ReconcileScope::Workers)?;
         let entries = spend_entries(&store, &sample_run(7))?;
         assert_eq!(entries.len(), 1);
         // Nothing states a rate for a machine that no longer exists, so the
@@ -256,7 +290,7 @@ mod tests {
             .with_unlisted_instance(InstanceId("i-1".to_string()), "sima-tag-0");
         let orphan = record("sima-tag-0", live_state("i-1"));
         store.put_instance(&orphan)?;
-        let report = reconcile(&stub, &store)?;
+        let report = reconcile(&stub, &store, ReconcileScope::Workers)?;
         assert_eq!(report.destroyed, vec![InstanceId("i-1".to_string())]);
         assert_eq!(report.cleared, vec!["sima-tag-0".to_string()]);
         assert!(stub.live().is_empty());
@@ -277,7 +311,7 @@ mod tests {
         // Reading the fault as absence would clear the record of a machine
         // that may still be running and billed.
         assert!(matches!(
-            reconcile(&stub, &store),
+            reconcile(&stub, &store, ReconcileScope::Workers),
             Err(Error::Provider(message)) if message == "show instance: 503"
         ));
         assert_eq!(store.instances()?, vec![orphan]);
@@ -291,7 +325,7 @@ mod tests {
         let stub = StubProvider::new(Vec::new())
             .with_instance(InstanceId("i-2".to_string()), "sima-tag-0");
         store.put_instance(&record("sima-tag-0", InstanceRecordState::Intent))?;
-        reconcile(&stub, &store)?;
+        reconcile(&stub, &store, ReconcileScope::Workers)?;
         assert_eq!(spend_entries(&store, &sample_run(7))?.len(), 1);
         Ok(())
     }
@@ -306,7 +340,7 @@ mod tests {
             .charging_instances_at(Price(250_000))
             .with_instance(InstanceId("i-2".to_string()), "sima-tag-0");
         store.put_instance(&record("sima-tag-0", InstanceRecordState::Intent))?;
-        reconcile(&stub, &store)?;
+        reconcile(&stub, &store, ReconcileScope::Workers)?;
         let entries = spend_entries(&store, &sample_run(7))?;
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].price_micro_usd_hour, 250_000);
@@ -322,7 +356,7 @@ mod tests {
             .charging_instances_at(Price(40_000))
             .with_instance(InstanceId("i-1".to_string()), "sima-tag-0");
         store.put_instance(&record("sima-tag-0", live_state("i-1")))?;
-        reconcile(&stub, &store)?;
+        reconcile(&stub, &store, ReconcileScope::Workers)?;
         let entries = spend_entries(&store, &sample_run(7))?;
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].price_micro_usd_hour, 40_000);
@@ -336,7 +370,7 @@ mod tests {
             .with_instance(InstanceId("i-1".to_string()), "sima-tag-0");
         let orphan = record("sima-tag-0", live_state("i-1"));
         store.put_instance(&orphan)?;
-        reconcile(&stub, &store)?;
+        reconcile(&stub, &store, ReconcileScope::Workers)?;
         let entries = spend_entries(&store, &sample_run(7))?;
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].price_micro_usd_hour, orphan.price_micro_usd_hour);
@@ -352,7 +386,7 @@ mod tests {
         // counted is an overcount, and a real machine missed is money the
         // ledger never accounts for.
         store.put_instance(&record("sima-tag-0", InstanceRecordState::Intent))?;
-        reconcile(&stub, &store)?;
+        reconcile(&stub, &store, ReconcileScope::Workers)?;
         let entries = spend_entries(&store, &sample_run(7))?;
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].tag, "sima-tag-0");
@@ -366,14 +400,14 @@ mod tests {
         let stub = StubProvider::new(Vec::new());
         let orphan = record("sima-tag-0", live_state("expired"));
         store.put_instance(&orphan)?;
-        reconcile(&stub, &store)?;
+        reconcile(&stub, &store, ReconcileScope::Workers)?;
         let first = spend_entries(&store, &sample_run(7))?;
         assert_eq!(first.len(), 1);
         // The state a crash between the entry write and the record clear
         // leaves: the record is back, and its close-out reproduces the same
         // key, so the entry is rewritten rather than added to.
         store.put_instance(&orphan)?;
-        reconcile(&stub, &store)?;
+        reconcile(&stub, &store, ReconcileScope::Workers)?;
         let second = spend_entries(&store, &sample_run(7))?;
         assert_eq!(second.len(), 1);
         assert!(second[0].ended_ms >= first[0].ended_ms);
@@ -386,7 +420,7 @@ mod tests {
         let stub = StubProvider::new(Vec::new());
         let orphan = record("sima-tag-0", InstanceRecordState::Intent);
         store.put_instance(&orphan)?;
-        reconcile(&stub, &store)?;
+        reconcile(&stub, &store, ReconcileScope::Workers)?;
         let charged = spend_entries(&store, &sample_run(7))?;
         assert_eq!(charged.len(), 1);
         // The acquiring process comes back to a tag reconciliation already
@@ -415,7 +449,7 @@ mod tests {
         // The owner holds its orchestrator lock for the length of the pass,
         // which is what a running run looks like.
         let _lock = store.acquire_run_lock(&sample_run(7))?;
-        let report = reconcile(&stub, &store)?;
+        let report = reconcile(&stub, &store, ReconcileScope::Workers)?;
         assert!(report.destroyed.is_empty());
         assert!(report.cleared.is_empty());
         assert_eq!(stub.live(), vec![InstanceId("i-1".to_string())]);
@@ -428,7 +462,7 @@ mod tests {
         let (_dir, store) = temp_store();
         let stub = StubProvider::new(Vec::new());
         store.put_instance(&record("sima-tag-0", live_state("expired")))?;
-        let report = reconcile(&stub, &store)?;
+        let report = reconcile(&stub, &store, ReconcileScope::Workers)?;
         assert!(report.destroyed.is_empty());
         assert_eq!(report.cleared, vec!["sima-tag-0".to_string()]);
         assert!(stub.destroyed().is_empty());
@@ -444,7 +478,7 @@ mod tests {
         let stub = StubProvider::new(Vec::new())
             .with_instance(InstanceId("i-2".to_string()), "sima-tag-0");
         store.put_instance(&record("sima-tag-0", InstanceRecordState::Intent))?;
-        let report = reconcile(&stub, &store)?;
+        let report = reconcile(&stub, &store, ReconcileScope::Workers)?;
         assert_eq!(report.destroyed, vec![InstanceId("i-2".to_string())]);
         assert_eq!(report.cleared, vec!["sima-tag-0".to_string()]);
         assert!(stub.live().is_empty());
@@ -458,7 +492,7 @@ mod tests {
         let stub =
             StubProvider::new(Vec::new()).with_instance(InstanceId("i-3".to_string()), "other-tag");
         store.put_instance(&record("sima-tag-0", InstanceRecordState::Intent))?;
-        let report = reconcile(&stub, &store)?;
+        let report = reconcile(&stub, &store, ReconcileScope::Workers)?;
         assert!(report.destroyed.is_empty());
         assert_eq!(report.cleared, vec!["sima-tag-0".to_string()]);
         // The instance under another tag belongs to another attempt.
@@ -473,7 +507,7 @@ mod tests {
             .with_instance(InstanceId("i-4".to_string()), "sima-tag-0");
         store.put_instance(&record("sima-tag-0", InstanceRecordState::Intent))?;
         let _lock = store.acquire_run_lock(&sample_run(7))?;
-        let report = reconcile(&stub, &store)?;
+        let report = reconcile(&stub, &store, ReconcileScope::Workers)?;
         assert!(report.destroyed.is_empty());
         assert!(report.cleared.is_empty());
         assert_eq!(stub.live(), vec![InstanceId("i-4".to_string())]);
@@ -488,7 +522,7 @@ mod tests {
         let mut foreign = record("sima-tag-0", live_state("i-5"));
         foreign.provider = "vastai".to_string();
         store.put_instance(&foreign)?;
-        let report = reconcile(&stub, &store)?;
+        let report = reconcile(&stub, &store, ReconcileScope::Workers)?;
         assert!(report.destroyed.is_empty());
         assert!(report.cleared.is_empty());
         assert_eq!(store.instances()?, vec![foreign]);
@@ -504,7 +538,7 @@ mod tests {
         malformed.owner = "not-a-run-id".to_string();
         store.put_instance(&malformed)?;
         assert!(matches!(
-            reconcile(&stub, &store),
+            reconcile(&stub, &store, ReconcileScope::Workers),
             Err(Error::Corruption(_))
         ));
         Ok(())
@@ -530,6 +564,77 @@ mod tests {
         let records = store.instances()?;
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].tag, guard.tag());
+        Ok(())
+    }
+
+    /// Provisions the stub's `nth` offer under `tag`, returning its instance
+    /// id. A rented offer never returns to the stub's marketplace, so two
+    /// rentals name two offers.
+    fn provisioned(stub: &StubProvider, nth: usize, tag: &str) -> String {
+        let offer = stub
+            .offers()
+            .expect("offers")
+            .into_iter()
+            .nth(nth)
+            .expect("an offer");
+        match stub.provision(&offer.id, tag).expect("provision") {
+            crate::provider::Provision::Provisioned(instance) => instance.id.0,
+            crate::provider::Provision::OfferGone => panic!("the stub offer is available"),
+        }
+    }
+
+    /// A stub holding one worker rental and one hosting rental, both owned by a
+    /// run holding no lock — the shape a pass reaps — with their records in the
+    /// ledger.
+    fn one_of_each(store: &Store) -> StubProvider {
+        let stub = StubProvider::new(vec![stub_offer("a", 100_000), stub_offer("b", 200_000)]);
+        for (nth, tag, role) in [
+            (0, "sima-worker-0", Rental::Worker),
+            (1, "sima-hosting-0", Rental::Orchestrator),
+        ] {
+            let instance = provisioned(&stub, nth, tag);
+            store
+                .put_instance(&instance_record_as(
+                    tag,
+                    live_state(&instance),
+                    sample_run(7),
+                    role,
+                ))
+                .expect("put the ledger record");
+        }
+        stub
+    }
+
+    #[test]
+    fn a_default_pass_spares_a_hosting_rental_and_reaps_a_worker_one() -> Result<()> {
+        // Both records have the shape a pass reaps, and only one of them is an
+        // orphan. The other is a detached migration, working and paid for.
+        let (_dir, store) = temp_store();
+        let stub = one_of_each(&store);
+
+        let report = reconcile(&stub, &store, ReconcileScope::Workers)?;
+        assert_eq!(report.cleared, vec!["sima-worker-0".to_string()]);
+        let left: Vec<String> = store.instances()?.into_iter().map(|r| r.tag).collect();
+        assert_eq!(
+            left,
+            vec!["sima-hosting-0".to_string()],
+            "the hosting rental keeps its record"
+        );
+        assert_eq!(stub.live().len(), 1, "and keeps its machine");
+        Ok(())
+    }
+
+    #[test]
+    fn the_hosted_scope_reaps_both() -> Result<()> {
+        // What `sima reconcile --hosted` asks for, when the operator knows no
+        // migration is running.
+        let (_dir, store) = temp_store();
+        let stub = one_of_each(&store);
+
+        let report = reconcile(&stub, &store, ReconcileScope::Hosted)?;
+        assert_eq!(report.cleared.len(), 2);
+        assert!(store.instances()?.is_empty());
+        assert!(stub.live().is_empty());
         Ok(())
     }
 }

@@ -10,27 +10,37 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Condvar, Mutex};
 use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use sima_contracts::DeviceBinding;
 use sima_core::{Error, Result};
-use sima_domains::devices::{DeviceInfo, DeviceType};
+use sima_domains::devices::DeviceInfo;
 use sima_model::FormatId;
 use sima_provider::stub::StubProvider;
 use sima_provider::{
     AcquireLimits, Budget, Exhaustion, IncidentKind, InstanceGuard, InstanceStatus, Objective,
-    Offer, OfferId, Price, Provider, SshEndpoint, Verdict, acquire, assess, record_incident,
+    Offer, OfferId, Price, Provider, Reachability, SshEndpoint, Verdict, acquire, assess, now_ms,
+    record_incident,
 };
 use sima_provider_vast::{VastConfig, VastProvider};
 use sima_scheduler::ExecutionConfig;
-use sima_store::{RunLock, Store};
+use sima_store::{Rental as RentalRole, RunLock, Store};
 use sima_trace::{Emitter, Event};
 use sima_transport::{SpawnMode, SshDestination, SshTransport};
 
 use crate::config::{FillPolicy, ProviderId, Rented};
-use crate::devices::parse_enumeration;
+use crate::devices::{parse_enumeration, usable};
 use crate::fleet::Rental;
 use crate::orchestrate::{command_stdout, worker_binary};
+
+/// The environment channel that points the stub backend at a machine that is
+/// really there, as `user@host:port`.
+///
+/// It exists so a test can exercise the ssh path against a throwaway server of
+/// its own, without a key in the configuration schema that would be valid for
+/// one provider and rejected for every other. Unset, the stub fabricates an
+/// endpoint naming no machine and is reached in process.
+const STUB_SSH: &str = "SIMA_STUB_SSH";
 
 /// Builds the control-plane backend a rental acquires its machines through.
 ///
@@ -39,45 +49,83 @@ use crate::orchestrate::{command_stdout, worker_binary};
 /// here before any store mutation. The `stub` backend is in-process, listing a
 /// generous always-available marketplace so a stub rental fills its declared
 /// count. An unknown id never reaches here — the config load rejects it.
+///
+/// [`STUB_SSH`] is read here and nowhere else, so a config naming any other
+/// provider never looks at it.
 pub(crate) fn provider_for(rental: &Rental<'_>) -> Result<Box<dyn Provider + Sync>> {
     match rental.spec.provider {
         ProviderId::Vast => {
             let config = VastConfig::from_env(&rental.spec.image, rental.spec.disk_gb)?;
             Ok(Box::new(VastProvider::new(config)))
         }
-        ProviderId::Stub => Ok(Box::new(StubProvider::new(stub_offers(rental.count)))),
+        ProviderId::Stub => {
+            let stub = StubProvider::new(stub_offers(rental.count));
+            Ok(Box::new(match std::env::var_os(STUB_SSH) {
+                Some(value) => {
+                    let endpoint = stub_endpoint(&value.to_string_lossy())?;
+                    stub.endpoint(&endpoint.host, endpoint.port, &endpoint.user)
+                }
+                None => stub,
+            }))
+        }
     }
 }
 
-/// The transport mode a rental's machines are reached through: ssh to a real
-/// rented instance, or a local `sima-worker` spawn for the stub, so the stub
-/// exercises every layer above the transport with no network.
-pub(crate) fn transport_mode(spec: &Rented) -> Result<SpawnMode> {
-    match spec.provider {
-        ProviderId::Vast => Ok(SpawnMode::Ssh),
-        ProviderId::Stub => Ok(SpawnMode::Local(worker_binary()?)),
+/// The endpoint a `user@host:port` value names.
+///
+/// A value that does not parse is an error naming the variable rather than a
+/// fall back to the in-process path. A caller that set it meant to cross a hop,
+/// and one that quietly did not would report a success that tested nothing.
+fn stub_endpoint(value: &str) -> Result<SshEndpoint> {
+    let malformed = || {
+        Error::Validation(format!(
+            "{STUB_SSH} is {value:?}, which is not a user@host:port endpoint"
+        ))
+    };
+    let (user, rest) = value.split_once('@').ok_or_else(malformed)?;
+    // From the right: an IPv6 literal in brackets holds colons of its own.
+    let (host, port) = rest.rsplit_once(':').ok_or_else(malformed)?;
+    let port: u16 = port.parse().map_err(|_| malformed())?;
+    if user.is_empty() || host.is_empty() || port == 0 {
+        return Err(malformed());
+    }
+    Ok(SshEndpoint {
+        host: host.to_string(),
+        port,
+        user: user.to_string(),
+    })
+}
+
+/// The transport mode a control plane's machines are reached through, from what
+/// the control plane says about them: ssh to a machine that is really there, or
+/// a local spawn for a backend whose machines are this machine.
+///
+/// The answer is the provider's, not the config's. A backend knows whether the
+/// endpoint it reports names anything, and the worker binary a local spawn
+/// needs is this layer's to supply — which is why [`Reachability`] and not
+/// [`SpawnMode`] is what crosses the seam.
+pub(crate) fn transport_mode(provider: &(dyn Provider + Sync)) -> Result<SpawnMode> {
+    match provider.reachability() {
+        Reachability::Ssh => Ok(SpawnMode::Ssh),
+        Reachability::Local => Ok(SpawnMode::Local(worker_binary()?)),
     }
 }
 
 /// Maps a provider's ssh endpoint into the transport's target, the seam that
 /// keeps the transport free of any dependency on the provider crate.
 pub(crate) fn endpoint_target(endpoint: SshEndpoint) -> SshDestination {
-    SshDestination {
-        host: endpoint.host,
-        port: endpoint.port,
-        user: endpoint.user,
-    }
+    SshDestination::rented(endpoint.host, endpoint.port, endpoint.user)
 }
-
-/// How many times an instance's enumeration probe is retried before its
-/// acquisition is abandoned: sshd can lag the provider's `Ready`, so the first
-/// probe against a fresh host may be refused.
-const PROBE_ATTEMPTS: u32 = 6;
 
 /// How many machines one instance's acquisition may burn through before it
 /// gives up. Each attempt is a paid rental torn down again, so the bound
 /// stays small; a machine that fails twice across runs is blacklisted by
 /// its incidents and stops being offered at all.
+///
+/// Each attempt runs under one `ready_timeout` covering everything it waits
+/// for, so this is what the worst case multiplies: `PROBE_ACQUIRE_ATTEMPTS`
+/// machines at one `ready_timeout` each, however many offers a walk tries
+/// inside one of them.
 const PROBE_ACQUIRE_ATTEMPTS: usize = 4;
 
 /// One acquired machine: the guard that owns and tears it down, the transport
@@ -134,10 +182,6 @@ pub(crate) fn acquire_hosts<'a>(
     format: &FormatId,
     exec: &ExecutionConfig,
 ) -> Result<Vec<RentedHost<'a>>> {
-    let limits = AcquireLimits {
-        ready_timeout: rental.spec.ready_timeout,
-        ready_poll: rental.spec.ready_poll,
-    };
     let mut hosts: Vec<RentedHost<'a>> = Vec::with_capacity(rental.count);
     for _ in 0..rental.count {
         // A machine that fails to acquire or probe is torn down inside
@@ -148,7 +192,6 @@ pub(crate) fn acquire_hosts<'a>(
             lock,
             rental.spec,
             budget,
-            &limits,
             mode,
             format,
             exec,
@@ -185,7 +228,6 @@ fn acquire_one<'a>(
     lock: &RunLock,
     spec: &Rented,
     budget: &Budget,
-    limits: &AcquireLimits,
     mode: &SpawnMode,
     format: &FormatId,
     exec: &ExecutionConfig,
@@ -198,25 +240,35 @@ fn acquire_one<'a>(
     let mut constraints = spec.constraints.clone();
     let mut refused: Option<Error> = None;
     for _ in 0..PROBE_ACQUIRE_ATTEMPTS {
+        // The clock on this machine starts where it is first asked for, and
+        // both stages that wait for it — reporting ready, then answering a
+        // probe — run under the one deadline. Each attempt reaches a different
+        // machine, so each gets a whole budget and none gets two.
+        let usable_by = Instant::now() + spec.ready_timeout;
+        let limits = AcquireLimits {
+            usable_by,
+            ready_poll: spec.ready_poll,
+        };
         // Pin the trait object to `Sync`, which the supervisor thread's shared
         // borrow of the provider needs; without it inference drops the bound.
         let guard = acquire::<dyn Provider + Sync>(
             provider,
             store,
             lock,
+            RentalRole::Worker,
             &constraints,
             Objective::CheapestPerHour,
-            limits,
+            &limits,
             budget,
             // Run-start acquisition has nothing to cancel: the run is not yet
             // driving, so no wind-down is in flight.
             never_cancelled(),
         )?;
         let target = endpoint_target(guard.endpoint().clone());
-        let host = target.host.clone();
+        let host = target.host().to_string();
         // The probe drives the machine's device enumeration; a failure drops
         // the guard, tearing the machine down.
-        let slots = match probe_slots(mode, &target, spec.ready_poll, format) {
+        let slots = match probe_slots(mode, &target, usable_by, spec.ready_poll, format) {
             Ok(slots) => slots,
             Err(error) => {
                 // The machine reported ready but cannot run work: an incident
@@ -263,55 +315,50 @@ fn acquire_one<'a>(
 }
 
 /// Probes a machine for the devices `format`'s program can run on and derives
-/// its worker slots, retrying briefly because sshd can lag the provider's
-/// `Ready`.
+/// its worker slots, retrying under the machine's own readiness bounds.
+///
+/// A provider reports an instance ready when its container is running, which is
+/// before the route to it carries an ssh, so the first probes against a fresh
+/// machine are refused. `usable_by` is the deadline the machine was asked for
+/// under, which its readiness wait has already been spending: the entry states
+/// one budget for how long from asking for a machine until it is usable, and
+/// this is the second stage of that one wait. A machine that answers at once
+/// costs nothing. Giving up destroys this rental and takes the next offer, so
+/// the bound is what separates a machine that is slow from one that is broken.
 fn probe_slots(
     mode: &SpawnMode,
     target: &SshDestination,
+    usable_by: Instant,
     poll: Duration,
     format: &FormatId,
 ) -> Result<Vec<Option<DeviceBinding>>> {
     let argv = sima_transport::ssh::probe_argv(mode, target, format);
-    let mut last: Option<Error> = None;
-    for attempt in 0..PROBE_ATTEMPTS {
+    let deadline = usable_by;
+    loop {
         match command_stdout(&argv).and_then(|stdout| parse_enumeration(&stdout)) {
             Ok(devices) => return Ok(rented_slots(&devices)),
             Err(error) => {
-                last = Some(error);
-                // No sleep after the final attempt.
-                if attempt + 1 < PROBE_ATTEMPTS {
-                    thread::sleep(poll.min(Duration::from_secs(5)));
+                if Instant::now() >= deadline {
+                    return Err(error);
                 }
             }
         }
+        thread::sleep(poll);
     }
-    Err(last.unwrap_or_else(|| Error::Provider("the machine probe never ran".to_string())))
 }
 
-/// One worker slot per enumerated GPU, each bound to its own device; a probe
-/// reporting no GPU yields a single deviceless worker — the stub testing path,
-/// and any device-free machine.
+/// One worker slot per usable device, each bound to it; a probe reporting no
+/// device at all yields a single deviceless worker — the stub testing path, and
+/// any device-free machine.
 ///
-/// The devices are the ones the run's program can open, since the probe asked
-/// about its format, so every slot here is a place this run can actually put a
-/// worker.
-///
-/// A software rasterizer is skipped whenever a real GPU is present. A rented
-/// host whose graphics stack works enumerates the CPU rasterizer beside its
-/// card, and a machine is rented for its GPU: placing a worker on the
-/// rasterizer would spend the rental running the slowest device on the machine.
-/// When every enumerated device is a CPU, they are all slots — a host that
-/// offers this program no GPU still gets workers.
+/// Which devices are usable is [`devices::usable`]'s rule, shared with the
+/// far-side config a migration synthesizes: both are deriving a worker layout
+/// from one enumeration, and they must agree on what the machine offers.
 fn rented_slots(devices: &[DeviceInfo]) -> Vec<Option<DeviceBinding>> {
     if devices.is_empty() {
         return vec![None];
     }
-    let has_gpu = devices
-        .iter()
-        .any(|device| device.device_type != DeviceType::Cpu);
-    devices
-        .iter()
-        .filter(|device| !has_gpu || device.device_type != DeviceType::Cpu)
+    usable(devices)
         .map(|device| {
             Some(DeviceBinding {
                 vendor_id: device.vendor_id,
@@ -353,6 +400,18 @@ pub(crate) fn release_all(groups: Vec<RentalGroup<'_>>) -> Result<()> {
     }
 }
 
+/// The event a spent ceiling raises. A fleet's supervisor and a migration both
+/// report exhaustion, and one journal reads the two the same way.
+pub(crate) fn budget_exhausted(exhaustion: Exhaustion) -> Event {
+    match exhaustion {
+        Exhaustion::Spend { accrued, cap } => Event::BudgetSpendExhausted {
+            accrued_microusd: accrued.0,
+            cap_microusd: cap.0,
+        },
+        Exhaustion::WallClock { deadline_ms } => Event::BudgetWallClockExhausted { deadline_ms },
+    }
+}
+
 /// The supervisor's heartbeat period. Rental health is a low-frequency concern
 /// and the poll is cheap, so a fixed period suffices; no config knob.
 const HEARTBEAT: Duration = Duration::from_secs(10);
@@ -362,14 +421,6 @@ const HEARTBEAT: Duration = Duration::from_secs(10);
 fn never_cancelled() -> &'static AtomicBool {
     static NEVER: AtomicBool = AtomicBool::new(false);
     &NEVER
-}
-
-/// Milliseconds since the epoch, the clock the budget ledger is stamped in.
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
 }
 
 /// The stop signal the orchestrator raises when the scheduler returns, waking
@@ -554,15 +605,7 @@ impl<'a, 'b> Supervisor<'a, 'b> {
     fn wind_down_for_budget(&self, exhaustion: Exhaustion) {
         self.interrupt.store(true, Ordering::Relaxed);
         if !self.budget_announced.swap(true, Ordering::Relaxed) {
-            self.emit(match exhaustion {
-                Exhaustion::Spend { accrued, cap } => Event::BudgetSpendExhausted {
-                    accrued_microusd: accrued.0,
-                    cap_microusd: cap.0,
-                },
-                Exhaustion::WallClock { deadline_ms } => {
-                    Event::BudgetWallClockExhausted { deadline_ms }
-                }
-            });
+            self.emit(budget_exhausted(exhaustion));
         }
     }
 
@@ -661,14 +704,17 @@ impl<'a, 'b> Supervisor<'a, 'b> {
         let gpu_slots = host.slots.iter().filter(|slot| slot.is_some()).count() as u32;
         let mut constraints = group.spec.constraints.clone();
         constraints.min_gpu_count = Some(constraints.min_gpu_count.unwrap_or(0).max(gpu_slots));
+        // A replacement is a fresh machine being asked for, so its clock
+        // starts here; nothing probes it, the transport reaches it.
         let limits = AcquireLimits {
-            ready_timeout: group.spec.ready_timeout,
+            usable_by: Instant::now() + group.spec.ready_timeout,
             ready_poll: group.spec.ready_poll,
         };
         match acquire::<dyn Provider + Sync>(
             group.provider,
             self.store,
             self.lock,
+            RentalRole::Worker,
             &constraints,
             Objective::CheapestPerHour,
             &limits,
@@ -796,6 +842,7 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::Arc;
 
+    use sima_domains::devices::DeviceType;
     use sima_model::{GeneratorConfig, GeneratorId, Params, RunConfig, RunId};
     use sima_provider::stub::StubProvider;
     use sima_provider::{Constraints, Cost, InstanceStatus, Provision};
@@ -845,7 +892,7 @@ mod tests {
     fn spec() -> Rented {
         Rented {
             provider: ProviderId::Stub,
-            image: "ghcr.io/alvatar/sima-worker:latest".to_string(),
+            image: "ghcr.io/alvatar/sima:latest".to_string(),
             disk_gb: 32,
             ready_timeout: Duration::from_millis(500),
             ready_poll: Duration::ZERO,
@@ -1184,15 +1231,52 @@ mod tests {
     }
 
     #[test]
-    fn a_vast_rental_is_reached_over_ssh() -> Result<()> {
-        // The transport mode is a pure function of the provider: vast over ssh,
-        // read without touching the environment (only the provider itself reads
-        // the key).
-        let spec = Rented {
-            provider: ProviderId::Vast,
-            ..spec()
-        };
-        assert!(matches!(transport_mode(&spec)?, SpawnMode::Ssh));
+    fn a_stub_endpoint_reads_as_a_user_a_host_and_a_port() -> Result<()> {
+        assert_eq!(
+            stub_endpoint("tester@127.0.0.1:41022")?,
+            SshEndpoint {
+                host: "127.0.0.1".to_string(),
+                port: 41022,
+                user: "tester".to_string(),
+            }
+        );
+        // Taken from the right, so a bracketed IPv6 literal keeps its own
+        // colons.
+        assert_eq!(stub_endpoint("root@[::1]:22")?.host, "[::1]");
+        Ok(())
+    }
+
+    #[test]
+    fn a_malformed_stub_endpoint_names_the_variable_and_falls_back_to_nothing() {
+        // Falling back to the in-process path would report a success that
+        // tested nothing, which is the failure this whole seam exists to avoid.
+        for value in [
+            "127.0.0.1:41022",
+            "tester@127.0.0.1",
+            "tester@127.0.0.1:0",
+            "tester@127.0.0.1:not-a-port",
+            "@127.0.0.1:22",
+            "tester@:22",
+            "",
+        ] {
+            match stub_endpoint(value) {
+                Err(Error::Validation(message)) => assert!(
+                    message.contains(STUB_SSH) && message.contains(value),
+                    "names the variable and the value: {message}"
+                ),
+                other => panic!("expected {value:?} to be refused, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn each_reachability_routes_onto_its_spawn_mode() -> Result<()> {
+        // A stub pointed at a machine that is really there is reached over ssh,
+        // exactly as a rented one is; one pointed at nothing spawns here.
+        let reached = StubProvider::new(Vec::new()).endpoint("127.0.0.1", 41022, "tester");
+        assert!(matches!(transport_mode(&reached)?, SpawnMode::Ssh));
+        let in_process = StubProvider::new(Vec::new());
+        assert!(matches!(transport_mode(&in_process)?, SpawnMode::Local(_)));
         Ok(())
     }
 
@@ -1220,9 +1304,13 @@ mod tests {
             panic!("the stub instance is ready at once");
         };
         let target = endpoint_target(endpoint.clone());
-        assert_eq!(target.host, endpoint.host);
-        assert_eq!(target.port, endpoint.port);
-        assert_eq!(target.user, endpoint.user);
+        assert_eq!(target.host(), endpoint.host);
+        // The endpoint's port and user reach the invocation, which is where
+        // they are observable: a rented destination states both explicitly.
+        assert_eq!(
+            target.prefix(),
+            SshDestination::rented(&endpoint.host, endpoint.port, &endpoint.user).prefix()
+        );
         Ok(())
     }
 

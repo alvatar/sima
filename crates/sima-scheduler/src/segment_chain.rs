@@ -292,7 +292,7 @@ mod tests {
             task.identity,
             vec![ArtifactRef::new(STATE_ARTIFACT, state_hash)?],
         )?;
-        store.commit_record(&record)?;
+        store.commit(&record)?;
         Ok(state_hash)
     }
 
@@ -300,7 +300,7 @@ mod tests {
     /// misconfiguration case.
     fn commit_stateless(store: &Store, task: &RunnableTask) -> Result<()> {
         let record = TaskRecord::new(task.identity, Vec::new())?;
-        store.commit_record(&record)?;
+        store.commit(&record)?;
         Ok(())
     }
 

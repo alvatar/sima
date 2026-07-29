@@ -2,7 +2,7 @@
 //! image, in two tiers by carrier.
 //!
 //! **Tier A — a container pool on this machine, no ssh.** The acceptance
-//! scenarios run against the real worker image over a local container runtime:
+//! scenarios run against the real sima image over a local container runtime:
 //! an `[orchestrator]` naming an `image`, so the worker pool's transport is
 //! `podman run --rm -i --name <name> <run_args> <image> sima-worker` with no ssh
 //! prefix — every layer of the container-worker mechanism except the ssh hop,
@@ -30,7 +30,7 @@
 //! The environment configures the container pool so one suite runs against a
 //! local runtime, a provisioned localhost, or a real remote unchanged:
 //!
-//! - `SIMA_TEST_IMAGE` — the worker image; unset skips Tier A, and defaults to
+//! - `SIMA_TEST_IMAGE` — the sima image; unset skips Tier A, and defaults to
 //!   `localhost/sima:latest` for Tier B.
 //! - `SIMA_TEST_REMOTE` — the ssh destination; unset skips Tier B.
 //! - `SIMA_TEST_RUNTIME` — `docker` or `podman`; defaults to `podman` locally,
@@ -69,7 +69,7 @@ struct ContainerEnv {
 
 impl ContainerEnv {
     /// Tier A: a container runtime on this machine. `SIMA_TEST_IMAGE` unset is
-    /// the skip signal — the built worker image is the artifact under test.
+    /// the skip signal — the built sima image is the artifact under test.
     fn local() -> Option<ContainerEnv> {
         let image = std::env::var("SIMA_TEST_IMAGE").ok()?;
         Some(ContainerEnv {
@@ -290,7 +290,7 @@ fn assert_no_chain_split(events: &[Event]) {
 /// journal cannot tell its classes apart by host; commits on both prove both
 /// were scheduled onto.
 #[test]
-#[ignore = "requires a container runtime and the worker image (SIMA_TEST_IMAGE)"]
+#[ignore = "requires a container runtime and the sima image (SIMA_TEST_IMAGE)"]
 fn a_two_class_container_run_commits_from_both_classes() {
     let env = local_or_skip!();
     let dir = tempfile::tempdir().expect("temp dir");
@@ -325,7 +325,7 @@ fn a_two_class_container_run_commits_from_both_classes() {
 /// driver parity is exact and the transport carrying an attempt never reaches
 /// run identity.
 #[test]
-#[ignore = "requires a container runtime and the worker image (SIMA_TEST_IMAGE)"]
+#[ignore = "requires a container runtime and the sima image (SIMA_TEST_IMAGE)"]
 fn single_class_manifests_are_identical_bare_and_container() {
     let env = local_or_skip!();
     let dir = tempfile::tempdir().expect("temp dir");
@@ -364,7 +364,7 @@ fn single_class_manifests_are_identical_bare_and_container() {
 /// A container killed mid-lease is a transient failure: the run converges
 /// through retry to a valid manifest, and the journal records it.
 #[test]
-#[ignore = "requires a container runtime and the worker image (SIMA_TEST_IMAGE)"]
+#[ignore = "requires a container runtime and the sima image (SIMA_TEST_IMAGE)"]
 fn a_killed_container_converges_through_retry() {
     let env = local_or_skip!();
     converges_after_a_mid_lease_kill(&env, "kill-local.toml");
@@ -374,7 +374,7 @@ fn a_killed_container_converges_through_retry() {
 /// chains bound to the absent class and converges — the rebind machinery
 /// composing with container pools.
 #[test]
-#[ignore = "requires a container runtime and the worker image (SIMA_TEST_IMAGE)"]
+#[ignore = "requires a container runtime and the sima image (SIMA_TEST_IMAGE)"]
 fn a_resume_without_a_container_class_rebinds_loudly() {
     let env = local_or_skip!();
     let dir = tempfile::tempdir().expect("temp dir");
@@ -443,7 +443,7 @@ fn a_resume_without_a_container_class_rebinds_loudly() {
 /// from both, and no chain splits. Here the pools sit on different machines, so
 /// the journal names the local pool and the ssh host separately.
 #[test]
-#[ignore = "requires a container runtime and the worker image on SIMA_TEST_REMOTE"]
+#[ignore = "requires a container runtime and the sima image on SIMA_TEST_REMOTE"]
 fn a_mixed_local_and_ssh_run_commits_from_both_pools() {
     let env = remote_or_skip!();
     let host = env.host.clone().expect("Tier B names an ssh host");
@@ -472,7 +472,7 @@ fn a_mixed_local_and_ssh_run_commits_from_both_pools() {
 /// A remote container killed mid-lease over ssh converges through retry — the
 /// two-stage kill's second channel is a second ssh connection to the host.
 #[test]
-#[ignore = "requires a container runtime and the worker image on SIMA_TEST_REMOTE"]
+#[ignore = "requires a container runtime and the sima image on SIMA_TEST_REMOTE"]
 fn a_killed_ssh_container_converges_through_retry() {
     let env = remote_or_skip!();
     converges_after_a_mid_lease_kill(&env, "kill-ssh.toml");

@@ -44,10 +44,14 @@ beyond it as an elastic, heterogeneous extension.
   uses the orchestrator alone and `sima run --fleet` adds every member, so
   declaring a machine says a run *may* use it and the invocation says it does.
   Worker faults converge through idempotent retry.
-- **Slingshot a run.** Start a search on the laptop, then carry it to rented
-  GPU machines: a have/want store-sync protocol transfers exactly the missing
-  records and objects over any byte pipe. The sync engine is built; `sima
-  migrate`, wiring it over ssh, is on the roadmap.
+- **Slingshot a run.** Start a search on the laptop, interrupt it, and
+  `sima migrate` moves the whole run — its store and its orchestrator — onto the
+  machine `[orchestrator].migrate` names, resumes it there, streams its events
+  back, and brings the results home. A have/want store sync transfers exactly
+  the missing records and objects, so what crosses is the difference and nothing
+  else. The far run is detached, so a dropped connection leaves the destination
+  computing and re-running reattaches to it; the manifest a migrated run writes
+  is byte-identical to one that never left.
 - **Watch it run, from anywhere.** `sima tui` drives a run in a full-screen
   live view and `sima follow` streams its events to a pipe; `sima status` and
   `sima report` print run state and per-candidate stats. Every one of them

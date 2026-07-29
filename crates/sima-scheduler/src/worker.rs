@@ -631,7 +631,7 @@ fn commit(store: &Store, identity: TaskIdentity, artifacts: Vec<Artifact>) -> Re
         refs.push(ArtifactRef::new(artifact.name, object)?);
     }
     let record = TaskRecord::new(identity, refs)?;
-    store.commit_record(&record)
+    store.commit(&record)
 }
 
 /// Emits the task's `Faulted` event and records the infrastructure fault, so

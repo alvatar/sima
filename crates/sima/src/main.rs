@@ -18,7 +18,9 @@
 //! A run executes on the machines the invocation asks for, never on every
 //! machine a config happens to declare: `run` and `tui` use `[orchestrator]`
 //! alone, and `--fleet` adds every member of `[fleet]`. Without it no provider
-//! is constructed and no rental credential is read.
+//! is constructed and no rental credential is read. `migrate` moves the whole
+//! run — its store and its orchestrator — onto the one machine
+//! `[orchestrator].migrate` names, and brings the results back.
 //!
 //! All orchestration lives in `sima-pipeline` — this binary parses arguments,
 //! renders output, registers the interrupt flag, and maps outcomes to exit
@@ -27,9 +29,11 @@
 //! - 0 — the run finalized (or `status` answered);
 //! - 2 — a definitive candidate failure;
 //! - 130 — interrupted by Ctrl-C, store resumable;
-//! - 1 — everything else: infrastructure fault, config error, usage error.
+//! - 1 — everything else: infrastructure fault, config error, usage error, and
+//!   a `migrate` that came home with tasks outstanding.
 
 mod follow;
+mod migrate;
 mod reconcile;
 mod render;
 mod tui;
@@ -45,8 +49,10 @@ use sima_pipeline::{
     Engagement, FeedInfo, LoadedConfig, LocalFeed, Record, RemoteFeed, RemovalReport, ReportRow,
     RunControl, RunFeed, RunId, RunOutcome, RunStatus, RunTimeline, TaskHistory, failures_records,
     follow_serve, load, local_snapshot, orchestrate, remote_snapshot, report_records,
-    report_task_records, status, status_records, task_history_records, timeline_records,
+    report_task_records, status, status_records, sync_serve, task_history_records,
+    timeline_records,
 };
+use sima_provider::ReconcileScope;
 
 /// Exit code for a definitive candidate failure.
 pub(crate) const EXIT_FAILED: u8 = 2;
@@ -70,14 +76,21 @@ fn main() -> ExitCode {
         ["run", config, "--fleet"] if host.is_none() => {
             run_command(&resolve_config(config), Engagement::Fleet)
         }
+        ["migrate", config] if host.is_none() => migrate::migrate_command(&resolve_config(config)),
         ["rm", config] if host.is_none() => rm_command(&resolve_config(config)),
         ["reconcile", config] if host.is_none() => {
-            reconcile::reconcile_command(&resolve_config(config))
+            reconcile::reconcile_command(&resolve_config(config), ReconcileScope::Workers)
+        }
+        ["reconcile", config, "--hosted"] if host.is_none() => {
+            reconcile::reconcile_command(&resolve_config(config), ReconcileScope::Hosted)
         }
         // The far half of the follow transport, invoked over ssh by another
         // machine's read command. It is not a user-facing verb.
         ["follow-serve", config] if host.is_none() => serve_command(config, false),
         ["follow-serve", config, "--once"] if host.is_none() => serve_command(config, true),
+        // The far half of a store sync, invoked over ssh by a migration. Not a
+        // user-facing verb either.
+        ["sync-serve", config] if host.is_none() => sync_serve_command(config),
         ["status", config] => status_command(&Target::new(config, host)),
         ["status", config, "--failed"] => status_failed_command(&Target::new(config, host)),
         ["status", config, "--task", key] => status_task_command(&Target::new(config, host), key),
@@ -113,8 +126,10 @@ fn main() -> ExitCode {
                  \x20      sima report <config> --timeline    report the run's metrics and its timeline\n\
                  \x20      sima report <config> --spend       report the run's rental spend\n\
                  \x20      sima report <config> --machines    report machine reputation and blacklisting\n\
+                 \x20      sima migrate <config>              move the run onto the host [orchestrator] names\n\
                  \x20      sima rm <config>                   delete the run and what only it references\n\
                  \x20      sima reconcile <config>            destroy the machines a crashed run left running\n\
+                 \x20      sima reconcile <config> --hosted   destroy the machines hosting a migrated run too\n\
                  \x20      sima tui <config> [--fleet]        drive the run in a full-screen terminal UI\n\
                  \x20      sima follow <config>               stream the run's events until it ends\n\
                  \x20      <config> is a sima.toml path; the .toml extension may be omitted\n\
@@ -511,6 +526,24 @@ fn serve_command(config: &str, once: bool) -> ExitCode {
     let mut out = stdout.lock();
     match follow_serve(&resolve_config(config), once, &mut out) {
         Ok(()) => ExitCode::SUCCESS,
+        Err(e) => report(e),
+    }
+}
+
+/// `sima sync-serve <config>`: serves one store-sync session over stdin and
+/// stdout, which carry protocol frames and nothing else — every diagnostic goes
+/// to stderr, which ssh keeps on its own channel. A migration spawns this over
+/// ssh; it is not a user-facing verb and stays out of the usage text.
+///
+/// It takes the run lock for the session, so a `sima run` driving this run on
+/// this machine makes the sync fail cleanly on the lock rather than writing
+/// underneath it.
+fn sync_serve_command(config: &str) -> ExitCode {
+    let stdin = std::io::stdin();
+    let stdout = std::io::stdout();
+    let (mut input, mut output) = (stdin.lock(), stdout.lock());
+    match sync_serve(&resolve_config(config), &mut input, &mut output) {
+        Ok(_) => ExitCode::SUCCESS,
         Err(e) => report(e),
     }
 }

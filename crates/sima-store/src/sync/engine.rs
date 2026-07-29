@@ -17,6 +17,23 @@ use crate::catalog::referenced_objects;
 use crate::store::Store;
 use crate::sync::message::{SYNC_PROTOCOL_VERSION, SyncMessage};
 
+/// Which objects a side advertises, and therefore the most the peer can ask it
+/// for: the scope bounds the peer's want, since a want is `theirs − mine` over
+/// what was advertised.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ObjectScope<'a> {
+    /// Every object the records in the key set reference. A side that holds a
+    /// complete store advertises everything, which is what a pull wants: the
+    /// store that comes home must be complete.
+    Referenced,
+    /// Exactly the listed objects, of those this side holds. A push uses it to
+    /// send the records in full — a chain is traversable forward only, so
+    /// without the prefix records the far side cannot locate the frontier at
+    /// all — while sending only the state bytes the far side will actually
+    /// read.
+    Named(&'a [Hash]),
+}
+
 /// Which side of a sync session a store plays. The roles interlock the
 /// exchange so that at every step one side writes while the other reads,
 /// leaving the session deadlock-free over an unbuffered duplex pipe.
@@ -56,10 +73,13 @@ impl Store {
     /// peer, which runs `sync` with the opposite [`SyncRole`].
     ///
     /// Only records and objects move — checkpoints, placement, journals, and
-    /// manifests stay with their orchestrator. A received object is re-hashed
-    /// against its advertised digest ([`Error::Validation`] on mismatch, with
-    /// nothing from that frame committed); a record held on both sides under
-    /// one key with differing bytes is [`Error::Validation`] naming the key.
+    /// manifests stay with their orchestrator. Every arriving object and record
+    /// is matched against the want it answers, both the item requested at that
+    /// position and the digest it was advertised under, so an item this side
+    /// never asked for and bytes altered after their advertisement each fail
+    /// the session ([`Error::Validation`], with nothing from that frame
+    /// committed); a record held on both sides under one key with differing
+    /// bytes is [`Error::Validation`] naming the key.
     /// Writes go through the store's atomic path, so a torn session leaves the
     /// store valid — some records and objects transferred, all intact. Run
     /// twice over identical stores it transfers nothing.
@@ -69,6 +89,7 @@ impl Store {
     pub fn sync(
         &self,
         keys: &[TaskKey],
+        scope: ObjectScope<'_>,
         reader: &mut dyn Read,
         writer: &mut dyn Write,
         role: SyncRole,
@@ -88,7 +109,7 @@ impl Store {
         }
 
         // Advertise this side's inventory within the key set; read the peer's.
-        let (my_records, my_objects) = self.inventory(keys)?;
+        let (my_records, my_objects) = self.have(keys, scope)?;
         let my_have = SyncMessage::Have {
             records: my_records.iter().map(|(k, h)| (*k, *h)).collect(),
             objects: my_objects.iter().copied().collect(),
@@ -114,11 +135,13 @@ impl Store {
             }
         }
 
-        // want = theirs − mine, in the peer's advertised order.
-        let want_records: Vec<TaskKey> = peer_records
+        // want = theirs − mine, in the peer's advertised order. The record
+        // wants keep the digest each key was advertised under, which the
+        // fulfillment is then checked against; the wire carries the keys alone.
+        let want_records: Vec<(TaskKey, Hash)> = peer_records
             .iter()
-            .map(|(k, _)| *k)
-            .filter(|k| !my_records.contains_key(k))
+            .copied()
+            .filter(|(k, _)| !my_records.contains_key(k))
             .collect();
         let want_objects: Vec<Hash> = peer_objects
             .iter()
@@ -126,7 +149,7 @@ impl Store {
             .filter(|h| !my_objects.contains(h))
             .collect();
         let my_want = SyncMessage::Want {
-            records: want_records.clone(),
+            records: want_records.iter().map(|(k, _)| *k).collect(),
             objects: want_objects.clone(),
         };
 
@@ -164,18 +187,46 @@ impl Store {
         })
     }
 
-    /// This side's inventory within the key set: the held records as a
-    /// key→digest map, and the set of every object those records reference.
-    /// The object set is derived from the records, never a full CAS scan.
-    fn inventory(&self, keys: &[TaskKey]) -> Result<(BTreeMap<TaskKey, Hash>, BTreeSet<Hash>)> {
+    /// What this side advertises, filling the protocol's `Have`: the records it
+    /// holds within the key set as a key→digest map, and the objects it offers
+    /// under `scope`.
+    ///
+    /// Records are always every one this side holds — they are what makes a
+    /// chain traversable — and the object set is derived from them, never a
+    /// full CAS scan. The advertised objects are filtered to what this side
+    /// actually holds, so a store with gaps never offers bytes it cannot serve:
+    /// a peer's want is bounded by this, and a want it could not fulfil would
+    /// fail the session.
+    fn have(
+        &self,
+        keys: &[TaskKey],
+        scope: ObjectScope<'_>,
+    ) -> Result<(BTreeMap<TaskKey, Hash>, BTreeSet<Hash>)> {
         let mut records = BTreeMap::new();
-        let mut objects = BTreeSet::new();
+        let mut referenced = BTreeSet::new();
         // A BTreeSet dedups and orders the keys, so a caller's repeated key
-        // advertises once and the inventory is deterministic.
+        // advertises once and the advertisement is deterministic.
         for key in keys.iter().copied().collect::<BTreeSet<_>>() {
             if let Some(record) = self.record(&key)? {
-                objects.extend(referenced_objects(&record));
+                referenced.extend(referenced_objects(&record));
                 records.insert(key, hash_bytes(&record.to_bytes()));
+            }
+        }
+        let offered = match scope {
+            ObjectScope::Referenced => referenced,
+            // A named object outside the key set's references is not this
+            // side's to offer under these keys, so the named set intersects
+            // what the records reference.
+            ObjectScope::Named(named) => named
+                .iter()
+                .copied()
+                .filter(|hash| referenced.contains(hash))
+                .collect(),
+        };
+        let mut objects = BTreeSet::new();
+        for hash in offered {
+            if self.has(&hash)? {
+                objects.insert(hash);
             }
         }
         Ok((records, objects))
@@ -211,18 +262,32 @@ impl Store {
         Ok(())
     }
 
-    /// Takes a fulfillment stream: objects first — each re-hashed and put —
-    /// then records, each committed once its objects are durable. The counts
-    /// are this side's own want, so the stream needs no terminator.
+    /// Takes a fulfillment stream: objects first, then records, each committed
+    /// once its objects are durable. Both loops walk this side's own want in
+    /// the order it was sent, so the stream needs no terminator, and both hold
+    /// every arrival to that want twice over: it must be the item requested at
+    /// its position, and its bytes must hash to the digest it was advertised
+    /// under. The want is this side's, so the first check binds what the peer
+    /// may deliver; the digest is the peer's own advertisement, so the second
+    /// catches bytes altered between the advertisement and the delivery.
     fn receive_fulfillment(
         &self,
         reader: &mut dyn Read,
         objects: &[Hash],
-        records: &[TaskKey],
+        records: &[(TaskKey, Hash)],
     ) -> Result<()> {
-        for _ in objects {
+        for requested in objects {
             match recv(reader)? {
                 SyncMessage::Object { hash, bytes } => {
+                    // An unrequested object would consume the arrival the
+                    // wanted one was to occupy, so the session would end with
+                    // the store short of bytes it asked for and no error to say
+                    // so — records replicate without their artifacts present.
+                    if hash != *requested {
+                        return Err(Error::Validation(format!(
+                            "sync object {hash} arrived where object {requested} was requested"
+                        )));
+                    }
                     let actual = hash_bytes(&bytes);
                     if actual != hash {
                         return Err(Error::Validation(format!(
@@ -234,17 +299,30 @@ impl Store {
                 other => return Err(unexpected("object", &other)),
             }
         }
-        for _ in records {
+        for (requested, digest) in records {
             match recv(reader)? {
                 SyncMessage::Record { key, bytes } => {
+                    if key != *requested {
+                        return Err(Error::Validation(format!(
+                            "sync record for task {key} arrived where task {requested} was requested"
+                        )));
+                    }
+                    let actual = hash_bytes(&bytes);
+                    if actual != *digest {
+                        return Err(Error::Validation(format!(
+                            "sync record for task {key} was advertised as {digest} and arrived with bytes hashing to {actual}"
+                        )));
+                    }
                     let record = TaskRecord::from_bytes(&bytes)?;
+                    // The digest is the peer's own claim, so the decoded record
+                    // is still held to answering for the key it arrived under.
                     if record.identity.key() != key {
                         return Err(Error::Validation(format!(
                             "sync record labelled task {key} answers for task {}",
                             record.identity.key()
                         )));
                     }
-                    self.commit_record(&record)?;
+                    self.replicate(&record)?;
                 }
                 other => return Err(unexpected("record", &other)),
             }
@@ -317,14 +395,46 @@ fn unexpected(expected: &str, got: &SyncMessage) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Store;
+    use crate::testutil::{
+        record_with_stored_artifact, sample_identity, store_identity_components, temp_store,
+    };
 
-    /// Opens a store over a fresh temporary directory, keeping the guard
-    /// alive for the test's duration.
-    fn temp_store() -> (tempfile::TempDir, Store) {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let store = Store::open(dir.path()).expect("open store");
-        (dir, store)
+    /// Drives `store` as a responder against a hand-built peer whose every
+    /// frame is precomputed, so the session runs synchronously against a byte
+    /// slice with no peer thread. The responder holds no key set of its own, so
+    /// it advertises nothing and the peer's `Have` alone decides its want.
+    fn responder_reads(
+        store: &Store,
+        frames: impl IntoIterator<Item = SyncMessage>,
+    ) -> Result<SyncReport> {
+        let mut incoming = Vec::new();
+        for message in frames {
+            write_frame(&mut incoming, &message.encode()).expect("frame");
+        }
+        let mut reader = incoming.as_slice();
+        let mut sink = Vec::new();
+        store.sync(
+            &[],
+            ObjectScope::Referenced,
+            &mut reader,
+            &mut sink,
+            SyncRole::Responder,
+        )
+    }
+
+    /// The handshake and the empty want that precede a peer's fulfillment,
+    /// advertising `records` and `objects` as the peer's inventory.
+    fn peer_offering(records: Vec<(TaskKey, Hash)>, objects: Vec<Hash>) -> [SyncMessage; 3] {
+        [
+            SyncMessage::Hello {
+                protocol: SYNC_PROTOCOL_VERSION,
+            },
+            SyncMessage::Have { records, objects },
+            SyncMessage::Want {
+                records: Vec::new(),
+                objects: Vec::new(),
+            },
+        ]
     }
 
     #[test]
@@ -332,15 +442,7 @@ mod tests {
         // A hand-framed hello at a future version: the responder reads it
         // first and refuses before writing anything.
         let (_dir, store) = temp_store();
-        let mut incoming = Vec::new();
-        write_frame(
-            &mut incoming,
-            &SyncMessage::Hello { protocol: 999 }.encode(),
-        )
-        .expect("frame hello");
-        let mut reader = incoming.as_slice();
-        let mut sink = Vec::new();
-        match store.sync(&[], &mut reader, &mut sink, SyncRole::Responder) {
+        match responder_reads(&store, [SyncMessage::Hello { protocol: 999 }]) {
             Err(Error::Validation(msg)) => {
                 assert!(msg.contains("999") && msg.contains('1'), "{msg}");
             }
@@ -351,55 +453,31 @@ mod tests {
     #[test]
     fn an_unexpected_first_message_is_a_protocol_error() {
         let (_dir, store) = temp_store();
-        let mut incoming = Vec::new();
-        write_frame(&mut incoming, &SyncMessage::Done.encode()).expect("frame");
-        let mut reader = incoming.as_slice();
-        let mut sink = Vec::new();
         assert!(matches!(
-            store.sync(&[], &mut reader, &mut sink, SyncRole::Responder),
+            responder_reads(&store, [SyncMessage::Done]),
             Err(Error::Validation(_))
         ));
     }
 
     #[test]
     fn a_tampered_object_is_rejected_and_nothing_is_committed() {
-        // A hand-built initiator drives a real responder to want one object,
-        // then serves a frame whose bytes do not hash to the advertised
-        // digest. The responder must reject it and commit nothing. Every frame
-        // the responder reads is precomputed, so the responder runs
-        // synchronously against a byte slice — no peer thread.
+        // The peer advertises one object the responder lacks, then serves a
+        // frame whose bytes do not hash to the advertised digest.
         let (_dir, store) = temp_store();
         let advertised = hash_bytes(b"the real object bytes");
         let tampered = b"tampered".to_vec();
         assert_ne!(hash_bytes(&tampered), advertised);
 
-        let mut incoming = Vec::new();
-        // Handshake, then advertise the object the responder lacks with no
-        // records, then a want of nothing, then the tampered fulfillment for
-        // the responder's own want.
-        for message in [
-            SyncMessage::Hello {
-                protocol: SYNC_PROTOCOL_VERSION,
-            },
-            SyncMessage::Have {
-                records: Vec::new(),
-                objects: vec![advertised],
-            },
-            SyncMessage::Want {
-                records: Vec::new(),
-                objects: Vec::new(),
-            },
-            SyncMessage::Object {
-                hash: advertised,
-                bytes: tampered.clone(),
-            },
-        ] {
-            write_frame(&mut incoming, &message.encode()).expect("frame");
-        }
-
-        let mut reader = incoming.as_slice();
-        let mut sink = Vec::new();
-        match store.sync(&[], &mut reader, &mut sink, SyncRole::Responder) {
+        let frames = peer_offering(Vec::new(), vec![advertised])
+            .into_iter()
+            .chain([
+                SyncMessage::Object {
+                    hash: advertised,
+                    bytes: tampered.clone(),
+                },
+                SyncMessage::Done,
+            ]);
+        match responder_reads(&store, frames) {
             Err(Error::Validation(msg)) => assert!(msg.contains("hashing to"), "{msg}"),
             other => panic!("expected a hash-mismatch rejection, got {other:?}"),
         }
@@ -410,5 +488,107 @@ mod tests {
                 .has(&hash_bytes(&tampered))
                 .expect("has tampered bytes")
         );
+    }
+
+    #[test]
+    fn an_object_that_was_not_requested_is_rejected_and_nothing_is_committed() {
+        // The peer advertises one object and serves another. The served object
+        // hashes to the digest its own frame carries; what disqualifies it is
+        // that this side never asked for it, and accepting it would consume the
+        // arrival the wanted object was to occupy.
+        let (_dir, store) = temp_store();
+        let requested = hash_bytes(b"the object this side wants");
+        let served = b"an object nobody asked for".to_vec();
+        let served_hash = hash_bytes(&served);
+        assert_ne!(served_hash, requested);
+
+        let frames = peer_offering(Vec::new(), vec![requested])
+            .into_iter()
+            .chain([
+                SyncMessage::Object {
+                    hash: served_hash,
+                    bytes: served,
+                },
+                SyncMessage::Done,
+            ]);
+        match responder_reads(&store, frames) {
+            Err(Error::Validation(msg)) => {
+                assert!(
+                    msg.contains(&served_hash.to_string()) && msg.contains(&requested.to_string()),
+                    "{msg}"
+                );
+            }
+            other => panic!("expected an unrequested-object rejection, got {other:?}"),
+        }
+        for hash in [requested, served_hash] {
+            assert!(!store.has(&hash).expect("object lookup"));
+        }
+    }
+
+    #[test]
+    fn a_record_that_misses_its_advertised_digest_is_rejected_and_nothing_is_committed() {
+        // The peer advertises a record under a digest that is not the digest of
+        // the bytes it then serves. The record itself is well formed and
+        // answers for the key it arrives under, so the digest comparison is the
+        // only check that can fire.
+        let (_dir, store) = temp_store();
+        store_identity_components(&store);
+        let record = record_with_stored_artifact(&store, sample_identity(1));
+        let key = record.identity.key();
+        let bytes = record.to_bytes();
+        let advertised = hash_bytes(b"a digest these bytes do not have");
+        assert_ne!(hash_bytes(&bytes), advertised);
+
+        let frames = peer_offering(vec![(key, advertised)], Vec::new())
+            .into_iter()
+            .chain([SyncMessage::Record { key, bytes }, SyncMessage::Done]);
+        match responder_reads(&store, frames) {
+            Err(Error::Validation(msg)) => {
+                assert!(
+                    msg.contains("hashing to") && msg.contains(&key.to_string()),
+                    "{msg}"
+                );
+            }
+            other => panic!("expected a digest-mismatch rejection, got {other:?}"),
+        }
+        assert!(store.record(&key).expect("record lookup").is_none());
+    }
+
+    #[test]
+    fn a_record_for_an_unwanted_key_is_rejected_and_nothing_is_committed() {
+        // The peer advertises one record and serves another. The served record
+        // is well formed and hashes to its own digest; what disqualifies it is
+        // that this side never asked for its key.
+        let (_dir, store) = temp_store();
+        store_identity_components(&store);
+        let wanted = record_with_stored_artifact(&store, sample_identity(1));
+        let served = record_with_stored_artifact(&store, sample_identity(2));
+        let (wanted_key, served_key) = (wanted.identity.key(), served.identity.key());
+        assert_ne!(wanted_key, served_key);
+
+        let frames = peer_offering(
+            vec![(wanted_key, hash_bytes(&wanted.to_bytes()))],
+            Vec::new(),
+        )
+        .into_iter()
+        .chain([
+            SyncMessage::Record {
+                key: served_key,
+                bytes: served.to_bytes(),
+            },
+            SyncMessage::Done,
+        ]);
+        match responder_reads(&store, frames) {
+            Err(Error::Validation(msg)) => {
+                assert!(
+                    msg.contains(&served_key.to_string()) && msg.contains(&wanted_key.to_string()),
+                    "{msg}"
+                );
+            }
+            other => panic!("expected an unwanted-key rejection, got {other:?}"),
+        }
+        for key in [wanted_key, served_key] {
+            assert!(store.record(&key).expect("record lookup").is_none());
+        }
     }
 }

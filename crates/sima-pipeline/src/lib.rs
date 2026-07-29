@@ -25,6 +25,7 @@ mod fixtures;
 mod fleet;
 mod journal;
 mod machines;
+mod migrate;
 mod observe;
 mod orchestrate;
 mod remove;
@@ -34,6 +35,7 @@ mod spend;
 mod stats;
 mod status;
 mod task_history;
+mod task_keys;
 mod timeline;
 
 pub use config::{
@@ -47,6 +49,7 @@ pub use feed::{
 };
 pub use fleet::Engagement;
 pub use machines::machines;
+pub use migrate::{MigrateOutcome, migrate, sync_serve};
 pub use observe::RunObserver;
 pub use orchestrate::orchestrate;
 pub use remove::remove;
@@ -68,4 +71,5 @@ pub use task_history::{
     Attempt, AttemptResult, TaskHistory, TaskOutcome, failures, failures_records, task_history,
     task_history_records,
 };
+pub use task_keys::task_keys;
 pub use timeline::{RetryStats, RunTimeline, WorkerMetrics, timeline, timeline_records};

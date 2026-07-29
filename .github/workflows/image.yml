@@ -1,0 +1,73 @@
+# Builds and publishes the sima container image, then checks the copy it
+# pushed.
+#
+# The registry copy is what every rented machine pulls, so it is built from the
+# repository's own source at a known commit rather than from a workstation. The
+# check runs against the pushed image, not the local build cache, so what is
+# verified is what a machine will get.
+
+name: image
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - containers/sima/Containerfile
+      - crates/**
+      - Cargo.toml
+      - Cargo.lock
+      - .github/workflows/image.yml
+  workflow_dispatch:
+
+env:
+  IMAGE: ghcr.io/${{ github.repository_owner }}/sima
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Tagged with the commit as well as `latest`, so a run that needs to be
+      # reproduced can name the image it actually used.
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: containers/sima/Containerfile
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:latest
+            ${{ env.IMAGE }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # The image's contract, checked against the copy in the registry: both
+      # binaries present, and the probe every orchestrator runs answering from
+      # inside it. `--enumerate` prints one JSON device per line and exits, so
+      # an empty answer on a runner with no GPU is a pass; a runtime that
+      # cannot start the binary at all is not.
+      - name: check the published image
+        run: |
+          set -euo pipefail
+          IMAGE="${{ env.IMAGE }}:${{ github.sha }}"
+          docker pull "$IMAGE"
+          docker run --rm --entrypoint /bin/sh "$IMAGE" -c \
+            'test -x /usr/local/bin/sima-worker && test -x /usr/local/bin/sima'
+          # `sima` with no arguments prints its usage and exits 1, so its
+          # output is captured rather than piped: under `pipefail` the exit
+          # would fail the step before grep saw anything.
+          usage="$(docker run --rm --entrypoint sima "$IMAGE" 2>&1 || true)"
+          printf '%s' "$usage" | grep -q 'usage: sima'
+          docker run --rm "$IMAGE" --enumerate stub.v1

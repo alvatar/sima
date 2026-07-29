@@ -26,6 +26,7 @@
 //! refuses to rent once they are reached.
 
 mod acquire;
+mod adopt;
 mod budget;
 mod guard;
 mod offer;
@@ -37,13 +38,17 @@ pub mod stub;
 mod testutil;
 
 pub use acquire::{AcquireLimits, acquire};
-pub use budget::{Budget, Cost, Exhaustion, OpenSpend, SpendReport, Verdict, assess, spend_report};
+pub use adopt::adopt;
+pub use budget::{
+    Budget, Cost, Exhaustion, OpenSpend, SpendReport, Verdict, assess, now_ms, spend_report,
+};
 pub use guard::InstanceGuard;
 pub use offer::{Constraints, Objective, Offer, OfferId, Price, select};
 pub use provider::{
-    Instance, InstanceId, InstanceStatus, Provider, Provision, SshEndpoint, TaggedInstance,
+    Instance, InstanceId, InstanceStatus, Provider, Provision, Reachability, SshEndpoint,
+    TaggedInstance,
 };
-pub use reconcile::{ReconcileReport, reconcile};
+pub use reconcile::{ReconcileReport, ReconcileScope, reconcile};
 pub use reputation::{
     IncidentKind, MachineReport, MachineSummary, machine_report, record_incident,
 };

@@ -35,7 +35,7 @@ impl Answer {
 
     /// The body's `msg` field, the human-readable detail the API sets
     /// beside `error` — the part that states what was actually wrong.
-    fn msg(&self) -> Option<&str> {
+    pub(crate) fn msg(&self) -> Option<&str> {
         self.body.get("msg")?.as_str()
     }
 

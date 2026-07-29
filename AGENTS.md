@@ -2,38 +2,30 @@
 
 ## Communication (read first)
 
-- Never open a reply with "You are right", "You're absolutely right", or any affirmation of the user. Just answer. Do not use the expression "load-bearing" either.
-- No sycophancy. Do not praise, flatter, or validate. State findings flat.
-- Never use the words "honest", "honestly", "honesty", "brutal", or "to be frank".  If something is a caveat or a risk, name the caveat or risk directly — do not frame it as an act of candor. NEVER USE THOSE WORDS.
-- Dry, direct, professional. Lead with the substance. The most important point goes first and in full, never buried as a "side note".
-- Never narrate your own tone or stance. No meta-commentary about how you are speaking — no "I'll say this flatly", "not defending it", "to be clear", "naming this directly", "stating plainly", or any phrase that describes the manner of your reply instead of just delivering it. Say the thing; do not announce how you are saying it.
-- Define things by what they are, not by what they are not. A negative ("this is not X", "rather than Y") bloats without adding clarity; state the positive fact. Applies to prose, code comments, and docs.
-- Do not invent ad-hoc hyphenated terms as shorthand ("line-framed", "no-replace"); use plain, established wording and spell the mechanism out. Applies to prose, code comments, and docs.
-- Professional register in everything written — PRs, docs, comments, reports. No jokes, metaphors, or playful phrasing ("the exit exam", "sails past").
-- Write for a senior engineer, not a domain expert: explain domain-specific concepts (cryptography, scheduling theory) at that level, and skip explanations of general engineering.
-- Reading takes time. Include only what changes the reader's understanding or decision; cut everything else. PR descriptions cover what changed and why, in the conventional shape of a PR; they leave out ancillary material such as the tests performed or the process followed.
+- Use only dry and professional tone.
+- No sycophancy. Do not praise, flatter, or validate. State findings flat. No "You are right" or variations.
+- No fake candor. Just communicate directly. You have to be honest without being explicit about this fact.
+- No meta-commentary about how you are speaking.
+- Synthetize. Use bullet points.
+- Use direct and simple language. No made up hyphenated terms. Use standard words.
+- Answer only to what is asked, go to the point.
+- Avoid hedging in your responses.
 
 ## General engineering rules
 
 - No hacks, no speculative architecture, no demo-shaped dead ends
-- Before introducing backwards compatibility, always ask. Err on the side of no backwards compatibility: it adds complexity and we do not need it.
+- Before introducing backwards compatibility, always ask.
 - work/ is never committed
-- Do a commit for every meaningful block of work, and push it. Small, meaningful commits that are easy to bisect later.
-- Docs and comments are timeless: they state the current state and its rationale. Never record decision dates, timestamps, milestone numbers, or narrations of how something came to be — anywhere in the repo (docs, code comments, test comments, artifact pages). History lives in git. The roadmap file (`TODO.md`) is the one exemption, since tracking progression is its function.
-- No AI attribution anywhere: no "Generated with Claude Code" footers, no `Co-Authored-By: Claude` lines, no session links — not in commits, PR bodies, PR comments, issues, or docs.
+- Always commit and push every meaningful block of work. Err on the side of small rather than big commits.
+- Docs and comments are timeless: they state the current state and its rationale. Never record decision dates, timestamps, milestone numbers, or narrations of how something came to be. History lives in git. The roadmap file (`TODO.md`) is the one exemption, since tracking progression is its function.
+- No AI attribution anywhere. AI is mentioned in the README.
 
-## Testing layer
+## Testing
 
-- Rust logic is tested in Rust tests, next to the type or function it covers.
+- Rust tests live in the same file as the code they cover, in a `#[cfg(test)] mod tests` at the end of the file. A separate test file is justified only for integration tests spanning multiple files/modules.
 - Cross-crate and end-to-end behavior is tested in integration tests under the consuming crate's `tests/` directory (workspace: each crate owns its integration tests).
 - End-to-end tests of real domains through the full spine live in `crates/sima-integration`.
-
-## Test-code structure
-
-- Rust tests live in the same file as the code they cover, in a `#[cfg(test)] mod tests` at the end of the file.
-- A separate test file is justified only for integration tests spanning multiple files/modules.
-- Test-only failure-injection state is consolidated into a single `#[cfg(test)]` seams struct per type, never scattered across the type's fields.
-- Test-only accessors are `#[cfg(test)]`-gated and may sit beside the state they expose.
+- Do not ignore tests. This is strictly forbidden.
 
 ## TODOs
 
@@ -62,25 +54,8 @@
 
 ## Architecture
 
-- `README.md` is the design document; the near-term work list is `TODO.md`. Rust; local execution first, distributed by design.
-- Invariants below are settled in discussion before being recorded here; new ones are added the same way.
-
-Settled invariants:
-- Execution backends are implementation crates under `crates/toolkits/` (`sima-toolkit-*`), depending on `sima-core` (and `sima-contracts` when needed); `sima-domains` depends on the toolkits its domains use, and each toolkit isolates its own dependency set.
-- The store is the only durable state. Queues, schedulers, and orchestrators are ephemeral; a task source derives the currently-runnable frontier from (config, store state) — static batches and segment chains are two implementations of that one interface. Resume, crash-recovery, and re-run are one code path: re-derive the frontier, continue.
-- One orchestrator per run — the `sima run` process itself, no daemon; single-writer enforced by an OS file lock the kernel releases when the holder exits, so no staleness protocol exists; the lock file's content (pid, hostname) is diagnostic only. Workers are stateless leaseholders.
-- Executors are pure compute: they receive (spec, params, seed, env) and return artifacts + stats, never touching the store. Workers commit results through the catalog. The trust boundary lives on this seam.
-- Candidates are opaque at the infrastructure layer: a spec is (format id, opaque bytes), content-addressed. Domains interpret specs; "genome" is domain vocabulary. Run parameters are a second opaque content-addressed blob (params): generators produce specs, config produces params, and the spec's format id governs the interpretation of both — so one candidate stays addressable across evaluation stages and the generator contract never carries evaluation policy.
-- Two serialization worlds: identity-bearing bytes (anything hashed) go through the canonical `Enc`/`Dec` encoding exclusively; human-readable artifacts are serde and never identity-bearing.
-- Reproducibility is declared per domain across two tiers (README, Determinism), not assumed uniform. The infrastructure guarantees run identity regardless: manifests are canonicalized so run hashes are independent of worker completion order, and journals are observational, excluded from equality criteria.
-- Structured events are the `sima-trace` facade at L0.5, directly above `sima-core`: the typed event vocabulary, journal records, emitters, and one collector thread any layer emits into without an upward edge. The collector is the single-writer seam — it stamps each event, appends the journal line through a `DurableSink` the store implements (which keeps the facade below the store), then hands the record to the run's observer; the journal write precedes the observer, and a child's events cross the wire as opaque frames the parent forwards to the collector.
-
-Principles:
-- Clean, pristine architecture: clear spine, truthful boundaries, no split brain.
-- No unjustified repeated code; justify file count / splits; deliberate naming.
-- No bootstrapping garbage in the active path; isolate platform-specific code cleanly.
-- Maintain a clear, data-driven flow of information.
-- Every milestone serves the real search substrate, optimizing for correctness and architecture, not demos.
+The settled invariants and principles are the RULES section of
+@docs/architecture.md.
 
 ## Documentation structure
 

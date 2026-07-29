@@ -1,10 +1,10 @@
 //! Fixtures shared by the crate's test modules.
 
 use std::sync::atomic::AtomicBool;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use sima_model::{FormatId, GeneratorConfig, GeneratorId, Params, RunConfig, RunId};
-use sima_store::{InstanceRecord, InstanceRecordState, SpendEntry, Store};
+use sima_store::{InstanceRecord, InstanceRecordState, Rental, SpendEntry, Store};
 use tempfile::TempDir;
 
 use sima_core::Result;
@@ -47,7 +47,19 @@ pub(crate) fn instance_record(
     state: InstanceRecordState,
     owner: RunId,
 ) -> InstanceRecord {
+    instance_record_as(tag, state, owner, Rental::Worker)
+}
+
+/// The same record in a stated role, for the tests that turn on what a rental
+/// carries.
+pub(crate) fn instance_record_as(
+    tag: &str,
+    state: InstanceRecordState,
+    owner: RunId,
+    role: Rental,
+) -> InstanceRecord {
     InstanceRecord {
+        role,
         tag: tag.to_string(),
         provider: "stub".to_string(),
         machine: "m-stub".to_string(),
@@ -90,7 +102,7 @@ pub(crate) fn sample_run(root_seed: u64) -> RunId {
 /// Limits that poll without waiting, so no test sleeps.
 pub(crate) fn prompt_limits() -> AcquireLimits {
     AcquireLimits {
-        ready_timeout: Duration::from_millis(500),
+        usable_by: Instant::now() + Duration::from_millis(500),
         ready_poll: Duration::ZERO,
     }
 }
@@ -117,6 +129,7 @@ pub(crate) fn acquire_any<'a, P: Provider>(
         provider,
         store,
         &lock,
+        Rental::Worker,
         &Constraints::default(),
         Objective::CheapestPerHour,
         &prompt_limits(),

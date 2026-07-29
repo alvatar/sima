@@ -70,7 +70,7 @@ mod tests {
     use crate::config::VastConfig;
     use crate::test_server::{ScriptedAnswer, TestServer};
     use sima_core::Result;
-    use sima_provider::{Constraints, Objective, Provider, select};
+    use sima_provider::{Constraints, Objective, Provider, Reachability, select};
 
     #[test]
     fn the_backend_lists_the_marketplace_behind_the_contract() -> Result<()> {
@@ -98,5 +98,20 @@ mod tests {
         assert_eq!(ranked.len(), 1);
         assert_eq!(ranked[0].gpu_model, "RTX 4090");
         Ok(())
+    }
+
+    #[test]
+    fn a_rented_machine_is_reached_over_ssh() {
+        // The contract's default, taken rather than restated: this backend
+        // rents real hardware, so its machines are somewhere else. Pinned here
+        // so a change to the default is a change this test reports.
+        let provider = VastProvider::new(VastConfig {
+            base_url: "http://127.0.0.1:1".to_string(),
+            api_key: "k-secret".to_string(),
+            image: String::new(),
+            disk_gb: 0,
+            env: None,
+        });
+        assert_eq!(provider.reachability(), Reachability::Ssh);
     }
 }

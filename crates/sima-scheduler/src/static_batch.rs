@@ -173,7 +173,7 @@ mod tests {
         store.put(&config.params.to_bytes())?;
         store.put(&env.to_bytes())?;
         let record = sima_model::TaskRecord::new(task.identity, Vec::new())?;
-        store.commit_record(&record)?;
+        store.commit(&record)?;
 
         // A fresh batch over the same config now skips the committed key.
         let resumed = StaticBatch::new(&generator, &config, &env, &store)?;
@@ -202,7 +202,7 @@ mod tests {
         let task = batch.poll()?.remove(0);
         store.put(&config.params.to_bytes())?;
         store.put(&env.to_bytes())?;
-        store.commit_record(&sima_model::TaskRecord::new(task.identity, Vec::new())?)?;
+        store.commit(&sima_model::TaskRecord::new(task.identity, Vec::new())?)?;
 
         // The count follows the records, so it is exact where a journal
         // replay would come up short.

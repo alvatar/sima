@@ -9,6 +9,12 @@
 //! The ledger decides which providers it touches: the records name them, so
 //! a store holding no record reaches no provider API and needs no
 //! credentials.
+//!
+//! A rental hosting a migrated run's orchestrator is spared by default. It has
+//! exactly the shape a pass reaps — nothing local holds its owner's lock,
+//! because a migration detaches the far side deliberately — and destroying one
+//! would kill a run that is working and paid for. `--hosted` includes them, for
+//! an operator who knows no migration is running.
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -16,17 +22,18 @@ use std::process::ExitCode;
 
 use sima_core::{Error, Result};
 use sima_pipeline::load;
-use sima_provider::{Provider, ReconcileReport, reconcile};
+use sima_provider::{Provider, ReconcileReport, ReconcileScope, reconcile};
 use sima_provider_vast::{VastConfig, VastProvider};
 use sima_store::Store;
 
 use crate::report;
 
-/// `sima reconcile <config.toml>`: destroys the machines the config's store
-/// still holds records for, and prints what the pass did. The store comes
-/// from the config's execution section, as the query commands derive it.
-pub(crate) fn reconcile_command(config: &Path) -> ExitCode {
-    match clean_store(config) {
+/// `sima reconcile <config.toml> [--hosted]`: destroys the machines the
+/// config's store still holds records for, and prints what the pass did. The
+/// store comes from the config's `[config]` section, as the query commands
+/// derive it. Without `--hosted` a rental hosting a migrated run is spared.
+pub(crate) fn reconcile_command(config: &Path, scope: ReconcileScope) -> ExitCode {
+    match clean_store(config, scope) {
         Ok(report) => {
             print_report(&report);
             ExitCode::SUCCESS
@@ -37,9 +44,9 @@ pub(crate) fn reconcile_command(config: &Path) -> ExitCode {
 
 /// Loads the config, opens its store, and runs the pass over every provider
 /// the instance ledger names.
-fn clean_store(config: &Path) -> Result<ReconcileReport> {
+fn clean_store(config: &Path, scope: ReconcileScope) -> Result<ReconcileReport> {
     let store = Store::open(load(config)?.store)?;
-    clean(&store, backend)
+    clean(&store, backend, scope)
 }
 
 /// Runs one reconciliation pass per provider the ledger names, over the
@@ -48,7 +55,7 @@ fn clean_store(config: &Path) -> Result<ReconcileReport> {
 /// A ledger holding no record resolves no backend at all: reconciliation is
 /// driven by what the store says was rented, so a store that rented nothing
 /// costs no provider call and no credential.
-fn clean<R>(store: &Store, resolve: R) -> Result<ReconcileReport>
+fn clean<R>(store: &Store, resolve: R, scope: ReconcileScope) -> Result<ReconcileReport>
 where
     R: Fn(&str) -> Result<Box<dyn Provider>>,
 {
@@ -59,7 +66,7 @@ where
         .collect();
     let mut report = ReconcileReport::default();
     for id in providers {
-        let pass = reconcile(resolve(&id)?.as_ref(), store)?;
+        let pass = reconcile(resolve(&id)?.as_ref(), store, scope)?;
         report.destroyed.extend(pass.destroyed);
         report.cleared.extend(pass.cleared);
     }
@@ -101,9 +108,10 @@ mod tests {
 
     use sima_core::{Error, Result};
     use sima_model::{FormatId, GeneratorConfig, GeneratorId, Params, RunConfig, RunId};
+    use sima_provider::ReconcileScope;
     use sima_provider::stub::StubProvider;
     use sima_provider::{InstanceId, Provider};
-    use sima_store::{InstanceRecord, InstanceRecordState, Store};
+    use sima_store::{InstanceRecord, InstanceRecordState, Rental, Store};
 
     use super::{backend, clean};
 
@@ -137,6 +145,7 @@ mod tests {
             provider: provider.to_string(),
             machine: "m-0".to_string(),
             owner: owner().to_string(),
+            role: Rental::Worker,
             state: InstanceRecordState::Live {
                 instance: instance.to_string(),
             },
@@ -149,10 +158,14 @@ mod tests {
     fn an_empty_ledger_resolves_no_backend_and_reports_nothing_done() -> Result<()> {
         let (_dir, store) = temp_store();
         let resolutions = Cell::new(0);
-        let report = clean(&store, |_| {
-            resolutions.set(resolutions.get() + 1);
-            Err(Error::Provider("no backend may be built".to_string()))
-        })?;
+        let report = clean(
+            &store,
+            |_| {
+                resolutions.set(resolutions.get() + 1);
+                Err(Error::Provider("no backend may be built".to_string()))
+            },
+            ReconcileScope::Workers,
+        )?;
         assert_eq!(resolutions.get(), 0);
         assert!(report.destroyed.is_empty());
         assert!(report.cleared.is_empty());
@@ -163,13 +176,17 @@ mod tests {
     fn an_orphan_of_a_dead_run_is_destroyed_and_its_record_cleared() -> Result<()> {
         let (_dir, store) = temp_store();
         store.put_instance(&record("sima-tag-0", "stub", "i-1"))?;
-        let report = clean(&store, |id| {
-            assert_eq!(id, "stub");
-            Ok(Box::new(
-                StubProvider::new(Vec::new())
-                    .with_instance(InstanceId("i-1".to_string()), "sima-tag-0"),
-            ) as Box<dyn Provider>)
-        })?;
+        let report = clean(
+            &store,
+            |id| {
+                assert_eq!(id, "stub");
+                Ok(Box::new(
+                    StubProvider::new(Vec::new())
+                        .with_instance(InstanceId("i-1".to_string()), "sima-tag-0"),
+                ) as Box<dyn Provider>)
+            },
+            ReconcileScope::Workers,
+        )?;
         assert_eq!(report.destroyed, vec![InstanceId("i-1".to_string())]);
         assert_eq!(report.cleared, vec!["sima-tag-0".to_string()]);
         assert!(store.instances()?.is_empty());
@@ -183,12 +200,16 @@ mod tests {
         // The owning run holds its orchestrator lock, which is what a live
         // run looks like to the pass.
         let _lock = store.acquire_run_lock(&owner())?;
-        let report = clean(&store, |_| {
-            Ok(Box::new(
-                StubProvider::new(Vec::new())
-                    .with_instance(InstanceId("i-1".to_string()), "sima-tag-0"),
-            ) as Box<dyn Provider>)
-        })?;
+        let report = clean(
+            &store,
+            |_| {
+                Ok(Box::new(
+                    StubProvider::new(Vec::new())
+                        .with_instance(InstanceId("i-1".to_string()), "sima-tag-0"),
+                ) as Box<dyn Provider>)
+            },
+            ReconcileScope::Workers,
+        )?;
         assert!(report.destroyed.is_empty());
         assert_eq!(store.instances()?.len(), 1);
         Ok(())
@@ -201,10 +222,14 @@ mod tests {
         store.put_instance(&record("sima-tag-1", "other", "i-2"))?;
         store.put_instance(&record("sima-tag-2", "stub", "i-3"))?;
         let resolved: std::cell::RefCell<Vec<String>> = std::cell::RefCell::new(Vec::new());
-        clean(&store, |id| {
-            resolved.borrow_mut().push(id.to_string());
-            Ok(Box::new(StubProvider::new(Vec::new())) as Box<dyn Provider>)
-        })?;
+        clean(
+            &store,
+            |id| {
+                resolved.borrow_mut().push(id.to_string());
+                Ok(Box::new(StubProvider::new(Vec::new())) as Box<dyn Provider>)
+            },
+            ReconcileScope::Workers,
+        )?;
         // One backend per distinct provider id, and no second pass over a
         // provider two records name.
         assert_eq!(resolved.into_inner(), vec!["other", "stub"]);
@@ -216,7 +241,7 @@ mod tests {
         let (_dir, store) = temp_store();
         store.put_instance(&record("sima-tag-0", "nowhere", "i-1"))?;
         assert!(matches!(
-            clean(&store, backend),
+            clean(&store, backend, ReconcileScope::Workers),
             Err(Error::Provider(message)) if message.contains("nowhere")
         ));
         // The record survives: nothing could judge the machine it names.

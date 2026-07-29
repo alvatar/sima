@@ -64,7 +64,7 @@ fn commit_task(store: &Store, seed: u64) -> Result<TaskKey> {
     let artifact_object = store.put(&seed.to_le_bytes())?;
     let artifact = ArtifactRef::new("state-final", artifact_object)?;
     let record = TaskRecord::new(identity, vec![artifact])?;
-    store.commit_record(&record)?;
+    store.commit(&record)?;
     Ok(identity.key())
 }
 

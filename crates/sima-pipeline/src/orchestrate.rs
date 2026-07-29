@@ -1,7 +1,7 @@
 //! [`orchestrate`]: one loaded config driven to its outcome.
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Command, ExitStatus, Stdio};
 
 use sima_contracts::DeviceBinding;
 use sima_core::{Error, Result};
@@ -78,10 +78,9 @@ pub fn orchestrate(
         .iter()
         .map(provider_for)
         .collect::<Result<Vec<_>>>()?;
-    let modes = members
-        .rentals
+    let modes = providers
         .iter()
-        .map(|rental| transport_mode(rental.spec))
+        .map(|provider| transport_mode(provider.as_ref()))
         .collect::<Result<Vec<_>>>()?;
     // Machines of yours resolve at run start too, over each machine's own
     // hardware: the image is verified present, then the enumeration probe
@@ -333,7 +332,11 @@ fn container_pool(
     execution: &ExecutionConfig,
     format: &FormatId,
 ) -> Result<ContainerPool> {
-    bootstrap_image(host, container)?;
+    // A pool fails on either answer; only the migration's first contact waits
+    // for a machine that is still coming up.
+    if let ImageCheck::Unreachable(error) = bootstrap_image(host, container)? {
+        return Err(error);
+    }
     let slots = match pool {
         Pool::Workers(workers) => vec![None; *workers],
         Pool::Devices(selectors) => {
@@ -372,14 +375,46 @@ fn container_pool(
     })
 }
 
+/// The code ssh exits with when it could not make the connection at all, as
+/// distinct from a command on the far side exiting non-zero.
+const SSH_UNREACHABLE: i32 = 255;
+
+/// What asking a machine for a pool's worker image found.
+pub(crate) enum ImageCheck {
+    /// The runtime answered and holds the image.
+    Present,
+    /// The machine could not be reached to ask, which is what a fresh or
+    /// rebooting one answers until it is up. The error names the destination
+    /// and is what to report if it never comes up.
+    Unreachable(Error),
+}
+
 /// Verifies a pool's worker image is present, failing with the command that
 /// puts it there. A missing image must be a clean error, not a hanging
 /// handshake. The fix differs by where the container runs: build it locally, or
 /// ship the local build to the machine.
-fn bootstrap_image(host: Option<&str>, container: &Container) -> Result<()> {
+///
+/// A machine that could not be reached at all is [`ImageCheck::Unreachable`]
+/// rather than an error, because the two failures are worth different
+/// responses: an image the runtime does not hold will not appear by being asked
+/// again, while a machine that is still coming up will answer shortly. The
+/// caller decides — a pool fails on either, a migration's first contact waits
+/// out the second.
+pub(crate) fn bootstrap_image(host: Option<&str>, container: &Container) -> Result<ImageCheck> {
     let argv = image_inspect_argv(host, &container.runtime, &container.image);
-    if command_succeeds(&argv)? {
-        return Ok(());
+    let status = command_status(&argv)?;
+    if status.success() {
+        return Ok(ImageCheck::Present);
+    }
+    // 255 is ssh's own code for a connection it could not make, and it can only
+    // mean that when there is an ssh in the command at all: a local runtime
+    // exiting 255 is the runtime speaking, about the image.
+    if let Some(host) = host
+        && status.code() == Some(SSH_UNREACHABLE)
+    {
+        return Ok(ImageCheck::Unreachable(Error::Validation(format!(
+            "cannot reach {host:?}: ssh exited with {status}"
+        ))));
     }
     let (place, fix) = match host {
         Some(host) => (
@@ -392,7 +427,7 @@ fn bootstrap_image(host: Option<&str>, container: &Container) -> Result<()> {
         None => (
             "locally".to_string(),
             format!(
-                "podman build -t {} -f containers/worker/Containerfile .",
+                "podman build -t {} -f containers/sima/Containerfile .",
                 container.image
             ),
         ),
@@ -422,16 +457,15 @@ fn probe_container_devices(
 }
 
 /// Runs `argv`, discarding its streams, and reports whether it exited zero.
-fn command_succeeds(argv: &[String]) -> Result<bool> {
+fn command_status(argv: &[String]) -> Result<ExitStatus> {
     let (program, args) = argv.split_first().expect("a non-empty command vector");
-    let status = Command::new(program)
+    Command::new(program)
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
-        .map_err(|e| Error::Validation(format!("running {program:?} failed: {e}")))?;
-    Ok(status.success())
+        .map_err(|e| Error::Validation(format!("running {program:?} failed: {e}")))
 }
 
 /// Runs `argv` and returns its stdout, or an error if it fails or its output
@@ -487,6 +521,11 @@ fn resolve_devices(config: &LoadedConfig) -> Result<ExecutionConfig> {
 ///   finding the binary in `target/debug`.
 ///
 /// A missing binary is a validation error naming the searched locations.
+///
+/// This is one of the two environment channels the pipeline reads. The other is
+/// `SIMA_STUB_SSH`, which points the stub backend at a machine that is really
+/// there so the ssh path runs against a throwaway server; it is read in
+/// `rental::provider_for` and nowhere else.
 pub(crate) fn worker_binary() -> Result<PathBuf> {
     if let Some(path) = std::env::var_os("SIMA_WORKER") {
         return Ok(PathBuf::from(path));

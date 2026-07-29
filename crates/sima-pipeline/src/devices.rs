@@ -8,7 +8,7 @@
 
 use sima_contracts::DeviceClass;
 use sima_core::{Error, Result};
-use sima_domains::devices::DeviceInfo;
+use sima_domains::devices::{DeviceInfo, DeviceType};
 use sima_scheduler::DeviceEntry;
 
 /// One `[[execution.device]]` entry as written: which device, and how many
@@ -20,6 +20,35 @@ pub struct DeviceSelector {
     pub select: String,
     /// Worker processes to run on the selected device.
     pub workers: usize,
+}
+
+/// The devices a machine's workers may be placed on: every enumerated device,
+/// minus the CPU ones whenever a non-CPU device is present.
+///
+/// A host whose graphics stack works enumerates the CPU rasterizer beside its
+/// card, and a machine with a GPU is used for the GPU: placing a worker on the
+/// rasterizer would spend the machine running the slowest device on it. When
+/// every enumerated device is a CPU they all stand — a host that offers this
+/// program no GPU still gets workers.
+///
+/// The devices are the ones the run's program can open, since the probe asked
+/// about its format, so every device this yields is a place the run can
+/// actually put a worker.
+pub(crate) fn usable(devices: &[DeviceInfo]) -> impl Iterator<Item = &DeviceInfo> {
+    let has_gpu = devices
+        .iter()
+        .any(|device| device.device_type != DeviceType::Cpu);
+    devices
+        .iter()
+        .filter(move |device| !has_gpu || device.device_type != DeviceType::Cpu)
+}
+
+/// The class a device belongs to.
+pub(crate) fn class_of(device: &DeviceInfo) -> DeviceClass {
+    DeviceClass {
+        vendor_id: device.vendor_id,
+        device_id: device.device_id,
+    }
 }
 
 /// Resolves each selector against `enumerated`, pairing it with the class it
@@ -110,14 +139,6 @@ fn matches(select: &str, device: &DeviceInfo) -> bool {
         return true;
     }
     device.name.to_lowercase().contains(&select.to_lowercase())
-}
-
-/// The class a device belongs to.
-fn class_of(device: &DeviceInfo) -> DeviceClass {
-    DeviceClass {
-        vendor_id: device.vendor_id,
-        device_id: device.device_id,
-    }
 }
 
 /// The classes as `vendor:device`, for an ambiguous-selector message.

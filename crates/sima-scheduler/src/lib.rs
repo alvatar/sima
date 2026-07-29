@@ -28,7 +28,7 @@ mod worker_pool;
 
 pub use config::{DeviceEntry, ExecutionConfig};
 pub use control::RunControl;
-pub use driver::{RunOutcome, run, worker_slots};
+pub use driver::{RunOutcome, run, run_keys, worker_slots};
 pub use segment_chain::SegmentChain;
 // The event vocabulary and journal line type are the trace facade's; the
 // scheduler re-exports them as the emitting layer consumers import from.

@@ -1,0 +1,186 @@
+//! The far half of a store sync, over the real binary: `sima sync-serve` on one
+//! store, a `Store::sync` initiator on another, joined by the child's stdio.
+//!
+//! This is the seam a migration's push and pull both cross. The key set is
+//! derived independently on each side from (config, store state), so no key
+//! list travels and the protocol is unchanged; what the test pins is that the
+//! far side derives the same set this side does, over stores that hold
+//! different amounts of the same run.
+//!
+//! Every test here runs in the ordinary gate: the far half is a subprocess on
+//! this machine, with no ssh hop and no network.
+
+mod common;
+
+use std::io::{BufReader, BufWriter};
+use std::path::Path;
+use std::process::{Command, Stdio};
+
+use common::{sima_command, write_config_text};
+use sima_core::{Error, Result};
+use sima_model::TaskKey;
+use sima_pipeline::{load, task_keys};
+use sima_store::{ObjectScope, Store, SyncReport, SyncRole};
+
+/// A stub config over `store`, dividing each candidate into `segments`
+/// accumulating tasks so a partly-run store has a real chain in it.
+fn config_text(store: &str, segments: u64) -> String {
+    format!(
+        r#"
+        [run]
+        root_seed = 21
+        format = "stub.v1"
+        segments = {segments}
+
+        [run.generator]
+        id = "stub.v1"
+        behaviors = ["accumulate:2", "accumulate:2"]
+
+        [config]
+        store = "{store}"
+        max_attempts = 1
+
+        [orchestrator]
+        workers = 2
+    "#
+    )
+}
+
+/// Runs `sima run` over `config` to completion, asserting it finalized.
+fn run_to_completion(config: &Path) {
+    let output = sima_command()
+        .args(["run", config.to_str().expect("utf-8 path")])
+        .output()
+        .expect("spawn sima run");
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+}
+
+/// Runs one sync session as the initiator against `sima sync-serve <far>`,
+/// advertising under `scope`, and returns this side's report.
+fn sync_against(near: &Path, far: &Path, scope: ObjectScope<'_>) -> Result<SyncReport> {
+    let loaded = load(near)?;
+    let store = Store::open(&loaded.store)?;
+    let keys = task_keys(&loaded, &store)?;
+    let mut child = sima_command()
+        .args(["sync-serve", far.to_str().expect("utf-8 path")])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .expect("spawn sima sync-serve");
+    let (stdin, stdout) = (
+        child.stdin.take().expect("piped stdin"),
+        child.stdout.take().expect("piped stdout"),
+    );
+    let mut writer = BufWriter::new(stdin);
+    let mut reader = BufReader::new(stdout);
+    let report = store.sync(&keys, scope, &mut reader, &mut writer, SyncRole::Initiator);
+    drop(writer);
+    let status = child.wait().expect("reap sima sync-serve");
+    match (report, status.success()) {
+        (Ok(report), true) => Ok(report),
+        (_, false) => Err(Error::Validation(format!(
+            "sima sync-serve exited with {status}"
+        ))),
+        (Err(error), true) => Err(error),
+    }
+}
+
+/// The task keys `config`'s run comprises over its own store.
+fn keys_of(config: &Path) -> Result<Vec<TaskKey>> {
+    let loaded = load(config)?;
+    let store = Store::open(&loaded.store)?;
+    task_keys(&loaded, &store)
+}
+
+#[test]
+fn a_push_lands_the_run_and_the_far_side_derives_the_same_frontier() -> Result<()> {
+    // A finished run pushed into an empty store: every record travels, and the
+    // far side — which derives its own key set from its own store — ends
+    // deriving exactly what this side does.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let near = write_config_text(dir.path(), "near.toml", &config_text("./near-store", 3));
+    let far = write_config_text(dir.path(), "far.toml", &config_text("./far-store", 3));
+    run_to_completion(&near);
+
+    let report = sync_against(&near, &far, ObjectScope::Referenced)?;
+    assert!(report.records_sent > 0, "the run travelled");
+    assert_eq!(keys_of(&far)?, keys_of(&near)?);
+    Ok(())
+}
+
+#[test]
+fn a_second_session_over_converged_stores_transfers_nothing() -> Result<()> {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let near = write_config_text(dir.path(), "near.toml", &config_text("./near-store", 2));
+    let far = write_config_text(dir.path(), "far.toml", &config_text("./far-store", 2));
+    run_to_completion(&near);
+
+    sync_against(&near, &far, ObjectScope::Referenced)?;
+    assert_eq!(
+        sync_against(&near, &far, ObjectScope::Referenced)?,
+        SyncReport::default(),
+        "a converged pair has nothing to say to each other"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_far_side_whose_run_lock_is_held_fails_cleanly_rather_than_hanging() -> Result<()> {
+    // `sync-serve` takes the run lock for the session, so a run driving that
+    // store on that machine makes the sync fail on the lock. The failure is the
+    // safe one: nothing is written underneath a live orchestrator.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let near = write_config_text(dir.path(), "near.toml", &config_text("./near-store", 2));
+    let far = write_config_text(dir.path(), "far.toml", &config_text("./far-store", 2));
+    run_to_completion(&near);
+
+    // Hold the far store's run lock from this process, as a live run would.
+    let far_loaded = load(&far)?;
+    let far_store = Store::open(&far_loaded.store)?;
+    let _held = far_store.acquire_run_lock(&far_loaded.run.id())?;
+
+    assert!(
+        sync_against(&near, &far, ObjectScope::Referenced).is_err(),
+        "a held lock is a clean failure, not a hang"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_far_side_whose_config_does_not_load_surfaces_as_a_failure() -> Result<()> {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let near = write_config_text(dir.path(), "near.toml", &config_text("./near-store", 2));
+    let broken = write_config_text(dir.path(), "broken.toml", "[run]\nnot = \"a config\"\n");
+    run_to_completion(&near);
+
+    assert!(sync_against(&near, &broken, ObjectScope::Referenced).is_err());
+    Ok(())
+}
+
+#[test]
+fn sync_serve_writes_frames_to_stdout_and_diagnostics_to_stderr() {
+    // The stream carries protocol frames and nothing else: a config that does
+    // not load must not put a word on stdout, or the frame decoder on the other
+    // end would read prose.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let broken = write_config_text(dir.path(), "broken.toml", "[run]\nnot = \"a config\"\n");
+    let output = Command::new(env!("CARGO_BIN_EXE_sima"))
+        .args(["sync-serve", broken.to_str().expect("utf-8 path")])
+        .stdin(Stdio::null())
+        .output()
+        .expect("spawn sima sync-serve");
+    assert_ne!(output.status.code(), Some(0));
+    assert!(output.stdout.is_empty(), "stdout carries frames alone");
+    assert!(!output.stderr.is_empty(), "the cause reaches stderr");
+}
+
+#[test]
+fn sync_serve_stays_out_of_the_usage_text() {
+    let output = sima_command().output().expect("spawn sima");
+    let usage = String::from_utf8(output.stderr).expect("stderr is UTF-8");
+    assert!(
+        !usage.contains("sync-serve"),
+        "it is a transport half, not a verb: {usage}"
+    );
+}
