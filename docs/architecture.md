@@ -84,6 +84,16 @@ depends on the control plane and on each backend, because resolving a ledger
 record's provider id to the backend that answers to it is what
 `sima reconcile` does. See [`sima-provider`](#sima-provider).
 
+`sima-api` sits beside the spine with no layer of its own: it depends on
+`sima-core`, `sima-model`, and `sima-contracts`, and nothing in the workspace
+depends on it. It is the surface an executor written outside this workspace is
+written against — re-exports and documentation, no logic — so the three crates
+behind it stay free to reorganise as long as it keeps naming the same items.
+`sima-example-executor` is the smallest implementation that compiles against
+it, and its manifest, naming `sima-api` as its only sima dependency, is what
+holds the surface to that promise. See
+[Extension surface](#extension-surface).
+
 Execution backends sit off the spine as a sibling group under
 `crates/toolkits/` (`sima-toolkit-*`). A toolkit is a compute library a domain
 computes on, below `sima-domains` and beside `sima-contracts`: it depends on
@@ -767,6 +777,63 @@ crate also fixes the state-artifact convention: a segmented executor commits
 its continuation state under the artifact name `STATE_ARTIFACT` (`"state"`),
 the name the chain source walks.
 
+## Extension surface
+
+`sima-api` is what an executor or generator written outside this workspace
+depends on. It holds re-exports and module documentation and nothing else, so
+it names a surface rather than adding a layer: an implementation depends on one
+crate, and `sima-core`, `sima-model`, and `sima-contracts` stay free to move
+underneath it.
+
+What it publishes:
+
+- **the two seams** — `Executor` and `Generator` — with the vocabulary they
+  exchange: `TaskInput`, `ExecutionContext`, `Outcome`, `Artifact`, `Stats`,
+  `WorkerId`, `STATE_ARTIFACT`, and the `Checkpoint` channel with its inert
+  `NoCheckpoint` handle;
+- **the device an executor is built for**: `DeviceBinding` and `DeviceClass`;
+- **the identity-bearing values a seam is handed**: `Spec`, `Params`,
+  `FormatId`, `GeneratorId`, and the `Environment` vocabulary;
+- **the foundations under them**: `Error` and `Result`, `Hash` and
+  `hash_bytes`, the `Codec`/`Enc`/`Dec` canonical encoding, and `prng`.
+
+`prng` is published whole because result-affecting randomness stays
+bit-identical across substrates: a generator draws from the PRNG implemented
+identically on CPU and GPU rather than from a dependency whose stream can shift
+under semver.
+
+What stays internal, each because it belongs to the other side of the seam:
+
+- **run-level configuration** (`RunConfig`, `RunId`, `GeneratorConfig`) is the
+  orchestrator's;
+- **identity and commitment** (`TaskKey`, `TaskIdentity`, `TaskRecord`,
+  `ArtifactRef`) are the worker's: an executor receives loaded bytes and
+  returns artifacts, and the worker keys and commits them;
+- **content addresses** (`SpecId`, `ParamsId`) address nothing an executor
+  reaches, since it is handed resolved values;
+- **transport framing** (`read_frame`, `write_frame`, `MAX_PAYLOAD`) carries a
+  seam's values between processes and is the transport's;
+- **crash injection** (`crashpoint`) is test-only failure injection;
+- **free-function hex** (`to_hex`, `from_hex`) is covered for an outside
+  implementation by `Hash::from_hex` and `Hash`'s `Display`.
+
+`sima-example-executor` is what holds the surface to its list. It is the
+smallest executor and generator that compile, and its manifest names `sima-api`
+as its only sima dependency, so an item the facade stops naming is a build
+failure in this workspace rather than a discovery made out of tree.
+
+Two seams the published surface does not reach:
+
+- **Device identity is a PCI triple.** `DeviceBinding` names a device by
+  `(vendor_id, device_id, member)`, so an executor whose devices the vocabulary
+  cannot name has no way to declare one — see
+  [`sima-scheduler`](#sima-scheduler-l6) for what the pair reaches and where it
+  stops.
+- **Config translation is in-tree.** Turning a format's `[run.params]` table
+  into `Params` bytes is a static match over the formats this build knows,
+  taking a `toml::Table`, so a format defined outside the workspace has no
+  published way to translate its own configuration.
+
 ## `sima-domains` (L5)
 
 The executable substance behind each format id. A `Domain` groups what a
@@ -1374,7 +1441,11 @@ vocabulary, and the shape's reach is exactly the reach of PCI:
   it.
 - **Limit.** The shape assumes PCI-identified hardware. A backend whose
   devices carry no PCI ids — integrated Apple devices, virtual or remote
-  device abstractions — falls outside it.
+  device abstractions — falls outside it. Partitioned cards fall outside it
+  from the other direction: slices of one physical card report identical ids,
+  so slices of different sizes land in one class while not being
+  interchangeable, which is the substitutability a class asserts of its
+  members.
 - **Why holding it is safe.** The two integers are interpreted only at the
   execution-backend seam. Above it, the scheduler compares and hashes classes,
   the pipeline matches the rendered `vendor:device` string, the store holds
