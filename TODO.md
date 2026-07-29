@@ -803,8 +803,10 @@ portability (P1 acceptance (d)) hold across the boundary.
       implementing both plugs with `sima-api` as its only sima dependency, and
       a full search runs through it. Not done here: a registered format's tasks
       run in its own binary on the orchestrator's own machine — a fleet machine
-      still runs the sima image's worker — and nothing folds a program's
-      identity into the environment hash, which is M7.5.
+      still runs the sima image's worker, and a migrated run's synthesized
+      config carries no `[domain.*]` entry, so a registered format fails there
+      naming the id — and nothing folds a program's identity into the
+      environment hash, which is M7.5.
 - [ ] M7.4 Isolation and trust: run out-of-tree executors process-isolated so
       the pure-compute boundary is OS-enforced (foreign code cannot reach the
       store). Process isolation now holds by construction — a registered
