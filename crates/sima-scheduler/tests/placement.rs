@@ -30,11 +30,12 @@ fn slot_class(store: &sima_store::Store, run: &sima_model::RunId, chain: u64) ->
         .expect("read bindings")
         .remove(&chain)?;
     let value: serde_json::Value = serde_json::from_slice(&payload).expect("a slot is JSON");
-    Some(format!(
-        "{:04x}:{:04x}",
-        value["vendor_id"].as_u64().expect("vendor id"),
-        value["device_id"].as_u64().expect("device id"),
-    ))
+    Some(
+        value["class"]
+            .as_str()
+            .expect("a slot names its class")
+            .to_string(),
+    )
 }
 
 #[test]
@@ -103,7 +104,7 @@ fn a_chain_whose_class_is_gone_rebinds_and_the_run_completes() -> Result<()> {
     let run = run_id(&config);
     // The run directory must exist before a slot can be written into it.
     store.create_run(&config)?;
-    let absent = br#"{"vendor_id":4098,"device_id":1}"#;
+    let absent = br#"{"class":"1002:0001"}"#;
     store.bind_chain(&run, 0, absent)?;
 
     let exec = exec_over(vec![device(NVIDIA, 2)], 1);
@@ -140,7 +141,7 @@ fn a_chain_resumed_from_its_slot_stays_on_its_class() -> Result<()> {
     store.bind_chain(
         &run,
         0,
-        format!(r#"{{"vendor_id":{INTEL},"device_id":1}}"#).as_bytes(),
+        format!(r#"{{"class":"{INTEL:04x}:0001"}}"#).as_bytes(),
     )?;
 
     // The Intel class carries one worker against NVIDIA's three, so a chain
@@ -155,6 +156,33 @@ fn a_chain_resumed_from_its_slot_stays_on_its_class() -> Result<()> {
     for (task, classes) in task_classes(&events) {
         assert_eq!(classes, vec![intel.clone()], "task {task} kept its class");
     }
+    Ok(())
+}
+
+#[test]
+fn a_chain_whose_slot_cannot_be_read_binds_again() -> Result<()> {
+    // A slot the scheduler cannot decode carries no usable placement, so it is
+    // read as an unbound chain: the chain binds again on its first pull and the
+    // run proceeds. Placement is advisory coherence state, and losing one slot
+    // costs coherence for that chain rather than the whole resume.
+    let (_dir, store) = temp_store();
+    let config = chained_config(29, vec![StubBehavior::Accumulate(2)], 2);
+    let run = run_id(&config);
+    store.create_run(&config)?;
+    store.bind_chain(&run, 0, b"not a placement slot")?;
+
+    let exec = exec_over(vec![device(NVIDIA, 2)], 1);
+    let outcome = run_with(&store, &config, &exec, device_naming_resolver())?;
+    assert!(matches!(outcome, RunOutcome::Finalized { .. }));
+
+    // Binding again is what an unbound chain does, so no rebind is journaled.
+    let events = journal_events(&store, &run);
+    assert!(!events_contain_rebind(&events));
+    assert_eq!(
+        slot_class(&store, &run, 0).as_deref(),
+        Some(format!("{NVIDIA:04x}:0001").as_str()),
+        "the chain bound to the class that pulled it"
+    );
     Ok(())
 }
 

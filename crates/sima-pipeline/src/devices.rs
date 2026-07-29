@@ -15,8 +15,8 @@ use sima_scheduler::DeviceEntry;
 /// workers on it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeviceSelector {
-    /// A case-insensitive substring of the device's reported name, or its
-    /// exact `vendor:device` hex pair.
+    /// A case-insensitive substring of the device's reported name, or the
+    /// exact class its execution backend minted.
     pub select: String,
     /// Worker processes to run on the selected device.
     pub workers: usize,
@@ -43,14 +43,6 @@ pub(crate) fn usable(devices: &[DeviceInfo]) -> impl Iterator<Item = &DeviceInfo
         .filter(move |device| !has_gpu || device.device_type != DeviceType::Cpu)
 }
 
-/// The class a device belongs to.
-pub(crate) fn class_of(device: &DeviceInfo) -> DeviceClass {
-    DeviceClass {
-        vendor_id: device.vendor_id,
-        device_id: device.device_id,
-    }
-}
-
 /// Resolves each selector against `enumerated`, pairing it with the class it
 /// names and that class's card count.
 ///
@@ -74,9 +66,8 @@ pub fn resolve(
         // class with several cards has named one thing, not many.
         let mut classes: Vec<DeviceClass> = Vec::new();
         for device in &matched {
-            let class = class_of(device);
-            if !classes.contains(&class) {
-                classes.push(class);
+            if !classes.contains(&device.class) {
+                classes.push(device.class.clone());
             }
         }
         let [class] = classes.as_slice() else {
@@ -98,7 +89,7 @@ pub fn resolve(
             )));
         }
         entries.push(DeviceEntry {
-            class: *class,
+            class: (*class).clone(),
             // Every member of a class reports the same name; the first is the
             // class's name.
             name: matched[0].name.clone(),
@@ -132,16 +123,16 @@ pub fn parse_enumeration(text: &str) -> Result<Vec<DeviceInfo>> {
     Ok(devices)
 }
 
-/// Whether `select` names `device`: its exact `vendor:device` hex pair, or a
-/// case-insensitive substring of its name.
+/// Whether `select` names `device`: its exact class, or a case-insensitive
+/// substring of its name.
 fn matches(select: &str, device: &DeviceInfo) -> bool {
-    if select.eq_ignore_ascii_case(&class_of(device).to_string()) {
+    if select.eq_ignore_ascii_case(device.class.as_str()) {
         return true;
     }
     device.name.to_lowercase().contains(&select.to_lowercase())
 }
 
-/// The classes as `vendor:device`, for an ambiguous-selector message.
+/// The classes, for an ambiguous-selector message.
 fn render_classes(classes: &[DeviceClass]) -> String {
     classes
         .iter()
@@ -150,15 +141,15 @@ fn render_classes(classes: &[DeviceClass]) -> String {
         .join(", ")
 }
 
-/// Every enumerated device as `name (vendor:device)`, so a failed selector
-/// shows what could have been written instead.
+/// Every enumerated device as `name (class)`, so a failed selector shows what
+/// could have been written instead.
 fn render_available(enumerated: &[DeviceInfo]) -> String {
     if enumerated.is_empty() {
         return "no compute-capable device is present".to_string();
     }
     let mut listed: Vec<String> = Vec::new();
     for device in enumerated {
-        let rendered = format!("{} ({})", device.name, class_of(device));
+        let rendered = format!("{} ({})", device.name, device.class);
         if !listed.contains(&rendered) {
             listed.push(rendered);
         }
@@ -173,10 +164,9 @@ mod tests {
     use super::*;
 
     /// One enumerated device.
-    fn info(vendor_id: u32, device_id: u32, name: &str, member: u32) -> DeviceInfo {
+    fn info(class: &str, name: &str, member: u32) -> DeviceInfo {
         DeviceInfo {
-            vendor_id,
-            device_id,
+            class: DeviceClass::new(class).expect("class id"),
             name: name.to_string(),
             device_type: DeviceType::Discrete,
             member,
@@ -186,13 +176,8 @@ mod tests {
     /// An Intel iGPU and an NVIDIA dGPU, a typical laptop device set.
     fn two_devices() -> Vec<DeviceInfo> {
         vec![
-            info(0x8086, 0x7d51, "Intel(R) Graphics (ARL)", 0),
-            info(
-                0x10de,
-                0x2d39,
-                "NVIDIA RTX PRO 2000 Blackwell Laptop GPU",
-                0,
-            ),
+            info("8086:7d51", "Intel(R) Graphics (ARL)", 0),
+            info("10de:2d39", "NVIDIA RTX PRO 2000 Blackwell Laptop GPU", 0),
         ]
     }
 
@@ -234,8 +219,8 @@ mod tests {
         // Two of the same card: one selector names both, because members are
         // interchangeable by declaration.
         let pair = vec![
-            info(0x10de, 0x2d39, "NVIDIA RTX PRO 2000", 0),
-            info(0x10de, 0x2d39, "NVIDIA RTX PRO 2000", 1),
+            info("10de:2d39", "NVIDIA RTX PRO 2000", 0),
+            info("10de:2d39", "NVIDIA RTX PRO 2000", 1),
         ];
         let entries = resolve(&[select("NVIDIA")], &pair)?;
         assert_eq!(entries.len(), 1, "one class");
@@ -265,8 +250,8 @@ mod tests {
         // Two different NVIDIA cards: "NVIDIA" names both, so the run would
         // not know which to place work on.
         let two_nvidias = vec![
-            info(0x10de, 0x2d39, "NVIDIA RTX PRO 2000", 0),
-            info(0x10de, 0x2684, "NVIDIA RTX 4090", 0),
+            info("10de:2d39", "NVIDIA RTX PRO 2000", 0),
+            info("10de:2684", "NVIDIA RTX 4090", 0),
         ];
         let error = resolve(&[select("NVIDIA")], &two_nvidias).expect_err("ambiguous");
         let Error::Validation(message) = error else {

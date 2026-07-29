@@ -30,7 +30,7 @@ use sima_domains::devices::DeviceInfo;
 use sima_model::RunId;
 
 use crate::config::{HostForm, OwnedHost, Pool};
-use crate::devices::{class_of, usable};
+use crate::devices::usable;
 
 /// The default `sima.toml` name the far side's `sima run` is pointed at.
 const CONFIG_FILE: &str = "sima.toml";
@@ -258,13 +258,14 @@ fn device_entry(select: &str, workers: i64) -> toml::Value {
 fn probed_classes(devices: &[DeviceInfo]) -> Vec<(String, i64)> {
     let mut classes: BTreeMap<String, i64> = BTreeMap::new();
     for device in usable(devices) {
-        *classes.entry(class_of(device).to_string()).or_default() += 1;
+        *classes.entry(device.class.to_string()).or_default() += 1;
     }
     classes.into_iter().collect()
 }
 
 #[cfg(test)]
 mod tests {
+    use sima_contracts::DeviceClass;
     use sima_domains::devices::DeviceType;
     use sima_model::RunId;
 
@@ -333,8 +334,7 @@ mod tests {
     /// One enumerated device of the given class and category.
     fn device(vendor_id: u32, device_id: u32, member: u32, device_type: DeviceType) -> DeviceInfo {
         DeviceInfo {
-            vendor_id,
-            device_id,
+            class: DeviceClass::new(format!("{vendor_id:04x}:{device_id:04x}")).expect("class id"),
             name: format!("device {vendor_id:04x}:{device_id:04x}"),
             device_type,
             member,

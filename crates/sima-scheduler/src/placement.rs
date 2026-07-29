@@ -40,16 +40,18 @@ pub(crate) enum Eligibility {
 ///
 /// Pure over its inputs, so the rule is verifiable without threads, workers,
 /// or a device.
+/// Both classes arrive by reference: this runs once per queued task on every
+/// task pull, so the scan compares in place rather than cloning a class.
 pub(crate) fn eligibility(
-    bound: Option<DeviceClass>,
-    class: DeviceClass,
+    bound: Option<&DeviceClass>,
+    class: &DeviceClass,
     present_classes: &[DeviceClass],
 ) -> Eligibility {
     match bound {
         None => Eligibility::Bind,
         Some(bound) if bound == class => Eligibility::Run,
         // Another class holds it, and that class is still here to do the work.
-        Some(bound) if present_classes.contains(&bound) => Eligibility::Skip,
+        Some(bound) if present_classes.contains(bound) => Eligibility::Skip,
         // Its class is gone; continuity outranks stickiness.
         Some(_) => Eligibility::Rebind,
     }
@@ -82,47 +84,50 @@ pub(crate) enum ChainPlacement {
 /// binding never does.
 #[derive(Debug, Serialize, Deserialize)]
 struct ClassSlot {
-    vendor_id: u32,
-    device_id: u32,
+    class: DeviceClass,
 }
 
 /// The slot payload binding a chain to `class`.
-pub(crate) fn encode_class(class: DeviceClass) -> Result<Vec<u8>> {
+pub(crate) fn encode_class(class: &DeviceClass) -> Result<Vec<u8>> {
     let slot = ClassSlot {
-        vendor_id: class.vendor_id,
-        device_id: class.device_id,
+        class: class.clone(),
     };
     serde_json::to_vec(&slot)
         .map_err(|e| Error::Encoding(format!("encode a chain's device class: {e}")))
 }
 
-/// The class a slot payload binds its chain to.
+/// The class a slot payload binds its chain to. A payload that is not a slot,
+/// or that names a class no backend could have minted, is an error the caller
+/// reads as an absent binding.
 pub(crate) fn decode_class(payload: &[u8]) -> Result<DeviceClass> {
     let slot: ClassSlot = serde_json::from_slice(payload)
         .map_err(|e| Error::Encoding(format!("decode a chain's device class: {e}")))?;
-    Ok(DeviceClass {
-        vendor_id: slot.vendor_id,
-        device_id: slot.device_id,
-    })
+    Ok(slot.class)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    const INTEL: DeviceClass = DeviceClass {
-        vendor_id: 0x8086,
-        device_id: 0x7d51,
-    };
-    const NVIDIA: DeviceClass = DeviceClass {
-        vendor_id: 0x10de,
-        device_id: 0x2d39,
-    };
+    /// A class that must be valid.
+    fn class(id: &str) -> DeviceClass {
+        DeviceClass::new(id).expect("a valid class id")
+    }
+
+    /// The Intel iGPU class.
+    fn intel() -> DeviceClass {
+        class("8086:7d51")
+    }
+
+    /// The NVIDIA dGPU class.
+    fn nvidia() -> DeviceClass {
+        class("10de:2d39")
+    }
 
     #[test]
     fn a_chain_bound_to_the_pulling_class_runs() {
         assert_eq!(
-            eligibility(Some(NVIDIA), NVIDIA, &[INTEL, NVIDIA]),
+            eligibility(Some(&nvidia()), &nvidia(), &[intel(), nvidia()]),
             Eligibility::Run
         );
     }
@@ -130,11 +135,11 @@ mod tests {
     #[test]
     fn an_unbound_chain_is_taken_by_whoever_pulls_it() {
         assert_eq!(
-            eligibility(None, INTEL, &[INTEL, NVIDIA]),
+            eligibility(None, &intel(), &[intel(), nvidia()]),
             Eligibility::Bind
         );
         assert_eq!(
-            eligibility(None, NVIDIA, &[INTEL, NVIDIA]),
+            eligibility(None, &nvidia(), &[intel(), nvidia()]),
             Eligibility::Bind
         );
     }
@@ -142,7 +147,7 @@ mod tests {
     #[test]
     fn a_chain_bound_to_another_present_class_is_left_alone() {
         assert_eq!(
-            eligibility(Some(NVIDIA), INTEL, &[INTEL, NVIDIA]),
+            eligibility(Some(&nvidia()), &intel(), &[intel(), nvidia()]),
             Eligibility::Skip
         );
     }
@@ -151,25 +156,54 @@ mod tests {
     fn a_chain_bound_to_an_absent_class_rebinds() {
         // The card it ran on is gone: the run continues on what is here.
         assert_eq!(
-            eligibility(Some(NVIDIA), INTEL, &[INTEL]),
+            eligibility(Some(&nvidia()), &intel(), &[intel()]),
             Eligibility::Rebind
         );
     }
 
     #[test]
+    fn a_partitioned_cards_profiles_are_separate_classes() {
+        // Two slices of one card report the same pair, so only the profile
+        // tells them apart. Work bound to the larger slice may not run on the
+        // smaller one, and eligibility follows the class it was given.
+        let small = class("10de:2330:1g.10gb");
+        let large = class("10de:2330:4g.40gb");
+        assert_eq!(
+            eligibility(Some(&large), &small, &[small.clone(), large.clone()]),
+            Eligibility::Skip
+        );
+        assert_eq!(
+            eligibility(Some(&large), &large, &[small, large.clone()]),
+            Eligibility::Run
+        );
+    }
+
+    #[test]
     fn a_class_slot_round_trips() -> Result<()> {
-        assert_eq!(decode_class(&encode_class(NVIDIA)?)?, NVIDIA);
+        let class = nvidia();
+        assert_eq!(decode_class(&encode_class(&class)?)?, class);
         Ok(())
     }
 
     #[test]
     fn a_slot_payload_is_the_readable_operational_form() -> Result<()> {
-        let payload = encode_class(INTEL)?;
+        let payload = encode_class(&intel())?;
         assert_eq!(
             String::from_utf8(payload).expect("utf-8"),
-            r#"{"vendor_id":32902,"device_id":32081}"#
+            r#"{"class":"8086:7d51"}"#
         );
         Ok(())
+    }
+
+    #[test]
+    fn a_slot_naming_an_invalid_class_is_an_encoding_error() {
+        // A slot is read back into a validated class, so a payload carrying a
+        // name no backend could have minted fails here rather than travelling
+        // on as a class nothing matches.
+        assert!(matches!(
+            decode_class(br#"{"class":"8086 7D51"}"#),
+            Err(Error::Encoding(_))
+        ));
     }
 
     #[test]

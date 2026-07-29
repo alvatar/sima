@@ -42,15 +42,13 @@ impl Context {
     /// Creates a headless compute context on the given member of the given
     /// device class.
     ///
-    /// The class is the `(vendor_id, device_id)` pair and `member` counts within
-    /// it, ordered by Vulkan enumeration index — the numbering
+    /// The class is one this backend minted, and `member` counts within it,
+    /// ordered by Vulkan enumeration index — the numbering
     /// [`enumerate_devices`](crate::enumerate_devices) reports. An absent class
     /// or a member out of range is an [`Error::Backend`] naming the request and
     /// what exists.
-    pub fn for_device(vendor_id: u32, device_id: u32, member: u32) -> Result<Context> {
-        Context::build(|instance| {
-            selection::select_class_member(instance, vendor_id, device_id, member)
-        })
+    pub fn for_class(class: &str, member: u32) -> Result<Context> {
+        Context::build(|instance| selection::select_class_member(instance, class, member))
     }
 
     /// Builds a context around the device `select` picks.
@@ -372,7 +370,7 @@ mod tests {
         let devices = crate::enumerate_devices().expect("enumerate devices");
         assert!(!devices.is_empty(), "at least one compute-capable device");
         for device in &devices {
-            let context = Context::for_device(device.vendor_id, device.device_id, device.member)
+            let context = Context::for_class(&device.class, device.member)
                 .expect("open the enumerated device");
             // The context opened the class member that was asked for, not
             // whichever device the default policy prefers.
@@ -384,7 +382,7 @@ mod tests {
     #[test]
     fn opening_an_absent_device_class_fails() {
         assert!(matches!(
-            Context::for_device(0xdead, 0xbeef, 0),
+            Context::for_class("dead:beef", 0),
             Err(Error::Backend(_))
         ));
     }

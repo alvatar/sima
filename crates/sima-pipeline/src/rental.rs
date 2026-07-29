@@ -361,8 +361,7 @@ fn rented_slots(devices: &[DeviceInfo]) -> Vec<Option<DeviceBinding>> {
     usable(devices)
         .map(|device| {
             Some(DeviceBinding {
-                vendor_id: device.vendor_id,
-                device_id: device.device_id,
+                class: device.class.clone(),
                 member: device.member,
             })
         })
@@ -842,6 +841,7 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::Arc;
 
+    use sima_contracts::DeviceClass;
     use sima_domains::devices::DeviceType;
     use sima_model::{GeneratorConfig, GeneratorId, Params, RunConfig, RunId};
     use sima_provider::stub::StubProvider;
@@ -972,10 +972,9 @@ mod tests {
     }
 
     /// One enumerated device of the given category.
-    fn device(vendor_id: u32, device_id: u32, name: &str, device_type: DeviceType) -> DeviceInfo {
+    fn device(class: &str, name: &str, device_type: DeviceType) -> DeviceInfo {
         DeviceInfo {
-            vendor_id,
-            device_id,
+            class: DeviceClass::new(class).expect("class id"),
             name: name.to_string(),
             device_type,
             member: 0,
@@ -990,29 +989,22 @@ mod tests {
     #[test]
     fn every_gpu_gets_a_slot_bound_to_it() {
         let devices = [
-            device(
-                0x10de,
-                0x2684,
-                "NVIDIA GeForce RTX 4090",
-                DeviceType::Discrete,
-            ),
-            device(0x8086, 0x7d51, "Intel(R) Graphics", DeviceType::Integrated),
+            device("10de:2684", "NVIDIA GeForce RTX 4090", DeviceType::Discrete),
+            device("8086:7d51", "Intel(R) Graphics", DeviceType::Integrated),
         ];
         let slots = rented_slots(&devices);
         assert_eq!(slots.len(), 2);
         assert_eq!(
             slots[0],
             Some(DeviceBinding {
-                vendor_id: 0x10de,
-                device_id: 0x2684,
+                class: DeviceClass::new("10de:2684").expect("class id"),
                 member: 0
             })
         );
         assert_eq!(
             slots[1],
             Some(DeviceBinding {
-                vendor_id: 0x8086,
-                device_id: 0x7d51,
+                class: DeviceClass::new("8086:7d51").expect("class id"),
                 member: 0
             })
         );
@@ -1023,21 +1015,15 @@ mod tests {
         // What a rented host reports: its card, and the CPU rasterizer the
         // graphics stack falls back to. The machine was rented for the card.
         let devices = [
-            device(0x10005, 0x0000, "llvmpipe (LLVM 19)", DeviceType::Cpu),
-            device(
-                0x10de,
-                0x2684,
-                "NVIDIA GeForce RTX 4090",
-                DeviceType::Discrete,
-            ),
+            device("10005:0000", "llvmpipe (LLVM 19)", DeviceType::Cpu),
+            device("10de:2684", "NVIDIA GeForce RTX 4090", DeviceType::Discrete),
         ];
         let slots = rented_slots(&devices);
         assert_eq!(slots.len(), 1, "one slot, on the GPU");
         assert_eq!(
             slots[0],
             Some(DeviceBinding {
-                vendor_id: 0x10de,
-                device_id: 0x2684,
+                class: DeviceClass::new("10de:2684").expect("class id"),
                 member: 0
             })
         );
@@ -1050,19 +1036,13 @@ mod tests {
         // reports to a WGSL run when its Vulkan loader cannot initialize the
         // NVIDIA driver: the card is there, and CUDA would enumerate it, but a
         // slot bound to it would hand a worker a device Vulkan cannot open.
-        let devices = [device(
-            0x10005,
-            0x0000,
-            "llvmpipe (LLVM 19)",
-            DeviceType::Cpu,
-        )];
+        let devices = [device("10005:0000", "llvmpipe (LLVM 19)", DeviceType::Cpu)];
         let slots = rented_slots(&devices);
         assert_eq!(slots.len(), 1);
         assert_eq!(
             slots[0],
             Some(DeviceBinding {
-                vendor_id: 0x10005,
-                device_id: 0x0000,
+                class: DeviceClass::new("10005:0000").expect("class id"),
                 member: 0
             })
         );

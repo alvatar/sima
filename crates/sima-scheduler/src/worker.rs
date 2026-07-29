@@ -69,7 +69,10 @@ pub(crate) fn worker_loop(worker: WorkerId, ctx: WorkerContext<'_>) {
         Ok(SpawnOutcome::Retired { fatal }) => return retire_worker(&ctx, worker, fatal),
         Err(e) => return ctx.coordinator.fault_run(e),
     };
-    while let Some(leased) = ctx.coordinator.next_task(ctx.device.map(|d| d.class())) {
+    while let Some(leased) = ctx
+        .coordinator
+        .next_task(ctx.device.as_ref().map(|d| d.class()))
+    {
         // The pull's placement decision reaches the store and the journal
         // before the assignment goes out, so a chain's binding is durable
         // before any work runs under it.
@@ -194,11 +197,11 @@ fn record_placement(ctx: &WorkerContext<'_>, placement: &ChainPlacement) -> Resu
         ChainPlacement::Settled => Ok(()),
         ChainPlacement::Bound { chain, to } => {
             ctx.store
-                .bind_chain(&ctx.run, *chain, &placement::encode_class(*to)?)
+                .bind_chain(&ctx.run, *chain, &placement::encode_class(to)?)
         }
         ChainPlacement::Rebound { chain, from, to } => {
             ctx.store
-                .bind_chain(&ctx.run, *chain, &placement::encode_class(*to)?)?;
+                .bind_chain(&ctx.run, *chain, &placement::encode_class(to)?)?;
             // The rebind is loud: the hardware changed under a running search,
             // and the journal is where that shows.
             ctx.events.emit(Event::ChainRebound {
