@@ -1,0 +1,18 @@
+# The pinned NVRTC is vendored beside the build's binaries by
+# `sima-toolkit-cuda`'s build script, and reaches the loader through these
+# entries.
+#
+# `cudarc` opens NVRTC at run time by trying sonames, the first of which is the
+# bare `libnvrtc.so`. A bare name resolves through `LD_LIBRARY_PATH`, then the
+# binary's `RUNPATH`, then `ld.so.cache` — and a CUDA toolkit installed on the
+# machine registers itself in that cache. These entries put the vendored copy on
+# the `RUNPATH`, ahead of the cache, so the emitted PTX stays the pinned
+# compiler's whatever else the machine has installed.
+#
+# `$ORIGIN` is the directory of the binary being run: `target/<profile>` for a
+# command, `target/<profile>/deps` for a test.
+[target.'cfg(target_os = "linux")']
+rustflags = [
+    "-C", "link-arg=-Wl,-rpath,$ORIGIN/nvrtc",
+    "-C", "link-arg=-Wl,-rpath,$ORIGIN/../nvrtc",
+]
