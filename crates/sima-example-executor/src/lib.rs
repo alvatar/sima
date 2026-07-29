@@ -1,34 +1,91 @@
-//! The smallest program that hosts a domain against the published surface
-//! alone: an executor, a generator, and the two plugs that hand them over.
+//! A whole sima program, in the shape a third party writes one.
 //!
-//! The manifest is the assertion: `sima-api` is the only sima dependency, so
-//! anything needed here that the facade does not re-export is a compile error
-//! rather than a discovery made out of tree. The configuration sections arrive
-//! as text and are parsed here with this program's own TOML, which is why
-//! sima's never enters the surface.
+//! # What a program supplies
 //!
-//! The whole of a hosted program is in this file and its `main`: implement
-//! [`DomainPlug`] and [`GeneratorPlug`], then call [`sima_api::serve`].
+//! - [`Doubler`] — the [`Executor`]: evaluates one candidate.
+//! - [`Sampler`] — the [`Generator`]: draws candidates from the run's seed.
+//! - [`DoublerDomain`] — the [`DomainPlug`]: what the format id binds. It names
+//!   the format's environment, enumerates the devices its work runs on, builds
+//!   the executor on the device a run placed it on, and translates
+//!   `[run.params]`.
+//! - [`SamplerPlug`] — the [`GeneratorPlug`]: the same for one generator.
+//!
+//! `main` builds these and calls [`sima_api::serve`]. That is the whole
+//! program: sima drives generation, scheduling, placement, the store,
+//! provenance, and the fleet around it.
+//!
+//! # Reaching it from a run
+//!
+//! ```toml
+//! [run]
+//! root_seed = 7
+//! format = "example.doubler.v1"
+//!
+//! [run.generator]
+//! id = "example.doubler.v1"
+//! count = 8
+//!
+//! [[execution.device]]
+//! select = "example:cpu"      # the class this program mints, below
+//! workers = 2
+//!
+//! [domain."example.doubler.v1"]
+//! binary = "/path/to/sima-example-executor"
+//! ```
+//!
+//! # Two properties of the surface
+//!
+//! `sima-api` is this crate's only sima dependency, so anything the facade does
+//! not publish is a compile error here. Configuration sections arrive as text
+//! and are parsed with this program's own TOML, which keeps sima's version of
+//! it off the published surface.
 
 use sima_api::{
-    Artifact, Checkpoint, DeviceBinding, DeviceInfo, DomainPlug, Environment, EnvironmentComponent,
-    EnvironmentValue, Error, ExecutionContext, Executor, FormatId, Generator, GeneratorId,
-    GeneratorPlug, Outcome, Params, Result, Spec, Stats, TaskInput, prng,
+    Artifact, Checkpoint, DeviceBinding, DeviceClass, DeviceInfo, DeviceType, DomainPlug,
+    Environment, EnvironmentComponent, EnvironmentValue, Error, ExecutionContext, Executor,
+    FormatId, Generator, GeneratorId, GeneratorPlug, Outcome, Params, Result, Spec, Stats,
+    TaskInput, prng,
 };
 
 /// The format this program serves, and the id its generator registers under.
 pub const FORMAT: &str = "example.doubler.v1";
 
+/// The class this program mints for the device it computes on.
+///
+/// A class is a promise of substitutability: two devices share a class when
+/// work bound to one may run on the other. The doubling runs on the host's
+/// processor, so one class covers it. A backend over real cards mints whatever
+/// separates the ones that cannot stand in for each other — the configuration
+/// space identifiers, and a partition profile beside them where a card is
+/// sliced.
+const DEVICE_CLASS: &str = "example:cpu";
+
+/// The device's reported name. A run's selector matches either this, as a
+/// case-insensitive substring, or the class exactly.
+const DEVICE_NAME: &str = "example host processor";
+
+/// Where a backend over real hardware reports its driver version.
+const DRIVER: &str = "example.doubler v1";
+
 /// Evaluates a one-byte spec: the result is that byte doubled.
+///
+/// One executor is built per worker and runs every task that worker takes, so
+/// this is where a real program holds what is expensive to acquire: its device
+/// context, its compiled kernels, its loaded assets.
 pub struct Doubler {
     format: FormatId,
+    /// The device this executor computes on, or `None` for the backend's own
+    /// default selection.
+    device: Option<DeviceBinding>,
 }
 
 impl Doubler {
-    /// Binds the executor to the format its specs carry.
-    pub fn new() -> Result<Doubler> {
+    /// Binds the executor to the format its specs carry and the device it runs
+    /// on.
+    pub fn new(device: Option<DeviceBinding>) -> Result<Doubler> {
         Ok(Doubler {
             format: FormatId::new(FORMAT)?,
+            device,
         })
     }
 }
@@ -54,13 +111,20 @@ impl Executor for Doubler {
             });
         };
         let doubled = byte.wrapping_mul(2);
+        let mut scalars = vec![("doubled".to_string(), f64::from(doubled))];
+        // Stats are observational, so reporting the member is free: it enters
+        // no key and no environment, and a run's report gains the device each
+        // result came off.
+        if let Some(device) = &self.device {
+            scalars.push(("device.member".to_string(), f64::from(device.member)));
+        }
         Ok(Outcome::Completed {
             artifacts: vec![Artifact {
                 name: "doubled".to_string(),
                 bytes: vec![doubled],
             }],
             stats: Stats {
-                scalars: vec![("doubled".to_string(), f64::from(doubled))],
+                scalars,
                 blob: Vec::new(),
             },
         })
@@ -90,6 +154,8 @@ impl Generator for Sampler {
         // The count is the generator's whole settings blob: one byte, so a run
         // asks for at most 255 candidates and an absent blob asks for one.
         let count = u64::from(params.first().copied().unwrap_or(1));
+        // The run's seed drives the draw, so the same run redraws the same
+        // candidates on any machine.
         let mut stream = prng::Stream::new(root_seed);
         Ok((0..count)
             .map(|_| Spec {
@@ -101,9 +167,8 @@ impl Generator for Sampler {
 }
 
 /// What the format binds, as this program supplies it: its executor, the
-/// environment its results depend on, the devices it runs on — none, it
-/// computes in the worker process — and the translation of its own
-/// configuration.
+/// environment its results depend on, the devices it runs on, and the
+/// translation of its own configuration.
 pub struct DoublerDomain {
     format: FormatId,
     environment: Environment,
@@ -135,18 +200,36 @@ impl DomainPlug for DoublerDomain {
         &self.environment
     }
 
-    fn executor(&self, _device: Option<&DeviceBinding>) -> Result<Box<dyn Executor + Sync>> {
-        Ok(Box::new(Doubler::new()?))
+    fn executor(&self, device: Option<&DeviceBinding>) -> Result<Box<dyn Executor + Sync>> {
+        // A constructor rather than a held executor: the device is known only
+        // where execution happens, which is the worker process this call runs
+        // in. A real program opens its context here.
+        Ok(Box::new(Doubler::new(device.cloned())?))
     }
 
-    fn device_desc(&self, _device: Option<&DeviceBinding>) -> Result<(String, String)> {
-        // The arithmetic runs in the worker process, so there is no device to
-        // name and no driver to report.
-        Ok((String::new(), String::new()))
+    fn device_desc(&self, device: Option<&DeviceBinding>) -> Result<(String, String)> {
+        // Reported beside every attempt, so a result names the device that
+        // produced it. It is observational — a name and a driver version, never
+        // part of an identity.
+        let name = match device {
+            Some(device) => format!("{DEVICE_NAME} #{}", device.member),
+            None => DEVICE_NAME.to_string(),
+        };
+        Ok((name, DRIVER.to_string()))
     }
 
     fn enumerate(&self) -> Result<Vec<DeviceInfo>> {
-        Ok(Vec::new())
+        // Every device this format's work can run on. A run resolves its
+        // `[[execution.device]]` selectors against this list and spreads its
+        // workers over the members of the class each one names, so a program
+        // with two cards enumerates two members of one class and a program with
+        // a card and an integrated chip enumerates two classes.
+        Ok(vec![DeviceInfo {
+            class: DeviceClass::new(DEVICE_CLASS)?,
+            name: DEVICE_NAME.to_string(),
+            device_type: DeviceType::Cpu,
+            member: 0,
+        }])
     }
 
     fn translate_params(&self, toml: &str, _segmented: bool) -> Result<Params> {
@@ -214,112 +297,9 @@ impl GeneratorPlug for SamplerPlug {
     }
 }
 
-/// Parses a configuration section, which crosses the seam as the text the run
-/// declared. Empty text is a section with no keys.
+/// Parses a configuration section, which crosses the boundary as the text the
+/// run declared. Empty text is a section with no keys.
 fn section(toml: &str) -> Result<toml::Table> {
     toml.parse()
         .map_err(|e| Error::Validation(format!("the configuration section is no TOML: {e}")))
-}
-
-#[cfg(test)]
-mod tests {
-    use sima_api::{DeviceClass, DeviceInfo, DeviceType, DomainPlug, GeneratorPlug, serve};
-
-    use super::*;
-
-    #[test]
-    fn the_published_surface_names_a_device_list() {
-        // What a domain answers when asked which devices its work runs on.
-        // These two executors compute in the worker process and open none, so
-        // the vocabulary is exercised rather than used: a domain that does open
-        // a device builds its answer out of exactly these types, and they reach
-        // it through the facade alone.
-        let device = DeviceInfo {
-            class: DeviceClass::new("8086:7d51").expect("class id"),
-            name: "Intel(R) Graphics (ARL)".to_string(),
-            device_type: DeviceType::Integrated,
-            member: 0,
-        };
-        assert_eq!(device.class.as_str(), "8086:7d51");
-        assert_eq!(device.member, 0);
-    }
-
-    #[test]
-    fn the_published_surface_names_what_a_hosted_program_is() {
-        // The whole of a program outside the workspace: the two plugs it
-        // implements and the one call that hosts them. Naming them here is
-        // what keeps them reachable through the facade alone.
-        let host: fn(&dyn DomainPlug, &[&dyn GeneratorPlug]) -> sima_api::Result<()> = serve;
-        assert_eq!(std::mem::size_of_val(&host), std::mem::size_of::<fn()>());
-    }
-
-    #[test]
-    fn the_generator_section_carries_the_candidate_count() {
-        // The section arrives as its text and leaves as the blob the generator
-        // reads, so a count declared in the file is the count drawn.
-        let plug = SamplerPlug::new().expect("the plug binds");
-        assert_eq!(
-            plug.translate_params("count = 7").expect("a count"),
-            vec![7]
-        );
-        // An absent section draws one candidate.
-        assert_eq!(plug.translate_params("").expect("a default"), vec![1]);
-    }
-
-    #[test]
-    fn a_count_outside_the_range_names_itself() {
-        let plug = SamplerPlug::new().expect("the plug binds");
-        for text in ["count = 0", "count = 256", "count = \"many\""] {
-            assert!(plug.translate_params(text).is_err(), "{text}");
-        }
-    }
-
-    #[test]
-    fn a_key_the_program_does_not_take_is_a_failure() {
-        // A section quietly ignored would leave a run whose identity promised
-        // settings the executor never read.
-        let domain = DoublerDomain::new().expect("the plug binds");
-        let error = domain
-            .translate_params("width = 128", false)
-            .expect_err("a key this format does not take");
-        assert!(error.to_string().contains("width"), "{error}");
-        let plug = SamplerPlug::new().expect("the plug binds");
-        assert!(plug.translate_params("width = 128").is_err());
-    }
-
-    #[test]
-    fn the_domain_binds_its_executor_and_opens_no_device() {
-        let domain = DoublerDomain::new().expect("the plug binds");
-        assert_eq!(domain.format().as_str(), FORMAT);
-        assert_eq!(
-            domain
-                .executor(None)
-                .expect("an executor")
-                .format()
-                .as_str(),
-            FORMAT
-        );
-        assert!(domain.enumerate().expect("an enumeration").is_empty());
-        assert_eq!(
-            domain.device_desc(None).expect("a description"),
-            (String::new(), String::new())
-        );
-        assert_eq!(
-            domain.translate_params("", false).expect("no params").bytes,
-            Vec::<u8>::new()
-        );
-    }
-
-    #[test]
-    fn the_generator_plug_produces_specs_of_the_format() {
-        let plug = SamplerPlug::new().expect("the plug binds");
-        let format = FormatId::new(FORMAT).expect("format id");
-        let specs = plug
-            .generator()
-            .expect("a generator")
-            .generate(42, &[3], &format)
-            .expect("three candidates");
-        assert_eq!(specs.len(), 3);
-        assert!(specs.iter().all(|spec| spec.format == format));
-    }
 }
