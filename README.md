@@ -67,9 +67,19 @@ beyond it as an elastic, heterogeneous extension.
   recovery, and re-run are one code path that re-derives the runnable frontier
   from the store. Kill `sima run` at any point and run it again.
 
-## Quick start
+## Requirements
 
-Requires a Vulkan-capable GPU.
+- **Rust**, edition 2024 — `cargo build --release`.
+- **A Vulkan GPU** — the default execution backend (WGSL lowered to SPIR-V).
+  Needs the Vulkan loader and a device ICD.
+- **NVIDIA CUDA** *(optional)* — the CUDA backend. Needs the NVIDIA driver
+  (`libcuda`) and the CUDA toolkit (`libnvrtc`), both opened at run time. The
+  workspace builds without it; it is required only to run the CUDA backend and
+  its tests.
+- **ssh and a container runtime** *(optional)* — remote and fleet execution
+  (`sima run --fleet`, `sima migrate`) run workers on other machines.
+
+## Quick start
 
 ```sh
 cargo build --release
