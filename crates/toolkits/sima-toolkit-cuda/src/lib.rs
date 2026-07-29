@@ -71,6 +71,7 @@ mod dispatch;
 mod driver;
 mod kernel;
 mod selection;
+mod vendored;
 
 pub use buffer::Buffer;
 pub use compile::{COMPILER_ID, PTX_OPTIONS, compile};
