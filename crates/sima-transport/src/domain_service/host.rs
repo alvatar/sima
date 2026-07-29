@@ -66,21 +66,24 @@ pub fn serve<R: Read, W: Write>(
         let Some(payload) = read_frame(&mut reader)? else {
             return Ok(());
         };
-        let question = ToDomain::decode(&payload)?;
-        if matches!(question, ToDomain::Goodbye) {
-            return Ok(());
+        match ToDomain::decode(&payload)? {
+            ToDomain::Goodbye => return Ok(()),
+            ToDomain::Hello { .. } => {
+                return Err(Error::Transport(
+                    "unexpected second Hello after the handshake".to_string(),
+                ));
+            }
+            // What the program could not answer crosses as its own rendering,
+            // so the parent surfaces the program's words rather than its own
+            // guess.
+            question => {
+                let answer =
+                    answer(domain, generators, question).unwrap_or_else(|e| FromDomain::Failed {
+                        message: e.to_string(),
+                    });
+                write_frame(&mut writer, &answer.encode())?;
+            }
         }
-        if matches!(question, ToDomain::Hello { .. }) {
-            return Err(Error::Transport(
-                "unexpected second Hello after the handshake".to_string(),
-            ));
-        }
-        // What the program could not answer crosses as its own rendering, so
-        // the parent surfaces the program's words rather than its own guess.
-        let answer = answer(domain, generators, question).unwrap_or_else(|e| FromDomain::Failed {
-            message: e.to_string(),
-        });
-        write_frame(&mut writer, &answer.encode())?;
     }
 }
 
