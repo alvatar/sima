@@ -792,6 +792,8 @@ What it publishes:
   `WorkerId`, `STATE_ARTIFACT`, and the `Checkpoint` channel with its inert
   `NoCheckpoint` handle;
 - **the device an executor is built for**: `DeviceBinding` and `DeviceClass`;
+- **the construction side of both seams** — `DomainPlug` and `GeneratorPlug` —
+  with `serve`, the call that hosts them;
 - **the identity-bearing values a seam is handed**: `Spec`, `Params`,
   `FormatId`, `GeneratorId`, and the `Environment` vocabulary;
 - **the foundations under them**: `Error` and `Result`, `Hash` and
@@ -828,12 +830,123 @@ on, so a backend the workspace has never seen names its devices in the
 published vocabulary — see [Device placement](#device-placement) for what a
 class asserts.
 
-One seam the published surface does not reach:
+The configuration seam is open too: a format's `[run.params]` section reaches
+its plug as **TOML text**, so a program translates its own configuration with a
+TOML of its own and sima's version never enters the surface — see
+[Registering a domain](#registering-a-domain).
 
-- **Config translation is in-tree.** Turning a format's `[run.params]` table
-  into `Params` bytes is a static match over the formats this build knows,
-  taking a `toml::Table`, so a format defined outside the workspace has no
-  published way to translate its own configuration.
+## Registering a domain
+
+A format id is bound by whatever answers for it. The formats this build carries
+are answered in process; a format a config routes to a binary is answered by
+that program, over a pipe.
+
+```mermaid
+flowchart TD
+  CFG["sima.toml names a binary<br/>for acme.thing.v1"] --> REG["registry<br/>format id to source"]
+  REG --> BS["BinarySource<br/>spawns the binary"]
+  REG --> IS["BuiltinSource<br/>calls sima-domains"]
+  BS -.->|"domain service protocol"| EXT["third-party binary<br/>links sima-api"]
+  IS --> DOM["sima-domains"]
+```
+
+The unit of registration is a **binary**. A heavy program owns its GPU context,
+its dependency tree, and its startup cost, so it runs as its own process: it
+loads its assets once at the handshake and then streams tasks. Foreign code
+stays out of the orchestrator, which keeps "executors never touch the store"
+enforced by the OS rather than by convention.
+
+### The plugs
+
+What a program hands over is a pair of objects in `sima-contracts`, published
+by `sima-api`:
+
+- **`DomainPlug`** — everything one format id binds: its executor, the devices
+  its work runs on, the environment its results depend on, and the translation
+  of its `[run.params]` section.
+- **`GeneratorPlug`** — a generator targeting that format, with the translation
+  of its own `[run.generator]` keys. Separate, because one format has one
+  executor and many generators.
+
+Traits rather than structs of function pointers, because a plug holds state: a
+renderer keeps its device and its loaded assets for the life of the run.
+Configuration crosses as TOML text, so the `toml` crate stays off the published
+surface.
+
+A whole program is then: implement the two traits, call `sima_api::serve`. That
+call reads the role from the process arguments, so one binary is both what a run
+asks about the format and what its workers execute in.
+
+### The domain service
+
+Five of the seven things a format binds are read where a run is driven — its
+environment, its device list, its params translation, its generator's params
+translation, and its specs — so a program in its own binary answers them over a
+second conversation, `<binary> --serve-domain <format>`. The other two, the
+executor and the device description, are read inside a worker and cross the
+worker protocol.
+
+| Parent to program | Program to parent |
+|---|---|
+| `Hello { protocol }` | `Ready { protocol }` |
+| `Describe { format }` | `Described { environment }` |
+| `Enumerate { format }` | `Enumerated { devices }` |
+| `TranslateParams { format, toml, segmented }` | `Translated { bytes }` |
+| `TranslateGeneratorParams { generator, toml }` | `Translated { bytes }` |
+| `Generate { generator, format, root_seed, params }` | `Generated { specs }` |
+| `Goodbye` | — |
+
+The framing is the transport's own — a `u32` length prefix and a `u8` message
+tag over the canonical `Enc`/`Dec` primitives — and the version is the one the
+worker protocol carries, because one program speaks both. A question the program
+cannot answer is `Failed { message }` carrying its own rendering, which the
+parent surfaces verbatim and the session survives. The session stays open for
+the whole config, so the startup cost is paid once.
+
+### The registry
+
+The run driver reads a domain the same way whichever side answers.
+
+```mermaid
+flowchart LR
+  subgraph parent["orchestrator process"]
+    RUN["run driver"] --> REG["DomainRegistry"]
+    REG --> SRC{"source for<br/>this format"}
+    SRC -->|in-tree| BI["BuiltinSource<br/>direct calls"]
+    SRC -->|configured| BN["BinarySource<br/>spawn + protocol"]
+  end
+  subgraph child["worker processes"]
+    W1["sima-worker<br/>in-tree formats"]
+    W2["third-party binary<br/>sima_api::serve(plug)"]
+  end
+  BI --> W1
+  BN --> W2
+```
+
+One seam, `DomainSource`, with two implementations:
+
+- **`BuiltinSource`** calls `sima-domains` directly, so the common path pays no
+  process and no pipe, and names sima's own worker binary.
+- **`BinarySource`** holds the session to a configured program and names that
+  program's binary, so a registered format's tasks execute in it.
+
+A config declares one entry per registered format:
+
+```toml
+[domain."acme.thing.v1"]
+binary = "/opt/acme/worker"
+```
+
+The registry is built where the config resolves, and the run's own translations
+go through it, so a program that cannot answer for the format it is declared
+under fails at load — the rule a config naming an unknown format already
+follows, and no store is left behind either way.
+
+**Sufficiency is a test, not a claim.** `sima-worker --serve-domain` serves the
+in-tree formats through the plugs, and an integration suite drives one of them
+through `BinarySource` and asserts the run id and every task key are identical
+to the same run by direct call. A field the protocol failed to carry would
+change a hash.
 
 ## `sima-domains` (L5)
 
@@ -846,12 +959,19 @@ only its own execution backend's devices are ever offered to its work and
 adding a backend adds no case to any match.
 Generators dispatch separately — one format has one executor but many
 generators — and each generator owns the translation of its own
-`[run.generator]` keys. Both dispatches are static matches keyed on the id; an
-unknown id is a validation error. Each domain's pieces — executor, generator,
-codecs, environment, and translation — live in its own module under
-`domains/`. The crate depends on `sima-contracts` for the traits and on `toml`
-for the translation, and owns the canonical codecs its specs and params hash
-through.
+`[run.generator]` keys. Both dispatches are static matches over the formats
+this build carries, keyed on the id; an id this build does not carry is a
+validation error here, and the registry one layer up is what routes such an id
+to the program that does carry it. Each domain's pieces — executor, generator,
+codecs, environment, and translation — live in its own module under `domains/`.
+
+The same domains are reachable as objects through `BuiltinDomain` and
+`BuiltinGenerator`, the shape a program outside the workspace supplies, so a
+built-in format can be driven over the seam a third party writes against — see
+[Registering a domain](#registering-a-domain).
+
+The crate depends on `sima-contracts` for the traits and on `toml` for the
+translation, and owns the canonical codecs its specs and params hash through.
 
 ### The translation seam
 
@@ -1617,8 +1737,9 @@ byte-identical across runs regardless.
 ## `sima-pipeline` (L7)
 
 The layer a person's configuration enters: it loads `sima.toml`, translates
-it through the domain and generator the config names, and drives the
-scheduler over the configured store.
+it through the domain and generator the config names — reached through the
+registry, which answers in process or through a program the config routes the
+format to — and drives the scheduler over the configured store.
 
 ### Identity and operation in the file
 
@@ -1721,19 +1842,22 @@ point of naming them.
 
 The pipeline parses the file's structure and routes each config section to
 the code that owns it, never interpreting the content itself: the format and
-generator ids dispatch through `sima-domains` (see L5), and the opaque
-`[run.params]` and `[run.generator]` tables pass to the domain and generator
+generator ids resolve through the registry — `sima-domains` for the formats
+this build carries (see L5), the program a `[domain.*]` entry names for the
+rest (see [Registering a domain](#registering-a-domain)) — and the opaque
+`[run.params]` and `[run.generator]` sections pass to the domain and generator
 translations that turn them into canonical bytes. Identity-bearing bytes are
 produced only by those codecs, never hand-rolled here.
 
 ### Orchestration
 
 `orchestrate` opens the store (creating it where missing), takes the run's
-orchestrator lock, dispatches the domain and the generator, locates the
-worker binary (the `SIMA_WORKER` environment variable, then `sima-worker`
-beside the current executable, then in its directory's parent), and calls
-the scheduler over the subprocess transport; the lock is held for the whole
-call and releases on return.
+orchestrator lock, reads the run's environment and generator from the source
+answering for its format, takes the worker binary from that same source — sima's
+own (the `SIMA_WORKER` environment variable, then `sima-worker` beside the
+current executable, then in its directory's parent) or the program the config
+routed the format to — and calls the scheduler over the subprocess transport;
+the lock is held for the whole call and releases on return.
 Resume and re-evaluation are this same call — the frontier re-derives from
 store state, so an interrupted or failed run continues where it stopped,
 and a finalized one re-finalizes idempotently without touching an executor.

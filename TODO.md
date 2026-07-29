@@ -774,20 +774,42 @@ portability (P1 acceptance (d)) hold across the boundary.
       detection — the class admits a partition profile, and the NVML calls that
       read one arrive when hardware or a fixture can exercise them — and no
       Metal or ROCm toolkit is built, though the shape admits one.
-- [ ] M7.3 Runtime registration: an out-of-tree executor announces its format
+- [x] M7.3 Runtime registration: an out-of-tree executor announces its format
       id and is selected without editing sima's dispatch — the static
-      format-id match (M1.6) becomes a registry. Registration and loading
-      mechanism decided here. The registration unit follows the `Family`-bundle
-      decision from M1.6: a third party registers the format-bound bundle
-      (codec + executor + reference + kernel) as one object, with generators a
-      separate plug targeting the format — do not fuse executor and generator.
-      The seam includes config translation: turning a format's `[run.params]`
-      table into `Params` bytes is today a static match taking a `toml::Table`,
-      so a third-party format has no published way to translate its own
-      configuration.
+      format-id match (M1.6) became a registry. Settled: the registration unit
+      is a **binary**, named in configuration as
+      `[domain."acme.thing.v1"] binary = "/opt/acme/worker"`. A heavy program
+      owns its GPU context, its dependency tree, and its startup cost, so it
+      runs as its own process; foreign code stays out of the orchestrator,
+      which leaves M7.4's boundary OS-enforced by construction, and Rust's
+      absent stable ABI made dynamic loading a C shim across trait objects.
+      The `Family`-bundle decision from M1.6 is honored by `DomainPlug`, one
+      object carrying a format's executor, devices, environment, and params
+      translation, with `GeneratorPlug` separate and targeting the format; both
+      live in `sima-contracts` and are published by `sima-api` beside `serve`,
+      the one call a program calls. Configuration crosses the seam as raw TOML
+      text rather than a `toml::Table`, so a third party is free of sima's
+      `toml` version. In-tree formats reach the same registry through
+      `BuiltinSource`, which calls `sima-domains` directly, so the common path
+      pays no process and no pipe; a configured format is answered by
+      `BinarySource` over the domain service protocol, one session held for the
+      config's life. The registry is built where the config resolves and the
+      run's own translations go through it, so a program that cannot answer for
+      the format it is declared under fails at load with no store behind it.
+      Sufficiency is a test rather than a claim: `sima-worker --serve-domain`
+      serves the in-tree formats through the plugs, and an in-tree format
+      driven through `BinarySource` produces the run id and every task key the
+      same run produces by direct call. `sima-example-executor` is now a binary
+      implementing both plugs with `sima-api` as its only sima dependency, and
+      a full search runs through it. Not done here: a registered format's tasks
+      run in its own binary on the orchestrator's own machine — a fleet machine
+      still runs the sima image's worker — and nothing folds a program's
+      identity into the environment hash, which is M7.5.
 - [ ] M7.4 Isolation and trust: run out-of-tree executors process-isolated so
       the pure-compute boundary is OS-enforced (foreign code cannot reach the
-      store).
+      store). Process isolation now holds by construction — a registered
+      program is its own process and is never given a store path — so what
+      remains is the trust argument around it and its enforcement.
 - [ ] M7.5 Identity and packaging: fold a custom executor's identity (version,
       build/content hash) into the environment hash so runs stay reproducible
       and portable; define how a custom family is packaged, versioned, and
