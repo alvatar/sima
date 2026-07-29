@@ -5,6 +5,9 @@ edition.workspace = true
 
 [dependencies]
 sima-api = { path = "../sima-api" }
+# A program parses the configuration sections it owns with a TOML of its own,
+# which is what keeps sima's off the published surface.
+toml.workspace = true
 
 [lints]
 workspace = true
