@@ -744,27 +744,36 @@ portability (P1 acceptance (d)) hold across the boundary.
       registration is M7.3 so an out-of-tree executor can be written and
       compiled but not yet registered, and nothing is versioned or published to
       a registry.
-- [ ] M7.2 Pluggable device backends: `Backend` is a closed enum
-      (`Host | Wgsl | Cuda`) whose only job is selecting an enumeration
-      function, so a third party bringing Metal, ROCm, or an accelerator we have
-      not thought of cannot name their backend or supply its device list. Delete
-      the enum and have `Domain` carry the enumeration directly, beside the
-      `executor` and `device_desc` function pointers it already holds; the
-      engine supplies it in place of `const BACKEND`. Removes a concept rather
-      than adding one, and needs no registry or backend id. The same pass opens
-      `DeviceBinding`'s shape, today the PCI triple `(vendor_id, device_id,
-      member)` rendered as the `vendor:device` hex a config selector matches. It
-      must admit devices that have no PCI configuration space at all — Apple
-      Silicon under Metal or MoltenVK, ARM SoC GPUs such as Mali and Adreno,
-      whose drivers report a Khronos-assigned vendor id and frequently a device
-      id of zero, collapsing every such device into one class. It must admit the
-      identifiers CUDA does not report, which the toolkit reads out of Linux
-      sysfs to fill the triple in, a path that exists on Linux and for PCI
-      devices and nowhere else. And it must admit NVIDIA MIG, where slices of
-      one card carry identical ids: slices of different sizes are one class by
-      that pair while not being interchangeable, so the `DeviceClass` invariant
-      that members are substitutable is false for them and work placed on the
-      class can land on a slice with a fraction of the memory it expected.
+- [x] M7.2 Pluggable device backends: `Backend` was a closed enum
+      (`Host | Wgsl | Cuda`) whose only job was selecting an enumeration
+      function, so a third party bringing Metal, ROCm, or an accelerator we had
+      not thought of could not name their backend or supply its device list.
+      Settled: the enum is deleted and `Domain` carries `enumerate` beside the
+      `executor` and `device_desc` pointers it already held, supplied by the
+      engine in place of `const BACKEND`; `DeviceInfo` and `DeviceType` moved to
+      `sima-contracts` and are published by `sima-api` beside `DeviceClass`,
+      because a domain answers with them. `DeviceClass` became a validated
+      string of 1 to 64 bytes of `[a-z0-9._:-]`, minted by the backend that
+      enumerates the device and compared, hashed, and rendered by sima without
+      interpretation; each toolkit mints and reads back its own names, which
+      retired the hand-rolled `{:04x}:{:04x}` both carried. What distinguishes
+      non-substitutable devices now lives inside the string, so the shape admits
+      devices with no configuration space at all (Apple Silicon under Metal or
+      MoltenVK, Mali, Adreno, whose drivers report a Khronos-assigned vendor id
+      and frequently a device id of zero) and admits NVIDIA MIG, where slices of
+      one card report identical identifiers: a backend that enumerates them
+      mints the partition profile alongside — `10de:2330:1g.10gb` — and the
+      profiles are separate classes, so the invariant that members of a class
+      substitute for each other holds again. No prefix names the backend or the
+      identity scheme, because classes are compared only within one run and a
+      run has one format, one domain, one backend. Both types lost `Copy`, so
+      the per-pull queue scan borrows a task's binding rather than cloning a
+      class per queued entry. A placement slot the scheduler cannot decode is
+      read as absent and its chain binds again, matching the stance the store
+      already took for a slot whose frame is unusable. Not done here: MIG
+      detection — the class admits a partition profile, and the NVML calls that
+      read one arrive when hardware or a fixture can exercise them — and no
+      Metal or ROCm toolkit is built, though the shape admits one.
 - [ ] M7.3 Runtime registration: an out-of-tree executor announces its format
       id and is selected without editing sima's dispatch — the static
       format-id match (M1.6) becomes a registry. Registration and loading
