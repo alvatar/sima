@@ -9,7 +9,12 @@
 //! ([`crate::protocol`]) instead.
 //!
 //! - [`protocol`] — the message vocabulary both endpoints share.
+//! - [`host`] — the child side: [`host::serve`] answers questions about the
+//!   format a program's plug binds, for the life of the session.
 //!
 //! The session stays open for the run, so a program pays its startup cost once.
 
+pub mod host;
 pub mod protocol;
+
+pub use host::serve;
