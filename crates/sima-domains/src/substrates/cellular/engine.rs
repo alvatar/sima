@@ -1,10 +1,9 @@
 //! [`CellularEngine`]: the seam between a cellular evaluation and the compute
 //! backend it runs on.
 
-use sima_contracts::DeviceBinding;
+use sima_contracts::{DeviceBinding, DeviceInfo};
 use sima_core::{Hash, Result};
 
-use crate::devices::Backend;
 use crate::substrates::cellular::Grid;
 
 /// A compute backend an evaluation runs on: it holds a device and the kernels
@@ -25,10 +24,10 @@ use crate::substrates::cellular::Grid;
 /// vocabulary of the cellular kind. Implementing it for a foreign backend
 /// violates no orphan rule, since the trait itself is local.
 pub(crate) trait CellularEngine: Send + Sized + 'static {
-    /// The execution backend behind this engine, which is also the one whose
-    /// devices can hold its work: a domain built on it enumerates that backend
-    /// alone.
-    const BACKEND: Backend;
+    /// Every device this engine's backend can open, in the domains layer's
+    /// vocabulary. A domain built on this engine answers with exactly this, so
+    /// no worker is bound to a device the backend faults on.
+    fn enumerate() -> Result<Vec<DeviceInfo>>;
 
     /// The name of the environment component that pins this backend's
     /// compiler. Each backend names its own, so a domain's environment says

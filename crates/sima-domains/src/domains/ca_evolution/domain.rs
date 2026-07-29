@@ -31,7 +31,7 @@ pub(crate) fn build_domain<M: CaModel, E: CellularEngine>() -> Result<Domain> {
         // holds; `M` and `E` ride along through monomorphization.
         executor: |device| Ok(Box::new(CaExecutor::<M, E>::new(device)?)),
         device_desc: E::device_desc,
-        backend: E::BACKEND,
+        enumerate: E::enumerate,
         environment: Environment::new(vec![
             EnvironmentComponent::new(
                 format!("{}.executor", M::NAME),
