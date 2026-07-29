@@ -23,6 +23,11 @@
 //! used solely to cross-check that harness against an independent implementation
 //! in tests.
 //!
+//! The same domains are reachable as objects through [`BuiltinDomain`] and
+//! [`BuiltinGenerator`], the shape a program outside the workspace supplies,
+//! so a built-in format can be driven over the seam a third party writes
+//! against.
+//!
 //! The pipeline calls this crate to resolve a config's format and generator
 //! ids to code; the scheduler tests use the stub domain as a deterministic,
 //! programmable substrate through a dev-dependency. `sima-contracts` sits
@@ -31,6 +36,7 @@
 pub mod devices;
 mod domain;
 mod domains;
+mod plug;
 pub mod substrates;
 
 pub use domain::{Domain, domain_for, generator_for, generator_params_for, params_for};
@@ -38,3 +44,4 @@ pub use domains::ca_evolution::continuation::{decode_continuation, encode_contin
 pub use domains::stub::{
     StubBehavior, StubExecutor, StubGenerator, StubGeneratorConfig, StubProgram, StubState,
 };
+pub use plug::{BuiltinDomain, BuiltinGenerator, generators_for};
