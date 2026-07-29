@@ -36,10 +36,11 @@ impl Context {
         // does within those allocations is the kernel's own contract: it reads
         // its bounds from the buffers it is given, as every kernel in this
         // project does.
-        unsafe { launch.launch(config) }.map_err(|e| driver::gpu_error("launch the kernel", e))?;
+        unsafe { launch.launch(config) }
+            .map_err(|e| driver::backend_error("launch the kernel", e))?;
         self.stream()
             .synchronize()
-            .map_err(|e| driver::gpu_error("drain the stream after a dispatch", e))
+            .map_err(|e| driver::backend_error("drain the stream after a dispatch", e))
     }
 }
 

@@ -21,7 +21,7 @@ impl Context {
     pub fn dispatch(&self, kernel: &Kernel, buffers: &[&Buffer], groups: [u32; 3]) -> Result<()> {
         let bindings = kernel.bindings();
         if buffers.len() != bindings.len() {
-            return Err(Error::Gpu(format!(
+            return Err(Error::Backend(format!(
                 "dispatch expects {} buffers for the kernel's bindings, got {}",
                 bindings.len(),
                 buffers.len()
@@ -134,7 +134,7 @@ fn create_descriptor_pool(device: &ash::Device, count: u32) -> Result<vk::Descri
         .pool_sizes(std::slice::from_ref(&pool_size));
     // SAFETY: `info` and the `pool_size` it borrows live through the call.
     unsafe { device.create_descriptor_pool(&info, None) }
-        .map_err(|e| Error::Gpu(format!("create descriptor pool: {e}")))
+        .map_err(|e| Error::Backend(format!("create descriptor pool: {e}")))
 }
 
 /// Allocates one descriptor set of `layout` from `pool`.
@@ -149,10 +149,10 @@ fn allocate_set(
     // SAFETY: `pool` has capacity for this set and `info` borrows `layout` via
     // from_ref through the call; one layout in, so sets[0] is present on success.
     let sets = unsafe { device.allocate_descriptor_sets(&info) }
-        .map_err(|e| Error::Gpu(format!("allocate descriptor set: {e}")))?;
+        .map_err(|e| Error::Backend(format!("allocate descriptor set: {e}")))?;
     sets.first()
         .copied()
-        .ok_or_else(|| Error::Gpu("descriptor set allocation returned no set".to_string()))
+        .ok_or_else(|| Error::Backend("descriptor set allocation returned no set".to_string()))
 }
 
 /// Owns a transient descriptor pool, destroying it (and the set within) on drop.

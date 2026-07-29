@@ -44,14 +44,14 @@ impl Context {
     /// greater than zero.
     pub fn buffer(&self, size: usize) -> Result<Buffer> {
         if size == 0 {
-            return Err(Error::Gpu(
+            return Err(Error::Backend(
                 "buffer size must be greater than zero".to_string(),
             ));
         }
         let bytes = self
             .stream()
             .alloc_zeros::<u8>(size)
-            .map_err(|e| driver::gpu_error("allocate device memory", e))?;
+            .map_err(|e| driver::backend_error("allocate device memory", e))?;
         Ok(Buffer { bytes })
     }
 
@@ -64,7 +64,7 @@ impl Context {
             return Ok(());
         }
         if data.len() > dst.bytes.len() {
-            return Err(Error::Gpu(format!(
+            return Err(Error::Backend(format!(
                 "upload of {} bytes exceeds buffer size {}",
                 data.len(),
                 dst.bytes.len()
@@ -76,7 +76,7 @@ impl Context {
         // written this way.
         self.stream()
             .memcpy_htod(data, &mut dst.bytes)
-            .map_err(|e| driver::gpu_error("copy host bytes to the device", e))
+            .map_err(|e| driver::backend_error("copy host bytes to the device", e))
     }
 
     /// Copies a device allocation back to host bytes, returning its full
@@ -88,10 +88,10 @@ impl Context {
         let mut out = vec![0u8; src.bytes.len()];
         self.stream()
             .memcpy_dtoh(&src.bytes, out.as_mut_slice())
-            .map_err(|e| driver::gpu_error("copy device bytes to the host", e))?;
+            .map_err(|e| driver::backend_error("copy device bytes to the host", e))?;
         self.stream()
             .synchronize()
-            .map_err(|e| driver::gpu_error("drain the stream after a readback", e))?;
+            .map_err(|e| driver::backend_error("drain the stream after a readback", e))?;
         Ok(out)
     }
 }
@@ -104,7 +104,7 @@ mod tests {
     #[test]
     fn buffer_rejects_zero_size() {
         let context = Context::new().expect("create compute context");
-        assert!(matches!(context.buffer(0), Err(Error::Gpu(_))));
+        assert!(matches!(context.buffer(0), Err(Error::Backend(_))));
     }
 
     /// Requires an NVIDIA device.
@@ -133,7 +133,7 @@ mod tests {
         let mut buffer = context.buffer(4).expect("allocate buffer");
         assert!(matches!(
             context.upload(&mut buffer, &[0u8; 8]),
-            Err(Error::Gpu(_))
+            Err(Error::Backend(_))
         ));
     }
 

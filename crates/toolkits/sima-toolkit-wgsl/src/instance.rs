@@ -19,14 +19,14 @@ use crate::validation::{debug_utils_extension_name, validation_layer_names};
 pub(crate) fn load_entry() -> Result<ash::Entry> {
     // SAFETY: loads the platform Vulkan loader; the caller keeps the returned
     // Entry alive for the whole lifetime of the instances derived from it.
-    unsafe { ash::Entry::load() }.map_err(|e| Error::Gpu(format!("load Vulkan loader: {e}")))
+    unsafe { ash::Entry::load() }.map_err(|e| Error::Backend(format!("load Vulkan loader: {e}")))
 }
 
 /// Creates an instance on `entry`, enabling the validation layer and its
 /// debug-utils extension when `validation_enabled`.
 pub(crate) fn create(entry: &ash::Entry, validation_enabled: bool) -> Result<ash::Instance> {
     try_create(entry, validation_enabled)
-        .map_err(|e| Error::Gpu(format!("create Vulkan instance: {e}")))
+        .map_err(|e| Error::Backend(format!("create Vulkan instance: {e}")))
 }
 
 /// Creates an instance on `entry`, surfacing the raw Vulkan result so a caller
@@ -73,7 +73,7 @@ pub(crate) fn with_query_instance_or_none<T>(
     let instance = match try_create(&entry, false) {
         Ok(instance) => InstanceGuard::new(instance),
         Err(vk::Result::ERROR_INCOMPATIBLE_DRIVER) => return Ok(None),
-        Err(e) => return Err(Error::Gpu(format!("create Vulkan instance: {e}"))),
+        Err(e) => return Err(Error::Backend(format!("create Vulkan instance: {e}"))),
     };
     // The guard destroys the instance as this scope ends, on both paths.
     query(instance.get()?).map(Some)
@@ -106,13 +106,13 @@ impl InstanceGuard {
     pub(crate) fn get(&self) -> Result<&ash::Instance> {
         self.instance
             .as_ref()
-            .ok_or_else(|| Error::Gpu("Vulkan instance guard used after finish".to_string()))
+            .ok_or_else(|| Error::Backend("Vulkan instance guard used after finish".to_string()))
     }
 
     pub(crate) fn finish(mut self) -> Result<ash::Instance> {
         self.instance
             .take()
-            .ok_or_else(|| Error::Gpu("Vulkan instance guard finished twice".to_string()))
+            .ok_or_else(|| Error::Backend("Vulkan instance guard finished twice".to_string()))
     }
 }
 

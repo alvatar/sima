@@ -102,9 +102,9 @@ pub fn enumerate_devices() -> Result<Vec<DeviceInfo>> {
 pub fn selected_device_desc(device: Option<(u32, u32, u32)>) -> Result<(String, String)> {
     let ordinal = resolve_ordinal(device)?;
     let cu_device = result::device::get(ordinal as i32)
-        .map_err(|e| driver::gpu_error("open the CUDA device", e))?;
+        .map_err(|e| driver::backend_error("open the CUDA device", e))?;
     let name = result::device::get_name(cu_device)
-        .map_err(|e| driver::gpu_error("read the CUDA device name", e))?;
+        .map_err(|e| driver::backend_error("read the CUDA device name", e))?;
     Ok((name, driver_version()?))
 }
 
@@ -139,7 +139,7 @@ pub(crate) fn driver_version() -> Result<String> {
     // stack slot the call writes exactly one int into.
     unsafe { sys::cuDriverGetVersion(&mut version) }
         .result()
-        .map_err(|e| driver::gpu_error("read the CUDA driver version", e))?;
+        .map_err(|e| driver::backend_error("read the CUDA driver version", e))?;
     // The driver reports one integer, 1000 * major + 10 * minor.
     Ok(format!("{}.{}", version / 1000, (version % 1000) / 10))
 }
@@ -155,14 +155,14 @@ struct Candidate {
 
 /// Every CUDA device, in ordinal order. The driver must already be initialized.
 fn cuda_devices() -> Result<Vec<Candidate>> {
-    let count =
-        result::device::get_count().map_err(|e| driver::gpu_error("count the CUDA devices", e))?;
+    let count = result::device::get_count()
+        .map_err(|e| driver::backend_error("count the CUDA devices", e))?;
     let mut candidates = Vec::with_capacity(count.max(0) as usize);
     for ordinal in 0..count {
         let cu_device = result::device::get(ordinal)
-            .map_err(|e| driver::gpu_error("open the CUDA device", e))?;
+            .map_err(|e| driver::backend_error("open the CUDA device", e))?;
         let name = result::device::get_name(cu_device)
-            .map_err(|e| driver::gpu_error("read the CUDA device name", e))?;
+            .map_err(|e| driver::backend_error("read the CUDA device name", e))?;
         // SAFETY: `cu_device` was returned by `cuDeviceGet` above and the
         // attribute is a plain integer query taking no pointers of ours.
         let integrated = unsafe {
@@ -171,7 +171,7 @@ fn cuda_devices() -> Result<Vec<Candidate>> {
                 sys::CUdevice_attribute_enum::CU_DEVICE_ATTRIBUTE_INTEGRATED,
             )
         }
-        .map_err(|e| driver::gpu_error("read the CUDA device integration attribute", e))?;
+        .map_err(|e| driver::backend_error("read the CUDA device integration attribute", e))?;
         let (vendor_id, device_id) = pci_class(cu_device)?;
         candidates.push(Candidate {
             ordinal: ordinal as usize,
@@ -213,7 +213,7 @@ fn pci_bus_id(cu_device: sys::CUdevice) -> Result<String> {
     // buffer of exactly the length passed alongside it.
     unsafe { sys::cuDeviceGetPCIBusId(raw.as_mut_ptr(), raw.len() as std::ffi::c_int, cu_device) }
         .result()
-        .map_err(|e| driver::gpu_error("read the CUDA device PCI bus identifier", e))?;
+        .map_err(|e| driver::backend_error("read the CUDA device PCI bus identifier", e))?;
     // SAFETY: the call above wrote a NUL-terminated string into `raw`, which is
     // alive for this borrow.
     let bus_id = unsafe { std::ffi::CStr::from_ptr(raw.as_ptr()) };
@@ -223,14 +223,14 @@ fn pci_bus_id(cu_device: sys::CUdevice) -> Result<String> {
 /// One `0x`-prefixed hexadecimal identifier from a PCI device's sysfs entry.
 fn pci_id(path: &std::path::Path, bus_id: &str) -> Result<u32> {
     let text = std::fs::read_to_string(path).map_err(|e| {
-        Error::Gpu(format!(
+        Error::Backend(format!(
             "read the PCI configuration of CUDA device {bus_id} at {}: {e}",
             path.display()
         ))
     })?;
     let digits = text.trim().trim_start_matches("0x");
     u32::from_str_radix(digits, 16).map_err(|e| {
-        Error::Gpu(format!(
+        Error::Backend(format!(
             "parse the PCI configuration of CUDA device {bus_id} at {}: {text:?} is not a \
              hexadecimal identifier: {e}",
             path.display()
@@ -257,13 +257,13 @@ fn resolve_member(
         .collect();
     members.sort_unstable();
     if members.is_empty() {
-        return Err(Error::Gpu(format!(
+        return Err(Error::Backend(format!(
             "no CUDA device {vendor_id:04x}:{device_id:04x} exists; present: {}",
             render_classes(candidates)
         )));
     }
     members.get(member as usize).copied().ok_or_else(|| {
-        Error::Gpu(format!(
+        Error::Backend(format!(
             "CUDA device {vendor_id:04x}:{device_id:04x} has {} member(s); member {member} \
              requested",
             members.len()
@@ -294,7 +294,7 @@ fn choose_device(candidates: &[(usize, DeviceType)]) -> Result<usize> {
         .iter()
         .min_by_key(|(ordinal, device_type)| (device_type.rank(), *ordinal))
         .map(|(ordinal, _)| *ordinal)
-        .ok_or_else(|| Error::Gpu("no CUDA device to select".to_string()))
+        .ok_or_else(|| Error::Backend("no CUDA device to select".to_string()))
 }
 
 #[cfg(test)]
@@ -324,7 +324,7 @@ mod tests {
 
     #[test]
     fn selecting_from_nothing_is_rejected() {
-        assert!(matches!(choose_device(&[]), Err(Error::Gpu(_))));
+        assert!(matches!(choose_device(&[]), Err(Error::Backend(_))));
     }
 
     /// Two identical cards and one of another class, in ordinal order.
@@ -370,8 +370,8 @@ mod tests {
         // The Intel card of a mixed machine: enumerated by the WGSL backend,
         // never by this one, so binding the CUDA program to it fails here.
         let error = resolve_member(&CANDIDATES, 0x8086, 0x7d51, 0).expect_err("absent class");
-        let Error::Gpu(message) = error else {
-            panic!("expected a Gpu error");
+        let Error::Backend(message) = error else {
+            panic!("expected a backend error");
         };
         assert!(
             message.contains("8086:7d51"),
@@ -387,8 +387,8 @@ mod tests {
     #[test]
     fn an_absent_class_on_a_machine_with_no_cuda_device_says_so() {
         let error = resolve_member(&[], 0x10de, 0x2d39, 0).expect_err("nothing to select");
-        let Error::Gpu(message) = error else {
-            panic!("expected a Gpu error");
+        let Error::Backend(message) = error else {
+            panic!("expected a backend error");
         };
         assert!(message.contains("no CUDA device"), "{message}");
     }
@@ -396,8 +396,8 @@ mod tests {
     #[test]
     fn member_out_of_range_error_names_the_member_count() {
         let error = resolve_member(&CANDIDATES, 0x10de, 0x2684, 1).expect_err("one member only");
-        let Error::Gpu(message) = error else {
-            panic!("expected a Gpu error");
+        let Error::Backend(message) = error else {
+            panic!("expected a backend error");
         };
         assert!(message.contains("10de:2684"), "names the class: {message}");
         assert!(message.contains('1'), "names the member count: {message}");
@@ -436,7 +436,7 @@ mod tests {
         // construction is lazy and would not notice until the first task.
         assert!(matches!(
             selected_device_desc(Some((0xdead, 0xbeef, 0))),
-            Err(Error::Gpu(_))
+            Err(Error::Backend(_))
         ));
     }
 }

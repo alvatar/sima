@@ -1,5 +1,5 @@
 //! CUDA driver entry: loading the driver library, initializing it, and turning
-//! driver failures into [`Error::Gpu`].
+//! driver failures into [`Error::Backend`].
 //!
 //! Every path that touches CUDA starts here. The driver library is opened at
 //! run time, so a machine with no NVIDIA driver installed loads nothing and
@@ -41,11 +41,11 @@ fn driver_library() -> Option<&'static libloading::Library> {
 /// Repeated calls are the driver's own no-op after the first success.
 pub(crate) fn initialize() -> Result<()> {
     if driver_library().is_none() {
-        return Err(Error::Gpu(
+        return Err(Error::Backend(
             "no CUDA driver library is installed on this machine".to_string(),
         ));
     }
-    result::init().map_err(|e| gpu_error("initialize the CUDA driver", e))
+    result::init().map_err(|e| backend_error("initialize the CUDA driver", e))
 }
 
 /// Runs `query` against an initialized driver, resolving to `None` on a machine
@@ -68,10 +68,10 @@ pub(crate) fn with_driver_or_none<T>(query: impl FnOnce() -> Result<T>) -> Resul
     query().map(Some)
 }
 
-/// Wraps a driver failure as [`Error::Gpu`], naming the operation and the
+/// Wraps a driver failure as [`Error::Backend`], naming the operation and the
 /// driver's own name and description of the failure.
-pub(crate) fn gpu_error(operation: &str, error: DriverError) -> Error {
-    Error::Gpu(format!("{operation}: {}", render(error)))
+pub(crate) fn backend_error(operation: &str, error: DriverError) -> Error {
+    Error::Backend(format!("{operation}: {}", render(error)))
 }
 
 /// The driver's name and description of an error, as `NAME: description`.
@@ -121,7 +121,8 @@ mod tests {
         if driver_library().is_none() || result::init().is_err() {
             return;
         }
-        let result = with_driver_or_none(|| -> Result<()> { Err(Error::Gpu("probe".to_string())) });
-        assert!(matches!(result, Err(Error::Gpu(_))));
+        let result =
+            with_driver_or_none(|| -> Result<()> { Err(Error::Backend("probe".to_string())) });
+        assert!(matches!(result, Err(Error::Backend(_))));
     }
 }

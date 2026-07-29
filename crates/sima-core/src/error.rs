@@ -42,10 +42,10 @@ pub enum Error {
     /// from [`Error::Corruption`] because absence here is recoverable —
     /// store sync negotiates exactly this class.
     MissingObject(Hash),
-    /// A GPU execution backend failed: shader compilation, device or queue
-    /// setup, memory allocation, or command submission. The payload names the
-    /// operation and the underlying cause.
-    Gpu(String),
+    /// An execution backend failed: shader or kernel compilation, device or
+    /// queue setup, memory allocation, or command submission. The payload names
+    /// the operation and the underlying cause.
+    Backend(String),
     /// The worker transport failed: a pipe to a worker process broke, or a
     /// frame violated the wire protocol (torn or oversize length prefix).
     /// The payload names the operation and the underlying cause.
@@ -73,7 +73,7 @@ impl fmt::Display for Error {
             Error::Io { path, source } => write!(f, "io error: {}: {source}", path.display()),
             Error::Corruption(msg) => write!(f, "store corruption: {msg}"),
             Error::MissingObject(hash) => write!(f, "missing object: {hash}"),
-            Error::Gpu(msg) => write!(f, "gpu error: {msg}"),
+            Error::Backend(msg) => write!(f, "backend error: {msg}"),
             Error::Transport(msg) => write!(f, "worker transport error: {msg}"),
             Error::Provider(msg) => write!(f, "provider error: {msg}"),
             Error::Reported(msg) => write!(f, "{msg}"),
@@ -142,9 +142,12 @@ mod tests {
     }
 
     #[test]
-    fn display_renders_gpu_context() {
-        let e = Error::Gpu("compile WGSL: unexpected token".to_string());
-        assert_eq!(e.to_string(), "gpu error: compile WGSL: unexpected token");
+    fn display_renders_backend_context() {
+        let e = Error::Backend("compile WGSL: unexpected token".to_string());
+        assert_eq!(
+            e.to_string(),
+            "backend error: compile WGSL: unexpected token"
+        );
     }
 
     #[test]

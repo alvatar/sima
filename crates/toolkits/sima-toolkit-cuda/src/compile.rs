@@ -71,7 +71,7 @@ pub fn compile(source: &str) -> Result<String> {
         ..Default::default()
     };
     let ptx = compile_ptx_with_opts(source, options)
-        .map_err(|e| Error::Gpu(format!("compile CUDA C to PTX: {e}")))?;
+        .map_err(|e| Error::Backend(format!("compile CUDA C to PTX: {e}")))?;
     Ok(ptx.to_src())
 }
 
@@ -126,10 +126,10 @@ extern \"C\" __global__ void __launch_bounds__(64) main_kernel(
     fn compile_rejects_malformed_cuda_c() {
         let result = compile("__global__ void broken() { let x = ; }");
         match result {
-            Err(Error::Gpu(message)) => {
+            Err(Error::Backend(message)) => {
                 assert!(message.contains("compile CUDA C to PTX"), "{message}");
             }
-            other => panic!("expected a Gpu compile error, got {other:?}"),
+            other => panic!("expected a backend compile error, got {other:?}"),
         }
     }
 

@@ -148,7 +148,7 @@ fn compute_capable_devices(instance: &ash::Instance) -> Result<Vec<Candidate>> {
     // SAFETY: `instance` is borrowed and alive; the returned handles are owned
     // by it and used only while the caller holds it.
     let devices = unsafe { instance.enumerate_physical_devices() }
-        .map_err(|e| Error::Gpu(format!("enumerate physical devices: {e}")))?;
+        .map_err(|e| Error::Backend(format!("enumerate physical devices: {e}")))?;
 
     let mut candidates = Vec::new();
     for (index, &physical_device) in devices.iter().enumerate() {
@@ -168,7 +168,7 @@ fn compute_capable_devices(instance: &ash::Instance) -> Result<Vec<Candidate>> {
         });
     }
     if candidates.is_empty() {
-        return Err(Error::Gpu(
+        return Err(Error::Backend(
             "no Vulkan device exposes a compute queue family".to_string(),
         ));
     }
@@ -181,7 +181,7 @@ fn take_candidate(candidates: Vec<Candidate>, winner: usize) -> Result<DeviceCho
         .into_iter()
         .find(|candidate| candidate.index == winner)
         .map(|candidate| candidate.choice)
-        .ok_or_else(|| Error::Gpu("selected device index has no candidate".to_string()))
+        .ok_or_else(|| Error::Backend("selected device index has no candidate".to_string()))
 }
 
 /// Selects the physical device to run on.
@@ -241,13 +241,13 @@ fn resolve_member(
         .collect();
     members.sort_unstable();
     if members.is_empty() {
-        return Err(Error::Gpu(format!(
+        return Err(Error::Backend(format!(
             "no compute-capable device {vendor_id:04x}:{device_id:04x} exists; present: {}",
             render_classes(candidates)
         )));
     }
     members.get(member as usize).copied().ok_or_else(|| {
-        Error::Gpu(format!(
+        Error::Backend(format!(
             "device {vendor_id:04x}:{device_id:04x} has {} member(s); member {member} requested",
             members.len()
         ))
@@ -281,7 +281,7 @@ fn choose_device(
             .find(|(index, _)| *index == requested)
             .map(|(index, _)| *index)
             .ok_or_else(|| {
-                Error::Gpu(format!(
+                Error::Backend(format!(
                     "SIMA_GPU_DEVICE={requested} does not name a compute-capable device"
                 ))
             });
@@ -290,7 +290,7 @@ fn choose_device(
         .iter()
         .min_by_key(|(index, device_type)| (type_rank(*device_type), *index))
         .map(|(index, _)| *index)
-        .ok_or_else(|| Error::Gpu("no compute-capable device to select".to_string()))
+        .ok_or_else(|| Error::Backend("no compute-capable device to select".to_string()))
 }
 
 /// Preference order across device types; lower ranks are preferred.
@@ -302,7 +302,7 @@ fn type_rank(device_type: vk::PhysicalDeviceType) -> u8 {
 fn requested_device_index() -> Result<Option<usize>> {
     match std::env::var("SIMA_GPU_DEVICE") {
         Ok(value) => value.trim().parse::<usize>().map(Some).map_err(|_| {
-            Error::Gpu(format!(
+            Error::Backend(format!(
                 "SIMA_GPU_DEVICE must be a device index, got {value:?}"
             ))
         }),
@@ -341,7 +341,7 @@ pub(crate) fn find_memory_type(
             return Ok(index as u32);
         }
     }
-    Err(Error::Gpu(format!(
+    Err(Error::Backend(format!(
         "no Vulkan memory type satisfies {required:?}"
     )))
 }
@@ -422,7 +422,7 @@ mod tests {
         let candidates = [(0, vk::PhysicalDeviceType::DISCRETE_GPU)];
         assert!(matches!(
             choose_device(&candidates, Some(7)),
-            Err(Error::Gpu(_))
+            Err(Error::Backend(_))
         ));
     }
 
@@ -473,8 +473,8 @@ mod tests {
     #[test]
     fn unknown_class_error_names_the_request_and_what_exists() {
         let error = resolve_member(&CANDIDATES, 0x1002, 0x1234, 0).expect_err("absent class");
-        let Error::Gpu(message) = error else {
-            panic!("expected a Gpu error");
+        let Error::Backend(message) = error else {
+            panic!("expected a backend error");
         };
         assert!(
             message.contains("1002:1234"),
@@ -493,8 +493,8 @@ mod tests {
     #[test]
     fn member_out_of_range_error_names_the_member_count() {
         let error = resolve_member(&CANDIDATES, 0x8086, 0x7d51, 1).expect_err("one member only");
-        let Error::Gpu(message) = error else {
-            panic!("expected a Gpu error");
+        let Error::Backend(message) = error else {
+            panic!("expected a backend error");
         };
         assert!(message.contains("8086:7d51"), "names the class: {message}");
         assert!(message.contains('1'), "names the member count: {message}");
@@ -508,7 +508,7 @@ mod tests {
         // construction is lazy and would not notice until the first task.
         assert!(matches!(
             selected_device_desc(Some((0xdead, 0xbeef, 0))),
-            Err(Error::Gpu(_))
+            Err(Error::Backend(_))
         ));
     }
 
