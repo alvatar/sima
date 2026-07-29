@@ -1,5 +1,5 @@
-//! Contract layer: the two seams the search substrate runs candidates
-//! through.
+//! Contract layer: the two components a program supplies, and the vocabulary
+//! they exchange with sima.
 //!
 //! A generator produces a run's candidate specs; an executor evaluates one
 //! candidate and returns produced artifacts plus observational stats, or a
@@ -27,11 +27,11 @@
 //! under it; like the execution context, it is operational and never reaches a
 //! committed artifact or a task key.
 //!
-//! [`DomainPlug`] and [`GeneratorPlug`] are the construction side of the same
-//! pair: what a program hands over so a run can reach its executor and its
-//! generators. A plug carries the format's environment, the devices its work
-//! runs on, and the translation of the program's own configuration, which
-//! crosses as TOML text.
+//! [`Domain`] is the declaration side: what a program hands over so a run can
+//! reach its executor. It carries the format's environment, the devices its
+//! work runs on, and the translation of the program's own configuration, which
+//! crosses as TOML text. A program supplies two components — one [`Domain`] and
+//! one [`Generator`] per way of choosing candidates.
 //!
 //! The concrete implementations that satisfy these traits live in
 //! `sima-domains` — executors keyed by format, generators by generator id;
@@ -39,14 +39,14 @@
 
 mod checkpoint;
 mod device;
+mod domain;
 mod executor;
 mod generator;
-mod plug;
 
 pub use checkpoint::{Checkpoint, NoCheckpoint};
 pub use device::{DeviceBinding, DeviceClass, DeviceInfo, DeviceType};
+pub use domain::Domain;
 pub use executor::{
     Artifact, ExecutionContext, Executor, Outcome, STATE_ARTIFACT, Stats, TaskInput, WorkerId,
 };
 pub use generator::Generator;
-pub use plug::{DomainPlug, GeneratorPlug};

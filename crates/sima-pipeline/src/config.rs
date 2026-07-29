@@ -846,7 +846,8 @@ fn resolve_run(path: &Path, section: RunSection, domains: &DomainRegistry) -> Re
     // workspace parses it with a TOML of its own.
     let source = domains.source(&format);
     let generator_params = source
-        .translate_generator_params(&generator_id, &section_text(&section.generator.rest)?)?;
+        .generator(&generator_id, &format)?
+        .translate_params(&section_text(&section.generator.rest)?)?;
     let params =
         source.translate_params(&format, &section_text(&section.params)?, segments.is_some())?;
     Ok(RunConfig {

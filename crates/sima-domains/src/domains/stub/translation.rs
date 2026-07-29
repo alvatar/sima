@@ -13,16 +13,16 @@ use sima_core::{Error, Result};
 use sima_model::{Environment, EnvironmentComponent, EnvironmentValue, FormatId, Params};
 
 use super::{StubBehavior, StubExecutor, StubGeneratorConfig};
-use crate::domain::Domain;
 use crate::domains::translate::reject_unknown_keys;
+use crate::format_binding::FormatBinding;
 
 /// The stub format id, doubling as the stub generator id.
 pub(crate) const ID: &str = "stub.v1";
 
-/// The stub domain: the stub executor and a one-component environment
+/// The stub format binding: the stub executor and a one-component environment
 /// carrying its version.
-pub(crate) fn domain() -> Result<Domain> {
-    Ok(Domain {
+pub(crate) fn binding() -> Result<FormatBinding> {
+    Ok(FormatBinding {
         format: FormatId::new(ID)?,
         // The stub computes on the CPU, so it has no use for a device binding
         // and no device or driver to name.
@@ -286,8 +286,8 @@ mod tests {
     }
 
     #[test]
-    fn the_domain_binds_the_stub_pieces() -> Result<()> {
-        let domain = domain()?;
+    fn the_binding_holds_the_stub_pieces() -> Result<()> {
+        let domain = binding()?;
         assert_eq!(domain.format.as_str(), ID);
         assert_eq!((domain.executor)(None)?.format().as_str(), ID);
         let components = domain.environment.components();

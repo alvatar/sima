@@ -10,7 +10,7 @@
 //!
 //! - [`protocol`] — the message vocabulary both endpoints share.
 //! - [`host`] — the child side: [`host::serve`] answers questions about the
-//!   format a program's plug binds, for the life of the session.
+//!   format a program's domain binds, for the life of the session.
 //! - [`session`] — the parent side: [`session::DomainService`] spawns a
 //!   program and asks it.
 //!

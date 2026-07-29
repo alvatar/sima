@@ -15,7 +15,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use common::{built_binary, loaded_text};
 use sima_contracts::Generator;
 use sima_core::Result;
-use sima_example_executor::{FORMAT, Sampler};
+use sima_example_executor::Sampler;
 use sima_pipeline::{
     Engagement, Event, LoadedConfig, Record, RunControl, RunOutcome, orchestrate, task_keys,
 };
@@ -200,7 +200,7 @@ fn a_search_runs_end_to_end_through_a_program_of_its_own() -> Result<()> {
     // What the store holds is what the program's own executor returns: every
     // candidate the program's generator drew, doubled.
     let expected: Vec<u8> = Sampler::new()?
-        .generate(7, &[4], &sima_model::FormatId::new(FORMAT)?)?
+        .generate(7, &[4])?
         .iter()
         .map(|spec| spec.bytes[0].wrapping_mul(2))
         .collect();

@@ -787,14 +787,14 @@ underneath it.
 
 What it publishes:
 
-- **the two seams** — `Executor` and `Generator` — with the vocabulary they
-  exchange: `TaskInput`, `ExecutionContext`, `Outcome`, `Artifact`, `Stats`,
-  `WorkerId`, `STATE_ARTIFACT`, and the `Checkpoint` channel with its inert
-  `NoCheckpoint` handle;
+- **the two components a program supplies** — `Domain` and `Generator` — with
+  `serve`, the call that hosts them;
+- **the `Executor` a domain builds**, with the vocabulary it exchanges:
+  `TaskInput`, `ExecutionContext`, `Outcome`, `Artifact`, `Stats`, `WorkerId`,
+  `STATE_ARTIFACT`, and the `Checkpoint` channel with its inert `NoCheckpoint`
+  handle;
 - **the device an executor is built for**: `DeviceBinding` and `DeviceClass`;
-- **the construction side of both seams** — `DomainPlug` and `GeneratorPlug` —
-  with `serve`, the call that hosts them;
-- **the identity-bearing values a seam is handed**: `Spec`, `Params`,
+- **the identity-bearing values a component is handed**: `Spec`, `Params`,
   `FormatId`, `GeneratorId`, and the `Environment` vocabulary;
 - **the foundations under them**: `Error` and `Result`, `Hash` and
   `hash_bytes`, the `Codec`/`Enc`/`Dec` canonical encoding, and `prng`.
@@ -861,15 +861,17 @@ enforced by the OS rather than by convention.
 What a program hands over is a pair of objects in `sima-contracts`, published
 by `sima-api`:
 
-- **`DomainPlug`** — everything one format id binds: its executor, the devices
-  its work runs on, the environment its results depend on, and the translation
-  of its `[run.params]` section.
-- **`GeneratorPlug`** — a generator targeting that format, with the translation
-  of its own `[run.generator]` keys. Separate, because one format has one
-  executor and many generators.
+- **`Domain`** — everything one format id binds: the devices its work runs on,
+  the environment its results depend on, the translation of its `[run.params]`
+  section, and the `Executor` it builds. A constructor rather than a built
+  executor, because the device is known only in the worker process.
+- **`Generator`** — one way of choosing candidates for that format, with the
+  translation of its own `[run.generator]` keys. Separate, because one format
+  has one executor and many generators.
 
-Traits rather than structs of function pointers, because a plug holds state: a
-renderer keeps its device and its loaded assets for the life of the run.
+Traits rather than structs of function pointers, because a component holds
+state: a renderer keeps its device and its loaded assets for the life of the
+run.
 Configuration crosses as TOML text, so the `toml` crate stays off the published
 surface.
 
@@ -966,8 +968,8 @@ to the program that does carry it. Each domain's pieces — executor, generator,
 codecs, environment, and translation — live in its own module under `domains/`.
 
 The same domains are reachable as objects through `BuiltinDomain` and
-`BuiltinGenerator`, the shape a program outside the workspace supplies, so a
-built-in format can be driven over the seam a third party writes against — see
+`generators_for`, the shape a program outside the workspace supplies, so a
+built-in format can be driven over the contracts a third party writes against — see
 [Registering a domain](#registering-a-domain).
 
 The crate depends on `sima-contracts` for the traits and on `toml` for the

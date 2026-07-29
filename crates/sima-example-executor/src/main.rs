@@ -1,6 +1,6 @@
-//! Step 5 of the five described in the library. Steps 1 to 4 are in `lib.rs`.
+//! Step 6 of the six described in the library: hand both components over.
 
-use sima_example_executor::{DoublerDomain, SamplerPlug};
+use sima_example_executor::{DoublerDomain, Sampler};
 
 fn main() {
     if let Err(e) = host() {
@@ -9,17 +9,17 @@ fn main() {
     }
 }
 
-// 5. Hand it all over.
+// 6. Hand component A and component B to sima.
 //
 // `serve` reads the process arguments to learn which role sima wants — answer
 // what the format binds, or execute the tasks it sends — and then owns the
-// process: it reads requests off stdin, calls into the plugs, and writes
-// answers to stdout until sima closes the pipe.
+// process: it reads requests off stdin, calls into the two components, and
+// writes answers to stdout until sima closes the pipe.
 //
 // This is the whole of hosting. A program that gets here has plugged in.
-/// Builds the plugs and hosts them for the life of the process.
+/// Builds both components and hosts them for the life of the process.
 fn host() -> sima_api::Result<()> {
     let domain = DoublerDomain::new()?;
-    let generator = SamplerPlug::new()?;
+    let generator = Sampler::new()?;
     sima_api::serve(&domain, &[&generator])
 }

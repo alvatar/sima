@@ -58,7 +58,7 @@ mod tests {
     use sima_core::hash_bytes;
     use sima_model::EnvironmentValue;
 
-    use super::super::super::domain::build_domain;
+    use super::super::super::binding::build_binding;
     use super::*;
     use crate::substrates::cellular::{CudaEngine, WgslEngine};
 
@@ -91,7 +91,7 @@ mod tests {
     fn the_environment_pins_the_ptx_digest_and_the_cuda_compiler() -> Result<()> {
         // The environment is derived device-free, hashing the artifact the
         // engine loads. Regenerating the PTX changes every task key.
-        let domain = build_domain::<GrayScottCuda, CudaEngine>()?;
+        let domain = build_binding::<GrayScottCuda, CudaEngine>()?;
         assert_eq!(domain.format.as_str(), GrayScottCuda::FORMAT_ID);
         let components = domain.environment.components();
         let names: Vec<&str> = components.iter().map(|c| c.name()).collect();
@@ -116,8 +116,8 @@ mod tests {
         // The rule is shared, the identity is not: a task key from one program
         // must never resolve to a result the other backend produced, since
         // the two agree only to a tolerance.
-        let cuda = build_domain::<GrayScottCuda, CudaEngine>()?;
-        let wgsl = build_domain::<GrayScott, WgslEngine>()?;
+        let cuda = build_binding::<GrayScottCuda, CudaEngine>()?;
+        let wgsl = build_binding::<GrayScott, WgslEngine>()?;
         assert_ne!(cuda.format, wgsl.format);
         assert_ne!(cuda.environment.id(), wgsl.environment.id());
         Ok(())

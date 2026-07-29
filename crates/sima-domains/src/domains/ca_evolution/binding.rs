@@ -1,4 +1,4 @@
-//! [`build_domain`]: assembles a [`Domain`] from a CA model and the backend
+//! [`build_binding`]: assembles a [`FormatBinding`] from a CA model and the backend
 //! it runs on.
 
 use sima_core::{Result, hash_bytes};
@@ -6,10 +6,10 @@ use sima_model::{Environment, EnvironmentComponent, EnvironmentValue, FormatId};
 
 use super::executor::CaExecutor;
 use super::model::CaModel;
-use crate::domain::Domain;
+use crate::format_binding::FormatBinding;
 use crate::substrates::cellular::CellularEngine;
 
-/// Assembles the [`Domain`] for the model `M` running on the backend `E`: the
+/// Assembles the [`FormatBinding`] for the model `M` running on the backend `E`: the
 /// executor and a four-component environment — the executor's own version, the
 /// blake3 digest of the update-kernel source, the digest of the backend's
 /// reduction kernel, and the backend's pinned compiler identity. The first
@@ -23,9 +23,9 @@ use crate::substrates::cellular::CellularEngine;
 /// neither one's results are invalidated by work on the other.
 ///
 /// All components are computed device-free, so
-/// [`domain_for`](crate::domain_for) never needs a GPU.
-pub(crate) fn build_domain<M: CaModel, E: CellularEngine>() -> Result<Domain> {
-    Ok(Domain {
+/// [`binding_for`](crate::binding_for) never needs a GPU.
+pub(crate) fn build_binding<M: CaModel, E: CellularEngine>() -> Result<FormatBinding> {
+    Ok(FormatBinding {
         format: FormatId::new(M::FORMAT_ID)?,
         // Captures nothing, so it coerces to the plain fn pointer the field
         // holds; `M` and `E` ride along through monomorphization.

@@ -3,7 +3,7 @@
 //!
 //! `serve` is what a program runs for the life of a session: read the
 //! [`ToDomain::Hello`], answer [`FromDomain::Ready`], then answer one question
-//! after another until the parent says goodbye or closes the pipe. The plugs
+//! after another until the parent says goodbye or closes the pipe. The components
 //! are built before the session opens, so a program that loads assets or opens
 //! a device pays that cost once and every later question is a message.
 //!
@@ -14,7 +14,7 @@
 
 use std::io::{Read, Write};
 
-use sima_contracts::{DomainPlug, GeneratorPlug};
+use sima_contracts::{Domain, Generator};
 use sima_core::{Error, Result, read_frame, write_frame};
 use sima_model::{FormatId, GeneratorId};
 
@@ -30,8 +30,8 @@ use crate::domain_service::protocol::{FromDomain, PROTOCOL_VERSION, ToDomain};
 pub fn serve<R: Read, W: Write>(
     mut reader: R,
     mut writer: W,
-    domain: &dyn DomainPlug,
-    generators: &[&dyn GeneratorPlug],
+    domain: &dyn Domain,
+    generators: &[&dyn Generator],
 ) -> Result<()> {
     // The handshake: the first frame must be a Hello at this protocol version.
     // Refusal happens before Ready, so the parent's missing Ready is its
@@ -87,11 +87,11 @@ pub fn serve<R: Read, W: Write>(
     }
 }
 
-/// Answers one question from the plugs. The handshake messages are handled by
+/// Answers one question from the components. The handshake messages are handled by
 /// the loop, so they never reach here.
 fn answer(
-    domain: &dyn DomainPlug,
-    generators: &[&dyn GeneratorPlug],
+    domain: &dyn Domain,
+    generators: &[&dyn Generator],
     question: ToDomain,
 ) -> Result<FromDomain> {
     match question {
@@ -118,7 +118,7 @@ fn answer(
             })
         }
         ToDomain::TranslateGeneratorParams { generator, toml } => Ok(FromDomain::Translated {
-            bytes: plug_for(generators, &generator)?.translate_params(&toml)?,
+            bytes: generator_for(generators, &generator)?.translate_params(&toml)?,
         }),
         ToDomain::Generate {
             generator,
@@ -127,9 +127,8 @@ fn answer(
             params,
         } => {
             served(domain, &format)?;
-            let plug = plug_for(generators, &generator)?;
             Ok(FromDomain::Generated {
-                specs: plug.generator()?.generate(root_seed, &params, &format)?,
+                specs: generator_for(generators, &generator)?.generate(root_seed, &params)?,
             })
         }
         ToDomain::Hello { .. } | ToDomain::Goodbye => Err(Error::Transport(
@@ -140,7 +139,7 @@ fn answer(
 
 /// Confirms `format` is the one this program serves. Shared with the role
 /// entry, which checks the same thing about the format it was spawned for.
-pub(crate) fn served(domain: &dyn DomainPlug, format: &FormatId) -> Result<()> {
+pub(crate) fn served(domain: &dyn Domain, format: &FormatId) -> Result<()> {
     if domain.format() == format {
         return Ok(());
     }
@@ -151,14 +150,14 @@ pub(crate) fn served(domain: &dyn DomainPlug, format: &FormatId) -> Result<()> {
     )))
 }
 
-/// The generator plug registered under `id`.
-fn plug_for<'a>(
-    generators: &[&'a dyn GeneratorPlug],
+/// The generator registered under `id`.
+fn generator_for<'a>(
+    generators: &[&'a dyn Generator],
     id: &GeneratorId,
-) -> Result<&'a dyn GeneratorPlug> {
+) -> Result<&'a dyn Generator> {
     generators
         .iter()
-        .find(|plug| plug.id() == id)
+        .find(|generator| generator.id() == id)
         .copied()
         .ok_or_else(|| Error::Validation(format!("unknown generator id {:?}", id.as_str())))
 }
@@ -166,8 +165,7 @@ fn plug_for<'a>(
 #[cfg(test)]
 mod tests {
     use sima_contracts::{
-        DeviceBinding, DeviceClass, DeviceInfo, DeviceType, DomainPlug, Executor, Generator,
-        GeneratorPlug,
+        DeviceBinding, DeviceClass, DeviceInfo, DeviceType, Domain, Executor, Generator,
     };
     use sima_core::{Error, Result, read_frame, write_frame};
     use sima_model::{
@@ -177,7 +175,7 @@ mod tests {
     use super::*;
     use crate::domain_service::protocol::{FromDomain, PROTOCOL_VERSION, ToDomain};
 
-    /// The format the test plug serves.
+    /// The format the test domain serves.
     const FORMAT: &str = "host-test.v1";
 
     /// A validated format id.
@@ -190,18 +188,18 @@ mod tests {
         GeneratorId::new(name).expect("generator id")
     }
 
-    /// A plug over one format: its translations fold their input so a test
+    /// A domain over one format: its translations merge their input so a test
     /// asserts arrival, and its enumeration answers one device.
-    struct TestPlug {
+    struct TestDomain {
         format: FormatId,
         environment: Environment,
         /// Whether every question answers a failure instead.
         failing: bool,
     }
 
-    impl TestPlug {
-        fn new(failing: bool) -> TestPlug {
-            TestPlug {
+    impl TestDomain {
+        fn new(failing: bool) -> TestDomain {
+            TestDomain {
                 format: format(FORMAT),
                 environment: Environment::new(vec![
                     EnvironmentComponent::new(
@@ -224,7 +222,7 @@ mod tests {
         }
     }
 
-    impl DomainPlug for TestPlug {
+    impl Domain for TestDomain {
         fn format(&self) -> &FormatId {
             &self.format
         }
@@ -259,13 +257,13 @@ mod tests {
         }
     }
 
-    /// A generator plug whose specs fold the seed and params it was given.
-    struct TestGeneratorPlug {
+    /// A generator whose specs merge the seed and params it was given.
+    struct TestGenerator {
         id: GeneratorId,
         format: FormatId,
     }
 
-    impl GeneratorPlug for TestGeneratorPlug {
+    impl Generator for TestGenerator {
         fn id(&self) -> &GeneratorId {
             &self.id
         }
@@ -278,24 +276,8 @@ mod tests {
             Ok(format!("gen:{toml}").into_bytes())
         }
 
-        fn generator(&self) -> Result<Box<dyn Generator>> {
-            Ok(Box::new(TestGenerator {
-                id: self.id.clone(),
-            }))
-        }
-    }
-
-    /// Produces one spec folding the root seed and the params blob.
-    struct TestGenerator {
-        id: GeneratorId,
-    }
-
-    impl Generator for TestGenerator {
-        fn id(&self) -> &GeneratorId {
-            &self.id
-        }
-
-        fn generate(&self, root_seed: u64, params: &[u8], format: &FormatId) -> Result<Vec<Spec>> {
+        fn generate(&self, root_seed: u64, params: &[u8]) -> Result<Vec<Spec>> {
+            let format = &self.format;
             let mut bytes = root_seed.to_le_bytes().to_vec();
             bytes.extend_from_slice(params);
             Ok(vec![Spec {
@@ -305,11 +287,11 @@ mod tests {
         }
     }
 
-    /// Frames `messages` into one input buffer, serves them against a plug that
+    /// Frames `messages` into one input buffer, serves them against a domain that
     /// fails or answers, and returns the result plus the decoded answers.
     fn drive(failing: bool, messages: &[ToDomain]) -> (Result<()>, Vec<FromDomain>) {
-        let plug = TestPlug::new(failing);
-        let generator_plug = TestGeneratorPlug {
+        let domain = TestDomain::new(failing);
+        let test_generator = TestGenerator {
             id: generator("host-test.v1"),
             format: format(FORMAT),
         };
@@ -321,8 +303,8 @@ mod tests {
         let result = serve(
             input.as_slice(),
             &mut output,
-            &plug,
-            &[&generator_plug as &dyn GeneratorPlug],
+            &domain,
+            &[&test_generator as &dyn Generator],
         );
         let mut answers = Vec::new();
         let mut reader = output.as_slice();
@@ -424,7 +406,7 @@ mod tests {
 
     #[test]
     fn translate_params_carries_the_section_text_and_the_segment_flag() {
-        // Both inputs reach the plug: the section as written, and whether the
+        // Both inputs reach the domain: the section as written, and whether the
         // run divides candidates into segments.
         let (result, answers) = drive(
             false,
@@ -582,7 +564,7 @@ mod tests {
 
     #[test]
     fn a_torn_input_frame_is_an_error() {
-        let plug = TestPlug::new(false);
+        let domain = TestDomain::new(false);
         let mut input = Vec::new();
         write_frame(&mut input, &hello().encode()).expect("frame");
         write_frame(
@@ -595,7 +577,7 @@ mod tests {
         .expect("frame");
         input.truncate(input.len() - 1);
         let mut output = Vec::new();
-        let result = serve(input.as_slice(), &mut output, &plug, &[]);
+        let result = serve(input.as_slice(), &mut output, &domain, &[]);
         assert!(matches!(result, Err(Error::Transport(_))), "{result:?}");
     }
 }

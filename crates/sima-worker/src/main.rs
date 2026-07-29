@@ -17,7 +17,7 @@
 //! logic lives in [`sima_transport`]; this binary only wires the streams, the
 //! domain resolver, and the exit code, plus the orphan protection.
 
-use sima_contracts::{DeviceBinding, Executor, GeneratorPlug};
+use sima_contracts::{DeviceBinding, Executor, Generator};
 use sima_core::Result;
 use sima_model::FormatId;
 use sima_transport::serve::Role;
@@ -32,7 +32,7 @@ fn resolver(
     format: &FormatId,
     device: Option<&DeviceBinding>,
 ) -> Result<(Box<dyn Executor>, String, String)> {
-    let domain = sima_domains::domain_for(format)?;
+    let domain = sima_domains::binding_for(format)?;
     let executor = (domain.executor)(device)?;
     let (device_name, driver) = (domain.device_desc)(device)?;
     Ok((executor, device_name, driver))
@@ -62,19 +62,16 @@ fn enumerate(format: &str) -> Result<()> {
 /// environment is, what devices its work runs on, how its configuration
 /// translates, and what specs its generators produce.
 ///
-/// The in-tree domains are reached as plugs here, so this role is the same
-/// seam a program outside the workspace serves and proves that seam carries
+/// The in-tree formats are reached through the same two contracts a program
+/// outside the workspace implements, so this role proves those contracts carry
 /// everything a run needs.
 fn serve_domain(format: &FormatId) -> Result<()> {
     let domain = sima_domains::BuiltinDomain::new(format)?;
     let generators = sima_domains::generators_for(format)?;
-    let plugs: Vec<&dyn GeneratorPlug> = generators
-        .iter()
-        .map(|generator| generator as &dyn GeneratorPlug)
-        .collect();
+    let generators: Vec<&dyn Generator> = generators.iter().map(AsRef::as_ref).collect();
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
-    sima_transport::domain_service::serve(stdin.lock(), stdout.lock(), &domain, &plugs)
+    sima_transport::domain_service::serve(stdin.lock(), stdout.lock(), &domain, &generators)
 }
 
 /// Exit codes: 0 on the parent closing the pipe (clean end-of-stream), 1

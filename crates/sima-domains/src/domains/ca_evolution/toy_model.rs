@@ -176,7 +176,7 @@ mod tests {
     use sima_contracts::Generator;
     use sima_model::FormatId;
 
-    use super::super::domain::build_domain;
+    use super::super::binding::build_binding;
     use super::super::generator::{CaGenerator, translate as translate_generator};
     use super::super::params::{decode_params, translate as translate_params};
     use super::*;
@@ -184,9 +184,9 @@ mod tests {
 
     #[test]
     fn the_environment_names_derive_from_the_model() -> Result<()> {
-        // build_domain forms the component names from M::NAME, so a different
+        // build_binding forms the component names from M::NAME, so a different
         // model yields different names with no change to the builder.
-        let domain = build_domain::<Toy, WgslEngine>()?;
+        let domain = build_binding::<Toy, WgslEngine>()?;
         assert_eq!(domain.format.as_str(), "toy.v1");
         let names: Vec<&str> = domain
             .environment
@@ -234,7 +234,7 @@ mod tests {
             .expect("parse generator table");
         let gen_blob = translate_generator::<Toy>(&gen_table)?;
         let format = FormatId::new(Toy::FORMAT_ID)?;
-        let specs = CaGenerator::<Toy>::new()?.generate(42, &gen_blob, &format)?;
+        let specs = CaGenerator::<Toy>::new()?.generate(42, &gen_blob)?;
         assert_eq!(specs.len(), 3);
         for spec in &specs {
             assert_eq!(spec.format, format);

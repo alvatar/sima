@@ -1,6 +1,6 @@
 //! [`DomainRegistry`]: where a format's domain is answered from.
 //!
-//! A run asks one seam — [`DomainSource`] — for everything the orchestrator
+//! A run asks one boundary — [`DomainSource`] — for everything the orchestrator
 //! reads of a format: its environment, its devices, its configuration
 //! translations, its generator, and the binary its workers are spawned from.
 //! Two things answer it:
@@ -18,9 +18,9 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::{Mutex, PoisonError};
 
-use sima_contracts::{DeviceInfo, DomainPlug, Generator, GeneratorPlug};
+use sima_contracts::{DeviceInfo, Domain, Generator};
 use sima_core::Result;
-use sima_domains::{BuiltinDomain, BuiltinGenerator};
+use sima_domains::BuiltinDomain;
 use sima_model::{Environment, FormatId, GeneratorId, Params, Spec};
 use sima_transport::domain_service::DomainService;
 
@@ -36,15 +36,16 @@ pub(crate) trait DomainSource: Send + Sync {
     /// params bytes that enter the run id.
     fn translate_params(&self, format: &FormatId, toml: &str, segmented: bool) -> Result<Params>;
 
-    /// The `[run.generator]` section, as text, translated into the generator's
-    /// opaque params blob.
-    fn translate_generator_params(&self, generator: &GeneratorId, toml: &str) -> Result<Vec<u8>>;
-
-    /// The generator the run produces its candidates from.
+    /// The generator the run produces its candidates from, which also owns the
+    /// translation of its own `[run.generator]` section.
     ///
     /// Built here rather than at the first batch, so a run naming a generator
     /// its source cannot answer for fails before its store exists.
-    fn generator(&self, generator: &GeneratorId) -> Result<Box<dyn Generator + '_>>;
+    fn generator(
+        &self,
+        generator: &GeneratorId,
+        format: &FormatId,
+    ) -> Result<Box<dyn Generator + '_>>;
 
     /// The binary a worker for this format is spawned from.
     fn worker_binary(&self) -> Result<PathBuf>;
@@ -67,12 +68,12 @@ impl DomainSource for BuiltinSource {
         BuiltinDomain::new(format)?.translate_params(toml, segmented)
     }
 
-    fn translate_generator_params(&self, generator: &GeneratorId, toml: &str) -> Result<Vec<u8>> {
-        BuiltinGenerator::new(generator)?.translate_params(toml)
-    }
-
-    fn generator(&self, generator: &GeneratorId) -> Result<Box<dyn Generator + '_>> {
-        BuiltinGenerator::new(generator)?.generator()
+    fn generator(
+        &self,
+        generator: &GeneratorId,
+        _format: &FormatId,
+    ) -> Result<Box<dyn Generator + '_>> {
+        sima_domains::generator_for(generator)
     }
 
     fn worker_binary(&self) -> Result<PathBuf> {
@@ -133,14 +134,15 @@ impl DomainSource for BinarySource {
         self.session().translate_params(format, toml, segmented)
     }
 
-    fn translate_generator_params(&self, generator: &GeneratorId, toml: &str) -> Result<Vec<u8>> {
-        self.session().translate_generator_params(generator, toml)
-    }
-
-    fn generator(&self, generator: &GeneratorId) -> Result<Box<dyn Generator + '_>> {
+    fn generator(
+        &self,
+        generator: &GeneratorId,
+        format: &FormatId,
+    ) -> Result<Box<dyn Generator + '_>> {
         Ok(Box::new(SessionGenerator {
             source: self,
             id: generator.clone(),
+            format: format.clone(),
         }))
     }
 
@@ -149,10 +151,12 @@ impl DomainSource for BinarySource {
     }
 }
 
-/// A generator that produces its specs over a program's session.
+/// A generator that answers over a program's session: both its translation and
+/// its draw cross the pipe.
 struct SessionGenerator<'a> {
     source: &'a BinarySource,
     id: GeneratorId,
+    format: FormatId,
 }
 
 impl Generator for SessionGenerator<'_> {
@@ -160,10 +164,20 @@ impl Generator for SessionGenerator<'_> {
         &self.id
     }
 
-    fn generate(&self, root_seed: u64, params: &[u8], format: &FormatId) -> Result<Vec<Spec>> {
+    fn format(&self) -> &FormatId {
+        &self.format
+    }
+
+    fn translate_params(&self, toml: &str) -> Result<Vec<u8>> {
         self.source
             .session()
-            .generate(&self.id, format, root_seed, params)
+            .translate_generator_params(&self.id, toml)
+    }
+
+    fn generate(&self, root_seed: u64, params: &[u8]) -> Result<Vec<Spec>> {
+        self.source
+            .session()
+            .generate(&self.id, &self.format, root_seed, params)
     }
 }
 
@@ -214,7 +228,7 @@ impl DomainRegistry {
 /// The text of a configuration section, as the source that owns its keys
 /// receives it.
 ///
-/// A section crosses the seam as TOML text rather than as a parsed table, so a
+/// A section crosses as TOML text rather than as a parsed table, so a
 /// program is free of sima's own TOML. The text is written from the table the
 /// file declared, so it parses back to that table.
 pub(crate) fn section_text(table: &toml::Table) -> Result<String> {
@@ -242,7 +256,7 @@ mod tests {
     }
 
     /// A registry whose `stub.v1` is answered by the built worker binary,
-    /// which serves the in-tree formats over the same seam a program outside
+    /// which serves the in-tree formats over the same protocol a program outside
     /// the workspace does.
     fn served_by_binary() -> Result<DomainRegistry> {
         DomainRegistry::new(vec![(format("stub.v1"), built_worker())])
@@ -256,7 +270,7 @@ mod tests {
         let source = registry.source(&format("stub.v1"));
         assert_eq!(
             source.environment(&format("stub.v1"))?,
-            sima_domains::domain_for(&format("stub.v1"))?.environment
+            sima_domains::binding_for(&format("stub.v1"))?.environment
         );
         Ok(())
     }
@@ -270,7 +284,7 @@ mod tests {
         assert_eq!(source.worker_binary()?, built_worker());
         assert_eq!(
             source.environment(&format("stub.v1"))?,
-            sima_domains::domain_for(&format("stub.v1"))?.environment
+            sima_domains::binding_for(&format("stub.v1"))?.environment
         );
         Ok(())
     }
@@ -284,7 +298,7 @@ mod tests {
         let nca = format("ca_evolution.nca.v1");
         assert_eq!(
             registry.source(&nca).environment(&nca)?,
-            sima_domains::domain_for(&nca)?.environment
+            sima_domains::binding_for(&nca)?.environment
         );
         Ok(())
     }
@@ -329,7 +343,7 @@ mod tests {
 
     #[test]
     fn both_sources_translate_a_section_to_the_same_bytes() -> Result<()> {
-        // What proves the seam carries the configuration: the bytes that enter
+        // What proves the protocol carries the configuration: the bytes that enter
         // the run id are the same whichever side answered.
         let registry = served_by_binary()?;
         let builtin = DomainRegistry::builtin();
@@ -348,10 +362,12 @@ mod tests {
         assert_eq!(
             registry
                 .source(&format("stub.v1"))
-                .translate_generator_params(&generator("stub.v1"), text)?,
+                .generator(&generator("stub.v1"), &format("stub.v1"))?
+                .translate_params(text)?,
             builtin
                 .source(&format("stub.v1"))
-                .translate_generator_params(&generator("stub.v1"), text)?
+                .generator(&generator("stub.v1"), &format("stub.v1"))?
+                .translate_params(text)?
         );
         Ok(())
     }
@@ -362,16 +378,17 @@ mod tests {
         let builtin = DomainRegistry::builtin();
         let params = builtin
             .source(&format("stub.v1"))
-            .translate_generator_params(&generator("stub.v1"), "behaviors = [\"succeed\"]\n")?;
+            .generator(&generator("stub.v1"), &format("stub.v1"))?
+            .translate_params("behaviors = [\"succeed\"]\n")?;
         assert_eq!(
             registry
                 .source(&format("stub.v1"))
-                .generator(&generator("stub.v1"))?
-                .generate(42, &params, &format("stub.v1"))?,
+                .generator(&generator("stub.v1"), &format("stub.v1"))?
+                .generate(42, &params)?,
             builtin
                 .source(&format("stub.v1"))
-                .generator(&generator("stub.v1"))?
-                .generate(42, &params, &format("stub.v1"))?
+                .generator(&generator("stub.v1"), &format("stub.v1"))?
+                .generate(42, &params)?
         );
         Ok(())
     }
@@ -396,7 +413,7 @@ mod tests {
         let registry = DomainRegistry::builtin();
         let Err(error) = registry
             .source(&format("stub.v1"))
-            .generator(&generator("no-such-generator.v1"))
+            .generator(&generator("no-such-generator.v1"), &format("stub.v1"))
         else {
             panic!("expected a generator this build does not carry to bind nothing");
         };
@@ -408,7 +425,7 @@ mod tests {
 
     #[test]
     fn a_section_parses_back_to_the_table_it_was_written_from() -> Result<()> {
-        // Configuration crosses the seam as text, so the text a source is
+        // Configuration crosses as text, so the text a source is
         // given must mean what the file declared — values, nested tables, and
         // floats alike.
         let declared: toml::Table = r#"

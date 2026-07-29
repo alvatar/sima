@@ -7,18 +7,18 @@
 //!
 //! What it publishes:
 //!
-//! - the two seams — [`Executor`] and [`Generator`] — with the vocabulary they
-//!   exchange: [`TaskInput`], [`ExecutionContext`], [`Outcome`], [`Artifact`],
-//!   [`Stats`], [`WorkerId`], [`STATE_ARTIFACT`], and the [`Checkpoint`]
-//!   resume channel with its inert [`NoCheckpoint`] handle;
+//! - the two components a program supplies — [`Domain`] and [`Generator`] —
+//!   with [`serve`], the call that hosts them: a program outside the workspace
+//!   implements the two traits and hands them to `serve`, which answers a run's
+//!   two conversations with it;
+//! - the [`Executor`] a domain builds, with the vocabulary it exchanges:
+//!   [`TaskInput`], [`ExecutionContext`], [`Outcome`], [`Artifact`], [`Stats`],
+//!   [`WorkerId`], [`STATE_ARTIFACT`], and the [`Checkpoint`] resume channel
+//!   with its inert [`NoCheckpoint`] handle;
 //! - the device vocabulary: [`DeviceBinding`] and [`DeviceClass`], which name
 //!   the device an executor is built for, and [`DeviceInfo`] with
 //!   [`DeviceType`], which are how a domain answers what its work runs on;
-//! - the construction side of both seams — [`DomainPlug`] and
-//!   [`GeneratorPlug`] — with [`serve`], the call that hosts them: a program
-//!   outside the workspace implements the two traits and hands them to `serve`,
-//!   which answers a run's two conversations with it;
-//! - the identity-bearing values a seam is handed: [`Spec`], [`Params`],
+//! - the identity-bearing values a component is handed: [`Spec`], [`Params`],
 //!   [`FormatId`], [`GeneratorId`], and the [`Environment`] vocabulary;
 //! - the foundations those values are built on: [`Error`] and [`Result`],
 //!   [`struct@Hash`] and [`hash_bytes`], the [`Codec`]/[`Enc`]/[`Dec`] canonical
@@ -32,7 +32,7 @@
 //! # What is deliberately absent
 //!
 //! The omissions are the surface's shape, not gaps in it. Each names a
-//! responsibility that belongs to the other side of the seam:
+//! responsibility that belongs to sima's side of the boundary:
 //!
 //! - **run-level configuration** (`RunConfig`, `RunId`, `GeneratorConfig`) is
 //!   the orchestrator's, never an executor's;
@@ -42,15 +42,15 @@
 //! - **content addresses** (`SpecId`, `ParamsId`) address nothing an executor
 //!   reaches, because it is handed resolved values rather than references;
 //! - **transport framing** (`read_frame`, `write_frame`, `MAX_PAYLOAD`) carries
-//!   a seam's values between processes and is the transport's own;
+//!   a component's values between processes and is the transport's own;
 //! - **crash injection** (`crashpoint`) is test-only failure injection;
 //! - **free-function hex** (`to_hex`, `from_hex`) is covered for a third party
 //!   by [`Hash::from_hex`] and [`struct@Hash`]'s `Display`.
 
 pub use sima_contracts::{
-    Artifact, Checkpoint, DeviceBinding, DeviceClass, DeviceInfo, DeviceType, DomainPlug,
-    ExecutionContext, Executor, Generator, GeneratorPlug, NoCheckpoint, Outcome, STATE_ARTIFACT,
-    Stats, TaskInput, WorkerId,
+    Artifact, Checkpoint, DeviceBinding, DeviceClass, DeviceInfo, DeviceType, Domain,
+    ExecutionContext, Executor, Generator, NoCheckpoint, Outcome, STATE_ARTIFACT, Stats, TaskInput,
+    WorkerId,
 };
 pub use sima_core::prng;
 pub use sima_core::{Codec, Dec, Enc, Error, Hash, Result, hash_bytes};

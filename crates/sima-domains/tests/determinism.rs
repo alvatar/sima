@@ -11,7 +11,7 @@ use sima_contracts::{
 };
 use sima_core::{Hash, Result, hash_bytes, prng};
 use sima_domains::{StubBehavior, StubExecutor, StubGenerator, StubGeneratorConfig};
-use sima_model::{ArtifactRef, EnvironmentId, FormatId, Params, TaskIdentity, TaskRecord};
+use sima_model::{ArtifactRef, EnvironmentId, Params, TaskIdentity, TaskRecord};
 
 /// Runs generate → execute → record for a fixed config and folds the committed
 /// records into one digest, executing every task at `(attempt, worker)`.
@@ -22,7 +22,6 @@ use sima_model::{ArtifactRef, EnvironmentId, FormatId, Params, TaskIdentity, Tas
 fn run_digest(attempt: u32, worker: WorkerId) -> Result<Hash> {
     let generator = StubGenerator::new()?;
     let executor = StubExecutor::new()?;
-    let format = FormatId::new("stub.v1")?;
     let root_seed = 0x0ABC_D123_4567_89AB_u64;
     let params = Params {
         bytes: vec![7, 7, 7],
@@ -39,7 +38,7 @@ fn run_digest(attempt: u32, worker: WorkerId) -> Result<Hash> {
         ],
     };
 
-    let specs = generator.generate(root_seed, &config.to_bytes(), &format)?;
+    let specs = generator.generate(root_seed, &config.to_bytes())?;
 
     let mut records = Vec::new();
     for (i, spec) in specs.iter().enumerate() {

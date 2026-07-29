@@ -146,7 +146,7 @@ pub(crate) fn served_run(
 /// itself: a fixture that minted its own would produce task keys no derivation
 /// through [`crate::task_keys`] could answer for.
 pub(crate) fn stub_environment() -> Environment {
-    sima_domains::domain_for(&FormatId::new("stub.v1").expect("format id"))
+    sima_domains::binding_for(&FormatId::new("stub.v1").expect("format id"))
         .expect("the stub domain")
         .environment
 }

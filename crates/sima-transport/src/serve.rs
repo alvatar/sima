@@ -6,7 +6,7 @@
 //! format binds over the domain service. A program is then its two plugs plus
 //! this call.
 
-use sima_contracts::{DomainPlug, Executor, GeneratorPlug};
+use sima_contracts::{Domain, Executor, Generator};
 use sima_core::{Error, Result};
 use sima_model::FormatId;
 
@@ -52,7 +52,7 @@ impl Role {
 /// Returns `Ok` when the parent closes the pipe or says goodbye; an `Err` is a
 /// handshake refusal, a frame violation, or a broken pipe, which the caller
 /// maps to a nonzero exit.
-pub fn serve(domain: &dyn DomainPlug, generators: &[&dyn GeneratorPlug]) -> Result<()> {
+pub fn serve(domain: &dyn Domain, generators: &[&dyn Generator]) -> Result<()> {
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
     match Role::from_args(std::env::args())? {

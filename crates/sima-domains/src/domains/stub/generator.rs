@@ -64,13 +64,15 @@ impl StubGeneratorConfig {
 #[derive(Debug, Clone)]
 pub struct StubGenerator {
     id: GeneratorId,
+    format: FormatId,
 }
 
 impl StubGenerator {
     /// Constructs the generator, registered under id `stub.v1`.
     pub fn new() -> Result<StubGenerator> {
         Ok(StubGenerator {
-            id: GeneratorId::new("stub.v1")?,
+            id: GeneratorId::new(super::ID)?,
+            format: FormatId::new(super::ID)?,
         })
     }
 }
@@ -80,7 +82,16 @@ impl Generator for StubGenerator {
         &self.id
     }
 
-    fn generate(&self, root_seed: u64, params: &[u8], format: &FormatId) -> Result<Vec<Spec>> {
+    fn format(&self) -> &FormatId {
+        &self.format
+    }
+
+    fn translate_params(&self, toml: &str) -> Result<Vec<u8>> {
+        super::generator_params(&crate::domains::translate::table(toml)?)
+    }
+
+    fn generate(&self, root_seed: u64, params: &[u8]) -> Result<Vec<Spec>> {
+        let format = &self.format;
         let config = StubGeneratorConfig::from_bytes(params)?;
         let mut specs = Vec::with_capacity(config.behaviors.len());
         for (i, behavior) in config.behaviors.iter().enumerate() {
@@ -154,11 +165,10 @@ mod tests {
     #[test]
     fn generate_is_deterministic() -> Result<()> {
         let generator = StubGenerator::new()?;
-        let format = FormatId::new("stub.v1")?;
         let params = config(vec![StubBehavior::Succeed, StubBehavior::Panic]);
         assert_eq!(
-            generator.generate(42, &params, &format)?,
-            generator.generate(42, &params, &format)?
+            generator.generate(42, &params)?,
+            generator.generate(42, &params)?
         );
         Ok(())
     }
@@ -166,13 +176,12 @@ mod tests {
     #[test]
     fn generated_specs_are_distinct() -> Result<()> {
         let generator = StubGenerator::new()?;
-        let format = FormatId::new("stub.v1")?;
         let params = config(vec![
             StubBehavior::Succeed,
             StubBehavior::Succeed,
             StubBehavior::Succeed,
         ]);
-        let specs = generator.generate(7, &params, &format)?;
+        let specs = generator.generate(7, &params)?;
         assert_eq!(specs.len(), 3);
         let ids: Vec<_> = specs.iter().map(Spec::id).collect();
         assert_ne!(ids[0], ids[1]);
@@ -182,12 +191,13 @@ mod tests {
     }
 
     #[test]
-    fn generate_stamps_the_requested_format() -> Result<()> {
+    fn generate_stamps_the_generators_own_format() -> Result<()> {
+        // The generator knows the format its specs are of, so every spec
+        // carries it without a caller supplying one.
         let generator = StubGenerator::new()?;
-        let format = FormatId::new("domain-a.v1")?;
         let params = config(vec![StubBehavior::Succeed, StubBehavior::Sleep(0)]);
-        for spec in generator.generate(1, &params, &format)? {
-            assert_eq!(spec.format, format);
+        for spec in generator.generate(1, &params)? {
+            assert_eq!(&spec.format, generator.format());
         }
         Ok(())
     }
@@ -195,10 +205,9 @@ mod tests {
     #[test]
     fn different_root_seed_changes_the_specs() -> Result<()> {
         let generator = StubGenerator::new()?;
-        let format = FormatId::new("stub.v1")?;
         let params = config(vec![StubBehavior::Succeed]);
-        let a = generator.generate(1, &params, &format)?;
-        let b = generator.generate(2, &params, &format)?;
+        let a = generator.generate(1, &params)?;
+        let b = generator.generate(2, &params)?;
         assert_ne!(a[0].id(), b[0].id());
         Ok(())
     }
@@ -206,22 +215,16 @@ mod tests {
     #[test]
     fn empty_config_yields_no_specs() -> Result<()> {
         let generator = StubGenerator::new()?;
-        let format = FormatId::new("stub.v1")?;
-        assert!(
-            generator
-                .generate(1, &config(Vec::new()), &format)?
-                .is_empty()
-        );
+        assert!(generator.generate(1, &config(Vec::new()))?.is_empty());
         Ok(())
     }
 
     #[test]
     fn generate_rejects_malformed_params() -> Result<()> {
         let generator = StubGenerator::new()?;
-        let format = FormatId::new("stub.v1")?;
         // A single byte cannot even hold the u64 count prefix.
         assert!(matches!(
-            generator.generate(1, &[0xFF], &format),
+            generator.generate(1, &[0xFF]),
             Err(Error::Encoding(_))
         ));
         Ok(())

@@ -783,11 +783,11 @@ portability (P1 acceptance (d)) hold across the boundary.
       runs as its own process; foreign code stays out of the orchestrator,
       which leaves M7.4's boundary OS-enforced by construction, and Rust's
       absent stable ABI made dynamic loading a C shim across trait objects.
-      The `Family`-bundle decision from M1.6 is honored by `DomainPlug`, one
+      The `Family`-bundle decision from M1.6 is honored by `Domain`, one
       object carrying a format's executor, devices, environment, and params
-      translation, with `GeneratorPlug` separate and targeting the format; both
+      translation, with `Generator` separate and targeting the format; both
       live in `sima-contracts` and are published by `sima-api` beside `serve`,
-      the one call a program calls. Configuration crosses the seam as raw TOML
+      the one call a program calls. Configuration crosses as raw TOML
       text rather than a `toml::Table`, so a third party is free of sima's
       `toml` version. In-tree formats reach the same registry through
       `BuiltinSource`, which calls `sima-domains` directly, so the common path

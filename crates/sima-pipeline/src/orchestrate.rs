@@ -42,7 +42,7 @@ pub fn orchestrate(
     // directory, or a lock file behind for a run that can never execute.
     let source = config.domains.source(&config.run.format);
     let environment = source.environment(&config.run.format)?;
-    let generator = source.generator(&config.run.generator.id)?;
+    let generator = source.generator(&config.run.generator.id, &config.run.format)?;
     let members = match engagement {
         Engagement::Orchestrator => Members::default(),
         Engagement::Fleet => members(config),

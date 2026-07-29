@@ -4,8 +4,8 @@
 //! candidates: the executor that evaluates its specs, the environment its
 //! results depend on, the generator that produces its specs, the codecs that
 //! give specs and params their canonical bytes, and the translation of the
-//! human-facing TOML config sections into those bytes. The [`Domain`] type and
-//! the id dispatch ([`domain_for`], [`generator_for`], and the two translation
+//! human-facing TOML config sections into those bytes. The [`FormatBinding`] type and
+//! the id dispatch ([`binding_for`], [`generator_for`], and the two translation
 //! entries) are the crate's surface; each domain's pieces live in its own
 //! module under `domains/`.
 //!
@@ -24,8 +24,8 @@
 //! in tests.
 //!
 //! The same domains are reachable as objects through [`BuiltinDomain`] and
-//! [`BuiltinGenerator`], the shape a program outside the workspace supplies,
-//! so a built-in format can be driven over the seam a third party writes
+//! [`generators_for`], the shape a program outside the workspace supplies, so a
+//! built-in format can be driven over the contracts a third party writes
 //! against.
 //!
 //! The pipeline calls this crate to resolve a config's format and generator
@@ -33,15 +33,15 @@
 //! programmable substrate through a dev-dependency. `sima-contracts` sits
 //! below and holds the traits alone.
 
+mod builtin;
 pub mod devices;
-mod domain;
 mod domains;
-mod plug;
+mod format_binding;
 pub mod substrates;
 
-pub use domain::{Domain, domain_for, generator_for, generator_params_for, params_for};
+pub use builtin::{BuiltinDomain, generators_for};
 pub use domains::ca_evolution::continuation::{decode_continuation, encode_continuation};
 pub use domains::stub::{
     StubBehavior, StubExecutor, StubGenerator, StubGeneratorConfig, StubProgram, StubState,
 };
-pub use plug::{BuiltinDomain, BuiltinGenerator, generators_for};
+pub use format_binding::{FormatBinding, binding_for, generator_for, params_for};

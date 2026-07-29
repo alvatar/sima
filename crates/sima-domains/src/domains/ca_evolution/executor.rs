@@ -30,7 +30,7 @@ use crate::substrates::cellular::{CellularEngine, EvaluationInput, Grid};
 /// registered against a second engine and nothing here changes.
 ///
 /// The engine is created lazily on the first execute, never at construction,
-/// so [`build_domain`](super::domain::build_domain) stays device-free —
+/// so [`build_binding`](super::binding::build_binding) stays device-free —
 /// orchestrate calls it before any store mutation, and unit tests run with no
 /// GPU. A `Mutex` serializes the GPU section: the scheduler runs `workers`
 /// threads calling `execute` on one shared executor, and a single GPU serializes
@@ -127,7 +127,7 @@ impl<M: CaModel, E: CellularEngine> Executor for CaExecutor<M, E> {
         // evaluation below — because a device's queues and command pools
         // require external synchronization and the worker threads share this
         // one executor. Initializing the engine inside the lock is why
-        // `domain_for` needs no device: nothing touches the GPU until the first
+        // `binding_for` needs no device: nothing touches the GPU until the first
         // execute. A poisoned lock is safe to enter: the slot only ever holds
         // None or a fully constructed engine, assigned after construction
         // completes.

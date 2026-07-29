@@ -23,7 +23,7 @@ use crate::config::LoadedConfig;
 pub fn task_keys(config: &LoadedConfig, store: &Store) -> Result<Vec<TaskKey>> {
     let source = config.domains.source(&config.run.format);
     let environment = source.environment(&config.run.format)?;
-    let generator = source.generator(&config.run.generator.id)?;
+    let generator = source.generator(&config.run.generator.id, &config.run.format)?;
     sima_scheduler::run_keys(store, &config.run, &environment, generator.as_ref())
 }
 

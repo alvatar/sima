@@ -1,96 +1,60 @@
-//! The in-tree domains behind the plug seam.
+//! The in-tree formats behind the contracts a program outside the workspace
+//! implements.
 //!
-//! [`BuiltinDomain`] and [`BuiltinGenerator`] present this crate's dispatches
-//! as the objects a program outside the workspace supplies, so the formats
-//! this build carries are reachable through exactly the seam a third party
-//! writes against.
+//! [`BuiltinDomain`] presents this crate's dispatch as the [`Domain`] object a
+//! program supplies, so the formats this build carries are reachable through
+//! exactly the contract a third party writes against. Generators need no such
+//! wrapper: each in-tree generator implements [`Generator`] whole, its own
+//! translation included.
 //!
-//! Configuration crosses the seam as TOML text, so a plug parses the section
-//! before handing it to the translation that owns its keys.
+//! Configuration crosses as TOML text, so the domain parses the section before
+//! handing it to the translation that owns its keys.
 
-use sima_contracts::{DeviceBinding, DeviceInfo, DomainPlug, Executor, Generator, GeneratorPlug};
-use sima_core::{Error, Result};
+use sima_contracts::{DeviceBinding, DeviceInfo, Domain, Executor, Generator};
+use sima_core::Result;
 use sima_model::{Environment, FormatId, GeneratorId, Params};
 
-use crate::domain::Domain;
+use crate::domains::translate::table;
+use crate::format_binding::FormatBinding;
 
-/// One of this build's formats, behind the domain seam.
+/// One of this build's formats, behind the domain contract.
 pub struct BuiltinDomain {
-    domain: Domain,
+    binding: FormatBinding,
 }
 
 impl BuiltinDomain {
-    /// The plug for `format`, or a validation error naming an id this build
+    /// The domain for `format`, or a validation error naming an id this build
     /// does not carry.
     pub fn new(format: &FormatId) -> Result<BuiltinDomain> {
         Ok(BuiltinDomain {
-            domain: crate::domain_for(format)?,
+            binding: crate::binding_for(format)?,
         })
     }
 }
 
-impl DomainPlug for BuiltinDomain {
+impl Domain for BuiltinDomain {
     fn format(&self) -> &FormatId {
-        &self.domain.format
+        &self.binding.format
     }
 
     fn environment(&self) -> &Environment {
-        &self.domain.environment
+        &self.binding.environment
     }
 
     fn executor(&self, device: Option<&DeviceBinding>) -> Result<Box<dyn Executor + Sync>> {
-        (self.domain.executor)(device)
+        (self.binding.executor)(device)
     }
 
     fn device_desc(&self, device: Option<&DeviceBinding>) -> Result<(String, String)> {
-        (self.domain.device_desc)(device)
+        (self.binding.device_desc)(device)
     }
 
     fn enumerate(&self) -> Result<Vec<DeviceInfo>> {
-        (self.domain.enumerate)()
+        (self.binding.enumerate)()
     }
 
     fn translate_params(&self, toml: &str, segmented: bool) -> Result<Params> {
-        crate::params_for(&self.domain.format, &table(toml)?, segmented)
-    }
-}
-
-/// One of this build's generators, behind the generator seam.
-pub struct BuiltinGenerator {
-    id: GeneratorId,
-    format: FormatId,
-}
-
-impl BuiltinGenerator {
-    /// The plug for `id`, or a validation error naming a generator this build
-    /// does not carry.
-    ///
-    /// Each program registers its generator under its format's id, so the
-    /// format its specs are of is the id itself.
-    pub fn new(id: &GeneratorId) -> Result<BuiltinGenerator> {
-        crate::generator_for(id)?;
-        Ok(BuiltinGenerator {
-            id: id.clone(),
-            format: FormatId::new(id.as_str())?,
-        })
-    }
-}
-
-impl GeneratorPlug for BuiltinGenerator {
-    fn id(&self) -> &GeneratorId {
-        &self.id
-    }
-
-    fn format(&self) -> &FormatId {
-        &self.format
-    }
-
-    fn translate_params(&self, toml: &str) -> Result<Vec<u8>> {
-        crate::generator_params_for(&self.id, &table(toml)?)
-    }
-
-    fn generator(&self) -> Result<Box<dyn Generator>> {
-        crate::generator_for(&self.id)
+        crate::params_for(&self.binding.format, &table(toml)?, segmented)
     }
 }
 
@@ -100,28 +64,20 @@ impl GeneratorPlug for BuiltinGenerator {
 /// generators follow from the format itself; both dispatches are exercised
 /// here, so a format this build does not carry — or one whose generator is
 /// missing — fails naming the id rather than at the first question.
-pub fn generators_for(format: &FormatId) -> Result<Vec<BuiltinGenerator>> {
-    crate::domain_for(format)?;
-    Ok(vec![BuiltinGenerator::new(&GeneratorId::new(
+pub fn generators_for(format: &FormatId) -> Result<Vec<Box<dyn Generator>>> {
+    crate::binding_for(format)?;
+    Ok(vec![crate::generator_for(&GeneratorId::new(
         format.as_str(),
     )?)?])
 }
 
-/// Parses a configuration section's text into the table its translation reads.
-/// Empty text is the table with no keys: a run that states no section.
-fn table(toml: &str) -> Result<toml::Table> {
-    toml.parse()
-        .map_err(|e| Error::Validation(format!("the configuration section is no TOML: {e}")))
-}
-
 #[cfg(test)]
 mod tests {
-    use sima_contracts::{DomainPlug, GeneratorPlug};
     use sima_core::Result;
     use sima_model::FormatId;
 
     use super::*;
-    use crate::{domain_for, generator_params_for, params_for};
+    use crate::{binding_for, params_for};
 
     /// Every format this build carries.
     const FORMATS: [&str; 4] = [
@@ -137,27 +93,27 @@ mod tests {
     }
 
     #[test]
-    fn a_plug_answers_for_the_format_it_was_built_for() -> Result<()> {
+    fn a_domain_answers_for_the_format_it_was_built_for() -> Result<()> {
         for name in FORMATS {
             let format = format(name);
-            let plug = BuiltinDomain::new(&format)?;
-            assert_eq!(plug.format(), &format);
+            let domain = BuiltinDomain::new(&format)?;
+            assert_eq!(domain.format(), &format);
             // The environment is the one the dispatch supplies, so a run
-            // reaching a format through a plug keeps its task keys.
-            assert_eq!(plug.environment(), &domain_for(&format)?.environment);
+            // reaching a format through the contract keeps its task keys.
+            assert_eq!(domain.environment(), &binding_for(&format)?.environment);
         }
         Ok(())
     }
 
     #[test]
-    fn a_plug_translates_the_section_text_to_the_canonical_bytes() -> Result<()> {
-        // The seam carries the section as text, so the plug parses it and
-        // answers what the in-process translation answers for the same table.
+    fn a_domain_translates_the_section_text_to_the_canonical_bytes() -> Result<()> {
+        // Configuration arrives as text, so the domain parses it and answers
+        // what the in-process translation answers for the same table.
         let format = format("stub.v1");
-        let plug = BuiltinDomain::new(&format)?;
+        let domain = BuiltinDomain::new(&format)?;
         let text = "hex = \"00ff\"\n";
         assert_eq!(
-            plug.translate_params(text, false)?,
+            domain.translate_params(text, false)?,
             params_for(
                 &format,
                 &text.parse::<toml::Table>().expect("a table"),
@@ -181,8 +137,8 @@ mod tests {
 
     #[test]
     fn a_section_that_is_no_toml_is_a_validation_error() {
-        let plug = BuiltinDomain::new(&format("stub.v1")).expect("a registered format");
-        let error = plug
+        let domain = BuiltinDomain::new(&format("stub.v1")).expect("a registered format");
+        let error = domain
             .translate_params("this is not toml", false)
             .expect_err("a parse failure");
         assert!(
@@ -192,7 +148,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unknown_format_binds_no_plug() {
+    fn an_unknown_format_binds_no_domain() {
         let Err(error) = BuiltinDomain::new(&format("no-such-domain.v1")) else {
             panic!("expected a format this build does not carry to bind nothing");
         };
@@ -210,22 +166,18 @@ mod tests {
             assert_eq!(generators.len(), 1, "{name} offers one generator");
             assert_eq!(generators[0].id().as_str(), name);
             assert_eq!(generators[0].format(), &format);
-            assert_eq!(generators[0].generator()?.id().as_str(), name);
         }
         Ok(())
     }
 
     #[test]
-    fn a_generator_plug_translates_the_section_text() -> Result<()> {
-        let format = format("stub.v1");
-        let generators = generators_for(&format)?;
+    fn a_generator_translates_its_own_section_text() -> Result<()> {
+        // The generator owns its keys, so text and table reach the same bytes.
+        let generators = generators_for(&format("stub.v1"))?;
         let text = "behaviors = [\"succeed\", \"reject\"]\n";
         assert_eq!(
             generators[0].translate_params(text)?,
-            generator_params_for(
-                generators[0].id(),
-                &text.parse::<toml::Table>().expect("a table")
-            )?
+            crate::domains::stub::generator_params(&text.parse::<toml::Table>().expect("a table"))?
         );
         Ok(())
     }
