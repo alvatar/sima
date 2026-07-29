@@ -37,12 +37,32 @@ pub fn journal_events(config: &LoadedConfig) -> Vec<Event> {
 /// that spawn workers build it explicitly.
 fn build_worker_binary() {
     static BUILD: Once = Once::new();
-    BUILD.call_once(|| {
-        let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
-        let status = std::process::Command::new(cargo)
-            .args(["build", "-p", "sima-worker"])
-            .status()
-            .expect("run cargo build for sima-worker");
-        assert!(status.success(), "building sima-worker failed");
-    });
+    BUILD.call_once(|| build_binary("sima-worker"));
+}
+
+/// Builds `package`'s binary and returns its path, for the suites that drive a
+/// run through a program of its own.
+#[allow(dead_code)]
+pub fn built_binary(package: &str) -> PathBuf {
+    build_binary(package);
+    // Beside the test executable's directory: `target/<profile>/deps` holds the
+    // test binary and `target/<profile>` the built program.
+    let exe = std::env::current_exe().expect("the test executable's path");
+    let binary = exe
+        .parent()
+        .and_then(Path::parent)
+        .expect("target/<profile> above the test executable")
+        .join(package);
+    assert!(binary.is_file(), "{} is built", binary.display());
+    binary
+}
+
+/// Asks cargo for `package`'s binary.
+fn build_binary(package: &str) {
+    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
+    let status = std::process::Command::new(cargo)
+        .args(["build", "-p", package])
+        .status()
+        .unwrap_or_else(|e| panic!("run cargo build for {package}: {e}"));
+    assert!(status.success(), "building {package} failed");
 }

@@ -1148,8 +1148,11 @@ dependencies = [
 name = "sima-integration"
 version = "0.1.0"
 dependencies = [
+ "sima-contracts",
  "sima-core",
  "sima-domains",
+ "sima-example-executor",
+ "sima-model",
  "sima-pipeline",
  "sima-store",
  "tempfile",
