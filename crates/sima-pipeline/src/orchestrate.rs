@@ -257,10 +257,9 @@ struct ContainerPool {
 ///
 /// Without an image the workers are plain subprocesses of the binary `source`
 /// names, and their device selectors resolve against this machine's own
-/// hardware. With one they run in a
-/// container here, so the image is verified and the selectors resolve against
-/// what the enumeration probe reports from inside it — the same path a machine
-/// of yours follows, minus the ssh hop.
+/// hardware. With one they run in a container here, so the image is verified
+/// and the selectors resolve against what the enumeration probe reports from
+/// inside it — the same path a machine of yours follows, minus the ssh hop.
 fn local_pool(
     config: &LoadedConfig,
     run: &RunId,

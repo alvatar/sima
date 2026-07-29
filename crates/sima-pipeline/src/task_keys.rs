@@ -2,9 +2,9 @@
 //!
 //! The pipeline half of the scheduler's own derivation: it reads the run's
 //! environment and generator from the source that answers for its format, and
-//! hands them to [`sima_scheduler::run_keys`]. Both halves of a store sync need this set, and
-//! each derives it independently from `(config, store state)` — no key list
-//! crosses the wire, so the sync protocol stays as it is.
+//! hands them to [`sima_scheduler::run_keys`]. Both halves of a store sync need
+//! this set, and each derives it independently from `(config, store state)` —
+//! no key list crosses the wire, so the sync protocol stays as it is.
 
 use sima_core::Result;
 use sima_model::TaskKey;
