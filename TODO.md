@@ -22,18 +22,18 @@ Run parameters (extent, steps, budgets) are a separate opaque params blob:
 generators produce specs, config produces params, and the spec's format id
 governs the interpretation of both. The research object is learned/evolved
 computation on data-parallel substrates; cellular automata are the first
-family, neural cellular automata the near-term target (Lenia in P8). Primary
+family, neural cellular automata the near-term target (Lenia in P10). Primary
 workload shape: huge grids, 3D included — a single simulation can saturate a
-GPU; small grids are supported via within-launch batching (P8), never the
+GPU; small grids are supported via within-launch batching (P10), never the
 design driver. Families divide by executor kind — the compute shape their
 engine has:
 - Cellular kind: double-buffered grid state (extent × channels ×
   dtype); each output cell is a function of a neighborhood of the input grid.
   Covers reaction-diffusion, Lenia, and Neural CA (float, N channels — P3),
-  with Flow-Lenia and cross-substrate rigor in P8.
+  with Flow-Lenia and cross-substrate rigor in P10.
 - Agent-field kind: state is an agent population (position, heading) plus a
   field grid; agents sense the field, move, deposit onto it, and the field
-  diffuses and decays. Covers Physarum (P9).
+  diffuses and decays. Covers Physarum (P11).
 At the infra layer both are opaque content-addressed state; the domain owns
 serialization and the compute shape. Required families across the ladder:
 reaction-diffusion, Lenia/Flow-Lenia, Neural CA, Physarum.
@@ -70,17 +70,13 @@ disposable at any instant.
 
 ## Execution order
 
-Phase sections below are numbered by when they were conceived, not by when they
-run. The remaining order is:
+Phases are numbered in the order they run. P1 through P6 are done; P7
+(out-of-tree executors) and P8 (store scale and environment provenance)
+remain, and then the ladder pauses.
 
-1. **P10** — out-of-tree executors.
-2. **P11** — store scale and environment provenance.
-
-Then the ladder pauses.
-
-P7 (evaluation funnel), P8 (continuous-family rigor), and P9 (Physarum) are
+P9 (evaluation funnel), P10 (continuous-family rigor), and P11 (Physarum) are
 deferred: they are model-specific, evaluation included, since a verdict is a
-judgement about a family's behaviour. Infrastructure comes first, and P10 is
+judgement about a family's behaviour. Infrastructure comes first, and P7 is
 the consequential one — it is how anything gets built on this without
 reopening the core, which matters most while the ladder is paused.
 
@@ -240,7 +236,7 @@ equal length.
       opaque content-addressed snapshot object; the WGSL compute path for
       float stencils and convolutions; the CPU-reference pattern the families
       cross-check against. Minimal — enough to run the float families; the
-      cross-substrate tolerance policy is P8
+      cross-substrate tolerance policy is P10
 - [x] M2.3 Segmented execution and resume checkpoints: two distinct
       mechanisms, kept separate because one names committed work and the other
       is disposable resume state.
@@ -274,18 +270,18 @@ equal length.
       only when no live manifest references it; remove a run's exclusive
       closure — lands when result objects first fill disk (M3.4 at the latest,
       earlier if M2.2/M2.3 test runs pile objects up), not before. It is the
-      same retention lever M11.2 formalizes; it arrives early only because
+      same retention lever M8.2 formalizes; it arrives early only because
       disk pressure does.
 
 ## P3 — First model families
 
 The near-term research targets, running end to end and explorable: reaction-
-diffusion and Neural CA (Lenia is descoped to P8, M8.2). Each lands as a
+diffusion and Neural CA (Lenia is descoped to P10, M10.1). Each lands as a
 domain (CPU reference + WGSL kernel + seeded generator) on the P2 toolkit and
 float foundation. Determinism
 is at the pragmatic per-backend level — deterministic run to run on one
 machine, exact where it is cheap — without the cross-substrate tolerance
-apparatus (P8). The point is having the families in hand and iterating.
+apparatus (P10). The point is having the families in hand and iterating.
 
 Phase acceptance: NCA runs through the full spine (generate → execute
 → commit → inspect) from a `sima.toml`; a local search over a float family
@@ -318,9 +314,9 @@ machine.
       rate ½ keyed on the per-step index the harness supplies, with committed
       state framed as that step ahead of the grid, so segments continue
       byte-identically; WGSL kernel over an in-shader SplitMix64 PRNG.
-      Training and mutation deferred to P8/M8.3, fitness scoring to P7; CPU
+      Training and mutation deferred to P10/M10.2, fitness scoring to P9; CPU
       reference descoped as in M3.1d
-- M3.3 Lenia: descoped from P3 to P8, folded into M8.2 beside Flow-Lenia, so
+- M3.3 Lenia: descoped from P3 to P10, folded into M10.1 beside Flow-Lenia, so
       the whole Lenia line (plain and flow variants) lands in one place under
       the cross-substrate rigor apparatus
 - [x] M3.4 First real search: a family search of ≥1000 candidates on the local
@@ -329,7 +325,7 @@ machine.
       not a funnel); throughput numbers recorded here. Result snapshots are
       stored in full (re-evaluation and portability require them), so extent ×
       batch is chosen to a stated disk budget. The retention policy — what is
-      kept and for how long — is deferred to P7, but the reference-guarded
+      kept and for how long — is deferred to P9, but the reference-guarded
       deletion primitive it will drive lands here (see M2.3), because this is
       where object volume first fills disk. Revisit CAS cost here, where disk
       volume and write throughput first
@@ -413,7 +409,7 @@ difference.
       name back for the journal; the toolkit gains device enumeration and
       selection by (vendor id, device id, member); `sima status` shows the
       run's device composition. Device identity never enters task keys or
-      the environment hash (driver provenance is M11.3).
+      the environment hash (driver provenance is M8.3).
 - [x] M4.3 Remote worker over SSH, against a manually provisioned machine.
       Settled at elaboration; split into three sequential PRs:
       (a) the two pre-existing test flakes (orchestrator-lock race in the
@@ -522,16 +518,16 @@ leaked instances are leaked money.
       after boot
 - [x] M6.3 On-worker stats reduction: kernel-side population/activity counts
       so remote runs return stats always, snapshots only on a cheap predicate
-      (placed here as the bandwidth guard; P7's funnel metrics consume the
+      (placed here as the bandwidth guard; P9's funnel metrics consume the
       same reduction — the mechanism is shared). "Stats always" covers the
       failed-evaluation case: M1.5 gave `Outcome::Failed` stats symmetric with
       `Completed`, so the reduction covers failures too and a failed evaluation
       returns its cheap counts over the wire like a success. This is also the first
       real producer of stats, so it forces the `Stats` type decision M1.4
       deferred: M1.4 ships `Stats` as opaque bytes, and here it should likely
-      become structured named scalars (population, activity, ...) the P7 funnel
+      become structured named scalars (population, activity, ...) the P9 funnel
       can threshold family-agnostically, plus an optional opaque family blob
-      for anything richer — decide the shape here, consumed at M7.2
+      for anything richer — decide the shape here, consumed at M9.2
 - [x] M6.4 Budget guard: total spend cap and rental-phase wall-clock limit
       per run, durable spend accounting
 - [x] M6.5 Distributed run: one local orchestrator drives a provisioned
@@ -684,10 +680,10 @@ leaked instances are leaked money.
 Expected to be re-split when reached; provider APIs and trust mechanisms hide
 surprises.
 
-## P10 — Out-of-tree executors (extensibility without forking)
+## P7 — Out-of-tree executors (extensibility without forking)
 
-Through P9 every executor and generator is an in-tree trait implementation
-selected by a compile-time format-id match (M1.6). This phase opens the
+Every executor and generator is an in-tree trait implementation selected by a
+compile-time format-id match (M1.6). This phase opens the
 contract as a public extension surface: a custom executor — and generator, by
 the same mechanism — is added against a public API and registered at runtime,
 with no sima source edit and no fork. The pure-compute trust boundary
@@ -721,12 +717,12 @@ environment hash, so two machines that load the same custom executor agree and
 one that loads a different build is distinguished — determinism and store
 portability (P1 acceptance (d)) hold across the boundary.
 
-- [ ] P10.1 Public contract API: publish the executor/generator traits and their
+- [ ] M7.1 Public contract API: publish the executor/generator traits and their
       wire types (spec, params, artifact, stats, task input, execution context)
       as a surface decoupled from internal crate churn. Audit it for anything
       that only admits cases we already built, and open those; the deliverable
       is the audit and its fixes, not a frozen version stamp.
-- [ ] P10.2 Pluggable device backends: `Backend` is a closed enum
+- [ ] M7.2 Pluggable device backends: `Backend` is a closed enum
       (`Host | Wgsl | Cuda`) whose only job is selecting an enumeration
       function, so a third party bringing Metal, ROCm, or an accelerator we have
       not thought of cannot name their backend or supply its device list. Delete
@@ -734,40 +730,40 @@ portability (P1 acceptance (d)) hold across the boundary.
       `executor` and `device_desc` function pointers it already holds; the
       engine supplies it in place of `const BACKEND`. Removes a concept rather
       than adding one, and needs no registry or backend id.
-- [ ] P10.3 Runtime registration: an out-of-tree executor announces its format
+- [ ] M7.3 Runtime registration: an out-of-tree executor announces its format
       id and is selected without editing sima's dispatch — the static
       format-id match (M1.6) becomes a registry. Registration and loading
       mechanism decided here. The registration unit follows the `Family`-bundle
       decision from M1.6: a third party registers the format-bound bundle
       (codec + executor + reference + kernel) as one object, with generators a
       separate plug targeting the format — do not fuse executor and generator.
-- [ ] P10.4 Isolation and trust: run out-of-tree executors process-isolated so
+- [ ] M7.4 Isolation and trust: run out-of-tree executors process-isolated so
       the pure-compute boundary is OS-enforced (foreign code cannot reach the
-      store); their results feed the trust-tiered validation (P6.7).
-- [ ] P10.5 Identity and packaging: fold a custom executor's identity (version,
+      store).
+- [ ] M7.5 Identity and packaging: fold a custom executor's identity (version,
       build/content hash) into the environment hash so runs stay reproducible
       and portable; define how a custom family is packaged, versioned, and
       pinned.
-- [ ] P10.6 Reference out-of-tree executor: a worked example family in a
+- [ ] M7.6 Reference out-of-tree executor: a worked example family in a
       separate repository, built only against the published API and exercised
       through the full spine — the phase's proof that no fork is required.
 
 Expected to be re-split when reached; the registration and isolation mechanism
 hides surprises.
 
-## P11 — Store scale and environment provenance
+## P8 — Store scale and environment provenance
 
 Two store-scaling levers and one provenance question, all independent of any
 model or metric. Last active phase before the pause.
 
-- [ ] M11.1 Object packing for scale: millions of small objects press on inode
+- [ ] M8.1 Object packing for scale: millions of small objects press on inode
       and directory limits; a pack format — many objects in one file with an
-      index — is the answer. Beside retention (M11.2) as the other scaling lever
-- [ ] M11.2 Snapshot retention policy: what is kept, for how long, and what
+      index — is the answer. Beside retention (M8.2) as the other scaling lever
+- [ ] M8.2 Snapshot retention policy: what is kept, for how long, and what
       re-evaluation minimally requires. The policy deferred from M3.4, where the
       mechanism (drop an object when no live manifest references it) already
       landed under disk pressure
-- [ ] M11.3 Driver provenance in the environment hash: a driver update can shift
+- [ ] M8.3 Driver provenance in the environment hash: a driver update can shift
       float results, and the driver is currently journaled as operational
       provenance rather than hashed, on the reasoning that a hash cannot see it
       across machines of one class. If that reasoning does not hold, stale
@@ -775,10 +771,10 @@ model or metric. Last active phase before the pause.
       journal and record why. Scoped to the decision and its consequences —
       no tolerance policy, no strict-IEEE path
 
-## P7 — Evaluation funnel v1
+## P9 — Evaluation funnel v1
 
 **Deferred.** Model-family and evaluation work is paused; the ladder stops
-after P11. This phase resumes by decision, not by sequence.
+after P8. This phase resumes by decision, not by sequence.
 
 Deliberately simple. The funnel machinery, with the cheapest deterministic
 metrics only; metric research lives in its own track.
@@ -787,21 +783,21 @@ Phase acceptance: verdicts are pure functions of recorded data — re-running
 the funnel over a recorded run reproduces identical verdicts, and changing
 thresholds re-classifies without any re-execution.
 
-- [ ] M7.1 Periodic snapshot/stats recording: segment boundaries (M2.3) are
+- [ ] M9.1 Periodic snapshot/stats recording: segment boundaries (M2.3) are
       the natural sampling points; this milestone adds the recording policy,
-      not a new mechanism. Retention is M11.2
-- [ ] M7.2 Verdict classification: dead / frozen / exploding / cyclic,
+      not a new mechanism. Retention is M8.2
+- [ ] M9.2 Verdict classification: dead / frozen / exploding / cyclic,
       thresholds from config. Classification reads named numeric metrics
       generically, so it requires the structured `Stats` decided at M6.3 rather
       than the opaque bytes M1.4 shipped — opaque stats would force a per-family
       decoder here and defeat the funnel's family-agnostic design
-- [ ] M7.3 Staged cheapest-first funnel + re-evaluation from recorded runs
+- [ ] M9.3 Staged cheapest-first funnel + re-evaluation from recorded runs
       without re-execution
 
-## P8 — Continuous-family rigor
+## P10 — Continuous-family rigor
 
 **Deferred.** Model-family and evaluation work is paused; the ladder stops
-after P11. This phase resumes by decision, not by sequence.
+after P8. This phase resumes by decision, not by sequence.
 
 Final research on the float families: the hard determinism, the harder
 variants, and scale. The families already run and are explorable (P3); this
@@ -813,9 +809,9 @@ trajectory exactly. Cross-backend bit-equality is explicitly not pursued: two
 backends are two program identities with two environments, so no result of one
 is ever reused for the other, and agreement between them is a transcription
 check at tolerance — which the cross-backend test shipped in M6.7 already
-performs. Driver provenance moved to M11.3.
+performs. Driver provenance moved to M8.3.
 
-- [ ] M8.2 Lenia and Flow-Lenia (Lenia descoped here from P3). Lenia:
+- [ ] M10.1 Lenia and Flow-Lenia (Lenia descoped here from P3). Lenia:
       large-radius convolution kernel + growth function; genome = kernel /
       growth parameters; seeded generator, CPU reference + WGSL kernel.
       Flow-Lenia: mass-conserving advection (semi-Lagrangian transport —
@@ -823,15 +819,15 @@ performs. Driver provenance moved to M11.3.
       is nondeterministic even on one device) and spatially localized
       parameters (genome becomes a per-region field, not one global vector).
       CPU reference + WGSL kernel + cross-substrate tolerance tests
-- [ ] M8.3 Search loop over continuous genomes (ES; gradient-based training is
+- [ ] M10.2 Search loop over continuous genomes (ES; gradient-based training is
       a standing research track — it changes the executor contract from "run"
       to "run + accumulate gradients")
-- [ ] M8.4 Within-launch population batching for small grids
+- [ ] M10.3 Within-launch population batching for small grids
 
-## P9 — Physarum (agent-field family)
+## P11 — Physarum (agent-field family)
 
 **Deferred.** Model-family and evaluation work is paused; the ladder stops
-after P11. This phase resumes by decision, not by sequence.
+after P8. This phase resumes by decision, not by sequence.
 
 The second executor kind: a stigmergic multi-agent model (Jones's slime-mould
 transport networks). State is an agent population plus a trail field; the step
@@ -842,34 +838,34 @@ families layer and nothing beneath it. It is the proof that the infra is
 family-agnostic.
 
 Determinism approach (integer tier, bit-exact everywhere — to confirm at
-M9.2): fixed-point agent state (position, heading) and nearest-cell sensing
+M11.2): fixed-point agent state (position, heading) and nearest-cell sensing
 keep motion exact on any hardware; deposits accumulate as fixed-point integers
 via order-independent atomic add (integer addition is associative and exact,
 so scatter ordering cannot change the sum); the field diffuse/decay is an
-integer stencil. This keeps Physarum out of the P8 float-tolerance
+integer stencil. This keeps Physarum out of the P10 float-tolerance
 machinery. The alternative — float agent state — moves it into that tier; the
 tradeoff (dynamic range and motion smoothness vs bit-exactness) is the open
-decision resolved in M9.2.
+decision resolved in M11.2.
 
 Phase acceptance: CPU/GPU bit-equality across an agent-count × field-extent ×
 step-count matrix; a segmented agent-field run (compound segment state)
 resumed equals an unsegmented run of equal length, bit-exact.
 
-- [ ] M9.1 Agent-field executor kind (`sima-domains`): compound state (agent
+- [ ] M11.1 Agent-field executor kind (`sima-domains`): compound state (agent
       buffer ‖ field grid) serialized as one opaque snapshot object;
       segmentation composes — the segment boundary state is the compound
       state, the task-key input-state-ref mechanism is unchanged
-- [ ] M9.2 Physarum family: fixed-point agent state, nearest-cell sensing,
+- [ ] M11.2 Physarum family: fixed-point agent state, nearest-cell sensing,
       order-independent integer deposit, field diffuse/decay stencil; genome =
       sensor geometry (angles, distance), turn rate, deposit amount,
       decay/diffusion rates; seeded generator, mutation, CPU reference with
       known-answer tests; the fixed-point-vs-float determinism decision is
       resolved here
-- [ ] M9.3 GPU kernels (agent update + field update) + CPU/GPU bit-equality
+- [ ] M11.3 GPU kernels (agent update + field update) + CPU/GPU bit-equality
       matrix
-- [ ] M9.4 First Physarum search through the full spine (funnel, slingshot,
+- [ ] M11.4 First Physarum search through the full spine (funnel, slingshot,
       distribution unchanged); network-structure interestingness metrics feed
-      the P7 funnel via the standing evaluation track
+      the P9 funnel via the standing evaluation track
 
 ## Research tracks (standing)
 
@@ -878,9 +874,9 @@ Parallel to the phase ladder, each eventually feeding it:
 - **Further model families** — graph CAs, attention-based update rules,
   program-shaped candidates; each lands as a rule family on unchanged infra.
   The ladder's own family phases (reaction-diffusion, Lenia/Flow-Lenia, Neural
-  CA in P3; Physarum in P9) are the first proof of that promise
+  CA in P3; Physarum in P11) are the first proof of that promise
 - **Evaluation / interestingness** — novelty, diversity, complexity metrics;
-  the funnel machinery (P7) is the harness, the metrics are open research
+  the funnel machinery (P9) is the harness, the metrics are open research
 - **Gradient-based training** — backprop through CA steps changes the executor
   contract from "run" to "run + accumulate gradients"; NCA literature
   precedent exists
