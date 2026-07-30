@@ -277,6 +277,9 @@ fn local_pool(
                 source.worker_binary()?,
                 // A local worker runs the bare binary: no arguments.
                 Vec::new(),
+                // Inherited for sima's own worker, scrubbed for a program a
+                // config routed this format to.
+                source.spawn_policy(),
                 config.run.format.clone(),
                 execution.checkpoint_interval,
                 execution.checkpoint_interval_steps,

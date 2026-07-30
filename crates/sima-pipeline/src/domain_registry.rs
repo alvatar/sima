@@ -22,6 +22,7 @@ use sima_contracts::{DeviceInfo, Domain, Generator};
 use sima_core::Result;
 use sima_domains::BuiltinDomain;
 use sima_model::{Environment, FormatId, GeneratorId, Params, Spec};
+use sima_transport::SpawnPolicy;
 use sima_transport::domain_service::DomainService;
 
 /// Where a format's domain is answered from.
@@ -49,6 +50,12 @@ pub(crate) trait DomainSource: Send + Sync {
 
     /// The binary a worker for this format is spawned from.
     fn worker_binary(&self) -> Result<PathBuf>;
+
+    /// The environment and working directory this format's workers are spawned
+    /// under. Selecting it is the pipeline's business — it knows whether the
+    /// binary is sima's own or a program a config named — while applying it is
+    /// the transport's.
+    fn spawn_policy(&self) -> SpawnPolicy;
 }
 
 /// The formats this build carries, answered in process.
@@ -79,12 +86,21 @@ impl DomainSource for BuiltinSource {
     fn worker_binary(&self) -> Result<PathBuf> {
         crate::orchestrate::worker_binary()
     }
+
+    fn spawn_policy(&self) -> SpawnPolicy {
+        // sima's own worker, in the orchestrator's own trust domain.
+        SpawnPolicy::Inherit
+    }
 }
 
 /// One format, answered by the program a config routes it to.
 #[derive(Debug)]
 pub(crate) struct BinarySource {
     binary: PathBuf,
+    /// The policy this program's processes are spawned under — its domain
+    /// service and every worker of the run alike, so the two halves of one
+    /// program see one environment.
+    policy: SpawnPolicy,
     /// The open session. One conversation serves the whole config, so the
     /// program pays its startup cost once; the lock is what makes that one
     /// conversation reachable from the threads a run drives.
@@ -105,10 +121,14 @@ impl BinarySource {
                 format.as_str()
             ))
         };
-        let mut service = DomainService::spawn(&binary, format).map_err(declared)?;
+        let policy = SpawnPolicy::Scrubbed {
+            passthrough: Vec::new(),
+        };
+        let mut service = DomainService::spawn(&binary, format, &policy).map_err(declared)?;
         service.environment(format).map_err(declared)?;
         Ok(BinarySource {
             binary,
+            policy,
             session: Mutex::new(service),
         })
     }
@@ -148,6 +168,10 @@ impl DomainSource for BinarySource {
 
     fn worker_binary(&self) -> Result<PathBuf> {
         Ok(self.binary.clone())
+    }
+
+    fn spawn_policy(&self) -> SpawnPolicy {
+        self.policy.clone()
     }
 }
 

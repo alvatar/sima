@@ -6,6 +6,10 @@
 //! through a program produces the run id and the task keys the same run
 //! produces by direct call, so anything the protocol failed to carry would
 //! change a hash and fail these tests rather than pass silently.
+//!
+//! The spawn surface is acceptance-tested the same way, from the program's own
+//! point of view: a wrapper script reports what it was handed, and a whole run
+//! through it is the proof.
 
 mod common;
 
@@ -116,6 +120,71 @@ fn doubled(config: &LoadedConfig) -> Result<Vec<u8>> {
 /// protocol a program outside the workspace does.
 fn worker() -> PathBuf {
     built_binary("sima-worker")
+}
+
+/// The name of the variable the wrapper script refuses to run with: a stand-in
+/// for a credential the orchestrator holds in its own environment.
+const CANARY: &str = "SIMA_TEST_CANARY";
+
+/// Writes an executable wrapper around the worker under `dir` and returns it.
+///
+/// The wrapper reports the spawn surface it was handed before becoming the
+/// worker: it exits non-zero if the canary variable reached it, and it writes
+/// a file by relative path, which lands wherever its working directory is.
+fn spawn_surface_wrapper(dir: &Path) -> PathBuf {
+    let path = dir.join("wrapper.sh");
+    std::fs::write(
+        &path,
+        format!(
+            "#!/bin/sh\n\
+             [ -z \"${CANARY}\" ] || exit 7\n\
+             touch ./canary\n\
+             exec {} \"$@\"\n",
+            worker().display()
+        ),
+    )
+    .expect("write the wrapper");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+            .expect("make the wrapper executable");
+    }
+    path
+}
+
+#[test]
+fn a_program_receives_neither_the_orchestrator_s_credentials_nor_its_directory() {
+    // The spawn surface, observed by the program itself through a whole run.
+    // The orchestrator runs as its own process here because that is the only
+    // way its environment can hold something a child must not see.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let wrapper = spawn_surface_wrapper(dir.path());
+    std::fs::write(
+        dir.path().join("sima.toml"),
+        stub_config("./store", Some(&wrapper)),
+    )
+    .expect("write the config");
+    let output = std::process::Command::new(built_binary("sima"))
+        .args(["run", "sima.toml"])
+        .current_dir(dir.path())
+        .env(CANARY, "a credential the orchestrator holds")
+        .output()
+        .expect("run sima");
+    // The run finalized, so neither the domain service nor any worker saw the
+    // canary: either one that had would have exited 7 instead of serving.
+    assert!(
+        output.status.success(),
+        "the run finalized: {}\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    // Both roles wrote `./canary` and neither wrote it here: the relative path
+    // resolved inside a scratch directory that is gone with the process.
+    assert!(
+        !dir.path().join("canary").exists(),
+        "a relative write by the program landed in the run's directory"
+    );
 }
 
 #[test]
