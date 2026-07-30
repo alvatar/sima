@@ -45,6 +45,12 @@
 //! the format binds, and once per worker slot to execute tasks. Both are the
 //! same program; [`sima_api::serve`] resolves which is being asked.
 //!
+//! Each role starts in a fresh scratch directory of its own, with the
+//! environment reduced to what the platform needs — the loader, the locale,
+//! the user's caches, the GPU stacks — plus the variable names the entry's
+//! optional `env` key lists. So a program names its assets by absolute path,
+//! and reads any setting of its own from a variable its entry declares.
+//!
 //! # The six steps
 //!
 //! 1. Produce the candidates.
