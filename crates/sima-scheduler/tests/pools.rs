@@ -2,7 +2,7 @@
 //! host loop: one run spread across two loopback pools on distinct hosts, each
 //! holding its own device class.
 //!
-//! What is under test is the pool seam — slots spawn on their own pool's
+//! What is under test is the pool boundary — slots spawn on their own pool's
 //! transport, `WorkerBound` carries each pool's host, and placement binds a
 //! chain to a class across pools exactly as it does within one. The classes
 //! are fictitious ids over the stub domain, so nothing touches a GPU.

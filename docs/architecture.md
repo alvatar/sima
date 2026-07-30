@@ -34,11 +34,11 @@ ones are added the same way.
 - Execution backends are implementation crates under `crates/toolkits/` (`sima-toolkit-*`), depending on `sima-core` (and `sima-contracts` when needed); `sima-domains` depends on the toolkits its domains use, and each toolkit isolates its own dependency set.
 - The store is the only durable state. Queues, schedulers, and orchestrators are ephemeral; a task source derives the currently-runnable frontier from (config, store state) — static batches and segment chains are two implementations of that one interface. Resume, crash-recovery, and re-run are one code path: re-derive the frontier, continue.
 - One orchestrator per run — the `sima run` process itself, no daemon; single-writer enforced by an OS file lock the kernel releases when the holder exits, so no staleness protocol exists; the lock file's content (pid, hostname) is diagnostic only. Workers are stateless leaseholders.
-- Executors are pure compute: they receive (spec, params, seed, env) and return artifacts + stats, never touching the store. Workers commit results through the catalog. The trust boundary lives on this seam.
+- Executors are pure compute: they receive (spec, params, seed, env) and return artifacts + stats, never touching the store. Workers commit results through the catalog. The trust boundary lives here.
 - Candidates are opaque at the infrastructure layer: a spec is (format id, opaque bytes), content-addressed. Domains interpret specs; "genome" is domain vocabulary. Run parameters are a second opaque content-addressed blob (params): generators produce specs, config produces params, and the spec's format id governs the interpretation of both — so one candidate stays addressable across evaluation stages and the generator contract never carries evaluation policy.
 - Two serialization worlds: identity-bearing bytes (anything hashed) go through the canonical `Enc`/`Dec` encoding exclusively; human-readable artifacts are serde and never identity-bearing.
 - Reproducibility is declared per domain across two tiers (README, Determinism), not assumed uniform. The infrastructure guarantees run identity regardless: manifests are canonicalized so run hashes are independent of worker completion order, and journals are observational, excluded from equality criteria.
-- Structured events are the `sima-trace` facade at L0.5, directly above `sima-core`: the typed event vocabulary, journal records, emitters, and one collector thread any layer emits into without an upward edge. The collector is the single-writer seam — it stamps each event, appends the journal line through a `DurableSink` the store implements (which keeps the facade below the store), then hands the record to the run's observer; the journal write precedes the observer, and a child's events cross the wire as opaque frames the parent forwards to the collector.
+- Structured events are the `sima-trace` facade at L0.5, directly above `sima-core`: the typed event vocabulary, journal records, emitters, and one collector thread any layer emits into without an upward edge. The collector is the single-writer boundary — it stamps each event, appends the journal line through a `DurableSink` the store implements (which keeps the facade below the store), then hands the record to the run's observer; the journal write precedes the observer, and a child's events cross the wire as opaque frames the parent forwards to the collector.
 
 ### Principles
 
@@ -230,7 +230,7 @@ equality criterion.
   one calling thread. The first append or encoding
   failure stops the collector and surfaces when it is joined.
 
-`DurableSink` is the seam that keeps the crate below the store:
+`DurableSink` is the boundary that keeps the crate below the store:
 `sima-store` implements it for its journal writer, so the collector appends
 through the same crash-safe path as any other journal line.
 
@@ -400,7 +400,7 @@ identical runs and are excluded from every equality criterion.
 Each line is a `sima-trace` `Record`: the collector's `ts_ms` wall-clock
 stamp plus one event — a lifecycle event or a `diagnostic` line. The
 collector stamps every line it writes, so a line lacking `ts_ms` is
-corruption. The store implements the collector's `DurableSink` seam on its
+corruption. The store implements the collector's `DurableSink` boundary on its
 journal writer, which is how records reach this framing.
 
 ### Concurrency
@@ -418,7 +418,7 @@ liveness.
 
 ## `sima-provider`
 
-The seam between a run and the machines it rents. A provider lists a
+The boundary between a run and the machines it rents. A provider lists a
 marketplace, rents one machine, reports its state, and destroys it; the
 crate turns that into an owned instance with guaranteed teardown.
 
@@ -729,7 +729,7 @@ Three decisions shape it:
 
 ## `sima-contracts` (L3)
 
-The two seams the search substrate runs candidates through. A `Generator`
+The two boundaries the search substrate runs candidates through. A `Generator`
 produces a run's candidate specs from `(root_seed, params, format)`,
 deterministically. An `Executor`
 interprets one format: it receives one candidate and returns what that
@@ -804,7 +804,7 @@ bit-identical across substrates: a generator draws from the PRNG implemented
 identically on CPU and GPU rather than from a dependency whose stream can shift
 under semver.
 
-What stays internal, each because it belongs to the other side of the seam:
+What stays internal, each because it belongs to the other side of the boundary:
 
 - **run-level configuration** (`RunConfig`, `RunId`, `GeneratorConfig`) is the
   orchestrator's;
@@ -814,7 +814,7 @@ What stays internal, each because it belongs to the other side of the seam:
 - **content addresses** (`SpecId`, `ParamsId`) address nothing an executor
   reaches, since it is handed resolved values;
 - **transport framing** (`read_frame`, `write_frame`, `MAX_PAYLOAD`) carries a
-  seam's values between processes and is the transport's;
+  component's values between processes and is the transport's;
 - **crash injection** (`crashpoint`) is test-only failure injection;
 - **free-function hex** (`to_hex`, `from_hex`) is covered for an outside
   implementation by `Hash::from_hex` and `Hash`'s `Display`.
@@ -975,7 +975,7 @@ built-in format can be driven over the contracts a third party writes against �
 The crate depends on `sima-contracts` for the traits and on `toml` for the
 translation, and owns the canonical codecs its specs and params hash through.
 
-### The translation seam
+### The translation boundary
 
 Human-facing TOML becomes the model's opaque canonical bytes only here,
 through each domain's own codecs — an identity-bearing encoding is never
@@ -1015,12 +1015,12 @@ input. Its state, dispatch harness, and cross-check scaffold live once in the
 reference, differing in those and the channel count, not in the state shape or
 the harness.
 
-**The substrate seam.** Which execution toolkit a kernel runs on is the
+**The substrate boundary.** Which execution toolkit a kernel runs on is the
 `CellularEngine` trait, one operation wide: advance a grid on a device and hold
 the result, with the reduced scalars and the final grid as separate calls on the
 handle it returns. Everything around that operation — decoding a spec, igniting
 or resuming a grid, deciding whether to keep a snapshot — is written once above
-the seam and shared by every substrate. Below it sit one implementation per
+the boundary and shared by every substrate. Below it sit one implementation per
 toolkit: `WgslEngine` over `step` and `reduce`, and `CudaEngine` over their
 transcriptions in `cellular/cuda`. The two dispatch loops are duplicated
 deliberately; what would drift if duplicated — the scalar naming, the channel
@@ -1251,10 +1251,10 @@ a failure at the call that caused it.
 
 Runs a search from `(RunConfig, store state)`. It is the layer that bridges
 pure executor output into durable store state, so the executor trust boundary
-lives on its worker seam: the executor returns values, and only the worker
+lives on the worker protocol: the executor returns values, and only the worker
 writes to the store. It depends on `sima-contracts` (to run generators and
 executors), `sima-store` (to commit results), and `sima-transport` (the worker
-seam it drives); `sima-contracts` itself stays free of the store, so the
+protocol it drives); `sima-contracts` itself stays free of the store, so the
 boundary holds in the crate graph.
 
 ### Task source
@@ -1343,7 +1343,7 @@ Execution happens in worker processes: the parent spawns one `sima-worker`
 child per worker slot, alive until the run ends and replaced only when it
 dies. The child hosts the domain executor and nothing else — it is never
 given the store path, so the pure-compute executor invariant is OS-enforced.
-The seam is two traits the scheduler is written against: `WorkerTransport`
+The boundary is two traits the scheduler is written against: `WorkerTransport`
 spawns workers, `WorkerLink` converses with one; the production transport
 spawns subprocesses, and a loopback test transport runs the same host loop
 and wire protocol over in-memory pipes. The traits, the wire protocol, the
@@ -1659,7 +1659,7 @@ search:
 - **observer** — the collector's record consumer: invoked with each typed
   record on the collector thread, immediately after its line is appended —
   typed records, journal order, one calling thread. Progress rendering
-  consumes this seam.
+  consumes this boundary.
 - **interrupt** — a level-triggered flag the driver polls within a bounded
   wait. Once set, the run winds down gracefully: no more tasks are handed
   out, in-flight attempts finish and commit, queued tasks are abandoned,
@@ -1729,7 +1729,7 @@ The vocabulary:
 The driver spawns the trace collector over the run's journal writer, with
 the caller's observer as its record consumer; the driver, the workers, and
 the transports' reader threads emit through cloned emitters, and the one
-collector thread is the single-writer seam the append contract requires.
+collector thread is the single-writer boundary the append contract requires.
 The journal write for an event happens before the observer sees it, and the
 observer sees records in journal order. Event arrival order across threads
 varies between runs; the journal is observational and excluded from every
@@ -1962,7 +1962,7 @@ the run's creation, and destruction follows its end. The events cover what
 happens while the run exists — the composition at start, a machine lost, a
 replacement, budget exhaustion — carried through a start hook that
 hands the supervisor the run's emitter when the collector spawns, so rental
-events cross the same single-writer seam as every other event with no
+events cross the same single-writer boundary as every other event with no
 scheduler edge to the provider. Acquisition intent and final spend live in
 the durable provider records and the ledger, which `sima report --spend`
 reports.
@@ -2199,13 +2199,13 @@ id to render them.
 
 The CLI holds no orchestration logic — parsing, rendering, signal
 registration, exit codes, and, for `tui`, an interactive terminal
-frontend over the observer seam. The read-only commands additionally take
+frontend over the observer boundary. The read-only commands additionally take
 `--on <ssh-dest>`, which addresses a run on the host its orchestrator runs on;
 the flag is split out of the arguments before the command match, so every
 command form keeps its shape whether or not a host is named:
 
 - **`sima run <config.toml>`** — drives the configured run, printing one
-  plain line per meaningful event from the observer seam. SIGINT sets the
+  plain line per meaningful event from the observer boundary. SIGINT sets the
   interrupt flag for a graceful wind-down; a second SIGINT falls through
   to default death, which is exactly the crash the recovery guarantees
   cover.
@@ -2323,7 +2323,7 @@ transport rather than a verb a user invokes, so it stays out of the usage
 text, and its stdout carries frames alone — every diagnostic goes to stderr,
 which ssh keeps on its own channel.
 
-**One seam, two implementations.** Every live view consumes a `RunFeed`: the
+**One boundary, two implementations.** Every live view consumes a `RunFeed`: the
 records a run gains, its lock holder, and the `FeedInfo` a renderer needs but
 cannot derive from records — the run id, the format whose domain renders
 stats, and the worker count. `LocalFeed` pairs a `RunObserver` with the

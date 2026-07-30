@@ -21,7 +21,7 @@ use crate::store::Store;
 
 /// Append handle over one run's journal. Appending takes `&mut self`:
 /// one orchestrator writes a run's journal, and this handle is its
-/// single-writer seam.
+/// single-writer boundary.
 pub struct JournalWriter {
     path: PathBuf,
     file: File,
@@ -92,7 +92,7 @@ impl Store {
     }
 }
 
-/// The trace collector's durable seam: a journal writer is exactly an
+/// The trace collector's durable boundary: a journal writer is exactly an
 /// append-one-line sink, so the collector funnels every record through the
 /// same crash-safe append as any other journal line.
 impl sima_trace::DurableSink for JournalWriter {
@@ -174,7 +174,7 @@ mod tests {
     }
 
     #[test]
-    fn the_durable_sink_seam_appends_like_the_writer() -> Result<()> {
+    fn the_durable_sink_boundary_appends_like_the_writer() -> Result<()> {
         let (_dir, store) = temp_store();
         let run = created_run(&store)?;
         let mut writer = store.journal_writer(&run)?;

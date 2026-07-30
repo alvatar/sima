@@ -13,7 +13,7 @@
 //!   of the program that owns it and answered from its two components.
 //! - [`serve`] — the process entry point of a program that hosts a domain:
 //!   both roles behind one call, chosen by the arguments it was spawned with.
-//! - [`link`] — the parent-side seam: the [`WorkerTransport`] and
+//! - [`link`] — the parent-side boundary: the [`WorkerTransport`] and
 //!   [`WorkerLink`] traits the scheduler is written against.
 //! - [`subprocess`] — the production transport: one process per worker,
 //!   SIGKILL preemption.

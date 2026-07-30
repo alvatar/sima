@@ -592,7 +592,7 @@ leaked instances are leaked money.
       its spec format, params, CPU reference, stats reduction, and store path
       untouched. Success is measured by the diff: the change is confined to
       the new toolkit crate and the domain's kernel selection, and anything
-      that forces a contract above the toolkit seam to change is the
+      that forces a contract above the toolkit boundary to change is the
       milestone's real finding, reported rather than absorbed.
       Worker enumeration answers per format rather than per machine, since
       each backend reaches only the devices its own driver stack exposes, and
@@ -728,7 +728,7 @@ portability (P1 acceptance (d)) hold across the boundary.
       surface is the facade crate `sima-api`, holding re-exports and module
       documentation and no logic — the two contract traits with their whole
       vocabulary, the device binding and class, the identity-bearing values a
-      seam is handed, and the `sima-core` foundations including `prng`, which a
+      boundary is handed, and the `sima-core` foundations including `prng`, which a
       generator needs because the `rand` crate is barred from result paths. Run
       configuration, task identity and commitment, content addresses, transport
       framing, and crash injection stay internal, and the module docs carry each
@@ -740,7 +740,7 @@ portability (P1 acceptance (d)) hold across the boundary.
       covering every execution backend, and a third-party executor returning
       `sima_core::Result` had no other variant for a fault inside its own
       compute. The device-identity and config-translation findings are recorded
-      against M7.2 and M7.3. Not done here: the device seam stays a PCI triple,
+      against M7.2 and M7.3. Not done here: the device boundary stays a PCI triple,
       registration is M7.3 so an out-of-tree executor can be written and
       compiled but not yet registered, and nothing is versioned or published to
       a registry.

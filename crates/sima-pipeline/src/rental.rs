@@ -103,7 +103,7 @@ fn stub_endpoint(value: &str) -> Result<SshEndpoint> {
 /// The answer is the provider's, not the config's. A backend knows whether the
 /// endpoint it reports names anything, and the worker binary a local spawn
 /// needs is this layer's to supply — which is why [`Reachability`] and not
-/// [`SpawnMode`] is what crosses the seam.
+/// [`SpawnMode`] is what crosses the boundary.
 pub(crate) fn transport_mode(provider: &(dyn Provider + Sync)) -> Result<SpawnMode> {
     match provider.reachability() {
         Reachability::Ssh => Ok(SpawnMode::Ssh),
@@ -111,7 +111,7 @@ pub(crate) fn transport_mode(provider: &(dyn Provider + Sync)) -> Result<SpawnMo
     }
 }
 
-/// Maps a provider's ssh endpoint into the transport's target, the seam that
+/// Maps a provider's ssh endpoint into the transport's target, the boundary that
 /// keeps the transport free of any dependency on the provider crate.
 pub(crate) fn endpoint_target(endpoint: SshEndpoint) -> SshDestination {
     SshDestination::rented(endpoint.host, endpoint.port, endpoint.user)
@@ -497,7 +497,7 @@ pub(crate) struct Supervisor<'a, 'b> {
     cancel: Option<&'b AtomicBool>,
     /// The run's emitter, delivered by the start hook once the collector spawns
     /// and `None` until then. Rental events cross the same single-writer
-    /// journal seam every other event does.
+    /// journal boundary every other event does.
     emitter: &'b Mutex<Option<Emitter>>,
     /// Whether the initial composition has been announced, so the online events
     /// fire once.
@@ -1229,7 +1229,7 @@ mod tests {
     #[test]
     fn a_malformed_stub_endpoint_names_the_variable_and_falls_back_to_nothing() {
         // Falling back to the in-process path would report a success that
-        // tested nothing, which is the failure this whole seam exists to avoid.
+        // tested nothing, which is the failure this whole boundary exists to avoid.
         for value in [
             "127.0.0.1:41022",
             "tester@127.0.0.1",

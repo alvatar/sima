@@ -3,7 +3,7 @@
 //! that result does not depend on the execution context (attempt, worker).
 //!
 //! This proves the acceptance clause ("run-twice → identical hashes") at
-//! the domain seam, without a store: it compares committed records only —
+//! the domain boundary, without a store: it compares committed records only —
 //! the equality criterion the phases use — and never the observational stats.
 
 use sima_contracts::{

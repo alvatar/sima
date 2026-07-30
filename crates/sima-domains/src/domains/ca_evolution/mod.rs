@@ -1,5 +1,5 @@
 //! The `ca_evolution` domain: a generic cellular-automaton substrate behind the
-//! [`CaModel`](model::CaModel) seam, with one model per registered format id.
+//! [`CaModel`](model::CaModel) boundary, with one model per registered format id.
 //!
 //! The domain owns the shared machinery — [`CaExecutor<M>`](executor::CaExecutor),
 //! [`CaGenerator<M>`](generator::CaGenerator), [`CaParams`](params::CaParams),

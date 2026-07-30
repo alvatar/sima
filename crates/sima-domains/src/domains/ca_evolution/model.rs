@@ -1,4 +1,4 @@
-//! [`CaModel`]: the seam between the generic CA domain and a concrete model.
+//! [`CaModel`]: the boundary between the generic CA domain and a concrete model.
 
 use sima_core::{Codec, Result};
 

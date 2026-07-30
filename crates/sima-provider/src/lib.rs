@@ -1,4 +1,4 @@
-//! The rented-hardware control plane: the provider-agnostic seam between a
+//! The rented-hardware control plane: the provider-agnostic boundary between a
 //! run and the machines it rents.
 //!
 //! A provider lists a marketplace of concrete offers, rents one, reports

@@ -59,7 +59,7 @@ use sima_trace::{Collector, Emitter, Event, Level, Observer};
 
 use crate::config::{FillPolicy, HostForm, LoadedConfig, Rented, load};
 // The readiness defaults are what a destination stating none falls back on,
-// which under test comes from the session's seams instead.
+// which under test comes from the session's test overrides instead.
 #[cfg(not(test))]
 use crate::config::{DEFAULT_READY_POLL_MS, DEFAULT_READY_TIMEOUT_MS};
 use crate::feed::RunFeed;
@@ -154,7 +154,7 @@ pub fn migrate(
                 // what starts its clock.
                 usable_by: None,
                 #[cfg(test)]
-                seams: Seams::default(),
+                overrides: Overrides::default(),
             }
             .drive()
         }
@@ -200,7 +200,7 @@ pub fn migrate(
                 interrupt,
                 usable_by: Some(usable_by),
                 #[cfg(test)]
-                seams: Seams::default(),
+                overrides: Overrides::default(),
             }
             .drive()
         }
@@ -253,7 +253,7 @@ fn hold<'a>(
 /// scattered across its fields.
 #[cfg(test)]
 #[derive(Debug, Clone, Copy)]
-struct Seams {
+struct Overrides {
     /// What a destination stating no readiness bounds falls back on. The suite
     /// takes the same tolerance production takes — the attempts and what each
     /// records are what its tests fix — at a poll that costs no wall clock.
@@ -261,9 +261,9 @@ struct Seams {
 }
 
 #[cfg(test)]
-impl Default for Seams {
-    fn default() -> Seams {
-        Seams {
+impl Default for Overrides {
+    fn default() -> Overrides {
+        Overrides {
             stated_nowhere: (Duration::from_millis(200), Duration::from_millis(1)),
         }
     }
@@ -287,7 +287,7 @@ struct Session<'a> {
     /// starts the deadline itself.
     usable_by: Option<Instant>,
     #[cfg(test)]
-    seams: Seams,
+    overrides: Overrides,
 }
 
 impl Session<'_> {
@@ -354,7 +354,7 @@ impl Session<'_> {
     /// Returns the state the far run's journal projects and whether this side
     /// wound it down. Both happen under the run's collector, so every record the
     /// follow delivers reaches the local journal and the operator's view through
-    /// one seam, and the budget and timeout reports land in that same journal.
+    /// one boundary, and the budget and timeout reports land in that same journal.
     fn watch(&self, pid: u32, reattached: bool) -> Result<(RunState, bool)> {
         let run = self.config.run.id();
         let writer = self.store.journal_writer(&run)?;
@@ -600,7 +600,7 @@ impl Session<'_> {
     /// yours is the only such destination: the config admits the readiness keys
     /// on a rented entry alone.
     ///
-    /// The suite reads them from a seam instead, so it spends no wall clock
+    /// The suite reads them from a test override instead, so it spends no wall clock
     /// waiting out a tolerance whose attempts are what its tests fix. The
     /// values below are therefore exercised by the config's own tests rather
     /// than by anything here.
@@ -614,7 +614,7 @@ impl Session<'_> {
 
     #[cfg(test)]
     fn stated_nowhere_bounds(&self) -> (Duration, Duration) {
-        self.seams.stated_nowhere
+        self.overrides.stated_nowhere
     }
 }
 
@@ -1073,7 +1073,7 @@ mod tests {
             observer: &observer,
             interrupt,
             usable_by,
-            seams: Seams::default(),
+            overrides: Overrides::default(),
         }
         .drive();
         let records = std::mem::take(&mut *captured.lock().expect("the capture lock"));

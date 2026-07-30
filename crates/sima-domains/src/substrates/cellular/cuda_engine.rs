@@ -1,4 +1,4 @@
-//! [`CudaEngine`]: the CUDA backend behind the [`CellularEngine`] seam.
+//! [`CudaEngine`]: the CUDA backend behind the [`CellularEngine`] boundary.
 
 use sima_contracts::{DeviceBinding, DeviceClass, DeviceInfo, DeviceType};
 use sima_core::{Hash, Result, hash_bytes};

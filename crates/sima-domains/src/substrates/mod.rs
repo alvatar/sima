@@ -6,7 +6,7 @@
 //! the engine that runs the dispatch. Where several domains would build their
 //! executors on the same structural kind, that kind lives here rather than
 //! inside any one domain. Today that is the [`cellular`] substrate — the grid
-//! state, the double-buffered dispatch harness, and the `CellularEngine` seam
+//! state, the double-buffered dispatch harness, and the `CellularEngine` boundary
 //! over its backends — shared by every reaction-diffusion, Neural CA, and Lenia
 //! domain.
 

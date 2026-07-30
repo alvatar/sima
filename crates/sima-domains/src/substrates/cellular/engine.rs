@@ -1,4 +1,4 @@
-//! [`CellularEngine`]: the seam between a cellular evaluation and the compute
+//! [`CellularEngine`]: the boundary between a cellular evaluation and the compute
 //! backend it runs on.
 
 use sima_contracts::{DeviceBinding, DeviceInfo};

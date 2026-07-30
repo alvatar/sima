@@ -157,7 +157,7 @@ pub fn orchestrate(
         let stop = StopSignal::new();
         // The run's emitter reaches the supervisor through the start hook,
         // filled once the collector spawns; the supervisor emits rental events
-        // through it, so they cross the same journal seam as the rest. No
+        // through it, so they cross the same journal boundary as the rest. No
         // scheduler edge to the provider appears — the hook is an opaque
         // closure.
         let emitter: std::sync::Mutex<Option<sima_trace::Emitter>> = std::sync::Mutex::new(None);

@@ -1,7 +1,7 @@
 //! The far half of a store sync, over the real binary: `sima sync-serve` on one
 //! store, a `Store::sync` initiator on another, joined by the child's stdio.
 //!
-//! This is the seam a migration's push and pull both cross. The key set is
+//! This is the boundary a migration's push and pull both cross. The key set is
 //! derived independently on each side from (config, store state), so no key
 //! list travels and the protocol is unchanged; what the test pins is that the
 //! far side derives the same set this side does, over stores that hold

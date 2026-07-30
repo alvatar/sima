@@ -1,4 +1,4 @@
-//! [`WgslEngine`]: the WGSL backend behind the [`CellularEngine`] seam.
+//! [`WgslEngine`]: the WGSL backend behind the [`CellularEngine`] boundary.
 
 use sima_contracts::{DeviceBinding, DeviceClass, DeviceInfo, DeviceType};
 use sima_core::{Hash, Result, hash_bytes};

@@ -120,7 +120,7 @@ generate → execute → evaluate → record
 - **Execution** runs candidates on fixed engines: GPU via Vulkan compute, with
   CPU reference implementations for verification. A single orchestrator drives
   stateless workers under process isolation; the trust boundary sits on the
-  worker seam, and executors never touch the store.
+  worker protocol, and executors never touch the store.
 - **Evaluation** reduces a batch to the few candidates worth attention,
   cheapest stage first, so expensive model-based scoring runs on a small
   fraction. The funnel doubles as a trust funnel: untrusted backends are

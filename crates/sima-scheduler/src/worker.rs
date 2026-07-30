@@ -568,7 +568,7 @@ fn retry(spec: sima_model::Spec, identity: TaskIdentity, chain: Option<u64>) -> 
 /// a preemption, a broken pipe, a protocol violation.
 /// Maps executor stats into the journal event's structured form: the named
 /// scalars verbatim, and the opaque family blob as hex. The scheduler is the
-/// seam between the contracts type and the trace facade's own representation.
+/// boundary between the contracts type and the trace facade's own representation.
 fn journal_stats(stats: &Stats) -> (Vec<StatScalar>, String) {
     let scalars = stats
         .scalars

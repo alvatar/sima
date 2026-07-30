@@ -1,10 +1,10 @@
 //! [`FarSide`]: everything a migration does to the destination machine.
 //!
-//! One seam carries the whole of it — confirm the machine can drive the run,
+//! One boundary carries the whole of it — confirm the machine can drive the run,
 //! place the run's directory and config, tell a run already going from one that
 //! ended, start it detached, sync against it, follow it, and ask it to wind
 //! down. Keeping the operations behind a trait is what lets the choreography be
-//! driven against a recording double, the same seam `Provider` and
+//! driven against a recording double, the same boundary `Provider` and
 //! `WorkerTransport` already establish.
 //!
 //! The production implementation reaches the machine through [`Reach`], so the
