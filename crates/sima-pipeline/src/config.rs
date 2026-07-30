@@ -2607,7 +2607,7 @@ mod tests {
         // beyond what every program receives.
         assert_eq!(
             stub_entry_policy(""),
-            SpawnPolicy::Scrubbed {
+            SpawnPolicy::Explicit {
                 passthrough: Vec::new()
             }
         );
@@ -2617,7 +2617,7 @@ mod tests {
     fn the_names_an_entry_declares_reach_its_program_s_spawn_policy() {
         assert_eq!(
             stub_entry_policy(r#"env = ["ACME_ASSETS", "ACME_LICENSE_PATH"]"#),
-            SpawnPolicy::Scrubbed {
+            SpawnPolicy::Explicit {
                 passthrough: vec!["ACME_ASSETS".to_string(), "ACME_LICENSE_PATH".to_string()],
             }
         );

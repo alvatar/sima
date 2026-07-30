@@ -565,7 +565,7 @@ mod tests {
         DomainService::spawn(
             &program,
             &FormatId::new("stub.v1").expect("format id"),
-            &SpawnPolicy::Scrubbed {
+            &SpawnPolicy::Explicit {
                 passthrough: Vec::new(),
             },
             Duration::MAX,

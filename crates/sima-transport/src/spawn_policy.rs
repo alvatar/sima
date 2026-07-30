@@ -45,7 +45,7 @@ pub enum SpawnPolicy {
     /// The child receives the baseline allowlist plus the named variables,
     /// and starts in a fresh scratch directory removed at reap.
     /// The policy of every config-routed binary.
-    Scrubbed { passthrough: Vec<String> },
+    Explicit { passthrough: Vec<String> },
 }
 
 impl SpawnPolicy {
@@ -66,7 +66,7 @@ impl SpawnPolicy {
     where
         I: IntoIterator<Item = (OsString, OsString)>,
     {
-        let SpawnPolicy::Scrubbed { passthrough } = self else {
+        let SpawnPolicy::Explicit { passthrough } = self else {
             return Ok(None);
         };
         // Clear first: what the child sees is what this loop puts back, so a
@@ -230,7 +230,7 @@ mod tests {
 
     /// A scrubbed policy declaring `passthrough`.
     fn scrubbed(passthrough: &[&str]) -> SpawnPolicy {
-        SpawnPolicy::Scrubbed {
+        SpawnPolicy::Explicit {
             passthrough: passthrough.iter().map(|name| name.to_string()).collect(),
         }
     }

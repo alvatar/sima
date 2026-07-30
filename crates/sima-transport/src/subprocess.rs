@@ -931,7 +931,7 @@ mod tests {
         let transport = SubprocessTransport::new(
             program,
             Vec::new(),
-            settings(SpawnPolicy::Scrubbed {
+            settings(SpawnPolicy::Explicit {
                 passthrough: Vec::new(),
             }),
         );

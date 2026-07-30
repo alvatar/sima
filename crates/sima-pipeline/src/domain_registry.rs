@@ -140,7 +140,7 @@ impl BinarySource {
                 format.as_str()
             ))
         };
-        let policy = SpawnPolicy::Scrubbed { passthrough: env };
+        let policy = SpawnPolicy::Explicit { passthrough: env };
         let mut service =
             DomainService::spawn(&binary, &format, &policy, answer_timeout).map_err(declared)?;
         service.environment(&format).map_err(declared)?;
@@ -512,7 +512,7 @@ mod tests {
         )?;
         assert_eq!(
             registry.source(&format("stub.v1")).spawn_policy(),
-            SpawnPolicy::Scrubbed {
+            SpawnPolicy::Explicit {
                 passthrough: vec!["ACME_ASSETS".to_string()],
             }
         );
