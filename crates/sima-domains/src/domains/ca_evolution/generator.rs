@@ -17,6 +17,7 @@ use crate::domains::translate::{TomlConfig, required};
 /// existing ones, keeping their spec ids — and any cached results — valid.
 pub(crate) struct CaGenerator<M: CaModel> {
     id: GeneratorId,
+    format: FormatId,
     /// `M` is used only through its associated items in [`Generator::generate`],
     /// never stored; `fn() -> M` keeps the generator `Send + Sync`.
     model: PhantomData<fn() -> M>,
@@ -27,6 +28,7 @@ impl<M: CaModel> CaGenerator<M> {
     pub(crate) fn new() -> Result<CaGenerator<M>> {
         Ok(CaGenerator {
             id: GeneratorId::new(M::FORMAT_ID)?,
+            format: FormatId::new(M::FORMAT_ID)?,
             model: PhantomData,
         })
     }
@@ -37,7 +39,16 @@ impl<M: CaModel> Generator for CaGenerator<M> {
         &self.id
     }
 
-    fn generate(&self, root_seed: u64, params: &[u8], format: &FormatId) -> Result<Vec<Spec>> {
+    fn format(&self) -> &FormatId {
+        &self.format
+    }
+
+    fn translate_config(&self, toml: &str) -> Result<Vec<u8>> {
+        translate::<M>(&crate::domains::translate::table(toml)?)
+    }
+
+    fn generate(&self, root_seed: u64, params: &[u8]) -> Result<Vec<Spec>> {
+        let format = &self.format;
         let (count, cfg) = decode_gen_params::<M>(params)?;
         let mut specs = Vec::with_capacity(count as usize);
         // Content addressing: identical draws would collapse to one identity, so
@@ -135,10 +146,6 @@ mod tests {
     use super::super::toy_model::Toy;
     use super::*;
 
-    fn format() -> FormatId {
-        FormatId::new(Toy::FORMAT_ID).expect("valid format id")
-    }
-
     /// A generator params blob for the toy model: `count` candidates over the
     /// range `[lo, hi]`.
     fn params(count: u64, lo: f32, hi: f32) -> Vec<u8> {
@@ -150,21 +157,21 @@ mod tests {
         let generator = CaGenerator::<Toy>::new()?;
         let params = params(8, 0.01, 0.08);
         assert_eq!(
-            generator.generate(42, &params, &format())?,
-            generator.generate(42, &params, &format())?
+            generator.generate(42, &params)?,
+            generator.generate(42, &params)?
         );
         Ok(())
     }
 
     #[test]
-    fn generate_stamps_the_requested_format() -> Result<()> {
-        // The format is stamped as received (the trait's contract).
+    fn generate_stamps_the_generators_own_format() -> Result<()> {
+        // The generator knows the format its specs are of, so every spec
+        // carries it without a caller supplying one.
         let generator = CaGenerator::<Toy>::new()?;
-        let other = FormatId::new("domain-a.v1")?;
-        let specs = generator.generate(1, &params(4, 0.01, 0.08), &other)?;
+        let specs = generator.generate(1, &params(4, 0.01, 0.08))?;
         assert_eq!(specs.len(), 4);
         for spec in specs {
-            assert_eq!(spec.format, other);
+            assert_eq!(&spec.format, generator.format());
         }
         Ok(())
     }
@@ -172,8 +179,8 @@ mod tests {
     #[test]
     fn raising_count_preserves_existing_candidates() -> Result<()> {
         let generator = CaGenerator::<Toy>::new()?;
-        let three = generator.generate(9, &params(3, 0.01, 0.08), &format())?;
-        let five = generator.generate(9, &params(5, 0.01, 0.08), &format())?;
+        let three = generator.generate(9, &params(3, 0.01, 0.08))?;
+        let five = generator.generate(9, &params(5, 0.01, 0.08))?;
         assert_eq!(three[..], five[..3]);
         Ok(())
     }
@@ -183,7 +190,7 @@ mod tests {
         // A degenerate range fixes every draw, so the second candidate collides
         // with the first.
         let generator = CaGenerator::<Toy>::new()?;
-        match generator.generate(3, &params(2, 0.05, 0.05), &format()) {
+        match generator.generate(3, &params(2, 0.05, 0.05)) {
             Err(Error::Validation(message)) => {
                 assert!(
                     message.contains("candidates 0 and 1"),
@@ -199,7 +206,7 @@ mod tests {
     fn a_zero_count_blob_fails_to_decode() {
         let generator = CaGenerator::<Toy>::new().expect("generator");
         assert!(matches!(
-            generator.generate(1, &params(0, 0.01, 0.08), &format()),
+            generator.generate(1, &params(0, 0.01, 0.08)),
             Err(Error::Validation(_))
         ));
     }
@@ -209,7 +216,7 @@ mod tests {
         let generator = CaGenerator::<Toy>::new()?;
         // A single byte cannot hold the u64 count prefix.
         assert!(matches!(
-            generator.generate(1, &[0xFF], &format()),
+            generator.generate(1, &[0xFF]),
             Err(Error::Encoding(_))
         ));
         Ok(())

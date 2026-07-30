@@ -170,10 +170,7 @@ mod tests {
     /// A resolved entry for a class carrying `workers` workers.
     fn entry(vendor_id: u32, workers: usize) -> DeviceEntry {
         DeviceEntry {
-            class: DeviceClass {
-                vendor_id,
-                device_id: 1,
-            },
+            class: DeviceClass::new(format!("{vendor_id:04x}:0001")).expect("class id"),
             name: format!("device {vendor_id:04x}"),
             workers,
             members: 1,

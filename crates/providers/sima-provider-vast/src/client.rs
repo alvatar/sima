@@ -1,4 +1,4 @@
-//! [`VastClient`]: the authenticated HTTP seam every backend call goes
+//! [`VastClient`]: the authenticated HTTP boundary every backend call goes
 //! through.
 //!
 //! The client owns the API root, the key, and the connection pool, and it

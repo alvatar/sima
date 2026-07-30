@@ -592,7 +592,7 @@ leaked instances are leaked money.
       its spec format, params, CPU reference, stats reduction, and store path
       untouched. Success is measured by the diff: the change is confined to
       the new toolkit crate and the domain's kernel selection, and anything
-      that forces a contract above the toolkit seam to change is the
+      that forces a contract above the toolkit boundary to change is the
       milestone's real finding, reported rather than absorbed.
       Worker enumeration answers per format rather than per machine, since
       each backend reaches only the devices its own driver stack exposes, and
@@ -728,7 +728,7 @@ portability (P1 acceptance (d)) hold across the boundary.
       surface is the facade crate `sima-api`, holding re-exports and module
       documentation and no logic — the two contract traits with their whole
       vocabulary, the device binding and class, the identity-bearing values a
-      seam is handed, and the `sima-core` foundations including `prng`, which a
+      boundary is handed, and the `sima-core` foundations including `prng`, which a
       generator needs because the `rand` crate is barred from result paths. Run
       configuration, task identity and commitment, content addresses, transport
       framing, and crash injection stay internal, and the module docs carry each
@@ -740,45 +740,78 @@ portability (P1 acceptance (d)) hold across the boundary.
       covering every execution backend, and a third-party executor returning
       `sima_core::Result` had no other variant for a fault inside its own
       compute. The device-identity and config-translation findings are recorded
-      against M7.2 and M7.3. Not done here: the device seam stays a PCI triple,
+      against M7.2 and M7.3. Not done here: the device boundary stays a PCI triple,
       registration is M7.3 so an out-of-tree executor can be written and
       compiled but not yet registered, and nothing is versioned or published to
       a registry.
-- [ ] M7.2 Pluggable device backends: `Backend` is a closed enum
-      (`Host | Wgsl | Cuda`) whose only job is selecting an enumeration
-      function, so a third party bringing Metal, ROCm, or an accelerator we have
-      not thought of cannot name their backend or supply its device list. Delete
-      the enum and have `Domain` carry the enumeration directly, beside the
-      `executor` and `device_desc` function pointers it already holds; the
-      engine supplies it in place of `const BACKEND`. Removes a concept rather
-      than adding one, and needs no registry or backend id. The same pass opens
-      `DeviceBinding`'s shape, today the PCI triple `(vendor_id, device_id,
-      member)` rendered as the `vendor:device` hex a config selector matches. It
-      must admit devices that have no PCI configuration space at all — Apple
-      Silicon under Metal or MoltenVK, ARM SoC GPUs such as Mali and Adreno,
-      whose drivers report a Khronos-assigned vendor id and frequently a device
-      id of zero, collapsing every such device into one class. It must admit the
-      identifiers CUDA does not report, which the toolkit reads out of Linux
-      sysfs to fill the triple in, a path that exists on Linux and for PCI
-      devices and nowhere else. And it must admit NVIDIA MIG, where slices of
-      one card carry identical ids: slices of different sizes are one class by
-      that pair while not being interchangeable, so the `DeviceClass` invariant
-      that members are substitutable is false for them and work placed on the
-      class can land on a slice with a fraction of the memory it expected.
-- [ ] M7.3 Runtime registration: an out-of-tree executor announces its format
+- [x] M7.2 Pluggable device backends: `Backend` was a closed enum
+      (`Host | Wgsl | Cuda`) whose only job was selecting an enumeration
+      function, so a third party bringing Metal, ROCm, or an accelerator we had
+      not thought of could not name their backend or supply its device list.
+      Settled: the enum is deleted and `Domain` carries `enumerate` beside the
+      `executor` and `device_desc` pointers it already held, supplied by the
+      engine in place of `const BACKEND`; `DeviceInfo` and `DeviceType` moved to
+      `sima-contracts` and are published by `sima-api` beside `DeviceClass`,
+      because a domain answers with them. `DeviceClass` became a validated
+      string of 1 to 64 bytes of `[a-z0-9._:-]`, minted by the backend that
+      enumerates the device and compared, hashed, and rendered by sima without
+      interpretation; each toolkit mints and reads back its own names, which
+      retired the hand-rolled `{:04x}:{:04x}` both carried. What distinguishes
+      non-substitutable devices now lives inside the string, so the shape admits
+      devices with no configuration space at all (Apple Silicon under Metal or
+      MoltenVK, Mali, Adreno, whose drivers report a Khronos-assigned vendor id
+      and frequently a device id of zero) and admits NVIDIA MIG, where slices of
+      one card report identical identifiers: a backend that enumerates them
+      mints the partition profile alongside — `10de:2330:1g.10gb` — and the
+      profiles are separate classes, so the invariant that members of a class
+      substitute for each other holds again. No prefix names the backend or the
+      identity scheme, because classes are compared only within one run and a
+      run has one format, one domain, one backend. Both types lost `Copy`, so
+      the per-pull queue scan borrows a task's binding rather than cloning a
+      class per queued entry. A placement slot the scheduler cannot decode is
+      read as absent and its chain binds again, matching the stance the store
+      already took for a slot whose frame is unusable. Not done here: MIG
+      detection — the class admits a partition profile, and the NVML calls that
+      read one arrive when hardware or a fixture can exercise them — and no
+      Metal or ROCm toolkit is built, though the shape admits one.
+- [x] M7.3 Runtime registration: an out-of-tree executor announces its format
       id and is selected without editing sima's dispatch — the static
-      format-id match (M1.6) becomes a registry. Registration and loading
-      mechanism decided here. The registration unit follows the `Family`-bundle
-      decision from M1.6: a third party registers the format-bound bundle
-      (codec + executor + reference + kernel) as one object, with generators a
-      separate plug targeting the format — do not fuse executor and generator.
-      The seam includes config translation: turning a format's `[run.params]`
-      table into `Params` bytes is today a static match taking a `toml::Table`,
-      so a third-party format has no published way to translate its own
-      configuration.
+      format-id match (M1.6) became a registry. Settled: the registration unit
+      is a **binary**, named in configuration as
+      `[domain."acme.thing.v1"] binary = "/opt/acme/worker"`. A heavy program
+      owns its GPU context, its dependency tree, and its startup cost, so it
+      runs as its own process; foreign code stays out of the orchestrator,
+      which leaves M7.4's boundary OS-enforced by construction, and Rust's
+      absent stable ABI made dynamic loading a C shim across trait objects.
+      The `Family`-bundle decision from M1.6 is honored by `Domain`, one
+      object carrying a format's executor, devices, environment, and params
+      translation, with `Generator` separate and targeting the format; both
+      live in `sima-contracts` and are published by `sima-api` beside `serve`,
+      the one call a program calls. Configuration crosses as raw TOML
+      text rather than a `toml::Table`, so a third party is free of sima's
+      `toml` version. In-tree formats reach the same registry through
+      `BuiltinSource`, which calls `sima-domains` directly, so the common path
+      pays no process and no pipe; a configured format is answered by
+      `BinarySource` over the domain service protocol, one session held for the
+      config's life. The registry is built where the config resolves and the
+      run's own translations go through it, so a program that cannot answer for
+      the format it is declared under fails at load with no store behind it.
+      Sufficiency is a test rather than a claim: `sima-worker --serve-domain`
+      serves the in-tree formats through the plugs, and an in-tree format
+      driven through `BinarySource` produces the run id and every task key the
+      same run produces by direct call. `sima-example-executor` is now a binary
+      implementing both plugs with `sima-api` as its only sima dependency, and
+      a full search runs through it. Not done here: a registered format's tasks
+      run in its own binary on the orchestrator's own machine — a fleet machine
+      still runs the sima image's worker, and a migrated run's synthesized
+      config carries no `[domain.*]` entry, so a registered format fails there
+      naming the id — and nothing folds a program's identity into the
+      environment hash, which is M7.5.
 - [ ] M7.4 Isolation and trust: run out-of-tree executors process-isolated so
       the pure-compute boundary is OS-enforced (foreign code cannot reach the
-      store).
+      store). Process isolation now holds by construction — a registered
+      program is its own process and is never given a store path — so what
+      remains is the trust argument around it and its enforcement.
 - [ ] M7.5 Identity and packaging: fold a custom executor's identity (version,
       build/content hash) into the environment hash so runs stay reproducible
       and portable; define how a custom family is packaged, versioned, and

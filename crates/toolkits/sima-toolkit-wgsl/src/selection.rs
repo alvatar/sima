@@ -23,16 +23,23 @@ pub(crate) struct DeviceChoice {
 /// A compute-capable physical device as enumerated: what it is, what it is
 /// called, and which card it is among identical ones.
 ///
-/// A device class is the `(vendor_id, device_id)` pair — two identical cards
-/// are one class with two members — and `member` is the position within the
-/// class, ordered by Vulkan enumeration index.
+/// The class is minted here from what Vulkan reports, and `member` is the
+/// position within the class, ordered by Vulkan enumeration index. Two
+/// identical cards are one class with two members.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeviceInfo {
-    pub vendor_id: u32,
-    pub device_id: u32,
+    pub class: String,
     pub name: String,
     pub device_type: DeviceType,
     pub member: u32,
+}
+
+/// The class of a device with configuration-space identifiers.
+///
+/// This backend defines its own class names, so it is the one that reads them
+/// back: every comparison against a caller's class goes through this spelling.
+pub fn class_of(vendor_id: u32, device_id: u32) -> String {
+    format!("{vendor_id:04x}:{device_id:04x}")
 }
 
 /// The device categories Vulkan reports.
@@ -75,17 +82,17 @@ impl DeviceType {
 /// exists without holding a [`Context`](crate::Context). A machine without
 /// Vulkan — no loader library, or a loader whose driver search comes up empty —
 /// has no such device, so it enumerates as an empty list, never an error; the
-/// worker's `--enumerate` probe relies on this to answer "none" on a driverless
+/// worker's `--enumerate-devices` probe relies on this to answer "none" on a driverless
 /// host instead of failing the probe.
 pub fn enumerate_devices() -> Result<Vec<DeviceInfo>> {
     let devices = instance::with_query_instance_or_none(|instance| {
         let candidates = compute_capable_devices(instance)?;
         // Members count within a class, so each class gets its own running
         // index as enumeration order is walked.
-        let mut members_seen: Vec<((u32, u32), u32)> = Vec::new();
+        let mut members_seen: Vec<(String, u32)> = Vec::new();
         let mut devices = Vec::with_capacity(candidates.len());
         for candidate in &candidates {
-            let class = (
+            let class = class_of(
                 candidate.properties.vendor_id,
                 candidate.properties.device_id,
             );
@@ -95,13 +102,12 @@ pub fn enumerate_devices() -> Result<Vec<DeviceInfo>> {
                     *next - 1
                 }
                 None => {
-                    members_seen.push((class, 1));
+                    members_seen.push((class.clone(), 1));
                     0
                 }
             };
             devices.push(DeviceInfo {
-                vendor_id: class.0,
-                device_id: class.1,
+                class,
                 name: device_name(&candidate.properties),
                 device_type: DeviceType::from_vk(candidate.properties.device_type),
                 member,
@@ -118,12 +124,10 @@ pub fn enumerate_devices() -> Result<Vec<DeviceInfo>> {
 /// Resolved over an instance of its own, so a caller can report the device it is
 /// bound to before any GPU engine is initialized. Name and driver resolve
 /// together over the one short-lived instance the query opens.
-pub fn selected_device_desc(device: Option<(u32, u32, u32)>) -> Result<(String, String)> {
+pub fn selected_device_desc(device: Option<(&str, u32)>) -> Result<(String, String)> {
     instance::with_query_instance(|instance| {
         let choice = match device {
-            Some((vendor_id, device_id, member)) => {
-                select_class_member(instance, vendor_id, device_id, member)?
-            }
+            Some((class, member)) => select_class_member(instance, class, member)?,
             None => select_physical_device(instance)?,
         };
         // SAFETY: `choice.physical_device` was enumerated from `instance` inside
@@ -203,63 +207,58 @@ pub(crate) fn select_physical_device(instance: &ash::Instance) -> Result<DeviceC
 /// Selects the given member of the given device class.
 pub(crate) fn select_class_member(
     instance: &ash::Instance,
-    vendor_id: u32,
-    device_id: u32,
+    class: &str,
     member: u32,
 ) -> Result<DeviceChoice> {
     let candidates = compute_capable_devices(instance)?;
-    let classes: Vec<(u32, u32, usize)> = candidates
+    let classes: Vec<(String, usize)> = candidates
         .iter()
         .map(|candidate| {
             (
-                candidate.properties.vendor_id,
-                candidate.properties.device_id,
+                class_of(
+                    candidate.properties.vendor_id,
+                    candidate.properties.device_id,
+                ),
                 candidate.index,
             )
         })
         .collect();
-    let winner = resolve_member(&classes, vendor_id, device_id, member)?;
+    let winner = resolve_member(&classes, class, member)?;
     take_candidate(candidates, winner)
 }
 
 /// Picks the enumeration index of one member of a device class from
-/// `(vendor id, device id, enumeration index)` triples.
+/// `(class, enumeration index)` pairs.
 ///
 /// Members of a class are ordered by enumeration index, so `member` counts
 /// within the class alone. Pure over the candidate list so the mapping is
 /// verifiable without a device.
-fn resolve_member(
-    candidates: &[(u32, u32, usize)],
-    vendor_id: u32,
-    device_id: u32,
-    member: u32,
-) -> Result<usize> {
+fn resolve_member(candidates: &[(String, usize)], class: &str, member: u32) -> Result<usize> {
     let mut members: Vec<usize> = candidates
         .iter()
-        .filter(|(vendor, device, _)| *vendor == vendor_id && *device == device_id)
-        .map(|(_, _, index)| *index)
+        .filter(|(candidate, _)| candidate == class)
+        .map(|(_, index)| *index)
         .collect();
     members.sort_unstable();
     if members.is_empty() {
         return Err(Error::Backend(format!(
-            "no compute-capable device {vendor_id:04x}:{device_id:04x} exists; present: {}",
+            "no compute-capable device {class} exists; present: {}",
             render_classes(candidates)
         )));
     }
     members.get(member as usize).copied().ok_or_else(|| {
         Error::Backend(format!(
-            "device {vendor_id:04x}:{device_id:04x} has {} member(s); member {member} requested",
+            "device {class} has {} member(s); member {member} requested",
             members.len()
         ))
     })
 }
 
-/// The candidates' classes as `vendor:device` hex, each listed once.
-fn render_classes(candidates: &[(u32, u32, usize)]) -> String {
-    let mut classes: Vec<String> = Vec::new();
-    for (vendor_id, device_id, _) in candidates {
-        let class = format!("{vendor_id:04x}:{device_id:04x}");
-        if !classes.contains(&class) {
+/// The candidates' classes, each listed once.
+fn render_classes(candidates: &[(String, usize)]) -> String {
+    let mut classes: Vec<&str> = Vec::new();
+    for (class, _) in candidates {
+        if !classes.contains(&class.as_str()) {
             classes.push(class);
         }
     }
@@ -433,16 +432,28 @@ mod tests {
     }
 
     /// Two identical cards and one of another class, in enumeration order.
-    const CANDIDATES: [(u32, u32, usize); 3] = [
-        (0x8086, 0x7d51, 0),
-        (0x10de, 0x2d39, 1),
-        (0x10de, 0x2d39, 2),
-    ];
+    fn candidates() -> Vec<(String, usize)> {
+        vec![
+            (class_of(0x8086, 0x7d51), 0),
+            (class_of(0x10de, 0x2d39), 1),
+            (class_of(0x10de, 0x2d39), 2),
+        ]
+    }
+
+    #[test]
+    fn a_class_is_minted_as_the_vendor_device_hex_pair() {
+        // The rendered form is a contract: a config selector matches this exact
+        // string, and the journal and placement slots spell a class the same
+        // way. A change of width, separator, or case would leave selector
+        // matching silently missing its device.
+        assert_eq!(class_of(0x8086, 0x7d51), "8086:7d51");
+        assert_eq!(class_of(0x10de, 0x2d39), "10de:2d39");
+    }
 
     #[test]
     fn member_zero_selects_the_first_card_of_its_class() {
         assert_eq!(
-            resolve_member(&CANDIDATES, 0x10de, 0x2d39, 0).expect("first member"),
+            resolve_member(&candidates(), "10de:2d39", 0).expect("first member"),
             1
         );
     }
@@ -450,29 +461,29 @@ mod tests {
     #[test]
     fn members_are_ordered_by_enumeration_index() {
         assert_eq!(
-            resolve_member(&CANDIDATES, 0x10de, 0x2d39, 1).expect("second member"),
+            resolve_member(&candidates(), "10de:2d39", 1).expect("second member"),
             2
         );
         // The class's own members are consecutive here, but its position among
         // all candidates is not: member indices count within the class only.
         assert_eq!(
-            resolve_member(&CANDIDATES, 0x8086, 0x7d51, 0).expect("sole member"),
+            resolve_member(&candidates(), "8086:7d51", 0).expect("sole member"),
             0
         );
     }
 
     #[test]
     fn member_order_follows_enumeration_even_when_candidates_are_unsorted() {
-        let unsorted = [(0x10de, 0x2d39, 2), (0x10de, 0x2d39, 1)];
+        let unsorted = [(class_of(0x10de, 0x2d39), 2), (class_of(0x10de, 0x2d39), 1)];
         assert_eq!(
-            resolve_member(&unsorted, 0x10de, 0x2d39, 0).expect("lowest index first"),
+            resolve_member(&unsorted, "10de:2d39", 0).expect("lowest index first"),
             1
         );
     }
 
     #[test]
     fn unknown_class_error_names_the_request_and_what_exists() {
-        let error = resolve_member(&CANDIDATES, 0x1002, 0x1234, 0).expect_err("absent class");
+        let error = resolve_member(&candidates(), "1002:1234", 0).expect_err("absent class");
         let Error::Backend(message) = error else {
             panic!("expected a backend error");
         };
@@ -492,7 +503,7 @@ mod tests {
 
     #[test]
     fn member_out_of_range_error_names_the_member_count() {
-        let error = resolve_member(&CANDIDATES, 0x8086, 0x7d51, 1).expect_err("one member only");
+        let error = resolve_member(&candidates(), "8086:7d51", 1).expect_err("one member only");
         let Error::Backend(message) = error else {
             panic!("expected a backend error");
         };
@@ -507,7 +518,7 @@ mod tests {
         // onto hardware the machine does not have is caught: executor
         // construction is lazy and would not notice until the first task.
         assert!(matches!(
-            selected_device_desc(Some((0xdead, 0xbeef, 0))),
+            selected_device_desc(Some(("dead:beef", 0))),
             Err(Error::Backend(_))
         ));
     }
@@ -519,9 +530,8 @@ mod tests {
         assert!(!devices.is_empty(), "at least one compute-capable device");
         for device in &devices {
             assert!(!device.name.is_empty());
-            let (name, driver) =
-                selected_device_desc(Some((device.vendor_id, device.device_id, device.member)))
-                    .expect("resolve the device description");
+            let (name, driver) = selected_device_desc(Some((device.class.as_str(), device.member)))
+                .expect("resolve the device description");
             assert_eq!(name, device.name);
             // The driver version is operational provenance; it decodes to the
             // standard three-part layout and is never empty for a real device.

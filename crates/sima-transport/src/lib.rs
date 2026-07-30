@@ -9,7 +9,11 @@
 //!   share, framed with [`sima_core::frame`].
 //! - [`host`] — the child side: [`host::serve`] hosts a resolved executor
 //!   over the pipe for the life of the worker process.
-//! - [`link`] — the parent-side seam: the [`WorkerTransport`] and
+//! - [`domain_service`] — the second conversation: what a format binds, asked
+//!   of the program that owns it and answered from its two components.
+//! - [`serve`] — the process entry point of a program that hosts a domain:
+//!   both roles behind one call, chosen by the arguments it was spawned with.
+//! - [`link`] — the parent-side boundary: the [`WorkerTransport`] and
 //!   [`WorkerLink`] traits the scheduler is written against.
 //! - [`subprocess`] — the production transport: one process per worker,
 //!   SIGKILL preemption.
@@ -26,10 +30,12 @@
 //! runs, the other hands the worker to ssh as the command to execute.
 
 pub mod container;
+pub mod domain_service;
 pub mod host;
 pub mod link;
 pub mod loopback;
 pub mod protocol;
+pub mod serve;
 pub mod ssh;
 pub mod subprocess;
 

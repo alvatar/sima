@@ -20,7 +20,7 @@ const GONE: u16 = 410;
 /// The script every rental runs at boot. The marketplace's ssh entry wraps
 /// sessions in a tmux attach unless `~/.no_auto_tmux` exists; the wrap
 /// swallows the command a non-interactive ssh carries, so without this file
-/// the worker probe (`ssh <host> -- sima-worker --enumerate`) never
+/// the worker probe (`ssh <host> -- sima-worker --enumerate-devices`) never
 /// executes.
 const ONSTART: &str = "touch ~/.no_auto_tmux";
 

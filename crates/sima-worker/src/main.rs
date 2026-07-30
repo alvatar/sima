@@ -1,17 +1,26 @@
-//! The `sima-worker` binary: an executor host, one per worker slot.
+//! The `sima-worker` binary: the in-tree domains, hosted.
 //!
-//! The orchestrator spawns one of these per worker and converses over its
-//! stdin/stdout in the transport's wire protocol; stderr is captured by the
-//! parent and journaled as correlated diagnostics. The process is pure
-//! compute by construction —
-//! it is never given a store path, so the "executors are pure compute"
-//! invariant is OS-enforced. All logic lives in [`sima_transport::host`];
-//! this binary only wires the streams, the domain resolver, and the exit
-//! code, plus the orphan protection.
+//! Its role is what the arguments say:
+//!
+//! - bare, it is an executor host, one per worker slot. The orchestrator
+//!   spawns one of these per worker and converses over its stdin/stdout in the
+//!   transport's wire protocol; stderr is captured by the parent and journaled
+//!   as correlated diagnostics.
+//! - under `--serve-domain <format>`, it answers what that format binds over
+//!   the domain service, through the same contracts a program outside the
+//!   workspace is written against.
+//! - under `--enumerate-devices <format>`, it prints the devices that format's work can
+//!   run on and exits.
+//!
+//! The process is pure compute by construction — it is never given a store
+//! path, so the "executors are pure compute" invariant is OS-enforced. All
+//! logic lives in [`sima_transport`]; this binary only wires the streams, the
+//! domain resolver, and the exit code, plus the orphan protection.
 
-use sima_contracts::{DeviceBinding, Executor};
+use sima_contracts::{DeviceBinding, Executor, Generator};
 use sima_core::Result;
 use sima_model::FormatId;
+use sima_transport::serve::Role;
 
 /// Resolves the executor for the handshake's format id through the domain
 /// registry, bound to the handshake's device, and describes the device it
@@ -23,7 +32,7 @@ fn resolver(
     format: &FormatId,
     device: Option<&DeviceBinding>,
 ) -> Result<(Box<dyn Executor>, String, String)> {
-    let domain = sima_domains::domain_for(format)?;
+    let domain = sima_domains::binding_for(format)?;
     let executor = (domain.executor)(device)?;
     let (device_name, driver) = (domain.device_desc)(device)?;
     Ok((executor, device_name, driver))
@@ -39,7 +48,7 @@ fn resolver(
 /// The format is what selects the backend to ask, so the answer is the devices
 /// this run's work can be placed on rather than every device present. A machine
 /// commonly has devices only one backend reaches.
-fn enumerate(format: &str) -> Result<()> {
+fn enumerate_devices(format: &str) -> Result<()> {
     let format = FormatId::new(format)?;
     for device in sima_domains::devices::enumerate_devices(&format)? {
         let line = serde_json::to_string(&device)
@@ -49,6 +58,22 @@ fn enumerate(format: &str) -> Result<()> {
     Ok(())
 }
 
+/// Answers the domain service for `format` over stdin/stdout: what its
+/// environment is, what devices its work runs on, how its configuration
+/// translates, and what specs its generators produce.
+///
+/// The in-tree formats are reached through the same two contracts a program
+/// outside the workspace implements, so this role proves those contracts carry
+/// everything a run needs.
+fn serve_domain(format: &FormatId) -> Result<()> {
+    let domain = sima_domains::BuiltinDomain::new(format)?;
+    let generators = sima_domains::generators_for(format)?;
+    let generators: Vec<&dyn Generator> = generators.iter().map(AsRef::as_ref).collect();
+    let stdin = std::io::stdin();
+    let stdout = std::io::stdout();
+    sima_transport::domain_service::serve(stdin.lock(), stdout.lock(), &domain, &generators)
+}
+
 /// Exit codes: 0 on the parent closing the pipe (clean end-of-stream), 1
 /// with a stderr line on a protocol refusal or a serve error.
 fn main() {
@@ -56,13 +81,13 @@ fn main() {
     // protection — enumerate, print, exit. It runs before anything else so a
     // probe never spawns the handshake machinery. The format id follows the
     // flag and decides which backend is asked.
-    let mut args = std::env::args().skip_while(|arg| arg != "--enumerate");
+    let mut args = std::env::args().skip_while(|arg| arg != "--enumerate-devices");
     if args.next().is_some() {
         let Some(format) = args.next() else {
-            eprintln!("sima-worker: --enumerate takes the run's format id");
+            eprintln!("sima-worker: --enumerate-devices takes the run's format id");
             std::process::exit(1);
         };
-        if let Err(e) = enumerate(&format) {
+        if let Err(e) = enumerate_devices(&format) {
             eprintln!("sima-worker: {e}");
             std::process::exit(1);
         }
@@ -81,6 +106,23 @@ fn main() {
     if unsafe { libc::getppid() } == 1 {
         eprintln!("sima-worker: orphaned before startup");
         std::process::exit(1);
+    }
+    // The domain-service role: one session for the run, answering what a
+    // format binds. It runs under the same orphan protection as a worker,
+    // its session being just as long-lived.
+    let role = match Role::from_args(std::env::args()) {
+        Ok(role) => role,
+        Err(e) => {
+            eprintln!("sima-worker: {e}");
+            std::process::exit(1);
+        }
+    };
+    if let Role::ServeDomain(format) = role {
+        if let Err(e) = serve_domain(&format) {
+            eprintln!("sima-worker: {e}");
+            std::process::exit(1);
+        }
+        return;
     }
     // Latch panic messages and backtraces for the serve loop's correlated
     // diagnostics; the default hook still prints to stderr after the capture.

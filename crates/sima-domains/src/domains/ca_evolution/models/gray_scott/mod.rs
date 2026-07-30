@@ -83,7 +83,7 @@ mod tests {
     use sima_model::EnvironmentValue;
     use sima_toolkit_wgsl::source_digest;
 
-    use super::super::super::domain::build_domain;
+    use super::super::super::binding::build_binding;
     use super::*;
     use crate::substrates::cellular::WgslEngine;
 
@@ -95,10 +95,10 @@ mod tests {
 
     #[test]
     fn the_environment_pins_the_kernel_digest() -> Result<()> {
-        // build_domain derives the model's environment device-free, hashing the
+        // build_binding derives the model's environment device-free, hashing the
         // kernel source rather than compiling it. The kernel component carries
         // that digest, so editing the shader changes every task key.
-        let domain = build_domain::<GrayScott, WgslEngine>()?;
+        let domain = build_binding::<GrayScott, WgslEngine>()?;
         assert_eq!(domain.format.as_str(), GrayScott::FORMAT_ID);
         let components = domain.environment.components();
         assert_eq!(components.len(), 4);

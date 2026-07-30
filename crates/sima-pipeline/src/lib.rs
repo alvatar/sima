@@ -1,13 +1,14 @@
 //! Pipeline layer: the human-facing configuration in, a driven run out.
 //!
 //! A `sima.toml` is loaded and translated into the identity-bearing
-//! [`sima_model::RunConfig`] plus the operational execution settings; the
-//! format id dispatches through [`sima_domains`] to the executor that
-//! evaluates the format's specs, the environment that enters task identity,
-//! and the translation of the domain-owned params section, and the generator
-//! id dispatches to a generator with its own config translation. The pipeline
-//! routes configuration sections to the domain and generator code that owns
-//! them; it never interprets their content.
+//! [`sima_model::RunConfig`] plus the operational execution settings. The
+//! format id resolves through the [`DomainRegistry`] to what answers for it —
+//! [`sima_domains`] for the formats this build carries, or the program a
+//! `[domain.*]` entry names — which supplies the executor that evaluates the
+//! format's specs, the environment that enters task identity, the translation
+//! of the domain-owned params section, and the generator the id names with its
+//! own config translation. The pipeline routes configuration sections to the
+//! code that owns them; it never interprets their content.
 //!
 //! Beside the driven run sit the read-only queries over what a run left
 //! behind. Each folds the run's journal and touches no store object:
@@ -19,6 +20,7 @@
 
 mod config;
 mod devices;
+mod domain_registry;
 mod feed;
 #[cfg(test)]
 mod fixtures;
@@ -43,6 +45,7 @@ pub use config::{
     OwnedClass, OwnedHost, Pool, ProviderId, Rented, RentedClass, load,
 };
 pub use devices::DeviceSelector;
+pub use domain_registry::DomainRegistry;
 pub use feed::{
     FOLLOW_PROTOCOL_VERSION, FeedInfo, FollowFrame, LocalFeed, RemoteFeed, RunFeed, follow_serve,
     local_snapshot, remote_snapshot,

@@ -17,7 +17,7 @@
 //! is no shutdown message: the parent closing the child's stdin is the
 //! shutdown signal.
 
-use sima_contracts::{Artifact, DeviceBinding, Outcome, Stats};
+use sima_contracts::{Artifact, DeviceBinding, DeviceClass, Outcome, Stats};
 use sima_core::{Dec, Enc, Error, Result};
 use sima_model::{EnvironmentId, FormatId};
 
@@ -361,28 +361,27 @@ fn decode_opt_bytes(dec: &mut Dec<'_>) -> Result<Option<Vec<u8>>> {
     }
 }
 
-/// Writes a present-flag byte, then the binding's three ids when present.
+/// Writes a present-flag byte, then the binding's class and member when
+/// present.
 fn opt_device(enc: &mut Enc, device: Option<&DeviceBinding>) {
     match device {
         None => {
             enc.u8(0);
         }
         Some(device) => {
-            enc.u8(1)
-                .u32(device.vendor_id)
-                .u32(device.device_id)
-                .u32(device.member);
+            enc.u8(1).str(device.class.as_str()).u32(device.member);
         }
     }
 }
 
-/// Reads a present-flag byte (0 or 1), then the binding's ids when present.
+/// Reads a present-flag byte (0 or 1), then the binding's class and member
+/// when present. The class is validated here, so a name no backend could have
+/// minted fails at the frame rather than inside the child.
 fn decode_opt_device(dec: &mut Dec<'_>) -> Result<Option<DeviceBinding>> {
     match dec.u8()? {
         0 => Ok(None),
         1 => Ok(Some(DeviceBinding {
-            vendor_id: dec.u32()?,
-            device_id: dec.u32()?,
+            class: DeviceClass::new(dec.str()?)?,
             member: dec.u32()?,
         })),
         flag => Err(Error::Encoding(format!(
@@ -427,9 +426,21 @@ mod tests {
                 checkpoint_interval_ms: u64::MAX,
                 checkpoint_interval_steps: 64,
                 device: Some(DeviceBinding {
-                    vendor_id: 0x10de,
-                    device_id: 0x2d39,
+                    class: DeviceClass::new("10de:2d39").expect("class id"),
                     member: 1,
+                }),
+            }),
+            ToChild::Hello(Hello {
+                protocol: PROTOCOL_VERSION,
+                worker: 3,
+                format: FormatId::new("stub.v1").expect("format id"),
+                checkpoint_interval_ms: 1,
+                checkpoint_interval_steps: 1,
+                // A partitioned card: the profile rides along in the class, so
+                // the worker opens the slice the parent placed it on.
+                device: Some(DeviceBinding {
+                    class: DeviceClass::new("10de:2330:1g.10gb").expect("class id"),
+                    member: 2,
                 }),
             }),
             ToChild::Assign(Assignment {

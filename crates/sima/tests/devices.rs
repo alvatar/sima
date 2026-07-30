@@ -18,9 +18,13 @@ use std::time::Duration;
 
 use common::{
     ChainTrail, chain_trails, devices_reported, journal_events, manifest_bytes, manifest_of,
-    poll_until, sima_command, task_devices,
+    poll_until, require_devices, sima_command, task_devices,
 };
 use sima_pipeline::Event;
+
+/// The format every test here runs: the WGSL Gray-Scott model, whose devices
+/// the Vulkan loader enumerates.
+const FORMAT: &str = "ca_evolution.gray_scott.v1";
 
 /// The candidates and segments every multi-device test here runs.
 ///
@@ -42,7 +46,7 @@ fn config_text(store: &str, count: u32, segments: u64, orchestrator: &str) -> St
         r#"
         [run]
         root_seed = 42
-        format = "ca_evolution.gray_scott.v1"
+        format = "{FORMAT}"
         segments = {segments}
 
         [run.generator]
@@ -158,6 +162,7 @@ fn chain_with_work_on(config: &Path, device: &str) -> Option<usize> {
 /// and keeps every chain on one of them.
 #[test]
 fn a_search_over_two_device_classes_uses_both_and_splits_no_chain() {
+    require_devices(FORMAT, &["nvidia", "intel"]);
     let dir = tempfile::tempdir().expect("temp dir");
     let config = common::write_config_text(
         dir.path(),
@@ -193,6 +198,7 @@ fn a_search_over_two_device_classes_uses_both_and_splits_no_chain() {
 /// started on: the binding is durable, so nothing rebinds.
 #[test]
 fn chains_keep_their_class_across_a_resume() {
+    require_devices(FORMAT, &["nvidia", "intel"]);
     let dir = tempfile::tempdir().expect("temp dir");
     let config = common::write_config_text(
         dir.path(),
@@ -245,6 +251,7 @@ fn chains_keep_their_class_across_a_resume() {
 /// present, loudly, and the run converges.
 #[test]
 fn removing_a_device_rebinds_its_chains_and_the_run_converges() {
+    require_devices(FORMAT, &["nvidia", "intel"]);
     let dir = tempfile::tempdir().expect("temp dir");
     let two = common::write_config_text(
         dir.path(),
@@ -296,6 +303,7 @@ fn removing_a_device_rebinds_its_chains_and_the_run_converges() {
 /// nothing a run records.
 #[test]
 fn a_single_device_run_commits_the_same_manifest_as_a_plain_worker_count() {
+    require_devices(FORMAT, &["nvidia"]);
     let dir = tempfile::tempdir().expect("temp dir");
     // The reference: a plain worker count over the backend's own device
     // choice, naming no device and reading no placement state.

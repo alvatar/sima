@@ -1,6 +1,6 @@
-//! [`Domain`] and the static dispatches from config ids to code.
+//! [`FormatBinding`] and the static dispatches from config ids to code.
 //!
-//! A format id binds three things — this is what a `Domain` groups: the
+//! A format id binds three things — this is what a `FormatBinding` groups: the
 //! executor that evaluates specs of the format, the environment its results
 //! depend on, and the translation of the domain-owned `[run.params]` section
 //! into the opaque canonical params bytes. Generators dispatch separately:
@@ -8,17 +8,16 @@
 //! translation of its own `[run.generator]` keys. Both dispatches are static
 //! matches; unknown ids are [`Error::Validation`].
 
-use sima_contracts::{DeviceBinding, Executor, Generator};
+use sima_contracts::{DeviceBinding, DeviceInfo, Executor, Generator};
 use sima_core::{Error, Result};
 use sima_model::{Environment, FormatId, GeneratorId, Params};
 
-use crate::devices::Backend;
 use crate::domains::{ca_evolution, stub};
 
 /// Everything a format id binds: the executor that evaluates specs of the
 /// format and the environment its results depend on. The format's params
 /// translation is the third binding, dispatched by [`params_for`].
-pub struct Domain {
+pub struct FormatBinding {
     /// The format this domain interprets.
     pub format: FormatId,
     /// Builds the executor for the format's specs, bound to the given device —
@@ -39,13 +38,15 @@ pub struct Domain {
     /// driver version is operational provenance the journal records: the one
     /// variable an environment hash cannot see across machines of one class.
     pub device_desc: fn(Option<&DeviceBinding>) -> Result<(String, String)>,
-    /// The execution backend this domain's executor runs through.
+    /// Every device this domain's work can run on, as its execution backend
+    /// enumerates them.
     ///
-    /// It is what the device enumeration follows: only this backend's devices
-    /// can hold the domain's work, so
-    /// [`enumerate_devices`](crate::devices::enumerate_devices) resolves a
-    /// format to a domain and reads this.
-    pub backend: Backend,
+    /// Only that backend's devices can hold the work, so the enumeration
+    /// travels with the domain rather than being selected from a list of
+    /// backends this build knows. A domain that opens no device answers with an
+    /// empty list, which the layers above read as a worker that needs no
+    /// device.
+    pub enumerate_devices: fn() -> Result<Vec<DeviceInfo>>,
     /// The environment entering every task's identity.
     pub environment: Environment,
 }
@@ -53,11 +54,11 @@ pub struct Domain {
 /// Static dispatch: the domains this build knows. The stub is matched directly;
 /// every other id is offered to `ca_evolution`, whose registry claims its
 /// models. An unclaimed id is [`Error::Validation`].
-pub fn domain_for(format: &FormatId) -> Result<Domain> {
+pub fn binding_for(format: &FormatId) -> Result<FormatBinding> {
     if format.as_str() == stub::ID {
-        return stub::domain();
+        return stub::binding();
     }
-    ca_evolution::domain_for(format).unwrap_or_else(|| {
+    ca_evolution::binding_for(format).unwrap_or_else(|| {
         Err(Error::Validation(format!(
             "unknown format id {:?}",
             format.as_str()
@@ -94,23 +95,10 @@ pub fn generator_for(id: &GeneratorId) -> Result<Box<dyn Generator>> {
     })
 }
 
-/// Translation of the generator's own config table — the `[run.generator]`
-/// section minus `id` — into its opaque params blob. The generator owns and
-/// validates its keys.
-pub fn generator_params_for(id: &GeneratorId, table: &toml::Table) -> Result<Vec<u8>> {
-    if id.as_str() == stub::ID {
-        return stub::generator_params(table);
-    }
-    ca_evolution::generator_params_for(id, table).unwrap_or_else(|| {
-        Err(Error::Validation(format!(
-            "unknown generator id {:?}",
-            id.as_str()
-        )))
-    })
-}
-
 #[cfg(test)]
 mod tests {
+    use sima_contracts::DeviceClass;
+
     use super::*;
 
     /// A validated format id.
@@ -127,7 +115,7 @@ mod tests {
     fn an_unknown_format_id_is_rejected_by_both_dispatches() {
         let unknown = format("no-such-domain.v1");
         for result in [
-            domain_for(&unknown).map(|_| ()),
+            binding_for(&unknown).map(|_| ()),
             params_for(&unknown, &toml::Table::new(), false).map(|_| ()),
         ] {
             match result {
@@ -143,27 +131,22 @@ mod tests {
     }
 
     #[test]
-    fn an_unknown_generator_id_is_rejected_by_both_dispatches() {
+    fn an_unknown_generator_id_is_rejected() {
         let unknown = generator("no-such-generator.v1");
-        for result in [
-            generator_for(&unknown).map(|_| ()),
-            generator_params_for(&unknown, &toml::Table::new()).map(|_| ()),
-        ] {
-            match result {
-                Err(Error::Validation(msg)) => {
-                    assert!(
-                        msg.contains("no-such-generator.v1"),
-                        "the error names the id: {msg}"
-                    );
-                }
-                other => panic!("expected Validation, got {other:?}"),
+        match generator_for(&unknown).map(|_| ()) {
+            Err(Error::Validation(msg)) => {
+                assert!(
+                    msg.contains("no-such-generator.v1"),
+                    "the error names the id: {msg}"
+                );
             }
+            other => panic!("expected Validation, got {other:?}"),
         }
     }
 
     #[test]
     fn the_stub_domain_binds_executor_and_environment() -> Result<()> {
-        let domain = domain_for(&format("stub.v1"))?;
+        let domain = binding_for(&format("stub.v1"))?;
         assert_eq!(domain.format.as_str(), "stub.v1");
         // The executor answers for the domain's format.
         assert_eq!((domain.executor)(None)?.format().as_str(), "stub.v1");
@@ -183,11 +166,11 @@ mod tests {
     #[test]
     fn a_ca_evolution_model_id_delegates_to_the_registry() -> Result<()> {
         // The crate-level dispatch claims no ca_evolution id itself: it offers
-        // the id to the registry. Binding here proves domain_for is device-free —
+        // the id to the registry. Binding here proves binding_for is device-free —
         // this test runs everywhere, GPU or not — and that the delegation reaches
         // the Gray-Scott model. The environment component digest is asserted in
         // the registry's own tests, which can read the model's kernel source.
-        let domain = domain_for(&format("ca_evolution.gray_scott.v1"))?;
+        let domain = binding_for(&format("ca_evolution.gray_scott.v1"))?;
         assert_eq!(domain.format.as_str(), "ca_evolution.gray_scott.v1");
         assert_eq!(
             (domain.executor)(None)?.format().as_str(),
@@ -226,11 +209,10 @@ mod tests {
         // mutation — runs on a machine with no GPU at all. The binding names a
         // class that need not exist here; nothing resolves it until execute.
         let binding = DeviceBinding {
-            vendor_id: 0xdead,
-            device_id: 0xbeef,
+            class: DeviceClass::new("dead:beef").expect("class id"),
             member: 0,
         };
-        let domain = domain_for(&format("ca_evolution.gray_scott.v1"))?;
+        let domain = binding_for(&format("ca_evolution.gray_scott.v1"))?;
         assert_eq!(
             (domain.executor)(Some(&binding))?.format().as_str(),
             "ca_evolution.gray_scott.v1"
@@ -242,11 +224,10 @@ mod tests {
     fn the_stub_executor_ignores_the_binding() -> Result<()> {
         // The stub uses no device, so a binding changes nothing about it.
         let binding = DeviceBinding {
-            vendor_id: 0x8086,
-            device_id: 0x7d51,
+            class: DeviceClass::new("8086:7d51").expect("class id"),
             member: 0,
         };
-        let domain = domain_for(&format("stub.v1"))?;
+        let domain = binding_for(&format("stub.v1"))?;
         assert_eq!(
             (domain.executor)(Some(&binding))?.format().as_str(),
             "stub.v1"

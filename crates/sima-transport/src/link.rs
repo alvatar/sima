@@ -1,4 +1,4 @@
-//! The parent-side transport seam: [`WorkerTransport`] spawns workers,
+//! The parent-side transport boundary: [`WorkerTransport`] spawns workers,
 //! [`WorkerLink`] converses with one.
 //!
 //! A spawn resolves to one of three outcomes: a live [`WorkerLink`] to
@@ -7,7 +7,7 @@
 //! spawn failure the caller faults on. The retirement is a spawn-time channel
 //! distinct from the conversation's [`LinkEvent`] outcomes below.
 //!
-//! The seam exists so the scheduler's worker loop is written against traits
+//! The boundary exists so the scheduler's worker loop is written against traits
 //! the tests can implement without processes: the production transport spawns
 //! `sima-worker` subprocesses, the test loopback runs the same host loop and
 //! wire protocol over in-memory pipes. Everything a child does reaches the

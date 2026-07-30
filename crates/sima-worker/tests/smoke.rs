@@ -318,7 +318,7 @@ fn an_executor_panic_crosses_as_a_correlated_diagnostic_event() {
 /// asserting it exited zero and that every line is a well-formed device.
 fn probe(format: &str) -> Vec<serde_json::Value> {
     let output = Command::new(env!("CARGO_BIN_EXE_sima-worker"))
-        .args(["--enumerate", format])
+        .args(["--enumerate-devices", format])
         .output()
         .expect("run the probe");
     assert!(
@@ -334,10 +334,12 @@ fn probe(format: &str) -> Vec<serde_json::Value> {
         .collect();
     for device in &devices {
         assert!(
-            device.get("vendor_id").is_some(),
-            "a device names its vendor"
+            device
+                .get("class")
+                .and_then(serde_json::Value::as_str)
+                .is_some(),
+            "a device names the class its backend minted"
         );
-        assert!(device.get("device_id").is_some(), "a device names its id");
     }
     devices
 }
@@ -345,7 +347,7 @@ fn probe(format: &str) -> Vec<serde_json::Value> {
 /// Requires a Vulkan device.
 #[test]
 fn the_enumerate_probe_prints_one_json_device_per_line() {
-    // The remote-resolution probe: `--enumerate <format>` prints the devices
+    // The remote-resolution probe: `--enumerate-devices <format>` prints the devices
     // that format's program can run on as JSON, one per line, and exits zero.
     assert!(
         !probe("ca_evolution.gray_scott.v1").is_empty(),
@@ -371,7 +373,7 @@ fn the_enumerate_probe_refuses_a_format_it_cannot_resolve() {
     // answer: it fails loudly rather than reporting an empty device list, which
     // the orchestrator would read as a machine with no hardware.
     let output = Command::new(env!("CARGO_BIN_EXE_sima-worker"))
-        .args(["--enumerate", "no-such-domain.v1"])
+        .args(["--enumerate-devices", "no-such-domain.v1"])
         .output()
         .expect("run the probe");
     assert!(!output.status.success(), "the probe exits nonzero");
@@ -384,7 +386,7 @@ fn the_enumerate_probe_refuses_a_format_it_cannot_resolve() {
 #[test]
 fn the_enumerate_probe_needs_the_format_to_answer_for() {
     let output = Command::new(env!("CARGO_BIN_EXE_sima-worker"))
-        .arg("--enumerate")
+        .arg("--enumerate-devices")
         .output()
         .expect("run the probe");
     assert!(!output.status.success(), "the probe exits nonzero");
@@ -403,7 +405,7 @@ fn the_enumerate_probe_answers_when_the_backend_finds_no_driver() {
     // the Vulkan loader's driver search come up empty, the same condition as a
     // machine with no Vulkan driver installed.
     let output = Command::new(env!("CARGO_BIN_EXE_sima-worker"))
-        .args(["--enumerate", "ca_evolution.gray_scott.v1"])
+        .args(["--enumerate-devices", "ca_evolution.gray_scott.v1"])
         .env("VK_DRIVER_FILES", "/nonexistent/no_driver.json")
         .output()
         .expect("run the probe");

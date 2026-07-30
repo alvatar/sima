@@ -5,7 +5,7 @@
 //! the transport ([`sima_transport`]), commits successes through the store,
 //! retries transient failures, and stops on a definitive one. It is the layer
 //! that bridges pure executor output into durable store state, so the
-//! executor trust boundary lives on the worker seam: the executor returns
+//! executor trust boundary lives on the worker protocol: the executor returns
 //! values from its own process, and only the parent-side worker writes to
 //! the store.
 //!

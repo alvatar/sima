@@ -6,9 +6,14 @@ publish = false
 
 [dev-dependencies]
 sima-core = { path = "../sima-core" }
+sima-contracts = { path = "../sima-contracts" }
+sima-model = { path = "../sima-model" }
 sima-domains = { path = "../sima-domains" }
 sima-pipeline = { path = "../sima-pipeline" }
 sima-store = { path = "../sima-store" }
+# The example program a suite drives a run through, so a test states the values
+# its executor produces rather than only their shape.
+sima-example-executor = { path = "../sima-example-executor" }
 tempfile.workspace = true
 
 [lints]

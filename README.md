@@ -59,6 +59,14 @@ beyond it as an elastic, heterogeneous extension.
   config is interpreted there, where the store and the orchestrator are, and
   the view renders here. Observation takes no lock and writes nothing, so
   watching a run cannot perturb it.
+- **Bring your own program.** A compute program outside this workspace — a
+  renderer, a simulator, anything with its own GPU context and its own
+  dependency tree — is registered by naming its binary:
+  `[domain."acme.thing.v1"] binary = "/opt/acme/worker"`. It implements two
+  traits against `sima-api` and calls `sima_api::serve`; sima spawns it, asks it
+  what its format binds, and runs the search through it. It runs as its own
+  process, so it loads its assets once and then streams tasks, and the store
+  stays on sima's side of the boundary.
 - **Reproduce any result.** A task is identified by content — spec, run
   parameters, seed, environment, input state — so a recorded result can be
   regenerated from its identity alone, and any backend that returns a result
@@ -112,7 +120,7 @@ generate → execute → evaluate → record
 - **Execution** runs candidates on fixed engines: GPU via Vulkan compute, with
   CPU reference implementations for verification. A single orchestrator drives
   stateless workers under process isolation; the trust boundary sits on the
-  worker seam, and executors never touch the store.
+  worker protocol, and executors never touch the store.
 - **Evaluation** reduces a batch to the few candidates worth attention,
   cheapest stage first, so expensive model-based scoring runs on a small
   fraction. The funnel doubles as a trust funnel: untrusted backends are

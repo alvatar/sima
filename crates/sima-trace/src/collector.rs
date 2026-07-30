@@ -18,7 +18,7 @@ use crate::event::Event;
 use crate::record::Record;
 
 /// The durable side of the collector: where each record's line lands before
-/// the observer sees it. The seam that keeps this crate below the store —
+/// the observer sees it. The boundary that keeps this crate below the store —
 /// the store implements it for its journal writer.
 pub trait DurableSink: Send {
     /// Appends one line durably; the collector stops on the first error.

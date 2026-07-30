@@ -1100,12 +1100,14 @@ dependencies = [
  "sima-contracts",
  "sima-core",
  "sima-model",
+ "sima-transport",
 ]
 
 [[package]]
 name = "sima-contracts"
 version = "0.1.0"
 dependencies = [
+ "serde",
  "sima-core",
  "sima-model",
 ]
@@ -1139,14 +1141,18 @@ name = "sima-example-executor"
 version = "0.1.0"
 dependencies = [
  "sima-api",
+ "toml",
 ]
 
 [[package]]
 name = "sima-integration"
 version = "0.1.0"
 dependencies = [
+ "sima-contracts",
  "sima-core",
  "sima-domains",
+ "sima-example-executor",
+ "sima-model",
  "sima-pipeline",
  "sima-store",
  "tempfile",
@@ -1281,6 +1287,7 @@ dependencies = [
  "sima-model",
  "sima-trace",
  "sima-transport",
+ "toml",
 ]
 
 [[package]]

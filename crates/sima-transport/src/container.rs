@@ -208,7 +208,7 @@ pub(crate) fn kill_argv(host: Option<&str>, runtime: &str, container: &str) -> V
 
 /// The argv that runs the one-shot enumeration probe in a throwaway container,
 /// ssh-wrapped when `host` is set: `[ssh …] <runtime> run --rm -i <run_args>
-/// <image> sima-worker --enumerate <format>`. It carries the pool's `run_args`
+/// <image> sima-worker --enumerate-devices <format>`. It carries the pool's `run_args`
 /// so the probe sees the same devices the workers will, and the run's format so
 /// it reports the backend those workers execute through. The orchestrator runs
 /// it at run start to resolve a remote's device selectors.
@@ -229,7 +229,7 @@ pub fn probe_argv(
     argv.extend(run_args.iter().cloned());
     argv.push(image.to_string());
     argv.push(WORKER_ENTRYPOINT.to_string());
-    argv.push("--enumerate".to_string());
+    argv.push("--enumerate-devices".to_string());
     argv.push(format.as_str().to_string());
     argv
 }
@@ -397,7 +397,7 @@ mod tests {
                 "all",
                 "sima:latest",
                 "sima-worker",
-                "--enumerate",
+                "--enumerate-devices",
                 "ca_evolution.gray_scott.v1",
             ]
         );
@@ -421,7 +421,7 @@ mod tests {
                 "-i",
                 "img",
                 "sima-worker",
-                "--enumerate",
+                "--enumerate-devices",
                 "stub.v1"
             ]
         );

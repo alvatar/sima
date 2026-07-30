@@ -13,7 +13,7 @@
 //!   reference.
 //! - [`sync`] — the two halves of a store sync, joined by a spawned process.
 //! - [`far_side`] — every operation the migration performs on the destination,
-//!   behind one seam.
+//!   behind one boundary.
 //! - [`session`] — the choreography that joins them.
 
 pub(crate) mod destination;

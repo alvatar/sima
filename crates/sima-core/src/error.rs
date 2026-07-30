@@ -50,7 +50,7 @@ pub enum Error {
     /// frame violated the wire protocol (torn or oversize length prefix).
     /// The payload names the operation and the underlying cause.
     Transport(String),
-    /// The rented-hardware provider seam failed: a provider API call
+    /// The rented-hardware provider boundary failed: a provider API call
     /// (authentication, quota, network, a malformed provider response), or an
     /// acquisition that ended without a machine — no offer qualified, or every
     /// qualifying offer was lost or never came up. The payload names the

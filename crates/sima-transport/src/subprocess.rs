@@ -179,7 +179,7 @@ pub(crate) fn spawn_worker(
     // the misbehaving child is killed and reaped before the error returns.
     let hello = Hello {
         worker,
-        device: device.copied(),
+        device: device.cloned(),
         ..hello.clone()
     };
     match handshake(&mut link, &hello) {

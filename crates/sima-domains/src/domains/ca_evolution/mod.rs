@@ -1,17 +1,17 @@
 //! The `ca_evolution` domain: a generic cellular-automaton substrate behind the
-//! [`CaModel`](model::CaModel) seam, with one model per registered format id.
+//! [`CaModel`](model::CaModel) boundary, with one model per registered format id.
 //!
 //! The domain owns the shared machinery — [`CaExecutor<M>`](executor::CaExecutor),
 //! [`CaGenerator<M>`](generator::CaGenerator), [`CaParams`](params::CaParams),
 //! the [`seeded_patch`](ignition::seeded_patch) ignition primitive, and
-//! [`build_domain`](domain::build_domain) — and each model under `models/`
+//! [`build_binding`](binding::build_binding) — and each model under `models/`
 //! implements [`CaModel`](model::CaModel). This module is the registry: it maps
 //! a format or generator id to its model and delegates. Adding a model is a new
 //! module under `models/` plus one arm here; the generic machinery never
 //! changes.
 
+mod binding;
 pub(crate) mod continuation;
-mod domain;
 mod executor;
 mod generator;
 mod ignition;
@@ -26,24 +26,24 @@ use sima_contracts::Generator;
 use sima_core::Result;
 use sima_model::{FormatId, GeneratorId, Params};
 
-use crate::domain::Domain;
+use crate::format_binding::FormatBinding;
 use crate::substrates::cellular::{CudaEngine, WgslEngine};
 use model::CaModel;
 use models::gray_scott::GrayScott;
 use models::gray_scott_cuda::GrayScottCuda;
 use models::nca::Nca;
 
-/// Resolves a format id to one of this domain's models, binding its [`Domain`],
+/// Resolves a format id to one of this domain's models, binding its [`FormatBinding`],
 /// or `None` if no model claims it.
 ///
 /// Each arm names both the model and the backend it runs on: the model
 /// declares no engine, so a rule ported to a second backend is a second arm
 /// beside the first, and a mismatched pairing is visible on one line.
-pub(crate) fn domain_for(format: &FormatId) -> Option<Result<Domain>> {
+pub(crate) fn binding_for(format: &FormatId) -> Option<Result<FormatBinding>> {
     match format.as_str() {
-        GrayScott::FORMAT_ID => Some(domain::build_domain::<GrayScott, WgslEngine>()),
-        GrayScottCuda::FORMAT_ID => Some(domain::build_domain::<GrayScottCuda, CudaEngine>()),
-        Nca::FORMAT_ID => Some(domain::build_domain::<Nca, WgslEngine>()),
+        GrayScott::FORMAT_ID => Some(binding::build_binding::<GrayScott, WgslEngine>()),
+        GrayScottCuda::FORMAT_ID => Some(binding::build_binding::<GrayScottCuda, CudaEngine>()),
+        Nca::FORMAT_ID => Some(binding::build_binding::<Nca, WgslEngine>()),
         _ => None,
     }
 }
@@ -81,19 +81,6 @@ pub(crate) fn generator_for(id: &GeneratorId) -> Option<Result<Box<dyn Generator
     }
 }
 
-/// Resolves the `[run.generator]` translation for a generator id, or `None`.
-pub(crate) fn generator_params_for(
-    id: &GeneratorId,
-    table: &toml::Table,
-) -> Option<Result<Vec<u8>>> {
-    match id.as_str() {
-        GrayScott::FORMAT_ID => Some(generator::translate::<GrayScott>(table)),
-        GrayScottCuda::FORMAT_ID => Some(generator::translate::<GrayScottCuda>(table)),
-        Nca::FORMAT_ID => Some(generator::translate::<Nca>(table)),
-        _ => None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -125,7 +112,7 @@ mod tests {
     fn every_registered_program_keeps_its_environment_id() -> Result<()> {
         for (id, pinned) in PINNED_ENVIRONMENT_IDS {
             let format = FormatId::new(id)?;
-            let domain = domain_for(&format).expect("a registered program")?;
+            let domain = binding_for(&format).expect("a registered program")?;
             assert_eq!(
                 domain.environment.id().to_string(),
                 pinned,
@@ -143,7 +130,7 @@ mod tests {
         for (id, _) in PINNED_ENVIRONMENT_IDS {
             let format = FormatId::new(id)?;
             let generator = GeneratorId::new(id)?;
-            assert!(domain_for(&format).is_some(), "{id} binds a domain");
+            assert!(binding_for(&format).is_some(), "{id} binds a domain");
             assert!(
                 params_for(&format, &toml::Table::new(), false).is_some(),
                 "{id} translates params"
@@ -151,10 +138,6 @@ mod tests {
             assert!(
                 generator_for(&generator).is_some(),
                 "{id} binds a generator"
-            );
-            assert!(
-                generator_params_for(&generator, &toml::Table::new()).is_some(),
-                "{id} translates generator params"
             );
         }
         Ok(())

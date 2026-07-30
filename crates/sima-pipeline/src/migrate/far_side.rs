@@ -1,10 +1,10 @@
 //! [`FarSide`]: everything a migration does to the destination machine.
 //!
-//! One seam carries the whole of it — confirm the machine can drive the run,
+//! One boundary carries the whole of it — confirm the machine can drive the run,
 //! place the run's directory and config, tell a run already going from one that
 //! ended, start it detached, sync against it, follow it, and ask it to wind
 //! down. Keeping the operations behind a trait is what lets the choreography be
-//! driven against a recording double, the same seam `Provider` and
+//! driven against a recording double, the same boundary `Provider` and
 //! `WorkerTransport` already establish.
 //!
 //! The production implementation reaches the machine through [`Reach`], so the
@@ -104,9 +104,9 @@ enum Readiness {
         host: String,
         container: Container,
     },
-    /// A rented machine: `sima-worker --enumerate` inside the instance's own
+    /// A rented machine: `sima-worker --enumerate-devices` inside the instance's own
     /// container, which is also the machine's device layout.
-    Enumerate {
+    EnumerateDevices {
         mode: SpawnMode,
         target: SshDestination,
         format: FormatId,
@@ -152,7 +152,7 @@ impl Remote {
         Ok(Remote {
             reach: Reach::new(&mode, &target, destination.binary),
             layout: FarLayout::new(destination.root, run),
-            readiness: Readiness::Enumerate {
+            readiness: Readiness::EnumerateDevices {
                 mode,
                 target,
                 format: format.clone(),
@@ -205,7 +205,7 @@ impl FarSide for Remote {
                 ImageCheck::Present => Ok(Contact::Answered(Vec::new())),
                 ImageCheck::Unreachable(error) => Ok(Contact::Unreachable(error)),
             },
-            Readiness::Enumerate {
+            Readiness::EnumerateDevices {
                 mode,
                 target,
                 format,

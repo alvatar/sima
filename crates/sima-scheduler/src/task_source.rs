@@ -2,7 +2,7 @@
 //! `(config, store state)`.
 
 use sima_contracts::Generator;
-use sima_core::Result;
+use sima_core::{Error, Result};
 use sima_model::{RunConfig, Spec, SpecId, TaskIdentity, TaskKey};
 use sima_store::Store;
 
@@ -61,10 +61,21 @@ pub(crate) fn generate_specs(
     config: &RunConfig,
     store: &Store,
 ) -> Result<Vec<(Spec, SpecId)>> {
-    let specs = generator.generate(config.root_seed, &config.generator.params, &config.format)?;
+    let specs = generator.generate(config.root_seed, &config.generator.params)?;
     specs
         .into_iter()
         .map(|spec| {
+            // A generator stamps its own format, so a run pairing one with a
+            // domain that reads another format is caught here rather than at
+            // the first task, where the bytes would be read as the wrong thing.
+            if spec.format != config.format {
+                return Err(Error::Validation(format!(
+                    "generator {:?} produced a spec of format {:?}, and the run is over {:?}",
+                    config.generator.id.as_str(),
+                    spec.format.as_str(),
+                    config.format.as_str()
+                )));
+            }
             let id = SpecId::from_hash(store.put(&spec.to_bytes())?);
             Ok((spec, id))
         })

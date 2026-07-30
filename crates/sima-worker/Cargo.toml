@@ -10,6 +10,9 @@ crash-injection = ["sima-domains/crash-injection"]
 
 [dev-dependencies]
 sima-trace = { path = "../sima-trace" }
+# The domain-service tests compare the answers that cross the pipe against the
+# same translations reached by direct call, which take a parsed table.
+toml.workspace = true
 
 [dependencies]
 sima-core = { path = "../sima-core" }

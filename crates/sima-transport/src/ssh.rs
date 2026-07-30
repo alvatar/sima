@@ -484,12 +484,12 @@ const SSH_CONNECT_TIMEOUT_SECS: u64 = 10;
 
 /// The argv that runs `sima-worker` at `destination` over ssh: the
 /// destination's own [`prefix`](SshDestination::prefix), then the worker, with
-/// `--enumerate <format>` appended when `probe` names the run's format.
+/// `--enumerate-devices <format>` appended when `probe` names the run's format.
 pub fn ssh_argv(destination: &SshDestination, probe: Option<&FormatId>) -> Vec<String> {
     let mut argv = destination.prefix();
     argv.push(WORKER_ENTRYPOINT.to_string());
     if let Some(format) = probe {
-        argv.push("--enumerate".to_string());
+        argv.push("--enumerate-devices".to_string());
         argv.push(format.as_str().to_string());
     }
     argv
@@ -497,7 +497,7 @@ pub fn ssh_argv(destination: &SshDestination, probe: Option<&FormatId>) -> Vec<S
 
 /// The argv that enumerates a machine's devices for `format`, so the
 /// orchestrator derives one worker slot per usable GPU: the ssh spawn argv with
-/// `--enumerate <format>`, or the local binary with the same in
+/// `--enumerate-devices <format>`, or the local binary with the same in
 /// [`SpawnMode::Local`].
 ///
 /// The format travels with the probe because the answer depends on it: the
@@ -508,7 +508,7 @@ pub fn probe_argv(mode: &SpawnMode, target: &SshDestination, format: &FormatId) 
         SpawnMode::Ssh => ssh_argv(target, Some(format)),
         SpawnMode::Local(program) => vec![
             program.to_string_lossy().into_owned(),
-            "--enumerate".to_string(),
+            "--enumerate-devices".to_string(),
             format.as_str().to_string(),
         ],
     }
@@ -689,7 +689,7 @@ mod tests {
     #[test]
     fn the_ssh_probe_argv_appends_enumerate_and_the_format() {
         let argv = ssh_argv(&a_target(), Some(&a_format()));
-        assert_eq!(&argv[argv.len() - 2..], ["--enumerate", "stub.v1"]);
+        assert_eq!(&argv[argv.len() - 2..], ["--enumerate-devices", "stub.v1"]);
         // Otherwise identical to the spawn argv.
         assert_eq!(&argv[..argv.len() - 2], ssh_argv(&a_target(), None));
     }
@@ -705,7 +705,7 @@ mod tests {
         let mode = SpawnMode::Local(PathBuf::from("/opt/sima/sima-worker"));
         assert_eq!(
             probe_argv(&mode, &a_target(), &a_format()),
-            ["/opt/sima/sima-worker", "--enumerate", "stub.v1"]
+            ["/opt/sima/sima-worker", "--enumerate-devices", "stub.v1"]
         );
     }
 
@@ -722,7 +722,7 @@ mod tests {
             let argv = probe_argv(&mode, &a_target(), &format);
             assert_eq!(
                 &argv[argv.len() - 2..],
-                ["--enumerate", "ca_evolution.gray_scott.v1"]
+                ["--enumerate-devices", "ca_evolution.gray_scott.v1"]
             );
         }
     }

@@ -34,11 +34,11 @@ ones are added the same way.
 - Execution backends are implementation crates under `crates/toolkits/` (`sima-toolkit-*`), depending on `sima-core` (and `sima-contracts` when needed); `sima-domains` depends on the toolkits its domains use, and each toolkit isolates its own dependency set.
 - The store is the only durable state. Queues, schedulers, and orchestrators are ephemeral; a task source derives the currently-runnable frontier from (config, store state) — static batches and segment chains are two implementations of that one interface. Resume, crash-recovery, and re-run are one code path: re-derive the frontier, continue.
 - One orchestrator per run — the `sima run` process itself, no daemon; single-writer enforced by an OS file lock the kernel releases when the holder exits, so no staleness protocol exists; the lock file's content (pid, hostname) is diagnostic only. Workers are stateless leaseholders.
-- Executors are pure compute: they receive (spec, params, seed, env) and return artifacts + stats, never touching the store. Workers commit results through the catalog. The trust boundary lives on this seam.
+- Executors are pure compute: they receive (spec, params, seed, env) and return artifacts + stats, never touching the store. Workers commit results through the catalog. The trust boundary lives here.
 - Candidates are opaque at the infrastructure layer: a spec is (format id, opaque bytes), content-addressed. Domains interpret specs; "genome" is domain vocabulary. Run parameters are a second opaque content-addressed blob (params): generators produce specs, config produces params, and the spec's format id governs the interpretation of both — so one candidate stays addressable across evaluation stages and the generator contract never carries evaluation policy.
 - Two serialization worlds: identity-bearing bytes (anything hashed) go through the canonical `Enc`/`Dec` encoding exclusively; human-readable artifacts are serde and never identity-bearing.
 - Reproducibility is declared per domain across two tiers (README, Determinism), not assumed uniform. The infrastructure guarantees run identity regardless: manifests are canonicalized so run hashes are independent of worker completion order, and journals are observational, excluded from equality criteria.
-- Structured events are the `sima-trace` facade at L0.5, directly above `sima-core`: the typed event vocabulary, journal records, emitters, and one collector thread any layer emits into without an upward edge. The collector is the single-writer seam — it stamps each event, appends the journal line through a `DurableSink` the store implements (which keeps the facade below the store), then hands the record to the run's observer; the journal write precedes the observer, and a child's events cross the wire as opaque frames the parent forwards to the collector.
+- Structured events are the `sima-trace` facade at L0.5, directly above `sima-core`: the typed event vocabulary, journal records, emitters, and one collector thread any layer emits into without an upward edge. The collector is the single-writer boundary — it stamps each event, appends the journal line through a `DurableSink` the store implements (which keeps the facade below the store), then hands the record to the run's observer; the journal write precedes the observer, and a child's events cross the wire as opaque frames the parent forwards to the collector.
 
 ### Principles
 
@@ -230,7 +230,7 @@ equality criterion.
   one calling thread. The first append or encoding
   failure stops the collector and surfaces when it is joined.
 
-`DurableSink` is the seam that keeps the crate below the store:
+`DurableSink` is the boundary that keeps the crate below the store:
 `sima-store` implements it for its journal writer, so the collector appends
 through the same crash-safe path as any other journal line.
 
@@ -400,7 +400,7 @@ identical runs and are excluded from every equality criterion.
 Each line is a `sima-trace` `Record`: the collector's `ts_ms` wall-clock
 stamp plus one event — a lifecycle event or a `diagnostic` line. The
 collector stamps every line it writes, so a line lacking `ts_ms` is
-corruption. The store implements the collector's `DurableSink` seam on its
+corruption. The store implements the collector's `DurableSink` boundary on its
 journal writer, which is how records reach this framing.
 
 ### Concurrency
@@ -418,7 +418,7 @@ liveness.
 
 ## `sima-provider`
 
-The seam between a run and the machines it rents. A provider lists a
+The boundary between a run and the machines it rents. A provider lists a
 marketplace, rents one machine, reports its state, and destroys it; the
 crate turns that into an owned instance with guaranteed teardown.
 
@@ -729,7 +729,7 @@ Three decisions shape it:
 
 ## `sima-contracts` (L3)
 
-The two seams the search substrate runs candidates through. A `Generator`
+The two boundaries the search substrate runs candidates through. A `Generator`
 produces a run's candidate specs from `(root_seed, params, format)`,
 deterministically. An `Executor`
 interprets one format: it receives one candidate and returns what that
@@ -787,12 +787,14 @@ underneath it.
 
 What it publishes:
 
-- **the two seams** — `Executor` and `Generator` — with the vocabulary they
-  exchange: `TaskInput`, `ExecutionContext`, `Outcome`, `Artifact`, `Stats`,
-  `WorkerId`, `STATE_ARTIFACT`, and the `Checkpoint` channel with its inert
-  `NoCheckpoint` handle;
+- **the two components a program supplies** — `Domain` and `Generator` — with
+  `serve`, the call that hosts them;
+- **the `Executor` a domain builds**, with the vocabulary it exchanges:
+  `TaskInput`, `ExecutionContext`, `Outcome`, `Artifact`, `Stats`, `WorkerId`,
+  `STATE_ARTIFACT`, and the `Checkpoint` channel with its inert `NoCheckpoint`
+  handle;
 - **the device an executor is built for**: `DeviceBinding` and `DeviceClass`;
-- **the identity-bearing values a seam is handed**: `Spec`, `Params`,
+- **the identity-bearing values a component is handed**: `Spec`, `Params`,
   `FormatId`, `GeneratorId`, and the `Environment` vocabulary;
 - **the foundations under them**: `Error` and `Result`, `Hash` and
   `hash_bytes`, the `Codec`/`Enc`/`Dec` canonical encoding, and `prng`.
@@ -802,7 +804,7 @@ bit-identical across substrates: a generator draws from the PRNG implemented
 identically on CPU and GPU rather than from a dependency whose stream can shift
 under semver.
 
-What stays internal, each because it belongs to the other side of the seam:
+What stays internal, each because it belongs to the other side of the boundary:
 
 - **run-level configuration** (`RunConfig`, `RunId`, `GeneratorConfig`) is the
   orchestrator's;
@@ -812,7 +814,7 @@ What stays internal, each because it belongs to the other side of the seam:
 - **content addresses** (`SpecId`, `ParamsId`) address nothing an executor
   reaches, since it is handed resolved values;
 - **transport framing** (`read_frame`, `write_frame`, `MAX_PAYLOAD`) carries a
-  seam's values between processes and is the transport's;
+  component's values between processes and is the transport's;
 - **crash injection** (`crashpoint`) is test-only failure injection;
 - **free-function hex** (`to_hex`, `from_hex`) is covered for an outside
   implementation by `Hash::from_hex` and `Hash`'s `Display`.
@@ -822,34 +824,158 @@ smallest executor and generator that compile, and its manifest names `sima-api`
 as its only sima dependency, so an item the facade stops naming is a build
 failure in this workspace rather than a discovery made out of tree.
 
-Two seams the published surface does not reach:
+The device boundary is open: `DeviceClass` is a name the execution backend mints,
+and `DeviceInfo` with `DeviceType` are how a domain answers what its work runs
+on, so a backend the workspace has never seen names its devices in the
+published vocabulary — see [Device placement](#device-placement) for what a
+class asserts.
 
-- **Device identity is a PCI triple.** `DeviceBinding` names a device by
-  `(vendor_id, device_id, member)`, so an executor whose devices the vocabulary
-  cannot name has no way to declare one — see
-  [`sima-scheduler`](#sima-scheduler-l6) for what the pair reaches and where it
-  stops.
-- **Config translation is in-tree.** Turning a format's `[run.params]` table
-  into `Params` bytes is a static match over the formats this build knows,
-  taking a `toml::Table`, so a format defined outside the workspace has no
-  published way to translate its own configuration.
+The configuration boundary is open too: a format's `[run.params]` section
+reaches its domain as **TOML text**, so a program translates its own
+configuration with a TOML of its own and sima's version never enters the
+surface — see [Registering a domain](#registering-a-domain).
+
+## Registering a domain
+
+A format id is bound by whatever answers for it. The formats this build carries
+are answered in process; a format a config routes to a binary is answered by
+that program, over a pipe.
+
+```mermaid
+flowchart TD
+  CFG["sima.toml names a binary<br/>for acme.thing.v1"] --> REG["registry<br/>format id to source"]
+  REG --> BS["BinarySource<br/>spawns the binary"]
+  REG --> IS["BuiltinSource<br/>calls sima-domains"]
+  BS -.->|"domain service protocol"| EXT["third-party binary<br/>links sima-api"]
+  IS --> DOM["sima-domains"]
+```
+
+The unit of registration is a **binary**. A heavy program owns its GPU context,
+its dependency tree, and its startup cost, so it runs as its own process: it
+loads its assets once at the handshake and then streams tasks. Foreign code
+stays out of the orchestrator, which keeps "executors never touch the store"
+enforced by the OS rather than by convention.
+
+### The two components
+
+What a program hands over is a pair of objects in `sima-contracts`, published
+by `sima-api`:
+
+- **`Domain`** — everything one format id binds: the devices its work runs on,
+  the environment its results depend on, the translation of its `[run.params]`
+  section, and the `Executor` it builds. A constructor rather than a built
+  executor, because the device is known only in the worker process.
+- **`Generator`** — one way of choosing candidates for that format, with the
+  translation of its own `[run.generator]` keys. Separate, because one format
+  has one executor and many generators.
+
+Traits rather than structs of function pointers, because a component holds
+state: a renderer keeps its device and its loaded assets for the life of the
+run.
+Configuration crosses as TOML text, so the `toml` crate stays off the published
+surface.
+
+A whole program is then: implement the two traits, call `sima_api::serve`. That
+call reads the role from the process arguments, so one binary is both what a run
+asks about the format and what its workers execute in.
+
+### The domain service
+
+Five of the seven things a format binds are read where a run is driven — its
+environment, its device list, its params translation, its generator's params
+translation, and its specs — so a program in its own binary answers them over a
+second conversation, `<binary> --serve-domain <format>`. The other two, the
+executor and the device description, are read inside a worker and cross the
+worker protocol.
+
+| Parent to program | Program to parent |
+|---|---|
+| `Hello { protocol }` | `Ready { protocol }` |
+| `Describe { format }` | `Described { environment }` |
+| `Enumerate { format }` | `Enumerated { devices }` |
+| `TranslateParams { format, toml, segmented }` | `Translated { bytes }` |
+| `TranslateGeneratorParams { generator, toml }` | `Translated { bytes }` |
+| `Generate { generator, format, root_seed, params }` | `Generated { specs }` |
+| `Goodbye` | — |
+
+The framing is the transport's own — a `u32` length prefix and a `u8` message
+tag over the canonical `Enc`/`Dec` primitives — and the version is the one the
+worker protocol carries, because one program speaks both. A question the program
+cannot answer is `Failed { message }` carrying its own rendering, which the
+parent surfaces verbatim and the session survives. The session stays open for
+the whole config, so the startup cost is paid once.
+
+### The registry
+
+The run driver reads a domain the same way whichever side answers.
+
+```mermaid
+flowchart LR
+  subgraph parent["orchestrator process"]
+    RUN["run driver"] --> REG["DomainRegistry"]
+    REG --> SRC{"source for<br/>this format"}
+    SRC -->|in-tree| BI["BuiltinSource<br/>direct calls"]
+    SRC -->|configured| BN["BinarySource<br/>spawn + protocol"]
+  end
+  subgraph child["worker processes"]
+    W1["sima-worker<br/>in-tree formats"]
+    W2["third-party binary<br/>sima_api::serve(domain, generators)"]
+  end
+  BI --> W1
+  BN --> W2
+```
+
+One boundary, `DomainSource`, with two implementations:
+
+- **`BuiltinSource`** calls `sima-domains` directly, so the common path pays no
+  process and no pipe, and names sima's own worker binary.
+- **`BinarySource`** holds the session to a configured program and names that
+  program's binary, so a registered format's tasks execute in it.
+
+A config declares one entry per registered format:
+
+```toml
+[domain."acme.thing.v1"]
+binary = "/opt/acme/worker"
+```
+
+The registry is built where the config resolves, and the run's own translations
+go through it, so a program that cannot answer for the format it is declared
+under fails at load — the rule a config naming an unknown format already
+follows, and no store is left behind either way.
+
+**Protocol sufficiency is tested.** `sima-worker --serve-domain` serves the
+in-tree formats through the two contracts, and an integration suite drives one of them
+through `BinarySource` and asserts the run id and every task key are identical
+to the same run by direct call. A field the protocol failed to carry would
+change a hash.
 
 ## `sima-domains` (L5)
 
 The executable substance behind each format id. A `Domain` groups what a
-format id binds: the executor that evaluates the format's specs, the
-environment that enters task identity, and the translation of the
-domain-owned `[run.params]` section into the opaque canonical params bytes.
+format id binds: the executor that evaluates the format's specs, the devices
+that executor's work can run on, the environment that enters task identity,
+and the translation of the domain-owned `[run.params]` section into the opaque
+canonical params bytes. The device enumeration travels with the domain, so
+only its own execution backend's devices are ever offered to its work and
+adding a backend adds no case to any match.
 Generators dispatch separately — one format has one executor but many
 generators — and each generator owns the translation of its own
-`[run.generator]` keys. Both dispatches are static matches keyed on the id; an
-unknown id is a validation error. Each domain's pieces — executor, generator,
-codecs, environment, and translation — live in its own module under
-`domains/`. The crate depends on `sima-contracts` for the traits and on `toml`
-for the translation, and owns the canonical codecs its specs and params hash
-through.
+`[run.generator]` keys. Both dispatches are static matches over the formats
+this build carries, keyed on the id; an id this build does not carry is a
+validation error here, and the registry one layer up is what routes such an id
+to the program that does carry it. Each domain's pieces — executor, generator,
+codecs, environment, and translation — live in its own module under `domains/`.
 
-### The translation seam
+The same domains are reachable as objects through `BuiltinDomain` and
+`generators_for`, the shape a program outside the workspace supplies, so a
+built-in format can be driven over the contracts a third party writes against — see
+[Registering a domain](#registering-a-domain).
+
+The crate depends on `sima-contracts` for the traits and on `toml` for the
+translation, and owns the canonical codecs its specs and params hash through.
+
+### The translation boundary
 
 Human-facing TOML becomes the model's opaque canonical bytes only here,
 through each domain's own codecs — an identity-bearing encoding is never
@@ -889,12 +1015,12 @@ input. Its state, dispatch harness, and cross-check scaffold live once in the
 reference, differing in those and the channel count, not in the state shape or
 the harness.
 
-**The substrate seam.** Which execution toolkit a kernel runs on is the
+**The substrate boundary.** Which execution toolkit a kernel runs on is the
 `CellularEngine` trait, one operation wide: advance a grid on a device and hold
 the result, with the reduced scalars and the final grid as separate calls on the
 handle it returns. Everything around that operation — decoding a spec, igniting
 or resuming a grid, deciding whether to keep a snapshot — is written once above
-the seam and shared by every substrate. Below it sit one implementation per
+the boundary and shared by every substrate. Below it sit one implementation per
 toolkit: `WgslEngine` over `step` and `reduce`, and `CudaEngine` over their
 transcriptions in `cellular/cuda`. The two dispatch loops are duplicated
 deliberately; what would drift if duplicated — the scalar naming, the channel
@@ -1107,10 +1233,12 @@ toolkit reaches by the other route: there the lowering happens during the run,
 so the source is hashed and the compiler that lowers it is named.
 
 **Device identity.** CUDA addresses devices by ordinal and reports a PCI bus
-identifier for each. The `(vendor_id, device_id)` class a device binding names
-comes from the PCI configuration under `/sys/bus/pci/devices`, and `member` is
-the position within the class in enumeration order — the WGSL toolkit's
-convention, so one binding vocabulary covers both substrates.
+identifier for each. The class this toolkit mints comes from the PCI
+configuration under `/sys/bus/pci/devices`, spelled as the vendor and device
+identifiers in hex, and `member` is the position within the class in
+enumeration order. The WGSL toolkit mints the same spelling from what Vulkan
+reports directly, so one physical card is one class whichever backend reached
+it.
 
 **Launch model.** Launches are one-dimensional: a kernel declares its block
 width with `__launch_bounds__`, the caller passes the matching width, and a
@@ -1123,10 +1251,10 @@ a failure at the call that caused it.
 
 Runs a search from `(RunConfig, store state)`. It is the layer that bridges
 pure executor output into durable store state, so the executor trust boundary
-lives on its worker seam: the executor returns values, and only the worker
+lives on the worker protocol: the executor returns values, and only the worker
 writes to the store. It depends on `sima-contracts` (to run generators and
 executors), `sima-store` (to commit results), and `sima-transport` (the worker
-seam it drives); `sima-contracts` itself stays free of the store, so the
+protocol it drives); `sima-contracts` itself stays free of the store, so the
 boundary holds in the crate graph.
 
 ### Task source
@@ -1215,7 +1343,7 @@ Execution happens in worker processes: the parent spawns one `sima-worker`
 child per worker slot, alive until the run ends and replaced only when it
 dies. The child hosts the domain executor and nothing else — it is never
 given the store path, so the pure-compute executor invariant is OS-enforced.
-The seam is two traits the scheduler is written against: `WorkerTransport`
+The boundary is two traits the scheduler is written against: `WorkerTransport`
 spawns workers, `WorkerLink` converses with one; the production transport
 spawns subprocesses, and a loopback test transport runs the same host loop
 and wire protocol over in-memory pipes. The traits, the wire protocol, the
@@ -1336,9 +1464,8 @@ minus the ssh hop.
   then one per machine the fleet resolved to, in member order. Each pool pairs a
   transport with the machine its workers run on and the device slots to spawn
   against it; worker ids stay global and sequential across pools. Placement is
-  untouched — a device class is `(vendor_id, device_id)` regardless of machine,
-  so a chain bound to a class runs on whichever pool holds it, exactly as
-  within one pool.
+  untouched — a class names a kind of device regardless of machine, so a chain
+  bound to a class runs on whichever pool holds it, exactly as within one pool.
 
 - **Preemption is two-stage.** Closing the pipe alone would let a mid-compute
   container run until its next write, so `kill` first fires
@@ -1358,7 +1485,7 @@ minus the ssh hop.
 
 - **Device selection on another machine.** A declared host carries the same
   device tables the orchestrator does. Resolving them needs that machine's
-  device list, so `sima-worker` doubles as the probe: `sima-worker --enumerate
+  device list, so `sima-worker` doubles as the probe: `sima-worker --enumerate-devices
   <format>` prints the devices that format's program can run on as JSON and
   exits. At run start the orchestrator verifies each machine's image is present,
   then runs the probe through that machine's container and reuses the same
@@ -1371,7 +1498,8 @@ minus the ssh hop.
   the CPU rasterizer alone while CUDA opens the card there, and a laptop's Intel
   integrated GPU is a Vulkan device CUDA cannot open. Enumerating everything
   present would bind workers to devices their substrate faults on, so the format
-  travels with the probe and `sima-domains` resolves it to the backend to ask.
+  travels with the probe and `sima-domains` resolves it to the domain that
+  carries the enumeration.
 
 - **The image.** A multi-stage `Containerfile` builds `sima-worker` and `sima`
   in a `rust:<pinned>-bookworm` stage whose glibc matches the
@@ -1423,41 +1551,41 @@ A machine's GPUs are rarely equal, and a run spreads its pool across them.
 A machine's device tables — `[[orchestrator.device]]` for this one,
 `[[host.<name>.device]]` for a declared one — name the devices and how many
 workers each carries; the pool is their sum, and one slot per (entry, worker)
-round-robins over the class's cards. A **device class** is the `(vendor id,
-device id)` pair the backend reports — two identical cards are one class with
-two members, interchangeable by declaration, which is why a class carries no
-member and work bound to one may run on either card. A selector names a
-device by a case-insensitive substring of its name or by its exact
-`vendor:device` hex pair, and resolves against the machine's hardware when a
-run starts, never when a config is read: `sima status` and `sima report` work
-where no device exists.
+round-robins over the class's cards. A **device class** is a name the
+execution backend mints for a kind of device — two identical cards are one
+class with two members, interchangeable by declaration, which is why a class
+carries no member and work bound to one may run on either card. A selector
+names a device by a case-insensitive substring of its name or by its exact
+class, and resolves against the machine's hardware when a run starts, never
+when a config is read: `sima status` and `sima report` work where no device
+exists.
 
-**What a class identity is.** The `(vendor id, device id)` pair is PCI
-vocabulary, and the shape's reach is exactly the reach of PCI:
+**What a class identity is.** A class names what distinguishes devices that
+cannot stand in for each other, and nothing else. It is 1 to 64 bytes of
+`[a-z0-9._:-]`, and sima compares, hashes, and renders it without
+interpreting it.
 
-- **Scope.** The pair is what PCI-enumerating GPU APIs report, so it is
-  neutral across them: two backends looking at the same physical card mint the
-  same class. The identity belongs to the hardware, not to the API that found
-  it.
-- **Limit.** The shape assumes PCI-identified hardware. A backend whose
-  devices carry no PCI ids — integrated Apple devices, virtual or remote
-  device abstractions — falls outside it. Partitioned cards fall outside it
-  from the other direction: slices of one physical card report identical ids,
-  so slices of different sizes land in one class while not being
-  interchangeable, which is the substitutability a class asserts of its
-  members.
-- **Why holding it is safe.** The two integers are interpreted only at the
-  execution-backend seam. Above it, the scheduler compares and hashes classes,
-  the pipeline matches the rendered `vendor:device` string, the store holds
-  opaque bytes, and the transport encodes the fields.
-
-A backend without PCI ids turns class identity into an opaque token the
-backend mints, with today's classes remaining valid tokens in their rendered
-hex form. That costs a protocol version bump (both binaries ship together, so
-a bump is free), invalidation of the advisory per-run placement slots (an
-unbound chain binds again), and the config selector's exact-id form matching
-tokens. Nothing identity-bearing carries the shape, so the change migrates no
-durable state.
+- **The backend mints it.** The layer that enumerates a device is the one that
+  knows what tells two of them apart, so it also reads the name back: a class
+  is minted and resolved in one place. Both PCI backends mint `8086:7d51`,
+  the vendor and device identifiers of the configuration space in hex, so two
+  backends looking at one physical card mint one class.
+- **The distinguishing detail lives inside the string.** A card partitioned
+  into instances reports the same configuration-space pair for every slice
+  while the slices differ in memory by up to a factor of four, so a backend
+  that enumerates them mints the partition profile alongside —
+  `10de:2330:1g.10gb` — and the profiles are separate classes. A backend whose
+  devices carry no configuration space is under the same rule: it mints
+  whatever distinguishes its devices.
+- **No scheme is spelled into the name.** Classes are compared only within one
+  run, and a run has one format, one domain, one backend, so a prefix naming
+  the backend or the identity scheme would distinguish nothing that ever meets
+  while making every selector longer and coupling it to the backend a format
+  happens to use.
+- **Why holding it is safe.** The name is read only where it was minted.
+  Above that boundary the scheduler compares and hashes classes, the pipeline
+  matches the rendered string, the store holds opaque bytes, and the transport
+  carries the name and the member.
 
 **The principle: device binding is derived operational state, never
 identity.** A run id never encodes devices; the store records what actually
@@ -1531,7 +1659,7 @@ search:
 - **observer** — the collector's record consumer: invoked with each typed
   record on the collector thread, immediately after its line is appended —
   typed records, journal order, one calling thread. Progress rendering
-  consumes this seam.
+  consumes this boundary.
 - **interrupt** — a level-triggered flag the driver polls within a bounded
   wait. Once set, the run winds down gracefully: no more tasks are handed
   out, in-flight attempts finish and commit, queued tasks are abandoned,
@@ -1601,7 +1729,7 @@ The vocabulary:
 The driver spawns the trace collector over the run's journal writer, with
 the caller's observer as its record consumer; the driver, the workers, and
 the transports' reader threads emit through cloned emitters, and the one
-collector thread is the single-writer seam the append contract requires.
+collector thread is the single-writer boundary the append contract requires.
 The journal write for an event happens before the observer sees it, and the
 observer sees records in journal order. Event arrival order across threads
 varies between runs; the journal is observational and excluded from every
@@ -1611,8 +1739,9 @@ byte-identical across runs regardless.
 ## `sima-pipeline` (L7)
 
 The layer a person's configuration enters: it loads `sima.toml`, translates
-it through the domain and generator the config names, and drives the
-scheduler over the configured store.
+it through the domain and generator the config names — reached through the
+registry, which answers in process or through a program the config routes the
+format to — and drives the scheduler over the configured store.
 
 ### Identity and operation in the file
 
@@ -1715,19 +1844,22 @@ point of naming them.
 
 The pipeline parses the file's structure and routes each config section to
 the code that owns it, never interpreting the content itself: the format and
-generator ids dispatch through `sima-domains` (see L5), and the opaque
-`[run.params]` and `[run.generator]` tables pass to the domain and generator
+generator ids resolve through the registry — `sima-domains` for the formats
+this build carries (see L5), the program a `[domain.*]` entry names for the
+rest (see [Registering a domain](#registering-a-domain)) — and the opaque
+`[run.params]` and `[run.generator]` sections pass to the domain and generator
 translations that turn them into canonical bytes. Identity-bearing bytes are
 produced only by those codecs, never hand-rolled here.
 
 ### Orchestration
 
 `orchestrate` opens the store (creating it where missing), takes the run's
-orchestrator lock, dispatches the domain and the generator, locates the
-worker binary (the `SIMA_WORKER` environment variable, then `sima-worker`
-beside the current executable, then in its directory's parent), and calls
-the scheduler over the subprocess transport; the lock is held for the whole
-call and releases on return.
+orchestrator lock, reads the run's environment and generator from the source
+answering for its format, takes the worker binary from that same source — sima's
+own (the `SIMA_WORKER` environment variable, then `sima-worker` beside the
+current executable, then in its directory's parent) or the program the config
+routed the format to — and calls the scheduler over the subprocess transport;
+the lock is held for the whole call and releases on return.
 Resume and re-evaluation are this same call — the frontier re-derives from
 store state, so an interrupted or failed run continues where it stopped,
 and a finalized one re-finalizes idempotently without touching an executor.
@@ -1745,7 +1877,7 @@ config's dollar figures to micro-USD.
 **Lifecycle.** Orchestration takes the store and lock first, then acquires under
 the held lock: each rented entry's `count` machines, each through
 [`acquire`](#the-acquisition-loop) behind a teardown guard, each probed over
-ssh (`sima-worker --enumerate <format>`) to derive one worker slot per usable
+ssh (`sima-worker --enumerate-devices <format>`) to derive one worker slot per usable
 device — or a single deviceless slot where the probe reports none. **Usable**
 drops CPU devices when the probe reports any non-CPU one: a machine rented for
 its card would otherwise spend the rental running the slowest device on it,
@@ -1830,7 +1962,7 @@ the run's creation, and destruction follows its end. The events cover what
 happens while the run exists — the composition at start, a machine lost, a
 replacement, budget exhaustion — carried through a start hook that
 hands the supervisor the run's emitter when the collector spawns, so rental
-events cross the same single-writer seam as every other event with no
+events cross the same single-writer boundary as every other event with no
 scheduler edge to the provider. Acquisition intent and final spend live in
 the durable provider records and the ledger, which `sima report --spend`
 reports.
@@ -1955,7 +2087,7 @@ The far side's own `[orchestrator]` is rebuilt from the destination's form:
   the config now sits on. Nothing is probed — the operator wrote the layout
   down.
 - **A rented machine** contributes what its enumeration probe reported, grouped
-  into classes by `(vendor_id, device_id)`, as an `[orchestrator]` naming no
+  by the class each device reported, as an `[orchestrator]` naming no
   image: ssh lands inside the instance's own container, so there is nothing to
   nest inside. A probe reporting no device at all yields one worker bound to
   nothing. Which devices count is the rule a rented machine's own worker slots
@@ -2067,13 +2199,13 @@ id to render them.
 
 The CLI holds no orchestration logic — parsing, rendering, signal
 registration, exit codes, and, for `tui`, an interactive terminal
-frontend over the observer seam. The read-only commands additionally take
+frontend over the observer boundary. The read-only commands additionally take
 `--on <ssh-dest>`, which addresses a run on the host its orchestrator runs on;
 the flag is split out of the arguments before the command match, so every
 command form keeps its shape whether or not a host is named:
 
 - **`sima run <config.toml>`** — drives the configured run, printing one
-  plain line per meaningful event from the observer seam. SIGINT sets the
+  plain line per meaningful event from the observer boundary. SIGINT sets the
   interrupt flag for a graceful wind-down; a second SIGINT falls through
   to default death, which is exactly the crash the recovery guarantees
   cover.
@@ -2191,7 +2323,7 @@ transport rather than a verb a user invokes, so it stays out of the usage
 text, and its stdout carries frames alone — every diagnostic goes to stderr,
 which ssh keeps on its own channel.
 
-**One seam, two implementations.** Every live view consumes a `RunFeed`: the
+**One boundary, two implementations.** Every live view consumes a `RunFeed`: the
 records a run gains, its lock holder, and the `FeedInfo` a renderer needs but
 cannot derive from records — the run id, the format whose domain renders
 stats, and the worker count. `LocalFeed` pairs a `RunObserver` with the

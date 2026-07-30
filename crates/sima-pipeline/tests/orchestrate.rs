@@ -186,6 +186,7 @@ fn an_undispatchable_config_orchestrates_to_validation_without_touching_the_stor
             None,
         )?,
         store: dir.path().join("store"),
+        domains: sima_pipeline::DomainRegistry::builtin(),
     };
     assert!(matches!(
         orchestrate(&config, &RunControl::detached(), Engagement::Orchestrator),
