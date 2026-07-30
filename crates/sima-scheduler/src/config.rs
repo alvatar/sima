@@ -44,7 +44,7 @@ pub struct ExecutionConfig {
     /// enforcement.
     pub attempt_timeout: Duration,
     /// Enforced deadline on a protocol answer: the worker handshake, and each
-    /// question the run asks a program about its format bar generation. On
+    /// question the run asks a program about its format except generation. On
     /// expiry the process is killed and reaped and the wait fails naming the
     /// binary and the answer it owed. [`Duration::MAX`] disables enforcement.
     pub answer_timeout: Duration,
