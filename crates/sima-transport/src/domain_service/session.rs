@@ -293,18 +293,25 @@ impl DomainService {
         ))
     }
 
-    /// Kills the program and reaps it, then collects the reader thread and
+    /// Kills the program and reaps it, then releases the reader thread and
     /// removes the directory it ran in. Best effort: one already dead is fine.
+    ///
+    /// The reader is released rather than joined. It ends when the program's
+    /// stdout closes, which is when the last holder of that pipe exits — the
+    /// program, and anything it left running behind it. Waiting on it would
+    /// put the caller back at the mercy of the process this call exists to
+    /// stop; the thread ends on its own, with nothing owed to it.
     fn kill(&mut self) {
         self.stdin = None;
         let _ = self.child.kill();
         let _ = self.child.wait();
-        self.join_reader();
+        self.reader = None;
         self.scratch = None;
     }
 
-    /// Joins the reader thread; it exits when the program's stdout ends, which
-    /// a reaped program's already has.
+    /// Joins the reader thread at the end of a session that ended on its own
+    /// terms; it exits when the program's stdout ends, which a program reaped
+    /// off the farewell has already closed.
     fn join_reader(&mut self) {
         if let Some(reader) = self.reader.take() {
             let _ = reader.join();
@@ -351,8 +358,143 @@ fn read_answers(mut reader: impl std::io::Read, answers: &Sender<Result<FromDoma
 
 #[cfg(test)]
 mod tests {
+    use std::time::Instant;
+
     use super::*;
     use crate::spawn_policy::fixture;
+
+    /// A deadline short enough that a wedged program expires promptly, and
+    /// long enough that a process start never races it.
+    const DEADLINE: Duration = Duration::from_millis(300);
+
+    /// How long a fake pauses to outlast [`DEADLINE`] without making a test
+    /// that waits it out slow.
+    const PAST_THE_DEADLINE: &str = "0.9";
+
+    /// A ceiling on a bounded wait, generous enough to survive a loaded
+    /// machine while still failing a wait that never ends.
+    const WELL_WITHIN: Duration = Duration::from_secs(20);
+
+    /// The tail of a fake that has said all it will say: it reads until the
+    /// parent closes its stdin — the shutdown signal a real program obeys —
+    /// and exits then.
+    const AWAIT_SHUTDOWN: &str = "exec cat > /dev/null";
+
+    /// The tail of a fake that answers nothing further: it holds its pipes
+    /// open and outlives any deadline, so the only thing that ends it is the
+    /// kill an expiry fires. `exec` puts it in the shell's place, so that kill
+    /// reaches the process holding the pipes.
+    const WEDGE: &str = "exec sleep 300";
+
+    /// The shell command writing `message` to stdout as one frame.
+    ///
+    /// The bytes come from the real encoder and travel through a file, so a
+    /// fake speaks the protocol exactly rather than from a second copy of its
+    /// rules, and `cat` puts them on the pipe as a process that writes and
+    /// exits — with none of a shell builtin's buffering between the frame and
+    /// the parent waiting for it.
+    fn emit(dir: &Path, name: &str, message: &FromDomain) -> String {
+        let mut frame = Vec::new();
+        write_frame(&mut frame, &message.encode()).expect("frame the message");
+        let path = dir.join(name);
+        std::fs::write(&path, &frame).expect("write the frame");
+        format!("cat {}", path.display())
+    }
+
+    /// The `Ready` a program answers the handshake with.
+    fn ready(dir: &Path) -> String {
+        emit(
+            dir,
+            "ready.frame",
+            &FromDomain::Ready {
+                protocol: PROTOCOL_VERSION,
+            },
+        )
+    }
+
+    /// A session against the program `body` describes, spawned under `within`.
+    fn session(dir: &Path, body: &str, within: Duration) -> Result<DomainService> {
+        DomainService::spawn(
+            &fixture::program(dir, "fake-domain.sh", body),
+            &FormatId::new("stub.v1").expect("format id"),
+            &SpawnPolicy::Inherit,
+            within,
+        )
+    }
+
+    #[test]
+    fn a_program_silent_past_the_deadline_fails_the_handshake_naming_it() {
+        // The measure: a program wedged before its first answer is a config
+        // failure naming what was awaited, not an orchestrator stopped
+        // forever.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let started = Instant::now();
+        let error = session(dir.path(), WEDGE, DEADLINE).expect_err("a silent program");
+        assert!(started.elapsed() < WELL_WITHIN, "{:?}", started.elapsed());
+        let message = error.to_string();
+        assert!(message.contains("fake-domain.sh"), "{message}");
+        assert!(message.contains("Ready"), "names the answer: {message}");
+        assert!(message.contains("300ms"), "names the deadline: {message}");
+    }
+
+    #[test]
+    fn a_program_slow_past_the_deadline_answers_when_no_deadline_is_set() {
+        // The absent key leaves the wait exactly as it was: the same program,
+        // taking the same time, is a session.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let body = format!(
+            "sleep {PAST_THE_DEADLINE}\n{}\n{AWAIT_SHUTDOWN}",
+            ready(dir.path())
+        );
+        session(dir.path(), &body, Duration::MAX).expect("a slow program still answers");
+    }
+
+    #[test]
+    fn a_question_wedged_mid_session_expires_naming_it() {
+        // The handshake passed, so what expires here is the question after
+        // it: the error says which one went unanswered.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let body = format!("{}\n{WEDGE}", ready(dir.path()));
+        let mut service = session(dir.path(), &body, DEADLINE).expect("the handshake answers");
+        let started = Instant::now();
+        let error = service
+            .environment(&FormatId::new("stub.v1").expect("format id"))
+            .expect_err("a wedged question");
+        assert!(started.elapsed() < WELL_WITHIN, "{:?}", started.elapsed());
+        let message = error.to_string();
+        assert!(message.contains("fake-domain.sh"), "{message}");
+        assert!(
+            message.contains("Described"),
+            "names the question: {message}"
+        );
+    }
+
+    #[test]
+    fn generation_outlasts_the_deadline_every_other_question_is_held_to() {
+        // Generation is computation proportional to the batch, so it answers
+        // whenever it is done — under the very deadline that bounds the
+        // questions around it.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let body = format!(
+            "{}\nsleep {PAST_THE_DEADLINE}\n{}\n{AWAIT_SHUTDOWN}",
+            ready(dir.path()),
+            emit(
+                dir.path(),
+                "generated.frame",
+                &FromDomain::Generated { specs: Vec::new() }
+            )
+        );
+        let mut service = session(dir.path(), &body, DEADLINE).expect("the handshake answers");
+        let specs = service
+            .generate(
+                &GeneratorId::new("stub.v1").expect("generator id"),
+                &FormatId::new("stub.v1").expect("format id"),
+                42,
+                &[],
+            )
+            .expect("generation answers past the deadline");
+        assert!(specs.is_empty());
+    }
 
     #[test]
     fn a_scrubbed_program_runs_in_a_scratch_directory_that_dies_with_it() {

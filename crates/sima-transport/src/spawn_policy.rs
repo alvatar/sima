@@ -105,31 +105,39 @@ pub(crate) mod fixture {
     /// runnable.
     const PROBE: &str = "--probe";
 
-    /// Writes an executable script under `dir` that records its working
-    /// directory at `report` and exits at once. Exiting is what the caller
-    /// wants: the spawn fails at the handshake, which is the path that reaps
-    /// the child, and by then the report is written.
-    pub(crate) fn cwd_reporting_program(dir: &Path, report: &Path) -> PathBuf {
-        let path = dir.join("report-cwd.sh");
+    /// Writes an executable program named `name` under `dir` whose whole
+    /// conversation is the shell `body`, and returns it ready to spawn.
+    pub(crate) fn program(dir: &Path, name: &str, body: &str) -> PathBuf {
+        let path = dir.join(name);
         std::fs::write(
             &path,
             format!(
                 "#!/bin/sh\n\
                  [ \"$1\" = {PROBE} ] && exit 0\n\
-                 pwd > {}\n\
-                 exit 0\n",
-                report.display()
+                 {body}\n"
             ),
         )
-        .expect("write the reporting program");
+        .expect("write the program");
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
-                .expect("make the reporting program executable");
+                .expect("make the program executable");
         }
         await_runnable(&path);
         path
+    }
+
+    /// Writes an executable program under `dir` that records its working
+    /// directory at `report` and exits at once. Exiting is what the caller
+    /// wants: the spawn fails at the handshake, which is the path that reaps
+    /// the child, and by then the report is written.
+    pub(crate) fn cwd_reporting_program(dir: &Path, report: &Path) -> PathBuf {
+        program(
+            dir,
+            "report-cwd.sh",
+            &format!("pwd > {}\nexit 0", report.display()),
+        )
     }
 
     /// Waits until the just-written program can be executed.

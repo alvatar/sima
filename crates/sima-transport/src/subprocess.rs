@@ -286,7 +286,14 @@ impl WorkerLink for SubprocessLink {
         self.stdin = None;
         let _ = self.child.kill();
         let _ = self.child.wait();
-        self.join_reader();
+        // The reader threads are released rather than joined. They end when
+        // the child's pipes close, which is when the last holder of them
+        // exits — the child, and anything it left running behind it. Waiting
+        // on them would put the caller back at the mercy of the process this
+        // call exists to stop; each thread ends on its own, with nothing owed
+        // to it.
+        self.reader = None;
+        self.stderr_reader = None;
         // The child is gone, so the directory it ran in goes with it.
         self.scratch = None;
     }
@@ -882,6 +889,35 @@ mod tests {
         // hanging or panicking.
         let result = transport("/bin/cat").spawn(0, None, discarding_emitter());
         assert!(result.is_err(), "the handshake against cat must fail");
+    }
+
+    #[test]
+    fn a_worker_silent_past_the_deadline_fails_the_spawn_naming_it() {
+        // Every worker spawn is bounded, builtin or configured: a child
+        // wedged before Ready — a broken driver hanging device
+        // initialization — is a spawn failure rather than a worker thread
+        // stopped forever. `exec` puts the sleep in the shell's place, so the
+        // process holding the pipes is the one the kill reaches.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let program = fixture::program(dir.path(), "wedged-worker.sh", "exec sleep 300");
+        let transport = SubprocessTransport::new(
+            program,
+            Vec::new(),
+            settings_within(SpawnPolicy::Inherit, Duration::from_millis(300)),
+        );
+        let started = Instant::now();
+        let error = match transport.spawn(0, None, discarding_emitter()) {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!("a silent child completes no handshake"),
+        };
+        assert!(
+            started.elapsed() < Duration::from_secs(20),
+            "{:?}",
+            started.elapsed()
+        );
+        assert!(error.contains("wedged-worker.sh"), "{error}");
+        assert!(error.contains("Ready"), "names the answer: {error}");
+        assert!(error.contains("300ms"), "names the deadline: {error}");
     }
 
     #[test]

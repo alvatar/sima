@@ -2637,6 +2637,103 @@ mod tests {
     }
 
     #[test]
+    fn an_absent_answer_deadline_leaves_every_protocol_wait_unbounded() {
+        // The key is optional and absent is the state every run had before
+        // one existed: a wait for as long as the peer lives.
+        assert_eq!(
+            load_text(BASE)
+                .expect("the config loads")
+                .execution
+                .answer_timeout,
+            Duration::MAX
+        );
+    }
+
+    #[test]
+    fn the_answer_deadline_reaches_the_execution_settings() {
+        let text = BASE.replace(
+            "max_attempts = 3",
+            "max_attempts = 3\nanswer_timeout_ms = 120000",
+        );
+        assert_eq!(
+            load_text(&text)
+                .expect("the config loads")
+                .execution
+                .answer_timeout,
+            Duration::from_millis(120_000)
+        );
+    }
+
+    #[test]
+    fn a_zero_answer_deadline_is_taken_as_written() {
+        // The attempt deadline takes any millisecond value the file states and
+        // enforces it; this one follows the same rule rather than a second one.
+        let text = BASE.replace(
+            "max_attempts = 3",
+            "max_attempts = 3\nanswer_timeout_ms = 0",
+        );
+        assert_eq!(
+            load_text(&text)
+                .expect("the config loads")
+                .execution
+                .answer_timeout,
+            Duration::ZERO
+        );
+    }
+
+    #[test]
+    fn a_negative_answer_deadline_is_refused_like_a_negative_attempt_deadline() {
+        for key in ["answer_timeout_ms", "attempt_timeout_ms"] {
+            let text = BASE.replace("max_attempts = 3", &format!("max_attempts = 3\n{key} = -1"));
+            assert!(rejection(&text).contains(key), "{key}");
+        }
+    }
+
+    #[test]
+    fn a_program_silent_past_the_answer_deadline_fails_the_load_naming_it() {
+        // The registry's sessions open while the config resolves, so the
+        // deadline is read before them: a program that never answers is a
+        // config failure naming what was awaited.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let program = dir.path().join("wedged.sh");
+        // `exec` puts the sleep in the shell's place, so the process holding
+        // the pipes is the one the expiry's kill reaches.
+        fs::write(&program, "#!/bin/sh\nexec sleep 300\n").expect("write the program");
+        fs::set_permissions(
+            &program,
+            std::os::unix::fs::PermissionsExt::from_mode(0o755),
+        )
+        .expect("make it executable");
+        let path = write_config(
+            dir.path(),
+            "sima.toml",
+            &format!(
+                r#"{BASE}
+                [domain."stub.v1"]
+                binary = "{}"
+                "#,
+                program.display()
+            )
+            .replace(
+                "max_attempts = 3",
+                "max_attempts = 3\nanswer_timeout_ms = 300",
+            ),
+        );
+        let started = std::time::Instant::now();
+        let Err(error) = load(&path) else {
+            panic!("expected a program that never answers to fail the load");
+        };
+        assert!(
+            started.elapsed() < Duration::from_secs(20),
+            "{:?}",
+            started.elapsed()
+        );
+        let message = error.to_string();
+        assert!(message.contains("wedged.sh"), "{message}");
+        assert!(message.contains("Ready"), "names the answer: {message}");
+    }
+
+    #[test]
     fn an_env_entry_carrying_a_value_is_refused() {
         // A name, never an assignment: the value comes from the
         // orchestrator's own environment, so writing one here would be a
