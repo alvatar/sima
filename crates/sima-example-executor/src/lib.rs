@@ -1,6 +1,6 @@
 //! A whole sima program, in the shape a third party writes one.
 //!
-//! # The division of labour
+//! # What sima does, and what a program supplies
 //!
 //! sima draws candidates, schedules them over workers and machines, stores
 //! every result by its content, and records how each one was produced. A
@@ -22,7 +22,7 @@
 //! read, so a format whose meaning changes is a new id. Several methods below
 //! exist solely to return it.
 //!
-//! # How a run reaches it
+//! # How a run reaches this program
 //!
 //! ```toml
 //! [run]
