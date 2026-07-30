@@ -166,7 +166,7 @@ fn generator_params_translate_to_the_bytes_the_dispatch_produces() {
     });
     let expected = sima_domains::generator_for(&generator)
         .expect("a registered generator")
-        .translate_params(text)
+        .translate_config(text)
         .expect("the stub translates its generator params");
     assert_eq!(answer, FromDomain::Translated { bytes: expected });
     assert_eq!(service.shutdown(), Some(0));
@@ -181,7 +181,7 @@ fn generation_answers_the_specs_the_in_process_generator_produces() {
     let generator = GeneratorId::new("stub.v1").expect("generator id");
     let params = sima_domains::generator_for(&generator)
         .expect("a registered generator")
-        .translate_params(text)
+        .translate_config(text)
         .expect("the stub translates its generator params");
     let mut service = Service::spawn("stub.v1");
     let answer = service.ask(ToDomain::Generate {
@@ -270,11 +270,11 @@ mod session {
                 .environment
         );
         assert_eq!(
-            service.enumerate(&format).expect("an enumeration"),
+            service.enumerate_devices(&format).expect("an enumeration"),
             sima_domains::devices::enumerate_devices(&format).expect("enumeration answers")
         );
         let params = service
-            .translate_generator_params(&generator, "behaviors = [\"succeed\"]\n")
+            .translate_generator_config(&generator, "behaviors = [\"succeed\"]\n")
             .expect("a translation");
         let specs = service
             .generate(&generator, &format, 42, &params)

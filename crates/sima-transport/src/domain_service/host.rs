@@ -104,7 +104,7 @@ fn answer(
         ToDomain::Enumerate { format } => {
             served(domain, &format)?;
             Ok(FromDomain::Enumerated {
-                devices: domain.enumerate()?,
+                devices: domain.enumerate_devices()?,
             })
         }
         ToDomain::TranslateParams {
@@ -114,11 +114,11 @@ fn answer(
         } => {
             served(domain, &format)?;
             Ok(FromDomain::Translated {
-                bytes: domain.translate_params(&toml, segmented)?.bytes,
+                bytes: domain.translate_config(&toml, segmented)?.bytes,
             })
         }
         ToDomain::TranslateGeneratorParams { generator, toml } => Ok(FromDomain::Translated {
-            bytes: generator_for(generators, &generator)?.translate_params(&toml)?,
+            bytes: generator_for(generators, &generator)?.translate_config(&toml)?,
         }),
         ToDomain::Generate {
             generator,
@@ -239,7 +239,7 @@ mod tests {
             Ok((String::new(), String::new()))
         }
 
-        fn enumerate(&self) -> Result<Vec<DeviceInfo>> {
+        fn enumerate_devices(&self) -> Result<Vec<DeviceInfo>> {
             self.refusal()?;
             Ok(vec![DeviceInfo {
                 class: DeviceClass::new("8086:7d51").expect("class id"),
@@ -249,7 +249,7 @@ mod tests {
             }])
         }
 
-        fn translate_params(&self, toml: &str, segmented: bool) -> Result<Params> {
+        fn translate_config(&self, toml: &str, segmented: bool) -> Result<Params> {
             self.refusal()?;
             Ok(Params {
                 bytes: format!("{toml}|{segmented}").into_bytes(),
@@ -272,7 +272,7 @@ mod tests {
             &self.format
         }
 
-        fn translate_params(&self, toml: &str) -> Result<Vec<u8>> {
+        fn translate_config(&self, toml: &str) -> Result<Vec<u8>> {
             Ok(format!("gen:{toml}").into_bytes())
         }
 
@@ -405,7 +405,7 @@ mod tests {
     }
 
     #[test]
-    fn translate_params_carries_the_section_text_and_the_segment_flag() {
+    fn translate_config_carries_the_section_text_and_the_segment_flag() {
         // Both inputs reach the domain: the section as written, and whether the
         // run divides candidates into segments.
         let (result, answers) = drive(

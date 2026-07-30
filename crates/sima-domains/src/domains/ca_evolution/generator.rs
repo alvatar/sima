@@ -43,7 +43,7 @@ impl<M: CaModel> Generator for CaGenerator<M> {
         &self.format
     }
 
-    fn translate_params(&self, toml: &str) -> Result<Vec<u8>> {
+    fn translate_config(&self, toml: &str) -> Result<Vec<u8>> {
         translate::<M>(&crate::domains::translate::table(toml)?)
     }
 

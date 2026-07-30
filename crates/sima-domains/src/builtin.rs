@@ -49,11 +49,11 @@ impl Domain for BuiltinDomain {
         (self.binding.device_desc)(device)
     }
 
-    fn enumerate(&self) -> Result<Vec<DeviceInfo>> {
+    fn enumerate_devices(&self) -> Result<Vec<DeviceInfo>> {
         (self.binding.enumerate)()
     }
 
-    fn translate_params(&self, toml: &str, segmented: bool) -> Result<Params> {
+    fn translate_config(&self, toml: &str, segmented: bool) -> Result<Params> {
         crate::params_for(&self.binding.format, &table(toml)?, segmented)
     }
 }
@@ -113,7 +113,7 @@ mod tests {
         let domain = BuiltinDomain::new(&format)?;
         let text = "hex = \"00ff\"\n";
         assert_eq!(
-            domain.translate_params(text, false)?,
+            domain.translate_config(text, false)?,
             params_for(
                 &format,
                 &text.parse::<toml::Table>().expect("a table"),
@@ -129,7 +129,7 @@ mod tests {
         // with no keys rather than a parse failure.
         let format = format("stub.v1");
         assert_eq!(
-            BuiltinDomain::new(&format)?.translate_params("", false)?,
+            BuiltinDomain::new(&format)?.translate_config("", false)?,
             params_for(&format, &toml::Table::new(), false)?
         );
         Ok(())
@@ -139,7 +139,7 @@ mod tests {
     fn a_section_that_is_no_toml_is_a_validation_error() {
         let domain = BuiltinDomain::new(&format("stub.v1")).expect("a registered format");
         let error = domain
-            .translate_params("this is not toml", false)
+            .translate_config("this is not toml", false)
             .expect_err("a parse failure");
         assert!(
             matches!(error, sima_core::Error::Validation(_)),
@@ -176,7 +176,7 @@ mod tests {
         let generators = generators_for(&format("stub.v1"))?;
         let text = "behaviors = [\"succeed\", \"reject\"]\n";
         assert_eq!(
-            generators[0].translate_params(text)?,
+            generators[0].translate_config(text)?,
             crate::domains::stub::generator_params(&text.parse::<toml::Table>().expect("a table"))?
         );
         Ok(())

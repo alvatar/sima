@@ -30,11 +30,11 @@ pub(crate) trait DomainSource: Send + Sync {
     fn environment(&self, format: &FormatId) -> Result<Environment>;
 
     /// The devices the format's work can run on.
-    fn enumerate(&self, format: &FormatId) -> Result<Vec<DeviceInfo>>;
+    fn enumerate_devices(&self, format: &FormatId) -> Result<Vec<DeviceInfo>>;
 
     /// The `[run.params]` section, as text, translated into the canonical
     /// params bytes that enter the run id.
-    fn translate_params(&self, format: &FormatId, toml: &str, segmented: bool) -> Result<Params>;
+    fn translate_config(&self, format: &FormatId, toml: &str, segmented: bool) -> Result<Params>;
 
     /// The generator the run produces its candidates from, which also owns the
     /// translation of its own `[run.generator]` section.
@@ -60,12 +60,12 @@ impl DomainSource for BuiltinSource {
         Ok(BuiltinDomain::new(format)?.environment().clone())
     }
 
-    fn enumerate(&self, format: &FormatId) -> Result<Vec<DeviceInfo>> {
-        BuiltinDomain::new(format)?.enumerate()
+    fn enumerate_devices(&self, format: &FormatId) -> Result<Vec<DeviceInfo>> {
+        BuiltinDomain::new(format)?.enumerate_devices()
     }
 
-    fn translate_params(&self, format: &FormatId, toml: &str, segmented: bool) -> Result<Params> {
-        BuiltinDomain::new(format)?.translate_params(toml, segmented)
+    fn translate_config(&self, format: &FormatId, toml: &str, segmented: bool) -> Result<Params> {
+        BuiltinDomain::new(format)?.translate_config(toml, segmented)
     }
 
     fn generator(
@@ -126,12 +126,12 @@ impl DomainSource for BinarySource {
         self.session().environment(format)
     }
 
-    fn enumerate(&self, format: &FormatId) -> Result<Vec<DeviceInfo>> {
-        self.session().enumerate(format)
+    fn enumerate_devices(&self, format: &FormatId) -> Result<Vec<DeviceInfo>> {
+        self.session().enumerate_devices(format)
     }
 
-    fn translate_params(&self, format: &FormatId, toml: &str, segmented: bool) -> Result<Params> {
-        self.session().translate_params(format, toml, segmented)
+    fn translate_config(&self, format: &FormatId, toml: &str, segmented: bool) -> Result<Params> {
+        self.session().translate_config(format, toml, segmented)
     }
 
     fn generator(
@@ -168,10 +168,10 @@ impl Generator for SessionGenerator<'_> {
         &self.format
     }
 
-    fn translate_params(&self, toml: &str) -> Result<Vec<u8>> {
+    fn translate_config(&self, toml: &str) -> Result<Vec<u8>> {
         self.source
             .session()
-            .translate_generator_params(&self.id, toml)
+            .translate_generator_config(&self.id, toml)
     }
 
     fn generate(&self, root_seed: u64, params: &[u8]) -> Result<Vec<Spec>> {
@@ -349,25 +349,25 @@ mod tests {
         let builtin = DomainRegistry::builtin();
         let text = "hex = \"00ff\"\n";
         assert_eq!(
-            registry.source(&format("stub.v1")).translate_params(
+            registry.source(&format("stub.v1")).translate_config(
                 &format("stub.v1"),
                 text,
                 false
             )?,
             builtin
                 .source(&format("stub.v1"))
-                .translate_params(&format("stub.v1"), text, false)?
+                .translate_config(&format("stub.v1"), text, false)?
         );
         let text = "behaviors = [\"succeed\", \"reject\"]\n";
         assert_eq!(
             registry
                 .source(&format("stub.v1"))
                 .generator(&generator("stub.v1"), &format("stub.v1"))?
-                .translate_params(text)?,
+                .translate_config(text)?,
             builtin
                 .source(&format("stub.v1"))
                 .generator(&generator("stub.v1"), &format("stub.v1"))?
-                .translate_params(text)?
+                .translate_config(text)?
         );
         Ok(())
     }
@@ -379,7 +379,7 @@ mod tests {
         let params = builtin
             .source(&format("stub.v1"))
             .generator(&generator("stub.v1"), &format("stub.v1"))?
-            .translate_params("behaviors = [\"succeed\"]\n")?;
+            .translate_config("behaviors = [\"succeed\"]\n")?;
         assert_eq!(
             registry
                 .source(&format("stub.v1"))
@@ -399,7 +399,7 @@ mod tests {
         assert_eq!(
             registry
                 .source(&format("stub.v1"))
-                .enumerate(&format("stub.v1"))?,
+                .enumerate_devices(&format("stub.v1"))?,
             sima_domains::devices::enumerate_devices(&format("stub.v1"))?
         );
         Ok(())

@@ -45,7 +45,7 @@ pub trait Domain: Send + Sync {
     /// Every device this format's work can run on, as its execution backend
     /// enumerates them. A format that opens no device answers with an empty
     /// list.
-    fn enumerate(&self) -> Result<Vec<DeviceInfo>>;
+    fn enumerate_devices(&self) -> Result<Vec<DeviceInfo>>;
 
     /// The `[run.params]` section as TOML text, translated to the canonical
     /// params bytes the format's executor reads. `segmented` is whether the run
@@ -54,7 +54,7 @@ pub trait Domain: Send + Sync {
     ///
     /// The section crosses as text, so the domain parses it with a TOML of its
     /// own choosing.
-    fn translate_params(&self, toml: &str, segmented: bool) -> Result<Params>;
+    fn translate_config(&self, toml: &str, segmented: bool) -> Result<Params>;
 }
 
 /// `Domain` is dyn-compatible: a host holds one behind a trait object for the
@@ -97,11 +97,11 @@ mod tests {
             Ok((String::new(), String::new()))
         }
 
-        fn enumerate(&self) -> Result<Vec<DeviceInfo>> {
+        fn enumerate_devices(&self) -> Result<Vec<DeviceInfo>> {
             Ok(Vec::new())
         }
 
-        fn translate_params(&self, toml: &str, segmented: bool) -> Result<Params> {
+        fn translate_config(&self, toml: &str, segmented: bool) -> Result<Params> {
             Ok(Params {
                 bytes: format!("{toml}:{segmented}").into_bytes(),
             })
@@ -123,7 +123,7 @@ mod tests {
             &self.format
         }
 
-        fn translate_params(&self, toml: &str) -> Result<Vec<u8>> {
+        fn translate_config(&self, toml: &str) -> Result<Vec<u8>> {
             Ok(toml.as_bytes().to_vec())
         }
 
@@ -162,9 +162,9 @@ mod tests {
         let domain: &dyn Domain = &domain;
         assert_eq!(domain.format().as_str(), "domain-test.v1");
         assert_eq!(domain.environment().components().len(), 1);
-        assert!(domain.enumerate()?.is_empty());
+        assert!(domain.enumerate_devices()?.is_empty());
         assert_eq!(
-            domain.translate_params("count = 3", true)?.bytes,
+            domain.translate_config("count = 3", true)?.bytes,
             b"count = 3:true"
         );
         Ok(())
@@ -176,7 +176,7 @@ mod tests {
         let generator: &dyn Generator = &generator;
         assert_eq!(generator.id().as_str(), "domain-test.v1");
         assert_eq!(generator.format().as_str(), "domain-test.v1");
-        assert_eq!(generator.translate_params("n = 1")?, b"n = 1");
+        assert_eq!(generator.translate_config("n = 1")?, b"n = 1");
         assert_eq!(
             generator.generate(7, &[])?[0].format.as_str(),
             "domain-test.v1"
@@ -189,10 +189,10 @@ mod tests {
         // Configuration crosses as the text of the section, so a program parses
         // it with a toml of its own choosing and sima's stays its own.
         let (domain, generator) = components()?;
-        let params: Params = domain.translate_params("hex = \"00\"", false)?;
+        let params: Params = domain.translate_config("hex = \"00\"", false)?;
         assert_eq!(params.bytes, b"hex = \"00\":false");
         assert_eq!(
-            generator.translate_params("behaviors = []")?,
+            generator.translate_config("behaviors = []")?,
             b"behaviors = []"
         );
         Ok(())

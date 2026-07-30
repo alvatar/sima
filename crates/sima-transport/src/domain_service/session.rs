@@ -95,7 +95,7 @@ impl DomainService {
     }
 
     /// The devices the format's work can run on.
-    pub fn enumerate(&mut self, format: &FormatId) -> Result<Vec<DeviceInfo>> {
+    pub fn enumerate_devices(&mut self, format: &FormatId) -> Result<Vec<DeviceInfo>> {
         match self.ask(&ToDomain::Enumerate {
             format: format.clone(),
         })? {
@@ -106,7 +106,7 @@ impl DomainService {
 
     /// The `[run.params]` section, as text, translated into the format's
     /// canonical params bytes.
-    pub fn translate_params(
+    pub fn translate_config(
         &mut self,
         format: &FormatId,
         toml: &str,
@@ -124,7 +124,7 @@ impl DomainService {
 
     /// The `[run.generator]` section, as text, translated into the generator's
     /// opaque params blob.
-    pub fn translate_generator_params(
+    pub fn translate_generator_config(
         &mut self,
         generator: &GeneratorId,
         toml: &str,

@@ -25,10 +25,10 @@ pub trait Generator: Send + Sync {
     ///
     /// The section crosses as text, so a generator parses it with a TOML of
     /// its own choosing. The bytes enter the run id.
-    fn translate_params(&self, toml: &str) -> Result<Vec<u8>>;
+    fn translate_config(&self, toml: &str) -> Result<Vec<u8>>;
 
     /// Produces the run's candidate specs from its root seed and the blob
-    /// [`Generator::translate_params`] produced, stamping each with
+    /// [`Generator::translate_config`] produced, stamping each with
     /// [`Generator::format`]. Deterministic in both inputs.
     fn generate(&self, root_seed: u64, params: &[u8]) -> Result<Vec<Spec>>;
 }

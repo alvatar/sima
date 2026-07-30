@@ -86,7 +86,7 @@ impl Generator for StubGenerator {
         &self.format
     }
 
-    fn translate_params(&self, toml: &str) -> Result<Vec<u8>> {
+    fn translate_config(&self, toml: &str) -> Result<Vec<u8>> {
         super::generator_params(&crate::domains::translate::table(toml)?)
     }
 

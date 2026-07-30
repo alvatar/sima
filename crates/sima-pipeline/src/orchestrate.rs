@@ -505,7 +505,7 @@ fn resolve_devices(config: &LoadedConfig, source: &dyn DomainSource) -> Result<E
     if selectors.is_empty() {
         return Ok(config.execution.clone());
     }
-    let entries = devices::resolve(selectors, &source.enumerate(&config.run.format)?)?;
+    let entries = devices::resolve(selectors, &source.enumerate_devices(&config.run.format)?)?;
     ExecutionConfig::with_devices(
         entries,
         config.execution.max_attempts,

@@ -847,9 +847,9 @@ fn resolve_run(path: &Path, section: RunSection, domains: &DomainRegistry) -> Re
     let source = domains.source(&format);
     let generator_params = source
         .generator(&generator_id, &format)?
-        .translate_params(&section_text(&section.generator.rest)?)?;
+        .translate_config(&section_text(&section.generator.rest)?)?;
     let params =
-        source.translate_params(&format, &section_text(&section.params)?, segments.is_some())?;
+        source.translate_config(&format, &section_text(&section.params)?, segments.is_some())?;
     Ok(RunConfig {
         root_seed,
         segments,

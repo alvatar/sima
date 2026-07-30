@@ -131,7 +131,7 @@ impl Generator for DoublerGenerator {
     // covers. The text is parsed with a TOML crate of this program's choosing,
     // which is what keeps sima's off the surface. This one takes `count`, so
     // the blob is one byte.
-    fn translate_params(&self, toml: &str) -> Result<Vec<u8>> {
+    fn translate_config(&self, toml: &str) -> Result<Vec<u8>> {
         let table = section(toml)?;
         if let Some(key) = table.keys().find(|key| key.as_str() != "count") {
             return Err(Error::Validation(format!(
@@ -265,7 +265,7 @@ impl Domain for DoublerDomain {
     // Rejecting an unread key protects that identity: a silently ignored
     // setting gives the run an identity promising something the executor never
     // applied.
-    fn translate_params(&self, toml: &str, _segmented: bool) -> Result<Params> {
+    fn translate_config(&self, toml: &str, _segmented: bool) -> Result<Params> {
         let table = section(toml)?;
         if let Some(key) = table.keys().next() {
             return Err(Error::Validation(format!(
@@ -287,7 +287,7 @@ impl Domain for DoublerDomain {
 
     // 5. Declare the hardware. Three methods, one lifecycle.
     //
-    // `enumerate` lists every device this program can compute on. A run
+    // `enumerate_devices` lists every device this program can compute on. A run
     // resolves its `[[execution.device]]` selectors against the list and
     // spreads its workers over the members of the class each one names. A
     // **class** promises its members are interchangeable, so two identical
@@ -295,7 +295,7 @@ impl Domain for DoublerDomain {
     // is two classes. The name is this program's to mint — a GPU backend mints
     // something like `10de:2330`, plus a partition profile where a card is
     // sliced. An empty list means plain workers, no device.
-    fn enumerate(&self) -> Result<Vec<DeviceInfo>> {
+    fn enumerate_devices(&self) -> Result<Vec<DeviceInfo>> {
         Ok(vec![DeviceInfo {
             class: DeviceClass::new("example:cpu")?,
             name: DEVICE_NAME.to_string(),
