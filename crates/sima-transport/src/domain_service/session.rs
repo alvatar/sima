@@ -358,13 +358,22 @@ mod tests {
     use super::*;
     use crate::spawn_policy::fixture;
 
-    /// A deadline short enough that a wedged program expires promptly, and
-    /// long enough that a process start never races it.
-    const DEADLINE: Duration = Duration::from_millis(300);
+    /// The deadline of a session whose program answers nothing: short, so a
+    /// test that waits the expiry out is quick. Nothing a correct fake does
+    /// has to fit inside it.
+    const EXPIRES_PROMPTLY: Duration = Duration::from_millis(300);
 
-    /// How long a fake pauses to outlast [`DEADLINE`] without making a test
-    /// that waits it out slow.
-    const PAST_THE_DEADLINE: &str = "0.9";
+    /// The deadline of a session whose program must answer first: generous,
+    /// because a process start and a frame on a machine running the whole
+    /// suite at once share one wall clock.
+    const ANSWERS_WITHIN: Duration = Duration::from_secs(2);
+
+    /// How long a fake pauses to outlast [`EXPIRES_PROMPTLY`].
+    const PAST_A_PROMPT_DEADLINE: &str = "0.9";
+
+    /// How long a fake pauses to outlast [`ANSWERS_WITHIN`], with the margin
+    /// a loaded machine takes out of it.
+    const PAST_A_GENEROUS_DEADLINE: &str = "2.6";
 
     /// A ceiling on a bounded wait, generous enough to survive a loaded
     /// machine while still failing a wait that never ends.
@@ -424,12 +433,15 @@ mod tests {
         // forever.
         let dir = tempfile::tempdir().expect("temp dir");
         let started = Instant::now();
-        let error = session(dir.path(), WEDGE, DEADLINE).expect_err("a silent program");
+        let error = session(dir.path(), WEDGE, EXPIRES_PROMPTLY).expect_err("a silent program");
         assert!(started.elapsed() < WELL_WITHIN, "{:?}", started.elapsed());
         let message = error.to_string();
         assert!(message.contains("fake-domain.sh"), "{message}");
         assert!(message.contains("Ready"), "names the answer: {message}");
-        assert!(message.contains("300ms"), "names the deadline: {message}");
+        assert!(
+            message.contains(&format!("{}ms", EXPIRES_PROMPTLY.as_millis())),
+            "names the deadline: {message}"
+        );
     }
 
     #[test]
@@ -469,10 +481,19 @@ mod tests {
         // taking the same time, is a session.
         let dir = tempfile::tempdir().expect("temp dir");
         let body = format!(
-            "sleep {PAST_THE_DEADLINE}\n{}\n{AWAIT_SHUTDOWN}",
+            "sleep {PAST_A_PROMPT_DEADLINE}\n{}\n{AWAIT_SHUTDOWN}",
             ready(dir.path())
         );
+        let started = Instant::now();
         session(dir.path(), &body, Duration::MAX).expect("a slow program still answers");
+        // The pause is what makes the session mean something: a program that
+        // answered inside the deadline it is meant to outlast would have been
+        // a session under either key.
+        assert!(
+            started.elapsed() > EXPIRES_PROMPTLY,
+            "{:?}",
+            started.elapsed()
+        );
     }
 
     #[test]
@@ -481,7 +502,8 @@ mod tests {
         // it: the error says which one went unanswered.
         let dir = tempfile::tempdir().expect("temp dir");
         let body = format!("{}\n{WEDGE}", ready(dir.path()));
-        let mut service = session(dir.path(), &body, DEADLINE).expect("the handshake answers");
+        let mut service =
+            session(dir.path(), &body, ANSWERS_WITHIN).expect("the handshake answers");
         let started = Instant::now();
         let error = service
             .environment(&FormatId::new("stub.v1").expect("format id"))
@@ -502,7 +524,7 @@ mod tests {
         // questions around it.
         let dir = tempfile::tempdir().expect("temp dir");
         let body = format!(
-            "{}\nsleep {PAST_THE_DEADLINE}\n{}\n{AWAIT_SHUTDOWN}",
+            "{}\nsleep {PAST_A_GENEROUS_DEADLINE}\n{}\n{AWAIT_SHUTDOWN}",
             ready(dir.path()),
             emit(
                 dir.path(),
@@ -510,7 +532,9 @@ mod tests {
                 &FromDomain::Generated { specs: Vec::new() }
             )
         );
-        let mut service = session(dir.path(), &body, DEADLINE).expect("the handshake answers");
+        let mut service =
+            session(dir.path(), &body, ANSWERS_WITHIN).expect("the handshake answers");
+        let started = Instant::now();
         let specs = service
             .generate(
                 &GeneratorId::new("stub.v1").expect("generator id"),
@@ -520,6 +544,14 @@ mod tests {
             )
             .expect("generation answers past the deadline");
         assert!(specs.is_empty());
+        // The wait is what is being measured, so it has to be a wait the
+        // deadline would have cut: an answer arriving inside it proves
+        // nothing about the question being unbounded.
+        assert!(
+            started.elapsed() > ANSWERS_WITHIN,
+            "{:?}",
+            started.elapsed()
+        );
     }
 
     #[test]
