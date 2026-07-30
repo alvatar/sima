@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use sima_core::Error;
 use sima_domains::{binding_for, generator_for};
-use sima_model::TaskIdentity;
+use sima_model::{FormatId, TaskIdentity};
 use sima_pipeline::{Event, Record, RunObserver, load};
 use sima_store::{Manifest, Store};
 
@@ -266,6 +266,75 @@ pub fn manifest_bytes(config_path: &Path) -> Option<Vec<u8>> {
         .join(config.run.id().to_string())
         .join("manifest.json");
     std::fs::read(path).ok()
+}
+
+/// Fails when this machine offers no device matching each of `selectors`,
+/// naming what enumeration found and what the loader was told to admit.
+///
+/// A multi-device test asserts where work landed, so a machine reporting fewer
+/// classes than the test names fails on placement minutes into a run — which
+/// reads as a scheduler defect. The usual cause is environmental: with
+/// `VK_DRIVER_FILES` set, the Vulkan loader admits only the drivers that
+/// variable lists, so a shell exporting one manifest leaves a two-GPU machine
+/// reporting one class. Checking first turns that into one sentence naming the
+/// cause.
+///
+/// Selectors are matched the way a config's `[[orchestrator.device]] select`
+/// is: a case-insensitive substring of the reported name, or the exact class.
+pub fn require_devices(format: &str, selectors: &[&str]) {
+    let format = FormatId::new(format).expect("format id");
+    let devices = sima_domains::devices::enumerate_devices(&format)
+        .expect("enumerate this machine's devices");
+    let missing: Vec<&str> = selectors
+        .iter()
+        .copied()
+        .filter(|selector| {
+            let wanted = selector.to_lowercase();
+            !devices.iter().any(|device| {
+                device.name.to_lowercase().contains(&wanted) || device.class.as_str() == *selector
+            })
+        })
+        .collect();
+    if missing.is_empty() {
+        return;
+    }
+    let found = if devices.is_empty() {
+        "no devices".to_string()
+    } else {
+        devices
+            .iter()
+            .map(|device| format!("{} ({})", device.class.as_str(), device.name))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    panic!(
+        "this test needs devices matching {missing:?}; enumeration of {} found {found}. {}",
+        format.as_str(),
+        why_unreachable()
+    );
+}
+
+/// Why the devices were out of reach, for [`require_devices`]'s message: the
+/// two causes that are environmental and fixable, then the one that is not.
+fn why_unreachable() -> String {
+    if let Ok(files) = std::env::var("VK_DRIVER_FILES") {
+        return format!(
+            "VK_DRIVER_FILES={files} admits only the drivers it lists; \
+             rerun with it unset: env -u VK_DRIVER_FILES cargo test ..."
+        );
+    }
+    // The NVIDIA driver creates its character devices on demand through the
+    // setuid helper, and they do not survive every suspend. The kernel modules
+    // stay loaded, so the card is present and merely unreachable — running the
+    // helper restores it without root.
+    if !Path::new("/dev/nvidiactl").exists() {
+        return "/dev/nvidiactl is absent, so the NVIDIA driver is unreachable \
+                though its modules are loaded: run `nvidia-modprobe -c 0 -u` and rerun."
+            .to_string();
+    }
+    "VK_DRIVER_FILES is unset and every driver is reachable: those are the \
+     devices this machine offers."
+        .to_string()
 }
 
 /// Polls `probe` every 20 ms until it holds or `deadline` elapses; returns
