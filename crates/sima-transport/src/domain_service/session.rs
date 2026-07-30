@@ -555,7 +555,7 @@ mod tests {
     }
 
     #[test]
-    fn a_scrubbed_program_runs_in_a_scratch_directory_that_dies_with_it() {
+    fn a_program_on_an_explicit_surface_runs_in_a_scratch_directory_that_dies_with_it() {
         // The scratch directory's life is the program's: it records where it
         // ran, and by the time the spawn returns — the program killed and
         // reaped over its refused handshake — that directory is gone.

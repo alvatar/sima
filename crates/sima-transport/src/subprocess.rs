@@ -921,7 +921,7 @@ mod tests {
     }
 
     #[test]
-    fn a_scrubbed_worker_runs_in_a_scratch_directory_that_dies_with_it() {
+    fn a_worker_on_an_explicit_surface_runs_in_a_scratch_directory_that_dies_with_it() {
         // The scratch directory's life is the child's: the program records
         // where it ran, and by the time the spawn returns — the child killed
         // and reaped over its refused handshake — that directory is gone.

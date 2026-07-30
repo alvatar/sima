@@ -228,8 +228,8 @@ mod tests {
             .collect()
     }
 
-    /// A scrubbed policy declaring `passthrough`.
-    fn scrubbed(passthrough: &[&str]) -> SpawnPolicy {
+    /// An explicit-surface policy declaring `passthrough`.
+    fn explicit(passthrough: &[&str]) -> SpawnPolicy {
         SpawnPolicy::Explicit {
             passthrough: passthrough.iter().map(|name| name.to_string()).collect(),
         }
@@ -263,20 +263,20 @@ mod tests {
     }
 
     #[test]
-    fn a_scrubbed_spawn_drops_a_credential_the_orchestrator_holds() {
-        // The measure the scrubbing exists for: a provider credential in the
-        // orchestrator's environment matches nothing on the baseline, so a
-        // foreign program never sees it. The baseline name beside it is what
-        // makes the absence mean something — an environment that forwarded
-        // nothing at all would drop the credential too.
-        let env = applied_env(&scrubbed(&[]));
+    fn an_explicit_spawn_drops_a_credential_the_orchestrator_holds() {
+        // The measure the explicit surface exists for: a provider credential
+        // in the orchestrator's environment matches nothing on the baseline,
+        // so a foreign program never sees it. The baseline name beside it is
+        // what makes the absence mean something — an environment that
+        // forwarded nothing at all would drop the credential too.
+        let env = applied_env(&explicit(&[]));
         assert!(!env.contains_key("VAST_API_KEY"), "{env:?}");
         assert!(env.contains_key("PATH"), "{env:?}");
     }
 
     #[test]
-    fn a_scrubbed_spawn_forwards_the_baseline() {
-        let env = applied_env(&scrubbed(&[]));
+    fn an_explicit_spawn_forwards_the_baseline() {
+        let env = applied_env(&explicit(&[]));
         assert_eq!(
             env.get("PATH"),
             Some(&Some("/usr/bin".to_string())),
@@ -307,7 +307,7 @@ mod tests {
             .map(|name| (OsString::from(name), OsString::from("value")))
             .collect();
         let mut command = Command::new("/bin/true");
-        scrubbed(&[])
+        explicit(&[])
             .apply(&mut command, || vars)
             .expect("apply the policy");
         let forwarded: Vec<String> = command
@@ -320,10 +320,10 @@ mod tests {
     }
 
     #[test]
-    fn a_scrubbed_spawn_forwards_a_declared_name_and_drops_an_undeclared_one() {
+    fn an_explicit_spawn_forwards_a_declared_name_and_drops_an_undeclared_one() {
         // What the entry names crosses; what it does not name is a variable
         // the program has no claim on.
-        let env = applied_env(&scrubbed(&["ACME_ASSETS"]));
+        let env = applied_env(&explicit(&["ACME_ASSETS"]));
         assert_eq!(
             env.get("ACME_ASSETS"),
             Some(&Some("/opt/acme/assets".to_string())),
@@ -336,7 +336,7 @@ mod tests {
     fn a_declared_name_absent_from_the_parent_is_absent_in_the_child() {
         // Naming a variable forwards it; it does not invent it. The program
         // owns its own defaults.
-        let env = applied_env(&scrubbed(&["ACME_LICENSE_PATH", "ACME_ASSETS"]));
+        let env = applied_env(&explicit(&["ACME_LICENSE_PATH", "ACME_ASSETS"]));
         assert!(!env.contains_key("ACME_LICENSE_PATH"), "{env:?}");
         // The second declared name, which the parent does hold, crossed: what
         // the entry declares is honoured, and only the absent one is absent.
@@ -344,10 +344,10 @@ mod tests {
     }
 
     #[test]
-    fn a_scrubbed_spawn_starts_in_a_fresh_empty_directory() {
-        let (cwd, scratch) = applied_cwd(&scrubbed(&[]));
-        let scratch = scratch.expect("a scrubbed spawn has a scratch directory");
-        let cwd = cwd.expect("a scrubbed spawn sets its working directory");
+    fn an_explicit_spawn_starts_in_a_fresh_empty_directory() {
+        let (cwd, scratch) = applied_cwd(&explicit(&[]));
+        let scratch = scratch.expect("an explicit spawn has a scratch directory");
+        let cwd = cwd.expect("an explicit spawn sets its working directory");
         assert_eq!(cwd, scratch.path());
         assert_eq!(
             std::fs::read_dir(&cwd)
@@ -360,11 +360,11 @@ mod tests {
     }
 
     #[test]
-    fn two_scrubbed_spawns_start_in_two_directories() {
+    fn two_explicit_spawns_start_in_two_directories() {
         // A respawn gets a fresh directory, so nothing one process left
         // behind is visible to the next.
-        let (first, first_scratch) = applied_cwd(&scrubbed(&[]));
-        let (second, second_scratch) = applied_cwd(&scrubbed(&[]));
+        let (first, first_scratch) = applied_cwd(&explicit(&[]));
+        let (second, second_scratch) = applied_cwd(&explicit(&[]));
         assert_ne!(first, second);
         drop((first_scratch, second_scratch));
     }
@@ -373,8 +373,8 @@ mod tests {
     fn the_scratch_directory_is_removed_when_it_is_dropped() {
         // The holder's lifetime is the child's: the directory the program ran
         // in is gone once the process is reaped.
-        let (cwd, scratch) = applied_cwd(&scrubbed(&[]));
-        let cwd = cwd.expect("a scrubbed spawn sets its working directory");
+        let (cwd, scratch) = applied_cwd(&explicit(&[]));
+        let cwd = cwd.expect("an explicit spawn sets its working directory");
         assert!(cwd.is_dir());
         drop(scratch);
         assert!(!cwd.exists(), "{} outlived its holder", cwd.display());
@@ -389,7 +389,7 @@ mod tests {
             (OsString::from("PATH"), OsString::from("/usr/bin")),
         ];
         let mut command = Command::new("/bin/true");
-        scrubbed(&[])
+        explicit(&[])
             .apply(&mut command, || vars)
             .expect("apply the policy");
         let names: Vec<String> = command
@@ -418,7 +418,7 @@ mod tests {
             (OsString::from("PATH"), OsString::from("/usr/bin")),
         ];
         let mut command = Command::new("/bin/true");
-        scrubbed(&[])
+        explicit(&[])
             .apply(&mut command, || vars)
             .expect("apply the policy");
         let forwarded: Vec<(OsString, Option<OsString>)> = command
@@ -443,7 +443,7 @@ mod tests {
         let opaque = OsString::from_vec(vec![b'/', 0xff, b'/', 0xfe]);
         let vars = vec![(OsString::from("PATH"), opaque.clone())];
         let mut command = Command::new("/bin/true");
-        scrubbed(&[])
+        explicit(&[])
             .apply(&mut command, || vars)
             .expect("apply the policy");
         let value = command
