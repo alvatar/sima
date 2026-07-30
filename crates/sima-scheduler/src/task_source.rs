@@ -81,3 +81,107 @@ pub(crate) fn generate_specs(
         })
         .collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use std::num::NonZeroU64;
+
+    use sima_model::{FormatId, GeneratorConfig, GeneratorId, Params};
+
+    use super::*;
+
+    /// A generator producing one spec of the format it is told to stamp, so a
+    /// test can present a run with a candidate of a format it never asked for
+    /// — what a program answering the generate question is free to return.
+    struct StampingGenerator {
+        id: GeneratorId,
+        stamped: FormatId,
+    }
+
+    impl Generator for StampingGenerator {
+        fn id(&self) -> &GeneratorId {
+            &self.id
+        }
+
+        fn format(&self) -> &FormatId {
+            &self.stamped
+        }
+
+        fn translate_config(&self, _toml: &str) -> Result<Vec<u8>> {
+            Ok(Vec::new())
+        }
+
+        fn generate(&self, _root_seed: u64, _params: &[u8]) -> Result<Vec<Spec>> {
+            Ok(vec![Spec {
+                format: self.stamped.clone(),
+                bytes: vec![7],
+            }])
+        }
+    }
+
+    /// A run over `format`, its generator named and its params empty.
+    fn config(format: &str) -> RunConfig {
+        RunConfig {
+            root_seed: 42,
+            segments: None::<NonZeroU64>,
+            format: FormatId::new(format).expect("format id"),
+            generator: GeneratorConfig {
+                id: GeneratorId::new("acme.gen.v1").expect("generator id"),
+                params: Vec::new(),
+            },
+            params: Params { bytes: Vec::new() },
+        }
+    }
+
+    /// The generator stamping `format`, under the id the config names.
+    fn generator(format: &str) -> StampingGenerator {
+        StampingGenerator {
+            id: GeneratorId::new("acme.gen.v1").expect("generator id"),
+            stamped: FormatId::new(format).expect("format id"),
+        }
+    }
+
+    #[test]
+    fn a_spec_of_the_run_s_format_is_stored_and_addressed_by_its_bytes() -> Result<()> {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let store = Store::open(dir.path())?;
+        let specs = generate_specs(&generator("stub.v1"), &config("stub.v1"), &store)?;
+        let [(spec, id)] = specs.as_slice() else {
+            panic!("one candidate, got {specs:?}");
+        };
+        assert_eq!(spec.format.as_str(), "stub.v1");
+        assert_eq!(
+            *id,
+            SpecId::from_hash(sima_core::hash_bytes(&spec.to_bytes()))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_spec_of_another_format_is_refused_naming_both_formats() -> Result<()> {
+        // The candidate a generator returns is a value that crossed a wire
+        // when a program produced it, so what the run executes is checked
+        // against what the run is over — before the bytes are read as the
+        // wrong thing, and before the spec object is stored.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let store = Store::open(dir.path())?;
+        let Err(error) = generate_specs(&generator("acme.thing.v1"), &config("stub.v1"), &store)
+        else {
+            panic!("expected a spec of another format to be refused");
+        };
+        let message = error.to_string();
+        assert!(
+            message.contains("acme.thing.v1"),
+            "names the format produced: {message}"
+        );
+        assert!(
+            message.contains("stub.v1"),
+            "names the run's format: {message}"
+        );
+        assert!(
+            message.contains("acme.gen.v1"),
+            "names the generator: {message}"
+        );
+        Ok(())
+    }
+}

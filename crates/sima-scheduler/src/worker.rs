@@ -684,6 +684,84 @@ mod tests {
         )
     }
 
+    /// A task identity whose components are durable in `store`, which is what
+    /// [`Store::commit`] requires of every record it writes.
+    fn an_identity(store: &Store) -> TaskIdentity {
+        let spec = Spec {
+            format: FormatId::new("stub.v1").expect("format id"),
+            bytes: vec![1],
+        };
+        let params = Params { bytes: Vec::new() };
+        let environment = sima_domains::binding_for(&spec.format)
+            .expect("a registered format")
+            .environment;
+        store.put(&spec.to_bytes()).expect("store the spec");
+        store.put(&params.to_bytes()).expect("store the params");
+        store
+            .put(&environment.to_bytes())
+            .expect("store the environment");
+        TaskIdentity {
+            spec: spec.id(),
+            params: params.id(),
+            seed: 1,
+            environment: environment.id(),
+            input_state: None,
+        }
+    }
+
+    #[test]
+    fn an_artifact_named_outside_the_rule_commits_nothing() {
+        // An artifact name enters the record, and the record is what the run's
+        // identity is made of, so a name a program returned outside the rule
+        // is refused where the record is built — and the task faults instead
+        // of committing a record no reader could have produced.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let store = Store::open(dir.path()).expect("open store");
+        let identity = an_identity(&store);
+        let Err(error) = commit(
+            &store,
+            identity,
+            vec![Artifact {
+                name: "Bad Name".to_string(),
+                bytes: vec![1],
+            }],
+        ) else {
+            panic!("expected an out-of-rule artifact name to be refused");
+        };
+        assert!(matches!(error, Error::Validation(_)), "{error:?}");
+        assert!(
+            store
+                .record(&identity.key())
+                .expect("read the record")
+                .is_none(),
+            "nothing was committed"
+        );
+    }
+
+    #[test]
+    fn an_artifact_named_within_the_rule_commits() {
+        // The other half of the pair: the same path with a name in the rule
+        // reaches the store, so the refusal above is the name's doing.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let store = Store::open(dir.path()).expect("open store");
+        let identity = an_identity(&store);
+        commit(
+            &store,
+            identity,
+            vec![Artifact {
+                name: "doubled".to_string(),
+                bytes: vec![1],
+            }],
+        )
+        .expect("a name in the rule commits");
+        assert!(
+            store
+                .record(&identity.key())
+                .expect("read the record")
+                .is_some()
+        );
+    }
+
     #[test]
     fn a_panicking_worker_releases_its_lease_as_a_fault() {
         let coordinator = Coordinator::new();

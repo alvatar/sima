@@ -671,6 +671,25 @@ mod tests {
     }
 
     #[test]
+    fn a_hello_binding_an_invalid_device_class_is_rejected() {
+        // The class the parent binds a worker to revalidates on decode, so a
+        // name no backend could have minted fails at the frame rather than
+        // reaching an executor or a journal line.
+        let mut enc = Enc::new();
+        enc.u8(TAG_HELLO)
+            .u32(PROTOCOL_VERSION)
+            .u64(0)
+            .str("stub.v1")
+            .u64(u64::MAX)
+            .u64(0);
+        enc.u8(1).str("8086:7D51").u32(0);
+        assert!(matches!(
+            ToChild::decode(&enc.finish()),
+            Err(Error::Validation(_))
+        ));
+    }
+
+    #[test]
     fn an_invalid_device_flag_is_an_encoding_error() {
         // A Hello whose device present-flag byte is 2.
         let mut enc = Enc::new();

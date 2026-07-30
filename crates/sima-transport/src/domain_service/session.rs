@@ -438,6 +438,37 @@ mod tests {
     }
 
     #[test]
+    fn a_program_at_another_protocol_version_is_refused_naming_both_versions() {
+        // The two binaries are built apart, so the mismatch is the one thing
+        // the handshake exists to catch; the parent refuses it here, where the
+        // answer arrives.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let stale = emit(
+            dir.path(),
+            "stale-ready.frame",
+            &FromDomain::Ready {
+                protocol: PROTOCOL_VERSION - 1,
+            },
+        );
+        let error = session(
+            dir.path(),
+            &format!("{stale}\n{AWAIT_SHUTDOWN}"),
+            Duration::MAX,
+        )
+        .expect_err("a program at another version");
+        let message = error.to_string();
+        assert!(message.contains("version mismatch"), "{message}");
+        assert!(
+            message.contains(&format!("parent speaks {PROTOCOL_VERSION}")),
+            "names the parent's version: {message}"
+        );
+        assert!(
+            message.contains(&format!("it speaks {}", PROTOCOL_VERSION - 1)),
+            "names the program's version: {message}"
+        );
+    }
+
+    #[test]
     fn a_program_slow_past_the_deadline_answers_when_no_deadline_is_set() {
         // The absent key leaves the wait exactly as it was: the same program,
         // taking the same time, is a session.

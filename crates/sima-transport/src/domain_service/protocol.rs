@@ -627,6 +627,39 @@ mod tests {
     }
 
     #[test]
+    fn a_described_environment_carries_an_invalid_component_name_no_further() {
+        // The environment enters every task's identity, so a component named
+        // outside the rule fails at the frame rather than reaching a hash.
+        let mut enc = Enc::new();
+        enc.u8(TAG_DESCRIBED)
+            .str("sima.environment.v1")
+            .u64(1)
+            .str("Bad Name")
+            .u8(0)
+            .str("1.0");
+        assert!(
+            matches!(FromDomain::decode(&enc.finish()), Err(Error::Validation(_))),
+            "an out-of-rule component name crossed"
+        );
+    }
+
+    #[test]
+    fn a_generated_spec_carries_an_invalid_format_no_further() {
+        // Every spec stamps the format its bytes are read under, so a name
+        // outside the rule fails at the frame rather than reaching a task.
+        let mut enc = Enc::new();
+        enc.u8(TAG_GENERATED)
+            .u64(1)
+            .str("sima.spec.v1")
+            .str("Bad Name")
+            .bytes(&[0xAA]);
+        assert!(
+            matches!(FromDomain::decode(&enc.finish()), Err(Error::Validation(_))),
+            "an out-of-rule spec format crossed"
+        );
+    }
+
+    #[test]
     fn an_invalid_flag_byte_is_an_encoding_error() {
         // A TranslateConfig whose segmented flag byte is 2.
         let mut enc = Enc::new();
