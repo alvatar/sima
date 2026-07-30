@@ -67,7 +67,7 @@ impl DeviceType {
 ///
 /// A machine without CUDA — no driver library, or a driver that refuses to
 /// initialize — has no such device, so it enumerates as an empty list, never an
-/// error; the worker's `--enumerate` probe relies on this to answer "none" on a
+/// error; the worker's `--enumerate-devices` probe relies on this to answer "none" on a
 /// driverless host instead of failing the probe.
 pub fn enumerate_devices() -> Result<Vec<DeviceInfo>> {
     let devices = driver::with_driver_or_none(|| {

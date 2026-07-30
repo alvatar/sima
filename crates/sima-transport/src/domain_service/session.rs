@@ -96,11 +96,11 @@ impl DomainService {
 
     /// The devices the format's work can run on.
     pub fn enumerate_devices(&mut self, format: &FormatId) -> Result<Vec<DeviceInfo>> {
-        match self.ask(&ToDomain::Enumerate {
+        match self.ask(&ToDomain::EnumerateDevices {
             format: format.clone(),
         })? {
-            FromDomain::Enumerated { devices } => Ok(devices),
-            other => Err(self.unexpected("Enumerated", &other)),
+            FromDomain::EnumeratedDevices { devices } => Ok(devices),
+            other => Err(self.unexpected("EnumeratedDevices", &other)),
         }
     }
 
@@ -112,13 +112,13 @@ impl DomainService {
         toml: &str,
         segmented: bool,
     ) -> Result<Params> {
-        match self.ask(&ToDomain::TranslateParams {
+        match self.ask(&ToDomain::TranslateConfig {
             format: format.clone(),
             toml: toml.to_string(),
             segmented,
         })? {
-            FromDomain::Translated { bytes } => Ok(Params { bytes }),
-            other => Err(self.unexpected("Translated", &other)),
+            FromDomain::TranslatedConfig { bytes } => Ok(Params { bytes }),
+            other => Err(self.unexpected("TranslatedConfig", &other)),
         }
     }
 
@@ -129,12 +129,12 @@ impl DomainService {
         generator: &GeneratorId,
         toml: &str,
     ) -> Result<Vec<u8>> {
-        match self.ask(&ToDomain::TranslateGeneratorParams {
+        match self.ask(&ToDomain::TranslateGeneratorConfig {
             generator: generator.clone(),
             toml: toml.to_string(),
         })? {
-            FromDomain::Translated { bytes } => Ok(bytes),
-            other => Err(self.unexpected("Translated", &other)),
+            FromDomain::TranslatedConfig { bytes } => Ok(bytes),
+            other => Err(self.unexpected("TranslatedConfig", &other)),
         }
     }
 

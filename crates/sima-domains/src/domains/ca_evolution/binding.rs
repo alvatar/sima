@@ -31,7 +31,7 @@ pub(crate) fn build_binding<M: CaModel, E: CellularEngine>() -> Result<FormatBin
         // holds; `M` and `E` ride along through monomorphization.
         executor: |device| Ok(Box::new(CaExecutor::<M, E>::new(device)?)),
         device_desc: E::device_desc,
-        enumerate: E::enumerate,
+        enumerate_devices: E::enumerate_devices,
         environment: Environment::new(vec![
             EnvironmentComponent::new(
                 format!("{}.executor", M::NAME),

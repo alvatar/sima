@@ -115,14 +115,14 @@ fn every_format_enumerates_the_devices_its_backend_reports() {
     // than failing.
     for name in FORMATS {
         let mut service = Service::spawn(name);
-        let answer = service.ask(ToDomain::Enumerate {
+        let answer = service.ask(ToDomain::EnumerateDevices {
             format: format(name),
         });
         let expected =
             sima_domains::devices::enumerate_devices(&format(name)).expect("enumeration answers");
         assert_eq!(
             answer,
-            FromDomain::Enumerated { devices: expected },
+            FromDomain::EnumeratedDevices { devices: expected },
             "{name}"
         );
         assert_eq!(service.shutdown(), Some(0));
@@ -135,7 +135,7 @@ fn params_translate_to_the_bytes_the_dispatch_produces() {
     // enter the run id, so the two paths agree byte for byte.
     let text = "hex = \"00ff\"\n";
     let mut service = Service::spawn("stub.v1");
-    let answer = service.ask(ToDomain::TranslateParams {
+    let answer = service.ask(ToDomain::TranslateConfig {
         format: format("stub.v1"),
         toml: text.to_string(),
         segmented: false,
@@ -148,7 +148,7 @@ fn params_translate_to_the_bytes_the_dispatch_produces() {
     .expect("the stub translates its params");
     assert_eq!(
         answer,
-        FromDomain::Translated {
+        FromDomain::TranslatedConfig {
             bytes: expected.bytes
         }
     );
@@ -160,7 +160,7 @@ fn generator_params_translate_to_the_bytes_the_dispatch_produces() {
     let text = "behaviors = [\"succeed\", \"reject\"]\n";
     let generator = GeneratorId::new("stub.v1").expect("generator id");
     let mut service = Service::spawn("stub.v1");
-    let answer = service.ask(ToDomain::TranslateGeneratorParams {
+    let answer = service.ask(ToDomain::TranslateGeneratorConfig {
         generator: generator.clone(),
         toml: text.to_string(),
     });
@@ -168,7 +168,7 @@ fn generator_params_translate_to_the_bytes_the_dispatch_produces() {
         .expect("a registered generator")
         .translate_config(text)
         .expect("the stub translates its generator params");
-    assert_eq!(answer, FromDomain::Translated { bytes: expected });
+    assert_eq!(answer, FromDomain::TranslatedConfig { bytes: expected });
     assert_eq!(service.shutdown(), Some(0));
 }
 

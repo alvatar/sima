@@ -104,9 +104,9 @@ enum Readiness {
         host: String,
         container: Container,
     },
-    /// A rented machine: `sima-worker --enumerate` inside the instance's own
+    /// A rented machine: `sima-worker --enumerate-devices` inside the instance's own
     /// container, which is also the machine's device layout.
-    Enumerate {
+    EnumerateDevices {
         mode: SpawnMode,
         target: SshDestination,
         format: FormatId,
@@ -152,7 +152,7 @@ impl Remote {
         Ok(Remote {
             reach: Reach::new(&mode, &target, destination.binary),
             layout: FarLayout::new(destination.root, run),
-            readiness: Readiness::Enumerate {
+            readiness: Readiness::EnumerateDevices {
                 mode,
                 target,
                 format: format.clone(),
@@ -205,7 +205,7 @@ impl FarSide for Remote {
                 ImageCheck::Present => Ok(Contact::Answered(Vec::new())),
                 ImageCheck::Unreachable(error) => Ok(Contact::Unreachable(error)),
             },
-            Readiness::Enumerate {
+            Readiness::EnumerateDevices {
                 mode,
                 target,
                 format,

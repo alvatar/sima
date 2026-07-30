@@ -50,7 +50,7 @@ impl CellularEngine for CudaEngine {
         })
     }
 
-    fn enumerate() -> Result<Vec<DeviceInfo>> {
+    fn enumerate_devices() -> Result<Vec<DeviceInfo>> {
         sima_toolkit_cuda::enumerate_devices()?
             .into_iter()
             .map(from_toolkit)
@@ -223,7 +223,7 @@ mod tests {
         // The probe the worker runs must answer rather than fail on a host with
         // no NVIDIA driver, so the orchestrator reads "no device" instead of a
         // failed probe.
-        CudaEngine::enumerate().expect("enumeration answers on any machine");
+        CudaEngine::enumerate_devices().expect("enumeration answers on any machine");
     }
 
     /// The smoke kernel both backends ship: a toroidal neighborhood max over

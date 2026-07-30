@@ -27,7 +27,7 @@ pub(crate) trait CellularEngine: Send + Sized + 'static {
     /// Every device this engine's backend can open, in the domains layer's
     /// vocabulary. A domain built on this engine answers with exactly this, so
     /// no worker is bound to a device the backend faults on.
-    fn enumerate() -> Result<Vec<DeviceInfo>>;
+    fn enumerate_devices() -> Result<Vec<DeviceInfo>>;
 
     /// The name of the environment component that pins this backend's
     /// compiler. Each backend names its own, so a domain's environment says

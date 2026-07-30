@@ -41,7 +41,7 @@ impl CellularEngine for WgslEngine {
         })
     }
 
-    fn enumerate() -> Result<Vec<DeviceInfo>> {
+    fn enumerate_devices() -> Result<Vec<DeviceInfo>> {
         sima_toolkit_wgsl::enumerate_devices()?
             .into_iter()
             .map(from_toolkit)
@@ -215,7 +215,7 @@ mod tests {
         // The probe the worker runs must answer rather than fail on a host
         // whose Vulkan loader finds no driver, so the orchestrator reads "no
         // device" instead of a failed probe.
-        WgslEngine::enumerate().expect("enumeration answers on any machine");
+        WgslEngine::enumerate_devices().expect("enumeration answers on any machine");
     }
 
     #[test]

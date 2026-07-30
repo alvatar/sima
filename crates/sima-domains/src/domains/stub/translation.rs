@@ -28,7 +28,7 @@ pub(crate) fn binding() -> Result<FormatBinding> {
         // and no device or driver to name.
         executor: |_| Ok(Box::new(StubExecutor::new()?)),
         device_desc: |_| Ok((String::new(), String::new())),
-        enumerate: || Ok(Vec::new()),
+        enumerate_devices: || Ok(Vec::new()),
         environment: Environment::new(vec![EnvironmentComponent::new(
             "stub.executor",
             EnvironmentValue::Version("v1".to_string()),

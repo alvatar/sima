@@ -25,7 +25,7 @@ pub use sima_contracts::{DeviceInfo, DeviceType};
 /// one its own execution backend supplies, so nothing above this crate has to
 /// know which backends the build compiles in.
 pub fn enumerate_devices(format: &FormatId) -> Result<Vec<DeviceInfo>> {
-    (crate::binding_for(format)?.enumerate)()
+    (crate::binding_for(format)?.enumerate_devices)()
 }
 
 #[cfg(test)]

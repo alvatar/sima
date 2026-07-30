@@ -1485,7 +1485,7 @@ minus the ssh hop.
 
 - **Device selection on another machine.** A declared host carries the same
   device tables the orchestrator does. Resolving them needs that machine's
-  device list, so `sima-worker` doubles as the probe: `sima-worker --enumerate
+  device list, so `sima-worker` doubles as the probe: `sima-worker --enumerate-devices
   <format>` prints the devices that format's program can run on as JSON and
   exits. At run start the orchestrator verifies each machine's image is present,
   then runs the probe through that machine's container and reuses the same
@@ -1877,7 +1877,7 @@ config's dollar figures to micro-USD.
 **Lifecycle.** Orchestration takes the store and lock first, then acquires under
 the held lock: each rented entry's `count` machines, each through
 [`acquire`](#the-acquisition-loop) behind a teardown guard, each probed over
-ssh (`sima-worker --enumerate <format>`) to derive one worker slot per usable
+ssh (`sima-worker --enumerate-devices <format>`) to derive one worker slot per usable
 device — or a single deviceless slot where the probe reports none. **Usable**
 drops CPU devices when the probe reports any non-CPU one: a machine rented for
 its card would otherwise spend the rental running the slowest device on it,

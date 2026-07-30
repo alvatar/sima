@@ -27,21 +27,21 @@ pub use crate::protocol::PROTOCOL_VERSION;
 // Parent → domain message tags.
 const TAG_HELLO: u8 = 0;
 const TAG_DESCRIBE: u8 = 1;
-const TAG_ENUMERATE: u8 = 2;
-const TAG_TRANSLATE_PARAMS: u8 = 3;
-const TAG_TRANSLATE_GENERATOR_PARAMS: u8 = 4;
+const TAG_ENUMERATE_DEVICES: u8 = 2;
+const TAG_TRANSLATE_CONFIG: u8 = 3;
+const TAG_TRANSLATE_GENERATOR_CONFIG: u8 = 4;
 const TAG_GENERATE: u8 = 5;
 const TAG_GOODBYE: u8 = 6;
 
 // Domain → parent message tags.
 const TAG_READY: u8 = 0;
 const TAG_DESCRIBED: u8 = 1;
-const TAG_ENUMERATED: u8 = 2;
-const TAG_TRANSLATED: u8 = 3;
+const TAG_ENUMERATED_DEVICES: u8 = 2;
+const TAG_TRANSLATED_CONFIG: u8 = 3;
 const TAG_GENERATED: u8 = 4;
 const TAG_FAILED: u8 = 5;
 
-// Device-category tags inside an `Enumerated` payload.
+// Device-category tags inside an `EnumeratedDevices` payload.
 const DEVICE_DISCRETE: u8 = 0;
 const DEVICE_INTEGRATED: u8 = 1;
 const DEVICE_VIRTUAL: u8 = 2;
@@ -65,13 +65,13 @@ pub enum ToDomain {
         format: FormatId,
     },
     /// What devices the format's work can run on.
-    Enumerate {
+    EnumerateDevices {
         /// The format asked about.
         format: FormatId,
     },
     /// The `[run.params]` section, as text, to be translated into the format's
     /// canonical params bytes.
-    TranslateParams {
+    TranslateConfig {
         /// The format whose translation is asked for.
         format: FormatId,
         /// The section's TOML text; empty for a run that states no params.
@@ -81,7 +81,7 @@ pub enum ToDomain {
     },
     /// The `[run.generator]` section minus `id`, as text, to be translated into
     /// the generator's opaque params blob.
-    TranslateGeneratorParams {
+    TranslateGeneratorConfig {
         /// The generator whose translation is asked for.
         generator: GeneratorId,
         /// The section's TOML text; empty for a run that states no settings.
@@ -118,13 +118,13 @@ pub enum FromDomain {
     },
     /// The devices the format's work can run on; empty for a format that opens
     /// none.
-    Enumerated {
+    EnumeratedDevices {
         /// The devices, as the program's execution backend enumerates them.
         devices: Vec<DeviceInfo>,
     },
-    /// Translated configuration: the canonical params bytes, for either
+    /// TranslatedConfig configuration: the canonical params bytes, for either
     /// translation.
-    Translated {
+    TranslatedConfig {
         /// The opaque bytes the translation produced.
         bytes: Vec<u8>,
     },
@@ -152,21 +152,21 @@ impl ToDomain {
             ToDomain::Describe { format } => {
                 enc.u8(TAG_DESCRIBE).str(format.as_str());
             }
-            ToDomain::Enumerate { format } => {
-                enc.u8(TAG_ENUMERATE).str(format.as_str());
+            ToDomain::EnumerateDevices { format } => {
+                enc.u8(TAG_ENUMERATE_DEVICES).str(format.as_str());
             }
-            ToDomain::TranslateParams {
+            ToDomain::TranslateConfig {
                 format,
                 toml,
                 segmented,
             } => {
-                enc.u8(TAG_TRANSLATE_PARAMS)
+                enc.u8(TAG_TRANSLATE_CONFIG)
                     .str(format.as_str())
                     .str(toml)
                     .u8(u8::from(*segmented));
             }
-            ToDomain::TranslateGeneratorParams { generator, toml } => {
-                enc.u8(TAG_TRANSLATE_GENERATOR_PARAMS)
+            ToDomain::TranslateGeneratorConfig { generator, toml } => {
+                enc.u8(TAG_TRANSLATE_GENERATOR_CONFIG)
                     .str(generator.as_str())
                     .str(toml);
             }
@@ -201,15 +201,15 @@ impl ToDomain {
             TAG_DESCRIBE => ToDomain::Describe {
                 format: FormatId::new(dec.str()?)?,
             },
-            TAG_ENUMERATE => ToDomain::Enumerate {
+            TAG_ENUMERATE_DEVICES => ToDomain::EnumerateDevices {
                 format: FormatId::new(dec.str()?)?,
             },
-            TAG_TRANSLATE_PARAMS => ToDomain::TranslateParams {
+            TAG_TRANSLATE_CONFIG => ToDomain::TranslateConfig {
                 format: FormatId::new(dec.str()?)?,
                 toml: dec.str()?.to_string(),
                 segmented: decode_flag(&mut dec)?,
             },
-            TAG_TRANSLATE_GENERATOR_PARAMS => ToDomain::TranslateGeneratorParams {
+            TAG_TRANSLATE_GENERATOR_CONFIG => ToDomain::TranslateGeneratorConfig {
                 generator: GeneratorId::new(dec.str()?)?,
                 toml: dec.str()?.to_string(),
             },
@@ -243,8 +243,8 @@ impl FromDomain {
                 enc.u8(TAG_DESCRIBED);
                 environment.encode(&mut enc);
             }
-            FromDomain::Enumerated { devices } => {
-                enc.u8(TAG_ENUMERATED).u64(devices.len() as u64);
+            FromDomain::EnumeratedDevices { devices } => {
+                enc.u8(TAG_ENUMERATED_DEVICES).u64(devices.len() as u64);
                 for device in devices {
                     enc.str(device.class.as_str())
                         .str(&device.name)
@@ -252,8 +252,8 @@ impl FromDomain {
                         .u32(device.member);
                 }
             }
-            FromDomain::Translated { bytes } => {
-                enc.u8(TAG_TRANSLATED).bytes(bytes);
+            FromDomain::TranslatedConfig { bytes } => {
+                enc.u8(TAG_TRANSLATED_CONFIG).bytes(bytes);
             }
             FromDomain::Generated { specs } => {
                 enc.u8(TAG_GENERATED).u64(specs.len() as u64);
@@ -279,7 +279,7 @@ impl FromDomain {
             TAG_DESCRIBED => FromDomain::Described {
                 environment: Environment::decode(&mut dec)?,
             },
-            TAG_ENUMERATED => {
+            TAG_ENUMERATED_DEVICES => {
                 let count = dec.u64()?;
                 // No pre-allocation from the untrusted count: each device reads
                 // two length-prefixed strings and five more bytes, so a lying
@@ -293,9 +293,9 @@ impl FromDomain {
                         member: dec.u32()?,
                     });
                 }
-                FromDomain::Enumerated { devices }
+                FromDomain::EnumeratedDevices { devices }
             }
-            TAG_TRANSLATED => FromDomain::Translated {
+            TAG_TRANSLATED_CONFIG => FromDomain::TranslatedConfig {
                 bytes: dec.bytes()?.to_vec(),
             },
             TAG_GENERATED => {
@@ -385,22 +385,22 @@ mod tests {
             ToDomain::Describe {
                 format: format("stub.v1"),
             },
-            ToDomain::Enumerate {
+            ToDomain::EnumerateDevices {
                 format: format("ca_evolution.gray_scott.v1"),
             },
-            ToDomain::TranslateParams {
+            ToDomain::TranslateConfig {
                 format: format("stub.v1"),
                 toml: "hex = \"00ff\"\n".to_string(),
                 segmented: true,
             },
             // An absent section crosses as empty text: a format whose params
             // are all defaulted still answers with its canonical bytes.
-            ToDomain::TranslateParams {
+            ToDomain::TranslateConfig {
                 format: format("stub.v1"),
                 toml: String::new(),
                 segmented: false,
             },
-            ToDomain::TranslateGeneratorParams {
+            ToDomain::TranslateGeneratorConfig {
                 generator: generator("stub.v1"),
                 toml: "behaviors = [\"succeed\"]\n".to_string(),
             },
@@ -442,7 +442,7 @@ mod tests {
                 ])
                 .expect("environment"),
             },
-            FromDomain::Enumerated {
+            FromDomain::EnumeratedDevices {
                 devices: vec![
                     DeviceInfo {
                         class: DeviceClass::new("8086:7d51").expect("class id"),
@@ -459,13 +459,13 @@ mod tests {
                 ],
             },
             // A format that opens no device answers with an empty list.
-            FromDomain::Enumerated {
+            FromDomain::EnumeratedDevices {
                 devices: Vec::new(),
             },
-            FromDomain::Translated {
+            FromDomain::TranslatedConfig {
                 bytes: vec![9, 9, 9],
             },
-            FromDomain::Translated { bytes: Vec::new() },
+            FromDomain::TranslatedConfig { bytes: Vec::new() },
             FromDomain::Generated {
                 specs: vec![
                     Spec {
@@ -574,9 +574,9 @@ mod tests {
 
     #[test]
     fn an_unknown_device_type_tag_is_an_encoding_error() {
-        // An Enumerated frame carrying one device whose type tag is 9.
+        // An EnumeratedDevices frame carrying one device whose type tag is 9.
         let mut enc = Enc::new();
-        enc.u8(TAG_ENUMERATED)
+        enc.u8(TAG_ENUMERATED_DEVICES)
             .u64(1)
             .str("8086:7d51")
             .str("a device")
@@ -599,7 +599,7 @@ mod tests {
             Err(Error::Validation(_))
         ));
         let mut enc = Enc::new();
-        enc.u8(TAG_TRANSLATE_GENERATOR_PARAMS)
+        enc.u8(TAG_TRANSLATE_GENERATOR_CONFIG)
             .str("Bad Name")
             .str("");
         assert!(matches!(
@@ -614,7 +614,7 @@ mod tests {
         // minted fails at the frame rather than travelling on as a class
         // nothing matches.
         let mut enc = Enc::new();
-        enc.u8(TAG_ENUMERATED)
+        enc.u8(TAG_ENUMERATED_DEVICES)
             .u64(1)
             .str("8086:7D51")
             .str("a device")
@@ -628,9 +628,9 @@ mod tests {
 
     #[test]
     fn an_invalid_flag_byte_is_an_encoding_error() {
-        // A TranslateParams whose segmented flag byte is 2.
+        // A TranslateConfig whose segmented flag byte is 2.
         let mut enc = Enc::new();
-        enc.u8(TAG_TRANSLATE_PARAMS).str("stub.v1").str("").u8(2);
+        enc.u8(TAG_TRANSLATE_CONFIG).str("stub.v1").str("").u8(2);
         assert!(matches!(
             ToDomain::decode(&enc.finish()),
             Err(Error::Encoding(_))
@@ -648,7 +648,7 @@ mod tests {
             DeviceType::Cpu,
             DeviceType::Other,
         ] {
-            let message = FromDomain::Enumerated {
+            let message = FromDomain::EnumeratedDevices {
                 devices: vec![DeviceInfo {
                     class: DeviceClass::new("8086:7d51").expect("class id"),
                     name: "a device".to_string(),

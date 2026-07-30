@@ -101,25 +101,27 @@ fn answer(
                 environment: domain.environment().clone(),
             })
         }
-        ToDomain::Enumerate { format } => {
+        ToDomain::EnumerateDevices { format } => {
             served(domain, &format)?;
-            Ok(FromDomain::Enumerated {
+            Ok(FromDomain::EnumeratedDevices {
                 devices: domain.enumerate_devices()?,
             })
         }
-        ToDomain::TranslateParams {
+        ToDomain::TranslateConfig {
             format,
             toml,
             segmented,
         } => {
             served(domain, &format)?;
-            Ok(FromDomain::Translated {
+            Ok(FromDomain::TranslatedConfig {
                 bytes: domain.translate_config(&toml, segmented)?.bytes,
             })
         }
-        ToDomain::TranslateGeneratorParams { generator, toml } => Ok(FromDomain::Translated {
-            bytes: generator_for(generators, &generator)?.translate_config(&toml)?,
-        }),
+        ToDomain::TranslateGeneratorConfig { generator, toml } => {
+            Ok(FromDomain::TranslatedConfig {
+                bytes: generator_for(generators, &generator)?.translate_config(&toml)?,
+            })
+        }
         ToDomain::Generate {
             generator,
             format,
@@ -391,14 +393,14 @@ mod tests {
             false,
             &[
                 hello(),
-                ToDomain::Enumerate {
+                ToDomain::EnumerateDevices {
                     format: format(FORMAT),
                 },
             ],
         );
         assert!(result.is_ok(), "{result:?}");
-        let FromDomain::Enumerated { devices } = &answers[1] else {
-            panic!("expected Enumerated, got {:?}", answers[1]);
+        let FromDomain::EnumeratedDevices { devices } = &answers[1] else {
+            panic!("expected EnumeratedDevices, got {:?}", answers[1]);
         };
         assert_eq!(devices.len(), 1);
         assert_eq!(devices[0].class.as_str(), "8086:7d51");
@@ -412,7 +414,7 @@ mod tests {
             false,
             &[
                 hello(),
-                ToDomain::TranslateParams {
+                ToDomain::TranslateConfig {
                     format: format(FORMAT),
                     toml: "hex = \"00\"".to_string(),
                     segmented: true,
@@ -422,7 +424,7 @@ mod tests {
         assert!(result.is_ok(), "{result:?}");
         assert_eq!(
             answers[1],
-            FromDomain::Translated {
+            FromDomain::TranslatedConfig {
                 bytes: b"hex = \"00\"|true".to_vec()
             }
         );
@@ -434,7 +436,7 @@ mod tests {
             false,
             &[
                 hello(),
-                ToDomain::TranslateGeneratorParams {
+                ToDomain::TranslateGeneratorConfig {
                     generator: generator("host-test.v1"),
                     toml: "n = 1".to_string(),
                 },
@@ -443,7 +445,7 @@ mod tests {
         assert!(result.is_ok(), "{result:?}");
         assert_eq!(
             answers[1],
-            FromDomain::Translated {
+            FromDomain::TranslatedConfig {
                 bytes: b"gen:n = 1".to_vec()
             }
         );
@@ -488,7 +490,7 @@ mod tests {
                 ToDomain::Describe {
                     format: format("other.v1"),
                 },
-                ToDomain::Enumerate {
+                ToDomain::EnumerateDevices {
                     format: format("other.v1"),
                 },
                 ToDomain::Generate {
@@ -514,7 +516,7 @@ mod tests {
             false,
             &[
                 hello(),
-                ToDomain::TranslateGeneratorParams {
+                ToDomain::TranslateGeneratorConfig {
                     generator: generator("no-such-generator.v1"),
                     toml: String::new(),
                 },
@@ -535,7 +537,7 @@ mod tests {
             true,
             &[
                 hello(),
-                ToDomain::Enumerate {
+                ToDomain::EnumerateDevices {
                     format: format(FORMAT),
                 },
                 ToDomain::Describe {

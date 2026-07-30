@@ -140,7 +140,7 @@
 //! | `binary` | yes | yes | the `sima` binary on that machine |
 //!
 //! A rented machine states no worker layout: it did not exist when the config
-//! was written, so its devices come from the `sima-worker --enumerate` probe.
+//! was written, so its devices come from the `sima-worker --enumerate-devices` probe.
 //!
 //! `[orchestrator]` is a machine of yours, implicitly this one, so it takes the
 //! same worker-side keys an owned host does — `image`, `runtime`, `run_args`,

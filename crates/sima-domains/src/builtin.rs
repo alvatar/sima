@@ -50,7 +50,7 @@ impl Domain for BuiltinDomain {
     }
 
     fn enumerate_devices(&self) -> Result<Vec<DeviceInfo>> {
-        (self.binding.enumerate)()
+        (self.binding.enumerate_devices)()
     }
 
     fn translate_config(&self, toml: &str, segmented: bool) -> Result<Params> {

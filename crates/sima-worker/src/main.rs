@@ -9,7 +9,7 @@
 //! - under `--serve-domain <format>`, it answers what that format binds over
 //!   the domain service, through the same contracts a program outside the
 //!   workspace is written against.
-//! - under `--enumerate <format>`, it prints the devices that format's work can
+//! - under `--enumerate-devices <format>`, it prints the devices that format's work can
 //!   run on and exits.
 //!
 //! The process is pure compute by construction — it is never given a store
@@ -48,7 +48,7 @@ fn resolver(
 /// The format is what selects the backend to ask, so the answer is the devices
 /// this run's work can be placed on rather than every device present. A machine
 /// commonly has devices only one backend reaches.
-fn enumerate(format: &str) -> Result<()> {
+fn enumerate_devices(format: &str) -> Result<()> {
     let format = FormatId::new(format)?;
     for device in sima_domains::devices::enumerate_devices(&format)? {
         let line = serde_json::to_string(&device)
@@ -81,13 +81,13 @@ fn main() {
     // protection — enumerate, print, exit. It runs before anything else so a
     // probe never spawns the handshake machinery. The format id follows the
     // flag and decides which backend is asked.
-    let mut args = std::env::args().skip_while(|arg| arg != "--enumerate");
+    let mut args = std::env::args().skip_while(|arg| arg != "--enumerate-devices");
     if args.next().is_some() {
         let Some(format) = args.next() else {
-            eprintln!("sima-worker: --enumerate takes the run's format id");
+            eprintln!("sima-worker: --enumerate-devices takes the run's format id");
             std::process::exit(1);
         };
-        if let Err(e) = enumerate(&format) {
+        if let Err(e) = enumerate_devices(&format) {
             eprintln!("sima-worker: {e}");
             std::process::exit(1);
         }

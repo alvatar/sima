@@ -101,7 +101,7 @@ pub fn resolve(
     Ok(entries)
 }
 
-/// Parses the `sima-worker --enumerate` probe's stdout — one JSON
+/// Parses the `sima-worker --enumerate-devices` probe's stdout — one JSON
 /// [`DeviceInfo`] per line — into the device list to resolve a remote's
 /// selectors against. Blank lines are ignored; a line that is not a valid
 /// device object is [`Error::Validation`]. Empty output is a machine with no
@@ -317,7 +317,7 @@ mod tests {
     #[test]
     fn a_probe_output_round_trips_through_the_parser() -> Result<()> {
         // The probe writes one JSON device per line; the parser reads exactly
-        // what `sima-worker --enumerate` serializes.
+        // what `sima-worker --enumerate-devices` serializes.
         let devices = two_devices();
         let text = devices
             .iter()

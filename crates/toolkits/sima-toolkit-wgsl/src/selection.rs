@@ -82,7 +82,7 @@ impl DeviceType {
 /// exists without holding a [`Context`](crate::Context). A machine without
 /// Vulkan — no loader library, or a loader whose driver search comes up empty —
 /// has no such device, so it enumerates as an empty list, never an error; the
-/// worker's `--enumerate` probe relies on this to answer "none" on a driverless
+/// worker's `--enumerate-devices` probe relies on this to answer "none" on a driverless
 /// host instead of failing the probe.
 pub fn enumerate_devices() -> Result<Vec<DeviceInfo>> {
     let devices = instance::with_query_instance_or_none(|instance| {

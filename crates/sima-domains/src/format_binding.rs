@@ -46,7 +46,7 @@ pub struct FormatBinding {
     /// backends this build knows. A domain that opens no device answers with an
     /// empty list, which the layers above read as a worker that needs no
     /// device.
-    pub enumerate: fn() -> Result<Vec<DeviceInfo>>,
+    pub enumerate_devices: fn() -> Result<Vec<DeviceInfo>>,
     /// The environment entering every task's identity.
     pub environment: Environment,
 }
