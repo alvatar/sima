@@ -257,8 +257,7 @@ mod tests {
                 passthrough: Vec::new(),
             },
         )
-        .err()
-        .expect("a program that exits serves no domain");
+        .expect_err("a program that exits serves no domain");
         let scratch = fixture::reported_cwd(&report);
         assert_ne!(
             scratch,

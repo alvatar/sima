@@ -902,10 +902,10 @@ mod tests {
             Duration::MAX,
             None,
         );
-        transport
-            .spawn(0, None, discarding_emitter())
-            .err()
-            .expect("a program that exits is no worker");
+        assert!(
+            transport.spawn(0, None, discarding_emitter()).is_err(),
+            "a program that exits is no worker"
+        );
         let scratch = fixture::reported_cwd(&report);
         assert_ne!(
             scratch,
