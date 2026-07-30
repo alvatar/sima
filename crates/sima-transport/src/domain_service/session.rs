@@ -77,7 +77,7 @@ impl DomainService {
             .arg(format.as_str())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped());
-        let scratch = policy.apply(&mut command, std::env::vars())?;
+        let scratch = policy.apply(&mut command, std::env::vars_os)?;
         let mut child = command.spawn().map_err(|e| {
             Error::Transport(format!(
                 "spawning the domain service {} failed: {e}",

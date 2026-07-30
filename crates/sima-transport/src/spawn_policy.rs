@@ -13,6 +13,7 @@
 //! directory: they run in the orchestrator's own trust domain, and the
 //! clients need the ambient environment to reach anything.
 
+use std::ffi::OsString;
 use std::process::Command;
 
 use sima_core::{Error, Result};
@@ -54,20 +55,32 @@ impl SpawnPolicy {
     /// directory.
     ///
     /// [`SpawnPolicy::Inherit`] leaves `command` untouched and yields no
-    /// directory, so an inheriting spawn is the plain one it always was.
-    pub(crate) fn apply(
+    /// directory, so an inheriting spawn is the plain one it always was — and
+    /// `vars` goes uncalled, so the environment is read only where it is read
+    /// from.
+    pub(crate) fn apply<I>(
         &self,
         command: &mut Command,
-        vars: impl Iterator<Item = (String, String)>,
-    ) -> Result<Option<TempDir>> {
+        vars: impl FnOnce() -> I,
+    ) -> Result<Option<TempDir>>
+    where
+        I: IntoIterator<Item = (OsString, OsString)>,
+    {
         let SpawnPolicy::Scrubbed { passthrough } = self else {
             return Ok(None);
         };
         // Clear first: what the child sees is what this loop puts back, so a
         // credential the orchestrator holds is dropped by never being copied.
         command.env_clear();
-        for (name, value) in vars {
-            if forwarded(&name, passthrough) {
+        for (name, value) in vars() {
+            // The names this policy forwards are text, so a name that is not
+            // text matches none of them and is dropped like any other name the
+            // policy does not forward. Values are forwarded as the bytes they
+            // are: what a variable holds is the program's business.
+            let Some(name) = name.to_str() else {
+                continue;
+            };
+            if forwarded(name, passthrough) {
                 command.env(name, value);
             }
         }
@@ -177,13 +190,14 @@ pub(crate) mod fixture {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
+    use std::ffi::OsStr;
     use std::path::{Path, PathBuf};
 
     use super::*;
 
     /// A parent environment holding one credential, one baseline name, one
     /// prefixed name, and two names an entry may declare.
-    fn parent_env() -> Vec<(String, String)> {
+    fn parent_env() -> Vec<(OsString, OsString)> {
         [
             ("VAST_API_KEY", "secret"),
             ("PATH", "/usr/bin"),
@@ -192,7 +206,7 @@ mod tests {
             ("ACME_SECRET", "unnamed"),
         ]
         .into_iter()
-        .map(|(name, value)| (name.to_string(), value.to_string()))
+        .map(|(name, value)| (OsString::from(name), OsString::from(value)))
         .collect()
     }
 
@@ -201,7 +215,7 @@ mod tests {
     fn applied_env(policy: &SpawnPolicy) -> BTreeMap<String, Option<String>> {
         let mut command = Command::new("/bin/true");
         policy
-            .apply(&mut command, parent_env().into_iter())
+            .apply(&mut command, parent_env)
             .expect("apply the policy");
         command
             .get_envs()
@@ -226,7 +240,7 @@ mod tests {
     fn applied_cwd(policy: &SpawnPolicy) -> (Option<PathBuf>, Option<TempDir>) {
         let mut command = Command::new("/bin/true");
         let scratch = policy
-            .apply(&mut command, parent_env().into_iter())
+            .apply(&mut command, parent_env)
             .expect("apply the policy");
         (command.get_current_dir().map(Path::to_path_buf), scratch)
     }
@@ -235,9 +249,13 @@ mod tests {
     fn an_inheriting_spawn_touches_neither_the_environment_nor_the_directory() {
         // The sima-owned path is the plain spawn it always was: nothing is
         // cleared, nothing is set, and the child starts where the parent is.
+        // The environment is not even read — the panicking source proves it,
+        // since an inheriting spawn has no use for a copy of it.
         let mut command = Command::new("/bin/true");
         let scratch = SpawnPolicy::Inherit
-            .apply(&mut command, parent_env().into_iter())
+            .apply(&mut command, || -> Vec<(OsString, OsString)> {
+                panic!("an inheriting spawn reads no environment")
+            })
             .expect("apply the policy");
         assert!(scratch.is_none(), "an inheriting spawn needs no scratch");
         assert_eq!(command.get_envs().count(), 0);
@@ -275,7 +293,7 @@ mod tests {
     fn every_baseline_name_and_prefix_crosses() {
         // The whole list, checked as a list: a name dropped from it silently
         // would leave a program without the platform it runs on.
-        let vars: Vec<(String, String)> = BASELINE_NAMES
+        let names: Vec<String> = BASELINE_NAMES
             .iter()
             .map(|name| (*name).to_string())
             .chain(
@@ -283,17 +301,20 @@ mod tests {
                     .iter()
                     .map(|prefix| format!("{prefix}SOMETHING")),
             )
-            .map(|name| (name, "value".to_string()))
+            .collect();
+        let vars: Vec<(OsString, OsString)> = names
+            .iter()
+            .map(|name| (OsString::from(name), OsString::from("value")))
             .collect();
         let mut command = Command::new("/bin/true");
         scrubbed(&[])
-            .apply(&mut command, vars.iter().cloned())
+            .apply(&mut command, || vars)
             .expect("apply the policy");
         let forwarded: Vec<String> = command
             .get_envs()
             .filter_map(|(name, value)| value.map(|_| name.to_string_lossy().into_owned()))
             .collect();
-        for (name, _) in &vars {
+        for name in &names {
             assert!(forwarded.contains(name), "{name} crosses: {forwarded:?}");
         }
     }
@@ -364,12 +385,12 @@ mod tests {
         // `PATH` is an exact name, so a variable merely starting with it is
         // not the platform's search path — while `PATH` itself still crosses.
         let vars = [
-            ("PATHOLOGICAL".to_string(), "value".to_string()),
-            ("PATH".to_string(), "/usr/bin".to_string()),
+            (OsString::from("PATHOLOGICAL"), OsString::from("value")),
+            (OsString::from("PATH"), OsString::from("/usr/bin")),
         ];
         let mut command = Command::new("/bin/true");
         scrubbed(&[])
-            .apply(&mut command, vars.into_iter())
+            .apply(&mut command, || vars)
             .expect("apply the policy");
         let names: Vec<String> = command
             .get_envs()
@@ -377,5 +398,58 @@ mod tests {
             .collect();
         assert!(!names.contains(&"PATHOLOGICAL".to_string()), "{names:?}");
         assert!(names.contains(&"PATH".to_string()), "{names:?}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_name_that_is_not_text_is_skipped_and_the_spawn_goes_on() {
+        // An environment is bytes, and nothing obliges the orchestrator's own
+        // to be text. Such a name matches neither the baseline nor a declared
+        // name, both of which are text, so it is dropped like any other name
+        // the policy does not forward — and the variables beside it still
+        // cross, which is what makes the drop a decision rather than a stop.
+        use std::os::unix::ffi::OsStringExt;
+
+        let vars = vec![
+            (
+                OsString::from_vec(vec![0xff, 0xfe]),
+                OsString::from("value"),
+            ),
+            (OsString::from("PATH"), OsString::from("/usr/bin")),
+        ];
+        let mut command = Command::new("/bin/true");
+        scrubbed(&[])
+            .apply(&mut command, || vars)
+            .expect("apply the policy");
+        let forwarded: Vec<(OsString, Option<OsString>)> = command
+            .get_envs()
+            .map(|(name, value)| (name.to_os_string(), value.map(OsStr::to_os_string)))
+            .collect();
+        assert_eq!(
+            forwarded,
+            vec![(OsString::from("PATH"), Some(OsString::from("/usr/bin")))],
+            "the untranslatable name is the only one missing"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_value_that_is_not_text_crosses_as_the_bytes_it_is() {
+        // Only the name is matched against the policy's lists, so a forwarded
+        // variable carries whatever it holds. A path on a filesystem that
+        // never promised an encoding is the ordinary case.
+        use std::os::unix::ffi::OsStringExt;
+
+        let opaque = OsString::from_vec(vec![b'/', 0xff, b'/', 0xfe]);
+        let vars = vec![(OsString::from("PATH"), opaque.clone())];
+        let mut command = Command::new("/bin/true");
+        scrubbed(&[])
+            .apply(&mut command, || vars)
+            .expect("apply the policy");
+        let value = command
+            .get_envs()
+            .find(|(name, _)| *name == OsStr::new("PATH"))
+            .and_then(|(_, value)| value);
+        assert_eq!(value, Some(opaque.as_os_str()));
     }
 }

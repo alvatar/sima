@@ -115,7 +115,7 @@ pub(crate) fn spawn_worker(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let scratch = settings.policy.apply(&mut command, std::env::vars())?;
+    let scratch = settings.policy.apply(&mut command, std::env::vars_os)?;
     let mut child = command.spawn().map_err(|e| {
         Error::Transport(format!("spawning worker {} failed: {e}", program.display()))
     })?;
