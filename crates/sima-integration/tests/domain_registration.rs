@@ -2,7 +2,7 @@
 //! carries everything a run's identity is made of, and a program outside this
 //! workspace runs a whole search through the same spine.
 //!
-//! The equivalence here is what proves the seam sufficient. A run driven
+//! The equivalence here is what proves the protocol sufficient. A run driven
 //! through a program produces the run id and the task keys the same run
 //! produces by direct call, so anything the protocol failed to carry would
 //! change a hash and fail these tests rather than pass silently.

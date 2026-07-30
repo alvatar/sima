@@ -3,8 +3,8 @@
 //! One binary answers both roles a run needs of a program, and the arguments
 //! it was spawned with say which: bare, it hosts the format's executor over
 //! the worker protocol; under `--serve-domain <format>`, it answers what the
-//! format binds over the domain service. A program is then its two plugs plus
-//! this call.
+//! format binds over the domain service. A program is then its two components
+//! plus this call.
 
 use sima_contracts::{Domain, Executor, Generator};
 use sima_core::{Error, Result};

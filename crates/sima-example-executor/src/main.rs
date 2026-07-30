@@ -16,7 +16,7 @@ fn main() {
 // process: it reads requests off stdin, calls into the two components, and
 // writes answers to stdout until sima closes the pipe.
 //
-// This is the whole of hosting. A program that gets here has plugged in.
+// This call is the whole of hosting.
 /// Builds both components and hosts them for the life of the process.
 fn host() -> sima_api::Result<()> {
     let domain = DoublerDomain::new()?;

@@ -63,7 +63,7 @@ pub(crate) fn loaded(store: PathBuf) -> Result<LoadedConfig> {
 ///
 /// The tests that route a format to a program need a program that answers, and
 /// sima's own worker is one: it serves the in-tree formats over exactly the
-/// seam a binary outside the workspace does. Cargo builds another crate's
+/// protocol a binary outside the workspace does. Cargo builds another crate's
 /// binary only when it is in the build graph, so the build is asked for here.
 pub(crate) fn built_worker() -> PathBuf {
     static BUILD: std::sync::Once = std::sync::Once::new();

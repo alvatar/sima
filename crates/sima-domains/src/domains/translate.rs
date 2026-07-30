@@ -108,5 +108,5 @@ pub(crate) fn range(table: &toml::Table, id: &str, section: &str, key: &str) -> 
 /// Empty text is the table with no keys: a run that states no section.
 pub(crate) fn table(toml: &str) -> Result<toml::Table> {
     toml.parse()
-        .map_err(|e| Error::Validation(format!("the configuration section is no TOML: {e}")))
+        .map_err(|e| Error::Validation(format!("the configuration section is not valid TOML: {e}")))
 }

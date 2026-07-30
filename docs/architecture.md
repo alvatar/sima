@@ -824,16 +824,16 @@ smallest executor and generator that compile, and its manifest names `sima-api`
 as its only sima dependency, so an item the facade stops naming is a build
 failure in this workspace rather than a discovery made out of tree.
 
-The device seam is open: `DeviceClass` is a name the execution backend mints,
+The device boundary is open: `DeviceClass` is a name the execution backend mints,
 and `DeviceInfo` with `DeviceType` are how a domain answers what its work runs
 on, so a backend the workspace has never seen names its devices in the
 published vocabulary — see [Device placement](#device-placement) for what a
 class asserts.
 
-The configuration seam is open too: a format's `[run.params]` section reaches
-its plug as **TOML text**, so a program translates its own configuration with a
-TOML of its own and sima's version never enters the surface — see
-[Registering a domain](#registering-a-domain).
+The configuration boundary is open too: a format's `[run.params]` section
+reaches its domain as **TOML text**, so a program translates its own
+configuration with a TOML of its own and sima's version never enters the
+surface — see [Registering a domain](#registering-a-domain).
 
 ## Registering a domain
 
@@ -856,7 +856,7 @@ loads its assets once at the handshake and then streams tasks. Foreign code
 stays out of the orchestrator, which keeps "executors never touch the store"
 enforced by the OS rather than by convention.
 
-### The plugs
+### The two components
 
 What a program hands over is a pair of objects in `sima-contracts`, published
 by `sima-api`:
@@ -919,13 +919,13 @@ flowchart LR
   end
   subgraph child["worker processes"]
     W1["sima-worker<br/>in-tree formats"]
-    W2["third-party binary<br/>sima_api::serve(plug)"]
+    W2["third-party binary<br/>sima_api::serve(domain, generators)"]
   end
   BI --> W1
   BN --> W2
 ```
 
-One seam, `DomainSource`, with two implementations:
+One boundary, `DomainSource`, with two implementations:
 
 - **`BuiltinSource`** calls `sima-domains` directly, so the common path pays no
   process and no pipe, and names sima's own worker binary.
@@ -944,8 +944,8 @@ go through it, so a program that cannot answer for the format it is declared
 under fails at load — the rule a config naming an unknown format already
 follows, and no store is left behind either way.
 
-**Sufficiency is a test, not a claim.** `sima-worker --serve-domain` serves the
-in-tree formats through the plugs, and an integration suite drives one of them
+**Protocol sufficiency is tested.** `sima-worker --serve-domain` serves the
+in-tree formats through the two contracts, and an integration suite drives one of them
 through `BinarySource` and asserts the run id and every task key are identical
 to the same run by direct call. A field the protocol failed to carry would
 change a hash.
@@ -1583,7 +1583,7 @@ interpreting it.
   while making every selector longer and coupling it to the backend a format
   happens to use.
 - **Why holding it is safe.** The name is read only where it was minted.
-  Above that seam the scheduler compares and hashes classes, the pipeline
+  Above that boundary the scheduler compares and hashes classes, the pipeline
   matches the rendered string, the store holds opaque bytes, and the transport
   carries the name and the member.
 

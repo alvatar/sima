@@ -7,7 +7,7 @@
 //!   transport's wire protocol; stderr is captured by the parent and journaled
 //!   as correlated diagnostics.
 //! - under `--serve-domain <format>`, it answers what that format binds over
-//!   the domain service, through the same plug seam a program outside the
+//!   the domain service, through the same contracts a program outside the
 //!   workspace is written against.
 //! - under `--enumerate <format>`, it prints the devices that format's work can
 //!   run on and exits.

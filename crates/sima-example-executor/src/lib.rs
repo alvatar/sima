@@ -3,10 +3,9 @@
 //! # The division of labour
 //!
 //! sima draws candidates, schedules them over workers and machines, stores
-//! every result by its content, and records how each one was produced. It knows
-//! nothing about the problem. A program supplies exactly that: what a candidate
-//! is, how to evaluate one, what settings a run may state, and what hardware
-//! the work runs on.
+//! every result by its content, and records how each one was produced. A
+//! program supplies the problem itself: what a candidate is, how to evaluate
+//! one, what settings a run may state, and what hardware the work runs on.
 //!
 //! This program evaluates a candidate of one byte by doubling it. Everything
 //! sima needs from a real renderer or simulator, it needs from this too, which
@@ -20,8 +19,8 @@
 //!
 //! A program registers under a **format id** — here `example.doubler.v1`, 1 to
 //! 64 bytes of `[a-z0-9._-]`. It governs how candidate bytes and run params are
-//! read, so a format whose meaning changes is a new id. A few methods below do
-//! nothing but return it.
+//! read, so a format whose meaning changes is a new id. Several methods below
+//! exist solely to return it.
 //!
 //! # How a run reaches it
 //!
@@ -46,15 +45,14 @@
 //! the format binds, and once per worker slot to execute tasks. Both are the
 //! same program; [`sima_api::serve`] sorts out which is being asked.
 //!
-//! # The five steps
+//! # The six steps
 //!
 //! 1. Evaluate one candidate.
 //! 2. Produce the candidates.
 //! 3. Translate the configuration each component owns.
 //! 4. Declare what enters a result's identity.
 //! 5. Declare the hardware.
-//!
-//! Step 6, handing both components over, is `main.rs`.
+//! 6. Hand both components over — `main.rs`.
 //!
 //! `sima-api` is this crate's only sima dependency, so anything the facade does
 //! not publish is a compile error here.
@@ -120,7 +118,7 @@ impl Domain for DoublerDomain {
     // covers. The text is parsed with a TOML crate of this program's choosing,
     // which is what keeps sima's off the surface.
     //
-    // Rejecting an unread key is therefore not pedantry: a silently ignored
+    // Rejecting an unread key protects that identity: a silently ignored
     // setting gives the run an identity promising something the executor never
     // applied.
     fn translate_params(&self, toml: &str, _segmented: bool) -> Result<Params> {
@@ -220,7 +218,7 @@ impl Executor for Doubler {
         _checkpoint: &dyn Checkpoint,
     ) -> Result<Outcome> {
         // Rejected rather than failed: retrying an empty spec would evaluate
-        // the same bytes to the same nothing.
+        // the same bytes to the same outcome.
         let Some(&byte) = input.spec.bytes.first() else {
             return Ok(Outcome::Rejected {
                 reason: "an empty spec carries no candidate byte".to_string(),
@@ -230,7 +228,7 @@ impl Executor for Doubler {
         let doubled = byte.wrapping_mul(2);
         let mut scalars = vec![("doubled".to_string(), f64::from(doubled))];
         // Stats enter no key and no environment, so reporting the device is
-        // free: a run's report gains where each result came off.
+        // free: a run's report shows which member produced each result.
         if let Some(device) = &self.device {
             scalars.push(("device.member".to_string(), f64::from(device.member)));
         }
@@ -324,5 +322,5 @@ impl Generator for Sampler {
 /// Empty text is a section with no keys.
 fn section(toml: &str) -> Result<toml::Table> {
     toml.parse()
-        .map_err(|e| Error::Validation(format!("the configuration section is no TOML: {e}")))
+        .map_err(|e| Error::Validation(format!("the configuration section is not valid TOML: {e}")))
 }

@@ -10,7 +10,7 @@
 //! - [`host`] — the child side: [`host::serve`] hosts a resolved executor
 //!   over the pipe for the life of the worker process.
 //! - [`domain_service`] — the second conversation: what a format binds, asked
-//!   of the program that owns it and answered from its plugs.
+//!   of the program that owns it and answered from its two components.
 //! - [`serve`] — the process entry point of a program that hosts a domain:
 //!   both roles behind one call, chosen by the arguments it was spawned with.
 //! - [`link`] — the parent-side seam: the [`WorkerTransport`] and

@@ -2446,7 +2446,7 @@ mod tests {
 
     #[test]
     fn a_format_routed_to_a_program_keeps_its_run_id() {
-        // The seam carries the configuration, so the identity a run has is the
+        // The protocol carries the configuration, so the identity a run has is the
         // one it has by direct call: the same file with an entry and without it
         // is the same run.
         let entry = format!(
