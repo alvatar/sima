@@ -16,8 +16,8 @@
 //! - [`link`] — the parent-side boundary: the [`WorkerTransport`] and
 //!   [`WorkerLink`] traits the scheduler is written against.
 //! - [`spawn_policy`] — what environment and working directory a spawned
-//!   child receives: inherited for a sima-owned process, scrubbed down to an
-//!   explicit surface for a configured program.
+//!   child receives: an inherited surface for a sima-owned process, an
+//!   explicit one for a configured program.
 //! - [`spawn_settings`] — what every worker spawn of one pool shares: that
 //!   policy, the deadline on the handshake answer, and the handshake frame.
 //! - [`subprocess`] — the production transport: one process per worker,

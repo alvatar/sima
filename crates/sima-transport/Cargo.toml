@@ -9,7 +9,7 @@ sima-model = { path = "../sima-model" }
 sima-contracts = { path = "../sima-contracts" }
 sima-trace = { path = "../sima-trace" }
 serde_json.workspace = true
-# The scratch working directory a scrubbed spawn hands its child, removed when
+# The scratch working directory an explicit spawn hands its child, removed when
 # the link or session that holds it reaps the process.
 tempfile.workspace = true
 

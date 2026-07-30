@@ -97,8 +97,8 @@ pub(crate) struct EventContext {
 
 /// Spawns `program args...` as a worker child under `settings`, pipes its
 /// stdio, runs the reader thread, and performs the handshake bound to
-/// `device`. The returned link owns the child and the scratch directory a
-/// scrubbed policy gave it; a handshake failure kills and reaps it before the
+/// `device`. The returned link owns the child and the scratch directory an
+/// explicit policy gave it; a handshake failure kills and reaps it before the
 /// error returns. Shared by every transport that runs a worker over a local
 /// process — a bare `sima-worker` or a container client wrapping one.
 pub(crate) fn spawn_worker(
@@ -228,7 +228,7 @@ pub(crate) fn ready_desc(peer: &str, answer: Option<Result<ToParent>>) -> Result
 /// stdin and the process handle; the reader thread owns its stdout.
 struct SubprocessLink {
     child: Child,
-    /// The scratch working directory a scrubbed spawn gave the child, held so
+    /// The scratch working directory an explicit spawn gave the child, held so
     /// it lives exactly as long as the process; `None` under an inheriting
     /// policy. Cleared once the child is reaped, so the directory is removed
     /// with nothing still writing into it.

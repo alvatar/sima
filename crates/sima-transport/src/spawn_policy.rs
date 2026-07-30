@@ -19,13 +19,13 @@ use std::process::Command;
 use sima_core::{Error, Result};
 use tempfile::TempDir;
 
-/// Environment variables forwarded to a scrubbed child by exact name.
+/// Environment variables an explicit surface carries by exact name.
 ///
 /// The program search path, the user's identity and scratch space, and the
 /// locale settings a library reads at startup.
 const BASELINE_NAMES: [&str; 7] = ["PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "LANG", "TZ"];
 
-/// Environment variable prefixes forwarded to a scrubbed child.
+/// Environment variable prefixes an explicit surface carries.
 ///
 /// The dynamic loader (`LD_`), the remaining locale settings (`LC_`), the
 /// user's directory layout and caches (`XDG_`), and the three GPU stacks a
@@ -94,8 +94,9 @@ impl SpawnPolicy {
     }
 }
 
-/// Whether a scrubbed child receives the variable named `name`: the baseline
-/// the platform needs, or a name the program's config entry declared.
+/// Whether an explicit surface carries the variable named `name`: the
+/// baseline the platform needs, or a name the program's config entry
+/// declared.
 fn forwarded(name: &str, passthrough: &[String]) -> bool {
     BASELINE_NAMES.contains(&name)
         || BASELINE_PREFIXES

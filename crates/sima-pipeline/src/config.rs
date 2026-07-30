@@ -105,7 +105,7 @@
 //! process. The entry is read when the config loads, so a program that cannot
 //! answer for the format it is declared under fails there.
 //!
-//! The program is spawned with a scrubbed environment and a scratch working
+//! The program is spawned with an explicit environment and a scratch working
 //! directory of its own. `env` names the variables it receives on top of that
 //! baseline, by name alone: each value comes from the orchestrator's own
 //! environment, and a name the orchestrator does not hold is simply absent in

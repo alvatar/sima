@@ -39,7 +39,7 @@ const SERVE_DOMAIN: &str = "--serve-domain";
 #[derive(Debug)]
 pub struct DomainService {
     child: Child,
-    /// The scratch working directory a scrubbed spawn gave the program, held
+    /// The scratch working directory an explicit spawn gave the program, held
     /// so it lives exactly as long as the session; `None` under an inheriting
     /// policy. Cleared once the program is reaped, so the directory is removed
     /// with nothing still writing into it.
