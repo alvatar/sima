@@ -51,7 +51,7 @@ impl LoopbackTransport {
         resolver: SharedResolver,
     ) -> LoopbackTransport {
         LoopbackTransport {
-            hello: subprocess::hello(format, checkpoint_interval, checkpoint_interval_steps),
+            hello: Hello::for_run(format, checkpoint_interval, checkpoint_interval_steps),
             resolver,
         }
     }

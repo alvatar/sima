@@ -17,6 +17,7 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::{Mutex, PoisonError};
+use std::time::Duration;
 
 use sima_contracts::{DeviceInfo, Domain, Generator};
 use sima_core::Result;
@@ -122,7 +123,8 @@ pub(crate) struct BinarySource {
 impl BinarySource {
     /// Spawns the entry's program for its format and confirms it answers, so a
     /// program that cannot be run or does not serve the format fails here.
-    fn spawn(entry: DomainEntry) -> Result<BinarySource> {
+    /// Every question this session asks is bounded by `answer_timeout`.
+    fn spawn(entry: DomainEntry, answer_timeout: Duration) -> Result<BinarySource> {
         let DomainEntry {
             format,
             binary,
@@ -139,7 +141,8 @@ impl BinarySource {
             ))
         };
         let policy = SpawnPolicy::Scrubbed { passthrough: env };
-        let mut service = DomainService::spawn(&binary, &format, &policy).map_err(declared)?;
+        let mut service =
+            DomainService::spawn(&binary, &format, &policy, answer_timeout).map_err(declared)?;
         service.environment(&format).map_err(declared)?;
         Ok(BinarySource {
             binary,
@@ -233,12 +236,16 @@ pub struct DomainRegistry {
 
 impl DomainRegistry {
     /// The registry `entries` declare: one program per format, each spawned and
-    /// asked to answer for the format it is declared under.
-    pub(crate) fn new(entries: Vec<DomainEntry>) -> Result<DomainRegistry> {
+    /// asked to answer for the format it is declared under, under the run's
+    /// answer deadline.
+    pub(crate) fn new(
+        entries: Vec<DomainEntry>,
+        answer_timeout: Duration,
+    ) -> Result<DomainRegistry> {
         let mut configured = BTreeMap::new();
         for entry in entries {
             let format = entry.format.as_str().to_string();
-            configured.insert(format, BinarySource::spawn(entry)?);
+            configured.insert(format, BinarySource::spawn(entry, answer_timeout)?);
         }
         Ok(DomainRegistry {
             builtin: BuiltinSource,
@@ -298,11 +305,14 @@ mod tests {
     /// which serves the in-tree formats over the same protocol a program outside
     /// the workspace does.
     fn served_by_binary() -> Result<DomainRegistry> {
-        DomainRegistry::new(vec![DomainEntry {
-            format: format("stub.v1"),
-            binary: built_worker(),
-            env: Vec::new(),
-        }])
+        DomainRegistry::new(
+            vec![DomainEntry {
+                format: format("stub.v1"),
+                binary: built_worker(),
+                env: Vec::new(),
+            }],
+            Duration::MAX,
+        )
     }
 
     #[test]
@@ -351,11 +361,14 @@ mod tests {
         // The registry is what a config resolves into, so a program that
         // cannot answer for the format it is declared under fails there —
         // before a run reaches a store.
-        let Err(error) = DomainRegistry::new(vec![DomainEntry {
-            format: format("acme.thing.v1"),
-            binary: built_worker(),
-            env: Vec::new(),
-        }]) else {
+        let Err(error) = DomainRegistry::new(
+            vec![DomainEntry {
+                format: format("acme.thing.v1"),
+                binary: built_worker(),
+                env: Vec::new(),
+            }],
+            Duration::MAX,
+        ) else {
             panic!("expected a program that serves no such format to fail");
         };
         assert!(error.to_string().contains("acme.thing.v1"), "{error}");
@@ -363,11 +376,14 @@ mod tests {
 
     #[test]
     fn a_binary_that_cannot_be_run_names_itself() {
-        let Err(error) = DomainRegistry::new(vec![DomainEntry {
-            format: format("acme.thing.v1"),
-            binary: PathBuf::from("/no/such/domain/binary"),
-            env: Vec::new(),
-        }]) else {
+        let Err(error) = DomainRegistry::new(
+            vec![DomainEntry {
+                format: format("acme.thing.v1"),
+                binary: PathBuf::from("/no/such/domain/binary"),
+                env: Vec::new(),
+            }],
+            Duration::MAX,
+        ) else {
             panic!("expected a binary that cannot be run to fail");
         };
         assert!(
@@ -486,11 +502,14 @@ mod tests {
     fn an_entry_s_declared_names_reach_the_policy_its_program_is_spawned_under() -> Result<()> {
         // One policy answers for the whole program: the session already open
         // and every worker the run will spawn from the same binary.
-        let registry = DomainRegistry::new(vec![DomainEntry {
-            format: format("stub.v1"),
-            binary: built_worker(),
-            env: vec!["ACME_ASSETS".to_string()],
-        }])?;
+        let registry = DomainRegistry::new(
+            vec![DomainEntry {
+                format: format("stub.v1"),
+                binary: built_worker(),
+                env: vec!["ACME_ASSETS".to_string()],
+            }],
+            Duration::MAX,
+        )?;
         assert_eq!(
             registry.source(&format("stub.v1")).spawn_policy(),
             SpawnPolicy::Scrubbed {

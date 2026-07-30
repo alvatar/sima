@@ -25,6 +25,7 @@
 //! store                     = "./store"   # resolved against this file's directory
 //! max_attempts              = 3
 //! attempt_timeout_ms        = 300000      # optional; absent disables the deadline
+//! answer_timeout_ms         = 120000      # optional; absent disables the deadline
 //! checkpoint_interval_ms    = 30000       # optional; wall-clock cadence
 //! checkpoint_interval_steps = 500         # optional; step cadence, >= 1
 //!
@@ -521,6 +522,7 @@ struct ConfigSection {
     store: String,
     max_attempts: u32,
     attempt_timeout_ms: Option<u64>,
+    answer_timeout_ms: Option<u64>,
     checkpoint_interval_ms: Option<u64>,
     checkpoint_interval_steps: Option<u64>,
 }
@@ -648,10 +650,14 @@ pub fn load(path: &Path) -> Result<LoadedConfig> {
     let file: FileConfig =
         toml::from_str(&text).map_err(|e| Error::Validation(format!("{}: {e}", path.display())))?;
 
+    // The answer deadline precedes the registry, which spawns programs and
+    // asks them questions: a session opened before the deadline was read
+    // would wait on its first answer without one.
+    let answer_timeout = optional_bound(file.config.answer_timeout_ms);
     // The registry precedes the run's translation, which is answered through
     // it: a program declared for a format is spawned and asked here, so an
     // entry naming one that cannot answer fails before the run has a store.
-    let domains = resolve_domains(path, file.domain)?;
+    let domains = resolve_domains(path, file.domain, answer_timeout)?;
     let run = resolve_run(path, file.run, &domains)?;
     let orchestrator = resolve_orchestrator(path, file.orchestrator)?;
 
@@ -732,6 +738,7 @@ pub fn load(path: &Path) -> Result<LoadedConfig> {
 fn resolve_domains(
     path: &Path,
     entries: BTreeMap<String, DomainSection>,
+    answer_timeout: Duration,
 ) -> Result<DomainRegistry> {
     let base = path.parent().unwrap_or(Path::new(""));
     let declared = entries
@@ -748,7 +755,8 @@ fn resolve_domains(
             })
         })
         .collect::<Result<Vec<_>>>()?;
-    DomainRegistry::new(declared).map_err(|e| Error::Validation(format!("{}: {e}", path.display())))
+    DomainRegistry::new(declared, answer_timeout)
+        .map_err(|e| Error::Validation(format!("{}: {e}", path.display())))
 }
 
 /// Validates the variable names an entry forwards to its program.
@@ -904,12 +912,8 @@ fn resolve_execution(
     config: &ConfigSection,
     orchestrator: &Orchestrator,
 ) -> Result<ExecutionConfig> {
-    let attempt_timeout = config
-        .attempt_timeout_ms
-        .map_or(Duration::MAX, Duration::from_millis);
-    let checkpoint_interval = config
-        .checkpoint_interval_ms
-        .map_or(Duration::MAX, Duration::from_millis);
+    let attempt_timeout = optional_bound(config.attempt_timeout_ms);
+    let checkpoint_interval = optional_bound(config.checkpoint_interval_ms);
     // The step cadence is optional and, when present, at least 1: a zero cadence
     // has no meaning (every offer, and no offer, at once), so it is a validation
     // fault naming the key.
@@ -929,9 +933,17 @@ fn resolve_execution(
         workers,
         config.max_attempts,
         attempt_timeout,
+        optional_bound(config.answer_timeout_ms),
         checkpoint_interval,
         checkpoint_interval_steps,
     )
+}
+
+/// An optional millisecond setting as a duration. Absent disables the bound,
+/// which [`Duration::MAX`] expresses: a wait longer than the address space of
+/// milliseconds is no bound in effect.
+fn optional_bound(ms: Option<u64>) -> Duration {
+    ms.map_or(Duration::MAX, Duration::from_millis)
 }
 
 /// Validates the `[orchestrator]` section and resolves it. This machine takes an

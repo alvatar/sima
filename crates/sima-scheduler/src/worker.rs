@@ -778,7 +778,14 @@ mod tests {
             params,
         };
         let run = store.create_run(&config)?;
-        let exec = ExecutionConfig::new(1, 1, Duration::from_secs(5), Duration::MAX, None)?;
+        let exec = ExecutionConfig::new(
+            1,
+            1,
+            Duration::from_secs(5),
+            Duration::MAX,
+            Duration::MAX,
+            None,
+        )?;
 
         // The stub artifact this identity commits when the state bytes reach the
         // executor: computed by calling the executor directly with the bytes.
@@ -946,7 +953,14 @@ mod tests {
             params,
         };
         let run = store.create_run(&config)?;
-        let exec = ExecutionConfig::new(1, 1, Duration::from_secs(5), Duration::MAX, None)?;
+        let exec = ExecutionConfig::new(
+            1,
+            1,
+            Duration::from_secs(5),
+            Duration::MAX,
+            Duration::MAX,
+            None,
+        )?;
         let coordinator = Coordinator::new();
         let key = identity.key();
         coordinator.lock().leases.insert(key);
@@ -1073,7 +1087,14 @@ mod tests {
             interval: Duration,
             step_interval: Option<NonZeroU64>,
         ) -> Result<Vec<Event>> {
-            let exec = ExecutionConfig::new(1, 1, Duration::from_secs(5), interval, step_interval)?;
+            let exec = ExecutionConfig::new(
+                1,
+                1,
+                Duration::from_secs(5),
+                Duration::MAX,
+                interval,
+                step_interval,
+            )?;
             let coordinator = Coordinator::new();
             let (tx, rx) = mpsc::channel();
             {

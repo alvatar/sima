@@ -255,6 +255,7 @@ mod session {
             std::path::Path::new(env!("CARGO_BIN_EXE_sima-worker")),
             &format(name),
             &SpawnPolicy::Inherit,
+            std::time::Duration::MAX,
         )
         .expect("the worker serves its own formats")
     }
@@ -304,6 +305,7 @@ mod session {
             std::path::Path::new(env!("CARGO_BIN_EXE_sima-worker")),
             &format("no-such-domain.v1"),
             &SpawnPolicy::Inherit,
+            std::time::Duration::MAX,
         )
         .expect_err("a program that serves no such format");
         assert!(
@@ -318,6 +320,7 @@ mod session {
             std::path::Path::new("/no/such/domain/binary"),
             &format("stub.v1"),
             &SpawnPolicy::Inherit,
+            std::time::Duration::MAX,
         )
         .expect_err("no such binary");
         assert!(

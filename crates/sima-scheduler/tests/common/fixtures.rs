@@ -80,15 +80,29 @@ pub fn device(vendor_id: u32, workers: usize) -> DeviceEntry {
 
 /// A validated execution config whose pool is spread over `devices`.
 pub fn exec_over(devices: Vec<DeviceEntry>, max_attempts: u32) -> ExecutionConfig {
-    ExecutionConfig::with_devices(devices, max_attempts, Duration::MAX, Duration::MAX, None)
-        .expect("execution config")
+    ExecutionConfig::with_devices(
+        devices,
+        max_attempts,
+        Duration::MAX,
+        Duration::MAX,
+        Duration::MAX,
+        None,
+    )
+    .expect("execution config")
 }
 
 /// A validated execution config with an explicit attempt timeout, for tests
 /// that need a duration outside the millisecond range such as `Duration::MAX`.
 pub fn exec_with_timeout(workers: usize, max_attempts: u32, timeout: Duration) -> ExecutionConfig {
-    ExecutionConfig::new(workers, max_attempts, timeout, Duration::MAX, None)
-        .expect("execution config")
+    ExecutionConfig::new(
+        workers,
+        max_attempts,
+        timeout,
+        Duration::MAX,
+        Duration::MAX,
+        None,
+    )
+    .expect("execution config")
 }
 
 /// A fresh store under a temporary directory; the directory is returned so it

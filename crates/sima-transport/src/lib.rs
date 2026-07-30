@@ -18,6 +18,8 @@
 //! - [`spawn_policy`] — what environment and working directory a spawned
 //!   child receives: inherited for a sima-owned process, scrubbed down to an
 //!   explicit surface for a configured program.
+//! - [`spawn_settings`] — what every worker spawn of one pool shares: that
+//!   policy, the deadline on the handshake answer, and the handshake frame.
 //! - [`subprocess`] — the production transport: one process per worker,
 //!   SIGKILL preemption.
 //! - [`container`] — a worker inside a container runtime, optionally across an
@@ -40,13 +42,16 @@ pub mod loopback;
 pub mod protocol;
 pub mod serve;
 pub mod spawn_policy;
+pub mod spawn_settings;
 pub mod ssh;
 pub mod subprocess;
 
+mod answer_deadline;
 mod checkpoint_cadence;
 
 pub use container::ContainerTransport;
 pub use link::{LinkEvent, SpawnOutcome, WorkerLink, WorkerTransport};
 pub use spawn_policy::SpawnPolicy;
+pub use spawn_settings::SpawnSettings;
 pub use ssh::{SpawnMode, SshDestination, SshTransport};
 pub use subprocess::SubprocessTransport;

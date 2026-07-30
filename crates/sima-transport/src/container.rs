@@ -18,7 +18,7 @@
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use sima_contracts::DeviceBinding;
 use sima_core::Result;
@@ -26,10 +26,10 @@ use sima_model::FormatId;
 use sima_trace::Emitter;
 
 use crate::link::{LinkEvent, SpawnOutcome, WorkerLink, WorkerTransport};
-use crate::protocol::{Assignment, Hello};
-use crate::spawn_policy::SpawnPolicy;
+use crate::protocol::Assignment;
+use crate::spawn_settings::SpawnSettings;
 use crate::ssh::SshDestination;
-use crate::subprocess::{EventContext, hello, spawn_worker};
+use crate::subprocess::{EventContext, spawn_worker};
 
 /// The container command the worker runs as; the runtime execs it as the
 /// container's entrypoint argument.
@@ -52,26 +52,23 @@ pub struct ContainerTransport {
     /// The stem every spawn's container name derives from; the pipeline makes
     /// it unique to the run and pool.
     container_prefix: String,
-    hello: Hello,
+    settings: SpawnSettings,
     /// The next container-name suffix. Monotonic per transport, so a name is
     /// unique across every slot's spawns and respawns without a clock.
     counter: AtomicU64,
 }
 
 impl ContainerTransport {
-    /// A transport launching `image` under `runtime` for a run over `format`
-    /// with the given checkpoint cadence ([`Duration::MAX`] and `None` disable
-    /// an axis). `host` is the ssh destination, or `None` for a local runtime.
-    #[allow(clippy::too_many_arguments)]
+    /// A transport launching `image` under `runtime`, spawning its clients
+    /// under `settings`. `host` is the ssh destination, or `None` for a local
+    /// runtime.
     pub fn new(
         host: Option<String>,
         runtime: String,
         image: String,
         run_args: Vec<String>,
         container_prefix: String,
-        format: FormatId,
-        checkpoint_interval: Duration,
-        checkpoint_interval_steps: Option<std::num::NonZeroU64>,
+        settings: SpawnSettings,
     ) -> ContainerTransport {
         ContainerTransport {
             host,
@@ -79,7 +76,7 @@ impl ContainerTransport {
             image,
             run_args,
             container_prefix,
-            hello: hello(format, checkpoint_interval, checkpoint_interval_steps),
+            settings,
             counter: AtomicU64::new(0),
         }
     }
@@ -116,11 +113,7 @@ impl WorkerTransport for ContainerTransport {
         let inner = spawn_worker(
             Path::new(program),
             args,
-            // The runtime client is sima's own process: it reads its
-            // configuration and credentials from the ambient environment, and
-            // the worker it nests is the sima image's.
-            &SpawnPolicy::Inherit,
-            &self.hello,
+            &self.settings,
             worker,
             device,
             context,

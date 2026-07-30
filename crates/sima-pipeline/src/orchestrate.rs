@@ -10,7 +10,7 @@ use sima_model::{FormatId, RunId};
 use sima_scheduler::{ExecutionConfig, RunControl, RunOutcome, WorkerPool, worker_slots};
 use sima_store::Store;
 use sima_transport::container::{image_inspect_argv, probe_argv};
-use sima_transport::{ContainerTransport, SubprocessTransport};
+use sima_transport::{ContainerTransport, SpawnPolicy, SpawnSettings, SubprocessTransport};
 
 use crate::config::{Container, LoadedConfig, Pool};
 use crate::devices;
@@ -279,10 +279,7 @@ fn local_pool(
                 Vec::new(),
                 // Inherited for sima's own worker, scrubbed for a program a
                 // config routed this format to.
-                source.spawn_policy(),
-                config.run.format.clone(),
-                execution.checkpoint_interval,
-                execution.checkpoint_interval_steps,
+                spawn_settings(source.spawn_policy(), execution, &config.run.format),
             )),
             slots: worker_slots(execution),
         })),
@@ -353,6 +350,7 @@ fn container_pool(
                 entries,
                 execution.max_attempts,
                 execution.attempt_timeout,
+                execution.answer_timeout,
                 execution.checkpoint_interval,
                 execution.checkpoint_interval_steps,
             )?;
@@ -371,9 +369,10 @@ fn container_pool(
             container.image.clone(),
             container.run_args.clone(),
             prefix,
-            format.clone(),
-            execution.checkpoint_interval,
-            execution.checkpoint_interval_steps,
+            // The runtime client is sima's own process: it reads its
+            // configuration from the ambient environment, and the worker it
+            // nests is the sima image's.
+            spawn_settings(SpawnPolicy::Inherit, execution, format),
         ),
         // A container on this machine binds as local in the journal — it is the
         // local machine.
@@ -513,8 +512,26 @@ fn resolve_devices(config: &LoadedConfig, source: &dyn DomainSource) -> Result<E
         entries,
         config.execution.max_attempts,
         config.execution.attempt_timeout,
+        config.execution.answer_timeout,
         config.execution.checkpoint_interval,
         config.execution.checkpoint_interval_steps,
+    )
+}
+
+/// The settings a pool's workers are spawned and greeted under: the policy the
+/// pool's binary calls for, plus the run's answer deadline and checkpoint
+/// cadence.
+fn spawn_settings(
+    policy: SpawnPolicy,
+    execution: &ExecutionConfig,
+    format: &FormatId,
+) -> SpawnSettings {
+    SpawnSettings::new(
+        policy,
+        execution.answer_timeout,
+        format.clone(),
+        execution.checkpoint_interval,
+        execution.checkpoint_interval_steps,
     )
 }
 

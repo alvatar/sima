@@ -536,6 +536,7 @@ mod tests {
             1,
             Duration::MAX,
             Duration::MAX,
+            Duration::MAX,
             None,
         )?;
         assert_eq!(
@@ -557,6 +558,7 @@ mod tests {
             1,
             Duration::MAX,
             Duration::MAX,
+            Duration::MAX,
             None,
         )?;
         assert_eq!(
@@ -575,7 +577,7 @@ mod tests {
     fn a_run_naming_no_device_leaves_every_slot_unbound() -> Result<()> {
         // The single implicit class: every child takes the backend's own
         // choice, and the pool is the plain worker count.
-        let exec = ExecutionConfig::new(3, 1, Duration::MAX, Duration::MAX, None)?;
+        let exec = ExecutionConfig::new(3, 1, Duration::MAX, Duration::MAX, Duration::MAX, None)?;
         assert_eq!(slot_shape(&exec), vec![None, None, None]);
         Ok(())
     }

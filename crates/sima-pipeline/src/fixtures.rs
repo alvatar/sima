@@ -44,7 +44,7 @@ pub(crate) fn stub_config() -> Result<RunConfig> {
 pub(crate) fn loaded(store: PathBuf) -> Result<LoadedConfig> {
     Ok(LoadedConfig {
         run: stub_config()?,
-        execution: ExecutionConfig::new(1, 1, Duration::MAX, Duration::MAX, None)?,
+        execution: ExecutionConfig::new(1, 1, Duration::MAX, Duration::MAX, Duration::MAX, None)?,
         orchestrator: Orchestrator {
             migrate: None,
             container: None,
@@ -161,8 +161,8 @@ pub(crate) fn drive_run(
     config: &RunConfig,
     stop_after: Option<usize>,
 ) -> RunOutcome {
-    let exec =
-        ExecutionConfig::new(1, 1, Duration::MAX, Duration::MAX, None).expect("execution config");
+    let exec = ExecutionConfig::new(1, 1, Duration::MAX, Duration::MAX, Duration::MAX, None)
+        .expect("execution config");
     let transport = LoopbackTransport::new(
         config.format.clone(),
         exec.checkpoint_interval,

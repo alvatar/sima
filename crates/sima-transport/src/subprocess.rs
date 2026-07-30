@@ -13,7 +13,6 @@
 //! closing, which [`WorkerLink::next`] reports as [`LinkEvent::Died`].
 
 use std::io::Read;
-use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
@@ -22,17 +21,17 @@ use std::time::{Duration, Instant};
 
 use sima_contracts::DeviceBinding;
 use sima_core::{Error, Result, read_frame, write_frame};
-use sima_model::FormatId;
 use sima_trace::{Emitter, Event, Level};
 use tempfile::TempDir;
 
+use crate::answer_deadline::receive_within;
 use crate::link::{LinkEvent, SpawnOutcome, WorkerLink, WorkerTransport};
 use crate::protocol::{Assignment, Hello, PROTOCOL_VERSION, ToChild, ToParent};
-use crate::spawn_policy::SpawnPolicy;
+use crate::spawn_settings::SpawnSettings;
 
 /// Spawns worker processes for one run: the command vector to run — a program
-/// and its arguments — the policy its children are spawned under, plus the
-/// handshake every child receives, the run's format id and checkpoint cadence.
+/// and its arguments — plus the settings every child of this pool is spawned
+/// and greeted under.
 ///
 /// The command vector is `sima-worker` with no arguments for a local worker,
 /// and a wrapper that ultimately execs a worker for anything longer-lived: the
@@ -41,57 +40,22 @@ use crate::spawn_policy::SpawnPolicy;
 pub struct SubprocessTransport {
     program: PathBuf,
     args: Vec<String>,
-    policy: SpawnPolicy,
-    hello: Hello,
+    settings: SpawnSettings,
 }
 
 impl SubprocessTransport {
-    /// A transport spawning `program args...` under `policy` for a run over
-    /// `format` with the given checkpoint cadence ([`Duration::MAX`] and
-    /// `None` disable an axis). A local worker passes an empty argument
-    /// vector.
+    /// A transport spawning `program args...` under `settings`. A local worker
+    /// passes an empty argument vector.
     pub fn new(
         program: PathBuf,
         args: Vec<String>,
-        policy: SpawnPolicy,
-        format: FormatId,
-        checkpoint_interval: Duration,
-        checkpoint_interval_steps: Option<NonZeroU64>,
+        settings: SpawnSettings,
     ) -> SubprocessTransport {
         SubprocessTransport {
             program,
             args,
-            policy,
-            hello: hello(format, checkpoint_interval, checkpoint_interval_steps),
+            settings,
         }
-    }
-}
-
-/// The handshake frame for a run's settings, in the wire's cadence encoding:
-/// a disabled wall-clock axis is `u64::MAX` milliseconds — an interval too
-/// large for the u64 saturates there, since a cadence beyond the address
-/// space of milliseconds is disabled in effect — and a disabled step axis
-/// is `0`.
-///
-/// The worker id and device are left unbound: they vary per worker, so each
-/// spawn sets them on its own copy of this frame.
-pub(crate) fn hello(
-    format: FormatId,
-    checkpoint_interval: Duration,
-    checkpoint_interval_steps: Option<NonZeroU64>,
-) -> Hello {
-    let checkpoint_interval_ms = if checkpoint_interval == Duration::MAX {
-        u64::MAX
-    } else {
-        u64::try_from(checkpoint_interval.as_millis()).unwrap_or(u64::MAX)
-    };
-    Hello {
-        protocol: PROTOCOL_VERSION,
-        worker: 0,
-        format,
-        checkpoint_interval_ms,
-        checkpoint_interval_steps: checkpoint_interval_steps.map_or(0, NonZeroU64::get),
-        device: None,
     }
 }
 
@@ -112,8 +76,7 @@ impl WorkerTransport for SubprocessTransport {
         spawn_worker(
             &self.program,
             &self.args,
-            &self.policy,
-            &self.hello,
+            &self.settings,
             worker,
             device,
             context,
@@ -132,17 +95,16 @@ pub(crate) struct EventContext {
     pub(crate) host: String,
 }
 
-/// Spawns `program args...` as a worker child under `policy`, pipes its stdio,
-/// runs the reader thread, and performs the handshake bound to `device`. The
-/// returned link owns the child and the scratch directory a scrubbed policy
-/// gave it; a handshake failure kills and reaps it before the error returns.
-/// Shared by every transport that runs a worker over a local process — a bare
-/// `sima-worker` or a container client wrapping one.
+/// Spawns `program args...` as a worker child under `settings`, pipes its
+/// stdio, runs the reader thread, and performs the handshake bound to
+/// `device`. The returned link owns the child and the scratch directory a
+/// scrubbed policy gave it; a handshake failure kills and reaps it before the
+/// error returns. Shared by every transport that runs a worker over a local
+/// process — a bare `sima-worker` or a container client wrapping one.
 pub(crate) fn spawn_worker(
     program: &Path,
     args: &[String],
-    policy: &SpawnPolicy,
-    hello: &Hello,
+    settings: &SpawnSettings,
     worker: u64,
     device: Option<&DeviceBinding>,
     context: EventContext,
@@ -153,7 +115,7 @@ pub(crate) fn spawn_worker(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let scratch = policy.apply(&mut command, std::env::vars())?;
+    let scratch = settings.policy.apply(&mut command, std::env::vars())?;
     let mut child = command.spawn().map_err(|e| {
         Error::Transport(format!("spawning worker {} failed: {e}", program.display()))
     })?;
@@ -186,14 +148,15 @@ pub(crate) fn spawn_worker(
         driver: String::new(),
     };
     // The handshake: Hello out, Ready back. Any other answer — silence ended
-    // by death, a wrong version, an undecodable echo — is a spawn failure, and
-    // the misbehaving child is killed and reaped before the error returns.
+    // by death, silence outlasting the answer deadline, a wrong version, an
+    // undecodable echo — is a spawn failure, and the misbehaving child is
+    // killed and reaped before the error returns.
     let hello = Hello {
         worker,
         device: device.cloned(),
-        ..hello.clone()
+        ..settings.hello.clone()
     };
-    match handshake(&mut link, &hello) {
+    match handshake(&mut link, &hello, settings.answer_timeout, program) {
         Ok((device_name, driver)) => {
             link.device_name = device_name;
             link.driver = driver;
@@ -208,9 +171,27 @@ pub(crate) fn spawn_worker(
 
 /// Performs the parent's half of the handshake over a fresh link, returning
 /// the device name and driver version the worker reported.
-fn handshake(link: &mut SubprocessLink, hello: &Hello) -> Result<(String, String)> {
+///
+/// The wait is startup plus one answer, so `answer_timeout` bounds it: a
+/// child wedged before `Ready` — a broken driver hanging device
+/// initialization, a wrapper that never execs — is a spawn failure naming the
+/// program rather than a worker thread stopped forever.
+fn handshake(
+    link: &mut SubprocessLink,
+    hello: &Hello,
+    answer_timeout: Duration,
+    program: &Path,
+) -> Result<(String, String)> {
     link.write(&ToChild::Hello(hello.clone()))?;
-    ready_desc("worker", link.events.recv().ok())
+    match receive_within(&link.events, answer_timeout) {
+        Ok(answer) => ready_desc("worker", Some(answer)),
+        Err(RecvTimeoutError::Timeout) => Err(Error::Transport(format!(
+            "the worker {} exceeded the {}ms answer deadline awaiting Ready",
+            program.display(),
+            answer_timeout.as_millis()
+        ))),
+        Err(RecvTimeoutError::Disconnected) => ready_desc("worker", None),
+    }
 }
 
 /// Classifies a peer's answer to `Hello`: the device name and driver version
@@ -597,8 +578,30 @@ pub(crate) fn next_event(
 
 #[cfg(test)]
 mod tests {
+    use std::num::NonZeroU64;
+
+    use sima_model::FormatId;
+
     use super::*;
-    use crate::spawn_policy::fixture;
+    use crate::spawn_policy::{SpawnPolicy, fixture};
+
+    /// The settings a builtin worker of the stub format is spawned under:
+    /// checkpointing disabled, and every answer awaited for as long as the
+    /// child lives.
+    fn settings(policy: SpawnPolicy) -> SpawnSettings {
+        settings_within(policy, Duration::MAX)
+    }
+
+    /// The same settings under an explicit answer deadline.
+    fn settings_within(policy: SpawnPolicy, answer_timeout: Duration) -> SpawnSettings {
+        SpawnSettings::new(
+            policy,
+            answer_timeout,
+            FormatId::new("stub.v1").expect("format id"),
+            Duration::MAX,
+            None::<NonZeroU64>,
+        )
+    }
 
     /// A transport over the given program for the stub format with
     /// checkpointing disabled, spawning the way a builtin worker is spawned.
@@ -606,10 +609,7 @@ mod tests {
         SubprocessTransport::new(
             PathBuf::from(program),
             Vec::new(),
-            SpawnPolicy::Inherit,
-            FormatId::new("stub.v1").expect("format id"),
-            Duration::MAX,
-            None,
+            settings(SpawnPolicy::Inherit),
         )
     }
 
@@ -895,12 +895,9 @@ mod tests {
         let transport = SubprocessTransport::new(
             program,
             Vec::new(),
-            SpawnPolicy::Scrubbed {
+            settings(SpawnPolicy::Scrubbed {
                 passthrough: Vec::new(),
-            },
-            FormatId::new("stub.v1").expect("format id"),
-            Duration::MAX,
-            None,
+            }),
         );
         assert!(
             transport.spawn(0, None, discarding_emitter()).is_err(),
