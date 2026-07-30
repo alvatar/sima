@@ -91,6 +91,81 @@ fn forwarded(name: &str, passthrough: &[String]) -> bool {
         || passthrough.iter().any(|declared| declared == name)
 }
 
+/// The fixture the two spawn sites share: a program that reports the
+/// directory it was spawned in, so a test can look for that directory once
+/// the process is reaped.
+#[cfg(test)]
+pub(crate) mod fixture {
+    use std::path::{Path, PathBuf};
+    use std::process::Command;
+    use std::time::{Duration, Instant};
+
+    /// The argument that makes the program exit without reporting, so the
+    /// fixture can exec it harmlessly while it waits for it to become
+    /// runnable.
+    const PROBE: &str = "--probe";
+
+    /// Writes an executable script under `dir` that records its working
+    /// directory at `report` and exits at once. Exiting is what the caller
+    /// wants: the spawn fails at the handshake, which is the path that reaps
+    /// the child, and by then the report is written.
+    pub(crate) fn cwd_reporting_program(dir: &Path, report: &Path) -> PathBuf {
+        let path = dir.join("report-cwd.sh");
+        std::fs::write(
+            &path,
+            format!(
+                "#!/bin/sh\n\
+                 [ \"$1\" = {PROBE} ] && exit 0\n\
+                 pwd > {}\n\
+                 exit 0\n",
+                report.display()
+            ),
+        )
+        .expect("write the reporting program");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+                .expect("make the reporting program executable");
+        }
+        await_runnable(&path);
+        path
+    }
+
+    /// Waits until the just-written program can be executed.
+    ///
+    /// Writing a program and running it within one multithreaded process
+    /// races the kernel's rule against exec'ing a file open for writing: a
+    /// spawn on another thread carries the fresh descriptor across its own
+    /// fork, and every exec of the file is refused with `ETXTBSY` until that
+    /// child has exec'd. Probing until one exec succeeds is what makes the
+    /// fixture deterministic. Only a test writes the program it spawns; the
+    /// run path spawns programs that were already on disk.
+    fn await_runnable(path: &Path) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            match Command::new(path).arg(PROBE).status() {
+                Ok(status) if status.success() => return,
+                outcome => assert!(
+                    Instant::now() < deadline,
+                    "{} never became runnable: {outcome:?}",
+                    path.display()
+                ),
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    /// The directory the program recorded at `report`.
+    pub(crate) fn reported_cwd(report: &Path) -> PathBuf {
+        PathBuf::from(
+            std::fs::read_to_string(report)
+                .expect("the program reported its working directory")
+                .trim(),
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;

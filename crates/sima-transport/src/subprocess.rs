@@ -598,6 +598,7 @@ pub(crate) fn next_event(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::spawn_policy::fixture;
 
     /// A transport over the given program for the stub format with
     /// checkpointing disabled, spawning the way a builtin worker is spawned.
@@ -881,5 +882,40 @@ mod tests {
         // hanging or panicking.
         let result = transport("/bin/cat").spawn(0, None, discarding_emitter());
         assert!(result.is_err(), "the handshake against cat must fail");
+    }
+
+    #[test]
+    fn a_scrubbed_worker_runs_in_a_scratch_directory_that_dies_with_it() {
+        // The scratch directory's life is the child's: the program records
+        // where it ran, and by the time the spawn returns — the child killed
+        // and reaped over its refused handshake — that directory is gone.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let report = dir.path().join("cwd");
+        let program = fixture::cwd_reporting_program(dir.path(), &report);
+        let transport = SubprocessTransport::new(
+            program,
+            Vec::new(),
+            SpawnPolicy::Scrubbed {
+                passthrough: Vec::new(),
+            },
+            FormatId::new("stub.v1").expect("format id"),
+            Duration::MAX,
+            None,
+        );
+        transport
+            .spawn(0, None, discarding_emitter())
+            .err()
+            .expect("a program that exits is no worker");
+        let scratch = fixture::reported_cwd(&report);
+        assert_ne!(
+            scratch,
+            dir.path(),
+            "the child ran in a directory of its own"
+        );
+        assert!(
+            !scratch.exists(),
+            "{} outlived its child",
+            scratch.display()
+        );
     }
 }

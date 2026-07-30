@@ -236,3 +236,39 @@ impl Drop for DomainService {
         self.scratch = None;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::spawn_policy::fixture;
+
+    #[test]
+    fn a_scrubbed_program_runs_in_a_scratch_directory_that_dies_with_it() {
+        // The scratch directory's life is the program's: it records where it
+        // ran, and by the time the spawn returns — the program killed and
+        // reaped over its refused handshake — that directory is gone.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let report = dir.path().join("cwd");
+        let program = fixture::cwd_reporting_program(dir.path(), &report);
+        DomainService::spawn(
+            &program,
+            &FormatId::new("stub.v1").expect("format id"),
+            &SpawnPolicy::Scrubbed {
+                passthrough: Vec::new(),
+            },
+        )
+        .err()
+        .expect("a program that exits serves no domain");
+        let scratch = fixture::reported_cwd(&report);
+        assert_ne!(
+            scratch,
+            dir.path(),
+            "the program ran in a directory of its own"
+        );
+        assert!(
+            !scratch.exists(),
+            "{} outlived its program",
+            scratch.display()
+        );
+    }
+}
