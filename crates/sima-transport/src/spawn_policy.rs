@@ -1,0 +1,298 @@
+//! [`SpawnPolicy`]: what environment and working directory a spawned child
+//! receives.
+//!
+//! Two processes are spawned across the boundary a configured program owns:
+//! its domain service and its workers. Both run code sima does not build, so
+//! both start from an explicit surface rather than from whatever the
+//! orchestrator happens to hold: the baseline environment the platform needs
+//! plus the variables the program's config entry names, and an empty working
+//! directory of its own.
+//!
+//! Every sima-owned process — a builtin worker, a container runtime client,
+//! an ssh client — keeps the orchestrator's environment and working
+//! directory: they run in the orchestrator's own trust domain, and the
+//! clients need the ambient environment to reach anything.
+
+use std::process::Command;
+
+use sima_core::{Error, Result};
+use tempfile::TempDir;
+
+/// Environment variables forwarded to a scrubbed child by exact name.
+///
+/// The program search path, the user's identity and scratch space, and the
+/// locale settings a library reads at startup.
+const BASELINE_NAMES: [&str; 7] = ["PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "LANG", "TZ"];
+
+/// Environment variable prefixes forwarded to a scrubbed child.
+///
+/// The dynamic loader (`LD_`), the remaining locale settings (`LC_`), the
+/// user's directory layout and caches (`XDG_`), and the three GPU stacks a
+/// domain program computes on: NVIDIA (`CUDA_`, `NVIDIA_`, `__GL_`), AMD
+/// (`ROCM_`, `ROCR_`, `HIP_`, `HSA_`), and Mesa/Vulkan (`VK_`, `MESA_`).
+const BASELINE_PREFIXES: [&str; 12] = [
+    "LC_", "XDG_", "LD_", "CUDA_", "NVIDIA_", "VK_", "MESA_", "ROCM_", "ROCR_", "HIP_", "HSA_",
+    "__GL_",
+];
+
+/// How a spawned child's environment and working directory are prepared.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SpawnPolicy {
+    /// The child inherits the parent's environment and working directory.
+    /// The policy of every sima-owned process.
+    Inherit,
+    /// The child receives the baseline allowlist plus the named variables,
+    /// and starts in a fresh scratch directory removed at reap.
+    /// The policy of every config-routed binary.
+    Scrubbed { passthrough: Vec<String> },
+}
+
+impl SpawnPolicy {
+    /// Prepares `command` under this policy, drawing the parent's environment
+    /// from `vars`. Returns the scratch directory the child runs in, which the
+    /// caller holds for exactly as long as the child: dropping it removes the
+    /// directory.
+    ///
+    /// [`SpawnPolicy::Inherit`] leaves `command` untouched and yields no
+    /// directory, so an inheriting spawn is the plain one it always was.
+    pub(crate) fn apply(
+        &self,
+        command: &mut Command,
+        vars: impl Iterator<Item = (String, String)>,
+    ) -> Result<Option<TempDir>> {
+        let SpawnPolicy::Scrubbed { passthrough } = self else {
+            return Ok(None);
+        };
+        // Clear first: what the child sees is what this loop puts back, so a
+        // credential the orchestrator holds is dropped by never being copied.
+        command.env_clear();
+        for (name, value) in vars {
+            if forwarded(&name, passthrough) {
+                command.env(name, value);
+            }
+        }
+        let scratch = TempDir::with_prefix("sima-scratch-").map_err(|e| {
+            Error::Transport(format!(
+                "creating the scratch working directory of a spawned program failed: {e}"
+            ))
+        })?;
+        command.current_dir(scratch.path());
+        Ok(Some(scratch))
+    }
+}
+
+/// Whether a scrubbed child receives the variable named `name`: the baseline
+/// the platform needs, or a name the program's config entry declared.
+fn forwarded(name: &str, passthrough: &[String]) -> bool {
+    BASELINE_NAMES.contains(&name)
+        || BASELINE_PREFIXES
+            .iter()
+            .any(|prefix| name.starts_with(prefix))
+        || passthrough.iter().any(|declared| declared == name)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+    use std::path::{Path, PathBuf};
+
+    use super::*;
+
+    /// A parent environment holding one credential, one baseline name, one
+    /// prefixed name, and two names an entry may declare.
+    fn parent_env() -> Vec<(String, String)> {
+        [
+            ("VAST_API_KEY", "secret"),
+            ("PATH", "/usr/bin"),
+            ("CUDA_VISIBLE_DEVICES", "0"),
+            ("ACME_ASSETS", "/opt/acme/assets"),
+            ("ACME_SECRET", "unnamed"),
+        ]
+        .into_iter()
+        .map(|(name, value)| (name.to_string(), value.to_string()))
+        .collect()
+    }
+
+    /// The environment `policy` leaves on a fresh command over
+    /// [`parent_env`], as name to value; a removal is a name mapped to `None`.
+    fn applied_env(policy: &SpawnPolicy) -> BTreeMap<String, Option<String>> {
+        let mut command = Command::new("/bin/true");
+        policy
+            .apply(&mut command, parent_env().into_iter())
+            .expect("apply the policy");
+        command
+            .get_envs()
+            .map(|(name, value)| {
+                (
+                    name.to_string_lossy().into_owned(),
+                    value.map(|value| value.to_string_lossy().into_owned()),
+                )
+            })
+            .collect()
+    }
+
+    /// A scrubbed policy declaring `passthrough`.
+    fn scrubbed(passthrough: &[&str]) -> SpawnPolicy {
+        SpawnPolicy::Scrubbed {
+            passthrough: passthrough.iter().map(|name| name.to_string()).collect(),
+        }
+    }
+
+    /// The working directory `policy` sets, with the scratch directory kept
+    /// alive so the path still exists when the caller looks at it.
+    fn applied_cwd(policy: &SpawnPolicy) -> (Option<PathBuf>, Option<TempDir>) {
+        let mut command = Command::new("/bin/true");
+        let scratch = policy
+            .apply(&mut command, parent_env().into_iter())
+            .expect("apply the policy");
+        (command.get_current_dir().map(Path::to_path_buf), scratch)
+    }
+
+    #[test]
+    fn an_inheriting_spawn_touches_neither_the_environment_nor_the_directory() {
+        // The sima-owned path is the plain spawn it always was: nothing is
+        // cleared, nothing is set, and the child starts where the parent is.
+        let mut command = Command::new("/bin/true");
+        let scratch = SpawnPolicy::Inherit
+            .apply(&mut command, parent_env().into_iter())
+            .expect("apply the policy");
+        assert!(scratch.is_none(), "an inheriting spawn needs no scratch");
+        assert_eq!(command.get_envs().count(), 0);
+        assert_eq!(command.get_current_dir(), None);
+    }
+
+    #[test]
+    fn a_scrubbed_spawn_drops_a_credential_the_orchestrator_holds() {
+        // The measure the scrubbing exists for: a provider credential in the
+        // orchestrator's environment matches nothing on the baseline, so a
+        // foreign program never sees it. The baseline name beside it is what
+        // makes the absence mean something — an environment that forwarded
+        // nothing at all would drop the credential too.
+        let env = applied_env(&scrubbed(&[]));
+        assert!(!env.contains_key("VAST_API_KEY"), "{env:?}");
+        assert!(env.contains_key("PATH"), "{env:?}");
+    }
+
+    #[test]
+    fn a_scrubbed_spawn_forwards_the_baseline() {
+        let env = applied_env(&scrubbed(&[]));
+        assert_eq!(
+            env.get("PATH"),
+            Some(&Some("/usr/bin".to_string())),
+            "{env:?}"
+        );
+        assert_eq!(
+            env.get("CUDA_VISIBLE_DEVICES"),
+            Some(&Some("0".to_string())),
+            "the GPU stack the program computes on: {env:?}"
+        );
+    }
+
+    #[test]
+    fn every_baseline_name_and_prefix_crosses() {
+        // The whole list, checked as a list: a name dropped from it silently
+        // would leave a program without the platform it runs on.
+        let vars: Vec<(String, String)> = BASELINE_NAMES
+            .iter()
+            .map(|name| (*name).to_string())
+            .chain(
+                BASELINE_PREFIXES
+                    .iter()
+                    .map(|prefix| format!("{prefix}SOMETHING")),
+            )
+            .map(|name| (name, "value".to_string()))
+            .collect();
+        let mut command = Command::new("/bin/true");
+        scrubbed(&[])
+            .apply(&mut command, vars.iter().cloned())
+            .expect("apply the policy");
+        let forwarded: Vec<String> = command
+            .get_envs()
+            .filter_map(|(name, value)| value.map(|_| name.to_string_lossy().into_owned()))
+            .collect();
+        for (name, _) in &vars {
+            assert!(forwarded.contains(name), "{name} crosses: {forwarded:?}");
+        }
+    }
+
+    #[test]
+    fn a_scrubbed_spawn_forwards_a_declared_name_and_drops_an_undeclared_one() {
+        // What the entry names crosses; what it does not name is a variable
+        // the program has no claim on.
+        let env = applied_env(&scrubbed(&["ACME_ASSETS"]));
+        assert_eq!(
+            env.get("ACME_ASSETS"),
+            Some(&Some("/opt/acme/assets".to_string())),
+            "{env:?}"
+        );
+        assert!(!env.contains_key("ACME_SECRET"), "{env:?}");
+    }
+
+    #[test]
+    fn a_declared_name_absent_from_the_parent_is_absent_in_the_child() {
+        // Naming a variable forwards it; it does not invent it. The program
+        // owns its own defaults.
+        let env = applied_env(&scrubbed(&["ACME_LICENSE_PATH", "ACME_ASSETS"]));
+        assert!(!env.contains_key("ACME_LICENSE_PATH"), "{env:?}");
+        // The second declared name, which the parent does hold, crossed: what
+        // the entry declares is honoured, and only the absent one is absent.
+        assert!(env.contains_key("ACME_ASSETS"), "{env:?}");
+    }
+
+    #[test]
+    fn a_scrubbed_spawn_starts_in_a_fresh_empty_directory() {
+        let (cwd, scratch) = applied_cwd(&scrubbed(&[]));
+        let scratch = scratch.expect("a scrubbed spawn has a scratch directory");
+        let cwd = cwd.expect("a scrubbed spawn sets its working directory");
+        assert_eq!(cwd, scratch.path());
+        assert_eq!(
+            std::fs::read_dir(&cwd)
+                .expect("read the scratch directory")
+                .count(),
+            0,
+            "a relative read finds nothing: {}",
+            cwd.display()
+        );
+    }
+
+    #[test]
+    fn two_scrubbed_spawns_start_in_two_directories() {
+        // A respawn gets a fresh directory, so nothing one process left
+        // behind is visible to the next.
+        let (first, first_scratch) = applied_cwd(&scrubbed(&[]));
+        let (second, second_scratch) = applied_cwd(&scrubbed(&[]));
+        assert_ne!(first, second);
+        drop((first_scratch, second_scratch));
+    }
+
+    #[test]
+    fn the_scratch_directory_is_removed_when_it_is_dropped() {
+        // The holder's lifetime is the child's: the directory the program ran
+        // in is gone once the process is reaped.
+        let (cwd, scratch) = applied_cwd(&scrubbed(&[]));
+        let cwd = cwd.expect("a scrubbed spawn sets its working directory");
+        assert!(cwd.is_dir());
+        drop(scratch);
+        assert!(!cwd.exists(), "{} outlived its holder", cwd.display());
+    }
+
+    #[test]
+    fn a_name_is_matched_whole_never_as_a_prefix_of_a_baseline_name() {
+        // `PATH` is an exact name, so a variable merely starting with it is
+        // not the platform's search path — while `PATH` itself still crosses.
+        let vars = [
+            ("PATHOLOGICAL".to_string(), "value".to_string()),
+            ("PATH".to_string(), "/usr/bin".to_string()),
+        ];
+        let mut command = Command::new("/bin/true");
+        scrubbed(&[])
+            .apply(&mut command, vars.into_iter())
+            .expect("apply the policy");
+        let names: Vec<String> = command
+            .get_envs()
+            .map(|(name, _)| name.to_string_lossy().into_owned())
+            .collect();
+        assert!(!names.contains(&"PATHOLOGICAL".to_string()), "{names:?}");
+        assert!(names.contains(&"PATH".to_string()), "{names:?}");
+    }
+}
