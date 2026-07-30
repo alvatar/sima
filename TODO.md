@@ -807,11 +807,36 @@ portability (P1 acceptance (d)) hold across the boundary.
       config carries no `[domain.*]` entry, so a registered format fails there
       naming the id — and nothing folds a program's identity into the
       environment hash, which is M7.5.
-- [ ] M7.4 Isolation and trust: run out-of-tree executors process-isolated so
+- [x] M7.4 Isolation and trust: run out-of-tree executors process-isolated so
       the pure-compute boundary is OS-enforced (foreign code cannot reach the
-      store). Process isolation now holds by construction — a registered
-      program is its own process and is never given a store path — so what
-      remains is the trust argument around it and its enforcement.
+      store). Process isolation already held by construction — a registered
+      program is its own process and is never given a store path — so the work
+      was the surface around it. Settled: the enforcement tier is **spawn
+      hygiene plus a recorded trust argument**, since a configured binary is
+      user-chosen code running as the user. `SpawnPolicy` names the surface a
+      child receives: `Inherit` for every sima-owned process, `Scrubbed` for a
+      config-routed binary — the environment cleared and repopulated from a
+      baseline allowlist (`PATH`, `HOME`, `USER`, `LOGNAME`, `TMPDIR`, `LANG`,
+      `TZ`, and the `LC_`/`XDG_`/`LD_` and three GPU-stack prefixes) plus the
+      exact names the entry's new `env` key declares, and a fresh scratch
+      working directory removed when the process is reaped. `answer_timeout_ms`
+      in `[config]` bounds every protocol answer: the worker handshake of every
+      spawn, and every domain-service question but `Generate`, which is
+      computation proportional to the batch and stays unbounded; the domain
+      service reads through a thread of its own so a question waits on a
+      channel, and an expiry kills and reaps the program naming it, the answer,
+      and the bound. The boundary-validation audit found every identity-bearing
+      decode already validated — frame cap, protocol versions, format check,
+      id rules, device class, environment component names, spec format,
+      artifact name — and closed the gap in the tests rather than in the code.
+      The trust argument lives in `docs/architecture.md` under "Isolation and
+      trust at the program boundary", with the settled invariant extended to
+      record the spawn surface. Not done here: any confinement tier
+      (Landlock, seccomp, namespaces, mandatory containers), which stays a
+      deliberate future opt-in with the container transport as its carrier; a
+      deadline on `Generate`; fleet routing of registered formats and the
+      migrated run's absent `[domain.*]` entry, both still M7.3 leftovers; and
+      program identity in the environment hash, which is M7.5.
 - [ ] M7.5 Identity and packaging: fold a custom executor's identity (version,
       build/content hash) into the environment hash so runs stay reproducible
       and portable; define how a custom family is packaged, versioned, and
