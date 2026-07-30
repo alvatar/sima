@@ -27,6 +27,7 @@ use sima_trace::Emitter;
 
 use crate::link::{LinkEvent, SpawnOutcome, WorkerLink, WorkerTransport};
 use crate::protocol::{Assignment, Hello};
+use crate::spawn_policy::SpawnPolicy;
 use crate::ssh::SshDestination;
 use crate::subprocess::{EventContext, hello, spawn_worker};
 
@@ -115,6 +116,10 @@ impl WorkerTransport for ContainerTransport {
         let inner = spawn_worker(
             Path::new(program),
             args,
+            // The runtime client is sima's own process: it reads its
+            // configuration and credentials from the ambient environment, and
+            // the worker it nests is the sima image's.
+            &SpawnPolicy::Inherit,
             &self.hello,
             worker,
             device,

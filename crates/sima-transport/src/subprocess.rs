@@ -24,13 +24,15 @@ use sima_contracts::DeviceBinding;
 use sima_core::{Error, Result, read_frame, write_frame};
 use sima_model::FormatId;
 use sima_trace::{Emitter, Event, Level};
+use tempfile::TempDir;
 
 use crate::link::{LinkEvent, SpawnOutcome, WorkerLink, WorkerTransport};
 use crate::protocol::{Assignment, Hello, PROTOCOL_VERSION, ToChild, ToParent};
+use crate::spawn_policy::SpawnPolicy;
 
 /// Spawns worker processes for one run: the command vector to run — a program
-/// and its arguments — plus the handshake every child receives, the run's
-/// format id and checkpoint cadence.
+/// and its arguments — the policy its children are spawned under, plus the
+/// handshake every child receives, the run's format id and checkpoint cadence.
 ///
 /// The command vector is `sima-worker` with no arguments for a local worker,
 /// and a wrapper that ultimately execs a worker for anything longer-lived: the
@@ -39,16 +41,19 @@ use crate::protocol::{Assignment, Hello, PROTOCOL_VERSION, ToChild, ToParent};
 pub struct SubprocessTransport {
     program: PathBuf,
     args: Vec<String>,
+    policy: SpawnPolicy,
     hello: Hello,
 }
 
 impl SubprocessTransport {
-    /// A transport spawning `program args...` for a run over `format` with the
-    /// given checkpoint cadence ([`Duration::MAX`] and `None` disable an axis).
-    /// A local worker passes an empty argument vector.
+    /// A transport spawning `program args...` under `policy` for a run over
+    /// `format` with the given checkpoint cadence ([`Duration::MAX`] and
+    /// `None` disable an axis). A local worker passes an empty argument
+    /// vector.
     pub fn new(
         program: PathBuf,
         args: Vec<String>,
+        policy: SpawnPolicy,
         format: FormatId,
         checkpoint_interval: Duration,
         checkpoint_interval_steps: Option<NonZeroU64>,
@@ -56,6 +61,7 @@ impl SubprocessTransport {
         SubprocessTransport {
             program,
             args,
+            policy,
             hello: hello(format, checkpoint_interval, checkpoint_interval_steps),
         }
     }
@@ -106,6 +112,7 @@ impl WorkerTransport for SubprocessTransport {
         spawn_worker(
             &self.program,
             &self.args,
+            &self.policy,
             &self.hello,
             worker,
             device,
@@ -125,28 +132,31 @@ pub(crate) struct EventContext {
     pub(crate) host: String,
 }
 
-/// Spawns `program args...` as a worker child, pipes its stdio, runs the
-/// reader thread, and performs the handshake bound to `device`. The returned
-/// link owns the child; a handshake failure kills and reaps it before the
-/// error returns. Shared by every transport that runs a worker over a local
-/// process — a bare `sima-worker` or a container client wrapping one.
+/// Spawns `program args...` as a worker child under `policy`, pipes its stdio,
+/// runs the reader thread, and performs the handshake bound to `device`. The
+/// returned link owns the child and the scratch directory a scrubbed policy
+/// gave it; a handshake failure kills and reaps it before the error returns.
+/// Shared by every transport that runs a worker over a local process — a bare
+/// `sima-worker` or a container client wrapping one.
 pub(crate) fn spawn_worker(
     program: &Path,
     args: &[String],
+    policy: &SpawnPolicy,
     hello: &Hello,
     worker: u64,
     device: Option<&DeviceBinding>,
     context: EventContext,
 ) -> Result<Box<dyn WorkerLink>> {
-    let mut child = Command::new(program)
+    let mut command = Command::new(program);
+    command
         .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| {
-            Error::Transport(format!("spawning worker {} failed: {e}", program.display()))
-        })?;
+        .stderr(Stdio::piped());
+    let scratch = policy.apply(&mut command, std::env::vars())?;
+    let mut child = command.spawn().map_err(|e| {
+        Error::Transport(format!("spawning worker {} failed: {e}", program.display()))
+    })?;
     // The pipes exist iff the spawn configured them; taking them cannot
     // fail past a successful spawn.
     let stdin = child
@@ -167,6 +177,7 @@ pub(crate) fn spawn_worker(
     let stderr_reader = std::thread::spawn(move || read_stderr(stderr, context));
     let mut link = SubprocessLink {
         child,
+        scratch,
         stdin: Some(stdin),
         events,
         reader: Some(reader),
@@ -236,6 +247,11 @@ pub(crate) fn ready_desc(peer: &str, answer: Option<Result<ToParent>>) -> Result
 /// stdin and the process handle; the reader thread owns its stdout.
 struct SubprocessLink {
     child: Child,
+    /// The scratch working directory a scrubbed spawn gave the child, held so
+    /// it lives exactly as long as the process; `None` under an inheriting
+    /// policy. Cleared once the child is reaped, so the directory is removed
+    /// with nothing still writing into it.
+    scratch: Option<TempDir>,
     /// The child's stdin; dropping it is the shutdown signal.
     stdin: Option<ChildStdin>,
     events: Receiver<Result<ToParent>>,
@@ -290,6 +306,8 @@ impl WorkerLink for SubprocessLink {
         let _ = self.child.kill();
         let _ = self.child.wait();
         self.join_reader();
+        // The child is gone, so the directory it ran in goes with it.
+        self.scratch = None;
     }
 }
 
@@ -338,10 +356,12 @@ impl SubprocessLink {
 
 impl Drop for SubprocessLink {
     /// The graceful shutdown at the end of the worker's life: reap the child
-    /// off the stdin-close signal, then collect the reader thread.
+    /// off the stdin-close signal, collect the reader thread, then remove the
+    /// scratch directory the child ran in.
     fn drop(&mut self) {
         self.reap();
         self.join_reader();
+        self.scratch = None;
     }
 }
 
@@ -580,11 +600,12 @@ mod tests {
     use super::*;
 
     /// A transport over the given program for the stub format with
-    /// checkpointing disabled.
+    /// checkpointing disabled, spawning the way a builtin worker is spawned.
     fn transport(program: &str) -> SubprocessTransport {
         SubprocessTransport::new(
             PathBuf::from(program),
             Vec::new(),
+            SpawnPolicy::Inherit,
             FormatId::new("stub.v1").expect("format id"),
             Duration::MAX,
             None,

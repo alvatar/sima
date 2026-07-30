@@ -55,6 +55,7 @@ use sima_trace::Emitter;
 
 use crate::link::{SpawnOutcome, WorkerLink, WorkerTransport};
 use crate::protocol::Hello;
+use crate::spawn_policy::SpawnPolicy;
 use crate::subprocess::{EventContext, hello, spawn_worker};
 
 /// The command the worker runs as: `sima-worker`, over ssh the remote command,
@@ -448,6 +449,10 @@ impl SshTransport {
         spawn_worker(
             Path::new(program),
             args,
+            // The ssh client is sima's own process: it reads its agent socket
+            // and client configuration from the ambient environment, and the
+            // worker on the far side is the sima image's.
+            &SpawnPolicy::Inherit,
             &self.hello,
             worker,
             device,

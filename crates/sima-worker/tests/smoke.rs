@@ -123,12 +123,13 @@ fn a_command_vector_spawn_reaches_the_worker_through_a_wrapper() {
     use std::path::PathBuf;
     use std::time::Duration;
 
-    use sima_transport::{LinkEvent, SubprocessTransport, WorkerTransport};
+    use sima_transport::{LinkEvent, SpawnPolicy, SubprocessTransport, WorkerTransport};
 
     let worker = env!("CARGO_BIN_EXE_sima-worker");
     let transport = SubprocessTransport::new(
         PathBuf::from("sh"),
         vec!["-c".to_string(), format!("exec {worker}")],
+        SpawnPolicy::Inherit,
         FormatId::new("stub.v1").expect("format id"),
         Duration::MAX,
         None,
@@ -164,7 +165,7 @@ fn worker_stderr_lines_arrive_as_correlated_diagnostics() {
     use std::time::Duration;
 
     use sima_trace::{Emitter, Event, Level};
-    use sima_transport::{SubprocessTransport, WorkerTransport};
+    use sima_transport::{SpawnPolicy, SubprocessTransport, WorkerTransport};
 
     let worker = env!("CARGO_BIN_EXE_sima-worker");
     let transport = SubprocessTransport::new(
@@ -173,6 +174,7 @@ fn worker_stderr_lines_arrive_as_correlated_diagnostics() {
             "-c".to_string(),
             format!("echo 'a stderr line' >&2; exec {worker}"),
         ],
+        SpawnPolicy::Inherit,
         FormatId::new("stub.v1").expect("format id"),
         Duration::MAX,
         None,
@@ -204,7 +206,7 @@ fn an_overlong_stderr_line_is_truncated_with_a_marker() {
     use std::time::Duration;
 
     use sima_trace::{Emitter, Event};
-    use sima_transport::{SubprocessTransport, WorkerTransport};
+    use sima_transport::{SpawnPolicy, SubprocessTransport, WorkerTransport};
 
     let worker = env!("CARGO_BIN_EXE_sima-worker");
     let transport = SubprocessTransport::new(
@@ -214,6 +216,7 @@ fn an_overlong_stderr_line_is_truncated_with_a_marker() {
             // 5000 x's on one stderr line, then the worker.
             format!("printf 'x%.0s' $(seq 1 5000) >&2; echo >&2; exec {worker}"),
         ],
+        SpawnPolicy::Inherit,
         FormatId::new("stub.v1").expect("format id"),
         Duration::MAX,
         None,
@@ -248,11 +251,12 @@ fn an_executor_panic_crosses_as_a_correlated_diagnostic_event() {
     use std::time::Duration;
 
     use sima_trace::{Emitter, Event, Level};
-    use sima_transport::{LinkEvent, SubprocessTransport, WorkerTransport};
+    use sima_transport::{LinkEvent, SpawnPolicy, SubprocessTransport, WorkerTransport};
 
     let transport = SubprocessTransport::new(
         PathBuf::from(env!("CARGO_BIN_EXE_sima-worker")),
         Vec::new(),
+        SpawnPolicy::Inherit,
         FormatId::new("stub.v1").expect("format id"),
         Duration::MAX,
         None,

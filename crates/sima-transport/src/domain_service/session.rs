@@ -16,8 +16,10 @@ use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use sima_contracts::DeviceInfo;
 use sima_core::{Error, Result, read_frame, write_frame};
 use sima_model::{Environment, FormatId, GeneratorId, Params, Spec};
+use tempfile::TempDir;
 
 use crate::domain_service::protocol::{FromDomain, PROTOCOL_VERSION, ToDomain};
+use crate::spawn_policy::SpawnPolicy;
 
 /// The flag that puts a program in its domain-service role.
 const SERVE_DOMAIN: &str = "--serve-domain";
@@ -26,6 +28,11 @@ const SERVE_DOMAIN: &str = "--serve-domain";
 #[derive(Debug)]
 pub struct DomainService {
     child: Child,
+    /// The scratch working directory a scrubbed spawn gave the program, held
+    /// so it lives exactly as long as the session; `None` under an inheriting
+    /// policy. Cleared once the program is reaped, so the directory is removed
+    /// with nothing still writing into it.
+    scratch: Option<TempDir>,
     /// The child's stdin; dropping it is the shutdown signal that follows the
     /// farewell.
     stdin: Option<ChildStdin>,
@@ -35,23 +42,24 @@ pub struct DomainService {
 }
 
 impl DomainService {
-    /// Spawns `binary` in its domain-service role for `format` and completes
-    /// the handshake, so a program that cannot be run, cannot speak this
-    /// protocol version, or does not serve the format fails here rather than at
-    /// the first question.
-    pub fn spawn(binary: &Path, format: &FormatId) -> Result<DomainService> {
-        let mut child = Command::new(binary)
+    /// Spawns `binary` in its domain-service role for `format` under `policy`
+    /// and completes the handshake, so a program that cannot be run, cannot
+    /// speak this protocol version, or does not serve the format fails here
+    /// rather than at the first question.
+    pub fn spawn(binary: &Path, format: &FormatId, policy: &SpawnPolicy) -> Result<DomainService> {
+        let mut command = Command::new(binary);
+        command
             .arg(SERVE_DOMAIN)
             .arg(format.as_str())
             .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .spawn()
-            .map_err(|e| {
-                Error::Transport(format!(
-                    "spawning the domain service {} failed: {e}",
-                    binary.display()
-                ))
-            })?;
+            .stdout(Stdio::piped());
+        let scratch = policy.apply(&mut command, std::env::vars())?;
+        let mut child = command.spawn().map_err(|e| {
+            Error::Transport(format!(
+                "spawning the domain service {} failed: {e}",
+                binary.display()
+            ))
+        })?;
         // The pipes exist iff the spawn configured them; taking them cannot
         // fail past a successful spawn.
         let stdin = child.stdin.take().ok_or_else(|| {
@@ -62,6 +70,7 @@ impl DomainService {
         })?;
         let mut service = DomainService {
             child,
+            scratch,
             stdin: Some(stdin),
             stdout,
             binary: binary.to_path_buf(),
@@ -203,23 +212,27 @@ impl DomainService {
         ))
     }
 
-    /// Kills the program and reaps it. Best effort: one already dead is fine.
+    /// Kills the program and reaps it, then removes the directory it ran in.
+    /// Best effort: one already dead is fine.
     fn kill(&mut self) {
         self.stdin = None;
         let _ = self.child.kill();
         let _ = self.child.wait();
+        self.scratch = None;
     }
 }
 
 impl Drop for DomainService {
     /// Says goodbye, then closes the pipe and reaps the program. A farewell
     /// that cannot be written means the program is already gone, so the close
-    /// and the reap are what settle it.
+    /// and the reap are what settle it. The scratch directory goes last, once
+    /// nothing is left running in it.
     fn drop(&mut self) {
         if let Some(stdin) = self.stdin.as_mut() {
             let _ = write_frame(stdin, &ToDomain::Goodbye.encode());
         }
         self.stdin = None;
         let _ = self.child.wait();
+        self.scratch = None;
     }
 }
