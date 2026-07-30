@@ -25,6 +25,18 @@ use sima_model::{Environment, FormatId, GeneratorId, Params, Spec};
 use sima_transport::SpawnPolicy;
 use sima_transport::domain_service::DomainService;
 
+/// One `[domain.*]` entry, resolved: the format it answers for, the program
+/// that answers, and the environment variables that program receives beyond
+/// the baseline every spawned program gets.
+pub(crate) struct DomainEntry {
+    pub(crate) format: FormatId,
+    /// The program, resolved against the config file's directory.
+    pub(crate) binary: PathBuf,
+    /// Exact variable names, forwarded from the orchestrator's environment
+    /// where it holds them.
+    pub(crate) env: Vec<String>,
+}
+
 /// Where a format's domain is answered from.
 pub(crate) trait DomainSource: Send + Sync {
     /// The environment the format's results depend on.
@@ -108,9 +120,14 @@ pub(crate) struct BinarySource {
 }
 
 impl BinarySource {
-    /// Spawns `binary` for `format` and confirms it answers, so a program that
-    /// cannot be run or does not serve the format fails here.
-    fn spawn(format: &FormatId, binary: PathBuf) -> Result<BinarySource> {
+    /// Spawns the entry's program for its format and confirms it answers, so a
+    /// program that cannot be run or does not serve the format fails here.
+    fn spawn(entry: DomainEntry) -> Result<BinarySource> {
+        let DomainEntry {
+            format,
+            binary,
+            env,
+        } = entry;
         // Both failures read as one thing to whoever wrote the entry: the
         // program declared for this format does not answer for it. The
         // program's own words follow.
@@ -121,11 +138,9 @@ impl BinarySource {
                 format.as_str()
             ))
         };
-        let policy = SpawnPolicy::Scrubbed {
-            passthrough: Vec::new(),
-        };
-        let mut service = DomainService::spawn(&binary, format, &policy).map_err(declared)?;
-        service.environment(format).map_err(declared)?;
+        let policy = SpawnPolicy::Scrubbed { passthrough: env };
+        let mut service = DomainService::spawn(&binary, &format, &policy).map_err(declared)?;
+        service.environment(&format).map_err(declared)?;
         Ok(BinarySource {
             binary,
             policy,
@@ -219,11 +234,11 @@ pub struct DomainRegistry {
 impl DomainRegistry {
     /// The registry `entries` declare: one program per format, each spawned and
     /// asked to answer for the format it is declared under.
-    pub(crate) fn new(entries: Vec<(FormatId, PathBuf)>) -> Result<DomainRegistry> {
+    pub(crate) fn new(entries: Vec<DomainEntry>) -> Result<DomainRegistry> {
         let mut configured = BTreeMap::new();
-        for (format, binary) in entries {
-            let source = BinarySource::spawn(&format, binary)?;
-            configured.insert(format.as_str().to_string(), source);
+        for entry in entries {
+            let format = entry.format.as_str().to_string();
+            configured.insert(format, BinarySource::spawn(entry)?);
         }
         Ok(DomainRegistry {
             builtin: BuiltinSource,
@@ -283,7 +298,11 @@ mod tests {
     /// which serves the in-tree formats over the same protocol a program outside
     /// the workspace does.
     fn served_by_binary() -> Result<DomainRegistry> {
-        DomainRegistry::new(vec![(format("stub.v1"), built_worker())])
+        DomainRegistry::new(vec![DomainEntry {
+            format: format("stub.v1"),
+            binary: built_worker(),
+            env: Vec::new(),
+        }])
     }
 
     #[test]
@@ -332,8 +351,11 @@ mod tests {
         // The registry is what a config resolves into, so a program that
         // cannot answer for the format it is declared under fails there —
         // before a run reaches a store.
-        let Err(error) = DomainRegistry::new(vec![(format("acme.thing.v1"), built_worker())])
-        else {
+        let Err(error) = DomainRegistry::new(vec![DomainEntry {
+            format: format("acme.thing.v1"),
+            binary: built_worker(),
+            env: Vec::new(),
+        }]) else {
             panic!("expected a program that serves no such format to fail");
         };
         assert!(error.to_string().contains("acme.thing.v1"), "{error}");
@@ -341,10 +363,11 @@ mod tests {
 
     #[test]
     fn a_binary_that_cannot_be_run_names_itself() {
-        let Err(error) = DomainRegistry::new(vec![(
-            format("acme.thing.v1"),
-            PathBuf::from("/no/such/domain/binary"),
-        )]) else {
+        let Err(error) = DomainRegistry::new(vec![DomainEntry {
+            format: format("acme.thing.v1"),
+            binary: PathBuf::from("/no/such/domain/binary"),
+            env: Vec::new(),
+        }]) else {
             panic!("expected a binary that cannot be run to fail");
         };
         assert!(
@@ -445,6 +468,36 @@ mod tests {
             error.to_string().contains("no-such-generator.v1"),
             "{error}"
         );
+    }
+
+    #[test]
+    fn a_format_answered_in_process_spawns_the_way_sima_spawns_its_own() -> Result<()> {
+        // The builtin worker is sima's own binary in sima's own trust domain,
+        // so it keeps the orchestrator's environment and working directory.
+        let registry = DomainRegistry::builtin();
+        assert_eq!(
+            registry.source(&format("stub.v1")).spawn_policy(),
+            SpawnPolicy::Inherit
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn an_entry_s_declared_names_reach_the_policy_its_program_is_spawned_under() -> Result<()> {
+        // One policy answers for the whole program: the session already open
+        // and every worker the run will spawn from the same binary.
+        let registry = DomainRegistry::new(vec![DomainEntry {
+            format: format("stub.v1"),
+            binary: built_worker(),
+            env: vec!["ACME_ASSETS".to_string()],
+        }])?;
+        assert_eq!(
+            registry.source(&format("stub.v1")).spawn_policy(),
+            SpawnPolicy::Scrubbed {
+                passthrough: vec!["ACME_ASSETS".to_string()],
+            }
+        );
+        Ok(())
     }
 
     #[test]
