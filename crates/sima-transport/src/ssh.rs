@@ -43,7 +43,6 @@
 //! it spawns a `sima-worker` binary directly with no ssh hop, so every layer
 //! above the transport exercises identically without a network.
 
-use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
 use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant};
@@ -54,8 +53,8 @@ use sima_model::FormatId;
 use sima_trace::Emitter;
 
 use crate::link::{SpawnOutcome, WorkerLink, WorkerTransport};
-use crate::protocol::Hello;
-use crate::subprocess::{EventContext, hello, spawn_worker};
+use crate::spawn_settings::SpawnSettings;
+use crate::subprocess::{EventContext, spawn_worker};
 
 /// The command the worker runs as: `sima-worker`, over ssh the remote command,
 /// in local mode the binary's own name is its path instead.
@@ -235,7 +234,7 @@ pub struct SshTransport {
     /// Signals a target change to a `spawn` blocked in `Replacing` or waiting
     /// out a failed ssh spawn.
     settled: Condvar,
-    hello: Hello,
+    settings: SpawnSettings,
     /// How long an ssh spawn keeps retrying a failing target before it gives
     /// up and faults the run — the readiness bound the machine was acquired
     /// under, so a broken host faults only after the same wait a fresh one is
@@ -255,9 +254,7 @@ impl SshTransport {
     pub fn new(
         mode: SpawnMode,
         initial: SshDestination,
-        format: FormatId,
-        checkpoint_interval: Duration,
-        checkpoint_interval_steps: Option<NonZeroU64>,
+        settings: SpawnSettings,
         ready_timeout: Duration,
         ready_poll: Duration,
     ) -> SshTransport {
@@ -268,7 +265,7 @@ impl SshTransport {
                 generation: 0,
             }),
             settled: Condvar::new(),
-            hello: hello(format, checkpoint_interval, checkpoint_interval_steps),
+            settings,
             ready_timeout,
             ready_poll,
         }
@@ -448,7 +445,7 @@ impl SshTransport {
         spawn_worker(
             Path::new(program),
             args,
-            &self.hello,
+            &self.settings,
             worker,
             device,
             context,
@@ -525,6 +522,7 @@ mod tests {
 
     use super::*;
     use crate::link::LinkEvent;
+    use crate::spawn_policy::SpawnPolicy;
 
     fn a_target() -> SshDestination {
         SshDestination::rented("203.0.113.7", 41022, "root")
@@ -551,9 +549,13 @@ mod tests {
         SshTransport::new(
             mode,
             a_target(),
-            FormatId::new("stub.v1").expect("format id"),
-            Duration::MAX,
-            None,
+            SpawnSettings::new(
+                SpawnPolicy::Inherit,
+                Duration::MAX,
+                FormatId::new("stub.v1").expect("format id"),
+                Duration::MAX,
+                None,
+            ),
             ready_timeout,
             ready_poll,
         )

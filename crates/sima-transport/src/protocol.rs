@@ -17,6 +17,9 @@
 //! is no shutdown message: the parent closing the child's stdin is the
 //! shutdown signal.
 
+use std::num::NonZeroU64;
+use std::time::Duration;
+
 use sima_contracts::{Artifact, DeviceBinding, DeviceClass, Outcome, Stats};
 use sima_core::{Dec, Enc, Error, Result};
 use sima_model::{EnvironmentId, FormatId};
@@ -63,6 +66,36 @@ pub struct Hello {
     /// The device this worker's executor is built for; `None` leaves the
     /// choice to the execution backend's default selection.
     pub device: Option<DeviceBinding>,
+}
+
+impl Hello {
+    /// The handshake frame for a run over `format` with the given checkpoint
+    /// cadence, in the wire's cadence encoding: a disabled wall-clock axis is
+    /// `u64::MAX` milliseconds — an interval too large for the u64 saturates
+    /// there, since a cadence beyond the address space of milliseconds is
+    /// disabled in effect — and a disabled step axis is `0`.
+    ///
+    /// The worker id and device are left unbound: they vary per worker, so
+    /// each spawn sets them on a copy of this frame.
+    pub fn for_run(
+        format: FormatId,
+        checkpoint_interval: Duration,
+        checkpoint_interval_steps: Option<NonZeroU64>,
+    ) -> Hello {
+        let checkpoint_interval_ms = if checkpoint_interval == Duration::MAX {
+            u64::MAX
+        } else {
+            u64::try_from(checkpoint_interval.as_millis()).unwrap_or(u64::MAX)
+        };
+        Hello {
+            protocol: PROTOCOL_VERSION,
+            worker: 0,
+            format,
+            checkpoint_interval_ms,
+            checkpoint_interval_steps: checkpoint_interval_steps.map_or(0, NonZeroU64::get),
+            device: None,
+        }
+    }
 }
 
 /// One task handed to the child: the identity-bearing inputs of the attempt
@@ -634,6 +667,25 @@ mod tests {
         assert!(matches!(
             ToChild::decode(&enc.finish()),
             Err(Error::Encoding(_))
+        ));
+    }
+
+    #[test]
+    fn a_hello_binding_an_invalid_device_class_is_rejected() {
+        // The class the parent binds a worker to revalidates on decode, so a
+        // name no backend could have minted fails at the frame rather than
+        // reaching an executor or a journal line.
+        let mut enc = Enc::new();
+        enc.u8(TAG_HELLO)
+            .u32(PROTOCOL_VERSION)
+            .u64(0)
+            .str("stub.v1")
+            .u64(u64::MAX)
+            .u64(0);
+        enc.u8(1).str("8086:7D51").u32(0);
+        assert!(matches!(
+            ToChild::decode(&enc.finish()),
+            Err(Error::Validation(_))
         ));
     }
 

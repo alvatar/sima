@@ -493,6 +493,11 @@ mod tests {
                 ToDomain::EnumerateDevices {
                     format: format("other.v1"),
                 },
+                ToDomain::TranslateConfig {
+                    format: format("other.v1"),
+                    toml: String::new(),
+                    segmented: false,
+                },
                 ToDomain::Generate {
                     generator: generator("host-test.v1"),
                     format: format("other.v1"),

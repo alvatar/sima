@@ -157,10 +157,11 @@ fn far_settings(local: &toml::Table) -> Result<toml::Table> {
         toml::Value::String(FAR_STORE.to_string()),
     );
     // `max_attempts` is required, so its absence would already have failed the
-    // load; the cadences and the attempt deadline travel when present.
+    // load; the cadences and the two deadlines travel when present.
     for key in [
         "max_attempts",
         "attempt_timeout_ms",
+        "answer_timeout_ms",
         "checkpoint_interval_ms",
         "checkpoint_interval_steps",
     ] {

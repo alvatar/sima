@@ -243,15 +243,19 @@ fn the_flag_without_a_format_exits_nonzero_naming_what_it_takes() {
 /// The parent-side session against the built binary: the same answers, reached
 /// the way a run reaches them.
 mod session {
+    use sima_transport::SpawnPolicy;
     use sima_transport::domain_service::DomainService;
 
     use super::{FORMATS, format};
 
-    /// The worker binary, in its domain-service role.
+    /// The worker binary, in its domain-service role. It is sima's own
+    /// program here, so it is spawned the way a builtin one is.
     fn service(name: &str) -> DomainService {
         DomainService::spawn(
             std::path::Path::new(env!("CARGO_BIN_EXE_sima-worker")),
             &format(name),
+            &SpawnPolicy::Inherit,
+            std::time::Duration::MAX,
         )
         .expect("the worker serves its own formats")
     }
@@ -300,6 +304,8 @@ mod session {
         let error = DomainService::spawn(
             std::path::Path::new(env!("CARGO_BIN_EXE_sima-worker")),
             &format("no-such-domain.v1"),
+            &SpawnPolicy::Inherit,
+            std::time::Duration::MAX,
         )
         .expect_err("a program that serves no such format");
         assert!(
@@ -313,6 +319,8 @@ mod session {
         let error = DomainService::spawn(
             std::path::Path::new("/no/such/domain/binary"),
             &format("stub.v1"),
+            &SpawnPolicy::Inherit,
+            std::time::Duration::MAX,
         )
         .expect_err("no such binary");
         assert!(

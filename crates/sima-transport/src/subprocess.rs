@@ -13,7 +13,6 @@
 //! closing, which [`WorkerLink::next`] reports as [`LinkEvent::Died`].
 
 use std::io::Read;
-use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
@@ -22,15 +21,17 @@ use std::time::{Duration, Instant};
 
 use sima_contracts::DeviceBinding;
 use sima_core::{Error, Result, read_frame, write_frame};
-use sima_model::FormatId;
 use sima_trace::{Emitter, Event, Level};
+use tempfile::TempDir;
 
+use crate::answer_deadline::receive_within;
 use crate::link::{LinkEvent, SpawnOutcome, WorkerLink, WorkerTransport};
 use crate::protocol::{Assignment, Hello, PROTOCOL_VERSION, ToChild, ToParent};
+use crate::spawn_settings::SpawnSettings;
 
 /// Spawns worker processes for one run: the command vector to run — a program
-/// and its arguments — plus the handshake every child receives, the run's
-/// format id and checkpoint cadence.
+/// and its arguments — plus the settings every child of this pool is spawned
+/// and greeted under.
 ///
 /// The command vector is `sima-worker` with no arguments for a local worker,
 /// and a wrapper that ultimately execs a worker for anything longer-lived: the
@@ -39,53 +40,22 @@ use crate::protocol::{Assignment, Hello, PROTOCOL_VERSION, ToChild, ToParent};
 pub struct SubprocessTransport {
     program: PathBuf,
     args: Vec<String>,
-    hello: Hello,
+    settings: SpawnSettings,
 }
 
 impl SubprocessTransport {
-    /// A transport spawning `program args...` for a run over `format` with the
-    /// given checkpoint cadence ([`Duration::MAX`] and `None` disable an axis).
-    /// A local worker passes an empty argument vector.
+    /// A transport spawning `program args...` under `settings`. A local worker
+    /// passes an empty argument vector.
     pub fn new(
         program: PathBuf,
         args: Vec<String>,
-        format: FormatId,
-        checkpoint_interval: Duration,
-        checkpoint_interval_steps: Option<NonZeroU64>,
+        settings: SpawnSettings,
     ) -> SubprocessTransport {
         SubprocessTransport {
             program,
             args,
-            hello: hello(format, checkpoint_interval, checkpoint_interval_steps),
+            settings,
         }
-    }
-}
-
-/// The handshake frame for a run's settings, in the wire's cadence encoding:
-/// a disabled wall-clock axis is `u64::MAX` milliseconds — an interval too
-/// large for the u64 saturates there, since a cadence beyond the address
-/// space of milliseconds is disabled in effect — and a disabled step axis
-/// is `0`.
-///
-/// The worker id and device are left unbound: they vary per worker, so each
-/// spawn sets them on its own copy of this frame.
-pub(crate) fn hello(
-    format: FormatId,
-    checkpoint_interval: Duration,
-    checkpoint_interval_steps: Option<NonZeroU64>,
-) -> Hello {
-    let checkpoint_interval_ms = if checkpoint_interval == Duration::MAX {
-        u64::MAX
-    } else {
-        u64::try_from(checkpoint_interval.as_millis()).unwrap_or(u64::MAX)
-    };
-    Hello {
-        protocol: PROTOCOL_VERSION,
-        worker: 0,
-        format,
-        checkpoint_interval_ms,
-        checkpoint_interval_steps: checkpoint_interval_steps.map_or(0, NonZeroU64::get),
-        device: None,
     }
 }
 
@@ -106,7 +76,7 @@ impl WorkerTransport for SubprocessTransport {
         spawn_worker(
             &self.program,
             &self.args,
-            &self.hello,
+            &self.settings,
             worker,
             device,
             context,
@@ -125,28 +95,30 @@ pub(crate) struct EventContext {
     pub(crate) host: String,
 }
 
-/// Spawns `program args...` as a worker child, pipes its stdio, runs the
-/// reader thread, and performs the handshake bound to `device`. The returned
-/// link owns the child; a handshake failure kills and reaps it before the
+/// Spawns `program args...` as a worker child under `settings`, pipes its
+/// stdio, runs the reader thread, and performs the handshake bound to
+/// `device`. The returned link owns the child and the scratch directory an
+/// explicit policy gave it; a handshake failure kills and reaps it before the
 /// error returns. Shared by every transport that runs a worker over a local
 /// process — a bare `sima-worker` or a container client wrapping one.
 pub(crate) fn spawn_worker(
     program: &Path,
     args: &[String],
-    hello: &Hello,
+    settings: &SpawnSettings,
     worker: u64,
     device: Option<&DeviceBinding>,
     context: EventContext,
 ) -> Result<Box<dyn WorkerLink>> {
-    let mut child = Command::new(program)
+    let mut command = Command::new(program);
+    command
         .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| {
-            Error::Transport(format!("spawning worker {} failed: {e}", program.display()))
-        })?;
+        .stderr(Stdio::piped());
+    let scratch = settings.policy.apply(&mut command, std::env::vars_os)?;
+    let mut child = command.spawn().map_err(|e| {
+        Error::Transport(format!("spawning worker {} failed: {e}", program.display()))
+    })?;
     // The pipes exist iff the spawn configured them; taking them cannot
     // fail past a successful spawn.
     let stdin = child
@@ -167,6 +139,7 @@ pub(crate) fn spawn_worker(
     let stderr_reader = std::thread::spawn(move || read_stderr(stderr, context));
     let mut link = SubprocessLink {
         child,
+        scratch,
         stdin: Some(stdin),
         events,
         reader: Some(reader),
@@ -175,14 +148,15 @@ pub(crate) fn spawn_worker(
         driver: String::new(),
     };
     // The handshake: Hello out, Ready back. Any other answer — silence ended
-    // by death, a wrong version, an undecodable echo — is a spawn failure, and
-    // the misbehaving child is killed and reaped before the error returns.
+    // by death, silence outlasting the answer deadline, a wrong version, an
+    // undecodable echo — is a spawn failure, and the misbehaving child is
+    // killed and reaped before the error returns.
     let hello = Hello {
         worker,
         device: device.cloned(),
-        ..hello.clone()
+        ..settings.hello.clone()
     };
-    match handshake(&mut link, &hello) {
+    match handshake(&mut link, &hello, settings.answer_timeout, program) {
         Ok((device_name, driver)) => {
             link.device_name = device_name;
             link.driver = driver;
@@ -197,9 +171,27 @@ pub(crate) fn spawn_worker(
 
 /// Performs the parent's half of the handshake over a fresh link, returning
 /// the device name and driver version the worker reported.
-fn handshake(link: &mut SubprocessLink, hello: &Hello) -> Result<(String, String)> {
+///
+/// The wait is startup plus one answer, so `answer_timeout` bounds it: a
+/// child wedged before `Ready` — a broken driver hanging device
+/// initialization, a wrapper that never execs — is a spawn failure naming the
+/// program rather than a worker thread stopped forever.
+fn handshake(
+    link: &mut SubprocessLink,
+    hello: &Hello,
+    answer_timeout: Duration,
+    program: &Path,
+) -> Result<(String, String)> {
     link.write(&ToChild::Hello(hello.clone()))?;
-    ready_desc("worker", link.events.recv().ok())
+    match receive_within(&link.events, answer_timeout) {
+        Ok(answer) => ready_desc("worker", Some(answer)),
+        Err(RecvTimeoutError::Timeout) => Err(Error::Transport(format!(
+            "the worker {} exceeded the {}ms answer deadline awaiting Ready",
+            program.display(),
+            answer_timeout.as_millis()
+        ))),
+        Err(RecvTimeoutError::Disconnected) => ready_desc("worker", None),
+    }
 }
 
 /// Classifies a peer's answer to `Hello`: the device name and driver version
@@ -236,6 +228,11 @@ pub(crate) fn ready_desc(peer: &str, answer: Option<Result<ToParent>>) -> Result
 /// stdin and the process handle; the reader thread owns its stdout.
 struct SubprocessLink {
     child: Child,
+    /// The scratch working directory an explicit spawn gave the child, held so
+    /// it lives exactly as long as the process; `None` under an inheriting
+    /// policy. Cleared once the child is reaped, so the directory is removed
+    /// with nothing still writing into it.
+    scratch: Option<TempDir>,
     /// The child's stdin; dropping it is the shutdown signal.
     stdin: Option<ChildStdin>,
     events: Receiver<Result<ToParent>>,
@@ -289,7 +286,16 @@ impl WorkerLink for SubprocessLink {
         self.stdin = None;
         let _ = self.child.kill();
         let _ = self.child.wait();
-        self.join_reader();
+        // The reader threads are released rather than joined. They end when
+        // the child's pipes close, which is when the last holder of them
+        // exits — the child, and anything it left running behind it. Waiting
+        // on them would put the caller back at the mercy of the process this
+        // call exists to stop; each thread ends on its own, with nothing owed
+        // to it.
+        self.reader = None;
+        self.stderr_reader = None;
+        // The child is gone, so the directory it ran in goes with it.
+        self.scratch = None;
     }
 }
 
@@ -338,10 +344,12 @@ impl SubprocessLink {
 
 impl Drop for SubprocessLink {
     /// The graceful shutdown at the end of the worker's life: reap the child
-    /// off the stdin-close signal, then collect the reader thread.
+    /// off the stdin-close signal, collect the reader thread, then remove the
+    /// scratch directory the child ran in.
     fn drop(&mut self) {
         self.reap();
         self.join_reader();
+        self.scratch = None;
     }
 }
 
@@ -577,17 +585,38 @@ pub(crate) fn next_event(
 
 #[cfg(test)]
 mod tests {
+    use std::num::NonZeroU64;
+
+    use sima_model::FormatId;
+
     use super::*;
+    use crate::spawn_policy::{SpawnPolicy, fixture};
+
+    /// The settings a builtin worker of the stub format is spawned under:
+    /// checkpointing disabled, and every answer awaited for as long as the
+    /// child lives.
+    fn settings(policy: SpawnPolicy) -> SpawnSettings {
+        settings_within(policy, Duration::MAX)
+    }
+
+    /// The same settings under an explicit answer deadline.
+    fn settings_within(policy: SpawnPolicy, answer_timeout: Duration) -> SpawnSettings {
+        SpawnSettings::new(
+            policy,
+            answer_timeout,
+            FormatId::new("stub.v1").expect("format id"),
+            Duration::MAX,
+            None::<NonZeroU64>,
+        )
+    }
 
     /// A transport over the given program for the stub format with
-    /// checkpointing disabled.
+    /// checkpointing disabled, spawning the way a builtin worker is spawned.
     fn transport(program: &str) -> SubprocessTransport {
         SubprocessTransport::new(
             PathBuf::from(program),
             Vec::new(),
-            FormatId::new("stub.v1").expect("format id"),
-            Duration::MAX,
-            None,
+            settings(SpawnPolicy::Inherit),
         )
     }
 
@@ -860,5 +889,66 @@ mod tests {
         // hanging or panicking.
         let result = transport("/bin/cat").spawn(0, None, discarding_emitter());
         assert!(result.is_err(), "the handshake against cat must fail");
+    }
+
+    #[test]
+    fn a_worker_silent_past_the_deadline_fails_the_spawn_naming_it() {
+        // Every worker spawn is bounded, builtin or configured: a child
+        // wedged before Ready — a broken driver hanging device
+        // initialization — is a spawn failure rather than a worker thread
+        // stopped forever. `exec` puts the sleep in the shell's place, so the
+        // process holding the pipes is the one the kill reaches.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let program = fixture::program(dir.path(), "wedged-worker.sh", "exec sleep 300");
+        let transport = SubprocessTransport::new(
+            program,
+            Vec::new(),
+            settings_within(SpawnPolicy::Inherit, Duration::from_millis(300)),
+        );
+        let started = Instant::now();
+        let error = match transport.spawn(0, None, discarding_emitter()) {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!("a silent child completes no handshake"),
+        };
+        assert!(
+            started.elapsed() < Duration::from_secs(20),
+            "{:?}",
+            started.elapsed()
+        );
+        assert!(error.contains("wedged-worker.sh"), "{error}");
+        assert!(error.contains("Ready"), "names the answer: {error}");
+        assert!(error.contains("300ms"), "names the deadline: {error}");
+    }
+
+    #[test]
+    fn a_worker_on_an_explicit_surface_runs_in_a_scratch_directory_that_dies_with_it() {
+        // The scratch directory's life is the child's: the program records
+        // where it ran, and by the time the spawn returns — the child killed
+        // and reaped over its refused handshake — that directory is gone.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let report = dir.path().join("cwd");
+        let program = fixture::cwd_reporting_program(dir.path(), &report);
+        let transport = SubprocessTransport::new(
+            program,
+            Vec::new(),
+            settings(SpawnPolicy::Explicit {
+                passthrough: Vec::new(),
+            }),
+        );
+        assert!(
+            transport.spawn(0, None, discarding_emitter()).is_err(),
+            "a program that exits is no worker"
+        );
+        let scratch = fixture::reported_cwd(&report);
+        assert_ne!(
+            scratch,
+            dir.path(),
+            "the child ran in a directory of its own"
+        );
+        assert!(
+            !scratch.exists(),
+            "{} outlived its child",
+            scratch.display()
+        );
     }
 }

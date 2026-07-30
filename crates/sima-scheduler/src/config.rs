@@ -43,6 +43,11 @@ pub struct ExecutionConfig {
     /// any attempt could take (for example [`Duration::MAX`]) disables
     /// enforcement.
     pub attempt_timeout: Duration,
+    /// Enforced deadline on a protocol answer: the worker handshake, and each
+    /// question the run asks a program about its format except generation. On
+    /// expiry the process is killed and reaped and the wait fails naming the
+    /// binary and the answer it owed. [`Duration::MAX`] disables enforcement.
+    pub answer_timeout: Duration,
     /// Wall-clock cadence between checkpoint saves during one attempt: the
     /// first save becomes due one full interval after execution starts.
     /// [`Duration::MAX`] disables this axis.
@@ -70,6 +75,7 @@ impl ExecutionConfig {
         workers: usize,
         max_attempts: u32,
         attempt_timeout: Duration,
+        answer_timeout: Duration,
         checkpoint_interval: Duration,
         checkpoint_interval_steps: Option<NonZeroU64>,
     ) -> Result<Self> {
@@ -82,6 +88,7 @@ impl ExecutionConfig {
             workers,
             max_attempts,
             attempt_timeout,
+            answer_timeout,
             checkpoint_interval,
             checkpoint_interval_steps,
             devices: Vec::new(),
@@ -95,6 +102,7 @@ impl ExecutionConfig {
         devices: Vec<DeviceEntry>,
         max_attempts: u32,
         attempt_timeout: Duration,
+        answer_timeout: Duration,
         checkpoint_interval: Duration,
         checkpoint_interval_steps: Option<NonZeroU64>,
     ) -> Result<Self> {
@@ -119,6 +127,7 @@ impl ExecutionConfig {
             workers,
             max_attempts,
             attempt_timeout,
+            answer_timeout,
             checkpoint_interval,
             checkpoint_interval_steps,
         )?;
@@ -139,6 +148,7 @@ mod tests {
             3,
             Duration::from_millis(50),
             Duration::MAX,
+            Duration::MAX,
             NonZeroU64::new(64),
         )?;
         assert_eq!(config.workers, 4);
@@ -154,7 +164,14 @@ mod tests {
         // A run with no local pool: the workers come from another machine,
         // so the "at least one worker" requirement is enforced across pools,
         // not here.
-        let config = ExecutionConfig::new(0, 1, Duration::from_millis(1), Duration::MAX, None)?;
+        let config = ExecutionConfig::new(
+            0,
+            1,
+            Duration::from_millis(1),
+            Duration::MAX,
+            Duration::MAX,
+            None,
+        )?;
         assert_eq!(config.workers, 0);
         Ok(())
     }
@@ -162,7 +179,14 @@ mod tests {
     #[test]
     fn new_rejects_zero_attempts() {
         assert!(matches!(
-            ExecutionConfig::new(1, 0, Duration::from_millis(1), Duration::MAX, None),
+            ExecutionConfig::new(
+                1,
+                0,
+                Duration::from_millis(1),
+                Duration::MAX,
+                Duration::MAX,
+                None
+            ),
             Err(Error::Validation(_))
         ));
     }
@@ -184,6 +208,7 @@ mod tests {
             3,
             Duration::MAX,
             Duration::MAX,
+            Duration::MAX,
             None,
         )?;
         assert_eq!(config.workers, 4, "the pool is the entries' sum");
@@ -196,6 +221,7 @@ mod tests {
         let error = ExecutionConfig::with_devices(
             vec![entry(0x10de, 0)],
             1,
+            Duration::MAX,
             Duration::MAX,
             Duration::MAX,
             None,
@@ -218,6 +244,7 @@ mod tests {
             1,
             Duration::MAX,
             Duration::MAX,
+            Duration::MAX,
             None,
         );
         let Err(Error::Validation(message)) = error else {
@@ -229,7 +256,7 @@ mod tests {
 
     #[test]
     fn no_device_entries_is_the_single_implicit_class() -> Result<()> {
-        let config = ExecutionConfig::new(4, 1, Duration::MAX, Duration::MAX, None)?;
+        let config = ExecutionConfig::new(4, 1, Duration::MAX, Duration::MAX, Duration::MAX, None)?;
         assert!(config.devices.is_empty(), "the single implicit class");
         Ok(())
     }

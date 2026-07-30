@@ -26,7 +26,7 @@ use sima_provider_vast::{VastConfig, VastProvider};
 use sima_scheduler::ExecutionConfig;
 use sima_store::{Rental as RentalRole, RunLock, Store};
 use sima_trace::{Emitter, Event};
-use sima_transport::{SpawnMode, SshDestination, SshTransport};
+use sima_transport::{SpawnMode, SpawnPolicy, SpawnSettings, SshDestination, SshTransport};
 
 use crate::config::{FillPolicy, ProviderId, Rented};
 use crate::devices::{parse_enumeration, usable};
@@ -295,9 +295,16 @@ fn acquire_one<'a>(
         let transport = SshTransport::new(
             mode.clone(),
             target,
-            format.clone(),
-            exec.checkpoint_interval,
-            exec.checkpoint_interval_steps,
+            // The ssh client is sima's own process: it reads its agent socket
+            // and client configuration from the ambient environment, and the
+            // worker on the far side is the sima image's.
+            SpawnSettings::new(
+                SpawnPolicy::Inherit,
+                exec.answer_timeout,
+                format.clone(),
+                exec.checkpoint_interval,
+                exec.checkpoint_interval_steps,
+            ),
             // The transport waits out a respawn against a dead host on the
             // same readiness bounds the machine was acquired under, bridging
             // the window until the supervisor swaps a replacement in.
@@ -962,7 +969,8 @@ mod tests {
 
     /// The execution settings the transport carries; no checkpoint cadence.
     fn exec() -> ExecutionConfig {
-        ExecutionConfig::new(1, 3, Duration::MAX, Duration::MAX, None).expect("execution config")
+        ExecutionConfig::new(1, 3, Duration::MAX, Duration::MAX, Duration::MAX, None)
+            .expect("execution config")
     }
 
     /// A local probe that enumerates no device, so every acquired machine

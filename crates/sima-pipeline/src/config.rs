@@ -25,6 +25,7 @@
 //! store                     = "./store"   # resolved against this file's directory
 //! max_attempts              = 3
 //! attempt_timeout_ms        = 300000      # optional; absent disables the deadline
+//! answer_timeout_ms         = 120000      # optional; absent disables the deadline
 //! checkpoint_interval_ms    = 30000       # optional; wall-clock cadence
 //! checkpoint_interval_steps = 500         # optional; step cadence, >= 1
 //!
@@ -93,6 +94,7 @@
 //!
 //! [domain."acme.thing.v1"]                # a format served by its own program
 //! binary = "/opt/acme/worker"             # resolved against this file's directory
+//! # env  = ["ACME_ASSETS"]                # optional; variable names it also receives
 //! ```
 //!
 //! ## Where a format is answered from
@@ -102,6 +104,12 @@
 //! from it. Every format without an entry is answered by this build, in
 //! process. The entry is read when the config loads, so a program that cannot
 //! answer for the format it is declared under fails there.
+//!
+//! The program is spawned with an explicit environment and a scratch working
+//! directory of its own. `env` names the variables it receives on top of that
+//! baseline, by name alone: each value comes from the orchestrator's own
+//! environment, and a name the orchestrator does not hold is simply absent in
+//! the program.
 //!
 //! ## Addressing
 //!
@@ -194,7 +202,7 @@ use sima_provider::{Budget, Constraints, Cost, Price};
 use sima_scheduler::ExecutionConfig;
 
 use crate::devices::DeviceSelector;
-use crate::domain_registry::{DomainRegistry, section_text};
+use crate::domain_registry::{DomainEntry, DomainRegistry, section_text};
 
 /// The image a machine of yours runs its workers from when its entry names
 /// none.
@@ -475,6 +483,9 @@ struct DomainSection {
     /// The binary sima spawns, resolved against the config file's directory;
     /// an absolute path is taken as written.
     binary: String,
+    /// Environment variable names the program receives beyond the baseline
+    /// every spawned program gets. Absent means the baseline alone.
+    env: Option<Vec<String>>,
 }
 
 /// The `[run]` section: every field enters run identity.
@@ -511,6 +522,7 @@ struct ConfigSection {
     store: String,
     max_attempts: u32,
     attempt_timeout_ms: Option<u64>,
+    answer_timeout_ms: Option<u64>,
     checkpoint_interval_ms: Option<u64>,
     checkpoint_interval_steps: Option<u64>,
 }
@@ -638,10 +650,14 @@ pub fn load(path: &Path) -> Result<LoadedConfig> {
     let file: FileConfig =
         toml::from_str(&text).map_err(|e| Error::Validation(format!("{}: {e}", path.display())))?;
 
+    // The answer deadline precedes the registry, which spawns programs and
+    // asks them questions: a session opened before the deadline was read
+    // would wait on its first answer without one.
+    let answer_timeout = optional_bound(file.config.answer_timeout_ms);
     // The registry precedes the run's translation, which is answered through
     // it: a program declared for a format is spawned and asked here, so an
     // entry naming one that cannot answer fails before the run has a store.
-    let domains = resolve_domains(path, file.domain)?;
+    let domains = resolve_domains(path, file.domain, answer_timeout)?;
     let run = resolve_run(path, file.run, &domains)?;
     let orchestrator = resolve_orchestrator(path, file.orchestrator)?;
 
@@ -718,22 +734,47 @@ pub fn load(path: &Path) -> Result<LoadedConfig> {
 
 /// Builds the registry the `[domain.*]` entries declare: each entry's format id
 /// paired with the binary that answers for it, resolved against the config
-/// file's directory.
+/// file's directory, and the variable names that binary is given.
 fn resolve_domains(
     path: &Path,
     entries: BTreeMap<String, DomainSection>,
+    answer_timeout: Duration,
 ) -> Result<DomainRegistry> {
     let base = path.parent().unwrap_or(Path::new(""));
     let declared = entries
         .into_iter()
         .map(|(format, section)| {
+            let env = resolve_domain_env(path, &format, section.env)?;
             let format = FormatId::new(format).map_err(|e| {
                 Error::Validation(format!("{}: [domain.*] entry: {e}", path.display()))
             })?;
-            Ok((format, base.join(section.binary)))
+            Ok(DomainEntry {
+                format,
+                binary: base.join(section.binary),
+                env,
+            })
         })
         .collect::<Result<Vec<_>>>()?;
-    DomainRegistry::new(declared).map_err(|e| Error::Validation(format!("{}: {e}", path.display())))
+    DomainRegistry::new(declared, answer_timeout)
+        .map_err(|e| Error::Validation(format!("{}: {e}", path.display())))
+}
+
+/// Validates the variable names an entry forwards to its program.
+///
+/// Each is a name alone: its value comes from the orchestrator's own
+/// environment, so an entry that wrote one would be a second source of it.
+fn resolve_domain_env(path: &Path, format: &str, env: Option<Vec<String>>) -> Result<Vec<String>> {
+    let env = env.unwrap_or_default();
+    for name in &env {
+        if name.is_empty() || name.contains('=') {
+            return Err(Error::Validation(format!(
+                "{}: [domain.{format:?}] env takes environment variable names, \
+                 each one non-empty and free of '=', and got {name:?}",
+                path.display()
+            )));
+        }
+    }
+    Ok(env)
 }
 
 /// Rejects a fleet that would engage one machine twice.
@@ -871,12 +912,8 @@ fn resolve_execution(
     config: &ConfigSection,
     orchestrator: &Orchestrator,
 ) -> Result<ExecutionConfig> {
-    let attempt_timeout = config
-        .attempt_timeout_ms
-        .map_or(Duration::MAX, Duration::from_millis);
-    let checkpoint_interval = config
-        .checkpoint_interval_ms
-        .map_or(Duration::MAX, Duration::from_millis);
+    let attempt_timeout = optional_bound(config.attempt_timeout_ms);
+    let checkpoint_interval = optional_bound(config.checkpoint_interval_ms);
     // The step cadence is optional and, when present, at least 1: a zero cadence
     // has no meaning (every offer, and no offer, at once), so it is a validation
     // fault naming the key.
@@ -896,9 +933,17 @@ fn resolve_execution(
         workers,
         config.max_attempts,
         attempt_timeout,
+        optional_bound(config.answer_timeout_ms),
         checkpoint_interval,
         checkpoint_interval_steps,
     )
+}
+
+/// An optional millisecond setting as a duration. Absent disables the bound,
+/// which [`Duration::MAX`] expresses: a wait longer than the address space of
+/// milliseconds is no bound in effect.
+fn optional_bound(ms: Option<u64>) -> Duration {
+    ms.map_or(Duration::MAX, Duration::from_millis)
 }
 
 /// Validates the `[orchestrator]` section and resolves it. This machine takes an
@@ -1379,6 +1424,7 @@ mod tests {
 
     use sima_domains::{StubBehavior, StubGeneratorConfig};
     use sima_model::RunId;
+    use sima_transport::SpawnPolicy;
 
     use super::*;
 
@@ -2530,5 +2576,179 @@ mod tests {
             "#
         ));
         assert!(message.contains("Bad Name"), "{message}");
+    }
+
+    /// The spawn policy the loaded config gives `stub.v1`, over an entry
+    /// routing it to the built worker with `env` written as `entry` states.
+    fn stub_entry_policy(entry: &str) -> SpawnPolicy {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = write_config(
+            dir.path(),
+            "sima.toml",
+            &format!(
+                r#"{BASE}
+                [domain."stub.v1"]
+                binary = "{}"
+                {entry}
+                "#,
+                crate::fixtures::built_worker().display()
+            ),
+        );
+        let config = load(&path).expect("the config loads");
+        config
+            .domains
+            .source(&FormatId::new("stub.v1").expect("format id"))
+            .spawn_policy()
+    }
+
+    #[test]
+    fn an_entry_without_env_forwards_the_baseline_alone() {
+        // The key is optional, and an entry that omits it declares nothing
+        // beyond what every program receives.
+        assert_eq!(
+            stub_entry_policy(""),
+            SpawnPolicy::Explicit {
+                passthrough: Vec::new()
+            }
+        );
+    }
+
+    #[test]
+    fn the_names_an_entry_declares_reach_its_program_s_spawn_policy() {
+        assert_eq!(
+            stub_entry_policy(r#"env = ["ACME_ASSETS", "ACME_LICENSE_PATH"]"#),
+            SpawnPolicy::Explicit {
+                passthrough: vec!["ACME_ASSETS".to_string(), "ACME_LICENSE_PATH".to_string()],
+            }
+        );
+    }
+
+    #[test]
+    fn an_env_entry_is_a_variable_name_and_an_empty_one_is_refused() {
+        let message = rejection(&format!(
+            r#"{BASE}
+            [domain."stub.v1"]
+            binary = "/opt/acme/worker"
+            env = ["ACME_ASSETS", ""]
+            "#
+        ));
+        assert!(message.contains("env"), "{message}");
+        assert!(message.contains(r#""""#), "names the value: {message}");
+    }
+
+    #[test]
+    fn an_absent_answer_deadline_leaves_every_protocol_wait_unbounded() {
+        // The key is optional and absent is the state every run had before
+        // one existed: a wait for as long as the peer lives.
+        assert_eq!(
+            load_text(BASE)
+                .expect("the config loads")
+                .execution
+                .answer_timeout,
+            Duration::MAX
+        );
+    }
+
+    #[test]
+    fn the_answer_deadline_reaches_the_execution_settings() {
+        let text = BASE.replace(
+            "max_attempts = 3",
+            "max_attempts = 3\nanswer_timeout_ms = 120000",
+        );
+        assert_eq!(
+            load_text(&text)
+                .expect("the config loads")
+                .execution
+                .answer_timeout,
+            Duration::from_millis(120_000)
+        );
+    }
+
+    #[test]
+    fn a_zero_answer_deadline_is_taken_as_written() {
+        // The attempt deadline takes any millisecond value the file states and
+        // enforces it; this one follows the same rule rather than a second one.
+        let text = BASE.replace(
+            "max_attempts = 3",
+            "max_attempts = 3\nanswer_timeout_ms = 0",
+        );
+        assert_eq!(
+            load_text(&text)
+                .expect("the config loads")
+                .execution
+                .answer_timeout,
+            Duration::ZERO
+        );
+    }
+
+    #[test]
+    fn a_negative_answer_deadline_is_refused_like_a_negative_attempt_deadline() {
+        for key in ["answer_timeout_ms", "attempt_timeout_ms"] {
+            let text = BASE.replace("max_attempts = 3", &format!("max_attempts = 3\n{key} = -1"));
+            assert!(rejection(&text).contains(key), "{key}");
+        }
+    }
+
+    #[test]
+    fn a_program_silent_past_the_answer_deadline_fails_the_load_naming_it() {
+        // The registry's sessions open while the config resolves, so the
+        // deadline is read before them: a program that never answers is a
+        // config failure naming what was awaited.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let program = dir.path().join("wedged.sh");
+        // `exec` puts the sleep in the shell's place, so the process holding
+        // the pipes is the one the expiry's kill reaches.
+        fs::write(&program, "#!/bin/sh\nexec sleep 300\n").expect("write the program");
+        fs::set_permissions(
+            &program,
+            std::os::unix::fs::PermissionsExt::from_mode(0o755),
+        )
+        .expect("make it executable");
+        let path = write_config(
+            dir.path(),
+            "sima.toml",
+            &format!(
+                r#"{BASE}
+                [domain."stub.v1"]
+                binary = "{}"
+                "#,
+                program.display()
+            )
+            .replace(
+                "max_attempts = 3",
+                "max_attempts = 3\nanswer_timeout_ms = 300",
+            ),
+        );
+        let started = std::time::Instant::now();
+        let Err(error) = load(&path) else {
+            panic!("expected a program that never answers to fail the load");
+        };
+        assert!(
+            started.elapsed() < Duration::from_secs(20),
+            "{:?}",
+            started.elapsed()
+        );
+        let message = error.to_string();
+        assert!(message.contains("wedged.sh"), "{message}");
+        assert!(message.contains("Ready"), "names the answer: {message}");
+    }
+
+    #[test]
+    fn an_env_entry_carrying_a_value_is_refused() {
+        // A name, never an assignment: the value comes from the
+        // orchestrator's own environment, so writing one here would be a
+        // second, silent source of it.
+        let message = rejection(&format!(
+            r#"{BASE}
+            [domain."stub.v1"]
+            binary = "/opt/acme/worker"
+            env = ["ACME_ASSETS=/opt/acme"]
+            "#
+        ));
+        assert!(message.contains("env"), "{message}");
+        assert!(
+            message.contains("ACME_ASSETS=/opt/acme"),
+            "names the value: {message}"
+        );
     }
 }

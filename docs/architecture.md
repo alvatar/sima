@@ -34,7 +34,7 @@ ones are added the same way.
 - Execution backends are implementation crates under `crates/toolkits/` (`sima-toolkit-*`), depending on `sima-core` (and `sima-contracts` when needed); `sima-domains` depends on the toolkits its domains use, and each toolkit isolates its own dependency set.
 - The store is the only durable state. Queues, schedulers, and orchestrators are ephemeral; a task source derives the currently-runnable frontier from (config, store state) — static batches and segment chains are two implementations of that one interface. Resume, crash-recovery, and re-run are one code path: re-derive the frontier, continue.
 - One orchestrator per run — the `sima run` process itself, no daemon; single-writer enforced by an OS file lock the kernel releases when the holder exits, so no staleness protocol exists; the lock file's content (pid, hostname) is diagnostic only. Workers are stateless leaseholders.
-- Executors are pure compute: they receive (spec, params, seed, env) and return artifacts + stats, never touching the store. Workers commit results through the catalog. The trust boundary lives here.
+- Executors are pure compute: they receive (spec, params, seed, env) and return artifacts + stats, never touching the store. Workers commit results through the catalog. The trust boundary lives here. A config-routed program is spawned across that boundary with an explicit environment — a baseline allowlist plus the variable names its entry declares — in a fresh scratch working directory removed at reap, and every protocol answer it owes is bounded by `answer_timeout_ms` except generation, which is compute.
 - Candidates are opaque at the infrastructure layer: a spec is (format id, opaque bytes), content-addressed. Domains interpret specs; "genome" is domain vocabulary. Run parameters are a second opaque content-addressed blob (params): generators produce specs, config produces params, and the spec's format id governs the interpretation of both — so one candidate stays addressable across evaluation stages and the generator contract never carries evaluation policy.
 - Two serialization worlds: identity-bearing bytes (anything hashed) go through the canonical `Enc`/`Dec` encoding exclusively; human-readable artifacts are serde and never identity-bearing.
 - Reproducibility is declared per domain across two tiers (README, Determinism), not assumed uniform. The infrastructure guarantees run identity regardless: manifests are canonicalized so run hashes are independent of worker completion order, and journals are observational, excluded from equality criteria.
@@ -937,6 +937,7 @@ A config declares one entry per registered format:
 ```toml
 [domain."acme.thing.v1"]
 binary = "/opt/acme/worker"
+env    = ["ACME_ASSETS"]   # optional; variable names the program also receives
 ```
 
 The registry is built where the config resolves, and the run's own translations
@@ -949,6 +950,88 @@ in-tree formats through the two contracts, and an integration suite drives one o
 through `BinarySource` and asserts the run id and every task key are identical
 to the same run by direct call. A field the protocol failed to carry would
 change a hash.
+
+### Isolation and trust at the program boundary
+
+A configured binary is user-chosen code running as the user, trusted like any
+installed tool. What sima enforces is the shape of the boundary around it: a
+narrow wire, a minimal spawn surface, and a bound on every wait.
+
+**The boundary.** Everything that crosses is the two framed stdio protocols.
+The wire carries no store path, no store handle, and no file descriptor beyond
+the stdio pipes. Every identity-bearing value is validated where its bytes
+decode:
+
+- the frame payload cap, enforced by the reader and the writer alike;
+- the protocol version, handshaked on both conversations;
+- the format check on every domain-service message naming one;
+- format and generator ids, revalidated on each decode that carries one;
+- device class ids, against the class character and length rule;
+- environment component names, against the shared name rule;
+- the spec format, checked against the run before a candidate is stored;
+- the artifact name, checked before a result becomes a record.
+
+**What a spawned program receives.** A worker gets three piped stdio streams,
+its stderr captured line by line into the run's journal; a domain service gets
+piped stdin and stdout, its stderr the orchestrator's own. Beyond those:
+
+- the argument vector — `--serve-domain <format>` for the service role, empty
+  for a worker;
+- a baseline environment: `PATH`, `HOME`, `USER`, `LOGNAME`, `TMPDIR`, `LANG`,
+  `TZ`, and anything prefixed `LC_`, `XDG_`, `LD_`, `CUDA_`, `NVIDIA_`, `VK_`,
+  `MESA_`, `ROCM_`, `ROCR_`, `HIP_`, `HSA_`, or `__GL_` — the dynamic loader,
+  the locale, the user's caches, and the three GPU stacks;
+- the variables its `[domain.*]` entry names in `env`, by name alone, taken
+  from the orchestrator's environment where it holds them;
+- a fresh scratch working directory, created at spawn and removed when the
+  process is reaped.
+
+A relative write by the program therefore lands in scratch space, and a
+relative read finds an empty directory, so a program loads its assets by
+absolute path. Every sima-owned process — a builtin worker, a container
+runtime client, an ssh client — keeps the orchestrator's environment and
+working directory instead: they run in the orchestrator's own trust domain,
+and the clients need the ambient environment to reach anything.
+
+**What sima protects.**
+
+- **Run identity and store integrity** against a buggy program: the validations
+  above, content addressing, and the single-writer catalog the parent alone
+  holds. A worker returns outcomes over the pipe; the parent commits.
+- **The orchestrator's credentials**: a provider key in the orchestrator's
+  environment matches nothing on the baseline, so it stays there.
+
+**What the user accepts.** Naming a binary in config runs it with the user's
+own authority. A malicious binary can find the store on disk the way any
+process of that user can, and the spawn surface is hygiene rather than
+confinement. Confinement is a deliberate future opt-in tier: Landlock grants
+access under listed paths and denies the rest, so "deny exactly the store
+subtree" is inexpressible, and an allowlist covering an arbitrary GPU
+program's needs — `/dev`, `/sys`, `/proc`, driver caches, `$HOME` caches, its
+own assets — is unwritable generically. The container transport is that tier's
+natural carrier: it already launches a worker inside a runtime the config
+describes.
+
+**Bounded waits.** Two keys in `[config]` bound what a program can hold up,
+each optional and each disabled when absent:
+
+| Wait | Bound | Key |
+|---|---|---|
+| task attempt, which is compute | the worker is killed, the attempt fails transiently and retries | `attempt_timeout_ms` |
+| worker handshake, spawn to `Ready` | a spawn failure naming the binary and the deadline | `answer_timeout_ms` |
+| domain-service metadata question | a config-load or run error naming the binary and the question | `answer_timeout_ms` |
+| domain-service `Generate` | unbounded by design | — |
+
+The handshake bound covers every worker spawn — builtin, configured,
+containerized, over ssh — which is operational robustness rather than a trust
+measure: a builtin worker wedges identically when a broken driver hangs device
+initialization.
+
+Generation is exempt because it is computation proportional to the batch, the
+analog of a task attempt rather than an answer, and a default sized for answers
+would kill a legitimate large batch. A generator computes under the same trust
+as an executor, and a runaway one is interrupted the way any run is — Ctrl-C,
+with the store losing nothing and the resume continuing from it.
 
 ## `sima-domains` (L5)
 
@@ -1753,8 +1836,10 @@ The config file carries the same split the model enforces:
   (its id plus the generator-owned keys), and the domain-owned run params.
 - **`[config]`** — the global operational settings: the store path (resolved
   relative to the config file's directory), the attempt cap, an optional
-  attempt timeout whose absence disables the enforced attempt deadline, and two
-  optional checkpoint cadences whose absence disables checkpointing.
+  attempt timeout whose absence disables the enforced attempt deadline, an
+  optional answer timeout bounding every protocol answer a program owes (see
+  [Isolation and trust at the program boundary](#isolation-and-trust-at-the-program-boundary)),
+  and two optional checkpoint cadences whose absence disables checkpointing.
 
 Every section below `[run]` is operational and never hashed — a run resumed
 with different parallelism, a different store path, or a different set of

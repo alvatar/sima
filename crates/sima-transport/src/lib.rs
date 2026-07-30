@@ -15,6 +15,11 @@
 //!   both roles behind one call, chosen by the arguments it was spawned with.
 //! - [`link`] — the parent-side boundary: the [`WorkerTransport`] and
 //!   [`WorkerLink`] traits the scheduler is written against.
+//! - [`spawn_policy`] — what environment and working directory a spawned
+//!   child receives: an inherited surface for a sima-owned process, an
+//!   explicit one for a configured program.
+//! - [`spawn_settings`] — what every worker spawn of one pool shares: that
+//!   policy, the deadline on the handshake answer, and the handshake frame.
 //! - [`subprocess`] — the production transport: one process per worker,
 //!   SIGKILL preemption.
 //! - [`container`] — a worker inside a container runtime, optionally across an
@@ -36,12 +41,17 @@ pub mod link;
 pub mod loopback;
 pub mod protocol;
 pub mod serve;
+pub mod spawn_policy;
+pub mod spawn_settings;
 pub mod ssh;
 pub mod subprocess;
 
+mod answer_deadline;
 mod checkpoint_cadence;
 
 pub use container::ContainerTransport;
 pub use link::{LinkEvent, SpawnOutcome, WorkerLink, WorkerTransport};
+pub use spawn_policy::SpawnPolicy;
+pub use spawn_settings::SpawnSettings;
 pub use ssh::{SpawnMode, SshDestination, SshTransport};
 pub use subprocess::SubprocessTransport;

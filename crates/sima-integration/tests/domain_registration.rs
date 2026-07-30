@@ -6,6 +6,10 @@
 //! through a program produces the run id and the task keys the same run
 //! produces by direct call, so anything the protocol failed to carry would
 //! change a hash and fail these tests rather than pass silently.
+//!
+//! The spawn surface is acceptance-tested the same way, from the program's own
+//! point of view: a wrapper script reports what it was handed, and a whole run
+//! through it is the proof.
 
 mod common;
 
@@ -21,12 +25,17 @@ use sima_pipeline::{
 };
 use sima_store::Store;
 
-/// A stub run, optionally routing its format to `program`. Everything else is
-/// identical, so what the two configs differ in is where the format is
-/// answered from.
-fn stub_config(store: &str, program: Option<&Path>) -> String {
+/// A stub run, optionally routing its format to `program` and declaring the
+/// variable names that program receives. Everything else is identical, so what
+/// the two configs differ in is where the format is answered from.
+fn stub_config(store: &str, program: Option<&Path>, env: &[&str]) -> String {
     let entry = program.map_or(String::new(), |binary| {
-        format!("[domain.\"stub.v1\"]\nbinary = \"{}\"\n", binary.display())
+        let names: Vec<String> = env.iter().map(|name| format!("{name:?}")).collect();
+        format!(
+            "[domain.\"stub.v1\"]\nbinary = \"{}\"\nenv = [{}]\n",
+            binary.display(),
+            names.join(", ")
+        )
     });
     format!(
         r#"
@@ -118,6 +127,82 @@ fn worker() -> PathBuf {
     built_binary("sima-worker")
 }
 
+/// The variable the wrapper script refuses to run with: a stand-in for a
+/// credential the orchestrator holds in its own environment and no program
+/// has a claim on.
+const CANARY: &str = "SIMA_TEST_CANARY";
+
+/// The variable the wrapper script requires: a stand-in for a setting a
+/// program needs, which its config entry declares by name.
+const DECLARED: &str = "ACME_ASSETS";
+
+/// Writes an executable wrapper around the worker under `dir` and returns it.
+///
+/// The wrapper reports the spawn surface it was handed before becoming the
+/// worker: it refuses the canary variable, requires the declared one, and
+/// writes a file by relative path, which lands wherever its working directory
+/// is.
+fn spawn_surface_wrapper(dir: &Path) -> PathBuf {
+    let path = dir.join("wrapper.sh");
+    std::fs::write(
+        &path,
+        format!(
+            "#!/bin/sh\n\
+             [ -z \"${CANARY}\" ] || exit 7\n\
+             [ -n \"${DECLARED}\" ] || exit 8\n\
+             touch ./canary\n\
+             exec {} \"$@\"\n",
+            worker().display()
+        ),
+    )
+    .expect("write the wrapper");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+            .expect("make the wrapper executable");
+    }
+    path
+}
+
+#[test]
+fn a_program_receives_the_spawn_surface_its_entry_declares() {
+    // The spawn surface, observed by the program itself through a whole run:
+    // the canary dropped, the declared name forwarded, the working directory
+    // its own. The orchestrator runs as its own process here because that is
+    // the only way its environment can hold what the child must and must not
+    // receive.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let wrapper = spawn_surface_wrapper(dir.path());
+    std::fs::write(
+        dir.path().join("sima.toml"),
+        stub_config("./store", Some(&wrapper), &[DECLARED]),
+    )
+    .expect("write the config");
+    let output = std::process::Command::new(built_binary("sima"))
+        .args(["run", "sima.toml"])
+        .current_dir(dir.path())
+        .env(CANARY, "a credential the orchestrator holds")
+        .env(DECLARED, "/opt/acme/assets")
+        .output()
+        .expect("run sima");
+    // The run finalized, so both roles of the program ran past their two
+    // checks: a spawn that carried the canary would have exited 7, and one
+    // missing the declared name would have exited 8.
+    assert!(
+        output.status.success(),
+        "the run finalized: {}\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    // Both roles wrote `./canary` and neither wrote it here: the relative path
+    // resolved inside a scratch directory that is gone with the process.
+    assert!(
+        !dir.path().join("canary").exists(),
+        "a relative write by the program landed in the run's directory"
+    );
+}
+
 #[test]
 fn a_run_through_a_program_keeps_the_identity_it_has_by_direct_call() -> Result<()> {
     // The proof the protocol carries everything the parent needs: the params,
@@ -125,11 +210,15 @@ fn a_run_through_a_program_keeps_the_identity_it_has_by_direct_call() -> Result<
     // produced all enter these hashes, so a field the protocol dropped would
     // change one of them.
     let dir = tempfile::tempdir().expect("temp dir");
-    let direct = loaded_text(dir.path(), "direct.toml", &stub_config("./direct", None))?;
+    let direct = loaded_text(
+        dir.path(),
+        "direct.toml",
+        &stub_config("./direct", None, &[]),
+    )?;
     let served = loaded_text(
         dir.path(),
         "served.toml",
-        &stub_config("./served", Some(&worker())),
+        &stub_config("./served", Some(&worker()), &[]),
     )?;
     assert_eq!(
         direct.run.id(),
@@ -149,11 +238,15 @@ fn a_run_through_a_program_commits_what_it_would_have_committed() -> Result<()> 
     // The identity holds through execution too: the same run driven both ways
     // finalizes over the same manifest entries.
     let dir = tempfile::tempdir().expect("temp dir");
-    let direct = loaded_text(dir.path(), "direct.toml", &stub_config("./direct", None))?;
+    let direct = loaded_text(
+        dir.path(),
+        "direct.toml",
+        &stub_config("./direct", None, &[]),
+    )?;
     let served = loaded_text(
         dir.path(),
         "served.toml",
-        &stub_config("./served", Some(&worker())),
+        &stub_config("./served", Some(&worker()), &[]),
     )?;
     for config in [&direct, &served] {
         let outcome = orchestrate(config, &RunControl::detached(), Engagement::Orchestrator)?;
