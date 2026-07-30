@@ -814,7 +814,7 @@ portability (P1 acceptance (d)) hold across the boundary.
       was the surface around it. Settled: the enforcement tier is **spawn
       hygiene plus a recorded trust argument**, since a configured binary is
       user-chosen code running as the user. `SpawnPolicy` names the surface a
-      child receives: `Inherit` for every sima-owned process, `Scrubbed` for a
+      child receives: `Inherit` for every sima-owned process, `Explicit` for a
       config-routed binary — the environment cleared and repopulated from a
       baseline allowlist (`PATH`, `HOME`, `USER`, `LOGNAME`, `TMPDIR`, `LANG`,
       `TZ`, and the `LC_`/`XDG_`/`LD_` and three GPU-stack prefixes) plus the
