@@ -8,14 +8,14 @@
 //! one, what settings a run may state, and what hardware the work runs on.
 //!
 //! This program evaluates a candidate of one byte by doubling it. Everything
-//! sima needs from a real renderer or simulator, it needs from this too, which
-//! is why the whole contract fits in one file.
+//! sima needs from a real program, it needs from this one too, which is why
+//! the whole contract fits in one file.
 //!
 //! # The two components
 //!
-//! - **Component A — [`DoublerDomain`]**, a [`Domain`]. What the format is, and
-//!   the [`Executor`] that evaluates one candidate.
-//! - **Component B — [`Sampler`]**, a [`Generator`]. Which candidates to try.
+//! - [`DoublerGenerator`], the [`Generator`]: which candidates to try.
+//! - [`DoublerDomain`], the [`Domain`]: what the format is, and the
+//!   [`DoublerExecutor`] it builds to evaluate each candidate.
 //!
 //! A program registers under a **format id** — here `example.doubler.v1`, 1 to
 //! 64 bytes of `[a-z0-9._-]`. It governs how candidate bytes and run params are
@@ -43,12 +43,12 @@
 //!
 //! sima runs the binary in two roles: once per configured format to ask what
 //! the format binds, and once per worker slot to execute tasks. Both are the
-//! same program; [`sima_api::serve`] sorts out which is being asked.
+//! same program; [`sima_api::serve`] resolves which is being asked.
 //!
 //! # The six steps
 //!
-//! 1. Evaluate one candidate.
-//! 2. Produce the candidates.
+//! 1. Produce the candidates.
+//! 2. Evaluate one candidate.
 //! 3. Translate the configuration each component owns.
 //! 4. Declare what enters a result's identity.
 //! 5. Declare the hardware.
@@ -74,131 +74,116 @@ const DEVICE_NAME: &str = "example host processor";
 const DRIVER: &str = "example.doubler v1";
 
 // ===========================================================================
-// Component A — the domain: what the format is, and the executor it builds.
+// The generator: which candidates the run tries.
 // ===========================================================================
 
-/// What the format binds: its executor, the environment its results depend on,
-/// the devices it runs on, and the translation of `[run.params]`.
-pub struct DoublerDomain {
+/// Draws one-byte specs from the run's root seed.
+///
+/// Separate from the domain because one format has one executor and many
+/// generators: a run names which one it wants by id.
+pub struct DoublerGenerator {
+    id: GeneratorId,
     format: FormatId,
-    environment: Environment,
 }
 
-impl DoublerDomain {
-    /// The domain a run reaches this program's format through.
-    pub fn new() -> Result<DoublerDomain> {
-        Ok(DoublerDomain {
+impl DoublerGenerator {
+    /// The generator a run reaches by id.
+    pub fn new() -> Result<DoublerGenerator> {
+        Ok(DoublerGenerator {
+            id: GeneratorId::new(FORMAT)?,
             format: FormatId::new(FORMAT)?,
-            environment: Environment::new(vec![EnvironmentComponent::new(
-                "example.doubler.executor",
-                EnvironmentValue::Version("v1".to_string()),
-            )?])?,
         })
     }
 }
 
-impl Domain for DoublerDomain {
+impl Generator for DoublerGenerator {
+    fn id(&self) -> &GeneratorId {
+        &self.id
+    }
+
     fn format(&self) -> &FormatId {
         &self.format
     }
 
-    // 4. Declare what enters a result's identity.
+    // 1. Produce the candidates.
     //
-    // sima addresses a result by a key hashed from the candidate, the run's
-    // params, and this environment. Two runs agree on a stored result only when
-    // all three agree, so change the arithmetic in step 1 and bump this
-    // version: every result stored by the old one keeps its old address.
-    fn environment(&self) -> &Environment {
-        &self.environment
+    // Called in the orchestrator with the run's root seed and the blob step 3
+    // produced. The specs become the run's tasks and their bytes enter every
+    // task key, so this must be deterministic: the same seed and params always
+    // yield the same specs, or a resumed run computes different work than it
+    // started.
+    fn generate(&self, root_seed: u64, params: &[u8]) -> Result<Vec<Spec>> {
+        // The count is the whole settings blob: one byte, so a run asks for at
+        // most 255 candidates and an absent blob asks for one.
+        let count = u64::from(params.first().copied().unwrap_or(1));
+        let mut stream = prng::Stream::new(root_seed);
+        Ok((0..count)
+            .map(|_| Spec {
+                format: self.format.clone(),
+                bytes: vec![stream.next_u64() as u8],
+            })
+            .collect())
     }
 
-    // 3. Translate `[run.params]`, the section this component owns.
+    // 3. Translate `[run.generator]`, the section this component owns.
     //
     // Text in, canonical bytes out — the bytes step 1 reads and the run id
     // covers. The text is parsed with a TOML crate of this program's choosing,
-    // which is what keeps sima's off the surface.
-    //
-    // Rejecting an unread key protects that identity: a silently ignored
-    // setting gives the run an identity promising something the executor never
-    // applied.
-    fn translate_params(&self, toml: &str, _segmented: bool) -> Result<Params> {
+    // which is what keeps sima's off the surface. This one takes `count`, so
+    // the blob is one byte.
+    fn translate_params(&self, toml: &str) -> Result<Vec<u8>> {
         let table = section(toml)?;
-        if let Some(key) = table.keys().next() {
+        if let Some(key) = table.keys().find(|key| key.as_str() != "count") {
             return Err(Error::Validation(format!(
-                "[run.params] carries {key:?}; {FORMAT} takes no params"
+                "[run.generator] carries {key:?}; {FORMAT} takes count alone"
             )));
         }
-        Ok(Params { bytes: Vec::new() })
-    }
-
-    // 5. Declare the hardware. Three methods, one lifecycle.
-    //
-    // `enumerate` lists every device this program can compute on. A run
-    // resolves its `[[execution.device]]` selectors against the list and
-    // spreads its workers over the members of the class each one names. A
-    // **class** promises its members are interchangeable, so two identical
-    // cards are two members of one class and a card beside an integrated chip
-    // is two classes. The name is this program's to mint — a GPU backend mints
-    // something like `10de:2330`, plus a partition profile where a card is
-    // sliced. An empty list means plain workers, no device.
-    fn enumerate(&self) -> Result<Vec<DeviceInfo>> {
-        Ok(vec![DeviceInfo {
-            class: DeviceClass::new("example:cpu")?,
-            name: DEVICE_NAME.to_string(),
-            device_type: DeviceType::Cpu,
-            member: 0,
-        }])
-    }
-
-    // `executor` builds the executor on the device sima placed this worker on.
-    // A constructor rather than a stored object, because it runs in the worker
-    // process where the device is finally known: a real program opens its
-    // context, compiles its kernels, and loads its assets here, once.
-    fn executor(&self, device: Option<&DeviceBinding>) -> Result<Box<dyn Executor + Sync>> {
-        Ok(Box::new(Doubler::new(device.cloned())?))
-    }
-
-    // `device_desc` names that device as `(name, driver version)`, reported
-    // beside every attempt so a result says which hardware produced it. It is
-    // observational and enters no identity; two empty strings mean no device.
-    fn device_desc(&self, device: Option<&DeviceBinding>) -> Result<(String, String)> {
-        let name = match device {
-            Some(device) => format!("{DEVICE_NAME} #{}", device.member),
-            None => DEVICE_NAME.to_string(),
+        let Some(value) = table.get("count") else {
+            return Ok(vec![1]);
         };
-        Ok((name, DRIVER.to_string()))
+        let count = value
+            .as_integer()
+            .and_then(|count| u8::try_from(count).ok())
+            .filter(|count| *count > 0)
+            .ok_or_else(|| Error::Validation(format!("count is 1 to 255, got {value}")))?;
+        Ok(vec![count])
     }
 }
+
+// ===========================================================================
+// The executor: evaluates one candidate. The domain below builds one per
+// worker.
+// ===========================================================================
 
 /// Evaluates a one-byte spec: the result is that byte doubled.
 ///
 /// One executor is built per worker and runs every task that worker takes, so
 /// this is where a real program holds what is expensive to acquire: its device
 /// context, its compiled kernels, its loaded assets.
-pub struct Doubler {
+pub struct DoublerExecutor {
     format: FormatId,
     /// The device this executor computes on, or `None` for the backend's own
     /// default selection.
     device: Option<DeviceBinding>,
 }
 
-impl Doubler {
+impl DoublerExecutor {
     /// Binds the executor to the format its specs carry and the device it runs
     /// on.
-    pub fn new(device: Option<DeviceBinding>) -> Result<Doubler> {
-        Ok(Doubler {
+    pub fn new(device: Option<DeviceBinding>) -> Result<DoublerExecutor> {
+        Ok(DoublerExecutor {
             format: FormatId::new(FORMAT)?,
             device,
         })
     }
 }
 
-impl Executor for Doubler {
+impl Executor for DoublerExecutor {
     fn format(&self) -> &FormatId {
         &self.format
     }
 
-    // 1. Evaluate one candidate. This is the work.
+    // 2. Evaluate one candidate. This is the work.
     //
     // Called once per task, in a worker process, with the candidate bytes, the
     // run's translated params, and a per-task seed. What it returns is stored:
@@ -246,75 +231,96 @@ impl Executor for Doubler {
 }
 
 // ===========================================================================
-// Component B — the generator: which candidates the run tries.
+// The domain: what the format is, and the executor it builds.
 // ===========================================================================
 
-/// Draws one-byte specs from the run's root seed.
-///
-/// Separate from the domain because one format has one executor and many
-/// generators: a run names which one it wants by id.
-pub struct Sampler {
-    id: GeneratorId,
+/// What the format binds: its executor, the environment its results depend on,
+/// the devices it runs on, and the translation of `[run.params]`.
+pub struct DoublerDomain {
     format: FormatId,
+    environment: Environment,
 }
 
-impl Sampler {
-    /// The generator a run reaches by id.
-    pub fn new() -> Result<Sampler> {
-        Ok(Sampler {
-            id: GeneratorId::new(FORMAT)?,
+impl DoublerDomain {
+    /// The domain a run reaches this program's format through.
+    pub fn new() -> Result<DoublerDomain> {
+        Ok(DoublerDomain {
             format: FormatId::new(FORMAT)?,
+            environment: Environment::new(vec![EnvironmentComponent::new(
+                "example.doubler.executor",
+                EnvironmentValue::Version("v1".to_string()),
+            )?])?,
         })
     }
 }
 
-impl Generator for Sampler {
-    fn id(&self) -> &GeneratorId {
-        &self.id
-    }
-
+impl Domain for DoublerDomain {
     fn format(&self) -> &FormatId {
         &self.format
     }
 
-    // 3, again: `[run.generator]` is this component's section, translated the
-    // same way. This one takes `count`, so the blob is one byte.
-    fn translate_params(&self, toml: &str) -> Result<Vec<u8>> {
+    // 3, again: `[run.params]` is this component's section, translated the
+    // same way. Its bytes are what step 2 reads, and they enter the run id.
+    //
+    // Rejecting an unread key protects that identity: a silently ignored
+    // setting gives the run an identity promising something the executor never
+    // applied.
+    fn translate_params(&self, toml: &str, _segmented: bool) -> Result<Params> {
         let table = section(toml)?;
-        if let Some(key) = table.keys().find(|key| key.as_str() != "count") {
+        if let Some(key) = table.keys().next() {
             return Err(Error::Validation(format!(
-                "[run.generator] carries {key:?}; {FORMAT} takes count alone"
+                "[run.params] carries {key:?}; {FORMAT} takes no params"
             )));
         }
-        let Some(value) = table.get("count") else {
-            return Ok(vec![1]);
-        };
-        let count = value
-            .as_integer()
-            .and_then(|count| u8::try_from(count).ok())
-            .filter(|count| *count > 0)
-            .ok_or_else(|| Error::Validation(format!("count is 1 to 255, got {value}")))?;
-        Ok(vec![count])
+        Ok(Params { bytes: Vec::new() })
     }
 
-    // 2. Produce the candidates.
+    // 4. Declare what enters a result's identity.
     //
-    // Called in the orchestrator with the run's root seed and the blob step 3
-    // produced. The specs become the run's tasks and their bytes enter every
-    // task key, so this must be deterministic: the same seed and params always
-    // yield the same specs, or a resumed run computes different work than it
-    // started.
-    fn generate(&self, root_seed: u64, params: &[u8]) -> Result<Vec<Spec>> {
-        // The count is the whole settings blob: one byte, so a run asks for at
-        // most 255 candidates and an absent blob asks for one.
-        let count = u64::from(params.first().copied().unwrap_or(1));
-        let mut stream = prng::Stream::new(root_seed);
-        Ok((0..count)
-            .map(|_| Spec {
-                format: self.format.clone(),
-                bytes: vec![stream.next_u64() as u8],
-            })
-            .collect())
+    // sima addresses a result by a key hashed from the candidate, the run's
+    // params, and this environment. Two runs agree on a stored result only when
+    // all three agree, so change the arithmetic in step 2 and bump this
+    // version: every result stored by the old one keeps its old address.
+    fn environment(&self) -> &Environment {
+        &self.environment
+    }
+
+    // 5. Declare the hardware. Three methods, one lifecycle.
+    //
+    // `enumerate` lists every device this program can compute on. A run
+    // resolves its `[[execution.device]]` selectors against the list and
+    // spreads its workers over the members of the class each one names. A
+    // **class** promises its members are interchangeable, so two identical
+    // cards are two members of one class and a card beside an integrated chip
+    // is two classes. The name is this program's to mint — a GPU backend mints
+    // something like `10de:2330`, plus a partition profile where a card is
+    // sliced. An empty list means plain workers, no device.
+    fn enumerate(&self) -> Result<Vec<DeviceInfo>> {
+        Ok(vec![DeviceInfo {
+            class: DeviceClass::new("example:cpu")?,
+            name: DEVICE_NAME.to_string(),
+            device_type: DeviceType::Cpu,
+            member: 0,
+        }])
+    }
+
+    // `executor` builds the executor on the device sima placed this worker on.
+    // A constructor rather than a stored object, because it runs in the worker
+    // process where the device is finally known: a real program opens its
+    // context, compiles its kernels, and loads its assets here, once.
+    fn executor(&self, device: Option<&DeviceBinding>) -> Result<Box<dyn Executor + Sync>> {
+        Ok(Box::new(DoublerExecutor::new(device.cloned())?))
+    }
+
+    // `device_desc` names that device as `(name, driver version)`, reported
+    // beside every attempt so a result says which hardware produced it. It is
+    // observational and enters no identity; two empty strings mean no device.
+    fn device_desc(&self, device: Option<&DeviceBinding>) -> Result<(String, String)> {
+        let name = match device {
+            Some(device) => format!("{DEVICE_NAME} #{}", device.member),
+            None => DEVICE_NAME.to_string(),
+        };
+        Ok((name, DRIVER.to_string()))
     }
 }
 
