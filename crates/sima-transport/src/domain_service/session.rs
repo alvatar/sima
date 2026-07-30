@@ -123,13 +123,12 @@ impl DomainService {
 
     /// The environment the format's results depend on.
     pub fn environment(&mut self, format: &FormatId) -> Result<Environment> {
-        let within = self.answer_timeout;
         match self.ask(
             &ToDomain::Describe {
                 format: format.clone(),
             },
             "Described",
-            within,
+            self.answer_timeout,
         )? {
             FromDomain::Described { environment } => Ok(environment),
             other => Err(self.unexpected("Described", &other)),
@@ -138,13 +137,12 @@ impl DomainService {
 
     /// The devices the format's work can run on.
     pub fn enumerate_devices(&mut self, format: &FormatId) -> Result<Vec<DeviceInfo>> {
-        let within = self.answer_timeout;
         match self.ask(
             &ToDomain::EnumerateDevices {
                 format: format.clone(),
             },
             "EnumeratedDevices",
-            within,
+            self.answer_timeout,
         )? {
             FromDomain::EnumeratedDevices { devices } => Ok(devices),
             other => Err(self.unexpected("EnumeratedDevices", &other)),
@@ -159,7 +157,6 @@ impl DomainService {
         toml: &str,
         segmented: bool,
     ) -> Result<Params> {
-        let within = self.answer_timeout;
         match self.ask(
             &ToDomain::TranslateConfig {
                 format: format.clone(),
@@ -167,7 +164,7 @@ impl DomainService {
                 segmented,
             },
             "TranslatedConfig",
-            within,
+            self.answer_timeout,
         )? {
             FromDomain::TranslatedConfig { bytes } => Ok(Params { bytes }),
             other => Err(self.unexpected("TranslatedConfig", &other)),
@@ -181,14 +178,13 @@ impl DomainService {
         generator: &GeneratorId,
         toml: &str,
     ) -> Result<Vec<u8>> {
-        let within = self.answer_timeout;
         match self.ask(
             &ToDomain::TranslateGeneratorConfig {
                 generator: generator.clone(),
                 toml: toml.to_string(),
             },
             "TranslatedConfig",
-            within,
+            self.answer_timeout,
         )? {
             FromDomain::TranslatedConfig { bytes } => Ok(bytes),
             other => Err(self.unexpected("TranslatedConfig", &other)),
@@ -226,13 +222,12 @@ impl DomainService {
 
     /// Opens the conversation, refusing a program that speaks another version.
     fn handshake(&mut self) -> Result<()> {
-        let within = self.answer_timeout;
         match self.ask(
             &ToDomain::Hello {
                 protocol: PROTOCOL_VERSION,
             },
             "Ready",
-            within,
+            self.answer_timeout,
         )? {
             FromDomain::Ready { protocol } if protocol == PROTOCOL_VERSION => Ok(()),
             FromDomain::Ready { protocol } => Err(Error::Transport(format!(
