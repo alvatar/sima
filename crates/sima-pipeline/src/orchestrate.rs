@@ -16,6 +16,7 @@ use crate::config::{Container, LoadedConfig, Pool};
 use crate::devices;
 use crate::domain_registry::DomainSource;
 use crate::fleet::{Engagement, Members, OwnedMachine, members};
+use crate::program_binding::{BinaryChange, bind};
 use crate::rental::{
     RentalGroup, StopSignal, Supervisor, acquire_hosts, provider_for, release_all, transport_mode,
 };
@@ -31,10 +32,15 @@ use crate::rental::{
 /// `engagement` is the invocation's answer to which machines the run uses. Under
 /// [`Engagement::Orchestrator`] the fleet is never resolved, so no provider is
 /// constructed and no credential is read whatever the config declares.
+///
+/// `accept` is the invocation's answer to a config-routed program whose build
+/// changed since this run last ran. A run whose format this build carries has
+/// no program, so nothing is compared and the answer is inert.
 pub fn orchestrate(
     config: &LoadedConfig,
     control: &RunControl,
     engagement: Engagement,
+    accept: BinaryChange,
 ) -> Result<RunOutcome> {
     // Dispatch and discovery precede every store mutation: a config naming an
     // unknown format or generator, a build without the worker binary, or a
@@ -90,6 +96,13 @@ pub fn orchestrate(
     let owned = owned_pools(&members.owned, &run, &execution, &config.run.format)?;
     let store = Store::open(&config.store)?;
     let lock = store.acquire_run_lock(&run)?;
+    // The build serving a config-routed format is compared against the one the
+    // run was last driven by, and recorded, under the held lock: the journal
+    // read and the append race no other orchestrator. A format this build
+    // carries has no program, so nothing is compared and nothing is recorded.
+    if let Some(routed) = config.domains.routed(&config.run.format) {
+        bind(&store, &config.run, &routed, accept)?;
+    }
     // Rentals are acquired under the held lock — each machine behind a teardown
     // guard held for the run's life. A strict-fill shortfall tears down whatever
     // was acquired and fails here, before any task runs.

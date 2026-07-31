@@ -22,6 +22,10 @@
 //! run — its store and its orchestrator — onto the one machine
 //! `[orchestrator].migrate` names, and brings the results back.
 //!
+//! A run through a program a `[domain.*]` entry names stops when that
+//! program's build changed since the run last ran; `--accept-binary` is the
+//! invocation stating that the changed build should drive it anyway.
+//!
 //! All orchestration lives in `sima-pipeline` — this binary parses arguments,
 //! renders output, registers the interrupt flag, and maps outcomes to exit
 //! codes:
@@ -46,10 +50,10 @@ use std::sync::atomic::AtomicBool;
 
 use sima_core::{Error, Result};
 use sima_pipeline::{
-    Engagement, FeedInfo, LoadedConfig, LocalFeed, Record, RemoteFeed, RemovalReport, ReportRow,
-    RunControl, RunFeed, RunId, RunOutcome, RunStatus, RunTimeline, TaskHistory, failures_records,
-    follow_serve, load, local_snapshot, orchestrate, remote_snapshot, report_records,
-    report_task_records, status, status_records, sync_serve, task_history_records,
+    BinaryChange, Engagement, FeedInfo, LoadedConfig, LocalFeed, Record, RemoteFeed, RemovalReport,
+    ReportRow, RunControl, RunFeed, RunId, RunOutcome, RunStatus, RunTimeline, TaskHistory,
+    failures_records, follow_serve, load, local_snapshot, orchestrate, remote_snapshot,
+    report_records, report_task_records, status, status_records, sync_serve, task_history_records,
     timeline_records,
 };
 use sima_provider::ReconcileScope;
@@ -66,15 +70,16 @@ pub(crate) const EXIT_ERROR: u8 = 1;
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let (args, host) = split_target(&args);
+    let (args, accept) = split_binary_change(&args);
     match args[..] {
         // The write commands never observe: `run` drives a run, which happens
         // where the hardware is, and `rm` and `reconcile` mutate a store. A
         // host on any of them falls through to the usage error.
         ["run", config] if host.is_none() => {
-            run_command(&resolve_config(config), Engagement::Orchestrator)
+            run_command(&resolve_config(config), Engagement::Orchestrator, accept)
         }
         ["run", config, "--fleet"] if host.is_none() => {
-            run_command(&resolve_config(config), Engagement::Fleet)
+            run_command(&resolve_config(config), Engagement::Fleet, accept)
         }
         ["migrate", config] if host.is_none() => migrate::migrate_command(&resolve_config(config)),
         ["rm", config] if host.is_none() => rm_command(&resolve_config(config)),
@@ -117,6 +122,7 @@ fn main() -> ExitCode {
             eprint!(
                 "usage: sima run <config>                  drive the run on this machine\n\
                  \x20      sima run <config> --fleet          drive it on this machine and [fleet]\n\
+                 \x20      sima run <config> --accept-binary  continue through a changed program\n\
                  \x20      sima status <config>               report the run's state\n\
                  \x20      sima status <config> --task <key>  print one task's attempt timeline\n\
                  \x20      sima status <config> --failed      digest the tasks that did not commit\n\
@@ -167,6 +173,32 @@ fn split_target(args: &[String]) -> (Vec<&str>, Option<&str>) {
         }
     }
     (rest, host)
+}
+
+/// Splits `--accept-binary` out of a `run` invocation, wherever in it the flag
+/// appears, returning the rest and the answer it states. `run` matches on the
+/// rest, so the flag composes with `--fleet` in either order rather than
+/// multiplying the command forms.
+///
+/// Every other command keeps the flag among its arguments, where it matches no
+/// form and falls to the usage error: the flag belongs to `run` alone.
+fn split_binary_change<'a>(args: &[&'a str]) -> (Vec<&'a str>, BinaryChange) {
+    if args.first() != Some(&"run") {
+        return (args.to_vec(), BinaryChange::Refuse);
+    }
+    let mut accept = BinaryChange::Refuse;
+    let rest = args
+        .iter()
+        .copied()
+        .filter(|arg| {
+            let flag = *arg == "--accept-binary";
+            if flag {
+                accept = BinaryChange::Accept;
+            }
+            !flag
+        })
+        .collect();
+    (rest, accept)
 }
 
 /// The run a read command addresses: one on this machine, or one on the host
@@ -237,12 +269,13 @@ fn resolve_config(arg: &str) -> PathBuf {
     path
 }
 
-/// `sima run <config.toml> [--fleet]`: loads, prints the run id, orchestrates
-/// with progress rendering and the SIGINT flag installed, and maps the outcome
-/// to the exit code. `engagement` is what the invocation asked for: this
-/// machine alone, or this machine and the fleet.
-fn run_command(config: &Path, engagement: Engagement) -> ExitCode {
-    match drive(config, engagement) {
+/// `sima run <config.toml> [--fleet] [--accept-binary]`: loads, prints the run
+/// id, orchestrates with progress rendering and the SIGINT flag installed, and
+/// maps the outcome to the exit code. `engagement` is what the invocation asked
+/// for: this machine alone, or this machine and the fleet. `accept` is what it
+/// asked for about a program whose build changed under the run.
+fn run_command(config: &Path, engagement: Engagement, accept: BinaryChange) -> ExitCode {
+    match drive(config, engagement, accept) {
         Ok(outcome) => ExitCode::from(outcome_exit_code(&outcome)),
         Err(e) => report(e),
     }
@@ -252,7 +285,7 @@ fn run_command(config: &Path, engagement: Engagement) -> ExitCode {
 /// before any output, so Ctrl-C is graceful from the first line on; a
 /// second Ctrl-C falls through to default death — which is safe, since
 /// that is exactly the crash the recovery guarantees cover.
-fn drive(config: &Path, engagement: Engagement) -> Result<RunOutcome> {
+fn drive(config: &Path, engagement: Engagement, accept: BinaryChange) -> Result<RunOutcome> {
     let loaded = load(config)?;
     let interrupt = Arc::new(AtomicBool::new(false));
     signal_hook::flag::register_conditional_default(signal_hook::consts::SIGINT, interrupt.clone())
@@ -269,7 +302,7 @@ fn drive(config: &Path, engagement: Engagement) -> Result<RunOutcome> {
         interrupt: &interrupt,
         on_start: None,
     };
-    orchestrate(&loaded, &control, engagement)
+    orchestrate(&loaded, &control, engagement, accept)
 }
 
 /// `sima report <config.toml> --spend`: the run's rental ledger — closed
@@ -715,6 +748,46 @@ mod tests {
         let (rest, host) = split(&["status", "exp.toml", "--on", "a", "--on", "b"]);
         assert_eq!(rest, ["status", "exp.toml"]);
         assert_eq!(host.as_deref(), Some("b"));
+    }
+
+    /// Splits the binary-change answer out of an argument list given as string
+    /// slices.
+    fn split_change(args: &[&str]) -> (Vec<String>, BinaryChange) {
+        let (rest, accept) = split_binary_change(args);
+        (rest.into_iter().map(str::to_string).collect(), accept)
+    }
+
+    #[test]
+    fn the_binary_flag_leaves_every_run_form_intact() {
+        // `run` matches on the rest, so extracting the flag — from either
+        // position — must leave exactly the argument list the arms match.
+        let (rest, accept) = split_change(&["run", "exp.toml", "--accept-binary"]);
+        assert_eq!(rest, ["run", "exp.toml"]);
+        assert_eq!(accept, BinaryChange::Accept);
+
+        let (rest, accept) = split_change(&["run", "exp.toml", "--fleet", "--accept-binary"]);
+        assert_eq!(rest, ["run", "exp.toml", "--fleet"]);
+        assert_eq!(accept, BinaryChange::Accept);
+
+        let (rest, accept) = split_change(&["run", "exp.toml", "--accept-binary", "--fleet"]);
+        assert_eq!(rest, ["run", "exp.toml", "--fleet"]);
+        assert_eq!(accept, BinaryChange::Accept);
+    }
+
+    #[test]
+    fn a_run_without_the_binary_flag_refuses_a_changed_program() {
+        let (rest, accept) = split_change(&["run", "exp.toml", "--fleet"]);
+        assert_eq!(rest, ["run", "exp.toml", "--fleet"]);
+        assert_eq!(accept, BinaryChange::Refuse);
+    }
+
+    #[test]
+    fn the_binary_flag_stays_in_another_command_s_arguments() {
+        // Left in place, it matches no form and falls to the usage error,
+        // rather than reading as a query that quietly accepted something.
+        let (rest, accept) = split_change(&["status", "exp.toml", "--accept-binary"]);
+        assert_eq!(rest, ["status", "exp.toml", "--accept-binary"]);
+        assert_eq!(accept, BinaryChange::Refuse);
     }
 
     #[test]

@@ -13,7 +13,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use common::{journal_events, loaded_text};
 use sima_core::{Error, Result};
 use sima_domains::StubState;
-use sima_pipeline::{Engagement, Event, LoadedConfig, Record, RunControl, RunOutcome, orchestrate};
+use sima_pipeline::{
+    BinaryChange, Engagement, Event, LoadedConfig, Record, RunControl, RunOutcome, orchestrate,
+};
 use sima_store::Store;
 
 /// A segmented `accumulate` config: `chains` candidates, `k` steps per
@@ -92,7 +94,12 @@ fn a_segmented_run_equals_an_unsegmented_run_of_equal_length() -> Result<()> {
     let whole = accumulate_config(dir.path(), "whole.toml", "./store-whole", 1000, None, None)?;
     for config in [&segmented, &whole] {
         assert!(matches!(
-            orchestrate(config, &RunControl::detached(), Engagement::Orchestrator)?,
+            orchestrate(
+                config,
+                &RunControl::detached(),
+                Engagement::Orchestrator,
+                BinaryChange::Refuse
+            )?,
             RunOutcome::Finalized { .. }
         ));
     }
@@ -117,7 +124,12 @@ fn a_segmented_config_is_deterministic_across_fresh_stores() -> Result<()> {
     assert_eq!(first.run.id(), second.run.id());
     for config in [&first, &second] {
         assert!(matches!(
-            orchestrate(config, &RunControl::detached(), Engagement::Orchestrator)?,
+            orchestrate(
+                config,
+                &RunControl::detached(),
+                Engagement::Orchestrator,
+                BinaryChange::Refuse
+            )?,
             RunOutcome::Finalized { .. }
         ));
     }
@@ -154,7 +166,12 @@ fn an_interrupted_chain_resumes_to_the_reference_manifest() -> Result<()> {
         on_start: None,
     };
     assert!(matches!(
-        orchestrate(&config, &control, Engagement::Orchestrator)?,
+        orchestrate(
+            &config,
+            &control,
+            Engagement::Orchestrator,
+            BinaryChange::Refuse
+        )?,
         RunOutcome::Interrupted { .. }
     ));
     assert!(
@@ -164,7 +181,12 @@ fn an_interrupted_chain_resumes_to_the_reference_manifest() -> Result<()> {
 
     // Resume over the same store; reference in a fresh store.
     assert!(matches!(
-        orchestrate(&config, &RunControl::detached(), Engagement::Orchestrator)?,
+        orchestrate(
+            &config,
+            &RunControl::detached(),
+            Engagement::Orchestrator,
+            BinaryChange::Refuse
+        )?,
         RunOutcome::Finalized { .. }
     ));
     let reference = accumulate_config(
@@ -179,7 +201,8 @@ fn an_interrupted_chain_resumes_to_the_reference_manifest() -> Result<()> {
         orchestrate(
             &reference,
             &RunControl::detached(),
-            Engagement::Orchestrator
+            Engagement::Orchestrator,
+            BinaryChange::Refuse,
         )?,
         RunOutcome::Finalized { .. }
     ));
@@ -200,7 +223,12 @@ fn a_longer_chain_reuses_the_shared_prefix_of_a_shorter_run() -> Result<()> {
     // Five segments into the shared store.
     let five = accumulate_config(dir.path(), "five.toml", "./store-shared", 10, Some(5), None)?;
     assert!(matches!(
-        orchestrate(&five, &RunControl::detached(), Engagement::Orchestrator)?,
+        orchestrate(
+            &five,
+            &RunControl::detached(),
+            Engagement::Orchestrator,
+            BinaryChange::Refuse
+        )?,
         RunOutcome::Finalized { .. }
     ));
     // Ten segments over the same store: the first five keys are already
@@ -208,7 +236,12 @@ fn a_longer_chain_reuses_the_shared_prefix_of_a_shorter_run() -> Result<()> {
     let ten = accumulate_config(dir.path(), "ten.toml", "./store-shared", 10, Some(10), None)?;
     assert_ne!(five.run.id(), ten.run.id(), "segments enters the run id");
     assert!(matches!(
-        orchestrate(&ten, &RunControl::detached(), Engagement::Orchestrator)?,
+        orchestrate(
+            &ten,
+            &RunControl::detached(),
+            Engagement::Orchestrator,
+            BinaryChange::Refuse
+        )?,
         RunOutcome::Finalized { .. }
     ));
     let leases = journal_events(&ten)
@@ -227,7 +260,12 @@ fn a_longer_chain_reuses_the_shared_prefix_of_a_shorter_run() -> Result<()> {
         None,
     )?;
     assert!(matches!(
-        orchestrate(&fresh, &RunControl::detached(), Engagement::Orchestrator)?,
+        orchestrate(
+            &fresh,
+            &RunControl::detached(),
+            Engagement::Orchestrator,
+            BinaryChange::Refuse
+        )?,
         RunOutcome::Finalized { .. }
     ));
     let run = ten.run.id();
@@ -259,7 +297,12 @@ fn segments_over_a_stateless_behavior_fails_naming_the_state_artifact() -> Resul
         workers = 1
     "#;
     let config = loaded_text(dir.path(), "stateless.toml", text)?;
-    match orchestrate(&config, &RunControl::detached(), Engagement::Orchestrator) {
+    match orchestrate(
+        &config,
+        &RunControl::detached(),
+        Engagement::Orchestrator,
+        BinaryChange::Refuse,
+    ) {
         Err(Error::Validation(msg)) => {
             assert!(msg.contains("state"), "the error names the artifact: {msg}");
         }
@@ -277,7 +320,12 @@ fn one_segment_matches_the_static_batch_keys_under_a_distinct_run_id() -> Result
     assert_ne!(one.run.id(), batch.run.id());
     for config in [&one, &batch] {
         assert!(matches!(
-            orchestrate(config, &RunControl::detached(), Engagement::Orchestrator)?,
+            orchestrate(
+                config,
+                &RunControl::detached(),
+                Engagement::Orchestrator,
+                BinaryChange::Refuse
+            )?,
             RunOutcome::Finalized { .. }
         ));
     }

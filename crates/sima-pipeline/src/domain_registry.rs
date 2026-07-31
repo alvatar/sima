@@ -15,12 +15,12 @@
 //! store.
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
 
 use sima_contracts::{DeviceInfo, Domain, Generator};
-use sima_core::Result;
+use sima_core::{Error, Hash, Result, hash_bytes};
 use sima_domains::BuiltinDomain;
 use sima_model::{Environment, FormatId, GeneratorId, Params, Spec};
 use sima_transport::SpawnPolicy;
@@ -110,6 +110,11 @@ impl DomainSource for BuiltinSource {
 #[derive(Debug)]
 pub(crate) struct BinarySource {
     binary: PathBuf,
+    /// The blake3 digest of the program file, read where the config resolved
+    /// into this registry. Provenance a run journals and a resume compares
+    /// against; it enters no hash, so the run's identity is what the program
+    /// declares and nothing else.
+    digest: Hash,
     /// The policy this program's processes are spawned under — its domain
     /// service and every worker of the run alike, so the two halves of one
     /// program see one environment.
@@ -121,20 +126,28 @@ pub(crate) struct BinarySource {
 }
 
 impl BinarySource {
-    /// Spawns the entry's program for its format and confirms it answers, so a
-    /// program that cannot be run or does not serve the format fails here.
-    /// Every question this session asks is bounded by `answer_timeout`.
+    /// Digests the entry's program, spawns it for its format, and confirms it
+    /// answers — so a program that cannot be read or run, or does not serve the
+    /// format, fails here. Every question this session asks is bounded by
+    /// `answer_timeout`.
     fn spawn(entry: DomainEntry, answer_timeout: Duration) -> Result<BinarySource> {
         let DomainEntry {
             format,
             binary,
             env,
         } = entry;
+        // The build about to serve this config, digested before it runs. The
+        // digest is provenance every session journals, so an unreadable
+        // program fails registration here, naming the path.
+        let digest = hash_bytes(&std::fs::read(&binary).map_err(|source| Error::Io {
+            path: binary.clone(),
+            source,
+        })?);
         // Both failures read as one thing to whoever wrote the entry: the
         // program declared for this format does not answer for it. The
         // program's own words follow.
-        let declared = |e: sima_core::Error| {
-            sima_core::Error::Validation(format!(
+        let declared = |e: Error| {
+            Error::Validation(format!(
                 "the program {} declared for format {:?} cannot answer for it: {e}",
                 binary.display(),
                 format.as_str()
@@ -146,6 +159,7 @@ impl BinarySource {
         service.environment(&format).map_err(declared)?;
         Ok(BinarySource {
             binary,
+            digest,
             policy,
             session: Mutex::new(service),
         })
@@ -269,6 +283,26 @@ impl DomainRegistry {
             None => &self.builtin,
         }
     }
+
+    /// The program a config routes `format` to, or `None` for a format this
+    /// build answers itself. What separates the two cases for a caller that
+    /// needs the program rather than the answers — the run's provenance and
+    /// the refusals a program's presence implies.
+    pub(crate) fn routed(&self, format: &FormatId) -> Option<RoutedProgram<'_>> {
+        self.configured
+            .get(format.as_str())
+            .map(|source| RoutedProgram {
+                binary: &source.binary,
+                digest: &source.digest,
+            })
+    }
+}
+
+/// The program answering for one format: the file a config named, and the
+/// digest of the bytes that file held when the config resolved.
+pub(crate) struct RoutedProgram<'a> {
+    pub(crate) binary: &'a Path,
+    pub(crate) digest: &'a Hash,
 }
 
 /// The text of a configuration section, as the source that owns its keys
@@ -517,6 +551,65 @@ mod tests {
             }
         );
         Ok(())
+    }
+
+    #[test]
+    fn a_format_with_no_entry_is_routed_to_no_program() {
+        // A format this build answers has no program and no digest, so the
+        // provenance the routed program carries is asked for only where a
+        // config named one.
+        let registry = DomainRegistry::builtin();
+        assert!(registry.routed(&format("stub.v1")).is_none());
+    }
+
+    #[test]
+    fn an_entry_routes_its_format_with_the_digest_of_the_file_it_names() -> Result<()> {
+        // What the run journals as provenance: the bytes of the build that
+        // answered, digested where the config resolved into a registry.
+        let registry = served_by_binary()?;
+        let routed = registry
+            .routed(&format("stub.v1"))
+            .expect("the declared format is routed to its program");
+        assert_eq!(routed.binary, built_worker());
+        let bytes = std::fs::read(built_worker()).expect("read the program");
+        assert_eq!(*routed.digest, sima_core::hash_bytes(&bytes));
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_binary_whose_bytes_cannot_be_read_names_itself() {
+        // A program sima cannot digest is a program whose provenance a run
+        // could not record, so the config fails to resolve rather than running
+        // with a build nothing identifies. Execute permission alone runs a
+        // binary but does not read it.
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let unreadable = dir.path().join("worker");
+        std::fs::copy(built_worker(), &unreadable).expect("copy the program");
+        std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o111))
+            .expect("make the program execute-only");
+        let outcome = DomainRegistry::new(
+            vec![DomainEntry {
+                format: format("stub.v1"),
+                binary: unreadable.clone(),
+                env: Vec::new(),
+            }],
+            Duration::MAX,
+        );
+        // Restore before asserting, so a failure still leaves a removable dir.
+        std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o755))
+            .expect("restore the program");
+        let Err(error) = outcome else {
+            panic!("expected a program whose bytes cannot be read to fail");
+        };
+        assert!(
+            error
+                .to_string()
+                .contains(&unreadable.display().to_string()),
+            "{error}"
+        );
     }
 
     #[test]

@@ -10,18 +10,24 @@
 //! The spawn surface is acceptance-tested the same way, from the program's own
 //! point of view: a wrapper script reports what it was handed, and a whole run
 //! through it is the proof.
+//!
+//! Two boundaries around the program's identity are here too: the build that
+//! served a session is journaled and compared at the next resume, and a
+//! migration of a config-routed run is refused, since the synthesized far
+//! config carries no route to the program.
 
 mod common;
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-use common::{built_binary, loaded_text};
+use common::{built_binary, journal_events, loaded_text};
 use sima_contracts::Generator;
-use sima_core::Result;
+use sima_core::{Error, Result, hash_bytes};
 use sima_example_executor::DoublerGenerator;
 use sima_pipeline::{
-    Engagement, Event, LoadedConfig, Record, RunControl, RunOutcome, orchestrate, task_keys,
+    BinaryChange, Engagement, Event, LoadedConfig, Record, RunControl, RunOutcome, migrate,
+    orchestrate, task_keys,
 };
 use sima_store::Store;
 
@@ -88,6 +94,13 @@ fn example_config(store: &str, count: u32, program: &Path) -> String {
         program.display()
     )
 }
+
+/// The candidate count a run cannot finish in the window between the commit
+/// that raises the interrupt and the driver observing it. The observer runs on
+/// the collector's thread, so a loaded machine can delay the flag past a short
+/// run's last commit; this count makes the interrupting tests decide on the
+/// ordering of events rather than on how fast this machine is.
+const UNFINISHABLE: u32 = 200;
 
 /// The task keys `config`'s run comprises, over a store of its own.
 fn keys(config: &LoadedConfig) -> Result<Vec<String>> {
@@ -156,13 +169,53 @@ fn spawn_surface_wrapper(dir: &Path) -> PathBuf {
         ),
     )
     .expect("write the wrapper");
+    make_executable(&path);
+    path
+}
+
+/// Writes an executable wrapper around `program` at `path`, carrying `comment`
+/// in its own text: two wrappers around one program differ in their bytes, and
+/// so in the digest sima records for them.
+///
+/// The file is replaced rather than rewritten, so the wrapper a winding-down
+/// process still holds open is a different file from the one written here.
+fn program_wrapper(path: &Path, program: &Path, comment: &str) {
+    let _ = std::fs::remove_file(path);
+    std::fs::write(
+        path,
+        format!(
+            "#!/bin/sh\n# {comment}\nexec {} \"$@\"\n",
+            program.display()
+        ),
+    )
+    .expect("write the wrapper");
+    make_executable(path);
+}
+
+/// Gives `path` the permissions a spawned program needs.
+fn make_executable(path: &Path) {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
             .expect("make the wrapper executable");
     }
-    path
+}
+
+/// The digests the run's journal records its programs under, in append order.
+fn bound_digests(config: &LoadedConfig) -> Vec<String> {
+    journal_events(config)
+        .into_iter()
+        .filter_map(|event| match event {
+            Event::ProgramBound { digest, .. } => Some(digest),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The blake3 digest of `path`'s bytes, as the journal renders it.
+fn digest_of(path: &Path) -> String {
+    hash_bytes(&std::fs::read(path).expect("read the program")).to_string()
 }
 
 #[test]
@@ -249,7 +302,12 @@ fn a_run_through_a_program_commits_what_it_would_have_committed() -> Result<()> 
         &stub_config("./served", Some(&worker()), &[]),
     )?;
     for config in [&direct, &served] {
-        let outcome = orchestrate(config, &RunControl::detached(), Engagement::Orchestrator)?;
+        let outcome = orchestrate(
+            config,
+            &RunControl::detached(),
+            Engagement::Orchestrator,
+            BinaryChange::Refuse,
+        )?;
         assert!(
             matches!(outcome, RunOutcome::Finalized { .. }),
             "{outcome:?}"
@@ -282,7 +340,12 @@ fn a_search_runs_end_to_end_through_a_program_of_its_own() -> Result<()> {
         &example_config("./store", 4, &program),
     )?;
     assert!(matches!(
-        orchestrate(&config, &RunControl::detached(), Engagement::Orchestrator)?,
+        orchestrate(
+            &config,
+            &RunControl::detached(),
+            Engagement::Orchestrator,
+            BinaryChange::Refuse
+        )?,
         RunOutcome::Finalized { .. }
     ));
     let store = Store::open(&config.store)?;
@@ -312,7 +375,7 @@ fn a_run_through_a_program_resumes_after_an_interruption() -> Result<()> {
     // committed are not run again.
     let dir = tempfile::tempdir().expect("temp dir");
     let program = built_binary("sima-example-executor");
-    let text = example_config("./store", 4, &program);
+    let text = example_config("./store", UNFINISHABLE, &program);
     let config = loaded_text(dir.path(), "sima.toml", &text)?;
     let interrupt = AtomicBool::new(false);
     let committed = AtomicUsize::new(0);
@@ -331,6 +394,7 @@ fn a_run_through_a_program_resumes_after_an_interruption() -> Result<()> {
             on_start: None,
         },
         Engagement::Orchestrator,
+        BinaryChange::Refuse,
     )?;
     assert!(
         matches!(outcome, RunOutcome::Interrupted { .. }),
@@ -339,9 +403,239 @@ fn a_run_through_a_program_resumes_after_an_interruption() -> Result<()> {
     // The same config again: the run resumes over the store it left.
     let resumed = loaded_text(dir.path(), "sima.toml", &text)?;
     assert!(matches!(
-        orchestrate(&resumed, &RunControl::detached(), Engagement::Orchestrator)?,
+        orchestrate(
+            &resumed,
+            &RunControl::detached(),
+            Engagement::Orchestrator,
+            BinaryChange::Refuse
+        )?,
         RunOutcome::Finalized { .. }
     ));
-    assert_eq!(doubled(&resumed)?.len(), 4, "every candidate committed");
+    assert_eq!(
+        doubled(&resumed)?.len(),
+        UNFINISHABLE as usize,
+        "every candidate committed"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_run_through_a_program_journals_the_build_that_served_it() -> Result<()> {
+    // Provenance the environment hash never sees: the run's identity is what
+    // the program declares, and the journal says which build declared it.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config = loaded_text(
+        dir.path(),
+        "sima.toml",
+        &stub_config("./store", Some(&worker()), &[]),
+    )?;
+    assert!(matches!(
+        orchestrate(
+            &config,
+            &RunControl::detached(),
+            Engagement::Orchestrator,
+            BinaryChange::Refuse
+        )?,
+        RunOutcome::Finalized { .. }
+    ));
+    assert_eq!(bound_digests(&config), [digest_of(&worker())]);
+    // The run's identity is untouched by the record: the same config answered
+    // in process produces the same run id.
+    let direct = loaded_text(
+        dir.path(),
+        "direct.toml",
+        &stub_config("./direct", None, &[]),
+    )?;
+    assert_eq!(config.run.id(), direct.run.id());
+    Ok(())
+}
+
+/// Drives the example run through `wrapper` until two candidates commit, then
+/// interrupts it — the state a resume gate is asked about.
+fn interrupted_through(dir: &Path, text: &str) -> Result<()> {
+    let config = loaded_text(dir, "sima.toml", text)?;
+    let interrupt = AtomicBool::new(false);
+    let committed = AtomicUsize::new(0);
+    let observer = |record: &Record| {
+        if matches!(record.event, Event::Committed { .. })
+            && committed.fetch_add(1, Ordering::Relaxed) + 1 >= 2
+        {
+            interrupt.store(true, Ordering::Relaxed);
+        }
+    };
+    let outcome = orchestrate(
+        &config,
+        &RunControl {
+            observer: &observer,
+            interrupt: &interrupt,
+            on_start: None,
+        },
+        Engagement::Orchestrator,
+        BinaryChange::Refuse,
+    )?;
+    assert!(
+        matches!(outcome, RunOutcome::Interrupted { .. }),
+        "the run stopped partway: {outcome:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_resume_after_the_program_changed_refuses_and_names_both_builds() -> Result<()> {
+    // The gate the milestone exists for: stored results and checkpoints came
+    // from a build that is no longer on disk, and only the user can say
+    // whether that matters.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let program = built_binary("sima-example-executor");
+    let wrapper = dir.path().join("wrapper.sh");
+    program_wrapper(&wrapper, &program, "the build that ran");
+    let text = example_config("./store", UNFINISHABLE, &wrapper);
+    let before = digest_of(&wrapper);
+    interrupted_through(dir.path(), &text)?;
+
+    program_wrapper(&wrapper, &program, "the build on disk now");
+    let after = digest_of(&wrapper);
+    let resumed = loaded_text(dir.path(), "sima.toml", &text)?;
+    let Err(error) = orchestrate(
+        &resumed,
+        &RunControl::detached(),
+        Engagement::Orchestrator,
+        BinaryChange::Refuse,
+    ) else {
+        panic!("expected a changed program to stop the resume");
+    };
+    assert!(matches!(error, Error::Validation(_)), "{error:?}");
+    let text = error.to_string();
+    for named in [
+        "example.doubler.v1",
+        &wrapper.display().to_string(),
+        &before,
+        &after,
+        "--accept-binary",
+    ] {
+        assert!(text.contains(named), "{named} is missing from {text}");
+    }
+    // The refused session drove nothing: the run still names the build that
+    // did, and the store holds no manifest.
+    assert_eq!(bound_digests(&resumed), [before]);
+    let store = Store::open(&resumed.store)?;
+    assert!(store.manifest(&resumed.run.id())?.is_none());
+    Ok(())
+}
+
+#[test]
+fn a_resume_that_accepts_the_change_runs_and_binds_the_new_build() -> Result<()> {
+    // Accepting is a decision about this run: the changed build finishes it,
+    // and becomes what the next resume compares against.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let program = built_binary("sima-example-executor");
+    let wrapper = dir.path().join("wrapper.sh");
+    program_wrapper(&wrapper, &program, "the build that ran");
+    let text = example_config("./store", UNFINISHABLE, &wrapper);
+    let before = digest_of(&wrapper);
+    interrupted_through(dir.path(), &text)?;
+
+    program_wrapper(&wrapper, &program, "the build on disk now");
+    let after = digest_of(&wrapper);
+    let accepted = loaded_text(dir.path(), "sima.toml", &text)?;
+    assert!(matches!(
+        orchestrate(
+            &accepted,
+            &RunControl::detached(),
+            Engagement::Orchestrator,
+            BinaryChange::Accept
+        )?,
+        RunOutcome::Finalized { .. }
+    ));
+    assert_eq!(
+        doubled(&accepted)?.len(),
+        UNFINISHABLE as usize,
+        "every candidate committed"
+    );
+    assert_eq!(bound_digests(&accepted), [before.clone(), after.clone()]);
+
+    // A further session over the accepted build passes the gate on its own:
+    // the comparison is against the build that actually ran.
+    let again = loaded_text(dir.path(), "sima.toml", &text)?;
+    assert!(matches!(
+        orchestrate(
+            &again,
+            &RunControl::detached(),
+            Engagement::Orchestrator,
+            BinaryChange::Refuse
+        )?,
+        RunOutcome::Finalized { .. }
+    ));
+    assert_eq!(bound_digests(&again), [before, after.clone(), after]);
+    Ok(())
+}
+
+#[test]
+fn a_resume_over_an_unchanged_program_passes_the_gate() -> Result<()> {
+    // The refusing default is the every-run case, so an unchanged program
+    // resumes with the flag absent.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let program = built_binary("sima-example-executor");
+    let wrapper = dir.path().join("wrapper.sh");
+    program_wrapper(&wrapper, &program, "the only build");
+    let text = example_config("./store", UNFINISHABLE, &wrapper);
+    let digest = digest_of(&wrapper);
+    interrupted_through(dir.path(), &text)?;
+
+    let resumed = loaded_text(dir.path(), "sima.toml", &text)?;
+    assert!(matches!(
+        orchestrate(
+            &resumed,
+            &RunControl::detached(),
+            Engagement::Orchestrator,
+            BinaryChange::Refuse
+        )?,
+        RunOutcome::Finalized { .. }
+    ));
+    assert_eq!(
+        doubled(&resumed)?.len(),
+        UNFINISHABLE as usize,
+        "every candidate committed"
+    );
+    assert_eq!(bound_digests(&resumed), [digest.clone(), digest]);
+    Ok(())
+}
+
+#[test]
+fn a_migration_of_a_config_routed_run_is_refused_where_it_is_asked_for() -> Result<()> {
+    // The far config a migration synthesizes carries `[run]`, `[config]`, and
+    // `[orchestrator]`, so a format routed to a program here has no route to
+    // it there. The refusal states that before anything moves.
+    //
+    // This config names no destination either, and the error names the program
+    // rather than the missing host: the guard runs ahead of the destination,
+    // the store, the lock, and any provider.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("sima.toml");
+    std::fs::write(&path, stub_config("./store", Some(&worker()), &[])).expect("write the config");
+    let interrupt = AtomicBool::new(false);
+    // Progress reporting is a side effect like any other, so the observer
+    // counts: the guard runs ahead of the collector that would feed it.
+    let observed = AtomicUsize::new(0);
+    let observer = |_: &Record| {
+        observed.fetch_add(1, Ordering::Relaxed);
+    };
+    let Err(error) = migrate(&path, &observer, &interrupt) else {
+        panic!("expected a config-routed run to be refused a migration");
+    };
+    assert!(matches!(error, Error::Validation(_)), "{error:?}");
+    let text = error.to_string();
+    for named in ["stub.v1", &worker().display().to_string()] {
+        assert!(text.contains(named), "{named} is missing from {text}");
+    }
+    assert!(
+        !dir.path().join("store").exists(),
+        "the refused migration opened a store"
+    );
+    assert_eq!(
+        observed.load(Ordering::Relaxed),
+        0,
+        "the refused migration reported progress"
+    );
     Ok(())
 }

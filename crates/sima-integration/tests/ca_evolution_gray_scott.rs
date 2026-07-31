@@ -11,7 +11,7 @@ use std::path::Path;
 use common::loaded_text;
 use sima_core::{Error, Hash, Result};
 use sima_domains::substrates::cellular::Grid;
-use sima_pipeline::{Engagement, LoadedConfig, RunControl, RunOutcome, orchestrate};
+use sima_pipeline::{BinaryChange, Engagement, LoadedConfig, RunControl, RunOutcome, orchestrate};
 use sima_store::Store;
 
 /// The ca_evolution.gray_scott config text: `count` candidates in a narrow band
@@ -98,7 +98,12 @@ fn a_ca_evolution_config_runs_the_full_spine() -> Result<()> {
     let dir = tempfile::tempdir().expect("temp dir");
     let config = ca_evolution_config(dir.path(), "sima.toml", "./store", 4, 100, None)?;
     assert!(matches!(
-        orchestrate(&config, &RunControl::detached(), Engagement::Orchestrator)?,
+        orchestrate(
+            &config,
+            &RunControl::detached(),
+            Engagement::Orchestrator,
+            BinaryChange::Refuse
+        )?,
         RunOutcome::Finalized { .. }
     ));
     // Four candidates, one manifest entry each, every committed state a
@@ -129,7 +134,8 @@ fn a_segment_boundary_leaves_the_trajectory_byte_identical() -> Result<()> {
         orchestrate(
             &segmented,
             &RunControl::detached(),
-            Engagement::Orchestrator
+            Engagement::Orchestrator,
+            BinaryChange::Refuse,
         )?,
         RunOutcome::Finalized { .. }
     ));
@@ -142,7 +148,12 @@ fn a_segment_boundary_leaves_the_trajectory_byte_identical() -> Result<()> {
     // The same trajectory as one unsegmented 100-step task, fresh store.
     let whole = ca_evolution_config(dir.path(), "whole.toml", "./store-whole", 1, 100, None)?;
     assert!(matches!(
-        orchestrate(&whole, &RunControl::detached(), Engagement::Orchestrator)?,
+        orchestrate(
+            &whole,
+            &RunControl::detached(),
+            Engagement::Orchestrator,
+            BinaryChange::Refuse
+        )?,
         RunOutcome::Finalized { .. }
     ));
     let whole_states = manifest_states(&whole)?;

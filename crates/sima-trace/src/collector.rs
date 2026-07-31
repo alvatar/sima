@@ -10,7 +10,6 @@
 
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread::{Scope, ScopedJoinHandle};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use sima_core::Result;
 
@@ -121,11 +120,8 @@ impl<'scope> Collector<'scope> {
 fn drain<S: DurableSink>(mut sink: S, rx: Receiver<Event>, observer: Observer) -> Result<()> {
     for event in rx {
         // One clock, read on this thread at append time — remote events are
-        // stamped on arrival. A clock before the epoch stamps zero.
-        let ts_ms = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |since_epoch| since_epoch.as_millis() as u64);
-        let record = Record { ts_ms, event };
+        // stamped on arrival.
+        let record = Record::stamped(event);
         sink.append_line(&record.to_line()?)?;
         observer(&record);
     }

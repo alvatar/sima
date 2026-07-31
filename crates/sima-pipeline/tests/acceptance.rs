@@ -16,7 +16,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use common::{journal_events, loaded, loaded_with};
 use sima_core::Result;
-use sima_pipeline::{Engagement, Event, Record, RunControl, RunOutcome, orchestrate};
+use sima_pipeline::{BinaryChange, Engagement, Event, Record, RunControl, RunOutcome, orchestrate};
 use sima_store::Store;
 
 /// A behavior mix covering retry and timing variance alongside plain
@@ -32,7 +32,12 @@ fn a_determinism_one_config_two_fresh_stores_identical_manifests() -> Result<()>
 
     for config in [&first, &second] {
         assert!(matches!(
-            orchestrate(config, &RunControl::detached(), Engagement::Orchestrator)?,
+            orchestrate(
+                config,
+                &RunControl::detached(),
+                Engagement::Orchestrator,
+                BinaryChange::Refuse
+            )?,
             RunOutcome::Finalized { .. }
         ));
     }
@@ -52,7 +57,12 @@ fn c_re_evaluation_of_a_finalized_run_touches_no_executor() -> Result<()> {
     let run = config.run.id();
 
     assert!(matches!(
-        orchestrate(&config, &RunControl::detached(), Engagement::Orchestrator)?,
+        orchestrate(
+            &config,
+            &RunControl::detached(),
+            Engagement::Orchestrator,
+            BinaryChange::Refuse
+        )?,
         RunOutcome::Finalized { .. }
     ));
     let store = Store::open(&config.store)?;
@@ -60,7 +70,12 @@ fn c_re_evaluation_of_a_finalized_run_touches_no_executor() -> Result<()> {
     let journal_len = journal_events(&config).len();
 
     assert!(matches!(
-        orchestrate(&config, &RunControl::detached(), Engagement::Orchestrator)?,
+        orchestrate(
+            &config,
+            &RunControl::detached(),
+            Engagement::Orchestrator,
+            BinaryChange::Refuse
+        )?,
         RunOutcome::Finalized { .. }
     ));
     assert_eq!(
@@ -114,7 +129,12 @@ fn d_a_copied_store_resumes_elsewhere_to_the_identical_manifest() -> Result<()> 
         on_start: None,
     };
     assert!(matches!(
-        orchestrate(&config, &control, Engagement::Orchestrator)?,
+        orchestrate(
+            &config,
+            &control,
+            Engagement::Orchestrator,
+            BinaryChange::Refuse
+        )?,
         RunOutcome::Interrupted { .. }
     ));
 
@@ -124,7 +144,12 @@ fn d_a_copied_store_resumes_elsewhere_to_the_identical_manifest() -> Result<()> 
     let moved = loaded_with(dir.path(), "moved.toml", behaviors, 4, "./store-copied")?;
     assert_eq!(moved.run.id(), run, "the copy answers the same run");
     assert!(matches!(
-        orchestrate(&moved, &RunControl::detached(), Engagement::Orchestrator)?,
+        orchestrate(
+            &moved,
+            &RunControl::detached(),
+            Engagement::Orchestrator,
+            BinaryChange::Refuse
+        )?,
         RunOutcome::Finalized { .. }
     ));
 
@@ -140,7 +165,8 @@ fn d_a_copied_store_resumes_elsewhere_to_the_identical_manifest() -> Result<()> 
         orchestrate(
             &reference,
             &RunControl::detached(),
-            Engagement::Orchestrator
+            Engagement::Orchestrator,
+            BinaryChange::Refuse,
         )?,
         RunOutcome::Finalized { .. }
     ));

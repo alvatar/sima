@@ -34,7 +34,7 @@ ones are added the same way.
 - Execution backends are implementation crates under `crates/toolkits/` (`sima-toolkit-*`), depending on `sima-core` (and `sima-contracts` when needed); `sima-domains` depends on the toolkits its domains use, and each toolkit isolates its own dependency set.
 - The store is the only durable state. Queues, schedulers, and orchestrators are ephemeral; a task source derives the currently-runnable frontier from (config, store state) — static batches and segment chains are two implementations of that one interface. Resume, crash-recovery, and re-run are one code path: re-derive the frontier, continue.
 - One orchestrator per run — the `sima run` process itself, no daemon; single-writer enforced by an OS file lock the kernel releases when the holder exits, so no staleness protocol exists; the lock file's content (pid, hostname) is diagnostic only. Workers are stateless leaseholders.
-- Executors are pure compute: they receive (spec, params, seed, env) and return artifacts + stats, never touching the store. Workers commit results through the catalog. The trust boundary lives here. A config-routed program is spawned across that boundary with an explicit environment — a baseline allowlist plus the variable names its entry declares — in a fresh scratch working directory removed at reap, and every protocol answer it owes is bounded by `answer_timeout_ms` except generation, which is compute.
+- Executors are pure compute: they receive (spec, params, seed, env) and return artifacts + stats, never touching the store. Workers commit results through the catalog. The trust boundary lives here. A config-routed program is spawned across that boundary with an explicit environment — a baseline allowlist plus the variable names its entry declares — in a fresh scratch working directory removed at reap, and every protocol answer it owes is bounded by `answer_timeout_ms` except generation, which is compute. Such a program's identity is what it declares through its environment components and nothing else; the digest of the file that served each session is journal provenance, and a resume whose program digest changed stops until the invocation accepts it.
 - Candidates are opaque at the infrastructure layer: a spec is (format id, opaque bytes), content-addressed. Domains interpret specs; "genome" is domain vocabulary. Run parameters are a second opaque content-addressed blob (params): generators produce specs, config produces params, and the spec's format id governs the interpretation of both — so one candidate stays addressable across evaluation stages and the generator contract never carries evaluation policy.
 - Two serialization worlds: identity-bearing bytes (anything hashed) go through the canonical `Enc`/`Dec` encoding exclusively; human-readable artifacts are serde and never identity-bearing.
 - Reproducibility is declared per domain across two tiers (README, Determinism), not assumed uniform. The infrastructure guarantees run identity regardless: manifests are canonicalized so run hashes are independent of worker completion order, and journals are observational, excluded from equality criteria.
@@ -1032,6 +1032,73 @@ analog of a task attempt rather than an answer, and a default sized for answers
 would kill a legitimate large batch. A generator computes under the same trust
 as an executor, and a runaway one is interrupted the way any run is — Ctrl-C,
 with the store losing nothing and the resume continuing from it.
+
+### Identity and packaging of a registered program
+
+**Identity is what the program declares.** A program's environment components
+are its whole hashed identity: sima hashes what the program says about itself
+and adds nothing. The in-tree formats are the pattern to imitate — a versioned
+executor constant, the content digest of each kernel source, the digest of each
+asset the executor reads, and the compiler id of the backend that built the
+shaders. Anything whose change would change a result belongs there.
+
+The obligation is honesty, and it falls on whoever builds the program: a build
+whose results differ must declare different components. A build that changes
+its behavior while keeping its components keeps its `EnvironmentId`, so every
+task key stays what it was and the store answers a new question with an old
+answer — results reused and checkpoints resumed across a change nothing named.
+
+**The journaled digest and the resume gate.** What sima adds backstops that
+obligation without joining it. Where a config resolves into its registry, the
+program file each `[domain.*]` entry names is read and its blake3 digest held;
+each session journals `ProgramBound { format, binary, digest }`, provenance
+beside `WorkerBound`'s device and driver, excluded from every equality
+criterion. Under the run lock, before any task runs, a session
+compares its digest against the last one the run's journal recorded:
+
+- equal, or absent because this is the run's first session — the run proceeds;
+- different — the run stops, naming the format, the path, both digests, and the
+  flag that would continue, and appending no record, so the journal's digest
+  history names the builds that drove sessions;
+- different, under `sima run <config> --accept-binary` — the run proceeds, and
+  the accepted build is what the next session compares against.
+
+The digest stays out of the environment hash by decision. Hashing it would turn
+a changed program into a different run — new keys, an empty frontier, a restart
+from zero — and the user would never be asked. Journaling it makes the change a
+question the user answers.
+
+Two limits are documented rather than mechanized:
+
+- **A fresh run that reuses an earlier run's records passes no gate.** A record
+  is addressed by its content alone, and giving each one a build to name would
+  reintroduce identity machinery this milestone deliberately keeps out of the
+  store.
+- **The digest covers the declared file alone.** A wrapper script's
+  interpreter, the binaries it execs, and the assets a program loads at runtime
+  sit outside it; they belong in the components the program declares.
+
+**A migration of a config-routed run is refused.** The far config a migration
+synthesizes carries `[run]`, `[config]`, and `[orchestrator]`, so the far side
+holds no `[domain.*]` entry and no route to the program. `sima migrate` says so
+where the migration is asked for — naming the format and the program, ahead of
+the destination, the store, the lock, and any provider — rather than letting
+the run reach the destination and die there on an unknown format id. Carrying
+entries across is paired with routing registered formats to fleet machines:
+both need the program present on a machine sima did not install it on.
+
+**Packaging is a convention.** The packaging unit is the unit of registration:
+one self-contained binary, holding both roles of the program. Its version is
+the components it declares, so a release is a build plus the declaration that
+describes it, and the journaled digest and the resume gate are what an operator
+reads when the two disagree.
+
+A config pin — a `pin` key on the entry, refusing any other digest — is
+deliberately absent. A registered format runs only on the orchestrator's own
+machine, so a pinned config has no second machine to travel to, and the pin
+would restate for one machine what the journal already records. The key arrives
+with fleet routing of registered formats or with entry carriage across a
+migration, whichever lands first.
 
 ## `sima-domains` (L5)
 
@@ -2124,6 +2191,12 @@ The consequence to hold on to: a migration must keep the backend the same on
 both ends. Starting on WGSL and moving to CUDA changes every task key, and the
 far side restarts from segment 0. That is a configuration error and nothing
 detects it.
+
+Both facts hold only for a format this build carries. A format a `[domain.*]`
+entry routes to a program is refused a migration outright, because the
+synthesized far config carries no entry and the far side has no route to the
+program — see
+[Identity and packaging of a registered program](#identity-and-packaging-of-a-registered-program).
 
 **The destination is a declared host**, named by `[orchestrator].migrate`. A
 migration adds no section and no key of its own, and the host's own form decides

@@ -210,6 +210,9 @@ impl RunStatus {
             // Diagnostics are observational text: no counter, no state
             // change.
             Event::Diagnostic { .. } => {}
+            // The program a session ran through is provenance of the build,
+            // not of the work: it moves no counter and frees no worker.
+            Event::ProgramBound { .. } => {}
             // Rental lifecycle is operational — rentals coming and going — and
             // states nothing about task progress or worker occupancy.
             Event::InstanceOnline { .. }

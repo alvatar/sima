@@ -129,6 +129,19 @@ pub fn migrate(
     let local_text = std::fs::read_to_string(config)
         .map_err(|e| Error::Validation(format!("cannot read config {}: {e}", config.display())))?;
     let loaded = load(config)?;
+    // A run whose format a `[domain.*]` entry routes to a program stays on the
+    // machine that program is installed on. The refusal precedes the
+    // destination, the store, the lock, and any provider, so the refusal is
+    // stated before anything is opened, moved, or rented.
+    if let Some(routed) = loaded.domains.routed(&loaded.run.format) {
+        return Err(Error::Validation(format!(
+            "the run's format {:?} is served by the program {}, and a migration carries no route \
+             to it: the far config is synthesized from [run], [config], and [orchestrator] alone. \
+             Drive this run on the machine the program is installed on.",
+            loaded.run.format.as_str(),
+            routed.binary.display()
+        )));
+    }
     let destination = destination_for(&loaded)?;
     let store = Store::open(&loaded.store)?;
     // Registering the run is what gives it a journal to forward into, and it is

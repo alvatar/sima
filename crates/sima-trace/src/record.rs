@@ -1,5 +1,7 @@
 //! [`Record`]: the journal line type — an event plus its append timestamp.
 
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use serde::{Deserialize, Serialize};
 use sima_core::{Error, Result};
 
@@ -23,6 +25,17 @@ pub struct Record {
 }
 
 impl Record {
+    /// The record for `event`, stamped with the wall clock read on the calling
+    /// thread. The collector stamps every event it appends this way; a caller
+    /// appending a line of its own — outside the collector's lifetime — reads
+    /// the same clock through here. A clock before the epoch stamps zero.
+    pub fn stamped(event: Event) -> Record {
+        let ts_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |since_epoch| since_epoch.as_millis() as u64);
+        Record { ts_ms, event }
+    }
+
     /// Renders the record as one journal line. `serde_json::to_string` emits a
     /// single line with no embedded newline — string fields are JSON-escaped —
     /// so it satisfies the journal's one-event-per-line rule directly. A
@@ -46,8 +59,8 @@ mod tests {
     use super::*;
     use crate::event::{Level, StatScalar};
 
-    /// A record as the collector writes it: stamped.
-    fn stamped(event: Event) -> Record {
+    /// A record at a fixed stamp, so a line's text is the test's to predict.
+    fn fixed_stamp(event: Event) -> Record {
         Record {
             ts_ms: 1_234,
             event,
@@ -56,7 +69,7 @@ mod tests {
 
     #[test]
     fn to_line_is_a_single_line() -> Result<()> {
-        let record = stamped(Event::Leased {
+        let record = fixed_stamp(Event::Leased {
             task: "ab".repeat(32),
             worker: 3,
             attempt: 1,
@@ -73,7 +86,7 @@ mod tests {
     fn a_reason_with_a_newline_stays_one_line() -> Result<()> {
         // A panic reason may carry a newline; JSON escaping keeps the physical
         // line intact so the journal framing holds.
-        let record = stamped(Event::Rejected {
+        let record = fixed_stamp(Event::Rejected {
             task: "cd".repeat(32),
             attempt: 0,
             reason: "panic: line one\nline two".to_string(),
@@ -110,7 +123,7 @@ mod tests {
 
     #[test]
     fn a_worker_bound_line_round_trips_driver_and_host() -> Result<()> {
-        let record = stamped(Event::WorkerBound {
+        let record = fixed_stamp(Event::WorkerBound {
             worker: 4,
             device: "NVIDIA RTX PRO 2000".to_string(),
             driver: "580.65.6".to_string(),
@@ -121,8 +134,30 @@ mod tests {
     }
 
     #[test]
+    fn a_program_bound_line_without_a_digest_is_rejected() {
+        let line = r#"{"ts_ms":1234,"event":"program_bound","format":"acme.thing.v1","binary":"/opt/acme/worker"}"#;
+        assert!(matches!(Record::from_line(line), Err(Error::Encoding(_))));
+    }
+
+    #[test]
+    fn a_stamped_record_carries_its_event_through_a_line() -> Result<()> {
+        // What a caller appending outside the collector gets: the same clock
+        // the collector reads, on a record whose line parses back whole.
+        let event = Event::ProgramBound {
+            format: "acme.thing.v1".to_string(),
+            binary: "/opt/acme/worker".to_string(),
+            digest: "ab".repeat(32),
+        };
+        let record = Record::stamped(event.clone());
+        assert!(record.ts_ms > 0, "{record:?}");
+        assert_eq!(Record::from_line(&record.to_line()?)?, record);
+        assert_eq!(record.event, event);
+        Ok(())
+    }
+
+    #[test]
     fn line_round_trips_through_serde() -> Result<()> {
-        let record = stamped(Event::Committed {
+        let record = fixed_stamp(Event::Committed {
             task: "11".repeat(32),
             record: "22".repeat(32),
             stats: vec![StatScalar {
@@ -204,6 +239,11 @@ mod tests {
                 from: "10de:2c02".to_string(),
                 to: "10de:2f04".to_string(),
             },
+            Event::ProgramBound {
+                format: "acme.thing.v1".to_string(),
+                binary: "/opt/acme/worker".to_string(),
+                digest: "ef".repeat(32),
+            },
             Event::RunFinalized {
                 run: run.clone(),
                 committed: 3,
@@ -236,7 +276,7 @@ mod tests {
     #[test]
     fn every_variant_round_trips_through_from_line() -> Result<()> {
         for event in every_variant() {
-            let record = stamped(event);
+            let record = fixed_stamp(event);
             let line = record.to_line()?;
             assert_eq!(Record::from_line(&line)?, record, "{line}");
         }

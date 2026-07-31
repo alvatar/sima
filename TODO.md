@@ -837,10 +837,36 @@ portability (P1 acceptance (d)) hold across the boundary.
       deadline on `Generate`; fleet routing of registered formats and the
       migrated run's absent `[domain.*]` entry, both still M7.3 leftovers; and
       program identity in the environment hash, which is M7.5.
-- [ ] M7.5 Identity and packaging: fold a custom executor's identity (version,
+- [x] M7.5 Identity and packaging: fold a custom executor's identity (version,
       build/content hash) into the environment hash so runs stay reproducible
       and portable; define how a custom family is packaged, versioned, and
-      pinned.
+      pinned. Settled the other way on the hash: **identity stays
+      self-declared** and the environment hash gains no new input, because an
+      automatic binary digest inside it turns a resume through a changed
+      program into a silent restart from zero — new keys, an empty frontier, no
+      error — which takes the decision away from the user. Run ids and task
+      keys are therefore byte-identical to before the milestone. What was added
+      is provenance with a gate: the registry reads the program file each
+      `[domain.*]` entry names and holds its blake3 digest, every session
+      journals `ProgramBound { format, binary, digest }` beside `WorkerBound`,
+      and `orchestrate` compares that record against the file on disk under the
+      run lock before any task runs — a difference stops the run naming the
+      format, the path, both digests, and `--accept-binary`, the flag that
+      drives it anyway and rebinds the run to the accepted build. `sima migrate`
+      now refuses a config-routed run where the migration is asked for, ahead
+      of the destination, the store, the lock, and any provider, since the
+      synthesized far config carries `[run]`, `[config]`, and `[orchestrator]`
+      alone. The packaging convention is recorded in `docs/architecture.md`
+      under "Identity and packaging of a registered program": one
+      self-contained binary, versioned by the components it declares, with the
+      in-tree pattern as the model and honesty as the obligation the digest and
+      the gate backstop. Not done here: a `pin` key on the entry, deliberately
+      absent while a registered format runs only on the orchestrator's own
+      machine — it arrives with fleet routing of registered formats or entry
+      carriage across a migration, whichever lands first, the two staying
+      paired as M7.3 leftovers; per-record build provenance, so a fresh run
+      reusing an earlier run's records passes no gate; and a deadline on
+      `Generate`, still M7.4's.
 - [ ] M7.6 Reference out-of-tree executor: a worked example family in a
       separate repository, built only against the published API and exercised
       through the full spine — the phase's proof that no fork is required.

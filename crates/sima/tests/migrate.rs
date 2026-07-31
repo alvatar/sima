@@ -27,8 +27,8 @@ use common::{manifest_bytes, sima_command, worker_binary};
 use sima_core::Result;
 use sima_model::{TaskKey, TaskRecord};
 use sima_pipeline::{
-    Engagement, Event, MigrateOutcome, Record, RunControl, RunOutcome, load, migrate, orchestrate,
-    task_keys,
+    BinaryChange, Engagement, Event, MigrateOutcome, Record, RunControl, RunOutcome, load, migrate,
+    orchestrate, task_keys,
 };
 use sima_store::Store;
 
@@ -110,7 +110,12 @@ fn drive(config: &Path, stop_after: Option<usize>) -> Result<RunOutcome> {
         interrupt: &interrupt,
         on_start: None,
     };
-    orchestrate(&loaded, &control, Engagement::Orchestrator)
+    orchestrate(
+        &loaded,
+        &control,
+        Engagement::Orchestrator,
+        BinaryChange::Refuse,
+    )
 }
 
 /// Moves the run `config` describes onto its destination, discarding the
