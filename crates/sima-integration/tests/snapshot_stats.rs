@@ -12,7 +12,9 @@ use std::path::Path;
 
 use common::{journal_events, loaded_text};
 use sima_core::Result;
-use sima_pipeline::{Engagement, Event, LoadedConfig, RunControl, RunOutcome, orchestrate, report};
+use sima_pipeline::{
+    BinaryChange, Engagement, Event, LoadedConfig, RunControl, RunOutcome, orchestrate, report,
+};
 use sima_store::Store;
 
 /// A stub `sima.toml` running `behaviors`, on a two-worker pool.
@@ -145,7 +147,12 @@ fn a_stub_run_journals_scalars_and_report_renders_them() -> Result<()> {
         r#""succeed", "flaky:1""#,
     )?;
     assert!(matches!(
-        orchestrate(&config, &RunControl::detached(), Engagement::Orchestrator)?,
+        orchestrate(
+            &config,
+            &RunControl::detached(),
+            Engagement::Orchestrator,
+            BinaryChange::Refuse
+        )?,
         RunOutcome::Finalized { .. }
     ));
 
@@ -221,7 +228,12 @@ fn a_failing_predicate_drops_every_snapshot_but_journals_scalars() -> Result<()>
             Some(r#"{ scalar = "population", min = 2.0 }"#),
         )?;
         assert!(matches!(
-            orchestrate(&config, &RunControl::detached(), Engagement::Orchestrator)?,
+            orchestrate(
+                &config,
+                &RunControl::detached(),
+                Engagement::Orchestrator,
+                BinaryChange::Refuse
+            )?,
             RunOutcome::Finalized { .. }
         ));
         let present = state_artifact_present(&config)?;
@@ -255,7 +267,12 @@ fn a_passing_predicate_keeps_every_snapshot() -> Result<()> {
             Some(r#"{ scalar = "population", min = 0.0 }"#),
         )?;
         assert!(matches!(
-            orchestrate(&config, &RunControl::detached(), Engagement::Orchestrator)?,
+            orchestrate(
+                &config,
+                &RunControl::detached(),
+                Engagement::Orchestrator,
+                BinaryChange::Refuse
+            )?,
             RunOutcome::Finalized { .. }
         ));
         let present = state_artifact_present(&config)?;
@@ -281,7 +298,12 @@ fn a_no_predicate_run_keeps_every_snapshot() -> Result<()> {
     for (label, format) in FORMATS {
         let config = gray_scott_config(dir.path(), "plain", label, format, 3, 60, None)?;
         assert!(matches!(
-            orchestrate(&config, &RunControl::detached(), Engagement::Orchestrator)?,
+            orchestrate(
+                &config,
+                &RunControl::detached(),
+                Engagement::Orchestrator,
+                BinaryChange::Refuse
+            )?,
             RunOutcome::Finalized { .. }
         ));
         let present = state_artifact_present(&config)?;
@@ -309,7 +331,12 @@ fn a_predicate_run_finalizes_a_deterministic_manifest() -> Result<()> {
         let second = gray_scott_config(dir.path(), "second", label, format, 2, 60, predicate)?;
         for config in [&first, &second] {
             assert!(matches!(
-                orchestrate(config, &RunControl::detached(), Engagement::Orchestrator)?,
+                orchestrate(
+                    config,
+                    &RunControl::detached(),
+                    Engagement::Orchestrator,
+                    BinaryChange::Refuse
+                )?,
                 RunOutcome::Finalized { .. }
             ));
         }

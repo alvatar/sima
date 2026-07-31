@@ -11,8 +11,8 @@ use common::{journal_events, loaded};
 use sima_core::{Error, Result};
 use sima_model::{FormatId, GeneratorConfig, GeneratorId, Params, RunConfig};
 use sima_pipeline::{
-    Engagement, Event, Fleet, LoadedConfig, Orchestrator, Pool, Record, RunControl, RunOutcome,
-    RunState, orchestrate, status,
+    BinaryChange, Engagement, Event, Fleet, LoadedConfig, Orchestrator, Pool, Record, RunControl,
+    RunOutcome, RunState, orchestrate, status,
 };
 use sima_provider::Budget;
 use sima_scheduler::ExecutionConfig;
@@ -24,7 +24,12 @@ fn a_config_orchestrates_to_finalized_and_status_reports_it() -> Result<()> {
     let config = loaded(dir.path(), r#""succeed", "succeed", "flaky:2""#, 2)?;
 
     assert!(matches!(
-        orchestrate(&config, &RunControl::detached(), Engagement::Orchestrator)?,
+        orchestrate(
+            &config,
+            &RunControl::detached(),
+            Engagement::Orchestrator,
+            BinaryChange::Refuse
+        )?,
         RunOutcome::Finalized { .. }
     ));
 
@@ -48,13 +53,23 @@ fn re_evaluation_finalizes_again_without_touching_an_executor() -> Result<()> {
     let config = loaded(dir.path(), r#""succeed", "succeed""#, 2)?;
 
     assert!(matches!(
-        orchestrate(&config, &RunControl::detached(), Engagement::Orchestrator)?,
+        orchestrate(
+            &config,
+            &RunControl::detached(),
+            Engagement::Orchestrator,
+            BinaryChange::Refuse
+        )?,
         RunOutcome::Finalized { .. }
     ));
     let first = journal_events(&config).len();
 
     assert!(matches!(
-        orchestrate(&config, &RunControl::detached(), Engagement::Orchestrator)?,
+        orchestrate(
+            &config,
+            &RunControl::detached(),
+            Engagement::Orchestrator,
+            BinaryChange::Refuse
+        )?,
         RunOutcome::Finalized { .. }
     ));
     let events = journal_events(&config);
@@ -76,11 +91,42 @@ fn re_evaluation_finalizes_again_without_touching_an_executor() -> Result<()> {
 }
 
 #[test]
+fn a_builtin_format_run_binds_no_program() -> Result<()> {
+    // A format this build carries is answered in process, so there is no
+    // program to bind: the run journals no binding, and the resume gate has
+    // nothing to compare whatever the invocation says.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config = loaded(dir.path(), r#""succeed", "succeed""#, 2)?;
+    for accept in [BinaryChange::Refuse, BinaryChange::Accept] {
+        assert!(matches!(
+            orchestrate(
+                &config,
+                &RunControl::detached(),
+                Engagement::Orchestrator,
+                accept
+            )?,
+            RunOutcome::Finalized { .. }
+        ));
+    }
+    let bound = journal_events(&config)
+        .iter()
+        .filter(|event| matches!(event, Event::ProgramBound { .. }))
+        .count();
+    assert_eq!(bound, 0, "a builtin-format run journals no program binding");
+    Ok(())
+}
+
+#[test]
 fn a_rejected_candidate_fails_the_run_and_status_carries_the_reason() -> Result<()> {
     let dir = tempfile::tempdir().expect("temp dir");
     let config = loaded(dir.path(), r#""succeed", "reject""#, 1)?;
 
-    let outcome = orchestrate(&config, &RunControl::detached(), Engagement::Orchestrator)?;
+    let outcome = orchestrate(
+        &config,
+        &RunControl::detached(),
+        Engagement::Orchestrator,
+        BinaryChange::Refuse,
+    )?;
     let reason = match outcome {
         RunOutcome::Failed { reason, .. } => reason,
         other => panic!("expected Failed, got {other:?}"),
@@ -106,7 +152,12 @@ fn a_held_lock_keeps_a_second_orchestrator_out() -> Result<()> {
     let store = Store::open(&config.store)?;
     let _lock = store.acquire_run_lock(&config.run.id())?;
     assert!(matches!(
-        orchestrate(&config, &RunControl::detached(), Engagement::Orchestrator),
+        orchestrate(
+            &config,
+            &RunControl::detached(),
+            Engagement::Orchestrator,
+            BinaryChange::Refuse
+        ),
         Err(Error::Validation(_))
     ));
     Ok(())
@@ -132,7 +183,12 @@ fn an_interrupt_through_the_pipeline_stays_resumable() -> Result<()> {
         on_start: None,
     };
     assert!(matches!(
-        orchestrate(&config, &control, Engagement::Orchestrator)?,
+        orchestrate(
+            &config,
+            &control,
+            Engagement::Orchestrator,
+            BinaryChange::Refuse
+        )?,
         RunOutcome::Interrupted { .. }
     ));
 
@@ -144,7 +200,12 @@ fn an_interrupt_through_the_pipeline_stays_resumable() -> Result<()> {
     // The lock released with the interrupted call; the following
     // orchestration completes the abandoned work.
     assert!(matches!(
-        orchestrate(&config, &RunControl::detached(), Engagement::Orchestrator)?,
+        orchestrate(
+            &config,
+            &RunControl::detached(),
+            Engagement::Orchestrator,
+            BinaryChange::Refuse
+        )?,
         RunOutcome::Finalized { .. }
     ));
     assert!(store.manifest(&run)?.is_some());
@@ -190,7 +251,12 @@ fn an_undispatchable_config_orchestrates_to_validation_without_touching_the_stor
         domains: sima_pipeline::DomainRegistry::builtin(),
     };
     assert!(matches!(
-        orchestrate(&config, &RunControl::detached(), Engagement::Orchestrator),
+        orchestrate(
+            &config,
+            &RunControl::detached(),
+            Engagement::Orchestrator,
+            BinaryChange::Refuse
+        ),
         Err(Error::Validation(_))
     ));
     // Dispatch precedes every store mutation: no store, no run directory,
@@ -256,7 +322,12 @@ fn a_run_with_nowhere_to_execute_is_a_validation_error_before_the_store() -> Res
         (Engagement::Orchestrator, "--fleet"),
         (Engagement::Fleet, "[fleet] names no machine"),
     ] {
-        match orchestrate(&config, &RunControl::detached(), engagement) {
+        match orchestrate(
+            &config,
+            &RunControl::detached(),
+            engagement,
+            BinaryChange::Refuse,
+        ) {
             Err(Error::Validation(message)) => assert!(
                 message.contains(expected),
                 "{engagement:?}: the error names {expected:?}: {message}"

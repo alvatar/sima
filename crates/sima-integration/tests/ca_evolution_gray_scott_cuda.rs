@@ -15,7 +15,7 @@ use std::path::Path;
 use common::loaded_text;
 use sima_core::{Error, Hash, Result};
 use sima_domains::substrates::cellular::Grid;
-use sima_pipeline::{Engagement, LoadedConfig, RunControl, RunOutcome, orchestrate};
+use sima_pipeline::{BinaryChange, Engagement, LoadedConfig, RunControl, RunOutcome, orchestrate};
 use sima_store::Store;
 
 /// The relative tolerance the two backends' grids are held to: the same
@@ -127,7 +127,12 @@ fn a_gray_scott_cuda_config_runs_the_full_spine() -> Result<()> {
         None,
     )?;
     assert!(matches!(
-        orchestrate(&config, &RunControl::detached(), Engagement::Orchestrator)?,
+        orchestrate(
+            &config,
+            &RunControl::detached(),
+            Engagement::Orchestrator,
+            BinaryChange::Refuse
+        )?,
         RunOutcome::Finalized { .. }
     ));
     // Four candidates, one manifest entry each, every committed state a
@@ -162,7 +167,8 @@ fn a_segment_boundary_leaves_the_trajectory_byte_identical() -> Result<()> {
         orchestrate(
             &segmented,
             &RunControl::detached(),
-            Engagement::Orchestrator
+            Engagement::Orchestrator,
+            BinaryChange::Refuse,
         )?,
         RunOutcome::Finalized { .. }
     ));
@@ -178,7 +184,12 @@ fn a_segment_boundary_leaves_the_trajectory_byte_identical() -> Result<()> {
         None,
     )?;
     assert!(matches!(
-        orchestrate(&whole, &RunControl::detached(), Engagement::Orchestrator)?,
+        orchestrate(
+            &whole,
+            &RunControl::detached(),
+            Engagement::Orchestrator,
+            BinaryChange::Refuse
+        )?,
         RunOutcome::Finalized { .. }
     ));
     let whole_states = manifest_states(&whole)?;
@@ -224,7 +235,12 @@ fn both_programs_evolve_the_same_rule_to_the_same_grid() -> Result<()> {
     )?;
     for config in [&cuda, &wgsl] {
         assert!(matches!(
-            orchestrate(config, &RunControl::detached(), Engagement::Orchestrator)?,
+            orchestrate(
+                config,
+                &RunControl::detached(),
+                Engagement::Orchestrator,
+                BinaryChange::Refuse
+            )?,
             RunOutcome::Finalized { .. }
         ));
     }

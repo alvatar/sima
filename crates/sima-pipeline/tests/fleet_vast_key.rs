@@ -9,7 +9,7 @@
 use std::path::Path;
 
 use sima_core::{Error, Result};
-use sima_pipeline::{Engagement, RunControl, load, orchestrate};
+use sima_pipeline::{BinaryChange, Engagement, RunControl, load, orchestrate};
 
 #[test]
 fn a_vast_rental_reads_the_key_only_when_the_fleet_is_engaged() -> Result<()> {
@@ -52,7 +52,12 @@ fn a_vast_rental_reads_the_key_only_when_the_fleet_is_engaged() -> Result<()> {
     // which is a validation error naming the flag — the shape that proves the
     // marketplace was not touched, since an absent key would have surfaced as a
     // provider error instead.
-    match orchestrate(&config, &RunControl::detached(), Engagement::Orchestrator) {
+    match orchestrate(
+        &config,
+        &RunControl::detached(),
+        Engagement::Orchestrator,
+        BinaryChange::Refuse,
+    ) {
         Err(Error::Validation(message)) => {
             assert!(
                 message.contains("--fleet"),
@@ -63,7 +68,12 @@ fn a_vast_rental_reads_the_key_only_when_the_fleet_is_engaged() -> Result<()> {
     }
 
     // With the flag the provider is constructed, and the absent key surfaces.
-    match orchestrate(&config, &RunControl::detached(), Engagement::Fleet) {
+    match orchestrate(
+        &config,
+        &RunControl::detached(),
+        Engagement::Fleet,
+        BinaryChange::Refuse,
+    ) {
         Err(Error::Provider(message)) => {
             assert!(
                 message.contains("VAST_API_KEY"),

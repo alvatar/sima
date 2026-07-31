@@ -15,7 +15,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use common::{journal_events, loaded_text};
 use sima_core::Result;
 use sima_pipeline::{
-    Engagement, Event, LoadedConfig, Record, RunControl, RunOutcome, orchestrate, spend,
+    BinaryChange, Engagement, Event, LoadedConfig, Record, RunControl, RunOutcome, orchestrate,
+    spend,
 };
 use sima_store::Store;
 
@@ -65,7 +66,12 @@ fn a_stub_fleet_run_finalizes_with_records_from_fleet_workers() -> Result<()> {
         2,
     )?;
     assert!(matches!(
-        orchestrate(&config, &RunControl::detached(), Engagement::Fleet)?,
+        orchestrate(
+            &config,
+            &RunControl::detached(),
+            Engagement::Fleet,
+            BinaryChange::Refuse
+        )?,
         RunOutcome::Finalized { .. }
     ));
 
@@ -104,7 +110,12 @@ fn the_ledger_holds_one_closed_entry_per_instance() -> Result<()> {
         2,
     )?;
     assert!(matches!(
-        orchestrate(&config, &RunControl::detached(), Engagement::Fleet)?,
+        orchestrate(
+            &config,
+            &RunControl::detached(),
+            Engagement::Fleet,
+            BinaryChange::Refuse
+        )?,
         RunOutcome::Finalized { .. }
     ));
 
@@ -128,14 +139,24 @@ fn a_re_run_resumes_and_finalizes() -> Result<()> {
         1,
     )?;
     assert!(matches!(
-        orchestrate(&config, &RunControl::detached(), Engagement::Fleet)?,
+        orchestrate(
+            &config,
+            &RunControl::detached(),
+            Engagement::Fleet,
+            BinaryChange::Refuse
+        )?,
         RunOutcome::Finalized { .. }
     ));
     // The same store, re-run: the frontier is empty, so the run re-finalizes
     // without re-evaluating a candidate, and the fleet is acquired and torn
     // down again cleanly.
     assert!(matches!(
-        orchestrate(&config, &RunControl::detached(), Engagement::Fleet)?,
+        orchestrate(
+            &config,
+            &RunControl::detached(),
+            Engagement::Fleet,
+            BinaryChange::Refuse
+        )?,
         RunOutcome::Finalized { .. }
     ));
     let store = Store::open(&config.store)?;
@@ -166,7 +187,7 @@ fn an_interrupt_tears_the_fleet_down_and_leaves_the_ledger_closed() -> Result<()
         on_start: None,
     };
     assert!(matches!(
-        orchestrate(&config, &control, Engagement::Fleet)?,
+        orchestrate(&config, &control, Engagement::Fleet, BinaryChange::Refuse)?,
         RunOutcome::Interrupted { .. }
     ));
 
@@ -234,7 +255,12 @@ fn without_the_flag_the_orchestrator_carries_the_run_and_nothing_is_rented() -> 
     let dir = tempfile::tempdir().expect("temp dir");
     let config = opt_in_config(dir.path(), "local.toml", "./store")?;
     assert!(matches!(
-        orchestrate(&config, &RunControl::detached(), Engagement::Orchestrator)?,
+        orchestrate(
+            &config,
+            &RunControl::detached(),
+            Engagement::Orchestrator,
+            BinaryChange::Refuse
+        )?,
         RunOutcome::Finalized { .. }
     ));
 
@@ -257,7 +283,12 @@ fn with_the_flag_the_declared_machines_join_the_orchestrator() -> Result<()> {
     let dir = tempfile::tempdir().expect("temp dir");
     let config = opt_in_config(dir.path(), "fleet.toml", "./store")?;
     assert!(matches!(
-        orchestrate(&config, &RunControl::detached(), Engagement::Fleet)?,
+        orchestrate(
+            &config,
+            &RunControl::detached(),
+            Engagement::Fleet,
+            BinaryChange::Refuse
+        )?,
         RunOutcome::Finalized { .. }
     ));
 

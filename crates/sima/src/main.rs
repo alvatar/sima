@@ -46,10 +46,10 @@ use std::sync::atomic::AtomicBool;
 
 use sima_core::{Error, Result};
 use sima_pipeline::{
-    Engagement, FeedInfo, LoadedConfig, LocalFeed, Record, RemoteFeed, RemovalReport, ReportRow,
-    RunControl, RunFeed, RunId, RunOutcome, RunStatus, RunTimeline, TaskHistory, failures_records,
-    follow_serve, load, local_snapshot, orchestrate, remote_snapshot, report_records,
-    report_task_records, status, status_records, sync_serve, task_history_records,
+    BinaryChange, Engagement, FeedInfo, LoadedConfig, LocalFeed, Record, RemoteFeed, RemovalReport,
+    ReportRow, RunControl, RunFeed, RunId, RunOutcome, RunStatus, RunTimeline, TaskHistory,
+    failures_records, follow_serve, load, local_snapshot, orchestrate, remote_snapshot,
+    report_records, report_task_records, status, status_records, sync_serve, task_history_records,
     timeline_records,
 };
 use sima_provider::ReconcileScope;
@@ -269,7 +269,7 @@ fn drive(config: &Path, engagement: Engagement) -> Result<RunOutcome> {
         interrupt: &interrupt,
         on_start: None,
     };
-    orchestrate(&loaded, &control, engagement)
+    orchestrate(&loaded, &control, engagement, BinaryChange::Refuse)
 }
 
 /// `sima report <config.toml> --spend`: the run's rental ledger — closed

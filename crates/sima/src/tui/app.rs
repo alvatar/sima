@@ -24,8 +24,8 @@ use ratatui::backend::CrosstermBackend;
 
 use sima_core::Error;
 use sima_pipeline::{
-    Engagement, LoadedConfig, LocalFeed, Record, RemoteFeed, RunControl, RunFeed, RunStatus, load,
-    orchestrate,
+    BinaryChange, Engagement, LoadedConfig, LocalFeed, Record, RemoteFeed, RunControl, RunFeed,
+    RunStatus, load, orchestrate,
 };
 
 use crate::Target;
@@ -402,7 +402,7 @@ fn spawn_run(
                 interrupt: &interrupt,
                 on_start: None,
             };
-            orchestrate(&config, &control, engagement)
+            orchestrate(&config, &control, engagement, BinaryChange::Refuse)
         }))
         .unwrap_or_else(|payload| Err(panic_fault(payload)));
         let _ = tx.send(Msg::Finished(outcome));
