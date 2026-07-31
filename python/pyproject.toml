@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sima"
+version = "0.1.0"
+description = "The Python SDK for writing a sima program: framing, canonical encoding, and the serve loop of the program protocol"
+requires-python = ">=3.11"
+license = "MIT OR Apache-2.0"
+# Zero dependencies: the protocol needs framing, integer packing, and JSON,
+# all of which the standard library carries.
+dependencies = []
+
+[project.urls]
+Repository = "https://github.com/alvatar/sima"
+
+[tool.setuptools]
+packages = ["sima"]

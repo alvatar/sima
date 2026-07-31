@@ -1,0 +1,22 @@
+[run]
+root_seed = 7
+format = "example.stepper.v1"
+segments = 3
+
+[run.generator]
+id = "example.stepper.candidates"
+count = 2
+
+[run.params]
+steps = 5
+
+[config]
+store = "./store"
+checkpoint_interval_ms = 0
+
+[[orchestrator.device]]
+select = "example:cpu"
+workers = 2
+
+[domain."example.stepper.v1"]
+binary = "./stepper.py"

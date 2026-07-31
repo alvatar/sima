@@ -169,6 +169,13 @@ A chain exists durably only as the trail of committed records linked by
 rebuilds from that trail at construction, which is why crash recovery,
 interrupt resume, and re-run are one code path.
 
+The diagram holds two continuation mechanisms that carry the same bytes
+under different guarantees. Checkpoint = crash recovery within a run: a
+disposable scratch slot, outside every hash, that only shortens a restarted
+attempt. Segment state = a result another run can legitimately start from: a
+committed, addressable artifact, which is what lets a longer run reuse the
+shared prefix of a shorter one.
+
 ## Two serialization worlds
 
 - **Identity-bearing bytes** — anything hashed — use the canonical binary
@@ -841,6 +848,12 @@ A format id is bound by whatever answers for it. The formats this build carries
 are answered in process; a format a config routes to a binary is answered by
 that program, over a pipe.
 
+What that program must do is published in `docs/protocol.md`: framing, the
+canonical encoding, both message sets, and the obligations a program takes on.
+Speaking it is the whole requirement, so a program in any language qualifies.
+`sima-api` is the Rust SDK over that contract and `python/` the Python one;
+this section describes how a registered program is reached, not what it says.
+
 ```mermaid
 flowchart TD
   CFG["sima.toml names a binary<br/>for acme.thing.v1"] --> REG["registry<br/>format id to source"]
@@ -888,22 +901,13 @@ second conversation, `<binary> --serve-domain <format>`. The other two, the
 executor and the device description, are read inside a worker and cross the
 worker protocol.
 
-| Parent to program | Program to parent |
-|---|---|
-| `Hello { protocol }` | `Ready { protocol }` |
-| `Describe { format }` | `Described { environment }` |
-| `Enumerate { format }` | `Enumerated { devices }` |
-| `TranslateParams { format, toml, segmented }` | `Translated { bytes }` |
-| `TranslateGeneratorParams { generator, toml }` | `Translated { bytes }` |
-| `Generate { generator, format, root_seed, params }` | `Generated { specs }` |
-| `Goodbye` | — |
-
-The framing is the transport's own — a `u32` length prefix and a `u8` message
-tag over the canonical `Enc`/`Dec` primitives — and the version is the one the
-worker protocol carries, because one program speaks both. A question the program
-cannot answer is `Failed { message }` carrying its own rendering, which the
-parent surfaces verbatim and the session survives. The session stays open for
-the whole config, so the startup cost is paid once.
+The message set and its layout are in `docs/protocol.md`. The framing is the
+transport's own — a `u32` length prefix and a `u8` message tag over the
+canonical `Enc`/`Dec` primitives — and the version is the one the worker
+protocol carries, because one program speaks both. A question the program
+cannot answer is `Failed` carrying its own rendering, which the parent surfaces
+verbatim and the session survives. The session stays open for the whole config,
+so the startup cost is paid once.
 
 ### The registry
 
@@ -1502,7 +1506,9 @@ beside the contract whose vocabulary the protocol carries across the process
 boundary; the scheduler consumes the traits, and `sima-worker` the host
 loop.
 
-The wire protocol frames messages on the child's stdin and stdout: a `u32`
+The wire protocol is published in `docs/protocol.md`, which states the message
+layouts normatively; what follows is how this side uses it. It frames messages
+on the child's stdin and stdout: a `u32`
 little-endian payload length, then a payload built with the canonical
 `Enc`/`Dec` primitives — used for their checked framing; frames are
 transport encoding, never identity-bearing. The handshake carries the

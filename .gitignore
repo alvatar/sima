@@ -2,3 +2,6 @@ target/
 work/
 out/
 examples/store/
+__pycache__/
+python/build/
+python/*.egg-info/
