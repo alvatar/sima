@@ -614,7 +614,13 @@ fn a_migration_of_a_config_routed_run_is_refused_where_it_is_asked_for() -> Resu
     let path = dir.path().join("sima.toml");
     std::fs::write(&path, stub_config("./store", Some(&worker()), &[])).expect("write the config");
     let interrupt = AtomicBool::new(false);
-    let Err(error) = migrate(&path, &|_| {}, &interrupt) else {
+    // Progress reporting is a side effect like any other, so the observer
+    // counts: the guard runs ahead of the collector that would feed it.
+    let observed = AtomicUsize::new(0);
+    let observer = |_: &Record| {
+        observed.fetch_add(1, Ordering::Relaxed);
+    };
+    let Err(error) = migrate(&path, &observer, &interrupt) else {
         panic!("expected a config-routed run to be refused a migration");
     };
     assert!(matches!(error, Error::Validation(_)), "{error:?}");
@@ -625,6 +631,11 @@ fn a_migration_of_a_config_routed_run_is_refused_where_it_is_asked_for() -> Resu
     assert!(
         !dir.path().join("store").exists(),
         "the refused migration opened a store"
+    );
+    assert_eq!(
+        observed.load(Ordering::Relaxed),
+        0,
+        "the refused migration reported progress"
     );
     Ok(())
 }
