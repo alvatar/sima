@@ -812,6 +812,48 @@ fn migrate_refuses_a_host_because_it_drives_a_run() {
 }
 
 #[test]
+fn run_accepts_the_binary_flag_beside_the_fleet_flag_in_either_order() {
+    // The two flags answer different questions — which machines, and what a
+    // changed program does — so a run states them in whatever order it likes.
+    // A config this build carries answers itself, so the flag is inert here
+    // and the run finalizes; the gate it arms is covered where a program
+    // serves the format.
+    let dir = tempfile::tempdir().expect("temp dir");
+    for (name, args) in [
+        ("a", vec!["--accept-binary"]),
+        ("b", vec!["--fleet", "--accept-binary"]),
+        ("c", vec!["--accept-binary", "--fleet"]),
+    ] {
+        let config = common::write_config(
+            dir.path(),
+            &format!("{name}.toml"),
+            r#""succeed""#,
+            &format!("./{name}-store"),
+        );
+        let path = config.to_str().expect("utf-8 path").to_string();
+        let mut invocation = vec!["run", path.as_str()];
+        invocation.extend(args.iter().copied());
+        let output = sima(&invocation);
+        assert_eq!(output.status.code(), Some(0), "{invocation:?}: {output:?}");
+    }
+}
+
+#[test]
+fn the_binary_flag_belongs_to_run_alone() {
+    // Every other command keeps the flag in its arguments, where it matches no
+    // form and falls to the usage error: a query has no program to accept.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config = write_config(dir.path(), r#""succeed""#);
+    let path = config.to_str().expect("utf-8 path");
+    for command in ["status", "report", "rm", "migrate"] {
+        let output = sima(&[command, path, "--accept-binary"]);
+        assert_eq!(output.status.code(), Some(1), "{command}: {output:?}");
+        let stderr = String::from_utf8(output.stderr).expect("stderr is UTF-8");
+        assert!(stderr.contains("usage: sima"), "{command}: {stderr}");
+    }
+}
+
+#[test]
 fn an_unknown_subcommand_exits_1_with_usage_on_stderr() {
     for args in [
         vec!["frobnicate"],
@@ -851,6 +893,7 @@ fn the_usage_text_names_every_command_form() {
         "sima follow",
         "--on",
         "--fleet",
+        "--accept-binary",
     ] {
         assert!(stderr.contains(form), "usage names {form}: {stderr}");
     }
