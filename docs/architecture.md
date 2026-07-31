@@ -1058,7 +1058,8 @@ compares its digest against the last one the run's journal recorded:
 
 - equal, or absent because this is the run's first session — the run proceeds;
 - different — the run stops, naming the format, the path, both digests, and the
-  flag that would continue;
+  flag that would continue, and appending no record, so the journal's digest
+  history names the builds that drove sessions;
 - different, under `sima run <config> --accept-binary` — the run proceeds, and
   the accepted build is what the next session compares against.
 

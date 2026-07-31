@@ -39,8 +39,10 @@ pub enum BinaryChange {
 /// was last driven by, and records the current one.
 ///
 /// Called under the run lock, so the read and the append race no other
-/// orchestrator. The record is appended whichever way the comparison went, so
-/// the next session compares against the build that actually ran.
+/// orchestrator. A session that proceeds appends its record, so the next
+/// session compares against the build that actually ran; a refusal returns
+/// ahead of the append, leaving the digest history naming the builds that drove
+/// sessions.
 pub(crate) fn bind(
     store: &Store,
     run: &RunConfig,
