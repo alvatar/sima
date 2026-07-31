@@ -24,8 +24,9 @@ use sima_contracts::{Artifact, DeviceBinding, DeviceClass, Outcome, Stats};
 use sima_core::{Dec, Enc, Error, Result};
 use sima_model::{EnvironmentId, FormatId};
 
-/// Version of the wire protocol; the handshake refuses a mismatch.
-pub const PROTOCOL_VERSION: u32 = 5;
+/// Version of the wire protocol; the handshake refuses a mismatch. The
+/// published contract (`docs/protocol.md`) numbers from 1.
+pub const PROTOCOL_VERSION: u32 = 1;
 
 // Parent → child message tags.
 const TAG_HELLO: u8 = 0;
@@ -565,7 +566,7 @@ mod tests {
     fn the_protocol_version_is_pinned() {
         // The handshake contract both binaries compile against; bumping it is
         // a deliberate act.
-        assert_eq!(PROTOCOL_VERSION, 5);
+        assert_eq!(PROTOCOL_VERSION, 1);
     }
 
     #[test]

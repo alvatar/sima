@@ -41,7 +41,7 @@ from .model import (
 __all__ = ["PROTOCOL_VERSION", "SERVE_DOMAIN", "serve"]
 
 #: The wire protocol version. The handshake refuses a mismatch on both sides.
-PROTOCOL_VERSION = 5
+PROTOCOL_VERSION = 1
 
 #: The flag that asks a program for the domain-service role, followed by the
 #: format id it is asked about.

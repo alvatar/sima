@@ -7,12 +7,15 @@ the whole requirement for building for sima.** A program in any language that
 frames these bytes plugs into a run; an SDK is a convenience over the same
 bytes.
 
-The Rust implementation is the reference for behavior. `sima-api` is the Rust
-SDK — a program implements two traits and calls `sima_api::serve`. `python/` in
-this repository is the Python SDK, and `examples/stepper-py/` is a program
-written against it that exercises every message below.
+Two implementations of the program side live in this repository, and the Rust
+one is normative: where this document and its behavior disagree, the Rust
+implementation decides and the document is corrected. `sima-api` is the Rust
+SDK over it — a program implements two traits and calls `sima_api::serve`. The
+Python implementation is the `sima` package under `python/`, a full client of
+this document, and `examples/stepper-py/` is a program written against it that
+exercises every message below.
 
-The protocol version is 5.
+The protocol version is 1.
 
 ## The two roles
 
