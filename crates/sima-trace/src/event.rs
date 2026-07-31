@@ -135,6 +135,17 @@ pub enum Event {
         driver: String,
         host: String,
     },
+    /// The program that served a config-routed format for one session: the
+    /// format it answered for, the file the config named, and the blake3
+    /// digest of that file's bytes as lowercase hex. Provenance, exactly as
+    /// [`WorkerBound`](Event::WorkerBound) records device and driver: the
+    /// digest identifies the build that produced the session's results and
+    /// enters no hash, so a run's identity stays what the program declares.
+    ProgramBound {
+        format: String,
+        binary: String,
+        digest: String,
+    },
     /// A chain's device class was absent from the run's devices, so its work
     /// moved to a class that is present. Classes render `vendor:device`.
     ChainRebound {
@@ -302,6 +313,19 @@ mod tests {
             let back: Event = serde_json::from_str(&json).expect("parse a rental event");
             assert_eq!(back, event);
         }
+    }
+
+    #[test]
+    fn a_program_bound_event_names_the_format_the_file_and_its_digest() {
+        let event = Event::ProgramBound {
+            format: "acme.thing.v1".to_string(),
+            binary: "/opt/acme/worker".to_string(),
+            digest: "ab".repeat(32),
+        };
+        let json = serde_json::to_string(&event).expect("serialize program bound");
+        assert!(json.contains("\"event\":\"program_bound\""), "{json}");
+        let back: Event = serde_json::from_str(&json).expect("parse program bound");
+        assert_eq!(back, event);
     }
 
     #[test]

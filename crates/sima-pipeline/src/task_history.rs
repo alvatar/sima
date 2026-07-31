@@ -215,6 +215,7 @@ impl TaskHistory {
             | Event::RunFailed { .. }
             | Event::RunInterrupted { .. }
             | Event::WorkerBound { .. }
+            | Event::ProgramBound { .. }
             | Event::ChainRebound { .. }
             | Event::Diagnostic { .. }
             | Event::InstanceOnline { .. }
@@ -263,6 +264,7 @@ fn lifecycle_task(event: &Event) -> Option<&str> {
         | Event::RunFailed { .. }
         | Event::RunInterrupted { .. }
         | Event::WorkerBound { .. }
+        | Event::ProgramBound { .. }
         | Event::ChainRebound { .. }
         | Event::Diagnostic { .. }
         | Event::InstanceOnline { .. }

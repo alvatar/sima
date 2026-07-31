@@ -191,6 +191,7 @@ pub fn timeline_records(run: RunId, records: &[Record]) -> RunTimeline {
             Event::LeaseExpired { .. }
             | Event::CheckpointDegraded { .. }
             | Event::ChainRebound { .. }
+            | Event::ProgramBound { .. }
             | Event::Queued { .. }
             | Event::Diagnostic { .. }
             | Event::RunFinalized { .. }

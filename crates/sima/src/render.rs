@@ -18,7 +18,8 @@ pub fn short(id: &str) -> &str {
 }
 
 /// Renders `event` to the one line it warrants, or `None` for the `Queued`,
-/// `Leased`, and `WorkerBound` bookkeeping events. `committed`/`tasks` supply
+/// `Leased`, `WorkerBound`, and `ProgramBound` bookkeeping events.
+/// `committed`/`tasks` supply
 /// the running `committed k/n` count a commit line shows; on `RunStarted`, a
 /// nonzero `committed` is the run's prior progress and the line names it, so a
 /// resumed session does not read as a restart. The single source of the
@@ -124,7 +125,10 @@ pub fn describe(event: &Event, committed: usize, tasks: usize) -> Option<String>
         Event::BudgetWallClockExhausted { deadline_ms } => format!(
             "budget exhausted: rental deadline (epoch ms {deadline_ms}) passed, winding down"
         ),
-        Event::Queued { .. } | Event::Leased { .. } | Event::WorkerBound { .. } => return None,
+        Event::Queued { .. }
+        | Event::Leased { .. }
+        | Event::WorkerBound { .. }
+        | Event::ProgramBound { .. } => return None,
     })
 }
 
