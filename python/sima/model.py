@@ -347,8 +347,8 @@ class Executor(ABC):
     ) -> Outcome:
         """Evaluates one candidate, returning one of the three outcomes.
 
-        Raising instead reports a panic: sima journals a diagnostic and fails
-        the attempt.
+        Raising instead reports a panic: sima journals a diagnostic and
+        rejects the task definitively, so no retry follows.
         """
 
 

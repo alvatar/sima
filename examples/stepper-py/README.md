@@ -54,6 +54,6 @@ an unarmed run of one configuration share an identity.
   converges.
 - `STEPPER_FAIL_ONCE=1` — the first attempt of every task returns a transient
   failure, which sima retries.
-- `STEPPER_RAISE_ONCE=1` — the first attempt of every task raises. The
-  traceback crosses as a diagnostic, the attempt fails as a panic, and sima
-  retries it.
+- `STEPPER_RAISE_ONCE=1` — every task raises, once. The traceback crosses as a
+  diagnostic and the attempt reports a panic, which sima treats as a definitive
+  rejection: the task is never retried and the run ends failed.

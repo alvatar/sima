@@ -20,8 +20,9 @@ can be exercised without a second program. Each is inert when unset:
   condition never fires twice and the run converges.
 - ``STEPPER_FAIL_ONCE=1`` — the first attempt of every task returns a transient
   failure, which sima retries.
-- ``STEPPER_RAISE_ONCE=1`` — the first attempt of every task raises, which
-  crosses as a diagnostic and a panic, and is likewise retried.
+- ``STEPPER_RAISE_ONCE=1`` — every task raises, once: the exception crosses as
+  a diagnostic and a panic, sima rejects the task definitively, and the run
+  ends failed.
 """
 
 from __future__ import annotations
@@ -73,7 +74,9 @@ class StepperExecutor(sima.Executor):
             return sima.Rejected(reason="zero increment")
         if os.environ.get("STEPPER_FAIL_ONCE") and context.attempt == 0:
             return sima.Failed(reason="armed transient failure")
-        if os.environ.get("STEPPER_RAISE_ONCE") and context.attempt == 0:
+        # No attempt guard, unlike the transient arm above: a panic rejects the
+        # task definitively, so this attempt is the only one there will be.
+        if os.environ.get("STEPPER_RAISE_ONCE"):
             raise RuntimeError("armed panic")
 
         params = sima.Dec(task.params)
