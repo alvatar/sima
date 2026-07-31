@@ -867,9 +867,36 @@ portability (P1 acceptance (d)) hold across the boundary.
       paired as M7.3 leftovers; per-record build provenance, so a fresh run
       reusing an earlier run's records passes no gate; and a deadline on
       `Generate`, still M7.4's.
-- [ ] M7.6 Reference out-of-tree executor: a worked example family in a
-      separate repository, built only against the published API and exercised
-      through the full spine — the phase's proof that no fork is required.
+- [x] M7.6 The published protocol and a program in another language: the
+      phase's proof that no fork is required. Settled what the requirement
+      actually is: **a program plugs into sima by speaking two small protocols
+      over its own stdin and stdout**, so the contract is the wire rather than
+      a Rust dependency, and `sima-api` is one SDK over it rather than the
+      entry price. `docs/protocol.md` publishes that contract — the two roles
+      and the argv rule selecting them, session lifetimes, framing, the
+      canonical primitives, the name rules, both message tables, the nested
+      forms, the flat `Done` layout, the JSON shape of an `Event`, the version
+      rule, and the obligations a program takes on. A pin test beside
+      `PROTOCOL_VERSION` reads the document, so the two cannot drift.
+      `python/` is the second client of the contract: a zero-dependency
+      standard-library package giving framing, encoding, the vocabulary, the
+      four contracts, and the `serve` loop for both roles. It was written from
+      the document alone, and the two facts it needed and did not find are now
+      in the document. `examples/stepper-py/` is a whole program written
+      against it — a stepped accumulator over one-byte candidates — and
+      `crates/sima-integration/tests/python_program.rs` drives it through the
+      full spine over seven tests: both roles, every domain-service question,
+      a segmented chain hopping on committed state, a checkpoint resume after
+      a worker death, all three outcomes, the panic path, and a configuration
+      the program refuses. No wire change; the milestone is documentation, a
+      library, an example, and tests. Not done here: crates.io and PyPI
+      publication, both still future work over landed license and metadata
+      groundwork; a conformance harness parameterized by an arbitrary command,
+      which waits for a second external implementer; cross-language identity
+      equivalence, rejected as irrelevant; and the standing leftovers — fleet
+      routing of registered formats with entry carriage across a migration
+      (M7.3), a deadline on `Generate` (M7.4), and per-record build provenance
+      (M7.5).
 
 Expected to be re-split when reached; the registration and isolation mechanism
 hides surprises.

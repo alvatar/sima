@@ -62,11 +62,14 @@ beyond it as an elastic, heterogeneous extension.
 - **Bring your own program.** A compute program outside this workspace — a
   renderer, a simulator, anything with its own GPU context and its own
   dependency tree — is registered by naming its binary:
-  `[domain."acme.thing.v1"] binary = "/opt/acme/worker"`. It implements two
-  traits against `sima-api` and calls `sima_api::serve`; sima spawns it, asks it
-  what its format binds, and runs the search through it. It runs as its own
-  process, so it loads its assets once and then streams tasks, and the store
-  stays on sima's side of the boundary.
+  `[domain."acme.thing.v1"] binary = "/opt/acme/worker"`. What it must do is
+  speak two small protocols over its own stdin and stdout, written down in
+  `docs/protocol.md` — any language that can frame bytes qualifies. `sima-api`
+  is the Rust SDK over that contract and `python/` the Python one;
+  `examples/stepper-py/` is a whole program written against the latter. sima
+  spawns the binary, asks it what its format binds, and runs the search through
+  it. It runs as its own process, so it loads its assets once and then streams
+  tasks, and the store stays on sima's side of the boundary.
 - **Reproduce any result.** A task is identified by content — spec, run
   parameters, seed, environment, input state — so a recorded result can be
   regenerated from its identity alone, and any backend that returns a result
