@@ -2,6 +2,7 @@
 name = "sima-provider"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 
 [features]
 # Forwards crash-injection to the layers whose durability the provider's

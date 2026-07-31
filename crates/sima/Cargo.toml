@@ -2,6 +2,7 @@
 name = "sima"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 
 [features]
 # Forwards crash-injection to the layers that plant points, so the crash

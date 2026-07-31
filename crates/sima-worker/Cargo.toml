@@ -2,6 +2,7 @@
 name = "sima-worker"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 
 [features]
 # Forwards crash-injection to the domains layer so executor-side points can
