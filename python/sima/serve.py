@@ -100,6 +100,10 @@ def serve(
 
     The streams and the argument vector default to this process's, and are
     parameters so a caller can drive the loops over any pipe.
+
+    **stdout carries frames and nothing else.** Anything a program prints goes
+    to stderr, which sima captures line by line and journals as diagnostics; a
+    stray write to stdout corrupts the frame stream.
     """
     arguments = list(sys.argv if argv is None else argv)
     stream_in = reader if reader is not None else sys.stdin.buffer
@@ -152,6 +156,7 @@ def _serve_domain_service(
     if dec.u8() != _ASK_HELLO:
         raise TransportError("expected the Hello handshake as the first frame")
     _check_version(dec.u32(), "domain service")
+    dec.finish()
     write_frame(writer, Enc().u8(_ANSWER_READY).u32(PROTOCOL_VERSION).finish())
 
     while True:
@@ -161,6 +166,7 @@ def _serve_domain_service(
         dec = Dec(payload)
         tag = dec.u8()
         if tag == _ASK_GOODBYE:
+            dec.finish()
             return
         if tag == _ASK_HELLO:
             raise TransportError("unexpected second Hello after the handshake")
