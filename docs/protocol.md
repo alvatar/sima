@@ -133,12 +133,18 @@ What each question asks for:
 - `EnumerateDevices` — the devices the format's work can run on, as the
   program's execution backend enumerates them. A format that opens no device
   answers an empty list.
-- `TranslateConfig` — the run's `[run.params]` section as TOML text, to be
-  translated into the format's canonical params bytes. The segmented flag says
-  whether the run divides each candidate's evaluation into a chain of segments,
-  so a program can refuse a combination it does not support.
+- `TranslateConfig` — the run's `[run.params]` section, to be translated into
+  the format's canonical params bytes. The segmented flag says whether the run
+  divides each candidate's evaluation into a chain of segments, so a program
+  can refuse a combination it does not support.
 - `TranslateGeneratorConfig` — the `[run.generator]` section minus its `id`
   key, translated into the generator's opaque params blob.
+
+Both translations receive the section's **body**, re-serialized as TOML: the
+keys and their values, without the `[run.params]` or `[run.generator]` header
+line. A run that states no such section sends an empty string. The bytes a
+translation answers are opaque to sima — it stores them, hashes them into the
+run's identity, and hands the params bytes back verbatim in every `Assign`.
 - `Generate` — the run's candidate specs, from the named generator, under the
   run's root seed and the blob the previous question produced.
 
@@ -235,6 +241,26 @@ is non-empty. Components are content-derived only — an executor version
 constant, the digest of a compiled shader. Anything machine-derived (hostname,
 device, driver, path, time) is journal metadata and never a component, because
 two machines with equal environments must produce equal results.
+
+## Structured events
+
+An `Event` frame carries one JSON object: a `event` key naming the kind in
+snake_case, and that kind's fields beside it. The vocabulary is sima's — the
+journal's own event kinds — and a program is expected to emit one of them:
+
+```json
+{"event": "diagnostic", "level": "error", "source": "panic", "message": "..."}
+```
+
+- `level` is one of `info`, `warn`, `error`.
+- `source` names the component the line came from.
+- `message` is the text.
+- `worker`, `host`, and `task` are optional attribution keys. A program leaves
+  all three unset: sima fills the worker slot and the host, which it knows, and
+  a task key is an id a program never computes.
+
+Events are observational and one-way. A frame that does not parse is journaled
+as a warning and dropped; it never decides the conversation's fate.
 
 ## The handshake and the version rule
 

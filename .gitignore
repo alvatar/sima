@@ -2,3 +2,4 @@ target/
 work/
 out/
 examples/store/
+__pycache__/
