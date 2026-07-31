@@ -2,8 +2,8 @@
 """A sima program in Python: a stepped accumulator.
 
 The whole contract fits in this file. A candidate is one byte, the increment.
-A task folds that increment into an accumulator for a fixed number of steps,
-keyed by the absolute step index, so the trajectory is the same wherever a
+A task adds that increment to an accumulator for a fixed number of steps, keyed
+by the absolute step index, so the trajectory is the same wherever a
 segmentation cuts it. The state a segment commits is what the next segment
 continues from, and the checkpoint the program offers at every step boundary is
 what a restarted attempt resumes from.
@@ -42,7 +42,7 @@ DEVICE_CLASS = "example:cpu"
 DEVICE_NAME = "python host processor"
 DRIVER = "example.stepper v1"
 
-#: The accumulator is a `u64`, so every fold wraps at 64 bits.
+#: The accumulator is a `u64`, so every addition wraps at 64 bits.
 WRAP = 2**64
 #: A state is a `u64` step and a `u64` accumulator, little-endian.
 STATE_LEN = 16
@@ -64,7 +64,7 @@ def decode_state(raw: bytes) -> tuple[int, int]:
 
 
 class StepperExecutor(sima.Executor):
-    """Folds the candidate's increment into the accumulator, one step at a time."""
+    """Adds the candidate's increment to the accumulator, one step at a time."""
 
     def execute(self, task, context, checkpoint):
         increment = task.spec.candidate[0] if task.spec.candidate else 0
@@ -128,8 +128,8 @@ class StepperDomain(sima.Domain):
 
     def environment(self):
         # What results depend on: this executor's arithmetic, versioned. Change
-        # the fold and bump the version, and every result the old one stored
-        # keeps its own address.
+        # the arithmetic and bump the version, and every result the old one
+        # stored keeps its own address.
         return sima.Environment((sima.EnvironmentComponent("example.stepper.executor", version="v1"),))
 
     def enumerate_devices(self):

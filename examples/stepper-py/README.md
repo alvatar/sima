@@ -10,7 +10,7 @@ spine.
 
 ## What it computes
 
-A candidate is one byte, the increment. A task folds that increment into a
+A candidate is one byte, the increment. A task adds that increment to a
 `u64` accumulator once per step, for the number of steps `[run.params]`
 declares, and commits the reached state — the absolute step and the
 accumulator, 16 little-endian bytes — as the artifact named `state`. Under
