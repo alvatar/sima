@@ -95,6 +95,13 @@ fn example_config(store: &str, count: u32, program: &Path) -> String {
     )
 }
 
+/// The candidate count a run cannot finish in the window between the commit
+/// that raises the interrupt and the driver observing it. The observer runs on
+/// the collector's thread, so a loaded machine can delay the flag past a short
+/// run's last commit; this count makes the interrupting tests decide on the
+/// ordering of events rather than on how fast this machine is.
+const UNFINISHABLE: u32 = 200;
+
 /// The task keys `config`'s run comprises, over a store of its own.
 fn keys(config: &LoadedConfig) -> Result<Vec<String>> {
     let store = Store::open(&config.store)?;
@@ -368,7 +375,7 @@ fn a_run_through_a_program_resumes_after_an_interruption() -> Result<()> {
     // committed are not run again.
     let dir = tempfile::tempdir().expect("temp dir");
     let program = built_binary("sima-example-executor");
-    let text = example_config("./store", 4, &program);
+    let text = example_config("./store", UNFINISHABLE, &program);
     let config = loaded_text(dir.path(), "sima.toml", &text)?;
     let interrupt = AtomicBool::new(false);
     let committed = AtomicUsize::new(0);
@@ -404,7 +411,11 @@ fn a_run_through_a_program_resumes_after_an_interruption() -> Result<()> {
         )?,
         RunOutcome::Finalized { .. }
     ));
-    assert_eq!(doubled(&resumed)?.len(), 4, "every candidate committed");
+    assert_eq!(
+        doubled(&resumed)?.len(),
+        UNFINISHABLE as usize,
+        "every candidate committed"
+    );
     Ok(())
 }
 
@@ -478,7 +489,7 @@ fn a_resume_after_the_program_changed_refuses_and_names_both_builds() -> Result<
     let program = built_binary("sima-example-executor");
     let wrapper = dir.path().join("wrapper.sh");
     program_wrapper(&wrapper, &program, "the build that ran");
-    let text = example_config("./store", 4, &wrapper);
+    let text = example_config("./store", UNFINISHABLE, &wrapper);
     let before = digest_of(&wrapper);
     interrupted_through(dir.path(), &text)?;
 
@@ -520,7 +531,7 @@ fn a_resume_that_accepts_the_change_runs_and_binds_the_new_build() -> Result<()>
     let program = built_binary("sima-example-executor");
     let wrapper = dir.path().join("wrapper.sh");
     program_wrapper(&wrapper, &program, "the build that ran");
-    let text = example_config("./store", 4, &wrapper);
+    let text = example_config("./store", UNFINISHABLE, &wrapper);
     let before = digest_of(&wrapper);
     interrupted_through(dir.path(), &text)?;
 
@@ -536,7 +547,11 @@ fn a_resume_that_accepts_the_change_runs_and_binds_the_new_build() -> Result<()>
         )?,
         RunOutcome::Finalized { .. }
     ));
-    assert_eq!(doubled(&accepted)?.len(), 4, "every candidate committed");
+    assert_eq!(
+        doubled(&accepted)?.len(),
+        UNFINISHABLE as usize,
+        "every candidate committed"
+    );
     assert_eq!(bound_digests(&accepted), [before.clone(), after.clone()]);
 
     // A further session over the accepted build passes the gate on its own:
@@ -563,7 +578,7 @@ fn a_resume_over_an_unchanged_program_passes_the_gate() -> Result<()> {
     let program = built_binary("sima-example-executor");
     let wrapper = dir.path().join("wrapper.sh");
     program_wrapper(&wrapper, &program, "the only build");
-    let text = example_config("./store", 4, &wrapper);
+    let text = example_config("./store", UNFINISHABLE, &wrapper);
     let digest = digest_of(&wrapper);
     interrupted_through(dir.path(), &text)?;
 
@@ -577,7 +592,11 @@ fn a_resume_over_an_unchanged_program_passes_the_gate() -> Result<()> {
         )?,
         RunOutcome::Finalized { .. }
     ));
-    assert_eq!(doubled(&resumed)?.len(), 4, "every candidate committed");
+    assert_eq!(
+        doubled(&resumed)?.len(),
+        UNFINISHABLE as usize,
+        "every candidate committed"
+    );
     assert_eq!(bound_digests(&resumed), [digest.clone(), digest]);
     Ok(())
 }
