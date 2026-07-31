@@ -10,6 +10,11 @@
 //! The spawn surface is acceptance-tested the same way, from the program's own
 //! point of view: a wrapper script reports what it was handed, and a whole run
 //! through it is the proof.
+//!
+//! Two boundaries around the program's identity are here too: the build that
+//! served a session is journaled and compared at the next resume, and a
+//! migration of a config-routed run is refused, since the synthesized far
+//! config carries no route to the program.
 
 mod common;
 
@@ -21,8 +26,8 @@ use sima_contracts::Generator;
 use sima_core::{Error, Result, hash_bytes};
 use sima_example_executor::DoublerGenerator;
 use sima_pipeline::{
-    BinaryChange, Engagement, Event, LoadedConfig, Record, RunControl, RunOutcome, orchestrate,
-    task_keys,
+    BinaryChange, Engagement, Event, LoadedConfig, Record, RunControl, RunOutcome, migrate,
+    orchestrate, task_keys,
 };
 use sima_store::Store;
 
@@ -574,5 +579,33 @@ fn a_resume_over_an_unchanged_program_passes_the_gate() -> Result<()> {
     ));
     assert_eq!(doubled(&resumed)?.len(), 4, "every candidate committed");
     assert_eq!(bound_digests(&resumed), [digest.clone(), digest]);
+    Ok(())
+}
+
+#[test]
+fn a_migration_of_a_config_routed_run_is_refused_where_it_is_asked_for() -> Result<()> {
+    // The far config a migration synthesizes carries `[run]`, `[config]`, and
+    // `[orchestrator]`, so a format routed to a program here has no route to
+    // it there. The refusal states that before anything moves.
+    //
+    // This config names no destination either, and the error names the program
+    // rather than the missing host: the guard runs ahead of the destination,
+    // the store, the lock, and any provider.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("sima.toml");
+    std::fs::write(&path, stub_config("./store", Some(&worker()), &[])).expect("write the config");
+    let interrupt = AtomicBool::new(false);
+    let Err(error) = migrate(&path, &|_| {}, &interrupt) else {
+        panic!("expected a config-routed run to be refused a migration");
+    };
+    assert!(matches!(error, Error::Validation(_)), "{error:?}");
+    let text = error.to_string();
+    for named in ["stub.v1", &worker().display().to_string()] {
+        assert!(text.contains(named), "{named} is missing from {text}");
+    }
+    assert!(
+        !dir.path().join("store").exists(),
+        "the refused migration opened a store"
+    );
     Ok(())
 }
