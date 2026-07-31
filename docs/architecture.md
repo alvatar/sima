@@ -169,6 +169,13 @@ A chain exists durably only as the trail of committed records linked by
 rebuilds from that trail at construction, which is why crash recovery,
 interrupt resume, and re-run are one code path.
 
+The diagram holds two continuation mechanisms that carry the same bytes
+under different guarantees. Checkpoint = crash recovery within a run: a
+disposable scratch slot, outside every hash, that only shortens a restarted
+attempt. Segment state = a result another run can legitimately start from: a
+committed, addressable artifact, which is what lets a longer run reuse the
+shared prefix of a shorter one.
+
 ## Two serialization worlds
 
 - **Identity-bearing bytes** — anything hashed — use the canonical binary
