@@ -140,13 +140,14 @@ What each question asks for:
 - `TranslateGeneratorConfig` — the `[run.generator]` section minus its `id`
   key, translated into the generator's opaque params blob.
 
+- `Generate` — the run's candidate specs, from the named generator, under the
+  run's root seed and the blob the previous question produced.
+
 Both translations receive the section's **body**, re-serialized as TOML: the
 keys and their values, without the `[run.params]` or `[run.generator]` header
 line. A run that states no such section sends an empty string. The bytes a
 translation answers are opaque to sima — it stores them, hashes them into the
 run's identity, and hands the params bytes back verbatim in every `Assign`.
-- `Generate` — the run's candidate specs, from the named generator, under the
-  run's root seed and the blob the previous question produced.
 
 Device type tags: `0` discrete, `1` integrated, `2` virtual, `3` cpu, `4`
 other.
@@ -244,7 +245,7 @@ two machines with equal environments must produce equal results.
 
 ## Structured events
 
-An `Event` frame carries one JSON object: a `event` key naming the kind in
+An `Event` frame carries one JSON object: an `event` key naming the kind in
 snake_case, and that kind's fields beside it. The vocabulary is sima's — the
 journal's own event kinds — and a program is expected to emit one of them:
 
@@ -361,9 +362,10 @@ Worker:
 - `Done` failed — the attempt failed transiently; the parent retries at its own
   discretion.
 - `Done` rejected — definitive; the task is never retried.
-- `Panicked` and `Fault` — the attempt fails. A program that panics reports it
-  as a `Panicked` frame rather than dying, and may precede it with an `Event`
-  carrying the diagnostic.
+- `Panicked` — definitive; the task is never retried, exactly as `Done`
+  rejected. A program that panics reports it as a `Panicked` frame rather than
+  dying, and may precede it with an `Event` carrying the diagnostic.
+- `Fault` — an infrastructure failure, which fails the run.
 - `Save` — persisted into the task's checkpoint slot, or dropped when the task
   selected none.
 - `Event` — parsed and forwarded to the run's collector, which journals it. It
