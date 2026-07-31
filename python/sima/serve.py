@@ -271,8 +271,12 @@ def _serve_worker(domain: Domain, reader: BinaryIO, writer: BinaryIO) -> None:
         if payload is None:
             return
         dec = Dec(payload)
-        if dec.u8() != _TO_ASSIGN:
-            raise TransportError("unexpected second Hello after the handshake")
+        tag = dec.u8()
+        if tag != _TO_ASSIGN:
+            raise TransportError(
+                f"expected an Assign after the handshake, met parent-to-worker "
+                f"message tag {tag}"
+            )
         _execute(executor, dec, format, interval_ms, interval_steps, writer)
 
 
