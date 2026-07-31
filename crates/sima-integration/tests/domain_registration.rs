@@ -558,7 +558,7 @@ fn a_resume_that_accepts_the_change_runs_and_binds_the_new_build() -> Result<()>
 #[test]
 fn a_resume_over_an_unchanged_program_passes_the_gate() -> Result<()> {
     // The refusing default is the every-run case, so an unchanged program
-    // resumes with no friction and no flag.
+    // resumes with the flag absent.
     let dir = tempfile::tempdir().expect("temp dir");
     let program = built_binary("sima-example-executor");
     let wrapper = dir.path().join("wrapper.sh");

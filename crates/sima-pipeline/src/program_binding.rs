@@ -4,12 +4,13 @@
 //! A program's identity is what it declares through its environment
 //! components, so a rebuilt binary that keeps its declarations keeps its
 //! `EnvironmentId` — and with it every task key, every stored result, and
-//! every checkpoint the previous build produced. Nothing in the hash notices.
+//! every checkpoint the previous build produced. The hash records none of
+//! this.
 //!
-//! What notices is here. Each session records the digest of the file that
+//! This module records it: each session journals the digest of the file that
 //! served it, and a session resuming a run compares that record against the
-//! file it is about to run. A difference is the user's decision to make, so it
-//! stops the run until the invocation states an answer.
+//! file it is about to run. A difference is the user's decision to make, so
+//! the run stops until the invocation states an answer.
 
 use sima_core::{Error, Result};
 use sima_model::{RunConfig, RunId};

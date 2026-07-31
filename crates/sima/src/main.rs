@@ -181,8 +181,7 @@ fn split_target(args: &[String]) -> (Vec<&str>, Option<&str>) {
 /// multiplying the command forms.
 ///
 /// Every other command keeps the flag among its arguments, where it matches no
-/// form and falls to the usage error: what a changed program does is a
-/// question only a run asks.
+/// form and falls to the usage error: the flag belongs to `run` alone.
 fn split_binary_change<'a>(args: &[&'a str]) -> (Vec<&'a str>, BinaryChange) {
     if args.first() != Some(&"run") {
         return (args.to_vec(), BinaryChange::Refuse);

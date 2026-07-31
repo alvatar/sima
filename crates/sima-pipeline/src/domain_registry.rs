@@ -136,9 +136,9 @@ impl BinarySource {
             binary,
             env,
         } = entry;
-        // The build that is about to serve this config, digested before it
-        // runs: a program sima cannot read is a program whose provenance no
-        // run could record, so the registry refuses it here.
+        // The build about to serve this config, digested before it runs. The
+        // digest is provenance every session journals, so an unreadable
+        // program fails registration here, naming the path.
         let digest = hash_bytes(&std::fs::read(&binary).map_err(|source| Error::Io {
             path: binary.clone(),
             source,

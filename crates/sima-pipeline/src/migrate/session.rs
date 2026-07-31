@@ -131,8 +131,8 @@ pub fn migrate(
     let loaded = load(config)?;
     // A run whose format a `[domain.*]` entry routes to a program stays on the
     // machine that program is installed on. The refusal precedes the
-    // destination, the store, the lock, and any provider, so a migration that
-    // cannot work moves nothing and rents nothing.
+    // destination, the store, the lock, and any provider, so the refusal is
+    // stated before anything is opened, moved, or rented.
     if let Some(routed) = loaded.domains.routed(&loaded.run.format) {
         return Err(Error::Validation(format!(
             "the run's format {:?} is served by the program {}, and a migration carries no route \

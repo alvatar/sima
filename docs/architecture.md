@@ -1051,9 +1051,9 @@ answer — results reused and checkpoints resumed across a change nothing named.
 **The journaled digest and the resume gate.** What sima adds backstops that
 obligation without joining it. Where a config resolves into its registry, the
 program file each `[domain.*]` entry names is read and its blake3 digest held;
-each session journals `ProgramBound { format, binary, digest }`, provenance in
-the same register as `WorkerBound`'s device and driver, excluded from every
-equality criterion. Under the run lock, before any task runs, a session
+each session journals `ProgramBound { format, binary, digest }`, provenance
+beside `WorkerBound`'s device and driver, excluded from every equality
+criterion. Under the run lock, before any task runs, a session
 compares its digest against the last one the run's journal recorded:
 
 - equal, or absent because this is the run's first session — the run proceeds;
@@ -1071,7 +1071,8 @@ Two limits are documented rather than mechanized:
 
 - **A fresh run that reuses an earlier run's records passes no gate.** A record
   is addressed by its content alone, and giving each one a build to name would
-  be identity machinery arriving through the back door.
+  reintroduce identity machinery this milestone deliberately keeps out of the
+  store.
 - **The digest covers the declared file alone.** A wrapper script's
   interpreter, the binaries it execs, and the assets a program loads at runtime
   sit outside it; they belong in the components the program declares.
