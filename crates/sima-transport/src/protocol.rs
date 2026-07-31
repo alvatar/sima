@@ -569,6 +569,22 @@ mod tests {
     }
 
     #[test]
+    fn the_published_document_states_the_pinned_version() {
+        // `docs/protocol.md` is the published contract and this constant is its
+        // compatibility gate, so the two cannot move apart: the document states
+        // the version in one sentence, and this reads that sentence.
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/protocol.md");
+        let document = std::fs::read_to_string(path).unwrap_or_else(|e| {
+            panic!("the published protocol document at {path} is unreadable: {e}")
+        });
+        let sentence = format!("The protocol version is {PROTOCOL_VERSION}.");
+        assert!(
+            document.contains(&sentence),
+            "docs/protocol.md does not state {sentence:?}"
+        );
+    }
+
+    #[test]
     fn every_to_child_message_round_trips() -> Result<()> {
         for message in to_child_messages() {
             let decoded = ToChild::decode(&message.encode())?;
