@@ -52,7 +52,26 @@ pub(crate) fn io_error(path: &Path, source: std::io::Error) -> Error {
 /// identical bytes, so the last writer wins harmlessly.
 pub(crate) fn write_atomic(root: &Path, dest: &Path, bytes: &[u8]) -> Result<()> {
     let tmp = write_tmp(root, bytes)?;
-    fs::rename(&tmp, dest).map_err(|e| io_error(dest, e))?;
+    place_atomic(&tmp, dest)
+}
+
+/// A fresh in-flight write path, `tmp/<pid>-<seq>`, distinct from every
+/// other this process hands out. Content written there is durable once
+/// fsynced, and enters its destination through [`place_atomic`]. A writer
+/// whose content is too large to hold in memory builds it here directly
+/// rather than through [`write_atomic`].
+pub(crate) fn tmp_path(root: &Path) -> PathBuf {
+    layout::tmp_file(
+        root,
+        std::process::id(),
+        SEQ.fetch_add(1, Ordering::Relaxed),
+    )
+}
+
+/// Renames a completed, fsynced `tmp/` file into `dest` and fsyncs the
+/// destination's parent, so the placement itself survives a crash.
+pub(crate) fn place_atomic(tmp: &Path, dest: &Path) -> Result<()> {
+    fs::rename(tmp, dest).map_err(|e| io_error(dest, e))?;
     sync_parent_dir(dest)
 }
 
@@ -117,11 +136,7 @@ pub(crate) fn create_dir_durable(dir: &Path) -> Result<()> {
 /// Writes `bytes` to a fresh `tmp/<pid>-<seq>` file and fsyncs it,
 /// returning the path ready to enter its destination.
 fn write_tmp(root: &Path, bytes: &[u8]) -> Result<PathBuf> {
-    let tmp = layout::tmp_file(
-        root,
-        std::process::id(),
-        SEQ.fetch_add(1, Ordering::Relaxed),
-    );
+    let tmp = tmp_path(root);
     let mut file = File::create(&tmp).map_err(|e| io_error(&tmp, e))?;
     // The payload is written in two parts around the crashpoint, so an
     // armed death lands after bytes have reached the temp file but before

@@ -1,11 +1,19 @@
 //! The [`Store`] handle and its open path.
 
+use std::fs;
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
-use sima_core::Result;
+use sima_core::{Error, Result};
 
-use crate::atomic;
+use crate::atomic::{self, io_error};
 use crate::layout;
+
+/// The store format this binary writes and reads. The number moves only on
+/// a layout change; a store marked otherwise is refused at open, which is
+/// what turns a version mismatch into one sentence instead of missing
+/// objects mid-operation.
+const FORMAT_VERSION: u32 = 1;
 
 /// Handle over a store root directory — the only durable state in sima.
 ///
@@ -19,14 +27,32 @@ pub struct Store {
 
 impl Store {
     /// Creates or opens the store at `root`, building the directory
-    /// skeleton (`objects/`, `tmp/`, `tasks/`, `runs/`, `instances/`,
-    /// `spend/`, `machines/`) durably where
+    /// skeleton (`objects/`, `packs/`, `tmp/`, `tasks/`, `runs/`,
+    /// `instances/`, `spend/`, `machines/`) durably where
     /// absent. A fresh root and an existing store open identically —
     /// resume is a reopen.
+    ///
+    /// The format marker settles in the same pass: a store already marked
+    /// with another version is [`Error::Validation`] naming both versions,
+    /// and nothing is created under it; a store without a marker gains one,
+    /// so a store laid out before the marker existed upgrades on first
+    /// touch.
     pub fn open(root: impl Into<PathBuf>) -> Result<Store> {
         let root = root.into();
+        // The version check comes first: a store this binary cannot read is
+        // refused before anything is created inside it.
+        let marked = read_format_marker(&root)?;
+        if let Some(version) = marked
+            && version != FORMAT_VERSION
+        {
+            return Err(Error::Validation(format!(
+                "store at {} is format version {version}; this binary reads version {FORMAT_VERSION}",
+                root.display()
+            )));
+        }
         for dir in [
             layout::objects_dir(&root),
+            layout::packs_dir(&root),
             layout::tmp_dir(&root),
             layout::tasks_dir(&root),
             layout::runs_dir(&root),
@@ -36,6 +62,15 @@ impl Store {
         ] {
             atomic::create_dir_durable(&dir)?;
         }
+        if marked.is_none() {
+            // Written through the atomic path, so racing opens converge on
+            // identical bytes instead of tearing the marker.
+            atomic::write_atomic(
+                &root,
+                &layout::format_marker_path(&root),
+                format!("{FORMAT_VERSION}\n").as_bytes(),
+            )?;
+        }
         Ok(Store { root })
     }
 
@@ -44,6 +79,22 @@ impl Store {
     pub fn root(&self) -> &Path {
         &self.root
     }
+}
+
+/// The format version `root` is marked with: `None` when the marker is
+/// absent. Content that is not a version number is [`Error::Corruption`] —
+/// the marker is the one file that says what the layout beneath it means.
+fn read_format_marker(root: &Path) -> Result<Option<u32>> {
+    let path = layout::format_marker_path(root);
+    let text = match fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(io_error(&path, e)),
+    };
+    text.trim()
+        .parse::<u32>()
+        .map(Some)
+        .map_err(|_| Error::Corruption(format!("{} holds no format version", path.display())))
 }
 
 #[cfg(test)]
