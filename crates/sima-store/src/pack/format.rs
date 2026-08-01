@@ -26,9 +26,14 @@
 //! one object. Identity is the address of the *uncompressed* bytes, and a
 //! read re-hashes what it decoded before returning it.
 
-use std::path::Path;
+use std::fs::File;
+use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
+use std::path::{Path, PathBuf};
 
-use sima_core::{Error, Hash, Result};
+use sima_core::{Dec, Enc, Error, Hash, Hasher, Result, hash_bytes};
+
+use crate::atomic::{self, io_error};
+use crate::layout;
 
 /// Raw bytes one pack holds at most. The cap bounds the cost of every later
 /// rewrite: deleting one object rewrites the pack that holds it, never more
@@ -77,35 +82,339 @@ pub(crate) struct PackEntry {
     pub(crate) encoding: Encoding,
 }
 
+impl Encoding {
+    /// The byte the index records this encoding as.
+    fn wire(self) -> u8 {
+        match self {
+            Encoding::Raw => 0,
+            Encoding::Zstd => 1,
+        }
+    }
+
+    /// The encoding an index byte names.
+    fn from_wire(byte: u8) -> Option<Encoding> {
+        match byte {
+            0 => Some(Encoding::Raw),
+            1 => Some(Encoding::Zstd),
+            _ => None,
+        }
+    }
+}
+
 /// Writes a pack holding `objects` and returns its name, the blake3 digest
 /// of the whole file. `source` yields each object's raw bytes.
+///
+/// The input is sorted and deduplicated here, so the file is a pure
+/// function of the object set whatever order the caller offers it in. The
+/// file is built in the store's `tmp/` directory and fsynced before it
+/// enters `packs/` by rename, so a reader meets a complete pack or none.
+/// An empty object set is [`Error::Validation`]: a pack with no objects is
+/// a file that says nothing.
 pub(crate) fn write_pack(
-    _root: &Path,
-    _objects: &[Hash],
-    _source: &dyn Fn(&Hash) -> Result<Vec<u8>>,
+    root: &Path,
+    objects: &[Hash],
+    source: &dyn Fn(&Hash) -> Result<Vec<u8>>,
 ) -> Result<Hash> {
-    unimplemented!("write_pack")
+    let mut sorted = objects.to_vec();
+    sorted.sort();
+    sorted.dedup();
+    if sorted.is_empty() {
+        return Err(Error::Validation(
+            "a pack holds at least one object".to_string(),
+        ));
+    }
+
+    let mut writer = PackWriter::create(atomic::tmp_path(root))?;
+    writer.write(MAGIC)?;
+    let mut header = Enc::new();
+    header.u32(VERSION);
+    writer.write(&header.finish())?;
+
+    let mut entries = Vec::with_capacity(sorted.len());
+    for hash in &sorted {
+        let raw = source(hash)?;
+        let compressed =
+            zstd::bulk::compress(&raw, ZSTD_LEVEL).map_err(|e| io_error(writer.path(), e))?;
+        // zstd is kept only where it shrinks the object: an equal or larger
+        // frame would cost a decompression on every read for nothing.
+        let (encoding, stored) = if compressed.len() < raw.len() {
+            (Encoding::Zstd, compressed.as_slice())
+        } else {
+            (Encoding::Raw, raw.as_slice())
+        };
+        let entry = PackEntry {
+            offset: writer.offset(),
+            stored_len: stored.len() as u64,
+            raw_len: raw.len() as u64,
+            encoding,
+        };
+        writer.write(stored)?;
+        entries.push((*hash, entry));
+    }
+
+    // The index follows the data it points into, and the footer says where
+    // it starts — so the reader finds the index from the file's end without
+    // scanning the objects.
+    let index_offset = writer.offset();
+    for (hash, entry) in &entries {
+        writer.write(&entry_bytes(hash, entry))?;
+    }
+    writer.write(&footer_bytes(index_offset, entries.len() as u64))?;
+
+    let (tmp, name) = writer.finish()?;
+    atomic::place_atomic(&tmp, &layout::pack_path(root, &name))?;
+    Ok(name)
 }
 
 /// Loads and validates a pack's index, returning its entries ascending by
 /// hash. Every violation of the format is [`Error::Corruption`] naming the
 /// pack file.
-pub(crate) fn load_index(_path: &Path) -> Result<Vec<(Hash, PackEntry)>> {
-    unimplemented!("load_index")
+pub(crate) fn load_index(path: &Path) -> Result<Vec<(Hash, PackEntry)>> {
+    let mut file = File::open(path).map_err(|e| io_error(path, e))?;
+    let len = file.metadata().map_err(|e| io_error(path, e))?.len();
+    if len < HEADER_LEN + FOOTER_LEN {
+        return Err(corrupt(path, "file is shorter than a header and a footer"));
+    }
+
+    let mut header = [0u8; HEADER_LEN as usize];
+    file.read_exact(&mut header)
+        .map_err(|e| io_error(path, e))?;
+    if &header[..MAGIC.len()] != MAGIC {
+        return Err(corrupt(path, "header magic is not simapack"));
+    }
+    let version = Dec::new(&header[MAGIC.len()..])
+        .u32()
+        .map_err(|_| corrupt(path, "header carries no version"))?;
+    if version != VERSION {
+        return Err(corrupt(
+            path,
+            &format!("pack format version is {version}, not {VERSION}"),
+        ));
+    }
+
+    let mut footer = [0u8; FOOTER_LEN as usize];
+    file.seek(SeekFrom::End(-(FOOTER_LEN as i64)))
+        .map_err(|e| io_error(path, e))?;
+    file.read_exact(&mut footer)
+        .map_err(|e| io_error(path, e))?;
+    if &footer[FOOTER_LEN as usize - MAGIC.len()..] != MAGIC {
+        return Err(corrupt(path, "footer magic is not simapack"));
+    }
+    let mut dec = Dec::new(&footer);
+    let malformed = || corrupt(path, "footer is malformed");
+    let index_offset = dec.u64().map_err(|_| malformed())?;
+    let count = dec.u64().map_err(|_| malformed())?;
+
+    // The index must occupy exactly the span between where the footer says
+    // it starts and the footer itself, which bounds `count` before a byte is
+    // allocated for it.
+    let index_len = count
+        .checked_mul(ENTRY_LEN)
+        .ok_or_else(|| corrupt(path, "index entry count overflows the file"))?;
+    let expected = index_offset
+        .checked_add(index_len)
+        .and_then(|end| end.checked_add(FOOTER_LEN));
+    if index_offset < HEADER_LEN || expected != Some(len) {
+        return Err(corrupt(
+            path,
+            &format!("index of {count} entries at {index_offset} does not fill a {len}-byte file"),
+        ));
+    }
+
+    let mut region = vec![0u8; index_len as usize];
+    file.seek(SeekFrom::Start(index_offset))
+        .map_err(|e| io_error(path, e))?;
+    file.read_exact(&mut region)
+        .map_err(|e| io_error(path, e))?;
+    let mut dec = Dec::new(&region);
+    let mut entries: Vec<(Hash, PackEntry)> = Vec::with_capacity(count as usize);
+    for _ in 0..count {
+        let malformed = || corrupt(path, "index entry is malformed");
+        let hash = dec.hash().map_err(|_| malformed())?;
+        let offset = dec.u64().map_err(|_| malformed())?;
+        let stored_len = dec.u64().map_err(|_| malformed())?;
+        let raw_len = dec.u64().map_err(|_| malformed())?;
+        let encoding = Encoding::from_wire(dec.u8().map_err(|_| malformed())?)
+            .ok_or_else(|| corrupt(path, &format!("object {hash} has an unknown encoding")))?;
+        // Every entry addresses bytes inside the data region, so a read
+        // never reaches into the index or past the file.
+        let end = offset.checked_add(stored_len);
+        if offset < HEADER_LEN || end.is_none_or(|end| end > index_offset) {
+            return Err(corrupt(
+                path,
+                &format!("object {hash} is stored outside the data region"),
+            ));
+        }
+        // Ascending order is what makes the index searchable and the file a
+        // pure function of its object set.
+        if let Some((previous, _)) = entries.last()
+            && *previous >= hash
+        {
+            return Err(corrupt(
+                path,
+                &format!("index is not ascending at object {hash}"),
+            ));
+        }
+        entries.push((
+            hash,
+            PackEntry {
+                offset,
+                stored_len,
+                raw_len,
+                encoding,
+            },
+        ));
+    }
+    Ok(entries)
 }
 
 /// Reads one object out of a pack, decoded and verified: the decoded length
 /// must match the entry's `raw_len` and the bytes must hash to `hash`.
-pub(crate) fn read_entry(_path: &Path, _hash: &Hash, _entry: &PackEntry) -> Result<Vec<u8>> {
-    unimplemented!("read_entry")
+pub(crate) fn read_entry(path: &Path, hash: &Hash, entry: &PackEntry) -> Result<Vec<u8>> {
+    let mut file = File::open(path).map_err(|e| io_error(path, e))?;
+    file.seek(SeekFrom::Start(entry.offset))
+        .map_err(|e| io_error(path, e))?;
+    let mut stored = vec![0u8; size(entry.stored_len, path)?];
+    file.read_exact(&mut stored)
+        .map_err(|e| io_error(path, e))?;
+
+    let raw_len = size(entry.raw_len, path)?;
+    let raw = match entry.encoding {
+        Encoding::Raw => stored,
+        // The declared length caps the output, so a frame claiming to
+        // expand beyond what the index promised fails here rather than
+        // allocating what it asked for.
+        Encoding::Zstd => zstd::bulk::decompress(&stored, raw_len)
+            .map_err(|e| corrupt(path, &format!("object {hash} does not decompress: {e}")))?,
+    };
+    if raw.len() != raw_len {
+        return Err(corrupt(
+            path,
+            &format!(
+                "object {hash} decodes to {} bytes, not the {raw_len} the index states",
+                raw.len()
+            ),
+        ));
+    }
+    // The verified read, as it is performed on a loose object: identity is
+    // the digest of these bytes, so packing cannot silently alter content.
+    let actual = hash_bytes(&raw);
+    if actual != *hash {
+        return Err(corrupt(
+            path,
+            &format!("object {hash} decodes to bytes hashing to {actual}"),
+        ));
+    }
+    Ok(raw)
 }
 
 /// Splits objects into the groups each pack will hold, greedily under `cap`
 /// raw bytes. A pack closes when the next object would cross the cap and it
 /// already holds one, so a single object above the cap gets a pack of its
 /// own.
-pub(crate) fn split_by_cap<'a>(_sizes: &'a [(Hash, u64)], _cap: u64) -> Vec<&'a [(Hash, u64)]> {
-    unimplemented!("split_by_cap")
+pub(crate) fn split_by_cap(sizes: &[(Hash, u64)], cap: u64) -> Vec<&[(Hash, u64)]> {
+    let mut groups = Vec::new();
+    let mut start = 0;
+    let mut held: u64 = 0;
+    for (index, (_, raw_len)) in sizes.iter().enumerate() {
+        if index > start && held.saturating_add(*raw_len) > cap {
+            groups.push(&sizes[start..index]);
+            start = index;
+            held = 0;
+        }
+        held = held.saturating_add(*raw_len);
+    }
+    if start < sizes.len() {
+        groups.push(&sizes[start..]);
+    }
+    groups
+}
+
+/// The pack file under construction: a buffered writer that hashes every
+/// byte on its way to disk, so the pack's name — the digest of the whole
+/// file — is known the moment the last byte lands, and counts the bytes
+/// written, which is the offset the next one goes to.
+struct PackWriter {
+    path: PathBuf,
+    file: BufWriter<File>,
+    hasher: Hasher,
+    offset: u64,
+}
+
+impl PackWriter {
+    /// Creates the file at `path` and starts an empty hash state over it.
+    fn create(path: PathBuf) -> Result<PackWriter> {
+        let file = File::create(&path).map_err(|e| io_error(&path, e))?;
+        Ok(PackWriter {
+            path,
+            file: BufWriter::new(file),
+            hasher: Hasher::new(),
+            offset: 0,
+        })
+    }
+
+    /// The file being written, for error context.
+    fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// The offset the next write lands at.
+    fn offset(&self) -> u64 {
+        self.offset
+    }
+
+    /// Appends `bytes` to the file and to the digest.
+    fn write(&mut self, bytes: &[u8]) -> Result<()> {
+        self.file
+            .write_all(bytes)
+            .map_err(|e| io_error(&self.path, e))?;
+        self.hasher.update(bytes);
+        self.offset += bytes.len() as u64;
+        Ok(())
+    }
+
+    /// Flushes and fsyncs the file, returning its path and its name.
+    fn finish(self) -> Result<(PathBuf, Hash)> {
+        let file = self
+            .file
+            .into_inner()
+            .map_err(|e| io_error(&self.path, e.into_error()))?;
+        file.sync_all().map_err(|e| io_error(&self.path, e))?;
+        Ok((self.path, self.hasher.finish()))
+    }
+}
+
+/// One index entry's 57 bytes: hash, offset, stored length, raw length,
+/// encoding.
+fn entry_bytes(hash: &Hash, entry: &PackEntry) -> Vec<u8> {
+    let mut enc = Enc::new();
+    enc.hash(hash)
+        .u64(entry.offset)
+        .u64(entry.stored_len)
+        .u64(entry.raw_len)
+        .u8(entry.encoding.wire());
+    enc.finish()
+}
+
+/// The footer's 24 bytes: where the index starts, how many entries it
+/// holds, and the magic that closes the file.
+fn footer_bytes(index_offset: u64, count: u64) -> Vec<u8> {
+    let mut enc = Enc::new();
+    enc.u64(index_offset).u64(count);
+    let mut bytes = enc.finish();
+    bytes.extend_from_slice(MAGIC);
+    bytes
+}
+
+/// A pack that contradicts the format, named by its file.
+fn corrupt(path: &Path, what: &str) -> Error {
+    Error::Corruption(format!("pack {}: {what}", path.display()))
+}
+
+/// A length from the index as an address-space size. A pack written on a
+/// wider machine can carry a length this one cannot address.
+fn size(len: u64, path: &Path) -> Result<usize> {
+    usize::try_from(len).map_err(|_| corrupt(path, &format!("length {len} exceeds address space")))
 }
 
 #[cfg(test)]
@@ -159,10 +468,7 @@ mod tests {
         let (dir, store) = temp_store();
         let hashes: Vec<Hash> = objects.keys().copied().collect();
         let name = write_pack(store.root(), &hashes, &source(objects)).expect("write pack");
-        let path = dir
-            .path()
-            .join("packs")
-            .join(format!("{name}.pack"));
+        let path = dir.path().join("packs").join(format!("{name}.pack"));
         (dir, path, name)
     }
 
@@ -278,9 +584,7 @@ mod tests {
 
     #[test]
     fn the_cap_closes_a_pack_before_it_is_crossed() {
-        let sizes: Vec<(Hash, u64)> = (0u8..5)
-            .map(|i| (hash_bytes(&[i]), 40))
-            .collect();
+        let sizes: Vec<(Hash, u64)> = (0u8..5).map(|i| (hash_bytes(&[i]), 40)).collect();
         // A cap of 100 raw bytes holds two 40-byte objects; the third would
         // cross it, so it opens the next pack.
         let groups = split_by_cap(&sizes, 100);

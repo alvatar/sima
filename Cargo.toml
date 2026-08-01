@@ -52,6 +52,9 @@ signal-hook = "0.4"
 tempfile = "3"
 toml = "0.9"
 ureq = { version = "3", features = ["json", "rustls"] }
+# Per-object compression inside store pack files. Objects compress
+# independently, so reading one object decompresses one object.
+zstd = "0.13"
 
 [workspace.lints.clippy]
 dbg_macro = "deny"
