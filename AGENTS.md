@@ -27,6 +27,7 @@
 - Cross-crate and end-to-end behavior is tested in integration tests under the consuming crate's `tests/` directory (workspace: each crate owns its integration tests).
 - End-to-end tests of real domains through the full spine live in `crates/sima-integration`.
 - Do not ignore tests. This is strictly forbidden.
+- A test that needs a real device carries `on_device` in its path — a containing `mod on_device`, or an `_on_device` suffix where the file holds a single such test. CI's hosted lane runs `cargo test --workspace -- --skip on_device`, so that substring is what keeps the test on the device machine.
 
 ## TODOs
 

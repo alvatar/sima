@@ -257,21 +257,24 @@ fn create_buffer(
 mod tests {
     use super::*;
 
-    /// Requires a real Vulkan device.
-    #[test]
-    fn buffer_rejects_zero_size() {
-        let context = Context::new().expect("create compute context");
-        assert!(matches!(context.buffer(0), Err(Error::Backend(_))));
-    }
+    /// Allocating through a context needs a Vulkan device.
+    mod on_device {
+        use super::*;
 
-    /// Requires a real Vulkan device.
-    #[test]
-    fn buffer_round_trips_bytes() {
-        let context = Context::new().expect("create compute context");
-        let data: Vec<u8> = (0..=255).collect();
-        let buffer = context.buffer(data.len()).expect("allocate buffer");
-        context.upload(&buffer, &data).expect("upload");
-        let read_back = context.download(&buffer).expect("download");
-        assert_eq!(read_back, data);
+        #[test]
+        fn buffer_rejects_zero_size() {
+            let context = Context::new().expect("create compute context");
+            assert!(matches!(context.buffer(0), Err(Error::Backend(_))));
+        }
+
+        #[test]
+        fn buffer_round_trips_bytes() {
+            let context = Context::new().expect("create compute context");
+            let data: Vec<u8> = (0..=255).collect();
+            let buffer = context.buffer(data.len()).expect("allocate buffer");
+            context.upload(&buffer, &data).expect("upload");
+            let read_back = context.download(&buffer).expect("download");
+            assert_eq!(read_back, data);
+        }
     }
 }

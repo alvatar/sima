@@ -511,7 +511,6 @@ mod tests {
         assert!(message.contains('1'), "names the member count: {message}");
     }
 
-    /// Requires a real Vulkan device.
     #[test]
     fn naming_an_absent_device_fails_to_resolve() {
         // A worker answers `Ready` with this name, so this is where a binding
@@ -523,19 +522,24 @@ mod tests {
         ));
     }
 
-    /// Requires a real Vulkan device.
-    #[test]
-    fn enumeration_reports_compute_capable_devices() {
-        let devices = enumerate_devices().expect("enumerate devices");
-        assert!(!devices.is_empty(), "at least one compute-capable device");
-        for device in &devices {
-            assert!(!device.name.is_empty());
-            let (name, driver) = selected_device_desc(Some((device.class.as_str(), device.member)))
-                .expect("resolve the device description");
-            assert_eq!(name, device.name);
-            // The driver version is operational provenance; it decodes to the
-            // standard three-part layout and is never empty for a real device.
-            assert!(!driver.is_empty(), "driver version reported");
+    /// Enumeration answers from the Vulkan loader, so this one needs a device.
+    mod on_device {
+        use super::*;
+
+        #[test]
+        fn enumeration_reports_compute_capable_devices() {
+            let devices = enumerate_devices().expect("enumerate devices");
+            assert!(!devices.is_empty(), "at least one compute-capable device");
+            for device in &devices {
+                assert!(!device.name.is_empty());
+                let (name, driver) =
+                    selected_device_desc(Some((device.class.as_str(), device.member)))
+                        .expect("resolve the device description");
+                assert_eq!(name, device.name);
+                // The driver version is operational provenance; it decodes to the
+                // standard three-part layout and is never empty for a real device.
+                assert!(!driver.is_empty(), "driver version reported");
+            }
         }
     }
 }

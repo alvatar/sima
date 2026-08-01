@@ -547,119 +547,121 @@ mod tests {
         }
     }
 
-    /// Requires a real Vulkan device.
-    #[test]
-    fn a_bare_grid_evaluation_reduces_to_named_scalars() {
-        // A bare-grid model reduces its final grid pair into the named scalars;
-        // the family blob stays empty. Gray-Scott, two channels, is the vehicle.
-        let exec = CaExecutor::<GrayScott, WgslEngine>::new(None).expect("executor");
-        let spec = Spec {
-            format: FormatId::new(GrayScott::FORMAT_ID).expect("format id"),
-            bytes: Genome::<GrayScott>::new(0.055, 0.062, 0.16, 0.08)
-                .expect("genome")
-                .to_bytes(),
-        };
-        let params = Params {
-            bytes: encode_params::<GrayScott>(
-                &CaParams::new(32, 32, 16, 1.0).expect("params"),
-                &Ignition::<GrayScott>::new(0.5, 0.25, 8, 0.02).expect("ignition"),
-            ),
-        };
-        match exec
-            .execute(&input(&spec, &params, None), &ctx(), &NoCheckpoint)
-            .expect("execute")
-        {
-            Outcome::Completed { artifacts, stats } => {
-                assert!(
-                    artifacts.iter().any(|a| a.name == STATE_ARTIFACT),
-                    "a state artifact"
-                );
-                assert!(stats.blob.is_empty(), "ca_evolution carries no blob");
-                let names: Vec<String> = stats.scalars.iter().map(|(n, _)| n.clone()).collect();
-                assert_eq!(names, expected_scalar_names(GrayScott::CHANNELS));
-                let population = stats
-                    .scalars
-                    .iter()
-                    .find(|(n, _)| n == "population")
-                    .expect("a population scalar")
-                    .1;
-                assert!(
-                    (0.0..=1.0).contains(&population),
-                    "population is a fraction: {population}"
-                );
-            }
-            other => panic!("expected Completed, got {other:?}"),
-        }
-    }
+    /// Executing the domain dispatches to a real device.
+    mod on_device {
+        use super::*;
 
-    /// Requires a real Vulkan device.
-    #[test]
-    fn a_stepped_evaluation_reduces_the_decoded_grid() {
-        // A stepped model frames its committed state, but the reduction runs over
-        // the resident grid pair, so it names the same scalars. NCA, eight
-        // channels, is the vehicle.
-        let exec = CaExecutor::<Nca, WgslEngine>::new(None).expect("executor");
-        let genome = Nca::sample(&GenConfig::<Nca>::new(0.5).expect("config"), 42, 0);
-        let spec = Spec {
-            format: FormatId::new(Nca::FORMAT_ID).expect("format id"),
-            bytes: genome.to_bytes(),
-        };
-        let params = Params {
-            bytes: encode_params::<Nca>(
-                &CaParams::new(32, 32, 50, 1.0).expect("params"),
-                &Ignition::<Nca>::new(1.0, 8, 0.0).expect("ignition"),
-            ),
-        };
-        match exec
-            .execute(&input(&spec, &params, None), &ctx(), &NoCheckpoint)
-            .expect("execute")
-        {
-            Outcome::Completed { artifacts, stats } => {
-                let state = artifacts
-                    .iter()
-                    .find(|a| a.name == STATE_ARTIFACT)
-                    .expect("a state artifact");
-                // The committed state is a continuation frame; the reduction ran
-                // over the grid, not these framed bytes.
-                decode_continuation(&state.bytes).expect("framed");
-                assert!(stats.blob.is_empty(), "ca_evolution carries no blob");
-                let names: Vec<String> = stats.scalars.iter().map(|(n, _)| n.clone()).collect();
-                assert_eq!(names, expected_scalar_names(Nca::CHANNELS));
+        #[test]
+        fn a_bare_grid_evaluation_reduces_to_named_scalars() {
+            // A bare-grid model reduces its final grid pair into the named scalars;
+            // the family blob stays empty. Gray-Scott, two channels, is the vehicle.
+            let exec = CaExecutor::<GrayScott, WgslEngine>::new(None).expect("executor");
+            let spec = Spec {
+                format: FormatId::new(GrayScott::FORMAT_ID).expect("format id"),
+                bytes: Genome::<GrayScott>::new(0.055, 0.062, 0.16, 0.08)
+                    .expect("genome")
+                    .to_bytes(),
+            };
+            let params = Params {
+                bytes: encode_params::<GrayScott>(
+                    &CaParams::new(32, 32, 16, 1.0).expect("params"),
+                    &Ignition::<GrayScott>::new(0.5, 0.25, 8, 0.02).expect("ignition"),
+                ),
+            };
+            match exec
+                .execute(&input(&spec, &params, None), &ctx(), &NoCheckpoint)
+                .expect("execute")
+            {
+                Outcome::Completed { artifacts, stats } => {
+                    assert!(
+                        artifacts.iter().any(|a| a.name == STATE_ARTIFACT),
+                        "a state artifact"
+                    );
+                    assert!(stats.blob.is_empty(), "ca_evolution carries no blob");
+                    let names: Vec<String> = stats.scalars.iter().map(|(n, _)| n.clone()).collect();
+                    assert_eq!(names, expected_scalar_names(GrayScott::CHANNELS));
+                    let population = stats
+                        .scalars
+                        .iter()
+                        .find(|(n, _)| n == "population")
+                        .expect("a population scalar")
+                        .1;
+                    assert!(
+                        (0.0..=1.0).contains(&population),
+                        "population is a fraction: {population}"
+                    );
+                }
+                other => panic!("expected Completed, got {other:?}"),
             }
-            other => panic!("expected Completed, got {other:?}"),
         }
-    }
 
-    /// Requires a real Vulkan device.
-    #[test]
-    fn a_failed_predicate_drops_the_snapshot_but_keeps_the_stats() {
-        // `population` is a fraction, so a minimum of 2.0 can never be met: the
-        // state artifact is dropped, the outcome still completes, and the stats
-        // are journaled regardless.
-        let exec = CaExecutor::<GrayScott, WgslEngine>::new(None).expect("executor");
-        let spec = Spec {
-            format: FormatId::new(GrayScott::FORMAT_ID).expect("format id"),
-            bytes: Genome::<GrayScott>::new(0.055, 0.062, 0.16, 0.08)
-                .expect("genome")
-                .to_bytes(),
-        };
-        let params = Params {
-            bytes: encode_params::<GrayScott>(
-                &CaParams::new(32, 32, 16, 1.0)
-                    .expect("params")
-                    .with_snapshot_when(Some(("population".to_string(), 2.0))),
-                &Ignition::<GrayScott>::new(0.5, 0.25, 8, 0.02).expect("ignition"),
-            ),
-        };
-        match exec
-            .execute(&input(&spec, &params, None), &ctx(), &NoCheckpoint)
-            .expect("execute")
-        {
-            Outcome::Completed { artifacts, stats } => {
-                assert!(artifacts.is_empty(), "the dropped snapshot commits nothing");
-                assert!(!stats.scalars.is_empty(), "stats are journaled regardless");
+        #[test]
+        fn a_stepped_evaluation_reduces_the_decoded_grid() {
+            // A stepped model frames its committed state, but the reduction runs over
+            // the resident grid pair, so it names the same scalars. NCA, eight
+            // channels, is the vehicle.
+            let exec = CaExecutor::<Nca, WgslEngine>::new(None).expect("executor");
+            let genome = Nca::sample(&GenConfig::<Nca>::new(0.5).expect("config"), 42, 0);
+            let spec = Spec {
+                format: FormatId::new(Nca::FORMAT_ID).expect("format id"),
+                bytes: genome.to_bytes(),
+            };
+            let params = Params {
+                bytes: encode_params::<Nca>(
+                    &CaParams::new(32, 32, 50, 1.0).expect("params"),
+                    &Ignition::<Nca>::new(1.0, 8, 0.0).expect("ignition"),
+                ),
+            };
+            match exec
+                .execute(&input(&spec, &params, None), &ctx(), &NoCheckpoint)
+                .expect("execute")
+            {
+                Outcome::Completed { artifacts, stats } => {
+                    let state = artifacts
+                        .iter()
+                        .find(|a| a.name == STATE_ARTIFACT)
+                        .expect("a state artifact");
+                    // The committed state is a continuation frame; the reduction ran
+                    // over the grid, not these framed bytes.
+                    decode_continuation(&state.bytes).expect("framed");
+                    assert!(stats.blob.is_empty(), "ca_evolution carries no blob");
+                    let names: Vec<String> = stats.scalars.iter().map(|(n, _)| n.clone()).collect();
+                    assert_eq!(names, expected_scalar_names(Nca::CHANNELS));
+                }
+                other => panic!("expected Completed, got {other:?}"),
             }
-            other => panic!("expected Completed, got {other:?}"),
+        }
+
+        #[test]
+        fn a_failed_predicate_drops_the_snapshot_but_keeps_the_stats() {
+            // `population` is a fraction, so a minimum of 2.0 can never be met: the
+            // state artifact is dropped, the outcome still completes, and the stats
+            // are journaled regardless.
+            let exec = CaExecutor::<GrayScott, WgslEngine>::new(None).expect("executor");
+            let spec = Spec {
+                format: FormatId::new(GrayScott::FORMAT_ID).expect("format id"),
+                bytes: Genome::<GrayScott>::new(0.055, 0.062, 0.16, 0.08)
+                    .expect("genome")
+                    .to_bytes(),
+            };
+            let params = Params {
+                bytes: encode_params::<GrayScott>(
+                    &CaParams::new(32, 32, 16, 1.0)
+                        .expect("params")
+                        .with_snapshot_when(Some(("population".to_string(), 2.0))),
+                    &Ignition::<GrayScott>::new(0.5, 0.25, 8, 0.02).expect("ignition"),
+                ),
+            };
+            match exec
+                .execute(&input(&spec, &params, None), &ctx(), &NoCheckpoint)
+                .expect("execute")
+            {
+                Outcome::Completed { artifacts, stats } => {
+                    assert!(artifacts.is_empty(), "the dropped snapshot commits nothing");
+                    assert!(!stats.scalars.is_empty(), "stats are journaled regardless");
+                }
+                other => panic!("expected Completed, got {other:?}"),
+            }
         }
     }
 }

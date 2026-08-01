@@ -187,61 +187,64 @@ mod tests {
         );
     }
 
-    /// Requires a CUDA device.
-    #[test]
-    fn run_advances_one_step() {
-        let context = Context::new().expect("create compute context");
-        let kernel = context
-            .kernel(SMOKE_PTX, "main_kernel", BLOCK_WIDTH)
-            .expect("build smoke kernel");
-        // 5x1x1: with height 1 the up/down neighbors alias the cell, so a step
-        // is a toroidal 3-point max along x over [1, 4, 2, 5, 3]:
-        //   x0=max(1,3,4)=4, x1=max(4,1,2)=4, x2=max(2,4,5)=5,
-        //   x3=max(5,2,3)=5, x4=max(3,5,1)=5.
-        let initial = Grid::new(5, 1, 1, vec![1.0, 4.0, 2.0, 5.0, 3.0]).expect("grid");
-        let result = run(&context, &kernel, &initial, 1, &[], None)
-            .expect("run")
-            .grid()
-            .expect("grid");
-        assert_eq!(result.data(), &[4.0, 4.0, 5.0, 5.0, 5.0]);
-    }
+    /// Stepping a grid dispatches the kernel, which needs a CUDA device.
+    mod on_device {
+        use super::*;
 
-    /// Requires a CUDA device.
-    #[test]
-    fn run_composes_across_steps() {
-        // Advancing k steps must equal advancing one step k times, for even and
-        // odd k alike. A ping-pong that returns the wrong buffer for even step
-        // counts would break this self-consistency.
-        let context = Context::new().expect("create compute context");
-        let kernel = context
-            .kernel(SMOKE_PTX, "main_kernel", BLOCK_WIDTH)
-            .expect("build smoke kernel");
-        let initial = Grid::new(4, 3, 2, (0..24).map(|i| (i % 7) as f32).collect()).expect("grid");
-        let advance = |grid: &Grid, steps: u32| {
-            run(&context, &kernel, grid, steps, &[], None)
+        #[test]
+        fn run_advances_one_step() {
+            let context = Context::new().expect("create compute context");
+            let kernel = context
+                .kernel(SMOKE_PTX, "main_kernel", BLOCK_WIDTH)
+                .expect("build smoke kernel");
+            // 5x1x1: with height 1 the up/down neighbors alias the cell, so a step
+            // is a toroidal 3-point max along x over [1, 4, 2, 5, 3]:
+            //   x0=max(1,3,4)=4, x1=max(4,1,2)=4, x2=max(2,4,5)=5,
+            //   x3=max(5,2,3)=5, x4=max(3,5,1)=5.
+            let initial = Grid::new(5, 1, 1, vec![1.0, 4.0, 2.0, 5.0, 3.0]).expect("grid");
+            let result = run(&context, &kernel, &initial, 1, &[], None)
                 .expect("run")
                 .grid()
-                .expect("grid")
-        };
-        let one = advance(&initial, 1);
-        let two = advance(&initial, 2);
-        assert_eq!(two.to_bytes(), advance(&one, 1).to_bytes());
-        let three = advance(&initial, 3);
-        assert_eq!(three.to_bytes(), advance(&two, 1).to_bytes());
-    }
+                .expect("grid");
+            assert_eq!(result.data(), &[4.0, 4.0, 5.0, 5.0, 5.0]);
+        }
 
-    /// Requires a CUDA device.
-    #[test]
-    fn run_zero_steps_returns_the_input() {
-        let context = Context::new().expect("create compute context");
-        let kernel = context
-            .kernel(SMOKE_PTX, "main_kernel", BLOCK_WIDTH)
-            .expect("build smoke kernel");
-        let initial = Grid::new(3, 2, 2, (0..12).map(|i| i as f32).collect()).expect("grid");
-        let result = run(&context, &kernel, &initial, 0, &[], None)
-            .expect("run")
-            .grid()
-            .expect("grid");
-        assert_eq!(result.to_bytes(), initial.to_bytes());
+        #[test]
+        fn run_composes_across_steps() {
+            // Advancing k steps must equal advancing one step k times, for even and
+            // odd k alike. A ping-pong that returns the wrong buffer for even step
+            // counts would break this self-consistency.
+            let context = Context::new().expect("create compute context");
+            let kernel = context
+                .kernel(SMOKE_PTX, "main_kernel", BLOCK_WIDTH)
+                .expect("build smoke kernel");
+            let initial =
+                Grid::new(4, 3, 2, (0..24).map(|i| (i % 7) as f32).collect()).expect("grid");
+            let advance = |grid: &Grid, steps: u32| {
+                run(&context, &kernel, grid, steps, &[], None)
+                    .expect("run")
+                    .grid()
+                    .expect("grid")
+            };
+            let one = advance(&initial, 1);
+            let two = advance(&initial, 2);
+            assert_eq!(two.to_bytes(), advance(&one, 1).to_bytes());
+            let three = advance(&initial, 3);
+            assert_eq!(three.to_bytes(), advance(&two, 1).to_bytes());
+        }
+
+        #[test]
+        fn run_zero_steps_returns_the_input() {
+            let context = Context::new().expect("create compute context");
+            let kernel = context
+                .kernel(SMOKE_PTX, "main_kernel", BLOCK_WIDTH)
+                .expect("build smoke kernel");
+            let initial = Grid::new(3, 2, 2, (0..12).map(|i| i as f32).collect()).expect("grid");
+            let result = run(&context, &kernel, &initial, 0, &[], None)
+                .expect("run")
+                .grid()
+                .expect("grid");
+            assert_eq!(result.to_bytes(), initial.to_bytes());
+        }
     }
 }

@@ -220,250 +220,6 @@ mod tests {
         .collect()
     }
 
-    /// Requires a real Vulkan device.
-    #[test]
-    fn a_single_channel_grid_reduces_to_known_scalars() {
-        // Four cells [1, 2, 3, 4]; the previous grid is all zeros. Every figure
-        // is exact in f32. mean 2.5, min 1, max 4, variance 1.25; alive threshold
-        // 3 counts {3, 4}, so population 0.5; activity is the mean |Δ| = 10/4.
-        let context = Context::new().expect("context");
-        let kernels = ReduceKernels::build(&context).expect("kernels");
-        let map = reduced(
-            &context,
-            &kernels,
-            &[1.0, 2.0, 3.0, 4.0],
-            &[0.0, 0.0, 0.0, 0.0],
-            1,
-            4,
-            (0, 3.0),
-        );
-        assert_eq!(map["c0.mean"], 2.5);
-        assert_eq!(map["c0.min"], 1.0);
-        assert_eq!(map["c0.max"], 4.0);
-        assert_eq!(map["c0.var"], 1.25);
-        assert_eq!(map["population"], 0.5);
-        assert_eq!(map["activity"], 2.5);
-    }
-
-    /// Requires a real Vulkan device.
-    #[test]
-    fn each_channel_reduces_independently() {
-        // Two cells, two channels, cell-major: cell0 = (1, 2), cell1 = (3, 4).
-        // Channel 0 is [1, 3] (mean 2, var 1), channel 1 is [2, 4] (mean 3,
-        // var 1). Alive on channel 1 at threshold 3 counts cell1 alone, so
-        // population 0.5; activity against a zero previous is 10/(2·2).
-        let context = Context::new().expect("context");
-        let kernels = ReduceKernels::build(&context).expect("kernels");
-        let map = reduced(
-            &context,
-            &kernels,
-            &[1.0, 2.0, 3.0, 4.0],
-            &[0.0, 0.0, 0.0, 0.0],
-            2,
-            2,
-            (1, 3.0),
-        );
-        assert_eq!(map["c0.mean"], 2.0);
-        assert_eq!(map["c0.var"], 1.0);
-        assert_eq!(map["c0.min"], 1.0);
-        assert_eq!(map["c0.max"], 3.0);
-        assert_eq!(map["c1.mean"], 3.0);
-        assert_eq!(map["c1.var"], 1.0);
-        assert_eq!(map["c1.min"], 2.0);
-        assert_eq!(map["c1.max"], 4.0);
-        assert_eq!(map["population"], 0.5);
-        assert_eq!(map["activity"], 2.5);
-    }
-
-    /// Requires a real Vulkan device.
-    #[test]
-    fn activity_is_the_mean_absolute_change() {
-        // Current [4, 1, 3, 2], previous [1, 3, 3, 6]: |Δ| = 3 + 2 + 0 + 4 = 9
-        // over four cells and one channel, so activity is 9/4 = 2.25.
-        let context = Context::new().expect("context");
-        let kernels = ReduceKernels::build(&context).expect("kernels");
-        let map = reduced(
-            &context,
-            &kernels,
-            &[4.0, 1.0, 3.0, 2.0],
-            &[1.0, 3.0, 3.0, 6.0],
-            1,
-            4,
-            (0, 0.0),
-        );
-        assert_eq!(map["activity"], 2.25);
-    }
-
-    /// Requires a real Vulkan device.
-    #[test]
-    fn population_spans_none_and_all_alive() {
-        // The same grid: a threshold above every value counts none alive, one
-        // below every value counts all.
-        let context = Context::new().expect("context");
-        let kernels = ReduceKernels::build(&context).expect("kernels");
-        let grid = [1.0, 2.0, 3.0, 4.0];
-        let zeros = [0.0; 4];
-        let none = reduced(&context, &kernels, &grid, &zeros, 1, 4, (0, 100.0));
-        assert_eq!(none["population"], 0.0);
-        let all = reduced(&context, &kernels, &grid, &zeros, 1, 4, (0, 0.0));
-        assert_eq!(all["population"], 1.0);
-    }
-
-    /// Requires a real Vulkan device.
-    #[test]
-    fn the_reduction_is_deterministic() {
-        // The fixed topology folds every sum in the same order, so reducing the
-        // same grid twice yields byte-identical scalars.
-        let context = Context::new().expect("context");
-        let kernels = ReduceKernels::build(&context).expect("kernels");
-        let cur = upload(&context, &[1.0, 2.0, 3.0, 4.0]);
-        let prev = upload(&context, &[0.5, 1.5, 2.5, 3.5]);
-        let pair = GridPair {
-            current: &cur,
-            previous: &prev,
-            channels: 1,
-            cell_count: 4,
-            alive_channel: 0,
-            alive_min: 2.0,
-        };
-        let first = reduce(&context, &kernels, &pair).expect("first");
-        let second = reduce(&context, &kernels, &pair).expect("second");
-        let first_bits: Vec<u64> = first.iter().map(|(_, v)| v.to_bits()).collect();
-        let second_bits: Vec<u64> = second.iter().map(|(_, v)| v.to_bits()).collect();
-        assert_eq!(first_bits, second_bits);
-    }
-
-    /// Requires a real Vulkan device.
-    #[test]
-    fn the_reduction_reads_the_harness_resident_pair() {
-        // The reduction runs over the two ping-pong buffers `run` leaves
-        // resident, not synthetic uploads, so `Trajectory::previous` (G_{N-1})
-        // is exercised end to end. A kernel that adds one per step keeps every
-        // sum exact: after k steps the final grid is `initial + k` and the step
-        // before is `initial + (k - 1)`, so the absolute change is one in every
-        // cell.
-        const ADD_ONE_WGSL: &str = r#"
-@group(0) @binding(0) var<storage, read> in_grid: array<f32>;
-@group(0) @binding(1) var<storage, read_write> out_grid: array<f32>;
-@group(0) @binding(2) var<storage, read> dims: array<u32>;
-@compute @workgroup_size(64)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-    let cell = gid.x;
-    if (cell >= dims[0] * dims[1]) { return; }
-    out_grid[cell] = in_grid[cell] + 1.0;
-}
-"#;
-        let context = Context::new().expect("context");
-        let kernels = ReduceKernels::build(&context).expect("kernels");
-        let kernel = context
-            .kernel(ADD_ONE_WGSL, "main")
-            .expect("add-one kernel");
-
-        let cells = 16u32;
-        let initial = crate::substrates::cellular::Grid::new(4, 4, 1, vec![0.0; cells as usize])
-            .expect("grid");
-        let steps = 3u32;
-        let trajectory =
-            crate::substrates::cellular::run(&context, &kernel, &initial, steps, &[], None)
-                .expect("run");
-
-        // The two resident buffers, downloaded as the reduction reads them.
-        let read = |buffer: &Buffer| -> Vec<f32> {
-            context
-                .download(buffer)
-                .expect("download")
-                .chunks_exact(4)
-                .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-                .collect()
-        };
-        let current = read(trajectory.current());
-        let previous = read(trajectory.previous());
-
-        // Activity is the mean absolute change over every cell and channel; the
-        // mean is over the final grid alone. Both are computed here from the
-        // downloaded pair, independent of the reduction.
-        let activity: f64 = current
-            .iter()
-            .zip(&previous)
-            .map(|(&c, &p)| f64::from((c - p).abs()))
-            .sum::<f64>()
-            / f64::from(cells);
-        let mean: f64 = current.iter().map(|&v| f64::from(v)).sum::<f64>() / f64::from(cells);
-
-        // The reduction reads the resident buffers in place, not the downloads.
-        let map: HashMap<String, f64> = reduce(
-            &context,
-            &kernels,
-            &GridPair {
-                current: trajectory.current(),
-                previous: trajectory.previous(),
-                channels: trajectory.channels(),
-                cell_count: trajectory.cell_count(),
-                alive_channel: 0,
-                alive_min: 0.0,
-            },
-        )
-        .expect("reduce")
-        .into_iter()
-        .collect();
-        // Activity ties the reduction to the resident G_{N-1}; the mean is over
-        // G_N alone, so it catches a reduction that read the pair swapped.
-        assert_eq!(map["activity"], activity);
-        assert_eq!(map["activity"], 1.0);
-        assert_eq!(map["c0.mean"], mean);
-        assert_eq!(map["c0.mean"], f64::from(steps));
-    }
-
-    /// Requires a real Vulkan device.
-    #[test]
-    fn too_many_channels_is_rejected() {
-        // A channel count past the scratch-array bound is a validation fault,
-        // caught before any dispatch.
-        let context = Context::new().expect("context");
-        let kernels = ReduceKernels::build(&context).expect("kernels");
-        let grid = upload(&context, &[0.0; 4]);
-        assert!(matches!(
-            reduce(
-                &context,
-                &kernels,
-                &GridPair {
-                    current: &grid,
-                    previous: &grid,
-                    channels: MAX_CHANNELS + 1,
-                    cell_count: 4,
-                    alive_channel: 0,
-                    alive_min: 0.0,
-                },
-            ),
-            Err(Error::Validation(_))
-        ));
-    }
-
-    /// Requires a real Vulkan device.
-    #[test]
-    fn an_out_of_range_alive_channel_is_rejected() {
-        // A two-channel grid with the liveness channel at index 2 is out of
-        // range: a validation fault, caught before any dispatch.
-        let context = Context::new().expect("context");
-        let kernels = ReduceKernels::build(&context).expect("kernels");
-        let grid = upload(&context, &[0.0; 4]);
-        assert!(matches!(
-            reduce(
-                &context,
-                &kernels,
-                &GridPair {
-                    current: &grid,
-                    previous: &grid,
-                    channels: 2,
-                    cell_count: 2,
-                    alive_channel: 2,
-                    alive_min: 0.0,
-                },
-            ),
-            Err(Error::Validation(_))
-        ));
-    }
-
     #[test]
     fn scalar_names_follow_the_channel_then_grid_order() {
         // Two channels: eight per-channel metrics, then population and activity.
@@ -487,5 +243,247 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         );
         assert_eq!(named[0].1, 0.0);
         assert_eq!(named[9].1, 9.0);
+    }
+
+    /// Reducing a grid dispatches the reduction passes, which needs a real Vulkan device.
+    mod on_device {
+        use super::*;
+
+        #[test]
+        fn a_single_channel_grid_reduces_to_known_scalars() {
+            // Four cells [1, 2, 3, 4]; the previous grid is all zeros. Every figure
+            // is exact in f32. mean 2.5, min 1, max 4, variance 1.25; alive threshold
+            // 3 counts {3, 4}, so population 0.5; activity is the mean |Δ| = 10/4.
+            let context = Context::new().expect("context");
+            let kernels = ReduceKernels::build(&context).expect("kernels");
+            let map = reduced(
+                &context,
+                &kernels,
+                &[1.0, 2.0, 3.0, 4.0],
+                &[0.0, 0.0, 0.0, 0.0],
+                1,
+                4,
+                (0, 3.0),
+            );
+            assert_eq!(map["c0.mean"], 2.5);
+            assert_eq!(map["c0.min"], 1.0);
+            assert_eq!(map["c0.max"], 4.0);
+            assert_eq!(map["c0.var"], 1.25);
+            assert_eq!(map["population"], 0.5);
+            assert_eq!(map["activity"], 2.5);
+        }
+
+        #[test]
+        fn each_channel_reduces_independently() {
+            // Two cells, two channels, cell-major: cell0 = (1, 2), cell1 = (3, 4).
+            // Channel 0 is [1, 3] (mean 2, var 1), channel 1 is [2, 4] (mean 3,
+            // var 1). Alive on channel 1 at threshold 3 counts cell1 alone, so
+            // population 0.5; activity against a zero previous is 10/(2·2).
+            let context = Context::new().expect("context");
+            let kernels = ReduceKernels::build(&context).expect("kernels");
+            let map = reduced(
+                &context,
+                &kernels,
+                &[1.0, 2.0, 3.0, 4.0],
+                &[0.0, 0.0, 0.0, 0.0],
+                2,
+                2,
+                (1, 3.0),
+            );
+            assert_eq!(map["c0.mean"], 2.0);
+            assert_eq!(map["c0.var"], 1.0);
+            assert_eq!(map["c0.min"], 1.0);
+            assert_eq!(map["c0.max"], 3.0);
+            assert_eq!(map["c1.mean"], 3.0);
+            assert_eq!(map["c1.var"], 1.0);
+            assert_eq!(map["c1.min"], 2.0);
+            assert_eq!(map["c1.max"], 4.0);
+            assert_eq!(map["population"], 0.5);
+            assert_eq!(map["activity"], 2.5);
+        }
+
+        #[test]
+        fn activity_is_the_mean_absolute_change() {
+            // Current [4, 1, 3, 2], previous [1, 3, 3, 6]: |Δ| = 3 + 2 + 0 + 4 = 9
+            // over four cells and one channel, so activity is 9/4 = 2.25.
+            let context = Context::new().expect("context");
+            let kernels = ReduceKernels::build(&context).expect("kernels");
+            let map = reduced(
+                &context,
+                &kernels,
+                &[4.0, 1.0, 3.0, 2.0],
+                &[1.0, 3.0, 3.0, 6.0],
+                1,
+                4,
+                (0, 0.0),
+            );
+            assert_eq!(map["activity"], 2.25);
+        }
+
+        #[test]
+        fn population_spans_none_and_all_alive() {
+            // The same grid: a threshold above every value counts none alive, one
+            // below every value counts all.
+            let context = Context::new().expect("context");
+            let kernels = ReduceKernels::build(&context).expect("kernels");
+            let grid = [1.0, 2.0, 3.0, 4.0];
+            let zeros = [0.0; 4];
+            let none = reduced(&context, &kernels, &grid, &zeros, 1, 4, (0, 100.0));
+            assert_eq!(none["population"], 0.0);
+            let all = reduced(&context, &kernels, &grid, &zeros, 1, 4, (0, 0.0));
+            assert_eq!(all["population"], 1.0);
+        }
+
+        #[test]
+        fn the_reduction_is_deterministic() {
+            // The fixed topology folds every sum in the same order, so reducing the
+            // same grid twice yields byte-identical scalars.
+            let context = Context::new().expect("context");
+            let kernels = ReduceKernels::build(&context).expect("kernels");
+            let cur = upload(&context, &[1.0, 2.0, 3.0, 4.0]);
+            let prev = upload(&context, &[0.5, 1.5, 2.5, 3.5]);
+            let pair = GridPair {
+                current: &cur,
+                previous: &prev,
+                channels: 1,
+                cell_count: 4,
+                alive_channel: 0,
+                alive_min: 2.0,
+            };
+            let first = reduce(&context, &kernels, &pair).expect("first");
+            let second = reduce(&context, &kernels, &pair).expect("second");
+            let first_bits: Vec<u64> = first.iter().map(|(_, v)| v.to_bits()).collect();
+            let second_bits: Vec<u64> = second.iter().map(|(_, v)| v.to_bits()).collect();
+            assert_eq!(first_bits, second_bits);
+        }
+
+        #[test]
+        fn the_reduction_reads_the_harness_resident_pair() {
+            // The reduction runs over the two ping-pong buffers `run` leaves
+            // resident, not synthetic uploads, so `Trajectory::previous` (G_{N-1})
+            // is exercised end to end. A kernel that adds one per step keeps every
+            // sum exact: after k steps the final grid is `initial + k` and the step
+            // before is `initial + (k - 1)`, so the absolute change is one in every
+            // cell.
+            const ADD_ONE_WGSL: &str = r#"
+@group(0) @binding(0) var<storage, read> in_grid: array<f32>;
+@group(0) @binding(1) var<storage, read_write> out_grid: array<f32>;
+@group(0) @binding(2) var<storage, read> dims: array<u32>;
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let cell = gid.x;
+    if (cell >= dims[0] * dims[1]) { return; }
+    out_grid[cell] = in_grid[cell] + 1.0;
+}
+"#;
+            let context = Context::new().expect("context");
+            let kernels = ReduceKernels::build(&context).expect("kernels");
+            let kernel = context
+                .kernel(ADD_ONE_WGSL, "main")
+                .expect("add-one kernel");
+
+            let cells = 16u32;
+            let initial =
+                crate::substrates::cellular::Grid::new(4, 4, 1, vec![0.0; cells as usize])
+                    .expect("grid");
+            let steps = 3u32;
+            let trajectory =
+                crate::substrates::cellular::run(&context, &kernel, &initial, steps, &[], None)
+                    .expect("run");
+
+            // The two resident buffers, downloaded as the reduction reads them.
+            let read = |buffer: &Buffer| -> Vec<f32> {
+                context
+                    .download(buffer)
+                    .expect("download")
+                    .chunks_exact(4)
+                    .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                    .collect()
+            };
+            let current = read(trajectory.current());
+            let previous = read(trajectory.previous());
+
+            // Activity is the mean absolute change over every cell and channel; the
+            // mean is over the final grid alone. Both are computed here from the
+            // downloaded pair, independent of the reduction.
+            let activity: f64 = current
+                .iter()
+                .zip(&previous)
+                .map(|(&c, &p)| f64::from((c - p).abs()))
+                .sum::<f64>()
+                / f64::from(cells);
+            let mean: f64 = current.iter().map(|&v| f64::from(v)).sum::<f64>() / f64::from(cells);
+
+            // The reduction reads the resident buffers in place, not the downloads.
+            let map: HashMap<String, f64> = reduce(
+                &context,
+                &kernels,
+                &GridPair {
+                    current: trajectory.current(),
+                    previous: trajectory.previous(),
+                    channels: trajectory.channels(),
+                    cell_count: trajectory.cell_count(),
+                    alive_channel: 0,
+                    alive_min: 0.0,
+                },
+            )
+            .expect("reduce")
+            .into_iter()
+            .collect();
+            // Activity ties the reduction to the resident G_{N-1}; the mean is over
+            // G_N alone, so it catches a reduction that read the pair swapped.
+            assert_eq!(map["activity"], activity);
+            assert_eq!(map["activity"], 1.0);
+            assert_eq!(map["c0.mean"], mean);
+            assert_eq!(map["c0.mean"], f64::from(steps));
+        }
+
+        #[test]
+        fn too_many_channels_is_rejected() {
+            // A channel count past the scratch-array bound is a validation fault,
+            // caught before any dispatch.
+            let context = Context::new().expect("context");
+            let kernels = ReduceKernels::build(&context).expect("kernels");
+            let grid = upload(&context, &[0.0; 4]);
+            assert!(matches!(
+                reduce(
+                    &context,
+                    &kernels,
+                    &GridPair {
+                        current: &grid,
+                        previous: &grid,
+                        channels: MAX_CHANNELS + 1,
+                        cell_count: 4,
+                        alive_channel: 0,
+                        alive_min: 0.0,
+                    },
+                ),
+                Err(Error::Validation(_))
+            ));
+        }
+
+        #[test]
+        fn an_out_of_range_alive_channel_is_rejected() {
+            // A two-channel grid with the liveness channel at index 2 is out of
+            // range: a validation fault, caught before any dispatch.
+            let context = Context::new().expect("context");
+            let kernels = ReduceKernels::build(&context).expect("kernels");
+            let grid = upload(&context, &[0.0; 4]);
+            assert!(matches!(
+                reduce(
+                    &context,
+                    &kernels,
+                    &GridPair {
+                        current: &grid,
+                        previous: &grid,
+                        channels: 2,
+                        cell_count: 2,
+                        alive_channel: 2,
+                        alive_min: 0.0,
+                    },
+                ),
+                Err(Error::Validation(_))
+            ));
+        }
     }
 }

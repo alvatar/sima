@@ -141,11 +141,11 @@ mod tests {
         Ok(())
     }
 
-    /// Executor fixtures driving the real [`CaExecutor<Nca, WgslEngine>`]: the GPU-gated
-    /// tests run the async kernel through the seed and step buffers exactly as a
-    /// live run does, and the device-free tests exercise the executor's
-    /// validation of a stepped input state before any GPU work. Neither touches
-    /// a store.
+    /// Executor fixtures driving the real [`CaExecutor<Nca, WgslEngine>`]: the
+    /// `on_device` tests run the async kernel through the seed and step buffers
+    /// exactly as a live run does, and the device-free tests beside them
+    /// exercise the executor's validation of a stepped input state before any
+    /// GPU work. Neither touches a store.
     #[cfg(test)]
     mod executor {
         use sima_contracts::{
@@ -233,61 +233,6 @@ mod tests {
             decode_continuation(bytes).expect("framed continuation state")
         }
 
-        /// Requires a real Vulkan device.
-        #[test]
-        fn repeated_runs_are_byte_identical() {
-            // The async mask is deterministic in (seed, cell, step), so two runs
-            // of the same task commit byte-identical framed states.
-            let exec = CaExecutor::<Nca, WgslEngine>::new(None).expect("executor");
-            let (spec, params) = (spec(0.5), params(50));
-            let first = run_state(&exec, &spec, &params, None);
-            let second = run_state(&exec, &spec, &params, None);
-            assert_eq!(first, second);
-        }
-
-        /// Requires a real Vulkan device.
-        #[test]
-        fn segment_continuation_is_cadence_invariant() {
-            // Ignite + 50 -> A; continue A + 50 -> B; ignite + 100 -> C. The framed
-            // step makes the committed state a complete continuation, so B is
-            // byte-identical to C: splitting the trajectory at a segment boundary
-            // changes nothing.
-            let exec = CaExecutor::<Nca, WgslEngine>::new(None).expect("executor");
-            let spec = spec(0.5);
-            let a = run_state(&exec, &spec, &params(50), None);
-            let b = run_state(&exec, &spec, &params(50), Some(&a));
-            let c = run_state(&exec, &spec, &params(100), None);
-            assert_eq!(b, c, "segmented 50+50 must equal unsegmented 100");
-            // A reached step 50, C step 100, each over an 8-channel grid.
-            let (a_step, a_grid) = framed(&a);
-            let (c_step, c_grid) = framed(&c);
-            assert_eq!(a_step, 50, "segment A reached step 50");
-            assert_eq!(c_step, 100, "the whole run reached step 100");
-            assert_eq!(a_grid.channels(), 8);
-            assert_eq!(c_grid.channels(), 8);
-        }
-
-        /// Requires a real Vulkan device.
-        #[test]
-        fn a_smoke_run_yields_a_finite_grid() {
-            // A small scale keeps the residual dynamics bounded over a few steps,
-            // so every committed value is finite; the framed step equals the step
-            // count over an 8-channel grid.
-            let exec = CaExecutor::<Nca, WgslEngine>::new(None).expect("executor");
-            let steps = 8;
-            let bytes = run_state(&exec, &spec(0.02), &params(steps), None);
-            let (step, grid) = framed(&bytes);
-            assert_eq!(
-                step,
-                u64::from(steps),
-                "the framed step equals the step count"
-            );
-            assert_eq!((grid.width(), grid.height(), grid.channels()), (32, 32, 8));
-            for &value in grid.data() {
-                assert!(value.is_finite(), "committed value {value} must be finite");
-            }
-        }
-
         #[test]
         fn a_malformed_stepped_input_state_is_an_error() {
             // A stepped model decodes its input state as (step, grid); a buffer
@@ -323,6 +268,63 @@ mod tests {
                     "the error names both dimension triples: {message}"
                 ),
                 other => panic!("expected Validation, got {other:?}"),
+            }
+        }
+
+        /// Running the model's kernel needs a real Vulkan device.
+        mod on_device {
+            use super::*;
+
+            #[test]
+            fn repeated_runs_are_byte_identical() {
+                // The async mask is deterministic in (seed, cell, step), so two runs
+                // of the same task commit byte-identical framed states.
+                let exec = CaExecutor::<Nca, WgslEngine>::new(None).expect("executor");
+                let (spec, params) = (spec(0.5), params(50));
+                let first = run_state(&exec, &spec, &params, None);
+                let second = run_state(&exec, &spec, &params, None);
+                assert_eq!(first, second);
+            }
+
+            #[test]
+            fn segment_continuation_is_cadence_invariant() {
+                // Ignite + 50 -> A; continue A + 50 -> B; ignite + 100 -> C. The framed
+                // step makes the committed state a complete continuation, so B is
+                // byte-identical to C: splitting the trajectory at a segment boundary
+                // changes nothing.
+                let exec = CaExecutor::<Nca, WgslEngine>::new(None).expect("executor");
+                let spec = spec(0.5);
+                let a = run_state(&exec, &spec, &params(50), None);
+                let b = run_state(&exec, &spec, &params(50), Some(&a));
+                let c = run_state(&exec, &spec, &params(100), None);
+                assert_eq!(b, c, "segmented 50+50 must equal unsegmented 100");
+                // A reached step 50, C step 100, each over an 8-channel grid.
+                let (a_step, a_grid) = framed(&a);
+                let (c_step, c_grid) = framed(&c);
+                assert_eq!(a_step, 50, "segment A reached step 50");
+                assert_eq!(c_step, 100, "the whole run reached step 100");
+                assert_eq!(a_grid.channels(), 8);
+                assert_eq!(c_grid.channels(), 8);
+            }
+
+            #[test]
+            fn a_smoke_run_yields_a_finite_grid() {
+                // A small scale keeps the residual dynamics bounded over a few steps,
+                // so every committed value is finite; the framed step equals the step
+                // count over an 8-channel grid.
+                let exec = CaExecutor::<Nca, WgslEngine>::new(None).expect("executor");
+                let steps = 8;
+                let bytes = run_state(&exec, &spec(0.02), &params(steps), None);
+                let (step, grid) = framed(&bytes);
+                assert_eq!(
+                    step,
+                    u64::from(steps),
+                    "the framed step equals the step count"
+                );
+                assert_eq!((grid.width(), grid.height(), grid.channels()), (32, 32, 8));
+                for &value in grid.data() {
+                    assert!(value.is_finite(), "committed value {value} must be finite");
+                }
             }
         }
     }

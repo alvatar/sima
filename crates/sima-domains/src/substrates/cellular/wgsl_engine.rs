@@ -254,101 +254,104 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 "#;
 
-    /// Requires a real Vulkan device.
-    #[test]
-    fn a_kernel_that_declares_no_uniforms_evaluates() {
-        // The smoke shader declares the convention's first three bindings and
-        // no uniform block, which is what a model with no uniform values gets.
-        // Binding a buffer the shader never declared is what this guards
-        // against, and a zero-sized one is what Vulkan rejects outright.
-        let engine = WgslEngine::build(None, include_str!("../../../shaders/smoke.wgsl"))
-            .expect("build the engine");
-        let initial = Grid::new(4, 4, 1, (0..16).map(|i| i as f32).collect()).expect("grid");
-        let scalars: std::collections::HashMap<String, f64> = engine
-            .evaluate(&EvaluationInput {
-                initial: &initial,
-                steps: 2,
-                uniforms: &[],
-                seed: None,
-                step_base: None,
-                alive_channel: 0,
-                alive_min: 1.0,
-            })
-            .expect("evaluate")
-            .scalars()
-            .expect("reduce")
-            .into_iter()
-            .collect();
-        // A neighborhood max can only raise a cell, so the maximum is the one
-        // the grid started with and the mean has risen off its own start.
-        assert_eq!(scalars["c0.max"], 15.0);
-        assert!(scalars["c0.mean"] > 7.5, "{scalars:?}");
-    }
+    /// Building the engine opens a context, which needs a real Vulkan device.
+    mod on_device {
+        use super::*;
 
-    /// Requires a real Vulkan device.
-    #[test]
-    fn the_engine_evaluates_exactly_as_the_harness_it_wraps() {
-        // The engine is the dispatch harness and the reduction behind one
-        // call, so its scalars and its final grid must be bit for bit what
-        // calling the two directly produces. The fixed reduction topology makes
-        // that an exact comparison, not an approximate one.
-        let uniforms = [0.25_f32];
-        let initial =
-            Grid::new(4, 4, 1, (0..16).map(|i| i as f32).collect()).expect("initial grid");
-        let steps = 3;
+        #[test]
+        fn a_kernel_that_declares_no_uniforms_evaluates() {
+            // The smoke shader declares the convention's first three bindings and
+            // no uniform block, which is what a model with no uniform values gets.
+            // Binding a buffer the shader never declared is what this guards
+            // against, and a zero-sized one is what Vulkan rejects outright.
+            let engine = WgslEngine::build(None, include_str!("../../../shaders/smoke.wgsl"))
+                .expect("build the engine");
+            let initial = Grid::new(4, 4, 1, (0..16).map(|i| i as f32).collect()).expect("grid");
+            let scalars: std::collections::HashMap<String, f64> = engine
+                .evaluate(&EvaluationInput {
+                    initial: &initial,
+                    steps: 2,
+                    uniforms: &[],
+                    seed: None,
+                    step_base: None,
+                    alive_channel: 0,
+                    alive_min: 1.0,
+                })
+                .expect("evaluate")
+                .scalars()
+                .expect("reduce")
+                .into_iter()
+                .collect();
+            // A neighborhood max can only raise a cell, so the maximum is the one
+            // the grid started with and the mean has risen off its own start.
+            assert_eq!(scalars["c0.max"], 15.0);
+            assert!(scalars["c0.mean"] > 7.5, "{scalars:?}");
+        }
 
-        let engine = WgslEngine::build(None, ADD_UNIFORM_WGSL).expect("build the engine");
-        let evaluation = engine
-            .evaluate(&EvaluationInput {
-                initial: &initial,
-                steps,
-                uniforms: &uniforms,
-                seed: None,
-                step_base: None,
-                alive_channel: 0,
-                alive_min: 1.0,
-            })
-            .expect("evaluate");
-        let engine_scalars = evaluation.scalars().expect("engine scalars");
-        let engine_grid = evaluation.grid().expect("engine grid");
+        #[test]
+        fn the_engine_evaluates_exactly_as_the_harness_it_wraps() {
+            // The engine is the dispatch harness and the reduction behind one
+            // call, so its scalars and its final grid must be bit for bit what
+            // calling the two directly produces. The fixed reduction topology makes
+            // that an exact comparison, not an approximate one.
+            let uniforms = [0.25_f32];
+            let initial =
+                Grid::new(4, 4, 1, (0..16).map(|i| i as f32).collect()).expect("initial grid");
+            let steps = 3;
 
-        // The same work through the toolkit directly, on a context of its own.
-        let context = Context::new().expect("context");
-        let kernel = context
-            .kernel(ADD_UNIFORM_WGSL, "main")
-            .expect("build kernel");
-        let reduce = ReduceKernels::build(&context).expect("reduction kernels");
-        let uniform_bytes: &[u8] = bytemuck::cast_slice(&uniforms);
-        let uniform_buffer = context.buffer(uniform_bytes.len()).expect("uniform buffer");
-        context
-            .upload(&uniform_buffer, uniform_bytes)
-            .expect("upload uniforms");
-        let trajectory =
-            run(&context, &kernel, &initial, steps, &[&uniform_buffer], None).expect("direct run");
-        let direct_scalars = reduce_pair(
-            &context,
-            &reduce,
-            &GridPair {
-                current: trajectory.current(),
-                previous: trajectory.previous(),
-                channels: trajectory.channels(),
-                cell_count: trajectory.cell_count(),
-                alive_channel: 0,
-                alive_min: 1.0,
-            },
-        )
-        .expect("direct reduction");
+            let engine = WgslEngine::build(None, ADD_UNIFORM_WGSL).expect("build the engine");
+            let evaluation = engine
+                .evaluate(&EvaluationInput {
+                    initial: &initial,
+                    steps,
+                    uniforms: &uniforms,
+                    seed: None,
+                    step_base: None,
+                    alive_channel: 0,
+                    alive_min: 1.0,
+                })
+                .expect("evaluate");
+            let engine_scalars = evaluation.scalars().expect("engine scalars");
+            let engine_grid = evaluation.grid().expect("engine grid");
 
-        assert_eq!(
-            engine_grid.to_bytes(),
-            trajectory.grid().expect("direct grid").to_bytes()
-        );
-        let bits = |scalars: &[(String, f64)]| -> Vec<(String, u64)> {
-            scalars
-                .iter()
-                .map(|(name, value)| (name.clone(), value.to_bits()))
-                .collect()
-        };
-        assert_eq!(bits(&engine_scalars), bits(&direct_scalars));
+            // The same work through the toolkit directly, on a context of its own.
+            let context = Context::new().expect("context");
+            let kernel = context
+                .kernel(ADD_UNIFORM_WGSL, "main")
+                .expect("build kernel");
+            let reduce = ReduceKernels::build(&context).expect("reduction kernels");
+            let uniform_bytes: &[u8] = bytemuck::cast_slice(&uniforms);
+            let uniform_buffer = context.buffer(uniform_bytes.len()).expect("uniform buffer");
+            context
+                .upload(&uniform_buffer, uniform_bytes)
+                .expect("upload uniforms");
+            let trajectory = run(&context, &kernel, &initial, steps, &[&uniform_buffer], None)
+                .expect("direct run");
+            let direct_scalars = reduce_pair(
+                &context,
+                &reduce,
+                &GridPair {
+                    current: trajectory.current(),
+                    previous: trajectory.previous(),
+                    channels: trajectory.channels(),
+                    cell_count: trajectory.cell_count(),
+                    alive_channel: 0,
+                    alive_min: 1.0,
+                },
+            )
+            .expect("direct reduction");
+
+            assert_eq!(
+                engine_grid.to_bytes(),
+                trajectory.grid().expect("direct grid").to_bytes()
+            );
+            let bits = |scalars: &[(String, f64)]| -> Vec<(String, u64)> {
+                scalars
+                    .iter()
+                    .map(|(name, value)| (name.clone(), value.to_bits()))
+                    .collect()
+            };
+            assert_eq!(bits(&engine_scalars), bits(&direct_scalars));
+        }
     }
 }

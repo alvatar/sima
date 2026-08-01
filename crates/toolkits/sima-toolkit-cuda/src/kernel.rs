@@ -118,57 +118,58 @@ mod tests {
         assert_eq!(COMPILER_ID, "ptx; arch=compute_75");
     }
 
-    /// Requires an NVIDIA device.
-    #[test]
-    fn kernel_reports_identity_inputs() {
-        let context = Context::new().expect("create compute context");
-        let kernel = context
-            .kernel(SMOKE_PTX, "main_kernel", 64)
-            .expect("build kernel");
-        assert_eq!(kernel.ptx_digest(), hash_bytes(SMOKE_PTX.as_bytes()));
-        assert_eq!(kernel.compiler_id(), COMPILER_ID);
-        assert_eq!(kernel.block_width(), 64);
-    }
+    /// Loading a module and launching from it needs an NVIDIA device.
+    mod on_device {
+        use super::*;
 
-    /// Requires an NVIDIA device.
-    #[test]
-    fn an_entry_point_the_module_does_not_declare_is_rejected() {
-        let context = Context::new().expect("create compute context");
-        match context.kernel(SMOKE_PTX, "no_such_entry", 64) {
-            Err(Error::Backend(message)) => {
-                assert!(message.contains("no_such_entry"), "{message}");
-            }
-            Err(other) => panic!("expected a backend lookup error, got {other:?}"),
-            Ok(_) => panic!("expected an unknown entry point to be rejected"),
+        #[test]
+        fn kernel_reports_identity_inputs() {
+            let context = Context::new().expect("create compute context");
+            let kernel = context
+                .kernel(SMOKE_PTX, "main_kernel", 64)
+                .expect("build kernel");
+            assert_eq!(kernel.ptx_digest(), hash_bytes(SMOKE_PTX.as_bytes()));
+            assert_eq!(kernel.compiler_id(), COMPILER_ID);
+            assert_eq!(kernel.block_width(), 64);
         }
-    }
 
-    /// Requires an NVIDIA device.
-    #[test]
-    fn malformed_ptx_is_rejected_by_the_driver() {
-        let context = Context::new().expect("create compute context");
-        match context.kernel("this is not PTX", "main_kernel", 64) {
-            Err(Error::Backend(message)) => {
-                assert!(message.contains("load the PTX module"), "{message}");
-            }
-            Err(other) => panic!("expected a backend load error, got {other:?}"),
-            Ok(_) => panic!("expected malformed PTX to be rejected"),
-        }
-    }
-
-    /// Requires an NVIDIA device.
-    #[test]
-    fn a_block_width_the_device_cannot_launch_is_rejected() {
-        // Caught before the module loads, so a mistyped width is a clear
-        // toolkit error rather than an opaque launch failure later.
-        let context = Context::new().expect("create compute context");
-        for width in [0, 1 << 20] {
-            match context.kernel("", "main_kernel", width) {
+        #[test]
+        fn an_entry_point_the_module_does_not_declare_is_rejected() {
+            let context = Context::new().expect("create compute context");
+            match context.kernel(SMOKE_PTX, "no_such_entry", 64) {
                 Err(Error::Backend(message)) => {
-                    assert!(message.contains("threads per block"), "{message}");
+                    assert!(message.contains("no_such_entry"), "{message}");
                 }
-                Err(other) => panic!("expected a backend width error, got {other:?}"),
-                Ok(_) => panic!("expected block width {width} to be rejected"),
+                Err(other) => panic!("expected a backend lookup error, got {other:?}"),
+                Ok(_) => panic!("expected an unknown entry point to be rejected"),
+            }
+        }
+
+        #[test]
+        fn malformed_ptx_is_rejected_by_the_driver() {
+            let context = Context::new().expect("create compute context");
+            match context.kernel("this is not PTX", "main_kernel", 64) {
+                Err(Error::Backend(message)) => {
+                    assert!(message.contains("load the PTX module"), "{message}");
+                }
+                Err(other) => panic!("expected a backend load error, got {other:?}"),
+                Ok(_) => panic!("expected malformed PTX to be rejected"),
+            }
+        }
+
+        #[test]
+        fn a_block_width_the_device_cannot_launch_is_rejected() {
+            // Caught before the module loads, so a mistyped width is a clear
+            // toolkit error rather than an opaque launch failure later.
+            let context = Context::new().expect("create compute context");
+            for width in [0, 1 << 20] {
+                match context.kernel("", "main_kernel", width) {
+                    Err(Error::Backend(message)) => {
+                        assert!(message.contains("threads per block"), "{message}");
+                    }
+                    Err(other) => panic!("expected a backend width error, got {other:?}"),
+                    Ok(_) => panic!("expected block width {width} to be rejected"),
+                }
             }
         }
     }

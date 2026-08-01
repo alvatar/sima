@@ -364,17 +364,6 @@ fn probe(format: &str) -> Vec<serde_json::Value> {
     devices
 }
 
-/// Requires a Vulkan device.
-#[test]
-fn the_enumerate_probe_prints_one_json_device_per_line() {
-    // The remote-resolution probe: `--enumerate-devices <format>` prints the devices
-    // that format's program can run on as JSON, one per line, and exits zero.
-    assert!(
-        !probe("ca_evolution.gray_scott.v1").is_empty(),
-        "this machine has a Vulkan device"
-    );
-}
-
 #[test]
 fn the_enumerate_probe_answers_per_format_rather_than_per_machine() {
     // A device list is a claim about what a program can run on. The stub
@@ -469,4 +458,19 @@ fn an_unknown_format_exits_nonzero_before_ready() {
     assert_eq!(answer, None, "no frame crosses a failed resolution");
     let code = worker.shutdown();
     assert_ne!(code, Some(0), "an unresolvable format exits nonzero");
+}
+
+/// The probe answers from the Vulkan loader, so it needs a device.
+mod on_device {
+    use super::*;
+
+    #[test]
+    fn the_enumerate_probe_prints_one_json_line_per_device() {
+        // The remote-resolution probe: `--enumerate-devices <format>` prints the devices
+        // that format's program can run on as JSON, one per line, and exits zero.
+        assert!(
+            !probe("ca_evolution.gray_scott.v1").is_empty(),
+            "this machine has a Vulkan device"
+        );
+    }
 }
