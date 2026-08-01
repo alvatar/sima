@@ -333,7 +333,7 @@ pub fn require_devices(format: &str, selectors: &[&str]) {
 }
 
 /// Why the devices were out of reach, for [`require_devices`]'s message: the
-/// two causes that are environmental and fixable, then the one that is not.
+/// causes that are environmental and fixable, then the ones that are not.
 fn why_unreachable() -> String {
     if let Ok(files) = std::env::var("VK_DRIVER_FILES") {
         return format!(
@@ -341,13 +341,24 @@ fn why_unreachable() -> String {
              rerun with it unset: env -u VK_DRIVER_FILES cargo test ..."
         );
     }
-    // The NVIDIA driver creates its character devices on demand through the
-    // setuid helper, and they do not survive every suspend. The kernel modules
-    // stay loaded, so the card is present and merely unreachable — running the
-    // helper restores it without root.
     if !Path::new("/dev/nvidiactl").exists() {
-        return "/dev/nvidiactl is absent, so the NVIDIA driver is unreachable \
-                though its modules are loaded: run `nvidia-modprobe -c 0 -u` and rerun."
+        // The NVIDIA driver creates its character devices on demand through the
+        // setuid helper, and they do not survive every suspend. A loaded module
+        // with no device node is therefore a card that is present and merely
+        // unreachable, which the helper restores without root. With no module
+        // loaded there is no card, and the helper has nothing to open — the
+        // case a hosted runner is in, where a device test reaching here is a
+        // test missing its `on_device` marker.
+        if Path::new("/sys/module/nvidia").exists() {
+            return "/dev/nvidiactl is absent though the nvidia module is loaded, \
+                    so the card is present and merely unreachable: run \
+                    `nvidia-modprobe -c 0 -u` and rerun."
+                .to_string();
+        }
+        return "no nvidia module is loaded and /dev/nvidiactl is absent, so this \
+                machine has no NVIDIA device. A test that needs one belongs \
+                behind the `on_device` marker, which keeps it on the device \
+                machine."
             .to_string();
     }
     "VK_DRIVER_FILES is unset and every driver is reachable: those are the \
