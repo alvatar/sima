@@ -111,6 +111,24 @@ pub fn worker_processes(parent: u32) -> Vec<u32> {
         .collect()
 }
 
+/// The pack files a store holds, by file name, sorted.
+pub fn pack_files(store: &Path) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(store.join("packs"))
+        .expect("read packs dir")
+        .map(|entry| {
+            entry
+                .expect("pack entry")
+                .file_name()
+                .to_str()
+                .expect("utf-8 name")
+                .to_string()
+        })
+        .filter(|name| name.ends_with(".pack"))
+        .collect();
+    names.sort();
+    names
+}
+
 /// The manifest of the run `config_path` describes, from its store.
 pub fn manifest_of(config_path: &Path) -> Option<Manifest> {
     let config = load(config_path).expect("load config");
