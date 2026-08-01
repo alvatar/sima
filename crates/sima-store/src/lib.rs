@@ -5,7 +5,10 @@
 //! root directory laid out as:
 //!
 //! ```text
+//! <root>/format                    store-format marker: the one line "1"
 //! <root>/objects/<aa>/<64-hex>     object bytes; aa = first two hex chars
+//! <root>/packs/<64-hex>.pack       immutable pack: many objects and an index
+//! <root>/packs/maintenance.lock    serializes packing, gc, and pack rewrites
 //! <root>/tmp/<pid>-<seq>           in-flight writes
 //! <root>/tasks/<task-key-hex>      index entry: record-hash hex + newline
 //! <root>/instances/<tag>           one rented instance's ledger record
@@ -27,6 +30,16 @@
 //! observes a complete file or none. Store methods take `&self` and are
 //! safe under concurrent use: writers racing on one path converge on
 //! identical bytes, and a conflicting racer fails with `Corruption`.
+//!
+//! An object is held loose under `objects/` or inside a pack under `packs/`,
+//! which is a fact about the store's shape and never about the object: it is
+//! addressed by the hash of its bytes either way, and every read re-hashes
+//! what it decoded. Writes always land loose; consolidating them is the
+//! maintenance operation [`Store::pack`], and deleting what no finalized run
+//! references is [`Store::gc`]. Deletion never removes the last copy of an
+//! object — a loose file goes only once a pack holds it, a pack only once
+//! its replacement is durable — so a maintenance operation killed part-way
+//! leaves a whole store that re-running it finishes.
 
 mod atomic;
 mod cas;

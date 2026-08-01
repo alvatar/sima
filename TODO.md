@@ -906,9 +906,33 @@ hides surprises.
 Two store-scaling levers and one provenance question, all independent of any
 model or metric. Last active phase before the pause.
 
-- [ ] M8.1 Object packing for scale: millions of small objects press on inode
+- [x] M8.1 Object packing for scale: millions of small objects press on inode
       and directory limits; a pack format — many objects in one file with an
-      index — is the answer. Beside retention (M8.2) as the other scaling lever
+      index — is the answer. Beside retention (M8.2) as the other scaling
+      lever. Settled shape: **objects are born loose and consolidation is a
+      maintenance verb**, so the write path that survives a crash is untouched
+      and the store's inode count follows its pack count instead of its object
+      count. A pack is one immutable file — header, each object's stored bytes,
+      an index sorted by hash, a footer locating it — named by the blake3 of
+      the whole file, which makes its bytes a pure function of its object set
+      and interrupted maintenance converge by re-running onto the identical
+      name. Objects compress independently with zstd and fall back to raw, so
+      one read decompresses one object; identity stays the hash of the
+      uncompressed bytes and every read re-hashes, so the verified read holds
+      through a pack. `get`/`has` read loose first and the packs failing that,
+      through a per-handle cache rebuilt from `packs/` on a miss. Deletion
+      carries one invariant — a loose file goes only once a pack holds its
+      object, a pack only once its replacement is durable — so every live
+      object is readable at one location or two, never zero, and both
+      reference-guarded deletions (`remove_run` and the new `gc`) run through
+      one primitive that knows both representations. `sima pack <store-dir>`
+      is the verb, `--gc` the sweep, and a store past six figures of loose
+      objects is told to run it. A `format` marker at the store root refuses a
+      layout this binary cannot read, naming both versions. Not done here:
+      wire compression, unchanged and awaiting a real transfer that shows it
+      pays; retention policy, which is M8.2 (M8.1 ships mechanism, not
+      policy); automatic pack triggers, the operator being the trigger; and
+      delta compression between objects.
 - [ ] M8.2 Snapshot retention policy: what is kept, for how long, and what
       re-evaluation minimally requires. The policy deferred from M3.4, where the
       mechanism (drop an object when no live manifest references it) already

@@ -636,9 +636,14 @@ fn remove_run(config: &Path) -> Result<RemovalReport> {
 ///
 /// Best effort throughout: a config that does not load or a store that
 /// cannot be measured says nothing here, because the command itself is
-/// about to report whatever is wrong with far better context.
+/// about to report whatever is wrong with far better context. A store that
+/// does not exist yet is left alone rather than opened, since opening one
+/// creates it and the query commands are read-only about that.
 fn warn_on_loose_objects(config: &Path) {
     let Ok(loaded) = load(config) else { return };
+    if !loaded.store.is_dir() {
+        return;
+    }
     let Ok(store) = sima_store::Store::open(&loaded.store) else {
         return;
     };

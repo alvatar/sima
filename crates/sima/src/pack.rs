@@ -12,9 +12,11 @@
 //! run knowledge and works on a store whose config files are long gone.
 //!
 //! `--gc` additionally deletes everything outside the finalized runs'
-//! closures, unfinalized runs and their directories included. Beside an
-//! active run that destroys the run's work; the operator owns that decision,
-//! which is why the sweep is a flag and not the default.
+//! closures, unfinalized runs and their directories included, and it runs
+//! before the packing so that an orphan is unlinked rather than packed and
+//! then rewritten away. Beside an active run the sweep destroys that run's
+//! work; the operator owns that decision, which is why it is a flag and not
+//! the default.
 
 use std::path::Path;
 use std::process::ExitCode;
@@ -29,26 +31,26 @@ use crate::report;
 /// phase.
 pub(crate) fn pack_command(store: &Path, gc: bool) -> ExitCode {
     match maintain(store, gc) {
-        Ok((packed, swept)) => {
-            println!("{}", pack_line(&packed));
+        Ok((swept, packed)) => {
             if let Some(swept) = swept {
                 println!("{}", gc_line(&swept));
             }
+            println!("{}", pack_line(&packed));
             ExitCode::SUCCESS
         }
         Err(e) => report(e),
     }
 }
 
-/// Opens the store and runs the phases the invocation asked for.
-fn maintain(store: &Path, gc: bool) -> Result<(PackReport, Option<GcReport>)> {
+/// Opens the store and runs the phases the invocation asked for, in the
+/// order that does the least work: the sweep first, so an orphan is
+/// unlinked where it lies instead of being packed and then rewritten out of
+/// the pack it just entered. The store both orders leave behind is the
+/// same, down to which objects it holds.
+fn maintain(store: &Path, gc: bool) -> Result<(Option<GcReport>, PackReport)> {
     let store = Store::open(store)?;
-    let packed = store.pack()?;
-    // The sweep runs after the packing, so the objects it condemns are
-    // already in the representation it will delete them from, and a pack is
-    // rewritten once rather than twice.
     let swept = if gc { Some(store.gc()?) } else { None };
-    Ok((packed, swept))
+    Ok((swept, store.pack()?))
 }
 
 /// What the packing phase did, in one line.
