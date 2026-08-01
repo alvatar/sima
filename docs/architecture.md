@@ -304,7 +304,9 @@ One `Store` type over a root directory:
   a footer locating that index; its name is the blake3 hash of the whole
   file. Each object inside is compressed on its own, so reading one object
   decompresses one object, and each is addressed by the hash of its
-  *uncompressed* bytes — the address a loose object has.
+  *uncompressed* bytes — the address a loose object has. The header names
+  the pack format's own version, currently 1, validated when the index
+  loads and versioned independently of the store-format marker.
 - **store-format marker** — the `format` file naming the version of the
   layout beneath it. `Store::open` writes it when absent and refuses any
   other version, naming both, so a layout change fails with a sentence
