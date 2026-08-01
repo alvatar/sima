@@ -115,6 +115,26 @@ impl Store {
         Ok(report)
     }
 
+    /// Deletes `doomed` from the store, in whichever representation each
+    /// object is held: a loose file is unlinked, and a pack holding one is
+    /// replaced by the pack of its survivors. Returns how many packs that
+    /// touched.
+    ///
+    /// No object loses its last copy: a replacement pack is durable before
+    /// the pack it replaces is deleted, and both the replacement's name and
+    /// its bytes are a function of what it holds, so an interrupted
+    /// deletion re-runs onto the identical file.
+    ///
+    /// The caller holds the maintenance lock, which is what serializes this
+    /// against packing and against another deletion.
+    pub(crate) fn delete_objects(
+        &self,
+        _doomed: &[Hash],
+        _lock: &MaintenanceLock,
+    ) -> Result<usize> {
+        unimplemented!("Store::delete_objects")
+    }
+
     /// Takes the store's maintenance lock. A lock already held is
     /// [`sima_core::Error::Validation`] naming the holder recorded in the
     /// file (pid, hostname).
@@ -377,6 +397,85 @@ mod tests {
         let (_dir, store) = temp_store();
         drop(store.acquire_maintenance_lock()?);
         store.acquire_maintenance_lock()?;
+        Ok(())
+    }
+
+    #[test]
+    fn deleting_loose_objects_unlinks_their_files() -> Result<()> {
+        let (dir, store) = temp_store();
+        let objects = put_objects(&store, 4);
+        let lock = store.acquire_maintenance_lock()?;
+
+        let rewritten = store.delete_objects(&objects[..2], &lock)?;
+        assert_eq!(rewritten, 0, "no pack was touched");
+        assert_eq!(loose_objects(dir.path()), objects[2..].iter().copied().collect());
+        readable(&store, &objects[2..]);
+        Ok(())
+    }
+
+    #[test]
+    fn deleting_a_packed_object_rewrites_its_pack_without_it() -> Result<()> {
+        let (dir, store) = temp_store();
+        let objects = put_objects(&store, 4);
+        store.pack()?;
+        let before = packs(dir.path());
+        let lock = store.acquire_maintenance_lock()?;
+
+        let rewritten = store.delete_objects(&objects[..1], &lock)?;
+        assert_eq!(rewritten, 1);
+        let after = packs(dir.path());
+        assert_eq!(after.len(), 1);
+        assert_ne!(after, before, "the pack was replaced, not edited");
+        assert!(!store.has(&objects[0])?);
+        readable(&store, &objects[1..]);
+        Ok(())
+    }
+
+    #[test]
+    fn deleting_every_object_of_a_pack_deletes_the_pack() -> Result<()> {
+        let (dir, store) = temp_store();
+        let objects = put_objects(&store, 3);
+        store.pack()?;
+        let lock = store.acquire_maintenance_lock()?;
+
+        let rewritten = store.delete_objects(&objects, &lock)?;
+        assert_eq!(rewritten, 1, "the pack counts as touched");
+        assert!(packs(dir.path()).is_empty(), "no pack survives");
+        for hash in &objects {
+            assert!(!store.has(hash)?);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn deleting_the_same_objects_twice_converges() -> Result<()> {
+        let (dir, store) = temp_store();
+        let objects = put_objects(&store, 4);
+        store.pack()?;
+        let lock = store.acquire_maintenance_lock()?;
+        store.delete_objects(&objects[..2], &lock)?;
+        let after = packs(dir.path());
+
+        // The replacement is a function of what it holds, so a repeated
+        // deletion lands on the identical file and deletes nothing else.
+        store.delete_objects(&objects[..2], &lock)?;
+        assert_eq!(packs(dir.path()), after);
+        readable(&store, &objects[2..]);
+        Ok(())
+    }
+
+    #[test]
+    fn deleting_an_object_the_store_does_not_hold_is_a_no_op() -> Result<()> {
+        let (dir, store) = temp_store();
+        let objects = put_objects(&store, 2);
+        store.pack()?;
+        let before = packs(dir.path());
+        let lock = store.acquire_maintenance_lock()?;
+
+        let rewritten = store.delete_objects(&[hash_bytes(b"never stored")], &lock)?;
+        assert_eq!(rewritten, 0);
+        assert_eq!(packs(dir.path()), before);
+        readable(&store, &objects);
         Ok(())
     }
 }

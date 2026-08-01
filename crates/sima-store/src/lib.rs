@@ -53,7 +53,7 @@ pub use lock::RunLock;
 pub use machines::{IncidentKind, MachineIncident};
 pub use manifest::{Manifest, ManifestEntry};
 pub use pack::PackReport;
-pub use retention::RemovalReport;
+pub use retention::{GcReport, RemovalReport};
 pub use spend::SpendEntry;
 pub use store::Store;
 pub use sync::{ObjectScope, SYNC_PROTOCOL_VERSION, SyncReport, SyncRole};
