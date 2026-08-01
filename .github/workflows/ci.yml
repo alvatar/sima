@@ -13,14 +13,27 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
 
-  # The suite drives real GPUs and compiles CUDA C with NVRTC, so it needs a
-  # runner with a Vulkan device, an NVIDIA device, and libnvrtc on the loader
-  # path. There is no device-free lane: green here means the device tests ran.
+  # The tests that need only a CPU, on every push. Green here means that
+  # subset passed on a hosted runner, and says nothing about the tests this
+  # lane skipped.
+  test-cpu:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # `on_device` in a test's path marks it as needing the device machine,
+      # and this flag is the whole definition of the lane. The marker polices
+      # itself: a device test that omits it runs here and dies on a missing
+      # driver, so an omission turns this job red instead of passing unseen.
+      - run: cargo test --workspace -- --skip on_device
+
+  # The whole suite, the device tests included, on a machine with a Vulkan
+  # device, an NVIDIA device, and libnvrtc on the loader path. Green here
+  # means those tests ran on real hardware, which is the claim `test-cpu`
+  # cannot make.
   #
   # This job stays queued until a self-hosted runner labelled `gpu` is
-  # registered on a machine with those devices. Until then the badge is red
-  # because the suite has nowhere to run, which is an infrastructure gap and
-  # not a test being skipped.
+  # registered on such a machine. A queued `test` beside a green `test-cpu`
+  # is a runner that is absent, not a test that was skipped.
   test:
     runs-on: [self-hosted, gpu]
     steps:
