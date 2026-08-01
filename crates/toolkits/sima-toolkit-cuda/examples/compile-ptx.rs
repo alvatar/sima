@@ -2,11 +2,12 @@
 //! writes the result to stdout. The regeneration step for every committed
 //! `.ptx` in the workspace.
 //!
-//! Needs `libnvrtc`, which opens no device and needs no driver:
+//! Needs `libnvrtc`, which opens no device and needs no driver. The build
+//! vendors the pinned release beside this binary, which reaches it through its
+//! `RUNPATH`:
 //!
 //! ```text
-//! LD_LIBRARY_PATH=<dir holding libnvrtc.so.12> \
-//!   cargo run -p sima-toolkit-cuda --example compile-ptx -- kernel.cu > kernel.ptx
+//! cargo run -p sima-toolkit-cuda --example compile-ptx -- kernel.cu > kernel.ptx
 //! ```
 //!
 //! Each kernel's regeneration test then asserts the committed artifact is
