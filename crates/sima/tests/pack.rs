@@ -87,7 +87,10 @@ fn pack_consolidates_a_store_a_run_wrote_and_the_run_still_reads() {
     let output = sima(&["pack", store.to_str().expect("utf-8 path")]);
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let text = stdout(&output);
-    assert!(text.contains("packed"), "the report names what it did: {text}");
+    assert!(
+        text.contains("packed"),
+        "the report names what it did: {text}"
+    );
     assert!(
         text.contains(&before.to_string()),
         "the report counts the objects: {text}"
@@ -132,7 +135,10 @@ fn pack_with_gc_keeps_a_finalized_run_whole() {
     let output = sima(&["pack", path, "--gc"]);
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let text = stdout(&output);
-    assert!(text.contains("gc:"), "the sweep reports its own line: {text}");
+    assert!(
+        text.contains("gc:"),
+        "the sweep reports its own line: {text}"
+    );
 
     assert_eq!(manifest_of(&config).expect("manifest"), manifest);
     let report = sima(&["report", config.to_str().expect("utf-8 path")]);
@@ -178,6 +184,28 @@ fn the_usage_text_names_both_forms_of_the_verb() {
     let text = stderr(&output);
     assert!(text.contains("sima pack <store-dir>"), "{text}");
     assert!(text.contains("--gc"), "{text}");
+}
+
+#[test]
+fn a_store_past_the_threshold_is_told_to_pack() {
+    let (_dir, config, store) = finalized_run(r#""succeed""#);
+    // The estimate scales one fan-out subdirectory by 256, so filling `00`
+    // with 391 entries puts the store past the six-figure threshold without
+    // writing six figures of files. The names are object-shaped, so every
+    // walk over `objects/` still reads them as objects.
+    let fanout = store.join("objects").join("00");
+    std::fs::create_dir_all(&fanout).expect("create fan-out dir");
+    for i in 0..391u32 {
+        std::fs::write(fanout.join(format!("00{i:062x}")), b"").expect("write object");
+    }
+    for verb in ["status", "report"] {
+        let output = sima(&[verb, config.to_str().expect("utf-8 path")]);
+        let text = stderr(&output);
+        assert!(
+            text.contains("loose objects") && text.contains("sima pack"),
+            "{verb} recommends packing: {text}"
+        );
+    }
 }
 
 #[test]
