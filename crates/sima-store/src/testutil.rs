@@ -1,12 +1,17 @@
 //! Helpers shared by the store test modules.
 
+use std::fs;
+
 use tempfile::TempDir;
 
+use sima_core::Hash;
 use sima_model::{
     ArtifactRef, Environment, EnvironmentComponent, EnvironmentValue, FormatId, GeneratorConfig,
     GeneratorId, Params, RunConfig, Spec, TaskIdentity, TaskRecord,
 };
 
+use crate::layout;
+use crate::pack::format;
 use crate::Store;
 
 /// Opens a store over a fresh temporary directory, keeping the directory
@@ -15,6 +20,23 @@ pub(crate) fn temp_store() -> (TempDir, Store) {
     let dir = tempfile::tempdir().expect("create temp dir");
     let store = Store::open(dir.path()).expect("open temp store");
     (dir, store)
+}
+
+/// Packs `objects` into one pack and deletes their loose files: the state
+/// [`Store::pack`] leaves behind, built directly so the read path is tested
+/// against it without the maintenance operation. Returns the pack's name.
+pub(crate) fn pack_objects(store: &Store, objects: &[Hash]) -> Hash {
+    let loose = |hash: &Hash| fs::read(layout::object_path(store.root(), hash)).map_err(|e| {
+        sima_core::Error::Io {
+            path: layout::object_path(store.root(), hash),
+            source: e,
+        }
+    });
+    let name = format::write_pack(store.root(), objects, &loose).expect("write pack");
+    for hash in objects {
+        fs::remove_file(layout::object_path(store.root(), hash)).expect("delete loose object");
+    }
+    name
 }
 
 /// The spec fixture shared by task tests.

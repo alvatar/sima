@@ -57,11 +57,19 @@ impl Store {
         let path = layout::object_path(self.root(), hash);
         path.try_exists().map_err(|e| io_error(&path, e))
     }
+
+    /// An estimate of how many loose objects the store holds, from one
+    /// directory read.
+    pub fn loose_object_estimate(&self) -> Result<u64> {
+        unimplemented!("loose_object_estimate")
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::testutil::temp_store;
+    use crate::layout;
+    use crate::pack::format;
+    use crate::testutil::{pack_objects, temp_store};
     use sima_core::{Error, Hash, Result, hash_bytes};
     use std::fs;
     use std::time::{Duration, SystemTime};
@@ -185,6 +193,137 @@ mod tests {
                     .count()
             })
             .sum()
+    }
+
+    #[test]
+    fn a_packed_object_answers_get_and_has_after_its_loose_file_is_gone() -> Result<()> {
+        let (dir, store) = temp_store();
+        let hash = store.put(b"packed payload")?;
+        pack_objects(&store, &[hash]);
+        // The loose file is gone; the pack is the only copy left.
+        assert!(!layout::object_path(dir.path(), &hash).exists());
+        assert!(store.has(&hash)?);
+        assert_eq!(store.get(&hash)?, b"packed payload");
+        Ok(())
+    }
+
+    #[test]
+    fn put_of_packed_content_writes_no_loose_file() -> Result<()> {
+        let (dir, store) = temp_store();
+        let hash = store.put(b"packed payload")?;
+        pack_objects(&store, &[hash]);
+        // `put` skips what the store already holds, in whichever
+        // representation it holds it.
+        assert_eq!(store.put(b"packed payload")?, hash);
+        assert_eq!(object_count(dir.path()), 0);
+        Ok(())
+    }
+
+    #[test]
+    fn get_of_an_absent_hash_over_a_packed_store_is_missing_object() -> Result<()> {
+        let (_dir, store) = temp_store();
+        let hash = store.put(b"packed payload")?;
+        pack_objects(&store, &[hash]);
+        let absent = hash_bytes(b"never stored");
+        assert!(!store.has(&absent)?);
+        match store.get(&absent) {
+            Err(Error::MissingObject(h)) => assert_eq!(h, absent),
+            other => panic!("expected MissingObject, got {other:?}"),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn get_of_a_tampered_pack_entry_is_corruption() -> Result<()> {
+        let (dir, store) = temp_store();
+        let hash = store.put(b"packed payload")?;
+        let pack = pack_objects(&store, &[hash]);
+        // Flip a byte of the pack's data region, past the header: the read
+        // re-hashes what it decoded, so the tampering surfaces here exactly
+        // as it does on a loose object.
+        let path = layout::pack_path(dir.path(), &pack);
+        let mut bytes = fs::read(&path).expect("read pack");
+        bytes[12] ^= 0xff;
+        fs::write(&path, &bytes).expect("tamper pack");
+        assert!(matches!(store.get(&hash), Err(Error::Corruption(_))));
+        Ok(())
+    }
+
+    #[test]
+    fn a_pack_written_after_the_first_lookup_is_found() -> Result<()> {
+        let (_dir, store) = temp_store();
+        // A miss loads the store's view of packs/, so a pack that appeared
+        // after this handle last looked is still found.
+        let absent = hash_bytes(b"packed later");
+        assert!(!store.has(&absent)?);
+        let hash = store.put(b"packed later")?;
+        pack_objects(&store, &[hash]);
+        assert!(store.has(&hash)?);
+        assert_eq!(store.get(&hash)?, b"packed later");
+        Ok(())
+    }
+
+    #[test]
+    fn a_pack_replaced_between_the_lookup_and_the_read_still_answers() -> Result<()> {
+        let (_dir, store) = temp_store();
+        let kept = store.put(b"kept payload")?;
+        let dropped = store.put(b"dropped payload")?;
+        let first = pack_objects(&store, &[kept, dropped]);
+        // Load the cache against the first pack, then rewrite it the way a
+        // removal does: the replacement lands durably before the original
+        // goes, so the reader that meets the vanished file finds the object
+        // on its retry.
+        assert_eq!(store.get(&kept)?, b"kept payload");
+        let replacement = format::write_pack(store.root(), &[kept], &|hash| store.get(hash))?;
+        assert_ne!(replacement, first);
+        fs::remove_file(layout::pack_path(store.root(), &first)).expect("delete the doomed pack");
+        assert_eq!(store.get(&kept)?, b"kept payload");
+        assert!(matches!(
+            store.get(&dropped),
+            Err(Error::MissingObject(_))
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn the_loose_estimate_scales_one_fan_out_directory() -> Result<()> {
+        let (dir, store) = temp_store();
+        // The fan-out is uniform, so one subdirectory's count stands for
+        // all 256 of them. Built by hand, the arithmetic is exact.
+        let fanout = dir.path().join("objects").join("00");
+        fs::create_dir_all(&fanout).expect("create fan-out dir");
+        for i in 0..3u8 {
+            fs::write(fanout.join(format!("{:02x}{}", i, "0".repeat(62))), b"")
+                .expect("write object");
+        }
+        assert_eq!(store.loose_object_estimate()?, 3 * 256);
+        Ok(())
+    }
+
+    #[test]
+    fn the_loose_estimate_of_a_store_without_that_fan_out_is_zero() -> Result<()> {
+        let (_dir, store) = temp_store();
+        // An empty store, and one whose objects all landed elsewhere, both
+        // estimate zero — coarse exactly where the count is small enough
+        // for the answer not to matter.
+        assert_eq!(store.loose_object_estimate()?, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn the_loose_estimate_lands_in_the_order_of_the_true_count() -> Result<()> {
+        let (_dir, store) = temp_store();
+        for i in 0..1000u64 {
+            store.put(&i.to_le_bytes())?;
+        }
+        // blake3 spreads 1000 objects over 256 subdirectories, so the
+        // sampled directory holds about four of them. A bound of 25 is far
+        // beyond anything that spread produces.
+        assert!(
+            store.loose_object_estimate()? <= 25 * 256,
+            "the estimate stays in the order of the true count"
+        );
+        Ok(())
     }
 
     #[test]

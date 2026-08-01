@@ -7,10 +7,13 @@
 //!
 //! - [`format`] — the pack file's bytes: writing one, loading and validating
 //!   its index, reading one entry back decoded and verified.
+//! - [`cache`] — where each packed object lives, held in memory: lookup,
+//!   rescan, eviction.
 //!
 //! Object identity is untouched by packing. A packed object is addressed by
 //! the blake3 digest of its uncompressed bytes, exactly as a loose one is,
 //! and every read re-hashes what it decoded — the verified-read contract
 //! holds through packs.
 
+pub(crate) mod cache;
 pub(crate) mod format;
