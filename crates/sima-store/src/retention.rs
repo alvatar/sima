@@ -377,8 +377,8 @@ mod tests {
 
     use super::*;
     use crate::testutil::{
-        record_with_stored_artifact, sample_identity, sample_run_config, store_identity_components,
-        temp_store,
+        pack_names, record_with_stored_artifact, sample_identity, sample_run_config,
+        store_identity_components, temp_store,
     };
     use sima_core::hash_bytes;
 
@@ -626,19 +626,6 @@ mod tests {
         assert_eq!(object_file_count(dir.path()), 0);
         assert!(!dir.path().join("runs").join(a.to_string()).exists());
         Ok(())
-    }
-
-    /// The packs a store holds, by name.
-    fn pack_names(root: &Path) -> BTreeSet<Hash> {
-        fs::read_dir(root.join("packs"))
-            .expect("read packs dir")
-            .filter_map(|entry| {
-                let name = entry.expect("pack entry").file_name();
-                let name = name.to_str().expect("utf-8 name").to_string();
-                name.strip_suffix(".pack")
-                    .map(|hex| Hash::from_hex(hex).expect("pack name"))
-            })
-            .collect()
     }
 
     #[test]

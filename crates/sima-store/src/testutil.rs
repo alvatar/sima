@@ -1,6 +1,8 @@
 //! Helpers shared by the store test modules.
 
+use std::collections::BTreeSet;
 use std::fs;
+use std::path::Path;
 
 use tempfile::TempDir;
 
@@ -32,6 +34,20 @@ pub(crate) fn pack_objects(store: &Store, objects: &[Hash]) -> Hash {
         fs::remove_file(layout::object_path(store.root(), hash)).expect("delete loose object");
     }
     name
+}
+
+/// The packs a store holds, by name. The maintenance lock shares the
+/// directory and carries no pack suffix, so the suffix is what selects.
+pub(crate) fn pack_names(root: &Path) -> BTreeSet<Hash> {
+    fs::read_dir(layout::packs_dir(root))
+        .expect("read packs dir")
+        .filter_map(|entry| {
+            let name = entry.expect("pack entry").file_name();
+            let name = name.to_str().expect("utf-8 name").to_string();
+            name.strip_suffix(layout::PACK_SUFFIX)
+                .map(|hex| Hash::from_hex(hex).expect("pack name"))
+        })
+        .collect()
 }
 
 /// The spec fixture shared by task tests.

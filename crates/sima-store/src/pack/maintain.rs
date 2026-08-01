@@ -203,7 +203,7 @@ fn loose_sizes(root: &Path, objects: &[Hash]) -> Result<Vec<(Hash, u64)>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testutil::temp_store;
+    use crate::testutil::{pack_names, temp_store};
     use sima_core::hash_bytes;
     use std::collections::BTreeSet;
 
@@ -235,19 +235,6 @@ mod tests {
         found
     }
 
-    /// The packs a store holds, by name.
-    fn packs(root: &Path) -> BTreeSet<Hash> {
-        fs::read_dir(root.join("packs"))
-            .expect("read packs dir")
-            .filter_map(|entry| {
-                let name = entry.expect("pack entry").file_name();
-                let name = name.to_str().expect("utf-8 name").to_string();
-                name.strip_suffix(".pack")
-                    .map(|hex| Hash::from_hex(hex).expect("pack name"))
-            })
-            .collect()
-    }
-
     /// Every object the store answers for, read back and verified.
     fn readable(store: &Store, objects: &[Hash]) {
         for hash in objects {
@@ -273,7 +260,7 @@ mod tests {
         // The objects are readable, and the files that held them are gone.
         readable(&store, &objects);
         assert!(loose_objects(dir.path()).is_empty());
-        assert_eq!(packs(dir.path()).len(), 1);
+        assert_eq!(pack_names(dir.path()).len(), 1);
         // A completed operation leaves nothing in flight.
         assert_eq!(
             fs::read_dir(dir.path().join("tmp"))
@@ -289,7 +276,7 @@ mod tests {
         let (dir, store) = temp_store();
         let objects = put_objects(&store, 4);
         store.pack()?;
-        let before = packs(dir.path());
+        let before = pack_names(dir.path());
 
         let report = store.pack()?;
         assert_eq!(
@@ -302,7 +289,7 @@ mod tests {
                 stored_bytes: 0,
             }
         );
-        assert_eq!(packs(dir.path()), before, "the packs are untouched");
+        assert_eq!(pack_names(dir.path()), before, "the packs are untouched");
         readable(&store, &objects);
         Ok(())
     }
@@ -312,7 +299,7 @@ mod tests {
         let (dir, store) = temp_store();
         let objects = put_objects(&store, 2);
         store.pack()?;
-        let before = packs(dir.path());
+        let before = pack_names(dir.path());
         // A loose copy of an object the packs already hold: what a crash
         // between the pack write and the loose deletion leaves.
         let path = layout::object_path(dir.path(), &objects[0]);
@@ -323,7 +310,7 @@ mod tests {
         assert_eq!(report.packs_written, 0);
         assert_eq!(report.objects_packed, 0);
         assert_eq!(report.loose_removed, 1);
-        assert_eq!(packs(dir.path()), before, "nothing was repacked");
+        assert_eq!(pack_names(dir.path()), before, "nothing was repacked");
         assert!(loose_objects(dir.path()).is_empty());
         readable(&store, &objects);
         Ok(())
@@ -348,7 +335,7 @@ mod tests {
         assert!(loose_objects(dir.path()).is_empty());
         // The partition differs from an uninterrupted run's, which is a fact
         // about the store's shape and not about what it holds.
-        assert_eq!(packs(dir.path()).len(), 2);
+        assert_eq!(pack_names(dir.path()).len(), 2);
         Ok(())
     }
 
@@ -366,7 +353,7 @@ mod tests {
         let report = store.pack()?;
         assert_eq!(report.packs_written, 0, "nothing is written twice");
         assert_eq!(report.loose_removed, 2);
-        assert_eq!(packs(dir.path()), BTreeSet::from([name]));
+        assert_eq!(pack_names(dir.path()), BTreeSet::from([name]));
         assert!(loose_objects(dir.path()).is_empty());
         readable(&store, &objects);
         Ok(())
@@ -457,12 +444,12 @@ mod tests {
         let (dir, store) = temp_store();
         let objects = put_objects(&store, 4);
         store.pack()?;
-        let before = packs(dir.path());
+        let before = pack_names(dir.path());
         let lock = store.acquire_maintenance_lock()?;
 
         let rewritten = store.delete_objects(&objects[..1], &lock)?;
         assert_eq!(rewritten, 1);
-        let after = packs(dir.path());
+        let after = pack_names(dir.path());
         assert_eq!(after.len(), 1);
         assert_ne!(after, before, "the pack was replaced, not edited");
         assert!(!store.has(&objects[0])?);
@@ -479,7 +466,7 @@ mod tests {
 
         let rewritten = store.delete_objects(&objects, &lock)?;
         assert_eq!(rewritten, 1, "the pack counts as touched");
-        assert!(packs(dir.path()).is_empty(), "no pack survives");
+        assert!(pack_names(dir.path()).is_empty(), "no pack survives");
         for hash in &objects {
             assert!(!store.has(hash)?);
         }
@@ -493,12 +480,12 @@ mod tests {
         store.pack()?;
         let lock = store.acquire_maintenance_lock()?;
         store.delete_objects(&objects[..2], &lock)?;
-        let after = packs(dir.path());
+        let after = pack_names(dir.path());
 
         // The replacement is a function of what it holds, so a repeated
         // deletion lands on the identical file and deletes nothing else.
         store.delete_objects(&objects[..2], &lock)?;
-        assert_eq!(packs(dir.path()), after);
+        assert_eq!(pack_names(dir.path()), after);
         readable(&store, &objects[2..]);
         Ok(())
     }
@@ -508,12 +495,12 @@ mod tests {
         let (dir, store) = temp_store();
         let objects = put_objects(&store, 2);
         store.pack()?;
-        let before = packs(dir.path());
+        let before = pack_names(dir.path());
         let lock = store.acquire_maintenance_lock()?;
 
         let rewritten = store.delete_objects(&[hash_bytes(b"never stored")], &lock)?;
         assert_eq!(rewritten, 0);
-        assert_eq!(packs(dir.path()), before);
+        assert_eq!(pack_names(dir.path()), before);
         readable(&store, &objects);
         Ok(())
     }
