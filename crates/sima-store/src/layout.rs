@@ -38,15 +38,22 @@ pub(crate) fn packs_dir(root: &Path) -> PathBuf {
     root.join("packs")
 }
 
+/// The suffix a pack file's name carries, which is what tells a pack from
+/// the maintenance lock beside it.
+pub(crate) const PACK_SUFFIX: &str = ".pack";
+
+/// The maintenance lock's file name, inside `packs/`.
+pub(crate) const MAINTENANCE_LOCK: &str = "maintenance.lock";
+
 /// A pack's path: `packs/<64-hex>.pack`, named by the blake3 digest of the
 /// whole file.
 pub(crate) fn pack_path(root: &Path, name: &Hash) -> PathBuf {
-    packs_dir(root).join(format!("{name}.pack"))
+    packs_dir(root).join(format!("{name}{PACK_SUFFIX}"))
 }
 
 /// The maintenance lock: `packs/maintenance.lock`.
 pub(crate) fn maintenance_lock_path(root: &Path) -> PathBuf {
-    packs_dir(root).join("maintenance.lock")
+    packs_dir(root).join(MAINTENANCE_LOCK)
 }
 
 /// The store-format marker: `<root>/format`.
@@ -89,11 +96,17 @@ pub(crate) fn runs_dir(root: &Path) -> PathBuf {
     root.join("runs")
 }
 
+/// One fan-out subdirectory: `objects/<aa>/`, holding every object whose
+/// address starts with those two hex characters.
+pub(crate) fn fanout_dir(root: &Path, prefix: &str) -> PathBuf {
+    objects_dir(root).join(prefix)
+}
+
 /// An object's CAS path: `objects/<aa>/<64-hex>`, fanned out by the first
 /// two hex characters of its address.
 pub(crate) fn object_path(root: &Path, hash: &Hash) -> PathBuf {
     let hex = hash.to_string();
-    objects_dir(root).join(&hex[..2]).join(hex)
+    fanout_dir(root, &hex[..2]).join(hex)
 }
 
 /// A task's index-entry path: `tasks/<task-key-hex>`.

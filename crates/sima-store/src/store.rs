@@ -3,11 +3,13 @@
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
+use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use sima_core::{Error, Result};
 
 use crate::atomic::{self, io_error};
 use crate::layout;
+use crate::pack::cache::PackCache;
 
 /// The store format this binary writes and reads. The number moves only on
 /// a layout change; a store marked otherwise is refused at open, which is
@@ -23,6 +25,10 @@ const FORMAT_VERSION: u32 = 1;
 /// with `Corruption`.
 pub struct Store {
     root: PathBuf,
+    /// Where this handle's packed objects live. Derived state, rebuilt
+    /// from `packs/` whenever a lookup misses, so it is behind a lock
+    /// rather than in the handle's type: reads stay `&self`.
+    packs: RwLock<PackCache>,
 }
 
 impl Store {
@@ -71,13 +77,34 @@ impl Store {
                 format!("{FORMAT_VERSION}\n").as_bytes(),
             )?;
         }
-        Ok(Store { root })
+        Ok(Store {
+            root,
+            packs: RwLock::new(PackCache::new()),
+        })
     }
 
     /// The root directory this store was opened on. All store paths are
     /// derived from it.
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// The pack cache for reading, recovering a poisoned lock. Poisoning
+    /// would mean a thread panicked holding the lock; the cache's own
+    /// operations do not panic, and a stale or smaller view is corrected by
+    /// the next rescan, so the recovered state is safe to read.
+    pub(crate) fn packs(&self) -> RwLockReadGuard<'_, PackCache> {
+        self.packs
+            .read()
+            .unwrap_or_else(|poison| poison.into_inner())
+    }
+
+    /// The pack cache for updating, recovering a poisoned lock for the
+    /// reason [`Store::packs`] does.
+    pub(crate) fn packs_mut(&self) -> RwLockWriteGuard<'_, PackCache> {
+        self.packs
+            .write()
+            .unwrap_or_else(|poison| poison.into_inner())
     }
 }
 

@@ -10,9 +10,9 @@ use sima_model::{
     GeneratorId, Params, RunConfig, Spec, TaskIdentity, TaskRecord,
 };
 
+use crate::Store;
 use crate::layout;
 use crate::pack::format;
-use crate::Store;
 
 /// Opens a store over a fresh temporary directory, keeping the directory
 /// guard alive for the test's duration.
@@ -26,13 +26,8 @@ pub(crate) fn temp_store() -> (TempDir, Store) {
 /// [`Store::pack`] leaves behind, built directly so the read path is tested
 /// against it without the maintenance operation. Returns the pack's name.
 pub(crate) fn pack_objects(store: &Store, objects: &[Hash]) -> Hash {
-    let loose = |hash: &Hash| fs::read(layout::object_path(store.root(), hash)).map_err(|e| {
-        sima_core::Error::Io {
-            path: layout::object_path(store.root(), hash),
-            source: e,
-        }
-    });
-    let name = format::write_pack(store.root(), objects, &loose).expect("write pack");
+    let name =
+        format::write_pack(store.root(), objects, &|hash| store.get(hash)).expect("write pack");
     for hash in objects {
         fs::remove_file(layout::object_path(store.root(), hash)).expect("delete loose object");
     }

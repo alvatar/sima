@@ -4,6 +4,12 @@
 //! records, configs, state snapshots, artifacts — lands here as an object
 //! addressed by its blake3 digest. Deletion is retention work; the CAS
 //! surface is exactly these three methods.
+//!
+//! An object lives loose under `objects/` or inside a pack under `packs/`,
+//! and which one is a fact about the store's shape, never about the object:
+//! reads look loose first, then in the packs, and both paths verify the
+//! bytes against the address before returning them. Writes always land
+//! loose — consolidating them into packs is maintenance work.
 
 use std::fs;
 use std::io::ErrorKind;
@@ -12,7 +18,12 @@ use sima_core::{Error, Hash, Result, hash_bytes};
 
 use crate::atomic::{self, io_error};
 use crate::layout;
+use crate::pack::format::{self, PackEntry};
 use crate::store::Store;
+
+/// Fan-out subdirectory the loose-object estimate samples. blake3 spreads
+/// addresses uniformly, so any one of the 256 stands for all of them.
+const ESTIMATE_SAMPLE: &str = "00";
 
 impl Store {
     /// Stores `bytes` under their blake3 address and returns it.
@@ -36,11 +47,13 @@ impl Store {
     /// Reads the object at `hash`, verifying every read: the bytes are
     /// re-hashed, and a digest mismatch is [`Error::Corruption`]. An
     /// absent object is [`Error::MissingObject`].
+    ///
+    /// A loose file answers first; failing that, the packs do.
     pub fn get(&self, hash: &Hash) -> Result<Vec<u8>> {
         let path = layout::object_path(self.root(), hash);
         let bytes = match fs::read(&path) {
             Ok(bytes) => bytes,
-            Err(e) if e.kind() == ErrorKind::NotFound => return Err(Error::MissingObject(*hash)),
+            Err(e) if e.kind() == ErrorKind::NotFound => return self.get_packed(hash),
             Err(e) => return Err(io_error(&path, e)),
         };
         let actual = hash_bytes(&bytes);
@@ -52,16 +65,62 @@ impl Store {
         Ok(bytes)
     }
 
-    /// Reports whether the object at `hash` exists, without reading it.
+    /// Reports whether the object at `hash` exists, without reading it,
+    /// in either representation.
     pub fn has(&self, hash: &Hash) -> Result<bool> {
         let path = layout::object_path(self.root(), hash);
-        path.try_exists().map_err(|e| io_error(&path, e))
+        if path.try_exists().map_err(|e| io_error(&path, e))? {
+            return Ok(true);
+        }
+        Ok(self.locate_packed(hash)?.is_some())
     }
 
     /// An estimate of how many loose objects the store holds, from one
-    /// directory read.
+    /// directory read: the addresses spread uniformly over the 256 fan-out
+    /// subdirectories, so one subdirectory's count times 256 is the whole.
+    /// A store without that subdirectory estimates zero, which is coarse
+    /// exactly where the count is too small for the answer to matter.
     pub fn loose_object_estimate(&self) -> Result<u64> {
-        unimplemented!("loose_object_estimate")
+        let dir = layout::fanout_dir(self.root(), ESTIMATE_SAMPLE);
+        let sampled = match fs::read_dir(&dir) {
+            Ok(entries) => entries.count() as u64,
+            Err(e) if e.kind() == ErrorKind::NotFound => return Ok(0),
+            Err(e) => return Err(io_error(&dir, e)),
+        };
+        Ok(sampled * 256)
+    }
+
+    /// Reads an object out of the pack that holds it.
+    ///
+    /// A pack that vanished between the lookup and the read is a rewrite
+    /// running beside this read: the replacement is durable before the
+    /// original goes, so forgetting the vanished pack and searching once
+    /// more finds the object wherever it moved to.
+    fn get_packed(&self, hash: &Hash) -> Result<Vec<u8>> {
+        for _ in 0..2 {
+            let Some((pack, entry)) = self.locate_packed(hash)? else {
+                break;
+            };
+            match format::read_entry(&layout::pack_path(self.root(), &pack), hash, &entry) {
+                Err(Error::Io { source, .. }) if source.kind() == ErrorKind::NotFound => {
+                    self.packs_mut().forget(&pack);
+                }
+                other => return other,
+            }
+        }
+        Err(Error::MissingObject(*hash))
+    }
+
+    /// The pack holding `hash` and its entry, `None` when no pack does.
+    /// A miss rescans `packs/` once, which is what makes a pack another
+    /// process wrote visible to this handle.
+    fn locate_packed(&self, hash: &Hash) -> Result<Option<(Hash, PackEntry)>> {
+        if let Some(found) = self.packs().lookup(hash) {
+            return Ok(Some(found));
+        }
+        let mut cache = self.packs_mut();
+        cache.rescan(self.root())?;
+        Ok(cache.lookup(hash))
     }
 }
 
@@ -278,10 +337,7 @@ mod tests {
         assert_ne!(replacement, first);
         fs::remove_file(layout::pack_path(store.root(), &first)).expect("delete the doomed pack");
         assert_eq!(store.get(&kept)?, b"kept payload");
-        assert!(matches!(
-            store.get(&dropped),
-            Err(Error::MissingObject(_))
-        ));
+        assert!(matches!(store.get(&dropped), Err(Error::MissingObject(_))));
         Ok(())
     }
 
