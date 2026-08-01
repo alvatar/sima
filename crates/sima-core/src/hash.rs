@@ -99,6 +99,32 @@ pub fn hash_bytes(data: &[u8]) -> Hash {
     Hash(*blake3::hash(data).as_bytes())
 }
 
+/// Incremental blake3 over content that is never held whole in memory.
+///
+/// [`hash_bytes`] answers for a byte slice; this answers for a byte stream —
+/// content hashed while it is written or read, such as a store pack file
+/// whose own digest is its name. Feeding the same bytes in any chunking
+/// yields the digest [`hash_bytes`] gives for them concatenated.
+#[derive(Default)]
+pub struct Hasher(blake3::Hasher);
+
+impl Hasher {
+    /// Starts an empty hash state.
+    pub fn new() -> Hasher {
+        Hasher(blake3::Hasher::new())
+    }
+
+    /// Feeds the next bytes of the content.
+    pub fn update(&mut self, bytes: &[u8]) {
+        self.0.update(bytes);
+    }
+
+    /// The digest of everything fed so far.
+    pub fn finish(&self) -> Hash {
+        Hash(*self.0.finalize().as_bytes())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -118,6 +144,26 @@ mod tests {
     #[test]
     fn hash_bytes_matches_official_single_byte_vector() -> Result<()> {
         assert_eq!(hash_bytes(&[0u8]), Hash::from_hex(BYTE0_HEX)?);
+        Ok(())
+    }
+
+    #[test]
+    fn incremental_hashing_matches_hashing_the_whole_content() {
+        let content: Vec<u8> = (0..=255u8).cycle().take(10_000).collect();
+        // Any chunking of the same bytes is the same content, so every one
+        // of these must land on the digest of the whole.
+        for chunk in [1, 7, 4096, content.len()] {
+            let mut hasher = Hasher::new();
+            for part in content.chunks(chunk) {
+                hasher.update(part);
+            }
+            assert_eq!(hasher.finish(), hash_bytes(&content), "chunked by {chunk}");
+        }
+    }
+
+    #[test]
+    fn an_unfed_hasher_answers_the_empty_digest() -> Result<()> {
+        assert_eq!(Hasher::new().finish(), Hash::from_hex(EMPTY_HEX)?);
         Ok(())
     }
 

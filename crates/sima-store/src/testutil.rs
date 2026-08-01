@@ -1,13 +1,20 @@
 //! Helpers shared by the store test modules.
 
+use std::collections::BTreeSet;
+use std::fs;
+use std::path::Path;
+
 use tempfile::TempDir;
 
+use sima_core::Hash;
 use sima_model::{
     ArtifactRef, Environment, EnvironmentComponent, EnvironmentValue, FormatId, GeneratorConfig,
     GeneratorId, Params, RunConfig, Spec, TaskIdentity, TaskRecord,
 };
 
 use crate::Store;
+use crate::layout;
+use crate::pack::format;
 
 /// Opens a store over a fresh temporary directory, keeping the directory
 /// guard alive for the test's duration.
@@ -15,6 +22,32 @@ pub(crate) fn temp_store() -> (TempDir, Store) {
     let dir = tempfile::tempdir().expect("create temp dir");
     let store = Store::open(dir.path()).expect("open temp store");
     (dir, store)
+}
+
+/// Packs `objects` into one pack and deletes their loose files: the state
+/// [`Store::pack`] leaves behind, built directly so the read path is tested
+/// against it without the maintenance operation. Returns the pack's name.
+pub(crate) fn pack_objects(store: &Store, objects: &[Hash]) -> Hash {
+    let name =
+        format::write_pack(store.root(), objects, &|hash| store.get(hash)).expect("write pack");
+    for hash in objects {
+        fs::remove_file(layout::object_path(store.root(), hash)).expect("delete loose object");
+    }
+    name
+}
+
+/// The packs a store holds, by name. The maintenance lock shares the
+/// directory and carries no pack suffix, so the suffix is what selects.
+pub(crate) fn pack_names(root: &Path) -> BTreeSet<Hash> {
+    fs::read_dir(layout::packs_dir(root))
+        .expect("read packs dir")
+        .filter_map(|entry| {
+            let name = entry.expect("pack entry").file_name();
+            let name = name.to_str().expect("utf-8 name").to_string();
+            name.strip_suffix(layout::PACK_SUFFIX)
+                .map(|hex| Hash::from_hex(hex).expect("pack name"))
+        })
+        .collect()
 }
 
 /// The spec fixture shared by task tests.

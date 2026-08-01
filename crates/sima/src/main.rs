@@ -38,6 +38,7 @@
 
 mod follow;
 mod migrate;
+mod pack;
 mod reconcile;
 mod render;
 mod tui;
@@ -67,10 +68,28 @@ pub(crate) const EXIT_INTERRUPTED: u8 = 130;
 /// fault, config error, usage error.
 pub(crate) const EXIT_ERROR: u8 = 1;
 
+/// Loose objects past which the binary recommends packing. One file per
+/// object costs one inode each, and six figures of them is where that
+/// starts to press on the filesystem rather than merely occupy it.
+const LOOSE_OBJECT_WARN_THRESHOLD: u64 = 100_000;
+
+/// The verbs that open a local store to read or to drive, and so are where
+/// a recommendation to pack it belongs. `tui` is excluded because its
+/// alternate screen swallows stderr, and `pack` because it is the answer.
+const STORE_OPENING_VERBS: [&str; 5] = ["run", "status", "report", "migrate", "rm"];
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let (args, host) = split_target(&args);
     let (args, accept) = split_binary_change(&args);
+    // A store on the far side of `--on` is not this machine's to pack, so
+    // only a local invocation is measured.
+    if host.is_none()
+        && let [verb, config, ..] = args[..]
+        && STORE_OPENING_VERBS.contains(&verb)
+    {
+        warn_on_loose_objects(&resolve_config(config));
+    }
     match args[..] {
         // The write commands never observe: `run` drives a run, which happens
         // where the hardware is, and `rm` and `reconcile` mutate a store. A
@@ -83,6 +102,11 @@ fn main() -> ExitCode {
         }
         ["migrate", config] if host.is_none() => migrate::migrate_command(&resolve_config(config)),
         ["rm", config] if host.is_none() => rm_command(&resolve_config(config)),
+        // The only verb whose argument is a store directory rather than a
+        // config: packing needs no run knowledge, and a store defines every
+        // run it holds.
+        ["pack", store] if host.is_none() => pack::pack_command(Path::new(store), false),
+        ["pack", store, "--gc"] if host.is_none() => pack::pack_command(Path::new(store), true),
         ["reconcile", config] if host.is_none() => {
             reconcile::reconcile_command(&resolve_config(config), ReconcileScope::Workers)
         }
@@ -134,6 +158,10 @@ fn main() -> ExitCode {
                  \x20      sima report <config> --machines    report machine reputation and blacklisting\n\
                  \x20      sima migrate <config>              move the run onto the host [orchestrator] names\n\
                  \x20      sima rm <config>                   delete the run and what only it references\n\
+                 \x20      sima pack <store-dir>              consolidate the store's loose objects into packs\n\
+                 \x20      sima pack <store-dir> --gc         … and delete everything outside the finalized\n\
+                 \x20                                         runs' closures, unfinalized runs included, which\n\
+                 \x20                                         destroys the work of a run still going\n\
                  \x20      sima reconcile <config>            destroy the machines a crashed run left running\n\
                  \x20      sima reconcile <config> --hosted   destroy the machines hosting a migrated run too\n\
                  \x20      sima tui <config> [--fleet]        drive the run in a full-screen terminal UI\n\
@@ -601,6 +629,33 @@ fn rm_command(config: &Path) -> ExitCode {
 fn remove_run(config: &Path) -> Result<RemovalReport> {
     let loaded = load(config)?;
     sima_pipeline::remove(&loaded)
+}
+
+/// Prints one stderr line when the config's store has accumulated enough
+/// loose objects for packing to pay, naming the command that does it.
+///
+/// Best effort throughout: a config that does not load or a store that
+/// cannot be measured says nothing here, because the command itself is
+/// about to report whatever is wrong with far better context. A store that
+/// does not exist yet is left alone rather than opened, since opening one
+/// creates it and the query commands are read-only about that.
+fn warn_on_loose_objects(config: &Path) {
+    let Ok(loaded) = load(config) else { return };
+    if !loaded.store.is_dir() {
+        return;
+    }
+    let Ok(store) = sima_store::Store::open(&loaded.store) else {
+        return;
+    };
+    let Ok(estimate) = store.loose_object_estimate() else {
+        return;
+    };
+    if estimate >= LOOSE_OBJECT_WARN_THRESHOLD {
+        eprintln!(
+            "store holds ~{estimate} loose objects; run `sima pack {}` to consolidate",
+            loaded.store.display()
+        );
+    }
 }
 
 /// Prints `error` to stderr and yields the generic error exit code.

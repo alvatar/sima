@@ -62,6 +62,32 @@ fn overlapping_stores_transfer_only_the_difference() -> Result<()> {
     Ok(())
 }
 
+/// A packed source serves the objects it holds exactly as a loose one does:
+/// the destination takes the same records and objects, and the counters
+/// match the loose-store equivalent.
+#[test]
+fn a_packed_store_syncs_like_a_loose_one() -> Result<()> {
+    let (_dl, loose, loose_keys) = store_with(&[1, 2]);
+    let (_dd, loose_destination) = empty_store();
+    let (rl, _) = run_sync(&loose, &loose_keys, &loose_destination, &loose_keys);
+    let reference = rl?;
+
+    let (_ds, source, keys) = store_with(&[1, 2]);
+    source.pack()?;
+    let (_dt, destination) = empty_store();
+    let (rs, rd) = run_sync(&source, &keys, &destination, &keys);
+    assert_eq!(rs?, reference);
+    rd?;
+
+    for key in &keys {
+        let record = destination.record(key)?.expect("record");
+        for artifact in record.artifacts() {
+            assert!(destination.has(artifact.object())?, "artifact object taken");
+        }
+    }
+    Ok(())
+}
+
 /// A second sync over the converged stores transfers nothing.
 #[test]
 fn a_second_sync_is_idempotent() -> Result<()> {

@@ -279,11 +279,15 @@ length-prefixed string domain tag, fixed forever (a layout change mints a
 One `Store` type over a root directory:
 
 ```
+<root>/format                    store-format marker: the one line "1"
 <root>/objects/<aa>/<hash>       CAS object bytes; aa = first two hex chars
+<root>/packs/<hash>.pack         many objects and an index, in one file
+<root>/packs/maintenance.lock    serializes packing, sweeping, pack rewrites
 <root>/tmp/<pid>-<seq>           in-flight writes
 <root>/tasks/<task-key>          index entry: record-hash hex + newline
 <root>/instances/<tag>           one rented instance's ledger record
 <root>/spend/<owner>/<tag>-<started-ms>  one closed rental's cost
+<root>/machines/<provider>-<machine>/<tag>-<occurred-ms>  one incident
 <root>/runs/<run-id>/manifest.json
 <root>/runs/<run-id>/journal
 <root>/runs/<run-id>/orchestrator.lock
@@ -296,6 +300,17 @@ One `Store` type over a root directory:
 
 - **object** — a content-addressed blob: bytes stored under the blake3 hash
   of those bytes. Every model id is the address of its object.
+- **pack** — one immutable file holding many objects, an index over them, and
+  a footer locating that index; its name is the blake3 hash of the whole
+  file. Each object inside is compressed on its own, so reading one object
+  decompresses one object, and each is addressed by the hash of its
+  *uncompressed* bytes — the address a loose object has. The header names
+  the pack format's own version, currently 1, validated when the index
+  loads and versioned independently of the store-format marker.
+- **store-format marker** — the `format` file naming the version of the
+  layout beneath it. `Store::open` writes it when absent and refuses any
+  other version, naming both, so a layout change fails with a sentence
+  rather than with missing objects mid-operation.
 - **task index** — the `tasks/` tree recording, for each answered task, the
   result that answers it. A task source reads it to derive what remains
   runnable.
@@ -325,6 +340,14 @@ One `Store` type over a root directory:
   references, guarded so an object a live run needs is never removed. The plan
   is recorded in the run's `remove-intent` slot before any deletion, so a
   removal interrupted by a crash resumes to the same end state.
+- **packing** — the maintenance operation that consolidates loose objects
+  into packs and deletes the files they absorbed, so the store's inode count
+  follows its pack count rather than its object count.
+- **sweep** — deleting everything outside the union of the finalized runs'
+  closures: orphan objects in either representation, the index entries
+  naming them, every unfinalized run directory, and the leftovers in `tmp/`.
+  It is guarded the same way removal is, and it is what `sima pack --gc`
+  runs.
 
 ### Content addressing
 
@@ -333,6 +356,37 @@ one re-hashes what it read and returns `Corruption` on mismatch, so every
 read is verified. Every model id is an address in this store, so specs,
 params, environments, records, configs, state snapshots, and artifacts all
 land here as objects.
+
+An object is held loose under `objects/` or inside a pack under `packs/`,
+and which one is a fact about the store's shape, never about the object. A
+read looks for the loose file first and the packs failing that; both paths
+re-hash before returning, so the verified read holds through a pack. A write
+always lands loose.
+
+### Packing
+
+The write path — full content to `tmp/`, fsync, rename — is the crash-safety
+spine, so objects are born loose and consolidation is a separate operation
+an operator asks for with `sima pack <store-dir>`. It walks the loose
+objects, splits them at a raw-byte cap, writes each group as a pack, and
+deletes the files those packs absorbed.
+
+A pack is written through `tmp/` with a blake3 hasher tapping the writer, so
+its name — the hash of the whole file — is known when the last byte lands,
+and it enters `packs/` by the same rename every durable file gets. The index
+inside is sorted strictly ascending by hash, which makes the file a pure
+function of its object set: a fixed set writes byte-identical bytes and
+therefore an identical name. That is what makes interrupted maintenance
+converge by re-running it, since the rewrite lands on the file it was
+already writing.
+
+Where a packed object lives is cached in memory per `Store` handle, rebuilt
+from `packs/` whenever a lookup misses. Packs are immutable, so the only
+directory mutations are a whole file appearing and a whole file
+disappearing: a rescan lists a handful of names and loads indices only for
+packs it has not seen. A reader whose cached entry names a pack that has
+since been rewritten meets the vanished file, forgets it, and searches once
+more.
 
 ### Atomic durability
 
@@ -373,6 +427,13 @@ observes a complete file or none. Directory fsync is specific to unix, so
 the crate builds on unix targets only; the build is refused elsewhere rather
 than silently dropping durability across a crash. Leftover `tmp/` files after
 a crash are inert; sweeping them is retention work.
+
+Deletion carries the mirror of that guarantee: **a loose file is deleted only
+once a pack holding its object is durable, and a pack is deleted only once
+its replacement is durable.** At every instant every live object is readable
+at one location or two, never zero. A death anywhere inside a maintenance
+operation therefore leaves a store that is whole and merely holds some
+objects twice, which re-running the operation finishes.
 
 ### Write ordering
 
@@ -422,6 +483,12 @@ holder exits, however it exits, so no staleness protocol exists. The file's
 content (pid, hostname) is diagnostic only — it names the holder in the
 validation error a second acquirer receives — and is never consulted for
 liveness.
+
+Every operation that reshapes `packs/` — packing, the sweep, and the pack
+rewrites a removal performs — is serialized by a second lock of the same
+kind, on `packs/maintenance.lock`. Ordinary reads and writes take no lock at
+all: the deletion invariant above is what keeps them correct while
+maintenance runs beneath them.
 
 ## `sima-provider`
 

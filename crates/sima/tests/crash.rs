@@ -133,6 +133,104 @@ fn a_removal_death_resumes_to_an_empty_store() {
     }
 }
 
+/// Runs `sima pack <store>` over `store`, armed with `crashpoint` when given,
+/// and returns the exit status. Output is discarded — the store carries the
+/// assertions.
+fn sima_pack(store: &Path, crashpoint: Option<&str>) -> ExitStatus {
+    let mut command = sima_command();
+    command
+        .args(["pack", store.to_str().expect("utf-8 path")])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    if let Some(arming) = crashpoint {
+        command.env("SIMA_CRASHPOINT", arming);
+    }
+    command.status().expect("spawn sima")
+}
+
+/// A packing run SIGKILLed at each of its crashpoints converges by re-running:
+/// no object loses its last copy at any point, so the re-run finishes what the
+/// dead one started and the run the store holds still enumerates whole.
+///
+/// The run's objects fit one pack, so the shape at every point is exact: the
+/// pack is durable before a single loose file goes, the armed point fires at
+/// its first hit, and a fixed object set packs to one fixed file name.
+#[test]
+fn a_pack_death_converges_on_re_run() {
+    let mut converged = Vec::new();
+    for arming in ["pack.after-pack-write", "pack.mid-loose-delete"] {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let slug = arming.replace('.', "-");
+        let store_rel = format!("./store-{slug}");
+        let config = write_config(dir.path(), &format!("pack-{slug}.toml"), &store_rel);
+        assert_eq!(sima_run(&config, None).code(), Some(0));
+        let reference = manifest_of(&config).expect("the run finalized");
+        let store = dir.path().join(format!("store-{slug}"));
+        let loose_before = object_file_count(&store);
+
+        let status = sima_pack(&store, Some(arming));
+        assert_eq!(
+            status.signal(),
+            Some(9),
+            "{arming}: the armed packing dies by SIGKILL, got {status:?}"
+        );
+        // The kill lands between the phases it names: the one pack is
+        // already durable at either point, deletion has not begun at the
+        // first, and exactly one unlink — the first hit — happened at the
+        // second.
+        let packs_at_death = common::pack_files(&store);
+        assert_eq!(
+            packs_at_death.len(),
+            1,
+            "{arming}: the pack is durable at the kill"
+        );
+        let expected_loose = match arming {
+            "pack.after-pack-write" => loose_before,
+            _ => loose_before - 1,
+        };
+        assert_eq!(
+            object_file_count(&store),
+            expected_loose,
+            "{arming}: the deletion phase is exactly where the point sits"
+        );
+        // Mid-flight the store holds both representations, and every object
+        // is readable throughout.
+        let opened = Store::open(&store).expect("open store");
+        let run = load(&config).expect("load config").run.id();
+        opened.run_closure(&run).expect("the closure enumerates");
+
+        assert_eq!(
+            sima_pack(&store, None).code(),
+            Some(0),
+            "{arming}: the resumed packing finalizes"
+        );
+        assert_eq!(
+            object_file_count(&store),
+            0,
+            "{arming}: loose files survived the packing"
+        );
+        // The re-run recognizes the completed pack: the same single file,
+        // nothing written twice.
+        assert_eq!(
+            common::pack_files(&store),
+            packs_at_death,
+            "{arming}: the re-run lands on the pack the dead run wrote"
+        );
+        assert_eq!(manifest_of(&config), Some(reference), "{arming}");
+        Store::open(&store)
+            .expect("reopen store")
+            .run_closure(&run)
+            .expect("the closure still enumerates whole");
+        converged.push(common::pack_files(&store));
+    }
+    // The two configs differ only in store path, which is outside run
+    // identity: identical object sets pack to the identically named file.
+    assert_eq!(
+        converged[0], converged[1],
+        "both armings converge to the same pack"
+    );
+}
+
 /// Harness soundness: the SIGKILL assertion is falsifiable. An unarmed
 /// child sails past every planted point and exits 0, so a passing armed
 /// case below genuinely proves the injected death.

@@ -1,4 +1,6 @@
-//! [`RunLock`]: the per-run orchestrator lock.
+//! The store's advisory file locks: [`RunLock`], the per-run orchestrator
+//! lock, and [`take_file_lock`], the primitive every store lock is built
+//! from — the maintenance lock over `packs/` included.
 //!
 //! One orchestrator drives a run at a time. The lock is the OS's advisory
 //! file lock on the run's `orchestrator.lock` file, so the kernel releases
@@ -9,6 +11,7 @@
 
 use std::fs::{File, OpenOptions, TryLockError};
 use std::io::{Read, Write};
+use std::path::Path;
 
 use sima_core::{Error, Result};
 use sima_model::RunId;
@@ -16,6 +19,37 @@ use sima_model::RunId;
 use crate::atomic::{self, io_error};
 use crate::layout;
 use crate::store::Store;
+
+/// Takes the OS lock on the file at `path`, creating it when absent, and
+/// records this process as the holder for diagnostics. A lock already held
+/// is the error `contended` builds from the holder line the owner recorded.
+///
+/// The returned file owns the lock: it is held until the file is unlocked
+/// or the holder exits, however it exits.
+pub(crate) fn take_file_lock(path: &Path, contended: impl Fn(&str) -> Error) -> Result<File> {
+    let mut file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path)
+        .map_err(|e| io_error(path, e))?;
+    match file.try_lock() {
+        Ok(()) => {
+            // Locked. Record the holder for diagnostics: a hostname from
+            // the environment is enough for a string nothing consults for
+            // liveness. Any previous holder's content is overwritten.
+            let hostname = std::env::var("HOSTNAME").unwrap_or_else(|_| "unknown".to_string());
+            let holder = format!("{} {hostname}\n", std::process::id());
+            file.set_len(0).map_err(|e| io_error(path, e))?;
+            file.write_all(holder.as_bytes())
+                .map_err(|e| io_error(path, e))?;
+            Ok(file)
+        }
+        Err(TryLockError::WouldBlock) => Err(contended(&recorded_holder(&mut file))),
+        Err(TryLockError::Error(e)) => Err(io_error(path, e)),
+    }
+}
 
 /// Exclusive right to drive a run: holds the OS lock on the run's
 /// `orchestrator.lock` file. The kernel releases it when the holder
@@ -61,35 +95,13 @@ impl Store {
     /// holder recorded in the file (pid, hostname).
     pub fn acquire_run_lock(&self, run: &RunId) -> Result<RunLock> {
         atomic::create_dir_durable(&layout::run_dir(self.root(), run))?;
-        let path = layout::lock_path(self.root(), run);
-        let mut file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(&path)
-            .map_err(|e| io_error(&path, e))?;
-        match file.try_lock() {
-            Ok(()) => {
-                // Locked. Record the holder for diagnostics: a hostname from
-                // the environment is enough for a string nothing consults for
-                // liveness. Any previous holder's content is overwritten.
-                let hostname = std::env::var("HOSTNAME").unwrap_or_else(|_| "unknown".to_string());
-                let holder = format!("{} {hostname}\n", std::process::id());
-                file.set_len(0).map_err(|e| io_error(&path, e))?;
-                file.write_all(holder.as_bytes())
-                    .map_err(|e| io_error(&path, e))?;
-                Ok(RunLock { run: *run, file })
-            }
-            Err(TryLockError::WouldBlock) => {
-                // Contended: name the holder the lock owner recorded.
-                Err(Error::Validation(format!(
-                    "run {run} is already locked by another orchestrator: {}",
-                    recorded_holder(&mut file)
-                )))
-            }
-            Err(TryLockError::Error(e)) => Err(io_error(&path, e)),
-        }
+        let file = take_file_lock(&layout::lock_path(self.root(), run), |holder| {
+            // Contended: name the holder the lock owner recorded.
+            Error::Validation(format!(
+                "run {run} is already locked by another orchestrator: {holder}"
+            ))
+        })?;
+        Ok(RunLock { run: *run, file })
     }
 
     /// Reports who holds `run`'s orchestrator lock: `Some` with the holder

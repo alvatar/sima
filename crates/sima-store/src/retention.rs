@@ -1,14 +1,17 @@
-//! Reference-guarded run removal: delete a run and everything no surviving
-//! run references, guarded so no object another live run references is ever
-//! removed.
+//! Reference-guarded deletion: [`Store::remove_run`] deletes one run and
+//! everything no surviving run references; [`Store::gc`] deletes everything
+//! outside the finalized runs' closures. Both are guarded the same way — no
+//! object a live run references is ever removed — and both delete through
+//! one primitive, so an object goes whichever representation holds it.
 //!
 //! The removal unit is the run. A single task's artifacts are never removed
 //! alone, because the run's manifest would then reference missing objects. No
 //! public single-object delete exists; the guard is the primitive.
 //!
 //! The plan is computed from the survivors, never from the target: the
-//! removal set is every CAS object outside the union of every other finalized
-//! run's [`run_closure`](Store::run_closure), and every task-index entry
+//! removal set is every object the store holds — loose and packed alike —
+//! outside the union of every other finalized run's
+//! [`run_closure`](Store::run_closure), and every task-index entry
 //! naming a record in that set. The target's own manifest is not consulted,
 //! so an unfinalized run — interrupted or abandoned — is removable, and
 //! orphaned objects from crashed pre-commit writes are collected in the same
@@ -45,6 +48,22 @@ pub struct RemovalReport {
     pub objects_removed: usize,
     /// Task-index entries deleted.
     pub index_entries_removed: usize,
+}
+
+/// What a [`Store::gc`] call deleted.
+#[derive(Debug, PartialEq, Eq)]
+pub struct GcReport {
+    /// Objects deleted, loose and packed together.
+    pub objects_removed: usize,
+    /// Task-index entries deleted.
+    pub index_entries_removed: usize,
+    /// Packs whose contents changed: replaced by the pack of their
+    /// survivors, or deleted outright when every object in them was doomed.
+    pub packs_rewritten: usize,
+    /// Unfinalized run directories deleted, whole.
+    pub runs_removed: usize,
+    /// Leftover `tmp/` files swept.
+    pub tmp_files_removed: usize,
 }
 
 /// A run's removal plan: the objects to delete and the task-index entries to
@@ -101,6 +120,11 @@ impl Store {
                 "cannot remove run {run}: run not found"
             )));
         }
+        // Deleting an object reshapes the packs that hold it, so the
+        // removal is serialized against every other maintenance operation
+        // for its whole length — the plan included, which is then computed
+        // over a store no packing is moving beneath it.
+        let lock = self.acquire_maintenance_lock()?;
         // A present intent is an interrupted removal: resume it without
         // recomputing, so the plan is fixed across the crash. Otherwise compute
         // the plan under the preconditions and record it durably first.
@@ -118,10 +142,7 @@ impl Store {
         for task in &plan.tasks {
             atomic::remove_file_idempotent(&layout::task_path(self.root(), task))?;
         }
-        for object in &plan.objects {
-            atomic::remove_file_idempotent(&layout::object_path(self.root(), object))?;
-            sima_core::crashpoint("remove.mid-objects");
-        }
+        self.delete_objects(&plan.objects, &lock)?;
         // The run directory last: manifest, journal, checkpoints, and the intent
         // itself. Empty object fan-out directories are left in place — removing
         // them would race concurrent puts.
@@ -130,6 +151,70 @@ impl Store {
             objects_removed: plan.objects.len(),
             index_entries_removed: plan.tasks.len(),
         })
+    }
+
+    /// Deletes everything the finalized runs do not reference: objects in
+    /// either representation, the task-index entries naming them, every
+    /// unfinalized run directory, and the leftovers in `tmp/`.
+    ///
+    /// The store remembers finalized runs only afterwards. An unfinalized
+    /// run's committed work is reachable through no manifest, so it is
+    /// swept with its run directory, and its in-flight `tmp/` writes are
+    /// swept from under it — an active run's work included. That is what
+    /// asking for this operation means, and the operator owns the decision.
+    pub fn gc(&self) -> Result<GcReport> {
+        let lock = self.acquire_maintenance_lock()?;
+        // The live set: the closure of every finalized run. A run without a
+        // manifest enumerates nothing, so it is doomed rather than live.
+        let mut live: BTreeSet<Hash> = BTreeSet::new();
+        let mut unfinalized = Vec::new();
+        for run in self.runs()? {
+            match self.manifest(&run)? {
+                Some(_) => live.extend(self.run_closure(&run)?),
+                None => unfinalized.push(run),
+            }
+        }
+
+        // Everything the store holds, minus what survives.
+        let doomed: Vec<Hash> = self.held_objects()?.difference(&live).copied().collect();
+        let tasks: Vec<TaskKey> = self
+            .task_index()?
+            .into_iter()
+            .filter(|(_, record)| doomed.binary_search(record).is_ok())
+            .map(|(key, _)| key)
+            .collect();
+
+        // References strictly before referents: the index entries naming a
+        // doomed record go before the record objects themselves.
+        for task in &tasks {
+            atomic::remove_file_idempotent(&layout::task_path(self.root(), task))?;
+        }
+        let packs_rewritten = self.delete_objects(&doomed, &lock)?;
+        for run in &unfinalized {
+            let dir = layout::run_dir(self.root(), run);
+            fs::remove_dir_all(&dir).map_err(|e| io_error(&dir, e))?;
+        }
+        Ok(GcReport {
+            objects_removed: doomed.len(),
+            index_entries_removed: tasks.len(),
+            packs_rewritten,
+            runs_removed: unfinalized.len(),
+            tmp_files_removed: self.sweep_tmp()?,
+        })
+    }
+
+    /// Deletes every file left in `tmp/` and returns how many went. They
+    /// are the inert remains of writes that died before their rename, so
+    /// nothing durable references them.
+    fn sweep_tmp(&self) -> Result<usize> {
+        let dir = layout::tmp_dir(self.root());
+        let mut swept = 0;
+        for entry in fs::read_dir(&dir).map_err(|e| io_error(&dir, e))? {
+            let path = entry.map_err(|e| io_error(&dir, e))?.path();
+            atomic::remove_file_idempotent(&path)?;
+            swept += 1;
+        }
+        Ok(swept)
     }
 
     /// Computes the removal plan from the survivors: every CAS object outside
@@ -152,7 +237,7 @@ impl Store {
         // Both walks return sorted entries and the filters keep their order,
         // so the plan is deterministic.
         let objects: Vec<Hash> = self
-            .cas_objects()?
+            .held_objects()?
             .into_iter()
             .filter(|object| !kept.contains(object))
             .collect();
@@ -166,10 +251,23 @@ impl Store {
         Ok(RemovalPlan { objects, tasks })
     }
 
-    /// Every object hash in the CAS, sorted, from walking the fan-out
+    /// Every object the store holds, in either representation: the loose
+    /// files and everything the packs hold. Both reference-guarded
+    /// deletions compute their plan against this, since which
+    /// representation an object sits in says nothing about whether it is
+    /// referenced.
+    fn held_objects(&self) -> Result<BTreeSet<Hash>> {
+        self.packs_mut().rescan(self.root())?;
+        let mut held: BTreeSet<Hash> = self.cas_objects()?.into_iter().collect();
+        held.extend(self.packs().objects());
+        Ok(held)
+    }
+
+    /// Every loose object hash, sorted, from walking the fan-out
     /// directories. A file whose name is not an object-hash hex string is
-    /// [`Error::Corruption`].
-    fn cas_objects(&self) -> Result<Vec<Hash>> {
+    /// [`Error::Corruption`]. The packing operation partitions this walk,
+    /// and [`Store::held_objects`] is its half of what the store holds.
+    pub(crate) fn cas_objects(&self) -> Result<Vec<Hash>> {
         let dir = layout::objects_dir(self.root());
         let mut objects = Vec::new();
         for fanout in fs::read_dir(&dir).map_err(|e| io_error(&dir, e))? {
@@ -279,8 +377,8 @@ mod tests {
 
     use super::*;
     use crate::testutil::{
-        record_with_stored_artifact, sample_identity, sample_run_config, store_identity_components,
-        temp_store,
+        pack_names, record_with_stored_artifact, sample_identity, sample_run_config,
+        store_identity_components, temp_store,
     };
     use sima_core::hash_bytes;
 
@@ -527,6 +625,216 @@ mod tests {
         assert_eq!(report, reference);
         assert_eq!(object_file_count(dir.path()), 0);
         assert!(!dir.path().join("runs").join(a.to_string()).exists());
+        Ok(())
+    }
+
+    #[test]
+    fn removing_a_run_rewrites_the_pack_holding_its_objects() -> Result<()> {
+        let (dir, store) = temp_store();
+        let a = finalized_run(&store, 42, &[1, 2])?;
+        let b = finalized_run(&store, 43, &[2, 3])?;
+        store.pack()?;
+        let before = pack_names(dir.path());
+        let b_closure = store.run_closure(&b)?;
+
+        let report = store.remove_run(&a)?;
+        assert_eq!(
+            report,
+            RemovalReport {
+                objects_removed: 3,
+                index_entries_removed: 1,
+            }
+        );
+        // The pack that held both runs' objects is replaced by one holding
+        // the survivors, so B's closure still enumerates whole.
+        assert_ne!(pack_names(dir.path()), before);
+        assert_eq!(store.run_closure(&b)?, b_closure);
+        assert!(!store.has(a.as_hash())?);
+        assert!(store.has(&hash_bytes(&2u64.to_le_bytes()))?);
+        Ok(())
+    }
+
+    #[test]
+    fn removing_the_only_run_leaves_neither_objects_nor_packs() -> Result<()> {
+        let (dir, store) = temp_store();
+        let a = finalized_run(&store, 42, &[1, 2])?;
+        store.pack()?;
+        store.remove_run(&a)?;
+        assert_eq!(object_file_count(dir.path()), 0, "no loose objects remain");
+        assert!(pack_names(dir.path()).is_empty(), "no packs remain");
+        Ok(())
+    }
+
+    #[test]
+    fn an_interrupted_removal_over_packs_resumes_from_its_intent() -> Result<()> {
+        let (_ref_dir, ref_store) = temp_store();
+        let ref_a = finalized_run(&ref_store, 42, &[1, 2])?;
+        finalized_run(&ref_store, 43, &[2, 3])?;
+        ref_store.pack()?;
+        let reference = ref_store.remove_run(&ref_a)?;
+
+        let (dir, store) = temp_store();
+        let a = finalized_run(&store, 42, &[1, 2])?;
+        let b = finalized_run(&store, 43, &[2, 3])?;
+        store.pack()?;
+        // A crash after the intent was written and after the replacement
+        // pack was placed, before the doomed one was deleted: both packs
+        // are on disk and every object is readable twice.
+        let plan = store.compute_removal(&a)?;
+        store.write_remove_intent(&a, &plan)?;
+        let survivors: Vec<Hash> = store
+            .run_closure(&b)?
+            .into_iter()
+            .filter(|hash| !plan.objects.contains(hash))
+            .collect();
+        crate::pack::format::write_pack(store.root(), &survivors, &|hash| store.get(hash))?;
+
+        let report = store.remove_run(&a)?;
+        assert_eq!(report, reference);
+        assert_eq!(store.run_closure(&b)?, ref_store.run_closure(&b)?);
+        assert!(!store.has(a.as_hash())?);
+        assert_eq!(object_file_count(dir.path()), 0);
+        Ok(())
+    }
+
+    #[test]
+    fn gc_keeps_every_finalized_run_and_sweeps_the_rest() -> Result<()> {
+        let (dir, store) = temp_store();
+        let a = finalized_run(&store, 42, &[1])?;
+        let closure = store.run_closure(&a)?;
+        let stray = store.put(b"orphaned bytes")?;
+        store.pack()?;
+        // A second stray, left loose after the packing, so the sweep is
+        // exercised in both representations at once.
+        let loose_stray = store.put(b"loose orphaned bytes")?;
+
+        let report = store.gc()?;
+        assert_eq!(report.objects_removed, 2);
+        assert_eq!(report.packs_rewritten, 1);
+        assert_eq!(report.runs_removed, 0);
+        assert!(!store.has(&stray)?);
+        assert!(!store.has(&loose_stray)?);
+        assert_eq!(store.run_closure(&a)?, closure);
+        assert!(dir.path().join("runs").join(a.to_string()).is_dir());
+        Ok(())
+    }
+
+    #[test]
+    fn gc_deletes_a_pack_whose_every_object_is_doomed() -> Result<()> {
+        let (dir, store) = temp_store();
+        // No run at all: every object in the store is an orphan.
+        let stray = store.put(b"orphaned bytes")?;
+        store.pack()?;
+        let report = store.gc()?;
+        assert_eq!(report.objects_removed, 1);
+        assert_eq!(report.packs_rewritten, 1);
+        assert!(pack_names(dir.path()).is_empty());
+        assert!(!store.has(&stray)?);
+        Ok(())
+    }
+
+    #[test]
+    fn gc_deletes_the_index_entries_of_the_records_it_removes() -> Result<()> {
+        let (_dir, store) = temp_store();
+        let a = finalized_run(&store, 42, &[1])?;
+        // A record committed outside any finalized run: its object and the
+        // index entry naming it both go.
+        let orphan = record_with_stored_artifact(&store, sample_identity(9));
+        store.commit(&orphan)?;
+        let report = store.gc()?;
+        assert_eq!(report.index_entries_removed, 1);
+        assert!(!store.has_record(&sample_identity(9).key())?);
+        assert!(store.has_record(&sample_identity(1).key())?);
+        assert_eq!(store.runs()?, vec![a]);
+        Ok(())
+    }
+
+    #[test]
+    fn gc_deletes_unfinalized_runs_whole() -> Result<()> {
+        let (dir, store) = temp_store();
+        let a = finalized_run(&store, 42, &[1])?;
+        let closure = store.run_closure(&a)?;
+        // An unfinalized run: a directory, a committed record, a config.
+        let record = record_with_stored_artifact(&store, sample_identity(2));
+        store.commit(&record)?;
+        let b = store.create_run(&sample_run_config(43))?;
+
+        let report = store.gc()?;
+        assert_eq!(report.runs_removed, 1);
+        assert!(!dir.path().join("runs").join(b.to_string()).exists());
+        assert!(dir.path().join("runs").join(a.to_string()).is_dir());
+        assert!(!store.has(b.as_hash())?, "its config object goes too");
+        assert!(!store.has_record(&sample_identity(2).key())?);
+        assert_eq!(store.run_closure(&a)?, closure);
+        Ok(())
+    }
+
+    #[test]
+    fn gc_sweeps_the_leftovers_of_crashed_writes() -> Result<()> {
+        let (dir, store) = temp_store();
+        finalized_run(&store, 42, &[1])?;
+        fs::write(dir.path().join("tmp").join("1234-0"), b"a torn write").expect("write leftover");
+        let report = store.gc()?;
+        assert_eq!(report.tmp_files_removed, 1);
+        assert_eq!(
+            fs::read_dir(dir.path().join("tmp"))
+                .expect("read tmp")
+                .count(),
+            0
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn gc_on_a_live_store_removes_nothing() -> Result<()> {
+        let (_dir, store) = temp_store();
+        let a = finalized_run(&store, 42, &[1, 2])?;
+        store.pack()?;
+        let closure = store.run_closure(&a)?;
+        let report = store.gc()?;
+        assert_eq!(
+            report,
+            GcReport {
+                objects_removed: 0,
+                index_entries_removed: 0,
+                packs_rewritten: 0,
+                runs_removed: 0,
+                tmp_files_removed: 0,
+            }
+        );
+        assert_eq!(store.run_closure(&a)?, closure);
+        // And a second call says the same, over a store it just left.
+        assert_eq!(store.gc()?.objects_removed, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn an_interrupted_gc_converges_on_re_run() -> Result<()> {
+        // A reference store, swept uninterrupted, to compare against.
+        let (ref_dir, ref_store) = temp_store();
+        let ref_a = finalized_run(&ref_store, 42, &[1])?;
+        let orphan = record_with_stored_artifact(&ref_store, sample_identity(9));
+        ref_store.commit(&orphan)?;
+        ref_store.pack()?;
+        ref_store.gc()?;
+
+        let (dir, store) = temp_store();
+        let a = finalized_run(&store, 42, &[1])?;
+        let orphan = record_with_stored_artifact(&store, sample_identity(9));
+        store.commit(&orphan)?;
+        store.pack()?;
+        // A death after the index entry went and before the pack was
+        // rewritten: the sweep recomputes its plan from the survivors, so
+        // the interrupted state is just a store with fewer references.
+        atomic::remove_file_idempotent(&layout::task_path(
+            store.root(),
+            &sample_identity(9).key(),
+        ))?;
+
+        store.gc()?;
+        assert_eq!(store.run_closure(&a)?, ref_store.run_closure(&ref_a)?);
+        assert_eq!(pack_names(dir.path()), pack_names(ref_dir.path()));
+        assert_eq!(object_file_count(dir.path()), 0);
         Ok(())
     }
 

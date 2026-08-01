@@ -4,7 +4,10 @@
 //! never mutates this one:
 //!
 //! ```text
+//! <root>/format                    store-format marker: the one line "1"
 //! <root>/objects/<aa>/<64-hex>     object bytes; aa = first two hex chars
+//! <root>/packs/<64-hex>.pack       immutable pack: many objects and an index
+//! <root>/packs/maintenance.lock    serializes packing, gc, and pack rewrites
 //! <root>/tmp/<pid>-<seq>           in-flight writes
 //! <root>/tasks/<task-key-hex>      index entry: record-hash hex + newline
 //! <root>/instances/<tag>           one rented instance's ledger record
@@ -26,6 +29,36 @@ use sima_model::{RunId, TaskKey};
 /// The `objects/` CAS directory.
 pub(crate) fn objects_dir(root: &Path) -> PathBuf {
     root.join("objects")
+}
+
+/// The `packs/` directory holding immutable pack files. Packs live outside
+/// `objects/` because the retention walk reads every file under `objects/`
+/// as one object.
+pub(crate) fn packs_dir(root: &Path) -> PathBuf {
+    root.join("packs")
+}
+
+/// The suffix a pack file's name carries, which is what tells a pack from
+/// the maintenance lock beside it.
+pub(crate) const PACK_SUFFIX: &str = ".pack";
+
+/// The maintenance lock's file name, inside `packs/`.
+pub(crate) const MAINTENANCE_LOCK: &str = "maintenance.lock";
+
+/// A pack's path: `packs/<64-hex>.pack`, named by the blake3 digest of the
+/// whole file.
+pub(crate) fn pack_path(root: &Path, name: &Hash) -> PathBuf {
+    packs_dir(root).join(format!("{name}{PACK_SUFFIX}"))
+}
+
+/// The maintenance lock: `packs/maintenance.lock`.
+pub(crate) fn maintenance_lock_path(root: &Path) -> PathBuf {
+    packs_dir(root).join(MAINTENANCE_LOCK)
+}
+
+/// The store-format marker: `<root>/format`.
+pub(crate) fn format_marker_path(root: &Path) -> PathBuf {
+    root.join("format")
 }
 
 /// The `tmp/` directory holding in-flight atomic writes.
@@ -63,11 +96,17 @@ pub(crate) fn runs_dir(root: &Path) -> PathBuf {
     root.join("runs")
 }
 
+/// One fan-out subdirectory: `objects/<aa>/`, holding every object whose
+/// address starts with those two hex characters.
+pub(crate) fn fanout_dir(root: &Path, prefix: &str) -> PathBuf {
+    objects_dir(root).join(prefix)
+}
+
 /// An object's CAS path: `objects/<aa>/<64-hex>`, fanned out by the first
 /// two hex characters of its address.
 pub(crate) fn object_path(root: &Path, hash: &Hash) -> PathBuf {
     let hex = hash.to_string();
-    objects_dir(root).join(&hex[..2]).join(hex)
+    fanout_dir(root, &hex[..2]).join(hex)
 }
 
 /// A task's index-entry path: `tasks/<task-key-hex>`.
