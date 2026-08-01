@@ -27,9 +27,12 @@ jobs:
       - run: cargo test --workspace -- --skip on_device
 
   # The whole suite, the device tests included, on a machine with a Vulkan
-  # device, an NVIDIA device, and libnvrtc on the loader path. Green here
-  # means those tests ran on real hardware, which is the claim `test-cpu`
-  # cannot make.
+  # device and an NVIDIA device. Green here means those tests ran on real
+  # hardware, which is the claim `test-cpu` cannot make. NVRTC arrives with the
+  # build: `build.rs` vendors the pinned release onto the binaries' `RUNPATH`,
+  # so this runner supplies the drivers and the cards alone. A staged NVRTC on
+  # `LD_LIBRARY_PATH` would resolve ahead of that `RUNPATH` and shadow the pin,
+  # which is what the byte-for-byte PTX known-answer tests compare against.
   #
   # This job stays queued until a self-hosted runner labelled `gpu` is
   # registered on such a machine. A queued `test` beside a green `test-cpu`
@@ -39,10 +42,3 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: cargo test --workspace
-        env:
-          # Where NVRTC is staged on the runner, configured as a repository
-          # variable so the location lives with the runner's registration. Only
-          # the PTX-regeneration tests need it, to check a committed `.ptx`
-          # still reproduces from its `.cu`; running the CUDA program itself
-          # needs the driver's libcuda alone, which the runner supplies.
-          LD_LIBRARY_PATH: ${{ vars.NVRTC_PATH }}
