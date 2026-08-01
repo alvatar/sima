@@ -166,10 +166,11 @@ impl Store {
         Ok(RemovalPlan { objects, tasks })
     }
 
-    /// Every object hash in the CAS, sorted, from walking the fan-out
+    /// Every loose object hash, sorted, from walking the fan-out
     /// directories. A file whose name is not an object-hash hex string is
-    /// [`Error::Corruption`].
-    fn cas_objects(&self) -> Result<Vec<Hash>> {
+    /// [`Error::Corruption`]. Removal computes its plan from this walk, and
+    /// packing partitions it.
+    pub(crate) fn cas_objects(&self) -> Result<Vec<Hash>> {
         let dir = layout::objects_dir(self.root());
         let mut objects = Vec::new();
         for fanout in fs::read_dir(&dir).map_err(|e| io_error(&dir, e))? {

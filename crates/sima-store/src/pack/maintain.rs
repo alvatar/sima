@@ -13,11 +13,16 @@
 //! converges — the completed packs are seen as packs, and the loose files
 //! they absorbed are deleted without writing anything.
 
-use std::fs::File;
+use std::fs::{self, File};
+use std::io::ErrorKind;
 use std::path::Path;
 
-use sima_core::{Hash, Result};
+use sima_core::{Error, Hash, Result};
 
+use crate::atomic::{self, io_error};
+use crate::layout;
+use crate::lock::take_file_lock;
+use crate::pack::format::{self, MAX_PACK_RAW_BYTES};
 use crate::store::Store;
 
 /// What a [`Store::pack`] call did.
@@ -59,32 +64,92 @@ impl Store {
     /// `packs/maintenance.lock`; contention is [`sima_core::Error::Validation`]
     /// naming the holder.
     pub fn pack(&self) -> Result<PackReport> {
-        unimplemented!("Store::pack")
+        let _lock = self.acquire_maintenance_lock()?;
+        self.packs_mut().rescan(self.root())?;
+
+        // What is loose, split by whether a pack already holds it. A loose
+        // duplicate is what a death between the pack write and the deletion
+        // leaves: it is deleted, never packed again.
+        let mut unpacked = Vec::new();
+        let mut duplicates = Vec::new();
+        {
+            let cache = self.packs();
+            for hash in self.cas_objects()? {
+                if cache.lookup(&hash).is_some() {
+                    duplicates.push(hash);
+                } else {
+                    unpacked.push(hash);
+                }
+            }
+        }
+        let sizes = loose_sizes(self.root(), &unpacked)?;
+
+        let mut report = PackReport {
+            objects_packed: 0,
+            packs_written: 0,
+            loose_removed: 0,
+            raw_bytes: 0,
+            stored_bytes: 0,
+        };
+        for group in format::split_by_cap(&sizes, MAX_PACK_RAW_BYTES) {
+            let hashes: Vec<Hash> = group.iter().map(|(hash, _)| *hash).collect();
+            let name = format::write_pack(self.root(), &hashes, &|hash| self.get(hash))?;
+            let path = layout::pack_path(self.root(), &name);
+            report.stored_bytes += fs::metadata(&path).map_err(|e| io_error(&path, e))?.len();
+            report.raw_bytes += group.iter().map(|(_, raw_len)| raw_len).sum::<u64>();
+            report.objects_packed += group.len();
+            report.packs_written += 1;
+            sima_core::crashpoint("pack.after-pack-write");
+        }
+
+        // The packs are durable and loadable before a single loose file
+        // goes: the rescan is what proves the second half, since a pack
+        // whose index does not load fails here, with every object still
+        // readable where it has always been.
+        self.packs_mut().rescan(self.root())?;
+        for hash in sizes.iter().map(|(hash, _)| hash).chain(&duplicates) {
+            atomic::remove_file_idempotent(&layout::object_path(self.root(), hash))?;
+            report.loose_removed += 1;
+            sima_core::crashpoint("pack.mid-loose-delete");
+        }
+        Ok(report)
     }
 
     /// Takes the store's maintenance lock. A lock already held is
     /// [`sima_core::Error::Validation`] naming the holder recorded in the
     /// file (pid, hostname).
     pub(crate) fn acquire_maintenance_lock(&self) -> Result<MaintenanceLock> {
-        unimplemented!("Store::acquire_maintenance_lock")
+        let file = take_file_lock(&layout::maintenance_lock_path(self.root()), |holder| {
+            Error::Validation(format!(
+                "store maintenance is already running in another process: {holder}"
+            ))
+        })?;
+        Ok(MaintenanceLock { file })
     }
 }
 
 /// The raw size of each loose object, in the walk's order — what the cap
-/// split partitions on.
-fn loose_sizes(_root: &Path, _objects: &[Hash]) -> Result<Vec<(Hash, u64)>> {
-    unimplemented!("loose_sizes")
+/// split partitions on. An object whose file went between the walk and the
+/// stat is dropped: it is no longer in the store, so it is nothing to pack.
+fn loose_sizes(root: &Path, objects: &[Hash]) -> Result<Vec<(Hash, u64)>> {
+    let mut sizes = Vec::with_capacity(objects.len());
+    for hash in objects {
+        let path = layout::object_path(root, hash);
+        match fs::metadata(&path) {
+            Ok(meta) => sizes.push((*hash, meta.len())),
+            Err(e) if e.kind() == ErrorKind::NotFound => continue,
+            Err(e) => return Err(io_error(&path, e)),
+        }
+    }
+    Ok(sizes)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::layout;
-    use crate::pack::format;
     use crate::testutil::temp_store;
-    use sima_core::{Error, hash_bytes};
+    use sima_core::hash_bytes;
     use std::collections::BTreeSet;
-    use std::fs;
 
     /// Puts `count` objects of distinct content, returning their addresses.
     fn put_objects(store: &Store, count: u64) -> Vec<Hash> {
@@ -155,7 +220,9 @@ mod tests {
         assert_eq!(packs(dir.path()).len(), 1);
         // A completed operation leaves nothing in flight.
         assert_eq!(
-            fs::read_dir(dir.path().join("tmp")).expect("read tmp").count(),
+            fs::read_dir(dir.path().join("tmp"))
+                .expect("read tmp")
+                .count(),
             0
         );
         Ok(())
