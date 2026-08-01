@@ -133,6 +133,75 @@ fn a_removal_death_resumes_to_an_empty_store() {
     }
 }
 
+/// Runs `sima pack <store>` over `store`, armed with `crashpoint` when given,
+/// and returns the exit status. Output is discarded — the store carries the
+/// assertions.
+fn sima_pack(store: &Path, crashpoint: Option<&str>) -> ExitStatus {
+    let mut command = sima_command();
+    command
+        .args(["pack", store.to_str().expect("utf-8 path")])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    if let Some(arming) = crashpoint {
+        command.env("SIMA_CRASHPOINT", arming);
+    }
+    command.status().expect("spawn sima")
+}
+
+/// The pack files a store holds.
+fn pack_file_count(store: &Path) -> usize {
+    std::fs::read_dir(store.join("packs"))
+        .expect("read packs dir")
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| entry.file_name().to_string_lossy().ends_with(".pack"))
+        .count()
+}
+
+/// A packing run SIGKILLed at each of its crashpoints converges by re-running:
+/// no object loses its last copy at any point, so the re-run finishes what the
+/// dead one started and the run the store holds still enumerates whole.
+#[test]
+fn a_pack_death_converges_on_re_run() {
+    for arming in ["pack.after-pack-write", "pack.mid-loose-delete"] {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let slug = arming.replace('.', "-");
+        let store_rel = format!("./store-{slug}");
+        let config = write_config(dir.path(), &format!("pack-{slug}.toml"), &store_rel);
+        assert_eq!(sima_run(&config, None).code(), Some(0));
+        let reference = manifest_of(&config).expect("the run finalized");
+        let store = dir.path().join(format!("store-{slug}"));
+
+        let status = sima_pack(&store, Some(arming));
+        assert_eq!(
+            status.signal(),
+            Some(9),
+            "{arming}: the armed packing dies by SIGKILL, got {status:?}"
+        );
+        // Mid-flight the store holds both representations, and every object
+        // is readable throughout.
+        let opened = Store::open(&store).expect("open store");
+        let run = load(&config).expect("load config").run.id();
+        opened.run_closure(&run).expect("the closure enumerates");
+
+        assert_eq!(
+            sima_pack(&store, None).code(),
+            Some(0),
+            "{arming}: the resumed packing finalizes"
+        );
+        assert_eq!(
+            object_file_count(&store),
+            0,
+            "{arming}: loose files survived the packing"
+        );
+        assert!(pack_file_count(&store) > 0, "{arming}: a pack was written");
+        assert_eq!(manifest_of(&config), Some(reference), "{arming}");
+        Store::open(&store)
+            .expect("reopen store")
+            .run_closure(&run)
+            .expect("the closure still enumerates whole");
+    }
+}
+
 /// Harness soundness: the SIGKILL assertion is falsifiable. An unarmed
 /// child sails past every planted point and exits 0, so a passing armed
 /// case below genuinely proves the injected death.
