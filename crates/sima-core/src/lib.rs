@@ -16,4 +16,4 @@ pub use crashpoint::crashpoint;
 pub use encode::{Codec, Dec, Enc};
 pub use error::{Error, Result};
 pub use frame::{MAX_PAYLOAD, read_frame, write_frame};
-pub use hash::{Hash, from_hex, hash_bytes, to_hex};
+pub use hash::{Hash, Hasher, from_hex, hash_bytes, to_hex};
