@@ -9,6 +9,8 @@
 //!   its index, reading one entry back decoded and verified.
 //! - [`cache`] — where each packed object lives, held in memory: lookup,
 //!   rescan, eviction.
+//! - [`maintain`] — the operations that reshape `packs/`, and the lock that
+//!   serializes them.
 //!
 //! Object identity is untouched by packing. A packed object is addressed by
 //! the blake3 digest of its uncompressed bytes, exactly as a loose one is,
@@ -17,3 +19,6 @@
 
 pub(crate) mod cache;
 pub(crate) mod format;
+pub(crate) mod maintain;
+
+pub use maintain::PackReport;
