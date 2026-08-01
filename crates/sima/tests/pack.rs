@@ -11,7 +11,7 @@ mod common;
 use std::path::{Path, PathBuf};
 use std::process::Output;
 
-use common::{manifest_of, sima_command};
+use common::{manifest_of, pack_files, sima_command};
 use sima_pipeline::load;
 
 /// Writes a `sima.toml` under `dir` whose store lives beside it.
@@ -46,24 +46,6 @@ fn loose_object_count(store: &Path) -> usize {
                 .count()
         })
         .sum()
-}
-
-/// The pack files a store holds, by file name.
-fn pack_files(store: &Path) -> Vec<String> {
-    let mut names: Vec<String> = std::fs::read_dir(store.join("packs"))
-        .expect("read packs dir")
-        .map(|entry| {
-            entry
-                .expect("pack entry")
-                .file_name()
-                .to_str()
-                .expect("utf-8 name")
-                .to_string()
-        })
-        .filter(|name| name.ends_with(".pack"))
-        .collect();
-    names.sort();
-    names
 }
 
 /// A finalized run over `behaviors`, returning the temp dir, the config
@@ -198,7 +180,10 @@ fn a_store_past_the_threshold_is_told_to_pack() {
     for i in 0..391u32 {
         std::fs::write(fanout.join(format!("00{i:062x}")), b"").expect("write object");
     }
-    for verb in ["status", "report"] {
+    // Every verb of main.rs's STORE_OPENING_VERBS, `rm` last: it deletes
+    // the run, so the others must observe the store first. The warning
+    // prints before the verb dispatches, so only stderr is asserted on.
+    for verb in ["status", "report", "run", "migrate", "rm"] {
         let output = sima(&[verb, config.to_str().expect("utf-8 path")]);
         let text = stderr(&output);
         assert!(
@@ -212,8 +197,9 @@ fn a_store_past_the_threshold_is_told_to_pack() {
 fn a_small_store_prints_no_loose_object_warning() {
     let (_dir, config, _store) = finalized_run(r#""succeed""#);
     // The warning fires only past the threshold; a store this size is far
-    // under it, and the read commands stay silent.
-    for verb in ["status", "report"] {
+    // under it, and every store-opening verb stays silent — `rm` last,
+    // since it deletes the run the others observe.
+    for verb in ["status", "report", "run", "migrate", "rm"] {
         let output = sima(&[verb, config.to_str().expect("utf-8 path")]);
         assert!(
             !stderr(&output).contains("loose objects"),
