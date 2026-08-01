@@ -60,6 +60,7 @@ mod tests {
         // fixed contract.
         for sub in [
             "objects",
+            "packs",
             "tmp",
             "tasks",
             "runs",
@@ -69,6 +70,82 @@ mod tests {
         ] {
             assert!(dir.path().join(sub).is_dir(), "missing skeleton dir {sub}");
         }
+        Ok(())
+    }
+
+    #[test]
+    fn open_writes_the_format_marker_on_a_fresh_store() -> Result<()> {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        Store::open(dir.path())?;
+        // The marker is the store-format contract in one line, pinned by
+        // its bytes.
+        assert_eq!(
+            fs::read(dir.path().join("format")).expect("read marker"),
+            b"1\n"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn open_settles_the_marker_on_a_store_that_lacks_it() -> Result<()> {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        // A store laid out before the marker existed: the skeleton alone.
+        for sub in ["objects", "tmp", "tasks", "runs"] {
+            fs::create_dir_all(dir.path().join(sub)).expect("create skeleton dir");
+        }
+        Store::open(dir.path())?;
+        assert_eq!(
+            fs::read(dir.path().join("format")).expect("read marker"),
+            b"1\n"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_foreign_format_version_refuses_to_open() -> Result<()> {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        Store::open(dir.path())?;
+        fs::write(dir.path().join("format"), b"2\n").expect("write marker");
+        match Store::open(dir.path()) {
+            Err(Error::Validation(msg)) => {
+                // The sentence names both versions, so the mismatch is
+                // actionable without reading the file.
+                assert!(msg.contains('2'), "the store's version: {msg}");
+                assert!(msg.contains('1'), "this binary's version: {msg}");
+            }
+            Err(other) => panic!("expected Validation, got {other}"),
+            Ok(_) => panic!("a foreign format version must not open"),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn an_unparseable_marker_is_corruption() -> Result<()> {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        Store::open(dir.path())?;
+        fs::write(dir.path().join("format"), b"not a version\n").expect("write marker");
+        assert!(matches!(Store::open(dir.path()), Err(Error::Corruption(_))));
+        Ok(())
+    }
+
+    #[test]
+    fn concurrent_opens_of_a_fresh_root_converge() -> Result<()> {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        // Racing opens write the marker through the atomic path, so they
+        // converge on identical bytes rather than tearing one.
+        std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..8)
+                .map(|_| scope.spawn(|| Store::open(dir.path())))
+                .collect();
+            for handle in handles {
+                handle.join().expect("open thread panicked")?;
+            }
+            Ok::<(), Error>(())
+        })?;
+        assert_eq!(
+            fs::read(dir.path().join("format")).expect("read marker"),
+            b"1\n"
+        );
         Ok(())
     }
 

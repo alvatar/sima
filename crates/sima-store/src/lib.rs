@@ -38,6 +38,7 @@ mod layout;
 mod lock;
 mod machines;
 mod manifest;
+mod pack;
 mod placement;
 mod retention;
 mod spend;
