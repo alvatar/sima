@@ -13,9 +13,9 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
 
-  # The tests that need only a CPU, on every push. Green here means that
-  # subset passed on a hosted runner, and says nothing about the tests this
-  # lane skipped.
+  # The tests that need only a CPU, on every push. Green here claims exactly
+  # the unmarked subset, on a hosted runner; the marked tests are the `test`
+  # lane's claim.
   test-cpu:
     runs-on: ubuntu-latest
     steps:
@@ -29,17 +29,17 @@ jobs:
       # its failures rather than the first failing binary's.
       - run: cargo test --workspace --no-fail-fast -- --skip on_device
 
-  # The whole suite, the device tests included, on a machine with a Vulkan
-  # device and an NVIDIA device. Green here means those tests ran on real
-  # hardware, which is the claim `test-cpu` cannot make. NVRTC arrives with the
+  # The whole suite, the marked tests included, on a machine with a Vulkan
+  # device and an NVIDIA device. Green here claims the marked tests ran on real
+  # hardware, which is what the marker reserves them for. NVRTC arrives with the
   # build: `build.rs` vendors the pinned release onto the binaries' `RUNPATH`,
   # so this runner supplies the drivers and the cards alone. A staged NVRTC on
-  # `LD_LIBRARY_PATH` would resolve ahead of that `RUNPATH` and shadow the pin,
-  # which is what the byte-for-byte PTX known-answer tests compare against.
+  # `LD_LIBRARY_PATH` would resolve ahead of that `RUNPATH` and shadow the pin
+  # the byte-for-byte PTX known-answer tests compare against.
   #
   # This job stays queued until a self-hosted runner labelled `gpu` is
   # registered on such a machine. A queued `test` beside a green `test-cpu`
-  # is a runner that is absent, not a test that was skipped.
+  # says the hosted subset held and the device runner is offline.
   test:
     runs-on: [self-hosted, gpu]
     steps:
