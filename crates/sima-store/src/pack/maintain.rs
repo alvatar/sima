@@ -13,6 +13,7 @@
 //! converges — the completed packs are seen as packs, and the loose files
 //! they absorbed are deleted without writing anything.
 
+use std::collections::BTreeSet;
 use std::fs::{self, File};
 use std::io::ErrorKind;
 use std::path::Path;
@@ -127,12 +128,47 @@ impl Store {
     ///
     /// The caller holds the maintenance lock, which is what serializes this
     /// against packing and against another deletion.
-    pub(crate) fn delete_objects(
-        &self,
-        _doomed: &[Hash],
-        _lock: &MaintenanceLock,
-    ) -> Result<usize> {
-        unimplemented!("Store::delete_objects")
+    pub(crate) fn delete_objects(&self, doomed: &[Hash], _lock: &MaintenanceLock) -> Result<usize> {
+        // References go before referents everywhere in the store, and a
+        // pack is a reference to nothing: the loose files go first because
+        // that is the cheap half, and each rewrite below reads what it
+        // keeps out of the pack it is about to replace.
+        for hash in doomed {
+            atomic::remove_file_idempotent(&layout::object_path(self.root(), hash))?;
+            // The point the removal crash test arms. Object deletion lives
+            // here for every caller, so this is where a death mid-deletion
+            // is staged.
+            sima_core::crashpoint("remove.mid-objects");
+        }
+
+        self.packs_mut().rescan(self.root())?;
+        let condemned: BTreeSet<Hash> = doomed.iter().copied().collect();
+        let mut affected = BTreeSet::new();
+        {
+            let cache = self.packs();
+            for hash in doomed {
+                if let Some((pack, _)) = cache.lookup(hash) {
+                    affected.insert(pack);
+                }
+            }
+        }
+        for pack in &affected {
+            let path = layout::pack_path(self.root(), pack);
+            let survivors: Vec<Hash> = format::load_index(&path)?
+                .into_iter()
+                .map(|(hash, _)| hash)
+                .filter(|hash| !condemned.contains(hash))
+                .collect();
+            // The replacement is durable before the pack it replaces goes,
+            // so every survivor is readable at one location or two
+            // throughout. A pack with no survivors needs no replacement.
+            if !survivors.is_empty() {
+                format::write_pack(self.root(), &survivors, &|hash| self.get(hash))?;
+            }
+            atomic::remove_file_idempotent(&path)?;
+        }
+        self.packs_mut().rescan(self.root())?;
+        Ok(affected.len())
     }
 
     /// Takes the store's maintenance lock. A lock already held is
@@ -408,7 +444,10 @@ mod tests {
 
         let rewritten = store.delete_objects(&objects[..2], &lock)?;
         assert_eq!(rewritten, 0, "no pack was touched");
-        assert_eq!(loose_objects(dir.path()), objects[2..].iter().copied().collect());
+        assert_eq!(
+            loose_objects(dir.path()),
+            objects[2..].iter().copied().collect()
+        );
         readable(&store, &objects[2..]);
         Ok(())
     }

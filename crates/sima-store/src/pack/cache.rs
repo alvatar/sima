@@ -43,6 +43,12 @@ impl PackCache {
         self.objects.get(hash).copied()
     }
 
+    /// Every object the loaded packs hold, which is the packed half of what
+    /// the store holds after a rescan.
+    pub(crate) fn objects(&self) -> impl Iterator<Item = &Hash> {
+        self.objects.keys()
+    }
+
     /// Brings the cache level with `packs/`: loads the indices of packs it
     /// has not seen, and forgets everything when a pack it holds has
     /// vanished, since the objects that pack held now live elsewhere.
