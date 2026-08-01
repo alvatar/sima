@@ -1,14 +1,17 @@
-//! Reference-guarded run removal: delete a run and everything no surviving
-//! run references, guarded so no object another live run references is ever
-//! removed.
+//! Reference-guarded deletion: [`Store::remove_run`] deletes one run and
+//! everything no surviving run references; [`Store::gc`] deletes everything
+//! outside the finalized runs' closures. Both are guarded the same way — no
+//! object a live run references is ever removed — and both delete through
+//! one primitive, so an object goes whichever representation holds it.
 //!
 //! The removal unit is the run. A single task's artifacts are never removed
 //! alone, because the run's manifest would then reference missing objects. No
 //! public single-object delete exists; the guard is the primitive.
 //!
 //! The plan is computed from the survivors, never from the target: the
-//! removal set is every CAS object outside the union of every other finalized
-//! run's [`run_closure`](Store::run_closure), and every task-index entry
+//! removal set is every object the store holds — loose and packed alike —
+//! outside the union of every other finalized run's
+//! [`run_closure`](Store::run_closure), and every task-index entry
 //! naming a record in that set. The target's own manifest is not consulted,
 //! so an unfinalized run — interrupted or abandoned — is removable, and
 //! orphaned objects from crashed pre-commit writes are collected in the same
@@ -117,6 +120,11 @@ impl Store {
                 "cannot remove run {run}: run not found"
             )));
         }
+        // Deleting an object reshapes the packs that hold it, so the
+        // removal is serialized against every other maintenance operation
+        // for its whole length — the plan included, which is then computed
+        // over a store no packing is moving beneath it.
+        let lock = self.acquire_maintenance_lock()?;
         // A present intent is an interrupted removal: resume it without
         // recomputing, so the plan is fixed across the crash. Otherwise compute
         // the plan under the preconditions and record it durably first.
@@ -134,10 +142,7 @@ impl Store {
         for task in &plan.tasks {
             atomic::remove_file_idempotent(&layout::task_path(self.root(), task))?;
         }
-        for object in &plan.objects {
-            atomic::remove_file_idempotent(&layout::object_path(self.root(), object))?;
-            sima_core::crashpoint("remove.mid-objects");
-        }
+        self.delete_objects(&plan.objects, &lock)?;
         // The run directory last: manifest, journal, checkpoints, and the intent
         // itself. Empty object fan-out directories are left in place — removing
         // them would race concurrent puts.
@@ -154,10 +159,62 @@ impl Store {
     ///
     /// The store remembers finalized runs only afterwards. An unfinalized
     /// run's committed work is reachable through no manifest, so it is
-    /// swept with its run directory — an active run's work included, which
-    /// is what asking for this operation means.
+    /// swept with its run directory, and its in-flight `tmp/` writes are
+    /// swept from under it — an active run's work included. That is what
+    /// asking for this operation means, and the operator owns the decision.
     pub fn gc(&self) -> Result<GcReport> {
-        unimplemented!("Store::gc")
+        let lock = self.acquire_maintenance_lock()?;
+        // The live set: the closure of every finalized run. A run without a
+        // manifest enumerates nothing, so it is doomed rather than live.
+        let mut live: BTreeSet<Hash> = BTreeSet::new();
+        let mut unfinalized = Vec::new();
+        for run in self.runs()? {
+            match self.manifest(&run)? {
+                Some(_) => live.extend(self.run_closure(&run)?),
+                None => unfinalized.push(run),
+            }
+        }
+
+        // Everything the store holds, minus what survives.
+        let doomed: Vec<Hash> = self.held_objects()?.difference(&live).copied().collect();
+        let tasks: Vec<TaskKey> = self
+            .task_index()?
+            .into_iter()
+            .filter(|(_, record)| doomed.binary_search(record).is_ok())
+            .map(|(key, _)| key)
+            .collect();
+
+        // References strictly before referents: the index entries naming a
+        // doomed record go before the record objects themselves.
+        for task in &tasks {
+            atomic::remove_file_idempotent(&layout::task_path(self.root(), task))?;
+        }
+        let packs_rewritten = self.delete_objects(&doomed, &lock)?;
+        for run in &unfinalized {
+            let dir = layout::run_dir(self.root(), run);
+            fs::remove_dir_all(&dir).map_err(|e| io_error(&dir, e))?;
+        }
+        Ok(GcReport {
+            objects_removed: doomed.len(),
+            index_entries_removed: tasks.len(),
+            packs_rewritten,
+            runs_removed: unfinalized.len(),
+            tmp_files_removed: self.sweep_tmp()?,
+        })
+    }
+
+    /// Deletes every file left in `tmp/` and returns how many went. They
+    /// are the inert remains of writes that died before their rename, so
+    /// nothing durable references them.
+    fn sweep_tmp(&self) -> Result<usize> {
+        let dir = layout::tmp_dir(self.root());
+        let mut swept = 0;
+        for entry in fs::read_dir(&dir).map_err(|e| io_error(&dir, e))? {
+            let path = entry.map_err(|e| io_error(&dir, e))?.path();
+            atomic::remove_file_idempotent(&path)?;
+            swept += 1;
+        }
+        Ok(swept)
     }
 
     /// Computes the removal plan from the survivors: every CAS object outside
@@ -180,7 +237,7 @@ impl Store {
         // Both walks return sorted entries and the filters keep their order,
         // so the plan is deterministic.
         let objects: Vec<Hash> = self
-            .cas_objects()?
+            .held_objects()?
             .into_iter()
             .filter(|object| !kept.contains(object))
             .collect();
@@ -194,10 +251,22 @@ impl Store {
         Ok(RemovalPlan { objects, tasks })
     }
 
+    /// Every object the store holds, in either representation: the loose
+    /// files and everything the packs hold. Both reference-guarded
+    /// deletions compute their plan against this, since which
+    /// representation an object sits in says nothing about whether it is
+    /// referenced.
+    fn held_objects(&self) -> Result<BTreeSet<Hash>> {
+        self.packs_mut().rescan(self.root())?;
+        let mut held: BTreeSet<Hash> = self.cas_objects()?.into_iter().collect();
+        held.extend(self.packs().objects());
+        Ok(held)
+    }
+
     /// Every loose object hash, sorted, from walking the fan-out
     /// directories. A file whose name is not an object-hash hex string is
-    /// [`Error::Corruption`]. Removal computes its plan from this walk, and
-    /// packing partitions it.
+    /// [`Error::Corruption`]. The packing operation partitions this walk,
+    /// and [`Store::held_objects`] is its half of what the store holds.
     pub(crate) fn cas_objects(&self) -> Result<Vec<Hash>> {
         let dir = layout::objects_dir(self.root());
         let mut objects = Vec::new();
