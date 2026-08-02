@@ -1,6 +1,6 @@
 //! [`CudaEngine`]: the CUDA backend behind the [`CellularEngine`] boundary.
 
-use sima_contracts::{DeviceBinding, DeviceClass, DeviceInfo, DeviceType};
+use sima_contracts::{DeviceBinding, DeviceInfo};
 use sima_core::{Hash, Result, hash_bytes};
 use sima_toolkit_cuda::{Buffer, Context, Kernel, selected_device_desc};
 
@@ -38,7 +38,7 @@ impl CellularEngine for CudaEngine {
         // The binding names the device to open; without one, the toolkit's
         // default selection applies.
         let context = match device {
-            Some(device) => Context::for_class(device.class().as_str(), device.member)?,
+            Some(device) => Context::for_class(device.class(), device.member)?,
             None => Context::new()?,
         };
         let kernel = context.kernel(kernel, ENTRY, BLOCK_WIDTH)?;
@@ -51,16 +51,13 @@ impl CellularEngine for CudaEngine {
     }
 
     fn enumerate_devices() -> Result<Vec<DeviceInfo>> {
-        sima_toolkit_cuda::enumerate_devices()?
-            .into_iter()
-            .map(from_toolkit)
-            .collect()
+        sima_toolkit_cuda::enumerate_devices()
     }
 
     fn device_desc(device: Option<&DeviceBinding>) -> Result<(String, String)> {
         // The toolkit reads back the class names it minted; this is where the
         // binding maps onto them.
-        selected_device_desc(device.map(|d| (d.class().as_str(), d.member)))
+        selected_device_desc(device.map(|d| (d.class(), d.member)))
     }
 
     fn reduce_digest() -> Hash {
@@ -156,67 +153,11 @@ impl CellularEvaluation for CudaEvaluation<'_> {
     }
 }
 
-/// The CUDA toolkit's enumerated device in the domains layer's vocabulary. CUDA
-/// discovers GPUs alone, so its two categories map straight across and the
-/// remaining ones never arise from it.
-fn from_toolkit(device: sima_toolkit_cuda::DeviceInfo) -> Result<DeviceInfo> {
-    Ok(DeviceInfo {
-        class: DeviceClass::new(device.class)?,
-        name: device.name,
-        device_type: match device.device_type {
-            sima_toolkit_cuda::DeviceType::Discrete => DeviceType::Discrete,
-            sima_toolkit_cuda::DeviceType::Integrated => DeviceType::Integrated,
-        },
-        member: device.member,
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use sima_contracts::DeviceClass;
 
     use super::*;
-
-    #[test]
-    fn every_toolkit_device_category_has_a_counterpart() {
-        for (toolkit, neutral) in [
-            (
-                sima_toolkit_cuda::DeviceType::Discrete,
-                DeviceType::Discrete,
-            ),
-            (
-                sima_toolkit_cuda::DeviceType::Integrated,
-                DeviceType::Integrated,
-            ),
-        ] {
-            let device = sima_toolkit_cuda::DeviceInfo {
-                class: sima_toolkit_cuda::class_of(0x10de, 0x2d39),
-                name: "NVIDIA RTX PRO 2000".to_string(),
-                device_type: toolkit,
-                member: 0,
-            };
-            assert_eq!(from_toolkit(device).expect("convert").device_type, neutral);
-        }
-    }
-
-    #[test]
-    fn a_device_carries_through_the_conversion_verbatim() {
-        let device = sima_toolkit_cuda::DeviceInfo {
-            class: sima_toolkit_cuda::class_of(0x10de, 0x2684),
-            name: "NVIDIA GeForce RTX 4090".to_string(),
-            device_type: sima_toolkit_cuda::DeviceType::Discrete,
-            member: 1,
-        };
-        assert_eq!(
-            from_toolkit(device).expect("convert"),
-            DeviceInfo {
-                class: DeviceClass::new("10de:2684").expect("class id"),
-                name: "NVIDIA GeForce RTX 4090".to_string(),
-                device_type: DeviceType::Discrete,
-                member: 1,
-            }
-        );
-    }
 
     #[test]
     fn enumeration_answers_on_a_machine_with_no_cuda_device() {

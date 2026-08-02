@@ -2,6 +2,7 @@
 
 use ash::vk;
 
+use sima_contracts::DeviceClass;
 use sima_core::{Error, Result};
 
 use crate::instance::{self, InstanceGuard};
@@ -42,12 +43,11 @@ impl Context {
     /// Creates a headless compute context on the given member of the given
     /// device class.
     ///
-    /// The class is one this backend minted, and `member` counts within it,
-    /// ordered by Vulkan enumeration index — the numbering
-    /// [`enumerate_devices`](crate::enumerate_devices) reports. An absent class
-    /// or a member out of range is an [`Error::Backend`] naming the request and
-    /// what exists.
-    pub fn for_class(class: &str, member: u32) -> Result<Context> {
+    /// `member` counts within the class, ordered by Vulkan enumeration index —
+    /// the numbering [`enumerate_devices`](crate::enumerate_devices) reports.
+    /// An absent class or a member out of range is an [`Error::Backend`] naming
+    /// the request and what exists.
+    pub fn for_class(class: &DeviceClass, member: u32) -> Result<Context> {
         Context::build(|instance| selection::select_class_member(instance, class, member))
     }
 
@@ -358,8 +358,9 @@ mod tests {
 
     #[test]
     fn opening_an_absent_device_class_fails() {
+        let absent = DeviceClass::new("dead:beef").expect("class id");
         assert!(matches!(
-            Context::for_class("dead:beef", 0),
+            Context::for_class(&absent, 0),
             Err(Error::Backend(_))
         ));
     }

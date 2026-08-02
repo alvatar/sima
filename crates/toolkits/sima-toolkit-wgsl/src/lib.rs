@@ -31,4 +31,4 @@ pub use buffer::Buffer;
 pub use compile::{COMPILER_ID, check, source_digest};
 pub use context::Context;
 pub use kernel::Kernel;
-pub use selection::{DeviceInfo, DeviceType, class_of, enumerate_devices, selected_device_desc};
+pub use selection::{enumerate_devices, selected_device_desc};
