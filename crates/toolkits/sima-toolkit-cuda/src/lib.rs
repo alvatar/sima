@@ -38,6 +38,23 @@
 //! regenerating with a different one is a real change to what the device runs,
 //! and it moves the digest the environment records.
 //!
+//! # What pairs with the WGSL toolkit
+//!
+//! The two toolkits present the same shape — a [`Context`] that allocates
+//! zeroed [`Buffer`]s, builds a [`Kernel`] at a stated block width, and
+//! dispatches over a reflected parameter list, optionally carrying a
+//! [`BufferUpdate`] — and differ only where the backends genuinely do:
+//!
+//! - **Identity.** This toolkit loads committed PTX, so a kernel reports the
+//!   digest of that artifact and [`COMPILER_ID`] names only what it targets.
+//!   The WGSL toolkit compiles its source in process, so it reports a source
+//!   digest and its compiler id states the lowering.
+//! - **The compiler on the surface.** Compilation happens offline here, so
+//!   [`compile`] is the regeneration entry point a developer machine calls and
+//!   nothing on the execution path does. WGSL lowers at run time instead, so
+//!   its surface carries a device-free validity check and no compiler of its
+//!   own.
+//!
 //! # Block dimensions
 //!
 //! Launches are one-dimensional. CUDA takes block dimensions at launch rather

@@ -36,7 +36,10 @@ pub struct Context {
 impl Context {
     /// Creates a headless compute context on the auto-selected device.
     ///
-    /// The device is chosen by [`selection::select_physical_device`].
+    /// The pick is the shared selection policy's: the `SIMA_GPU_DEVICE`
+    /// enumeration index when it is set, and otherwise discrete before
+    /// integrated before virtual before CPU, with the lowest enumeration index
+    /// breaking ties.
     pub fn new() -> Result<Context> {
         Context::build(selection::select_physical_device)
     }
