@@ -721,9 +721,10 @@ mod tests {
             bytes: vec![1],
         };
         let params = Params { bytes: Vec::new() };
-        let environment = sima_domains::binding_for(&spec.format)
+        let environment = sima_domains::domain_for(&spec.format)
             .expect("a registered format")
-            .environment;
+            .environment()
+            .clone();
         store.put(&spec.to_bytes()).expect("store the spec");
         store.put(&params.to_bytes()).expect("store the params");
         store

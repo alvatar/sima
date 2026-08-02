@@ -11,7 +11,7 @@ use std::sync::{Mutex, Once};
 use std::time::{Duration, Instant};
 
 use sima_core::Error;
-use sima_domains::{binding_for, generator_for};
+use sima_domains::{domain_for, generator_for};
 use sima_model::{FormatId, TaskIdentity};
 use sima_pipeline::{Event, Record, RunObserver, load};
 use sima_store::{Manifest, Store};
@@ -224,10 +224,11 @@ impl ChainTrail {
 pub fn chain_trails(config_path: &Path) -> Vec<ChainTrail> {
     let config = load(config_path).expect("load config");
     let store = Store::open(&config.store).expect("open store");
-    let generator = generator_for(&config.run.generator.id).expect("dispatch the generator");
-    let environment = binding_for(&config.run.format)
+    let generator = generator_for(&config.run.format, &config.run.generator.id)
+        .expect("dispatch the generator");
+    let environment = domain_for(&config.run.format)
         .expect("dispatch the domain")
-        .environment
+        .environment()
         .id();
     let specs = generator
         .generate(config.run.root_seed, &config.run.generator.params)

@@ -19,9 +19,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
 
-use sima_contracts::{DeviceInfo, Domain, Generator};
+use sima_contracts::{DeviceInfo, Generator};
 use sima_core::{Error, Hash, Result, hash_bytes};
-use sima_domains::BuiltinDomain;
 use sima_model::{Environment, FormatId, GeneratorId, Params, Spec};
 use sima_transport::SpawnPolicy;
 use sima_transport::domain_service::DomainService;
@@ -77,23 +76,26 @@ pub(crate) struct BuiltinSource;
 
 impl DomainSource for BuiltinSource {
     fn environment(&self, format: &FormatId) -> Result<Environment> {
-        Ok(BuiltinDomain::new(format)?.environment().clone())
+        Ok(sima_domains::domain_for(format)?.environment().clone())
     }
 
     fn enumerate_devices(&self, format: &FormatId) -> Result<Vec<DeviceInfo>> {
-        BuiltinDomain::new(format)?.enumerate_devices()
+        sima_domains::domain_for(format)?.enumerate_devices()
     }
 
     fn translate_config(&self, format: &FormatId, toml: &str, segmented: bool) -> Result<Params> {
-        BuiltinDomain::new(format)?.translate_config(toml, segmented)
+        sima_domains::domain_for(format)?.translate_config(toml, segmented)
     }
 
     fn generator(
         &self,
         generator: &GeneratorId,
-        _format: &FormatId,
+        format: &FormatId,
     ) -> Result<Box<dyn Generator + '_>> {
-        sima_domains::generator_for(generator)
+        // The format is what the generator is checked against: a generator
+        // drawing for another format would produce specs this run's executor
+        // cannot read.
+        sima_domains::generator_for(format, generator)
     }
 
     fn worker_binary(&self) -> Result<PathBuf> {
@@ -357,7 +359,7 @@ mod tests {
         let source = registry.source(&format("stub.v1"));
         assert_eq!(
             source.environment(&format("stub.v1"))?,
-            sima_domains::binding_for(&format("stub.v1"))?.environment
+            *sima_domains::domain_for(&format("stub.v1"))?.environment()
         );
         Ok(())
     }
@@ -371,7 +373,7 @@ mod tests {
         assert_eq!(source.worker_binary()?, built_worker());
         assert_eq!(
             source.environment(&format("stub.v1"))?,
-            sima_domains::binding_for(&format("stub.v1"))?.environment
+            *sima_domains::domain_for(&format("stub.v1"))?.environment()
         );
         Ok(())
     }
@@ -385,9 +387,30 @@ mod tests {
         let nca = format("ca_evolution.nca.v1");
         assert_eq!(
             registry.source(&nca).environment(&nca)?,
-            sima_domains::binding_for(&nca)?.environment
+            *sima_domains::domain_for(&nca)?.environment()
         );
         Ok(())
+    }
+
+    #[test]
+    fn a_generator_that_does_not_belong_to_the_format_is_refused() {
+        // A run declares a format and a generator separately, and the two must
+        // agree: a generator that produces specs of another format would mint a
+        // run id over the mismatch and fail only when the first spec is stored,
+        // after the store exists. The refusal names both ids, since either one
+        // could be the typo.
+        let registry = DomainRegistry::builtin();
+        let error = registry
+            .source(&format("stub.v1"))
+            .generator(&generator("ca_evolution.nca.v1"), &format("stub.v1"))
+            .err()
+            .expect("a generator belonging to another format");
+        let message = error.to_string();
+        assert!(
+            message.contains("ca_evolution.nca.v1"),
+            "names the generator: {message}"
+        );
+        assert!(message.contains("stub.v1"), "names the format: {message}");
     }
 
     #[test]

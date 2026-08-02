@@ -32,9 +32,9 @@ fn resolver(
     format: &FormatId,
     device: Option<&DeviceBinding>,
 ) -> Result<(Box<dyn Executor>, String, String)> {
-    let domain = sima_domains::binding_for(format)?;
-    let executor = (domain.executor)(device)?;
-    let (device_name, driver) = (domain.device_desc)(device)?;
+    let domain = sima_domains::domain_for(format)?;
+    let executor = domain.executor(device)?;
+    let (device_name, driver) = domain.device_desc(device)?;
     Ok((executor, device_name, driver))
 }
 
@@ -66,12 +66,12 @@ fn enumerate_devices(format: &str) -> Result<()> {
 /// outside the workspace implements, so this role proves those contracts carry
 /// everything a run needs.
 fn serve_domain(format: &FormatId) -> Result<()> {
-    let domain = sima_domains::BuiltinDomain::new(format)?;
+    let domain = sima_domains::domain_for(format)?;
     let generators = sima_domains::generators_for(format)?;
     let generators: Vec<&dyn Generator> = generators.iter().map(AsRef::as_ref).collect();
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
-    sima_transport::domain_service::serve(stdin.lock(), stdout.lock(), &domain, &generators)
+    sima_transport::domain_service::serve(stdin.lock(), stdout.lock(), domain.as_ref(), &generators)
 }
 
 /// Exit codes: 0 on the parent closing the pipe (clean end-of-stream), 1
