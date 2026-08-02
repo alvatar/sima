@@ -196,6 +196,10 @@ mod tests {
     use sima_toolkit_wgsl::check;
     use std::collections::HashMap;
 
+    /// The CUDA reduction's source, for the checks that read a bound out of
+    /// every kernel that declares one.
+    const REDUCE_CU: &str = include_str!("cuda/kernels/reduce.cu");
+
     #[test]
     fn every_pass_compiles_and_reflects_seven_bindings() -> Result<()> {
         // The four entry points share one module, so each reflects the module's
@@ -243,6 +247,53 @@ mod tests {
         .expect("reduce")
         .into_iter()
         .collect()
+    }
+
+    #[test]
+    fn every_kernel_sizes_its_scratch_to_the_bound_this_module_enforces() {
+        // The bound exists three times: here, where a channel count is refused
+        // before dispatch, and once inside each backend's reduction kernel,
+        // where it sizes the per-channel scratch arrays. A kernel whose copy
+        // fell below this one would write past its scratch on a grid this
+        // module admits — out of bounds on the device, with no error anywhere.
+        // Each kernel's copy is parsed back out of its own source so the three
+        // cannot drift apart silently.
+        assert_eq!(
+            declared_bound(REDUCE_WGSL, "const MAX_CHANNELS: u32 = ", "u;"),
+            Some(MAX_CHANNELS),
+            "the WGSL reduction declares the bound this module enforces"
+        );
+        assert_eq!(
+            declared_bound(REDUCE_CU, "#define MAX_CHANNELS ", "\n"),
+            Some(MAX_CHANNELS),
+            "the CUDA reduction declares the bound this module enforces"
+        );
+    }
+
+    #[test]
+    fn a_kernel_that_lowered_its_bound_is_caught() {
+        // The agreement test above is only worth its place if it fails on a
+        // drifted copy, so a mutated source stands in for one.
+        let lowered = REDUCE_WGSL.replace(
+            &format!("const MAX_CHANNELS: u32 = {MAX_CHANNELS}u;"),
+            "const MAX_CHANNELS: u32 = 8u;",
+        );
+        assert_ne!(
+            declared_bound(&lowered, "const MAX_CHANNELS: u32 = ", "u;"),
+            Some(MAX_CHANNELS),
+            "a kernel that lowered its bound reads back as disagreeing"
+        );
+
+        // And a source that declares nothing reads back as absent rather than
+        // as agreeing, so a renamed constant fails the check too.
+        assert_eq!(declared_bound("", "const MAX_CHANNELS: u32 = ", "u;"), None);
+    }
+
+    /// The integer a source declares after `prefix`, up to `terminator`.
+    fn declared_bound(source: &str, prefix: &str, terminator: &str) -> Option<u32> {
+        let at = source.find(prefix)? + prefix.len();
+        let rest = &source[at..];
+        rest[..rest.find(terminator)?].trim().parse().ok()
     }
 
     #[test]
