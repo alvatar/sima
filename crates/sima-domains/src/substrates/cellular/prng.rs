@@ -112,122 +112,123 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         sima_toolkit_wgsl::check(&probe_source(), "main").expect("probe kernel compiles");
     }
 
-    /// Requires a real Vulkan device.
-    ///
-    /// Proves the WGSL PRNG equals [`sima_core::prng`] bit-for-bit: it runs
-    /// `prng_next`/`prng_derive` on the GPU for a spread of inputs, including the
-    /// three published known answers, and compares every 64-bit result against
-    /// the CPU implementation and the pinned values.
-    #[test]
-    fn the_wgsl_prng_matches_sima_core() {
-        // op 0 = next(seed, counter); op 1 = derive(seed, tag). The first three
-        // rows are the published known answers; the rest are a spread.
-        let cases: [(u32, u64, u64); 12] = [
-            (0, 0, 0),
-            (1, 0, 1),
-            (1, 1, 1),
-            (0, 0, 1),
-            (0, 1, 0),
-            (0, 42, 7),
-            (0, u64::MAX, 3),
-            (0, 0x0123_4567_89AB_CDEF, 100),
-            (1, 0, 2),
-            (1, 42, 5),
-            (1, u64::MAX, u64::MAX),
-            (1, 0x0123_4567_89AB_CDEF, 0xFEDC_BA98),
-        ];
+    /// Running the probe kernel needs a real Vulkan device.
+    mod on_device {
+        use super::*;
 
-        let mut requests: Vec<u32> = Vec::with_capacity(cases.len() * 5);
-        for &(op, seed, arg) in &cases {
-            requests.extend_from_slice(&request(op, seed, arg));
+        /// Proves the WGSL PRNG equals [`sima_core::prng`] bit-for-bit: it runs
+        /// `prng_next`/`prng_derive` on the GPU for a spread of inputs, including the
+        /// three published known answers, and compares every 64-bit result against
+        /// the CPU implementation and the pinned values.
+        #[test]
+        fn the_wgsl_prng_matches_sima_core() {
+            // op 0 = next(seed, counter); op 1 = derive(seed, tag). The first three
+            // rows are the published known answers; the rest are a spread.
+            let cases: [(u32, u64, u64); 12] = [
+                (0, 0, 0),
+                (1, 0, 1),
+                (1, 1, 1),
+                (0, 0, 1),
+                (0, 1, 0),
+                (0, 42, 7),
+                (0, u64::MAX, 3),
+                (0, 0x0123_4567_89AB_CDEF, 100),
+                (1, 0, 2),
+                (1, 42, 5),
+                (1, u64::MAX, u64::MAX),
+                (1, 0x0123_4567_89AB_CDEF, 0xFEDC_BA98),
+            ];
+
+            let mut requests: Vec<u32> = Vec::with_capacity(cases.len() * 5);
+            for &(op, seed, arg) in &cases {
+                requests.extend_from_slice(&request(op, seed, arg));
+            }
+            let results = dispatch_probe(&requests);
+
+            for (i, &(op, seed, arg)) in cases.iter().enumerate() {
+                let expected = if op == 0 {
+                    prng::next(seed, arg)
+                } else {
+                    prng::derive(seed, arg)
+                };
+                assert_eq!(
+                    results[i], expected,
+                    "case {i} (op {op}, seed {seed}, arg {arg}) diverged from sima_core::prng"
+                );
+            }
+
+            // The three published known answers, keyed to the first three rows.
+            assert_eq!(results[0], 0xE220_A839_7B1D_CDAF, "next(0, 0)");
+            assert_eq!(results[1], 0x7AB4_0E09_0F36_3A7D, "derive(0, 1)");
+            assert_eq!(results[2], 0x83EC_686C_1600_460A, "derive(1, 1)");
         }
-        let results = dispatch_probe(&requests);
 
-        for (i, &(op, seed, arg)) in cases.iter().enumerate() {
-            let expected = if op == 0 {
-                prng::next(seed, arg)
-            } else {
-                prng::derive(seed, arg)
+        /// Probes each u64 emulation helper at its engineered corners against Rust's
+        /// own `u64` arithmetic — the language semantics the WGSL emulation
+        /// reproduces. Every row carries its expected result computed natively, so a
+        /// helper that mishandles a carry, a shift-amount mask, or a cross-term
+        /// diverges from a bit-exact reference.
+        #[test]
+        fn the_wgsl_u64_helpers_match_native() {
+            // Each row is (op, a, b, expected) with expected computed by Rust's own
+            // wrapping/shift arithmetic. `shr` carries its shift amount in b; the two
+            // `mul_wide` operands are u32, widened for transport.
+            let add = |a: u64, b: u64| (OP_ADD, a, b, a.wrapping_add(b));
+            let shr = |a: u64, n: u32| (OP_SHR, a, u64::from(n), a >> n);
+            let mul = |a: u64, b: u64| (OP_MUL, a, b, a.wrapping_mul(b));
+            let mul_wide = |a: u32, b: u32| {
+                (
+                    OP_MUL_WIDE,
+                    u64::from(a),
+                    u64::from(b),
+                    u64::from(a) * u64::from(b),
+                )
             };
-            assert_eq!(
-                results[i], expected,
-                "case {i} (op {op}, seed {seed}, arg {arg}) diverged from sima_core::prng"
-            );
-        }
 
-        // The three published known answers, keyed to the first three rows.
-        assert_eq!(results[0], 0xE220_A839_7B1D_CDAF, "next(0, 0)");
-        assert_eq!(results[1], 0x7AB4_0E09_0F36_3A7D, "derive(0, 1)");
-        assert_eq!(results[2], 0x83EC_686C_1600_460A, "derive(1, 1)");
-    }
+            // A dense pattern with bits in both halves, for the shift corners.
+            const DENSE: u64 = 0xF0F0_F0F0_0F0F_0F0F;
+            let rows: Vec<(u32, u64, u64, u64)> = vec![
+                // u64_add: low halves summing to exactly 2^32 (carry boundary),
+                // carry into a saturated high half (u64::MAX + 1 wraps to 0), and
+                // zero operands.
+                add(0x8000_0000, 0x8000_0000),
+                add(u64::MAX, 1),
+                add(0, 0),
+                // u64_shr on a dense pattern at n in {0, 1, 31, 32, 33, 63}. 0 and 32
+                // sit on WGSL's shift-amount masking, which the snippet guards.
+                shr(DENSE, 0),
+                shr(DENSE, 1),
+                shr(DENSE, 31),
+                shr(DENSE, 32),
+                shr(DENSE, 33),
+                shr(DENSE, 63),
+                // u64_mul_wide: 0xFFFFFFFF squared saturates every partial product;
+                // 0xFFFFFFFF * 0xFFFFFFFE forces the cross term to overflow (its carry
+                // into bit 48); then the 0 and 1 multipliers.
+                mul_wide(0xFFFF_FFFF, 0xFFFF_FFFF),
+                mul_wide(0xFFFF_FFFF, 0xFFFF_FFFE),
+                mul_wide(0, 0x1234_5678),
+                mul_wide(1, 0x1234_5678),
+                // u64_mul mod 2^64: max squared, a product overflowing 2^64 (2^32 *
+                // 2^32 wraps to 0), and a pair with both halves nonzero so both cross
+                // terms feed the high half.
+                mul(u64::MAX, u64::MAX),
+                mul(0x0000_0001_0000_0000, 0x0000_0001_0000_0000),
+                mul(0x0000_0001_0000_0002, 0x0000_0003_0000_0004),
+            ];
 
-    /// Requires a real Vulkan device.
-    ///
-    /// Probes each u64 emulation helper at its engineered corners against Rust's
-    /// own `u64` arithmetic — the language semantics the WGSL emulation
-    /// reproduces. Every row carries its expected result computed natively, so a
-    /// helper that mishandles a carry, a shift-amount mask, or a cross-term
-    /// diverges from a bit-exact reference.
-    #[test]
-    fn the_wgsl_u64_helpers_match_native() {
-        // Each row is (op, a, b, expected) with expected computed by Rust's own
-        // wrapping/shift arithmetic. `shr` carries its shift amount in b; the two
-        // `mul_wide` operands are u32, widened for transport.
-        let add = |a: u64, b: u64| (OP_ADD, a, b, a.wrapping_add(b));
-        let shr = |a: u64, n: u32| (OP_SHR, a, u64::from(n), a >> n);
-        let mul = |a: u64, b: u64| (OP_MUL, a, b, a.wrapping_mul(b));
-        let mul_wide = |a: u32, b: u32| {
-            (
-                OP_MUL_WIDE,
-                u64::from(a),
-                u64::from(b),
-                u64::from(a) * u64::from(b),
-            )
-        };
+            let mut requests: Vec<u32> = Vec::with_capacity(rows.len() * 5);
+            for &(op, a, b, _) in &rows {
+                requests.extend_from_slice(&request(op, a, b));
+            }
+            let results = dispatch_probe(&requests);
 
-        // A dense pattern with bits in both halves, for the shift corners.
-        const DENSE: u64 = 0xF0F0_F0F0_0F0F_0F0F;
-        let rows: Vec<(u32, u64, u64, u64)> = vec![
-            // u64_add: low halves summing to exactly 2^32 (carry boundary),
-            // carry into a saturated high half (u64::MAX + 1 wraps to 0), and
-            // zero operands.
-            add(0x8000_0000, 0x8000_0000),
-            add(u64::MAX, 1),
-            add(0, 0),
-            // u64_shr on a dense pattern at n in {0, 1, 31, 32, 33, 63}. 0 and 32
-            // sit on WGSL's shift-amount masking, which the snippet guards.
-            shr(DENSE, 0),
-            shr(DENSE, 1),
-            shr(DENSE, 31),
-            shr(DENSE, 32),
-            shr(DENSE, 33),
-            shr(DENSE, 63),
-            // u64_mul_wide: 0xFFFFFFFF squared saturates every partial product;
-            // 0xFFFFFFFF * 0xFFFFFFFE forces the cross term to overflow (its carry
-            // into bit 48); then the 0 and 1 multipliers.
-            mul_wide(0xFFFF_FFFF, 0xFFFF_FFFF),
-            mul_wide(0xFFFF_FFFF, 0xFFFF_FFFE),
-            mul_wide(0, 0x1234_5678),
-            mul_wide(1, 0x1234_5678),
-            // u64_mul mod 2^64: max squared, a product overflowing 2^64 (2^32 *
-            // 2^32 wraps to 0), and a pair with both halves nonzero so both cross
-            // terms feed the high half.
-            mul(u64::MAX, u64::MAX),
-            mul(0x0000_0001_0000_0000, 0x0000_0001_0000_0000),
-            mul(0x0000_0001_0000_0002, 0x0000_0003_0000_0004),
-        ];
-
-        let mut requests: Vec<u32> = Vec::with_capacity(rows.len() * 5);
-        for &(op, a, b, _) in &rows {
-            requests.extend_from_slice(&request(op, a, b));
-        }
-        let results = dispatch_probe(&requests);
-
-        for (i, &(op, a, b, expected)) in rows.iter().enumerate() {
-            assert_eq!(
-                results[i], expected,
-                "row {i} (op {op}, a {a:#018x}, b {b:#018x}) diverged from native u64 arithmetic"
-            );
+            for (i, &(op, a, b, expected)) in rows.iter().enumerate() {
+                assert_eq!(
+                    results[i], expected,
+                    "row {i} (op {op}, a {a:#018x}, b {b:#018x}) diverged from native u64 arithmetic"
+                );
+            }
         }
     }
 }

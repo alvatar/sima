@@ -65,72 +65,73 @@ mod tests {
         (kernel, buffer)
     }
 
-    /// Requires an NVIDIA device.
-    #[test]
-    fn dispatch_applies_the_kernel() {
-        let context = Context::new().expect("create compute context");
-        let (kernel, count) = smoke(&context, 4);
-        let input: [u32; 4] = [1, 2, 3, 4];
-        let bytes: &[u8] = bytemuck::cast_slice(&input);
-        let mut in_buffer = context.buffer(bytes.len()).expect("input buffer");
-        let out_buffer = context.buffer(bytes.len()).expect("output buffer");
-        context.upload(&mut in_buffer, bytes).expect("upload input");
+    /// Every dispatch test launches a kernel, which needs an NVIDIA device.
+    mod on_device {
+        use super::*;
 
-        context
-            .dispatch(&kernel, &[&in_buffer, &out_buffer, &count], [1, 1, 1])
-            .expect("dispatch");
+        #[test]
+        fn dispatch_applies_the_kernel() {
+            let context = Context::new().expect("create compute context");
+            let (kernel, count) = smoke(&context, 4);
+            let input: [u32; 4] = [1, 2, 3, 4];
+            let bytes: &[u8] = bytemuck::cast_slice(&input);
+            let mut in_buffer = context.buffer(bytes.len()).expect("input buffer");
+            let out_buffer = context.buffer(bytes.len()).expect("output buffer");
+            context.upload(&mut in_buffer, bytes).expect("upload input");
 
-        let read_back = context.download(&out_buffer).expect("download output");
-        let output: &[u32] = bytemuck::cast_slice(&read_back);
-        assert_eq!(output, [3, 5, 7, 9]);
-    }
+            context
+                .dispatch(&kernel, &[&in_buffer, &out_buffer, &count], [1, 1, 1])
+                .expect("dispatch");
 
-    /// Requires an NVIDIA device.
-    ///
-    /// A dispatch that reads a buffer a prior dispatch wrote must observe that
-    /// output: both launches go to the same stream, which orders them, and
-    /// each dispatch drains before returning. Applying `out = in * 2 + 1`
-    /// twice, ping-ponging the two buffers, yields `in * 4 + 3`.
-    #[test]
-    fn a_dispatch_observes_a_prior_dispatchs_writes() {
-        let context = Context::new().expect("create compute context");
-        let (kernel, count) = smoke(&context, 4);
-        let input: [u32; 4] = [1, 2, 3, 4];
-        let bytes: &[u8] = bytemuck::cast_slice(&input);
-        let mut a = context.buffer(bytes.len()).expect("buffer a");
-        let b = context.buffer(bytes.len()).expect("buffer b");
-        context.upload(&mut a, bytes).expect("upload input");
+            let read_back = context.download(&out_buffer).expect("download output");
+            let output: &[u32] = bytemuck::cast_slice(&read_back);
+            assert_eq!(output, [3, 5, 7, 9]);
+        }
 
-        context
-            .dispatch(&kernel, &[&a, &b, &count], [1, 1, 1])
-            .expect("first dispatch");
-        context
-            .dispatch(&kernel, &[&b, &a, &count], [1, 1, 1])
-            .expect("second dispatch");
+        /// A dispatch that reads a buffer a prior dispatch wrote must observe that
+        /// output: both launches go to the same stream, which orders them, and
+        /// each dispatch drains before returning. Applying `out = in * 2 + 1`
+        /// twice, ping-ponging the two buffers, yields `in * 4 + 3`.
+        #[test]
+        fn a_dispatch_observes_a_prior_dispatchs_writes() {
+            let context = Context::new().expect("create compute context");
+            let (kernel, count) = smoke(&context, 4);
+            let input: [u32; 4] = [1, 2, 3, 4];
+            let bytes: &[u8] = bytemuck::cast_slice(&input);
+            let mut a = context.buffer(bytes.len()).expect("buffer a");
+            let b = context.buffer(bytes.len()).expect("buffer b");
+            context.upload(&mut a, bytes).expect("upload input");
 
-        let read_back = context.download(&a).expect("download");
-        let output: &[u32] = bytemuck::cast_slice(&read_back);
-        // (in * 2 + 1) * 2 + 1 = in * 4 + 3.
-        assert_eq!(output, [7, 11, 15, 19]);
-    }
+            context
+                .dispatch(&kernel, &[&a, &b, &count], [1, 1, 1])
+                .expect("first dispatch");
+            context
+                .dispatch(&kernel, &[&b, &a, &count], [1, 1, 1])
+                .expect("second dispatch");
 
-    /// Requires an NVIDIA device.
-    #[test]
-    fn a_launch_covering_more_threads_than_elements_writes_only_the_elements() {
-        // The block width is fixed at 64, so a 4-element buffer is covered by
-        // one block of 64 threads and 60 of them must fall out on the bounds
-        // guard rather than write past the allocation.
-        let context = Context::new().expect("create compute context");
-        let (kernel, count) = smoke(&context, 4);
-        let input: [u32; 4] = [1, 2, 3, 4];
-        let bytes: &[u8] = bytemuck::cast_slice(&input);
-        let mut in_buffer = context.buffer(bytes.len()).expect("input buffer");
-        let out_buffer = context.buffer(bytes.len()).expect("output buffer");
-        context.upload(&mut in_buffer, bytes).expect("upload input");
-        context
-            .dispatch(&kernel, &[&in_buffer, &out_buffer, &count], [1, 1, 1])
-            .expect("dispatch");
-        let read_back = context.download(&out_buffer).expect("download output");
-        assert_eq!(read_back.len(), bytes.len());
+            let read_back = context.download(&a).expect("download");
+            let output: &[u32] = bytemuck::cast_slice(&read_back);
+            // (in * 2 + 1) * 2 + 1 = in * 4 + 3.
+            assert_eq!(output, [7, 11, 15, 19]);
+        }
+
+        #[test]
+        fn a_launch_covering_more_threads_than_elements_writes_only_the_elements() {
+            // The block width is fixed at 64, so a 4-element buffer is covered by
+            // one block of 64 threads and 60 of them must fall out on the bounds
+            // guard rather than write past the allocation.
+            let context = Context::new().expect("create compute context");
+            let (kernel, count) = smoke(&context, 4);
+            let input: [u32; 4] = [1, 2, 3, 4];
+            let bytes: &[u8] = bytemuck::cast_slice(&input);
+            let mut in_buffer = context.buffer(bytes.len()).expect("input buffer");
+            let out_buffer = context.buffer(bytes.len()).expect("output buffer");
+            context.upload(&mut in_buffer, bytes).expect("upload input");
+            context
+                .dispatch(&kernel, &[&in_buffer, &out_buffer, &count], [1, 1, 1])
+                .expect("dispatch");
+            let read_back = context.download(&out_buffer).expect("download output");
+            assert_eq!(read_back.len(), bytes.len());
+        }
     }
 }

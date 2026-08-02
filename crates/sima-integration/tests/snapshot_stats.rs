@@ -210,137 +210,138 @@ fn a_stub_run_journals_scalars_and_report_renders_them() -> Result<()> {
     Ok(())
 }
 
-/// Requires a real GPU and a CUDA device.
-#[test]
-fn a_failing_predicate_drops_every_snapshot_but_journals_scalars() -> Result<()> {
-    // population is a fraction, so a minimum of 2.0 can never be met: every
-    // candidate commits a record with no state artifact, yet every task still
-    // journals its scalars.
-    let dir = tempfile::tempdir().expect("temp dir");
-    for (label, format) in FORMATS {
-        let config = gray_scott_config(
-            dir.path(),
-            "drop",
-            label,
-            format,
-            3,
-            60,
-            Some(r#"{ scalar = "population", min = 2.0 }"#),
-        )?;
-        assert!(matches!(
-            orchestrate(
-                &config,
-                &RunControl::detached(),
-                Engagement::Orchestrator,
-                BinaryChange::Refuse
-            )?,
-            RunOutcome::Finalized { .. }
-        ));
-        let present = state_artifact_present(&config)?;
-        assert_eq!(present.len(), 3, "{format}");
-        assert!(
-            present.iter().all(|&p| !p),
-            "{format}: every failing candidate drops its snapshot"
-        );
-        assert!(
-            every_committed_task_has_scalars(&journal_events(&config)),
-            "{format}: a dropped snapshot still journals its scalars"
-        );
-    }
-    Ok(())
-}
+/// Each predicate case runs both Gray-Scott programs, so these need a real GPU and a CUDA device.
+mod on_device {
+    use super::*;
 
-/// Requires a real GPU and a CUDA device.
-#[test]
-fn a_passing_predicate_keeps_every_snapshot() -> Result<()> {
-    // A minimum of 0.0 is met by every candidate, so each commits its snapshot,
-    // and every task journals scalars.
-    let dir = tempfile::tempdir().expect("temp dir");
-    for (label, format) in FORMATS {
-        let config = gray_scott_config(
-            dir.path(),
-            "keep",
-            label,
-            format,
-            3,
-            60,
-            Some(r#"{ scalar = "population", min = 0.0 }"#),
-        )?;
-        assert!(matches!(
-            orchestrate(
-                &config,
-                &RunControl::detached(),
-                Engagement::Orchestrator,
-                BinaryChange::Refuse
-            )?,
-            RunOutcome::Finalized { .. }
-        ));
-        let present = state_artifact_present(&config)?;
-        assert_eq!(present.len(), 3, "{format}");
-        assert!(
-            present.iter().all(|&p| p),
-            "{format}: every passing candidate keeps its snapshot"
-        );
-        assert!(
-            every_committed_task_has_scalars(&journal_events(&config)),
-            "{format}: every task journals its scalars"
-        );
+    #[test]
+    fn a_predicate_run_finalizes_a_deterministic_manifest() -> Result<()> {
+        // The same predicate config run twice into fresh stores finalizes
+        // byte-identical manifests: the predicate verdict is a pure function of the
+        // deterministic final grid, so it decides identically both times.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let predicate = Some(r#"{ scalar = "activity", min = 1e-4 }"#);
+        let manifest = |config: &LoadedConfig| -> Result<_> {
+            Ok(Store::open(&config.store)?
+                .manifest(&config.run.id())?
+                .expect("a finalized manifest"))
+        };
+        for (label, format) in FORMATS {
+            let first = gray_scott_config(dir.path(), "first", label, format, 2, 60, predicate)?;
+            let second = gray_scott_config(dir.path(), "second", label, format, 2, 60, predicate)?;
+            for config in [&first, &second] {
+                assert!(matches!(
+                    orchestrate(
+                        config,
+                        &RunControl::detached(),
+                        Engagement::Orchestrator,
+                        BinaryChange::Refuse
+                    )?,
+                    RunOutcome::Finalized { .. }
+                ));
+            }
+            assert_eq!(manifest(&first)?, manifest(&second)?, "{format}");
+        }
+        Ok(())
     }
-    Ok(())
-}
 
-/// Requires a real GPU and a CUDA device.
-#[test]
-fn a_no_predicate_run_keeps_every_snapshot() -> Result<()> {
-    // The pre-milestone behavior: without a predicate every candidate commits
-    // its state artifact, unchanged.
-    let dir = tempfile::tempdir().expect("temp dir");
-    for (label, format) in FORMATS {
-        let config = gray_scott_config(dir.path(), "plain", label, format, 3, 60, None)?;
-        assert!(matches!(
-            orchestrate(
-                &config,
-                &RunControl::detached(),
-                Engagement::Orchestrator,
-                BinaryChange::Refuse
-            )?,
-            RunOutcome::Finalized { .. }
-        ));
-        let present = state_artifact_present(&config)?;
-        assert_eq!(present.len(), 3, "{format}");
-        assert!(present.iter().all(|&p| p), "{format}");
-    }
-    Ok(())
-}
-
-/// Requires a real GPU and a CUDA device.
-#[test]
-fn a_predicate_run_finalizes_a_deterministic_manifest() -> Result<()> {
-    // The same predicate config run twice into fresh stores finalizes
-    // byte-identical manifests: the predicate verdict is a pure function of the
-    // deterministic final grid, so it decides identically both times.
-    let dir = tempfile::tempdir().expect("temp dir");
-    let predicate = Some(r#"{ scalar = "activity", min = 1e-4 }"#);
-    let manifest = |config: &LoadedConfig| -> Result<_> {
-        Ok(Store::open(&config.store)?
-            .manifest(&config.run.id())?
-            .expect("a finalized manifest"))
-    };
-    for (label, format) in FORMATS {
-        let first = gray_scott_config(dir.path(), "first", label, format, 2, 60, predicate)?;
-        let second = gray_scott_config(dir.path(), "second", label, format, 2, 60, predicate)?;
-        for config in [&first, &second] {
+    #[test]
+    fn a_no_predicate_run_keeps_every_snapshot() -> Result<()> {
+        // The pre-milestone behavior: without a predicate every candidate commits
+        // its state artifact, unchanged.
+        let dir = tempfile::tempdir().expect("temp dir");
+        for (label, format) in FORMATS {
+            let config = gray_scott_config(dir.path(), "plain", label, format, 3, 60, None)?;
             assert!(matches!(
                 orchestrate(
-                    config,
+                    &config,
                     &RunControl::detached(),
                     Engagement::Orchestrator,
                     BinaryChange::Refuse
                 )?,
                 RunOutcome::Finalized { .. }
             ));
+            let present = state_artifact_present(&config)?;
+            assert_eq!(present.len(), 3, "{format}");
+            assert!(present.iter().all(|&p| p), "{format}");
         }
-        assert_eq!(manifest(&first)?, manifest(&second)?, "{format}");
+        Ok(())
     }
-    Ok(())
+
+    #[test]
+    fn a_passing_predicate_keeps_every_snapshot() -> Result<()> {
+        // A minimum of 0.0 is met by every candidate, so each commits its snapshot,
+        // and every task journals scalars.
+        let dir = tempfile::tempdir().expect("temp dir");
+        for (label, format) in FORMATS {
+            let config = gray_scott_config(
+                dir.path(),
+                "keep",
+                label,
+                format,
+                3,
+                60,
+                Some(r#"{ scalar = "population", min = 0.0 }"#),
+            )?;
+            assert!(matches!(
+                orchestrate(
+                    &config,
+                    &RunControl::detached(),
+                    Engagement::Orchestrator,
+                    BinaryChange::Refuse
+                )?,
+                RunOutcome::Finalized { .. }
+            ));
+            let present = state_artifact_present(&config)?;
+            assert_eq!(present.len(), 3, "{format}");
+            assert!(
+                present.iter().all(|&p| p),
+                "{format}: every passing candidate keeps its snapshot"
+            );
+            assert!(
+                every_committed_task_has_scalars(&journal_events(&config)),
+                "{format}: every task journals its scalars"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_failing_predicate_drops_every_snapshot_but_journals_scalars() -> Result<()> {
+        // population is a fraction, so a minimum of 2.0 can never be met: every
+        // candidate commits a record with no state artifact, yet every task still
+        // journals its scalars.
+        let dir = tempfile::tempdir().expect("temp dir");
+        for (label, format) in FORMATS {
+            let config = gray_scott_config(
+                dir.path(),
+                "drop",
+                label,
+                format,
+                3,
+                60,
+                Some(r#"{ scalar = "population", min = 2.0 }"#),
+            )?;
+            assert!(matches!(
+                orchestrate(
+                    &config,
+                    &RunControl::detached(),
+                    Engagement::Orchestrator,
+                    BinaryChange::Refuse
+                )?,
+                RunOutcome::Finalized { .. }
+            ));
+            let present = state_artifact_present(&config)?;
+            assert_eq!(present.len(), 3, "{format}");
+            assert!(
+                present.iter().all(|&p| !p),
+                "{format}: every failing candidate drops its snapshot"
+            );
+            assert!(
+                every_committed_task_has_scalars(&journal_events(&config)),
+                "{format}: a dropped snapshot still journals its scalars"
+            );
+        }
+        Ok(())
+    }
 }

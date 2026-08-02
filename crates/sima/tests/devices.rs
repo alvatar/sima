@@ -2,8 +2,8 @@
 //! spread across unequal cards, chain stickiness across a resume, a rebind
 //! when a card is gone, and single-device determinism unchanged.
 //!
-//! Every test here needs the machine's GPUs and runs under a plain
-//! `cargo test`, like the other device suites.
+//! Every test here needs the machine's GPUs, which the `on_device` module
+//! holding them states.
 //!
 //! The placement rule itself is proven device-free in the scheduler's own
 //! tests; what these prove is that the whole path — config, resolution,
@@ -158,191 +158,196 @@ fn chain_with_work_on(config: &Path, device: &str) -> Option<usize> {
     })
 }
 
-/// A Gray-Scott search over both of this machine's GPUs completes, uses both,
-/// and keeps every chain on one of them.
-#[test]
-fn a_search_over_two_device_classes_uses_both_and_splits_no_chain() {
-    require_devices(FORMAT, &["nvidia", "intel"]);
-    let dir = tempfile::tempdir().expect("temp dir");
-    let config = common::write_config_text(
-        dir.path(),
-        "both.toml",
-        &config_text("./store", CANDIDATES, SEGMENTS, BOTH_DEVICES),
-    );
-    run_to_completion(&config);
+/// Every test here drives the machine's real GPUs through the real binaries.
+mod on_device {
+    use super::*;
 
-    let events = journal_events(&config);
-    let reported = devices_reported(&events);
-    assert_eq!(
-        reported.len(),
-        2,
-        "both device classes carried workers: {reported:?}"
-    );
-    let per_device = assert_chains_never_split(&config);
-    assert_eq!(
-        per_device.iter().map(|(_, n)| n).sum::<usize>(),
-        CANDIDATES as usize,
-        "every chain ran"
-    );
-    // Greedy placement hands an unbound chain to whichever class is free, and
-    // at this workload's sizing neither class can absorb the run alone.
-    assert_eq!(
-        per_device.len(),
-        2,
-        "both classes took chains: {per_device:?}"
-    );
-    assert!(manifest_of(&config).is_some(), "the run wrote a manifest");
-}
+    /// A Gray-Scott search over both of this machine's GPUs completes, uses both,
+    /// and keeps every chain on one of them.
+    #[test]
+    fn a_search_over_two_device_classes_uses_both_and_splits_no_chain() {
+        require_devices(FORMAT, &["nvidia", "intel"]);
+        let dir = tempfile::tempdir().expect("temp dir");
+        let config = common::write_config_text(
+            dir.path(),
+            "both.toml",
+            &config_text("./store", CANDIDATES, SEGMENTS, BOTH_DEVICES),
+        );
+        run_to_completion(&config);
 
-/// A run killed mid-flight and resumed keeps each chain on the class it
-/// started on: the binding is durable, so nothing rebinds.
-#[test]
-fn chains_keep_their_class_across_a_resume() {
-    require_devices(FORMAT, &["nvidia", "intel"]);
-    let dir = tempfile::tempdir().expect("temp dir");
-    let config = common::write_config_text(
-        dir.path(),
-        "resume.toml",
-        &config_text("./store", CANDIDATES, SEGMENTS, BOTH_DEVICES),
-    );
-
-    // Kill the orchestrator once the run is under way, so some chains are
-    // bound and partly walked while others are untouched.
-    let mut child = spawn_run(&config);
-    let bound = poll_until(Duration::from_secs(120), || {
-        journal_events(&config)
-            .iter()
-            .filter(|e| matches!(e, Event::Committed { .. }))
-            .count()
-            >= 2
-    });
-    assert!(bound, "the run committed before the deadline");
-    child.kill().expect("kill the orchestrator");
-    child.wait().expect("reap the orchestrator");
-
-    // The kill landed mid-run: work remains, so the second session is a real
-    // resume rather than a re-finalization that would satisfy every assertion
-    // below without running anything.
-    assert!(
-        manifest_of(&config).is_none(),
-        "the first session was killed before it finalized"
-    );
-    let first_session = journal_events(&config).len();
-
-    run_to_completion(&config);
-
-    let events = journal_events(&config);
-    let resumed_leases = events[first_session..]
-        .iter()
-        .filter(|e| matches!(e, Event::Leased { .. }))
-        .count();
-    assert!(resumed_leases > 0, "the second session ran the work left");
-    assert!(
-        !events
-            .iter()
-            .any(|e| matches!(e, Event::ChainRebound { .. })),
-        "every class was still present, so nothing moved"
-    );
-    assert_chains_never_split(&config);
-    assert!(manifest_of(&config).is_some(), "the resumed run finalized");
-}
-
-/// A chain bound to a class the config no longer names moves to one that is
-/// present, loudly, and the run converges.
-#[test]
-fn removing_a_device_rebinds_its_chains_and_the_run_converges() {
-    require_devices(FORMAT, &["nvidia", "intel"]);
-    let dir = tempfile::tempdir().expect("temp dir");
-    let two = common::write_config_text(
-        dir.path(),
-        "two.toml",
-        &config_text("./store", CANDIDATES, SEGMENTS, BOTH_DEVICES),
-    );
-    // The state a rebind needs something to move: a chain bound to Intel that
-    // still has segments left. Workers reporting both devices would say only
-    // that both classes started, not that Intel holds any unfinished chain.
-    let mut child = spawn_run(&two);
-    let orphan_pending = poll_until(Duration::from_secs(180), || {
-        chain_with_work_on(&two, "intel").is_some()
-    });
-    assert!(
-        orphan_pending,
-        "Intel held an unfinished chain before the deadline"
-    );
-    let orphan = chain_with_work_on(&two, "intel").expect("the chain the poll saw");
-    child.kill().expect("kill the orchestrator");
-    child.wait().expect("reap the orchestrator");
-
-    // The same run, resumed over one class: the chain bound to the other has
-    // nowhere to go but here.
-    let one = common::write_config_text(
-        dir.path(),
-        "one.toml",
-        &config_text("./store", CANDIDATES, SEGMENTS, NVIDIA_ONLY),
-    );
-    run_to_completion(&one);
-
-    let rebound: Vec<u64> = journal_events(&one)
-        .iter()
-        .filter_map(|e| match e {
-            Event::ChainRebound { chain, .. } => Some(*chain),
-            _ => None,
-        })
-        .collect();
-    assert!(
-        rebound.contains(&(orphan as u64)),
-        "chain {orphan}, bound to the device that is gone, moved and said so: {rebound:?}"
-    );
-    // The manifest is valid; no equality is claimed against a single-class
-    // reference, because mixed provenance is a legitimate outcome here.
-    assert!(manifest_of(&one).is_some(), "the run converged");
-}
-
-/// A run that names one device commits byte-for-byte what the same run
-/// commits under a plain worker count: placement is operational, so it reaches
-/// nothing a run records.
-#[test]
-fn a_single_device_run_commits_the_same_manifest_as_a_plain_worker_count() {
-    require_devices(FORMAT, &["nvidia"]);
-    let dir = tempfile::tempdir().expect("temp dir");
-    // The reference: a plain worker count over the backend's own device
-    // choice, naming no device and reading no placement state.
-    let reference = common::write_config_text(
-        dir.path(),
-        "reference.toml",
-        &config_text(
-            "./reference-store",
-            4,
+        let events = journal_events(&config);
+        let reported = devices_reported(&events);
+        assert_eq!(
+            reported.len(),
             2,
-            "[orchestrator]\n        workers = 4",
-        ),
-    );
-    run_to_completion(&reference);
-
-    // The same run under the placement machinery: one named device, four
-    // workers on it.
-    let placed = common::write_config_text(
-        dir.path(),
-        "placed.toml",
-        &config_text(
-            "./placed-store",
-            4,
+            "both device classes carried workers: {reported:?}"
+        );
+        let per_device = assert_chains_never_split(&config);
+        assert_eq!(
+            per_device.iter().map(|(_, n)| n).sum::<usize>(),
+            CANDIDATES as usize,
+            "every chain ran"
+        );
+        // Greedy placement hands an unbound chain to whichever class is free, and
+        // at this workload's sizing neither class can absorb the run alone.
+        assert_eq!(
+            per_device.len(),
             2,
-            r#"
+            "both classes took chains: {per_device:?}"
+        );
+        assert!(manifest_of(&config).is_some(), "the run wrote a manifest");
+    }
+
+    /// A run killed mid-flight and resumed keeps each chain on the class it
+    /// started on: the binding is durable, so nothing rebinds.
+    #[test]
+    fn chains_keep_their_class_across_a_resume() {
+        require_devices(FORMAT, &["nvidia", "intel"]);
+        let dir = tempfile::tempdir().expect("temp dir");
+        let config = common::write_config_text(
+            dir.path(),
+            "resume.toml",
+            &config_text("./store", CANDIDATES, SEGMENTS, BOTH_DEVICES),
+        );
+
+        // Kill the orchestrator once the run is under way, so some chains are
+        // bound and partly walked while others are untouched.
+        let mut child = spawn_run(&config);
+        let bound = poll_until(Duration::from_secs(120), || {
+            journal_events(&config)
+                .iter()
+                .filter(|e| matches!(e, Event::Committed { .. }))
+                .count()
+                >= 2
+        });
+        assert!(bound, "the run committed before the deadline");
+        child.kill().expect("kill the orchestrator");
+        child.wait().expect("reap the orchestrator");
+
+        // The kill landed mid-run: work remains, so the second session is a real
+        // resume rather than a re-finalization that would satisfy every assertion
+        // below without running anything.
+        assert!(
+            manifest_of(&config).is_none(),
+            "the first session was killed before it finalized"
+        );
+        let first_session = journal_events(&config).len();
+
+        run_to_completion(&config);
+
+        let events = journal_events(&config);
+        let resumed_leases = events[first_session..]
+            .iter()
+            .filter(|e| matches!(e, Event::Leased { .. }))
+            .count();
+        assert!(resumed_leases > 0, "the second session ran the work left");
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, Event::ChainRebound { .. })),
+            "every class was still present, so nothing moved"
+        );
+        assert_chains_never_split(&config);
+        assert!(manifest_of(&config).is_some(), "the resumed run finalized");
+    }
+
+    /// A chain bound to a class the config no longer names moves to one that is
+    /// present, loudly, and the run converges.
+    #[test]
+    fn removing_a_device_rebinds_its_chains_and_the_run_converges() {
+        require_devices(FORMAT, &["nvidia", "intel"]);
+        let dir = tempfile::tempdir().expect("temp dir");
+        let two = common::write_config_text(
+            dir.path(),
+            "two.toml",
+            &config_text("./store", CANDIDATES, SEGMENTS, BOTH_DEVICES),
+        );
+        // The state a rebind needs something to move: a chain bound to Intel that
+        // still has segments left. Workers reporting both devices would say only
+        // that both classes started, not that Intel holds any unfinished chain.
+        let mut child = spawn_run(&two);
+        let orphan_pending = poll_until(Duration::from_secs(180), || {
+            chain_with_work_on(&two, "intel").is_some()
+        });
+        assert!(
+            orphan_pending,
+            "Intel held an unfinished chain before the deadline"
+        );
+        let orphan = chain_with_work_on(&two, "intel").expect("the chain the poll saw");
+        child.kill().expect("kill the orchestrator");
+        child.wait().expect("reap the orchestrator");
+
+        // The same run, resumed over one class: the chain bound to the other has
+        // nowhere to go but here.
+        let one = common::write_config_text(
+            dir.path(),
+            "one.toml",
+            &config_text("./store", CANDIDATES, SEGMENTS, NVIDIA_ONLY),
+        );
+        run_to_completion(&one);
+
+        let rebound: Vec<u64> = journal_events(&one)
+            .iter()
+            .filter_map(|e| match e {
+                Event::ChainRebound { chain, .. } => Some(*chain),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            rebound.contains(&(orphan as u64)),
+            "chain {orphan}, bound to the device that is gone, moved and said so: {rebound:?}"
+        );
+        // The manifest is valid; no equality is claimed against a single-class
+        // reference, because mixed provenance is a legitimate outcome here.
+        assert!(manifest_of(&one).is_some(), "the run converged");
+    }
+
+    /// A run that names one device commits byte-for-byte what the same run
+    /// commits under a plain worker count: placement is operational, so it reaches
+    /// nothing a run records.
+    #[test]
+    fn a_single_device_run_commits_the_same_manifest_as_a_plain_worker_count() {
+        require_devices(FORMAT, &["nvidia"]);
+        let dir = tempfile::tempdir().expect("temp dir");
+        // The reference: a plain worker count over the backend's own device
+        // choice, naming no device and reading no placement state.
+        let reference = common::write_config_text(
+            dir.path(),
+            "reference.toml",
+            &config_text(
+                "./reference-store",
+                4,
+                2,
+                "[orchestrator]\n        workers = 4",
+            ),
+        );
+        run_to_completion(&reference);
+
+        // The same run under the placement machinery: one named device, four
+        // workers on it.
+        let placed = common::write_config_text(
+            dir.path(),
+            "placed.toml",
+            &config_text(
+                "./placed-store",
+                4,
+                2,
+                r#"
         [[orchestrator.device]]
         select = "nvidia"
         workers = 4
     "#,
-        ),
-    );
-    run_to_completion(&placed);
+            ),
+        );
+        run_to_completion(&placed);
 
-    // The manifest file itself, byte for byte: what a run commits is the
-    // claim, so the bytes on disk are the evidence.
-    let reference = manifest_bytes(&reference).expect("the reference finalized");
-    let placed = manifest_bytes(&placed).expect("the placed run finalized");
-    assert_eq!(
-        reference, placed,
-        "placement is operational: it never touches what a run commits"
-    );
+        // The manifest file itself, byte for byte: what a run commits is the
+        // claim, so the bytes on disk are the evidence.
+        let reference = manifest_bytes(&reference).expect("the reference finalized");
+        let placed = manifest_bytes(&placed).expect("the placed run finalized");
+        assert_eq!(
+            reference, placed,
+            "placement is operational: it never touches what a run commits"
+        );
+    }
 }

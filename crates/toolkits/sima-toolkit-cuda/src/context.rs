@@ -78,34 +78,36 @@ mod tests {
     use super::*;
     use sima_core::Error;
 
-    /// Requires an NVIDIA device.
-    #[test]
-    fn context_reports_device_provenance() {
-        let context = Context::new().expect("create compute context");
-        assert!(!context.device_name().is_empty());
-        assert!(!context.driver_version().is_empty());
-    }
-
-    /// Requires an NVIDIA device.
-    #[test]
-    fn a_context_opens_on_every_enumerated_device() {
-        let devices = crate::enumerate_devices().expect("enumerate devices");
-        assert!(!devices.is_empty(), "at least one CUDA device");
-        for device in &devices {
-            let context = Context::for_class(&device.class, device.member)
-                .expect("open the enumerated device");
-            // The context opened the class member that was asked for, not
-            // whichever device the default policy prefers.
-            assert_eq!(context.device_name(), device.name);
-        }
-    }
-
-    /// Requires an NVIDIA device.
     #[test]
     fn opening_an_absent_device_class_fails() {
         assert!(matches!(
             Context::for_class("dead:beef", 0),
             Err(Error::Backend(_))
         ));
+    }
+
+    /// Opening a context needs an NVIDIA device.
+    mod on_device {
+        use super::*;
+
+        #[test]
+        fn context_reports_device_provenance() {
+            let context = Context::new().expect("create compute context");
+            assert!(!context.device_name().is_empty());
+            assert!(!context.driver_version().is_empty());
+        }
+
+        #[test]
+        fn a_context_opens_on_every_enumerated_device() {
+            let devices = crate::enumerate_devices().expect("enumerate devices");
+            assert!(!devices.is_empty(), "at least one CUDA device");
+            for device in &devices {
+                let context = Context::for_class(&device.class, device.member)
+                    .expect("open the enumerated device");
+                // The context opened the class member that was asked for, not
+                // whichever device the default policy prefers.
+                assert_eq!(context.device_name(), device.name);
+            }
+        }
     }
 }

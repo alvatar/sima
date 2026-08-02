@@ -1,6 +1,6 @@
 //! End-to-end smoke test spanning context, buffer, kernel, and dispatch.
 //!
-//! Requires a real Vulkan device.
+//! Requires a real Vulkan device, which the `on_device` suffix states.
 
 use sima_toolkit_wgsl::{COMPILER_ID, Context, source_digest};
 
@@ -8,7 +8,7 @@ use sima_toolkit_wgsl::{COMPILER_ID, Context, source_digest};
 const SMOKE_WGSL: &str = include_str!("../shaders/smoke.wgsl");
 
 #[test]
-fn smoke_kernel_runs_end_to_end() {
+fn smoke_kernel_runs_end_to_end_on_device() {
     let context = Context::new().expect("create compute context");
     let kernel = context.kernel(SMOKE_WGSL, "main").expect("build kernel");
 

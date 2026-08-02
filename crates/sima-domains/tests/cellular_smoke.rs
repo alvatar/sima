@@ -1,6 +1,7 @@
 //! End-to-end check of the cellular path: the GPU harness advancing a grid with
 //! the neighborhood-max kernel produces byte-identical results to the CPU
-//! reference over several steps, on a real device.
+//! reference over several steps, on a real device, which the `on_device`
+//! suffix states.
 
 mod common;
 
@@ -41,9 +42,8 @@ impl CellularRule for SmokeMax {
 /// The kernel the reference mirrors.
 const SMOKE_WGSL: &str = include_str!("../shaders/smoke.wgsl");
 
-/// Requires a real Vulkan device.
 #[test]
-fn harness_matches_reference_over_k_steps() {
+fn harness_matches_reference_over_k_steps_on_device() {
     let context = Context::new().expect("create compute context");
     let kernel = context
         .kernel(SMOKE_WGSL, "main")

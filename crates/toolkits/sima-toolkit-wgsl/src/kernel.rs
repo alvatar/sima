@@ -218,12 +218,16 @@ mod tests {
     /// The shipped compute kernel with two group-0 storage buffers.
     const SMOKE_WGSL: &str = include_str!("../shaders/smoke.wgsl");
 
-    /// Requires a real Vulkan device.
-    #[test]
-    fn kernel_reports_identity_inputs() {
-        let context = Context::new().expect("create compute context");
-        let kernel = context.kernel(SMOKE_WGSL, "main").expect("build kernel");
-        assert_eq!(kernel.source_digest(), source_digest(SMOKE_WGSL));
-        assert_eq!(kernel.compiler_id(), COMPILER_ID);
+    /// Building a kernel against a context needs a Vulkan device.
+    mod on_device {
+        use super::*;
+
+        #[test]
+        fn kernel_reports_identity_inputs() {
+            let context = Context::new().expect("create compute context");
+            let kernel = context.kernel(SMOKE_WGSL, "main").expect("build kernel");
+            assert_eq!(kernel.source_digest(), source_digest(SMOKE_WGSL));
+            assert_eq!(kernel.compiler_id(), COMPILER_ID);
+        }
     }
 }

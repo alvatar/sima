@@ -5,8 +5,8 @@
 //! backends lands on the same grid within tolerance, and a malformed
 //! `[run.params]` section fails at load — before any store or GPU work.
 //!
-//! Some tests here drive a real device; the program's identity, its params
-//! validation, and the shipped config are checked device-free.
+//! The `on_device` tests drive a real device; the program's identity, its
+//! params validation, and the shipped config are checked device-free.
 
 mod common;
 
@@ -113,155 +113,6 @@ fn manifest_states(config: &LoadedConfig) -> Result<Vec<(Hash, Grid)>> {
         .collect()
 }
 
-/// Requires a CUDA device.
-#[test]
-fn a_gray_scott_cuda_config_runs_the_full_spine() -> Result<()> {
-    let dir = tempfile::tempdir().expect("temp dir");
-    let config = config(
-        dir.path(),
-        "sima.toml",
-        CUDA_FORMAT,
-        "./store",
-        4,
-        100,
-        None,
-    )?;
-    assert!(matches!(
-        orchestrate(
-            &config,
-            &RunControl::detached(),
-            Engagement::Orchestrator,
-            BinaryChange::Refuse
-        )?,
-        RunOutcome::Finalized { .. }
-    ));
-    // Four candidates, one manifest entry each, every committed state a
-    // 32x32 two-channel grid. The dimensions are the whole assertion: the
-    // qualitative dynamics story lives with the engine's own tests.
-    let states = manifest_states(&config)?;
-    assert_eq!(states.len(), 4);
-    for (_, grid) in &states {
-        assert_eq!((grid.width(), grid.height(), grid.channels()), (32, 32, 2));
-    }
-    Ok(())
-}
-
-/// Requires a CUDA device.
-#[test]
-fn a_segment_boundary_leaves_the_trajectory_byte_identical() -> Result<()> {
-    // Resume across a segment boundary is backend-independent machinery, and
-    // this is what proves the CUDA engine's resident state survives it: the
-    // second segment must continue from the first segment's committed grid and
-    // land exactly where an unsegmented run of the same length lands.
-    let dir = tempfile::tempdir().expect("temp dir");
-    let segmented = config(
-        dir.path(),
-        "segmented.toml",
-        CUDA_FORMAT,
-        "./store-segmented",
-        1,
-        50,
-        Some(2),
-    )?;
-    assert!(matches!(
-        orchestrate(
-            &segmented,
-            &RunControl::detached(),
-            Engagement::Orchestrator,
-            BinaryChange::Refuse,
-        )?,
-        RunOutcome::Finalized { .. }
-    ));
-    assert_eq!(manifest_states(&segmented)?.len(), 2);
-
-    let whole = config(
-        dir.path(),
-        "whole.toml",
-        CUDA_FORMAT,
-        "./store-whole",
-        1,
-        100,
-        None,
-    )?;
-    assert!(matches!(
-        orchestrate(
-            &whole,
-            &RunControl::detached(),
-            Engagement::Orchestrator,
-            BinaryChange::Refuse
-        )?,
-        RunOutcome::Finalized { .. }
-    ));
-    let whole_states = manifest_states(&whole)?;
-    assert_eq!(whole_states.len(), 1);
-
-    // Content addressing turns "the 100-step grid is byte-identical whether or
-    // not a segment boundary cut the trajectory" into a hash membership check:
-    // the unsegmented state's object must already exist in the segmented run's
-    // store, because the second segment committed the same bytes.
-    let (whole_object, whole_grid) = &whole_states[0];
-    let bytes = Store::open(&segmented.store)?.get(whole_object)?;
-    assert_eq!(bytes, whole_grid.to_bytes());
-    Ok(())
-}
-
-/// Requires both a CUDA device and a Vulkan device.
-#[test]
-fn both_programs_evolve_the_same_rule_to_the_same_grid() -> Result<()> {
-    // The port's acceptance at program level: one genome, two backends, two
-    // full runs through the spine, and grids that agree cell for cell within
-    // tolerance. The step count is deliberately short — a rounding difference
-    // one backend makes and the other does not compounds with every step, so
-    // a long run measures divergence growth rather than transcription
-    // fidelity, which is what this test is for.
-    let dir = tempfile::tempdir().expect("temp dir");
-    let cuda = config(
-        dir.path(),
-        "cuda.toml",
-        CUDA_FORMAT,
-        "./store-cuda",
-        1,
-        20,
-        None,
-    )?;
-    let wgsl = config(
-        dir.path(),
-        "wgsl.toml",
-        WGSL_FORMAT,
-        "./store-wgsl",
-        1,
-        20,
-        None,
-    )?;
-    for config in [&cuda, &wgsl] {
-        assert!(matches!(
-            orchestrate(
-                config,
-                &RunControl::detached(),
-                Engagement::Orchestrator,
-                BinaryChange::Refuse
-            )?,
-            RunOutcome::Finalized { .. }
-        ));
-    }
-    let cuda_states = manifest_states(&cuda)?;
-    let wgsl_states = manifest_states(&wgsl)?;
-    assert_eq!(cuda_states.len(), 1);
-    assert_eq!(wgsl_states.len(), 1);
-    let cuda_grid = &cuda_states[0].1;
-    let wgsl_grid = &wgsl_states[0].1;
-    assert_eq!(cuda_grid.data().len(), wgsl_grid.data().len());
-    for (index, (&c, &w)) in cuda_grid.data().iter().zip(wgsl_grid.data()).enumerate() {
-        let (c, w) = (f64::from(c), f64::from(w));
-        let scale = w.abs().max(1.0);
-        assert!(
-            (c - w).abs() <= TOLERANCE * scale,
-            "cell {index}: CUDA {c} against WGSL {w}"
-        );
-    }
-    Ok(())
-}
-
 #[test]
 fn the_two_programs_are_separately_addressable() -> Result<()> {
     // Device-free: both configs load, and the runs they describe carry
@@ -361,4 +212,156 @@ fn the_shipped_search_config_loads_with_the_snapshot_predicate_enabled() -> Resu
         "the example's scalar is a reduction name: {names:?}"
     );
     Ok(())
+}
+
+/// Running the CUDA program through the spine needs a CUDA device, and the cross-program comparison needs a Vulkan one beside it.
+mod on_device {
+    use super::*;
+
+    #[test]
+    fn a_gray_scott_cuda_config_runs_the_full_spine() -> Result<()> {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let config = config(
+            dir.path(),
+            "sima.toml",
+            CUDA_FORMAT,
+            "./store",
+            4,
+            100,
+            None,
+        )?;
+        assert!(matches!(
+            orchestrate(
+                &config,
+                &RunControl::detached(),
+                Engagement::Orchestrator,
+                BinaryChange::Refuse
+            )?,
+            RunOutcome::Finalized { .. }
+        ));
+        // Four candidates, one manifest entry each, every committed state a
+        // 32x32 two-channel grid. The dimensions are the whole assertion: the
+        // qualitative dynamics story lives with the engine's own tests.
+        let states = manifest_states(&config)?;
+        assert_eq!(states.len(), 4);
+        for (_, grid) in &states {
+            assert_eq!((grid.width(), grid.height(), grid.channels()), (32, 32, 2));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_segment_boundary_leaves_the_trajectory_byte_identical() -> Result<()> {
+        // Resume across a segment boundary is backend-independent machinery, and
+        // this is what proves the CUDA engine's resident state survives it: the
+        // second segment must continue from the first segment's committed grid and
+        // land exactly where an unsegmented run of the same length lands.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let segmented = config(
+            dir.path(),
+            "segmented.toml",
+            CUDA_FORMAT,
+            "./store-segmented",
+            1,
+            50,
+            Some(2),
+        )?;
+        assert!(matches!(
+            orchestrate(
+                &segmented,
+                &RunControl::detached(),
+                Engagement::Orchestrator,
+                BinaryChange::Refuse,
+            )?,
+            RunOutcome::Finalized { .. }
+        ));
+        assert_eq!(manifest_states(&segmented)?.len(), 2);
+
+        let whole = config(
+            dir.path(),
+            "whole.toml",
+            CUDA_FORMAT,
+            "./store-whole",
+            1,
+            100,
+            None,
+        )?;
+        assert!(matches!(
+            orchestrate(
+                &whole,
+                &RunControl::detached(),
+                Engagement::Orchestrator,
+                BinaryChange::Refuse
+            )?,
+            RunOutcome::Finalized { .. }
+        ));
+        let whole_states = manifest_states(&whole)?;
+        assert_eq!(whole_states.len(), 1);
+
+        // Content addressing turns "the 100-step grid is byte-identical whether or
+        // not a segment boundary cut the trajectory" into a hash membership check:
+        // the unsegmented state's object must already exist in the segmented run's
+        // store, because the second segment committed the same bytes.
+        let (whole_object, whole_grid) = &whole_states[0];
+        let bytes = Store::open(&segmented.store)?.get(whole_object)?;
+        assert_eq!(bytes, whole_grid.to_bytes());
+        Ok(())
+    }
+
+    /// Requires both a CUDA device and a Vulkan device.
+    #[test]
+    fn both_programs_evolve_the_same_rule_to_the_same_grid() -> Result<()> {
+        // The port's acceptance at program level: one genome, two backends, two
+        // full runs through the spine, and grids that agree cell for cell within
+        // tolerance. The step count is deliberately short — a rounding difference
+        // one backend makes and the other does not compounds with every step, so
+        // a long run measures divergence growth rather than transcription
+        // fidelity, which is what this test is for.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let cuda = config(
+            dir.path(),
+            "cuda.toml",
+            CUDA_FORMAT,
+            "./store-cuda",
+            1,
+            20,
+            None,
+        )?;
+        let wgsl = config(
+            dir.path(),
+            "wgsl.toml",
+            WGSL_FORMAT,
+            "./store-wgsl",
+            1,
+            20,
+            None,
+        )?;
+        for config in [&cuda, &wgsl] {
+            assert!(matches!(
+                orchestrate(
+                    config,
+                    &RunControl::detached(),
+                    Engagement::Orchestrator,
+                    BinaryChange::Refuse
+                )?,
+                RunOutcome::Finalized { .. }
+            ));
+        }
+        let cuda_states = manifest_states(&cuda)?;
+        let wgsl_states = manifest_states(&wgsl)?;
+        assert_eq!(cuda_states.len(), 1);
+        assert_eq!(wgsl_states.len(), 1);
+        let cuda_grid = &cuda_states[0].1;
+        let wgsl_grid = &wgsl_states[0].1;
+        assert_eq!(cuda_grid.data().len(), wgsl_grid.data().len());
+        for (index, (&c, &w)) in cuda_grid.data().iter().zip(wgsl_grid.data()).enumerate() {
+            let (c, w) = (f64::from(c), f64::from(w));
+            let scale = w.abs().max(1.0);
+            assert!(
+                (c - w).abs() <= TOLERANCE * scale,
+                "cell {index}: CUDA {c} against WGSL {w}"
+            );
+        }
+        Ok(())
+    }
 }

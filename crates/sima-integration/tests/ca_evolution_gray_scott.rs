@@ -92,84 +92,6 @@ fn manifest_states(config: &LoadedConfig) -> Result<Vec<(Hash, Grid)>> {
         .collect()
 }
 
-/// Requires a real GPU.
-#[test]
-fn a_ca_evolution_config_runs_the_full_spine() -> Result<()> {
-    let dir = tempfile::tempdir().expect("temp dir");
-    let config = ca_evolution_config(dir.path(), "sima.toml", "./store", 4, 100, None)?;
-    assert!(matches!(
-        orchestrate(
-            &config,
-            &RunControl::detached(),
-            Engagement::Orchestrator,
-            BinaryChange::Refuse
-        )?,
-        RunOutcome::Finalized { .. }
-    ));
-    // Four candidates, one manifest entry each, every committed state a
-    // 32x32 two-channel grid. The dimensions are the whole assertion: the
-    // qualitative dynamics story lives with the executor's own tests.
-    let states = manifest_states(&config)?;
-    assert_eq!(states.len(), 4);
-    for (_, grid) in &states {
-        assert_eq!((grid.width(), grid.height(), grid.channels()), (32, 32, 2));
-    }
-    Ok(())
-}
-
-/// Requires a real GPU.
-#[test]
-fn a_segment_boundary_leaves_the_trajectory_byte_identical() -> Result<()> {
-    let dir = tempfile::tempdir().expect("temp dir");
-    // One candidate as a chain of two 50-step segments.
-    let segmented = ca_evolution_config(
-        dir.path(),
-        "segmented.toml",
-        "./store-segmented",
-        1,
-        50,
-        Some(2),
-    )?;
-    assert!(matches!(
-        orchestrate(
-            &segmented,
-            &RunControl::detached(),
-            Engagement::Orchestrator,
-            BinaryChange::Refuse,
-        )?,
-        RunOutcome::Finalized { .. }
-    ));
-    let segment_states = manifest_states(&segmented)?;
-    assert_eq!(segment_states.len(), 2);
-    for (_, grid) in &segment_states {
-        assert_eq!((grid.width(), grid.height(), grid.channels()), (32, 32, 2));
-    }
-
-    // The same trajectory as one unsegmented 100-step task, fresh store.
-    let whole = ca_evolution_config(dir.path(), "whole.toml", "./store-whole", 1, 100, None)?;
-    assert!(matches!(
-        orchestrate(
-            &whole,
-            &RunControl::detached(),
-            Engagement::Orchestrator,
-            BinaryChange::Refuse
-        )?,
-        RunOutcome::Finalized { .. }
-    ));
-    let whole_states = manifest_states(&whole)?;
-    assert_eq!(whole_states.len(), 1);
-
-    // Content addressing turns "the 100-step grid is byte-identical whether
-    // or not a segment boundary cut the trajectory" into a hash membership
-    // check: the unsegmented state's object must already exist in the
-    // segmented run's store, because the second segment committed the same
-    // bytes.
-    let (whole_object, whole_grid) = &whole_states[0];
-    let bytes = Store::open(&segmented.store)?.get(whole_object)?;
-    assert_eq!(bytes, whole_grid.to_bytes());
-    Ok(())
-}
-
 #[test]
 fn a_malformed_params_section_fails_at_load() -> Result<()> {
     let dir = tempfile::tempdir().expect("temp dir");
@@ -238,4 +160,85 @@ fn the_shipped_search_config_loads_with_the_snapshot_predicate_enabled() -> Resu
         "the example's scalar is a reduction name: {names:?}"
     );
     Ok(())
+}
+
+/// Running the domain through the spine dispatches to a real GPU.
+mod on_device {
+    use super::*;
+
+    #[test]
+    fn a_ca_evolution_config_runs_the_full_spine() -> Result<()> {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let config = ca_evolution_config(dir.path(), "sima.toml", "./store", 4, 100, None)?;
+        assert!(matches!(
+            orchestrate(
+                &config,
+                &RunControl::detached(),
+                Engagement::Orchestrator,
+                BinaryChange::Refuse
+            )?,
+            RunOutcome::Finalized { .. }
+        ));
+        // Four candidates, one manifest entry each, every committed state a
+        // 32x32 two-channel grid. The dimensions are the whole assertion: the
+        // qualitative dynamics story lives with the executor's own tests.
+        let states = manifest_states(&config)?;
+        assert_eq!(states.len(), 4);
+        for (_, grid) in &states {
+            assert_eq!((grid.width(), grid.height(), grid.channels()), (32, 32, 2));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_segment_boundary_leaves_the_trajectory_byte_identical() -> Result<()> {
+        let dir = tempfile::tempdir().expect("temp dir");
+        // One candidate as a chain of two 50-step segments.
+        let segmented = ca_evolution_config(
+            dir.path(),
+            "segmented.toml",
+            "./store-segmented",
+            1,
+            50,
+            Some(2),
+        )?;
+        assert!(matches!(
+            orchestrate(
+                &segmented,
+                &RunControl::detached(),
+                Engagement::Orchestrator,
+                BinaryChange::Refuse,
+            )?,
+            RunOutcome::Finalized { .. }
+        ));
+        let segment_states = manifest_states(&segmented)?;
+        assert_eq!(segment_states.len(), 2);
+        for (_, grid) in &segment_states {
+            assert_eq!((grid.width(), grid.height(), grid.channels()), (32, 32, 2));
+        }
+
+        // The same trajectory as one unsegmented 100-step task, fresh store.
+        let whole = ca_evolution_config(dir.path(), "whole.toml", "./store-whole", 1, 100, None)?;
+        assert!(matches!(
+            orchestrate(
+                &whole,
+                &RunControl::detached(),
+                Engagement::Orchestrator,
+                BinaryChange::Refuse
+            )?,
+            RunOutcome::Finalized { .. }
+        ));
+        let whole_states = manifest_states(&whole)?;
+        assert_eq!(whole_states.len(), 1);
+
+        // Content addressing turns "the 100-step grid is byte-identical whether
+        // or not a segment boundary cut the trajectory" into a hash membership
+        // check: the unsegmented state's object must already exist in the
+        // segmented run's store, because the second segment committed the same
+        // bytes.
+        let (whole_object, whole_grid) = &whole_states[0];
+        let bytes = Store::open(&segmented.store)?.get(whole_object)?;
+        assert_eq!(bytes, whole_grid.to_bytes());
+        Ok(())
+    }
 }

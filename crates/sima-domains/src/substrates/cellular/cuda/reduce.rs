@@ -222,187 +222,192 @@ mod tests {
         .collect()
     }
 
-    /// Requires a CUDA device.
-    #[test]
-    fn a_single_channel_grid_reduces_to_known_scalars() {
-        // The WGSL reduction's own known-answer case, asserted against the same
-        // figures: four cells [1, 2, 3, 4] over an all-zero previous grid, every
-        // figure exact in f32. mean 2.5, min 1, max 4, variance 1.25; the alive
-        // threshold 3 counts {3, 4}, so population 0.5; activity is 10/4.
-        let context = Context::new().expect("context");
-        let kernels = ReduceKernels::build(&context).expect("kernels");
-        let map = reduced(
-            &context,
-            &kernels,
-            &[1.0, 2.0, 3.0, 4.0],
-            &[0.0, 0.0, 0.0, 0.0],
-            1,
-            4,
-            (0, 3.0),
-        );
-        assert_eq!(map["c0.mean"], 2.5);
-        assert_eq!(map["c0.min"], 1.0);
-        assert_eq!(map["c0.max"], 4.0);
-        assert_eq!(map["c0.var"], 1.25);
-        assert_eq!(map["population"], 0.5);
-        assert_eq!(map["activity"], 2.5);
-    }
+    /// Reducing a grid dispatches the reduction passes, which needs a CUDA device.
+    mod on_device {
+        use super::*;
 
-    /// Requires a CUDA device.
-    #[test]
-    fn each_channel_reduces_independently() {
-        // Two cells, two channels, cell-major: cell0 = (1, 2), cell1 = (3, 4).
-        // Channel 0 is [1, 3] (mean 2, var 1), channel 1 is [2, 4] (mean 3,
-        // var 1). Alive on channel 1 at threshold 3 counts cell1 alone, so
-        // population 0.5; activity against a zero previous is 10/(2·2).
-        let context = Context::new().expect("context");
-        let kernels = ReduceKernels::build(&context).expect("kernels");
-        let map = reduced(
-            &context,
-            &kernels,
-            &[1.0, 2.0, 3.0, 4.0],
-            &[0.0, 0.0, 0.0, 0.0],
-            2,
-            2,
-            (1, 3.0),
-        );
-        assert_eq!(map["c0.mean"], 2.0);
-        assert_eq!(map["c0.var"], 1.0);
-        assert_eq!(map["c0.min"], 1.0);
-        assert_eq!(map["c0.max"], 3.0);
-        assert_eq!(map["c1.mean"], 3.0);
-        assert_eq!(map["c1.var"], 1.0);
-        assert_eq!(map["c1.min"], 2.0);
-        assert_eq!(map["c1.max"], 4.0);
-        assert_eq!(map["population"], 0.5);
-        assert_eq!(map["activity"], 2.5);
-    }
+        #[test]
+        fn a_single_channel_grid_reduces_to_known_scalars() {
+            // The WGSL reduction's own known-answer case, asserted against the same
+            // figures: four cells [1, 2, 3, 4] over an all-zero previous grid, every
+            // figure exact in f32. mean 2.5, min 1, max 4, variance 1.25; the alive
+            // threshold 3 counts {3, 4}, so population 0.5; activity is 10/4.
+            let context = Context::new().expect("context");
+            let kernels = ReduceKernels::build(&context).expect("kernels");
+            let map = reduced(
+                &context,
+                &kernels,
+                &[1.0, 2.0, 3.0, 4.0],
+                &[0.0, 0.0, 0.0, 0.0],
+                1,
+                4,
+                (0, 3.0),
+            );
+            assert_eq!(map["c0.mean"], 2.5);
+            assert_eq!(map["c0.min"], 1.0);
+            assert_eq!(map["c0.max"], 4.0);
+            assert_eq!(map["c0.var"], 1.25);
+            assert_eq!(map["population"], 0.5);
+            assert_eq!(map["activity"], 2.5);
+        }
 
-    /// Requires a CUDA device.
-    #[test]
-    fn activity_is_the_mean_absolute_change() {
-        // Current [4, 1, 3, 2], previous [1, 3, 3, 6]: |Δ| = 3 + 2 + 0 + 4 = 9
-        // over four cells and one channel, so activity is 9/4 = 2.25.
-        let context = Context::new().expect("context");
-        let kernels = ReduceKernels::build(&context).expect("kernels");
-        let map = reduced(
-            &context,
-            &kernels,
-            &[4.0, 1.0, 3.0, 2.0],
-            &[1.0, 3.0, 3.0, 6.0],
-            1,
-            4,
-            (0, 0.0),
-        );
-        assert_eq!(map["activity"], 2.25);
-    }
+        #[test]
+        fn each_channel_reduces_independently() {
+            // Two cells, two channels, cell-major: cell0 = (1, 2), cell1 = (3, 4).
+            // Channel 0 is [1, 3] (mean 2, var 1), channel 1 is [2, 4] (mean 3,
+            // var 1). Alive on channel 1 at threshold 3 counts cell1 alone, so
+            // population 0.5; activity against a zero previous is 10/(2·2).
+            let context = Context::new().expect("context");
+            let kernels = ReduceKernels::build(&context).expect("kernels");
+            let map = reduced(
+                &context,
+                &kernels,
+                &[1.0, 2.0, 3.0, 4.0],
+                &[0.0, 0.0, 0.0, 0.0],
+                2,
+                2,
+                (1, 3.0),
+            );
+            assert_eq!(map["c0.mean"], 2.0);
+            assert_eq!(map["c0.var"], 1.0);
+            assert_eq!(map["c0.min"], 1.0);
+            assert_eq!(map["c0.max"], 3.0);
+            assert_eq!(map["c1.mean"], 3.0);
+            assert_eq!(map["c1.var"], 1.0);
+            assert_eq!(map["c1.min"], 2.0);
+            assert_eq!(map["c1.max"], 4.0);
+            assert_eq!(map["population"], 0.5);
+            assert_eq!(map["activity"], 2.5);
+        }
 
-    /// Requires a CUDA device.
-    #[test]
-    fn population_spans_none_and_all_alive() {
-        // The same grid: a threshold above every value counts none alive, one
-        // below every value counts all.
-        let context = Context::new().expect("context");
-        let kernels = ReduceKernels::build(&context).expect("kernels");
-        let grid = [1.0, 2.0, 3.0, 4.0];
-        let zeros = [0.0; 4];
-        let none = reduced(&context, &kernels, &grid, &zeros, 1, 4, (0, 100.0));
-        assert_eq!(none["population"], 0.0);
-        let all = reduced(&context, &kernels, &grid, &zeros, 1, 4, (0, 0.0));
-        assert_eq!(all["population"], 1.0);
-    }
+        #[test]
+        fn activity_is_the_mean_absolute_change() {
+            // Current [4, 1, 3, 2], previous [1, 3, 3, 6]: |Δ| = 3 + 2 + 0 + 4 = 9
+            // over four cells and one channel, so activity is 9/4 = 2.25.
+            let context = Context::new().expect("context");
+            let kernels = ReduceKernels::build(&context).expect("kernels");
+            let map = reduced(
+                &context,
+                &kernels,
+                &[4.0, 1.0, 3.0, 2.0],
+                &[1.0, 3.0, 3.0, 6.0],
+                1,
+                4,
+                (0, 0.0),
+            );
+            assert_eq!(map["activity"], 2.25);
+        }
 
-    /// Requires a CUDA device.
-    #[test]
-    fn the_reduction_is_deterministic() {
-        // The fixed topology folds every sum in the same order, so reducing the
-        // same grid twice yields byte-identical scalars.
-        let context = Context::new().expect("context");
-        let kernels = ReduceKernels::build(&context).expect("kernels");
-        let cur = upload(&context, &[1.0, 2.0, 3.0, 4.0]);
-        let prev = upload(&context, &[0.5, 1.5, 2.5, 3.5]);
-        let pair = GridPair {
-            current: &cur,
-            previous: &prev,
-            channels: 1,
-            cell_count: 4,
-            alive_channel: 0,
-            alive_min: 2.0,
-        };
-        let first = reduce(&context, &kernels, &pair).expect("first");
-        let second = reduce(&context, &kernels, &pair).expect("second");
-        let first_bits: Vec<u64> = first.iter().map(|(_, v)| v.to_bits()).collect();
-        let second_bits: Vec<u64> = second.iter().map(|(_, v)| v.to_bits()).collect();
-        assert_eq!(first_bits, second_bits);
-    }
+        #[test]
+        fn population_spans_none_and_all_alive() {
+            // The same grid: a threshold above every value counts none alive, one
+            // below every value counts all.
+            let context = Context::new().expect("context");
+            let kernels = ReduceKernels::build(&context).expect("kernels");
+            let grid = [1.0, 2.0, 3.0, 4.0];
+            let zeros = [0.0; 4];
+            let none = reduced(&context, &kernels, &grid, &zeros, 1, 4, (0, 100.0));
+            assert_eq!(none["population"], 0.0);
+            let all = reduced(&context, &kernels, &grid, &zeros, 1, 4, (0, 0.0));
+            assert_eq!(all["population"], 1.0);
+        }
 
-    /// Requires a CUDA device.
-    #[test]
-    fn the_reduction_reads_the_harness_resident_pair() {
-        // The reduction runs over the two ping-pong buffers `run` leaves
-        // resident, not synthetic uploads, so `Trajectory::previous` (G_{N-1})
-        // is exercised end to end. The smoke kernel over a grid that is already
-        // a neighborhood maximum is a fixed point, so the pair is equal and the
-        // activity is zero; the mean is the grid's own, which catches a
-        // reduction reading the pair swapped only through the resident buffers.
-        let context = Context::new().expect("context");
-        let kernels = ReduceKernels::build(&context).expect("kernels");
-        let kernel = context
-            .kernel(
-                include_str!("../../../../kernels/smoke.ptx"),
-                "main_kernel",
-                BLOCK_WIDTH,
-            )
-            .expect("smoke kernel");
-        let initial = crate::substrates::cellular::Grid::new(4, 4, 1, vec![2.0; 16]).expect("grid");
-        let trajectory =
-            crate::substrates::cellular::cuda::step::run(&context, &kernel, &initial, 3, &[], None)
-                .expect("run");
-        let map: HashMap<String, f64> = reduce(
-            &context,
-            &kernels,
-            &GridPair {
-                current: trajectory.current(),
-                previous: trajectory.previous(),
-                channels: trajectory.channels(),
-                cell_count: trajectory.cell_count(),
+        #[test]
+        fn the_reduction_is_deterministic() {
+            // The fixed topology folds every sum in the same order, so reducing the
+            // same grid twice yields byte-identical scalars.
+            let context = Context::new().expect("context");
+            let kernels = ReduceKernels::build(&context).expect("kernels");
+            let cur = upload(&context, &[1.0, 2.0, 3.0, 4.0]);
+            let prev = upload(&context, &[0.5, 1.5, 2.5, 3.5]);
+            let pair = GridPair {
+                current: &cur,
+                previous: &prev,
+                channels: 1,
+                cell_count: 4,
                 alive_channel: 0,
-                alive_min: 0.0,
-            },
-        )
-        .expect("reduce")
-        .into_iter()
-        .collect();
-        assert_eq!(map["c0.mean"], 2.0);
-        assert_eq!(map["activity"], 0.0);
-        assert_eq!(map["population"], 1.0);
-    }
+                alive_min: 2.0,
+            };
+            let first = reduce(&context, &kernels, &pair).expect("first");
+            let second = reduce(&context, &kernels, &pair).expect("second");
+            let first_bits: Vec<u64> = first.iter().map(|(_, v)| v.to_bits()).collect();
+            let second_bits: Vec<u64> = second.iter().map(|(_, v)| v.to_bits()).collect();
+            assert_eq!(first_bits, second_bits);
+        }
 
-    /// Requires a CUDA device.
-    #[test]
-    fn a_shape_the_reduction_cannot_handle_is_rejected() {
-        // Both guards are validation faults caught before any dispatch: a
-        // channel count past the scratch-array bound, and a liveness channel
-        // that indexes past the cell.
-        let context = Context::new().expect("context");
-        let kernels = ReduceKernels::build(&context).expect("kernels");
-        let grid = upload(&context, &[0.0; 4]);
-        for (channels, cell_count, alive_channel) in [(MAX_CHANNELS + 1, 4, 0), (2, 2, 2)] {
-            assert!(matches!(
-                reduce(
-                    &context,
-                    &kernels,
-                    &GridPair {
-                        current: &grid,
-                        previous: &grid,
-                        channels,
-                        cell_count,
-                        alive_channel,
-                        alive_min: 0.0,
-                    },
-                ),
-                Err(Error::Validation(_))
-            ));
+        #[test]
+        fn the_reduction_reads_the_harness_resident_pair() {
+            // The reduction runs over the two ping-pong buffers `run` leaves
+            // resident, not synthetic uploads, so `Trajectory::previous` (G_{N-1})
+            // is exercised end to end. The smoke kernel over a grid that is already
+            // a neighborhood maximum is a fixed point, so the pair is equal and the
+            // activity is zero; the mean is the grid's own, which catches a
+            // reduction reading the pair swapped only through the resident buffers.
+            let context = Context::new().expect("context");
+            let kernels = ReduceKernels::build(&context).expect("kernels");
+            let kernel = context
+                .kernel(
+                    include_str!("../../../../kernels/smoke.ptx"),
+                    "main_kernel",
+                    BLOCK_WIDTH,
+                )
+                .expect("smoke kernel");
+            let initial =
+                crate::substrates::cellular::Grid::new(4, 4, 1, vec![2.0; 16]).expect("grid");
+            let trajectory = crate::substrates::cellular::cuda::step::run(
+                &context,
+                &kernel,
+                &initial,
+                3,
+                &[],
+                None,
+            )
+            .expect("run");
+            let map: HashMap<String, f64> = reduce(
+                &context,
+                &kernels,
+                &GridPair {
+                    current: trajectory.current(),
+                    previous: trajectory.previous(),
+                    channels: trajectory.channels(),
+                    cell_count: trajectory.cell_count(),
+                    alive_channel: 0,
+                    alive_min: 0.0,
+                },
+            )
+            .expect("reduce")
+            .into_iter()
+            .collect();
+            assert_eq!(map["c0.mean"], 2.0);
+            assert_eq!(map["activity"], 0.0);
+            assert_eq!(map["population"], 1.0);
+        }
+
+        #[test]
+        fn a_shape_the_reduction_cannot_handle_is_rejected() {
+            // Both guards are validation faults caught before any dispatch: a
+            // channel count past the scratch-array bound, and a liveness channel
+            // that indexes past the cell.
+            let context = Context::new().expect("context");
+            let kernels = ReduceKernels::build(&context).expect("kernels");
+            let grid = upload(&context, &[0.0; 4]);
+            for (channels, cell_count, alive_channel) in [(MAX_CHANNELS + 1, 4, 0), (2, 2, 2)] {
+                assert!(matches!(
+                    reduce(
+                        &context,
+                        &kernels,
+                        &GridPair {
+                            current: &grid,
+                            previous: &grid,
+                            channels,
+                            cell_count,
+                            alive_channel,
+                            alive_min: 0.0,
+                        },
+                    ),
+                    Err(Error::Validation(_))
+                ));
+            }
         }
     }
 }

@@ -189,55 +189,57 @@ mod tests {
     /// The shipped compute kernel: `out[i] = in[i] * 2 + 1`.
     const SMOKE_WGSL: &str = include_str!("../shaders/smoke.wgsl");
 
-    /// Requires a real Vulkan device.
-    #[test]
-    fn dispatch_applies_the_kernel() {
-        let context = Context::new().expect("create compute context");
-        let kernel = context.kernel(SMOKE_WGSL, "main").expect("build kernel");
-        let input: [u32; 4] = [1, 2, 3, 4];
-        let bytes: &[u8] = bytemuck::cast_slice(&input);
-        let in_buffer = context.buffer(bytes.len()).expect("input buffer");
-        let out_buffer = context.buffer(bytes.len()).expect("output buffer");
-        context.upload(&in_buffer, bytes).expect("upload input");
+    /// Every dispatch test launches a kernel, which needs a Vulkan device.
+    mod on_device {
+        use super::*;
 
-        context
-            .dispatch(&kernel, &[&in_buffer, &out_buffer], [1, 1, 1])
-            .expect("dispatch");
+        #[test]
+        fn dispatch_applies_the_kernel() {
+            let context = Context::new().expect("create compute context");
+            let kernel = context.kernel(SMOKE_WGSL, "main").expect("build kernel");
+            let input: [u32; 4] = [1, 2, 3, 4];
+            let bytes: &[u8] = bytemuck::cast_slice(&input);
+            let in_buffer = context.buffer(bytes.len()).expect("input buffer");
+            let out_buffer = context.buffer(bytes.len()).expect("output buffer");
+            context.upload(&in_buffer, bytes).expect("upload input");
 
-        let read_back = context.download(&out_buffer).expect("download output");
-        let output: &[u32] = bytemuck::cast_slice(&read_back);
-        assert_eq!(output, [3, 5, 7, 9]);
-    }
+            context
+                .dispatch(&kernel, &[&in_buffer, &out_buffer], [1, 1, 1])
+                .expect("dispatch");
 
-    /// Requires a real Vulkan device.
-    ///
-    /// A dispatch that reads a buffer a prior dispatch wrote must observe that
-    /// output: the toolkit orders cross-dispatch shader-write to shader-read
-    /// visibility through the leading buffer barrier's source scope. Applying
-    /// `out = in * 2 + 1` twice, ping-ponging the two buffers, yields
-    /// `in * 4 + 3`.
-    #[test]
-    fn a_dispatch_observes_a_prior_dispatchs_writes() {
-        let context = Context::new().expect("create compute context");
-        let kernel = context.kernel(SMOKE_WGSL, "main").expect("build kernel");
-        let input: [u32; 4] = [1, 2, 3, 4];
-        let bytes: &[u8] = bytemuck::cast_slice(&input);
-        let a = context.buffer(bytes.len()).expect("buffer a");
-        let b = context.buffer(bytes.len()).expect("buffer b");
-        context.upload(&a, bytes).expect("upload input");
+            let read_back = context.download(&out_buffer).expect("download output");
+            let output: &[u32] = bytemuck::cast_slice(&read_back);
+            assert_eq!(output, [3, 5, 7, 9]);
+        }
 
-        // First pass writes b = a * 2 + 1 through the shader; the second pass
-        // reads that shader output back out of b and writes a.
-        context
-            .dispatch(&kernel, &[&a, &b], [1, 1, 1])
-            .expect("first dispatch");
-        context
-            .dispatch(&kernel, &[&b, &a], [1, 1, 1])
-            .expect("second dispatch");
+        /// A dispatch that reads a buffer a prior dispatch wrote must observe that
+        /// output: the toolkit orders cross-dispatch shader-write to shader-read
+        /// visibility through the leading buffer barrier's source scope. Applying
+        /// `out = in * 2 + 1` twice, ping-ponging the two buffers, yields
+        /// `in * 4 + 3`.
+        #[test]
+        fn a_dispatch_observes_a_prior_dispatchs_writes() {
+            let context = Context::new().expect("create compute context");
+            let kernel = context.kernel(SMOKE_WGSL, "main").expect("build kernel");
+            let input: [u32; 4] = [1, 2, 3, 4];
+            let bytes: &[u8] = bytemuck::cast_slice(&input);
+            let a = context.buffer(bytes.len()).expect("buffer a");
+            let b = context.buffer(bytes.len()).expect("buffer b");
+            context.upload(&a, bytes).expect("upload input");
 
-        let read_back = context.download(&a).expect("download");
-        let output: &[u32] = bytemuck::cast_slice(&read_back);
-        // (in * 2 + 1) * 2 + 1 = in * 4 + 3.
-        assert_eq!(output, [7, 11, 15, 19]);
+            // First pass writes b = a * 2 + 1 through the shader; the second pass
+            // reads that shader output back out of b and writes a.
+            context
+                .dispatch(&kernel, &[&a, &b], [1, 1, 1])
+                .expect("first dispatch");
+            context
+                .dispatch(&kernel, &[&b, &a], [1, 1, 1])
+                .expect("second dispatch");
+
+            let read_back = context.download(&a).expect("download");
+            let output: &[u32] = bytemuck::cast_slice(&read_back);
+            // (in * 2 + 1) * 2 + 1 = in * 4 + 3.
+            assert_eq!(output, [7, 11, 15, 19]);
+        }
     }
 }

@@ -92,87 +92,6 @@ fn manifest_states(config: &LoadedConfig) -> Result<Vec<(Hash, u64, Grid)>> {
         .collect()
 }
 
-/// Requires a real GPU.
-#[test]
-fn a_ca_evolution_nca_config_runs_the_full_spine() -> Result<()> {
-    let dir = tempfile::tempdir().expect("temp dir");
-    let config = nca_config(dir.path(), "sima.toml", "./store", 4, 100, None)?;
-    assert!(matches!(
-        orchestrate(
-            &config,
-            &RunControl::detached(),
-            Engagement::Orchestrator,
-            BinaryChange::Refuse
-        )?,
-        RunOutcome::Finalized { .. }
-    ));
-    // Four candidates, one manifest entry each, every committed state framed at
-    // step 100 over a 32x32 eight-channel grid.
-    let states = manifest_states(&config)?;
-    assert_eq!(states.len(), 4);
-    for (_, step, grid) in &states {
-        assert_eq!(*step, 100, "a single 100-step segment reaches step 100");
-        assert_eq!((grid.width(), grid.height(), grid.channels()), (32, 32, 8));
-    }
-    Ok(())
-}
-
-/// Requires a real GPU.
-#[test]
-fn a_segment_boundary_leaves_the_trajectory_byte_identical() -> Result<()> {
-    let dir = tempfile::tempdir().expect("temp dir");
-    // One candidate as a chain of two 50-step segments.
-    let segmented = nca_config(
-        dir.path(),
-        "segmented.toml",
-        "./store-segmented",
-        1,
-        50,
-        Some(2),
-    )?;
-    assert!(matches!(
-        orchestrate(
-            &segmented,
-            &RunControl::detached(),
-            Engagement::Orchestrator,
-            BinaryChange::Refuse,
-        )?,
-        RunOutcome::Finalized { .. }
-    ));
-    let segment_states = manifest_states(&segmented)?;
-    assert_eq!(segment_states.len(), 2);
-    for (_, _, grid) in &segment_states {
-        assert_eq!((grid.width(), grid.height(), grid.channels()), (32, 32, 8));
-    }
-
-    // The same trajectory as one unsegmented 100-step task, fresh store.
-    let whole = nca_config(dir.path(), "whole.toml", "./store-whole", 1, 100, None)?;
-    assert!(matches!(
-        orchestrate(
-            &whole,
-            &RunControl::detached(),
-            Engagement::Orchestrator,
-            BinaryChange::Refuse
-        )?,
-        RunOutcome::Finalized { .. }
-    ));
-    let whole_states = manifest_states(&whole)?;
-    assert_eq!(whole_states.len(), 1);
-    let (whole_object, whole_step, whole_grid) = &whole_states[0];
-    assert_eq!(*whole_step, 100, "the unsegmented run reaches step 100");
-    assert_eq!(whole_grid.channels(), 8);
-
-    // The framed step makes the committed state a complete continuation, so the
-    // 100-step state is byte-identical whether or not a segment boundary cut the
-    // trajectory. The unsegmented state's object must already exist in the
-    // segmented run's store — the `get` errors if absent, so it is the membership
-    // check — and its bytes must equal the framed state reconstructed here from
-    // the decoded step and grid, not a second fetch of the same object.
-    let from_segmented = Store::open(&segmented.store)?.get(whole_object)?;
-    assert_eq!(from_segmented, encode_continuation(*whole_step, whole_grid));
-    Ok(())
-}
-
 #[test]
 fn a_malformed_config_fails_at_load() -> Result<()> {
     let dir = tempfile::tempdir().expect("temp dir");
@@ -196,4 +115,88 @@ fn a_malformed_config_fails_at_load() -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Running the model through the spine dispatches to a real GPU.
+mod on_device {
+    use super::*;
+
+    #[test]
+    fn a_ca_evolution_nca_config_runs_the_full_spine() -> Result<()> {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let config = nca_config(dir.path(), "sima.toml", "./store", 4, 100, None)?;
+        assert!(matches!(
+            orchestrate(
+                &config,
+                &RunControl::detached(),
+                Engagement::Orchestrator,
+                BinaryChange::Refuse
+            )?,
+            RunOutcome::Finalized { .. }
+        ));
+        // Four candidates, one manifest entry each, every committed state framed at
+        // step 100 over a 32x32 eight-channel grid.
+        let states = manifest_states(&config)?;
+        assert_eq!(states.len(), 4);
+        for (_, step, grid) in &states {
+            assert_eq!(*step, 100, "a single 100-step segment reaches step 100");
+            assert_eq!((grid.width(), grid.height(), grid.channels()), (32, 32, 8));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_segment_boundary_leaves_the_trajectory_byte_identical() -> Result<()> {
+        let dir = tempfile::tempdir().expect("temp dir");
+        // One candidate as a chain of two 50-step segments.
+        let segmented = nca_config(
+            dir.path(),
+            "segmented.toml",
+            "./store-segmented",
+            1,
+            50,
+            Some(2),
+        )?;
+        assert!(matches!(
+            orchestrate(
+                &segmented,
+                &RunControl::detached(),
+                Engagement::Orchestrator,
+                BinaryChange::Refuse,
+            )?,
+            RunOutcome::Finalized { .. }
+        ));
+        let segment_states = manifest_states(&segmented)?;
+        assert_eq!(segment_states.len(), 2);
+        for (_, _, grid) in &segment_states {
+            assert_eq!((grid.width(), grid.height(), grid.channels()), (32, 32, 8));
+        }
+
+        // The same trajectory as one unsegmented 100-step task, fresh store.
+        let whole = nca_config(dir.path(), "whole.toml", "./store-whole", 1, 100, None)?;
+        assert!(matches!(
+            orchestrate(
+                &whole,
+                &RunControl::detached(),
+                Engagement::Orchestrator,
+                BinaryChange::Refuse
+            )?,
+            RunOutcome::Finalized { .. }
+        ));
+        let whole_states = manifest_states(&whole)?;
+        assert_eq!(whole_states.len(), 1);
+        let (whole_object, whole_step, whole_grid) = &whole_states[0];
+        assert_eq!(*whole_step, 100, "the unsegmented run reaches step 100");
+        assert_eq!(whole_grid.channels(), 8);
+
+        // The framed step makes the committed state a complete continuation, so the
+        // 100-step state is byte-identical whether or not a segment boundary cut the
+        // trajectory. The unsegmented state's object must already exist in the
+        // segmented run's store — the `get` errors if absent, so it is the membership
+        // check — and its bytes must equal the framed state reconstructed here from
+        // the decoded step and grid, not a second fetch of the same object.
+        let from_segmented = Store::open(&segmented.store)?.get(whole_object)?;
+        assert_eq!(from_segmented, encode_continuation(*whole_step, whole_grid));
+        Ok(())
+    }
 }

@@ -17,17 +17,18 @@
 //! only the driver, which arrives with the card.
 //!
 //! Regenerating a committed PTX needs `libnvrtc`, and only that: it is a
-//! userspace compiler that opens no device and needs no driver. It comes with
-//! the CUDA toolkit, or on its own from the `nvidia-cuda-nvrtc-cu12` wheel, in
-//! which case point `LD_LIBRARY_PATH` at the directory holding
-//! `libnvrtc.so.12`. Use version 12.0.x: the NVRTC that compiles a kernel fixes
-//! the PTX ISA version in its header, which is the axis the loading driver is
+//! userspace compiler that opens no device and needs no driver. The build
+//! vendors the pinned 12.0.x release beside its binaries and reaches it through
+//! their `RUNPATH`, so a machine with no CUDA toolkit regenerates, and a copy
+//! elsewhere on the library path shadows the pin. The release is what fixes the
+//! PTX ISA version in the artifact's header, the axis the loading driver is
 //! checked against, and 12.0.x emits ISA 8.0 for the widest driver support.
-//! [`compile`] documents both compatibility axes. The `compile-ptx` example is
-//! the regeneration step:
+//! [`compile`] documents both compatibility axes, and `SIMA_NVRTC_DIR` names a
+//! copy already on the machine, for a build that fetches nothing. The
+//! `compile-ptx` example is the regeneration step:
 //!
 //! ```text
-//! LD_LIBRARY_PATH=<dir> cargo run -p sima-toolkit-cuda --example compile-ptx \
+//! cargo run -p sima-toolkit-cuda --example compile-ptx \
 //!   -- path/to/kernel.cu > path/to/kernel.ptx
 //! ```
 //!
@@ -52,13 +53,13 @@
 //!
 //! Tests split three ways by what they touch: pure ones run anywhere, tests
 //! that open a [`Context`] need an NVIDIA device, and tests that call
-//! [`compile`] need `libnvrtc` instead of a device. All three run under a plain
-//! `cargo test`, with the requirement stated in each test's doc comment, so a
-//! device or compiler fault surfaces as a test failure rather than a skipped
-//! test. The compilation tests need `libnvrtc` on the loader path:
+//! [`compile`] need `libnvrtc`, which the build vendors, so they run anywhere
+//! too. Each device test sits behind a `mod on_device`, the marker that keeps
+//! it on the device machine. On that machine every test runs under a plain
+//! `cargo test`, so a device or compiler fault surfaces as a test failure:
 //!
 //! ```text
-//! LD_LIBRARY_PATH=<dir> cargo test -p sima-toolkit-cuda
+//! cargo test -p sima-toolkit-cuda
 //! ```
 //!
 //! `cudarc` opens the CUDA libraries at run time, so the crate builds with no

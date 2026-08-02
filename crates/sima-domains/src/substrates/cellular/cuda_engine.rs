@@ -281,112 +281,113 @@ mod tests {
         }
     }
 
-    /// Requires a CUDA device.
-    #[test]
-    fn the_engine_advances_and_reduces_a_grid() {
-        // The engine is the dispatch harness and the reduction behind one call.
-        // The smoke kernel is a neighborhood max, so advancing a grid can only
-        // raise a cell: the mean after three steps is above the mean of the
-        // grid it started from, and every scalar is finite.
-        let engine = CudaEngine::build(None, SMOKE_PTX).expect("build the engine");
-        let initial = a_grid();
-        let start: f64 = initial
-            .data()
-            .iter()
-            .step_by(2)
-            .map(|&v| f64::from(v))
-            .sum::<f64>()
-            / 64.0;
-        let evaluation = engine
-            .evaluate(&an_input(&initial, 3))
-            .expect("evaluate the grid");
-        let scalars: std::collections::HashMap<String, f64> =
-            evaluation.scalars().expect("reduce").into_iter().collect();
-        assert!(
-            scalars.values().all(|v| v.is_finite()),
-            "every scalar is finite: {scalars:?}"
-        );
-        assert!(
-            scalars["c0.mean"] > start,
-            "a neighborhood max raises the mean: {} from {start}",
-            scalars["c0.mean"]
-        );
-        let grid = evaluation.grid().expect("download the grid");
-        assert_eq!(grid.width(), initial.width());
-        assert_eq!(grid.channels(), initial.channels());
-    }
+    /// Building the engine opens a CUDA context, and the cross-backend comparison opens a Vulkan one beside it.
+    mod on_device {
+        use super::*;
 
-    /// Requires both a CUDA device and a Vulkan device.
-    #[test]
-    fn both_backends_agree_on_the_same_grid() {
-        // The port's exit criterion: the same kernel transcribed for the two
-        // backends, advanced over the same grid, reduces to the same scalars.
-        // A transcription error in either the step kernel or the reduction —
-        // a swapped neighbor, a wrong partition boundary, a misplaced output
-        // slot — moves a scalar far past the tolerance.
-        let initial = a_grid();
-        let cuda = CudaEngine::build(None, SMOKE_PTX).expect("build the CUDA engine");
-        let wgsl = crate::substrates::cellular::WgslEngine::build(None, SMOKE_WGSL)
-            .expect("build the WGSL engine");
-        let cuda_scalars = cuda
-            .evaluate(&an_input(&initial, 4))
-            .expect("CUDA evaluation")
-            .scalars()
-            .expect("CUDA reduction");
-        let wgsl_scalars = wgsl
-            .evaluate(&an_input(&initial, 4))
-            .expect("WGSL evaluation")
-            .scalars()
-            .expect("WGSL reduction");
-        assert_eq!(
-            cuda_scalars.iter().map(|(n, _)| n).collect::<Vec<_>>(),
-            wgsl_scalars.iter().map(|(n, _)| n).collect::<Vec<_>>(),
-            "both backends emit the same scalars in the same order"
-        );
-        for ((name, cuda_value), (_, wgsl_value)) in cuda_scalars.iter().zip(&wgsl_scalars) {
-            let scale = wgsl_value.abs().max(1.0);
+        #[test]
+        fn the_engine_advances_and_reduces_a_grid() {
+            // The engine is the dispatch harness and the reduction behind one call.
+            // The smoke kernel is a neighborhood max, so advancing a grid can only
+            // raise a cell: the mean after three steps is above the mean of the
+            // grid it started from, and every scalar is finite.
+            let engine = CudaEngine::build(None, SMOKE_PTX).expect("build the engine");
+            let initial = a_grid();
+            let start: f64 = initial
+                .data()
+                .iter()
+                .step_by(2)
+                .map(|&v| f64::from(v))
+                .sum::<f64>()
+                / 64.0;
+            let evaluation = engine
+                .evaluate(&an_input(&initial, 3))
+                .expect("evaluate the grid");
+            let scalars: std::collections::HashMap<String, f64> =
+                evaluation.scalars().expect("reduce").into_iter().collect();
             assert!(
-                (cuda_value - wgsl_value).abs() <= TOLERANCE * scale,
-                "{name}: CUDA {cuda_value} against WGSL {wgsl_value}"
+                scalars.values().all(|v| v.is_finite()),
+                "every scalar is finite: {scalars:?}"
+            );
+            assert!(
+                scalars["c0.mean"] > start,
+                "a neighborhood max raises the mean: {} from {start}",
+                scalars["c0.mean"]
+            );
+            let grid = evaluation.grid().expect("download the grid");
+            assert_eq!(grid.width(), initial.width());
+            assert_eq!(grid.channels(), initial.channels());
+        }
+
+        #[test]
+        fn both_backends_agree_on_the_same_grid() {
+            // The port's exit criterion: the same kernel transcribed for the two
+            // backends, advanced over the same grid, reduces to the same scalars.
+            // A transcription error in either the step kernel or the reduction —
+            // a swapped neighbor, a wrong partition boundary, a misplaced output
+            // slot — moves a scalar far past the tolerance.
+            let initial = a_grid();
+            let cuda = CudaEngine::build(None, SMOKE_PTX).expect("build the CUDA engine");
+            let wgsl = crate::substrates::cellular::WgslEngine::build(None, SMOKE_WGSL)
+                .expect("build the WGSL engine");
+            let cuda_scalars = cuda
+                .evaluate(&an_input(&initial, 4))
+                .expect("CUDA evaluation")
+                .scalars()
+                .expect("CUDA reduction");
+            let wgsl_scalars = wgsl
+                .evaluate(&an_input(&initial, 4))
+                .expect("WGSL evaluation")
+                .scalars()
+                .expect("WGSL reduction");
+            assert_eq!(
+                cuda_scalars.iter().map(|(n, _)| n).collect::<Vec<_>>(),
+                wgsl_scalars.iter().map(|(n, _)| n).collect::<Vec<_>>(),
+                "both backends emit the same scalars in the same order"
+            );
+            for ((name, cuda_value), (_, wgsl_value)) in cuda_scalars.iter().zip(&wgsl_scalars) {
+                let scale = wgsl_value.abs().max(1.0);
+                assert!(
+                    (cuda_value - wgsl_value).abs() <= TOLERANCE * scale,
+                    "{name}: CUDA {cuda_value} against WGSL {wgsl_value}"
+                );
+            }
+        }
+
+        #[test]
+        fn a_zero_step_evaluation_reports_no_activity() {
+            // Both buffers hold the initial grid, so the pair is equal and the
+            // reduction sees no change — the resumption case where a segment
+            // advances nothing.
+            let engine = CudaEngine::build(None, SMOKE_PTX).expect("build the engine");
+            let initial = a_grid();
+            let scalars: std::collections::HashMap<String, f64> = engine
+                .evaluate(&an_input(&initial, 0))
+                .expect("evaluate")
+                .scalars()
+                .expect("reduce")
+                .into_iter()
+                .collect();
+            assert_eq!(scalars["activity"], 0.0);
+        }
+
+        #[test]
+        fn a_device_the_backend_cannot_open_fails_naming_it() {
+            // The binding names a class this machine's CUDA driver does not have —
+            // an Intel integrated GPU is the live case, since the WGSL backend
+            // reaches it and this one cannot. The failure names the device.
+            let binding = DeviceBinding {
+                class: DeviceClass::new("8086:7d51").expect("class id"),
+                member: 0,
+            };
+            let message = match CudaEngine::build(Some(&binding), SMOKE_PTX) {
+                Err(error) => error.to_string(),
+                Ok(_) => panic!("no CUDA device is an Intel iGPU"),
+            };
+            assert!(
+                message.contains("8086"),
+                "the error names the device: {message}"
             );
         }
-    }
-
-    /// Requires a CUDA device.
-    #[test]
-    fn a_zero_step_evaluation_reports_no_activity() {
-        // Both buffers hold the initial grid, so the pair is equal and the
-        // reduction sees no change — the resumption case where a segment
-        // advances nothing.
-        let engine = CudaEngine::build(None, SMOKE_PTX).expect("build the engine");
-        let initial = a_grid();
-        let scalars: std::collections::HashMap<String, f64> = engine
-            .evaluate(&an_input(&initial, 0))
-            .expect("evaluate")
-            .scalars()
-            .expect("reduce")
-            .into_iter()
-            .collect();
-        assert_eq!(scalars["activity"], 0.0);
-    }
-
-    /// Requires a CUDA device.
-    #[test]
-    fn a_device_the_backend_cannot_open_fails_naming_it() {
-        // The binding names a class this machine's CUDA driver does not have —
-        // an Intel integrated GPU is the live case, since the WGSL backend
-        // reaches it and this one cannot. The failure names the device.
-        let binding = DeviceBinding {
-            class: DeviceClass::new("8086:7d51").expect("class id"),
-            member: 0,
-        };
-        let message = match CudaEngine::build(Some(&binding), SMOKE_PTX) {
-            Err(error) => error.to_string(),
-            Ok(_) => panic!("no CUDA device is an Intel iGPU"),
-        };
-        assert!(
-            message.contains("8086"),
-            "the error names the device: {message}"
-        );
     }
 }

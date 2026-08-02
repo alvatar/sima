@@ -417,28 +417,6 @@ mod tests {
         enumerate_devices().expect("enumeration answers on any machine");
     }
 
-    /// Requires an NVIDIA device.
-    #[test]
-    fn enumeration_reports_every_cuda_device() {
-        let devices = enumerate_devices().expect("enumerate devices");
-        assert!(!devices.is_empty(), "at least one CUDA device");
-        for device in &devices {
-            assert!(!device.name.is_empty());
-            // Every CUDA device is an NVIDIA card, so the class's vendor half
-            // is fixed and the device half comes from its PCI configuration.
-            assert!(
-                device.class.starts_with("10de:"),
-                "an NVIDIA vendor id: {}",
-                device.class
-            );
-            let (name, driver) = selected_device_desc(Some((device.class.as_str(), device.member)))
-                .expect("resolve the device description");
-            assert_eq!(name, device.name);
-            assert!(!driver.is_empty(), "driver version reported");
-        }
-    }
-
-    /// Requires an NVIDIA device.
     #[test]
     fn naming_an_absent_device_fails_to_resolve() {
         // A worker answers `Ready` with this name, so this is where a binding
@@ -448,5 +426,31 @@ mod tests {
             selected_device_desc(Some(("dead:beef", 0))),
             Err(Error::Backend(_))
         ));
+    }
+
+    /// Enumeration answers from the driver, so this one needs an NVIDIA device.
+    mod on_device {
+        use super::*;
+
+        #[test]
+        fn enumeration_reports_every_cuda_device() {
+            let devices = enumerate_devices().expect("enumerate devices");
+            assert!(!devices.is_empty(), "at least one CUDA device");
+            for device in &devices {
+                assert!(!device.name.is_empty());
+                // Every CUDA device is an NVIDIA card, so the class's vendor half
+                // is fixed and the device half comes from its PCI configuration.
+                assert!(
+                    device.class.starts_with("10de:"),
+                    "an NVIDIA vendor id: {}",
+                    device.class
+                );
+                let (name, driver) =
+                    selected_device_desc(Some((device.class.as_str(), device.member)))
+                        .expect("resolve the device description");
+                assert_eq!(name, device.name);
+                assert!(!driver.is_empty(), "driver version reported");
+            }
+        }
     }
 }

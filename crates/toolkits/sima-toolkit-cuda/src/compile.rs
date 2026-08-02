@@ -44,10 +44,10 @@ pub const PTX_OPTIONS: [&str; 2] = ["--gpu-architecture=compute_75", "--fmad=tru
 
 /// Compiles CUDA C to PTX under [`PTX_OPTIONS`], with NVRTC 12.0.x.
 ///
-/// Needs `libnvrtc`, which comes with the CUDA toolkit or, without one, from the
-/// `nvidia-cuda-nvrtc-cu12` wheel — it is a userspace compiler that needs
-/// neither a driver nor a device. Compilation failures carry NVRTC's own
-/// diagnostics, which name the offending source line.
+/// Needs `libnvrtc`, a userspace compiler that needs neither a driver nor a
+/// device, and which the build vendors beside its binaries. Compilation
+/// failures carry NVRTC's own diagnostics, which name the offending source
+/// line.
 ///
 /// The version matters, because a committed artifact answers to two separate
 /// compatibility axes and only one of them is an option:
