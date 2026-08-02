@@ -26,6 +26,10 @@ pub(crate) struct Trajectory<'a> {
     width: u32,
     height: u32,
     channels: u32,
+    /// `width * height`, taken from the grid that was advanced rather than
+    /// recomputed: `Grid::new` already refused an extent whose product does not
+    /// fit a `u32`.
+    cell_count: u32,
 }
 
 impl Trajectory<'_> {
@@ -41,7 +45,7 @@ impl Trajectory<'_> {
 
     /// The cell count of the grid: `width * height`.
     pub(crate) fn cell_count(&self) -> u32 {
-        self.width * self.height
+        self.cell_count
     }
 
     /// The channel count of the grid.
@@ -98,6 +102,7 @@ pub(crate) fn run<'a>(
     let width = initial.width();
     let height = initial.height();
     let channels = initial.channels();
+    let cell_count = initial.cell_count();
     let payload = initial.data();
     let byte_len = std::mem::size_of_val(payload);
 
@@ -119,9 +124,8 @@ pub(crate) fn run<'a>(
         None => None,
     };
 
-    // One block covers 64 cells along x; round the cell count up.
-    let cell_count = width as u64 * height as u64;
-    let groups = [cell_count.div_ceil(u64::from(BLOCK_WIDTH)) as u32, 1, 1];
+    // One block covers `BLOCK_WIDTH` cells along x; round the count up.
+    let groups = [cell_count.div_ceil(BLOCK_WIDTH), 1, 1];
 
     // `current_is_a` tracks which buffer holds the latest state. Each dispatch
     // reads the current buffer and writes the other; after the swap the written
@@ -163,6 +167,7 @@ pub(crate) fn run<'a>(
         width,
         height,
         channels,
+        cell_count,
     })
 }
 

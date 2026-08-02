@@ -3,7 +3,7 @@
 use sima_core::Result;
 use sima_toolkit_wgsl::{Buffer, BufferUpdate, Context, Kernel};
 
-use crate::substrates::cellular::Grid;
+use crate::substrates::cellular::{BLOCK_WIDTH, Grid};
 
 /// The result of a [`run`]: the two ping-pong buffers left resident on the
 /// device — the final grid $G_N$ and the step before it $G_{N-1}$ — over the
@@ -22,6 +22,10 @@ pub struct Trajectory<'a> {
     width: u32,
     height: u32,
     channels: u32,
+    /// `width * height`, taken from the grid that was advanced rather than
+    /// recomputed: `Grid::new` already refused an extent whose product does not
+    /// fit a `u32`.
+    cell_count: u32,
 }
 
 impl<'a> Trajectory<'a> {
@@ -37,7 +41,7 @@ impl<'a> Trajectory<'a> {
 
     /// The cell count of the grid: `width * height`.
     pub fn cell_count(&self) -> u32 {
-        self.width * self.height
+        self.cell_count
     }
 
     /// The channel count of the grid.
@@ -100,6 +104,7 @@ pub fn run<'a>(
     let width = initial.width();
     let height = initial.height();
     let channels = initial.channels();
+    let cell_count = initial.cell_count();
     let payload = initial.data();
     let byte_len = std::mem::size_of_val(payload);
 
@@ -122,9 +127,8 @@ pub fn run<'a>(
         None => None,
     };
 
-    // One workgroup covers 64 cells along x; round the cell count up.
-    let cell_count = width as u64 * height as u64;
-    let groups = [cell_count.div_ceil(64) as u32, 1, 1];
+    // One workgroup covers `BLOCK_WIDTH` cells along x; round the count up.
+    let groups = [cell_count.div_ceil(BLOCK_WIDTH), 1, 1];
 
     // `current_is_a` tracks which buffer holds the latest state. Each dispatch
     // reads the current buffer and writes the other; after the swap the written
@@ -166,13 +170,13 @@ pub fn run<'a>(
         width,
         height,
         channels,
+        cell_count,
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::substrates::cellular::BLOCK_WIDTH;
 
     /// The neighborhood-max kernel that exercises the path. Its bindings and
     /// dispatch match the cellular-kind convention the harness encodes.
