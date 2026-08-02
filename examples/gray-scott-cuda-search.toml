@@ -44,9 +44,10 @@ noise_width = 0.02
 [config]
 store = "./store"
 max_attempts = 3
-# The two deadlines bound waiting, never computation, and each is off while
-# absent. The two checkpoint cadences are unioned: a save is due when either
-# fires, and with both absent no checkpoint is ever written.
+# The two deadlines bound waiting: one an attempt's lease, one a protocol
+# answer. Each is enforced while its key is present and off while it is absent.
+# The two checkpoint cadences are unioned: a save is due when either fires, and
+# checkpointing is on as soon as either is present.
 # attempt_timeout_ms        = 300000      # per-attempt deadline
 # answer_timeout_ms         = 120000      # per-answer deadline: the worker
                                           # handshake and each question the run
