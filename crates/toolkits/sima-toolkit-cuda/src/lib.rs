@@ -78,5 +78,6 @@ mod vendored;
 pub use buffer::Buffer;
 pub use compile::{COMPILER_ID, PTX_OPTIONS, compile};
 pub use context::Context;
+pub use dispatch::BufferUpdate;
 pub use kernel::Kernel;
 pub use selection::{enumerate_devices, selected_device_desc};

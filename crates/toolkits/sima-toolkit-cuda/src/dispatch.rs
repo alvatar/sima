@@ -9,6 +9,27 @@ use crate::context::Context;
 use crate::driver;
 use crate::kernel::Kernel;
 
+/// The largest update a dispatch carries, in bytes. Both backends hold the
+/// same bound — it is what Vulkan writes inline from a command buffer — so an
+/// update a domain writes is portable between them.
+const MAX_UPDATE: usize = 65536;
+
+/// A small host-side write folded into a dispatch's own stream ordering.
+///
+/// The bytes land in `buffer` before the kernel reads it, submitted to the same
+/// stream as the launch, so a value that changes per dispatch — a step index, a
+/// pass number — costs no drain and no allocation of its own.
+///
+/// The updated buffer binds after every buffer in the dispatch's own list. That
+/// is what makes the write sound to express: the update holds it exclusively
+/// while the rest of the bindings are shared.
+pub struct BufferUpdate<'a> {
+    pub buffer: &'a mut Buffer,
+    /// The bytes to write, from the start of the buffer: a whole number of
+    /// 4-byte words, at most 64 KiB, and no longer than the buffer.
+    pub bytes: &'a [u8],
+}
+
 impl Context {
     /// Binds `buffers` to the kernel's parameters in order and launches
     /// `groups` thread blocks of the kernel's own width.
@@ -51,6 +72,43 @@ impl Context {
             .synchronize()
             .map_err(|e| driver::backend_error("drain the stream after a dispatch", e))
     }
+
+    /// Dispatches as [`dispatch`](Context::dispatch) does, with `update`
+    /// applied to its own buffer first and that buffer bound last.
+    ///
+    /// The copy goes onto the stream the launch is submitted to, which orders
+    /// it against the kernel's read: the bytes land before the kernel that
+    /// reads them, with no drain between the two.
+    pub fn dispatch_with_update(
+        &self,
+        kernel: &Kernel,
+        buffers: &[&Buffer],
+        update: BufferUpdate<'_>,
+        groups: [u32; 3],
+    ) -> Result<()> {
+        check_update(update.bytes, update.buffer.len())?;
+        self.upload(update.buffer, update.bytes)?;
+        let mut bound: Vec<&Buffer> = buffers.to_vec();
+        bound.push(update.buffer);
+        self.dispatch(kernel, &bound, groups)
+    }
+}
+
+/// Confirms an update fits the portable bound and what the buffer holds.
+fn check_update(bytes: &[u8], size: usize) -> Result<()> {
+    if bytes.is_empty() || !bytes.len().is_multiple_of(4) || bytes.len() > MAX_UPDATE {
+        return Err(Error::Backend(format!(
+            "a dispatch update is 4 to {MAX_UPDATE} bytes in whole 4-byte words, got {}",
+            bytes.len()
+        )));
+    }
+    if bytes.len() > size {
+        return Err(Error::Backend(format!(
+            "a dispatch update of {} bytes exceeds buffer size {size}",
+            bytes.len()
+        )));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -60,6 +118,29 @@ mod tests {
     /// The shipped compute kernel: `out[i] = in[i] * 2 + 1`, over a third
     /// buffer holding the element count.
     const SMOKE_PTX: &str = include_str!("../kernels/smoke.ptx");
+
+    #[test]
+    fn an_update_is_whole_words_within_the_portable_bound() {
+        // The bound is Vulkan's, held here too so an update a domain writes
+        // behaves the same on either backend rather than passing on one and
+        // failing on the other.
+        assert!(check_update(&[], 64).is_err(), "empty");
+        assert!(check_update(&[0; 6], 64).is_err(), "not whole 4-byte words");
+        assert!(
+            check_update(&[0; MAX_UPDATE + 4], 1 << 20).is_err(),
+            "past the portable bound"
+        );
+        check_update(&[0; 8], 64).expect("eight bytes into a 64-byte buffer");
+    }
+
+    #[test]
+    fn an_update_longer_than_its_buffer_is_rejected() {
+        let error = check_update(&[0; 16], 8).expect_err("past the buffer");
+        let Error::Backend(message) = error else {
+            panic!("expected a backend error");
+        };
+        assert!(message.contains("exceeds buffer size 8"), "{message}");
+    }
 
     /// The context, the kernel, and the element-count buffer every test here
     /// starts from.
