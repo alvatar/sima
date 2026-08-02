@@ -95,8 +95,9 @@ fn leased(config: &Path) -> usize {
 }
 
 /// A `sima.toml` whose sleeps keep workers busy long enough for the process
-/// table to be inspected mid-run.
-fn write_sleep_config(dir: &Path, name: &str, store: &str, sleep_ms: u64) -> PathBuf {
+/// table to be inspected mid-run. `workers` is operational, never identity:
+/// a reference run matches whatever count its counterpart used.
+fn write_sleep_config(dir: &Path, name: &str, store: &str, sleep_ms: u64, workers: u32) -> PathBuf {
     let text = format!(
         r#"
         [run]
@@ -112,7 +113,7 @@ fn write_sleep_config(dir: &Path, name: &str, store: &str, sleep_ms: u64) -> Pat
         max_attempts = 3
 
         [orchestrator]
-        workers = 2
+        workers = {workers}
     "#
     );
     common::write_config_text(dir, name, &text)
@@ -127,19 +128,21 @@ fn an_externally_killed_worker_converges_to_the_reference_manifest() {
 
     // The sleep duration is identity-bearing, so the reference run shares it
     // exactly; it is long enough that the kill below lands mid-attempt.
-    let reference = write_sleep_config(dir.path(), "reference.toml", "./store-ref", 2000);
+    let reference = write_sleep_config(dir.path(), "reference.toml", "./store-ref", 2000, 1);
     assert_eq!(
         spawn_run(&reference).wait().expect("reference run").code(),
         Some(0)
     );
     let reference = manifest_of(&reference).expect("reference manifest");
 
-    let config = write_sleep_config(dir.path(), "killed.toml", "./store-killed", 2000);
+    // One worker, so the child in the process table IS the leased child. With
+    // two, the pid picked below could be the sibling still inside its
+    // handshake — a child dying there is a spawn failure, which faults the
+    // run: an infrastructure fault, not this test's path.
+    let config = write_sleep_config(dir.path(), "killed.toml", "./store-killed", 2000, 1);
     let mut run = spawn_run(&config);
-    // Wait for a worker child, then for an assignment to land — a `Leased`
-    // event in the journal — so the SIGKILL cannot land inside spawn: a
-    // spawn failure is an infrastructure fault, which is not this test's
-    // path.
+    // Wait for the worker child, then for an assignment to land — a `Leased`
+    // event in the journal — so the SIGKILL lands inside the attempt.
     assert!(
         poll_until(Duration::from_secs(30), || {
             !worker_processes(run.id()).is_empty()
@@ -194,14 +197,14 @@ fn workers_die_with_their_parent_and_the_run_resumes() {
     // identity-bearing, so the reference run shares it exactly.
     const SLEEP_MS: u64 = 6_000;
 
-    let reference = write_sleep_config(dir.path(), "reference.toml", "./store-ref", SLEEP_MS);
+    let reference = write_sleep_config(dir.path(), "reference.toml", "./store-ref", SLEEP_MS, 2);
     assert_eq!(
         spawn_run(&reference).wait().expect("reference run").code(),
         Some(0)
     );
     let reference = manifest_of(&reference).expect("reference manifest");
 
-    let config = write_sleep_config(dir.path(), "orphaned.toml", "./store-orphaned", SLEEP_MS);
+    let config = write_sleep_config(dir.path(), "orphaned.toml", "./store-orphaned", SLEEP_MS, 2);
     let mut run = spawn_run(&config);
     assert!(
         poll_until(Duration::from_secs(30), || {
