@@ -18,7 +18,7 @@ use std::thread;
 use std::time::Duration;
 
 use sima_contracts::{DeviceBinding, DeviceClass, Generator, WorkerId};
-use sima_core::{Error, Result};
+use sima_core::{Codec, Error, Result};
 use sima_model::{Environment, RunConfig, RunId, TaskKey};
 use sima_store::Store;
 use sima_trace::{Collector, Emitter, Event};

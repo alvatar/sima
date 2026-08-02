@@ -10,7 +10,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Read, Write};
 
-use sima_core::{Error, Hash, Result, hash_bytes, read_frame, write_frame};
+use sima_core::{Codec, Error, Hash, Result, hash_bytes, read_frame, write_frame};
 use sima_model::{TaskKey, TaskRecord};
 
 use crate::catalog::referenced_objects;

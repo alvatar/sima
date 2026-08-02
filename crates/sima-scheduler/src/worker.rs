@@ -680,6 +680,7 @@ fn task_fault(ctx: &WorkerContext<'_>, task: String, attempt: u32, key: TaskKey,
 
 #[cfg(test)]
 mod tests {
+    use sima_core::Codec;
     use std::num::NonZeroU64;
     use std::sync::Arc;
     use std::sync::mpsc;

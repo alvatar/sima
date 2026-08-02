@@ -127,6 +127,7 @@ mod tests {
     use crate::spec::SpecId;
     use crate::task::TaskIdentity;
     use crate::testutil::{fill_hash, from_hex, to_hex};
+    use sima_core::Codec;
     use sima_core::{Enc, Error, Hash, Result, hash_bytes};
 
     /// The stateless-arm identity pinned in the `task` module tests.

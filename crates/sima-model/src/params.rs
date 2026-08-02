@@ -1,6 +1,6 @@
 //! Run parameters: the opaque evaluation-axis blob paired with a spec.
 
-use sima_core::{Dec, Enc, Result, hash_bytes};
+use sima_core::{Codec, Dec, Enc, Result, hash_bytes};
 
 use crate::canonical::{self, TAG_PARAMS};
 

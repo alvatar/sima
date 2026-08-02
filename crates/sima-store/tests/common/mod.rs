@@ -5,7 +5,7 @@
 use std::io::pipe;
 use std::thread;
 
-use sima_core::Result;
+use sima_core::{Codec, Result};
 use sima_model::{
     ArtifactRef, Environment, EnvironmentComponent, EnvironmentValue, FormatId, Params, Spec,
     TaskIdentity, TaskKey, TaskRecord,

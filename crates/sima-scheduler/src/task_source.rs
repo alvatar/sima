@@ -2,7 +2,7 @@
 //! `(config, store state)`.
 
 use sima_contracts::Generator;
-use sima_core::{Error, Result};
+use sima_core::{Codec, Error, Result};
 use sima_model::{RunConfig, Spec, SpecId, TaskIdentity, TaskKey};
 use sima_store::Store;
 

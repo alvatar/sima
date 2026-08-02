@@ -1,7 +1,7 @@
 //! Task identity: the exact inputs that determine a task's results, and
 //! the task key derived from them.
 
-use sima_core::{Dec, Enc, Hash, Result, hash_bytes};
+use sima_core::{Codec, Dec, Enc, Hash, Result, hash_bytes};
 
 use crate::canonical::{self, TAG_TASK};
 use crate::environment::EnvironmentId;

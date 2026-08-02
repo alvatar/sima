@@ -247,6 +247,7 @@ impl TaskSource for SegmentChain<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sima_core::Codec;
     use sima_domains::{StubBehavior, StubGenerator, StubGeneratorConfig};
     use sima_model::{ArtifactRef, GeneratorConfig, Params, TaskRecord};
 

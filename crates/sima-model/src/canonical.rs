@@ -106,27 +106,21 @@ pub(crate) fn require_ascending_names(prev: Option<&str>, next: &str) -> Result<
     }
 }
 
-/// Implements the standalone framing of the uniform type surface:
-/// `to_bytes` runs `encode` on a fresh encoder — the result is exactly the
-/// value's store object bytes; `from_bytes` runs `decode` and rejects
-/// trailing input.
+/// Binds a type's inherent `encode`/`decode` to [`sima_core::Codec`], the
+/// trait that already carries the standalone framing.
+///
+/// `to_bytes` and `from_bytes` come from the trait's provided methods, so
+/// every model type frames its bytes the one way `Codec` defines rather than
+/// each repeating it, and a caller can write `T: Codec` over model types.
 macro_rules! standalone_codec {
     ($ty:ident) => {
-        impl $ty {
-            /// The standalone canonical bytes — exactly the value's store
-            /// object bytes.
-            pub fn to_bytes(&self) -> Vec<u8> {
-                let mut enc = ::sima_core::Enc::new();
-                self.encode(&mut enc);
-                enc.finish()
+        impl ::sima_core::Codec for $ty {
+            fn encode(&self, enc: &mut ::sima_core::Enc) {
+                $ty::encode(self, enc)
             }
 
-            /// Parses standalone canonical bytes, rejecting trailing input.
-            pub fn from_bytes(bytes: &[u8]) -> ::sima_core::Result<Self> {
-                let mut dec = ::sima_core::Dec::new(bytes);
-                let value = Self::decode(&mut dec)?;
-                dec.finish()?;
-                Ok(value)
+            fn decode(dec: &mut ::sima_core::Dec<'_>) -> ::sima_core::Result<Self> {
+                $ty::decode(dec)
             }
         }
     };
@@ -174,7 +168,20 @@ pub(crate) use id_newtype;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sima_core::{Enc, hash_bytes};
+    use sima_core::{Codec, Enc, hash_bytes};
+
+    /// Compile-time assertion: every model type framed by `standalone_codec!`
+    /// satisfies the trait that defines that framing, so a caller can be
+    /// generic over them rather than over each type by name.
+    const _: fn() = || {
+        fn assert_codec<T: Codec>() {}
+        assert_codec::<crate::Spec>();
+        assert_codec::<crate::Params>();
+        assert_codec::<crate::Environment>();
+        assert_codec::<crate::RunConfig>();
+        assert_codec::<crate::TaskIdentity>();
+        assert_codec::<crate::TaskRecord>();
+    };
 
     const TAGS: [&str; 6] = [
         TAG_SPEC,

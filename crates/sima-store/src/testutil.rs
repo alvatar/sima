@@ -6,7 +6,7 @@ use std::path::Path;
 
 use tempfile::TempDir;
 
-use sima_core::Hash;
+use sima_core::{Codec, Hash};
 use sima_model::{
     ArtifactRef, Environment, EnvironmentComponent, EnvironmentValue, FormatId, GeneratorConfig,
     GeneratorId, Params, RunConfig, Spec, TaskIdentity, TaskRecord,
