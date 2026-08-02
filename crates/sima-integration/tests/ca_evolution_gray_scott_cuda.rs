@@ -10,13 +10,34 @@
 
 mod common;
 
+use std::num::NonZeroU64;
 use std::path::Path;
+use std::time::Duration;
 
-use common::loaded_text;
+use common::{
+    comment_out, load_example_variant, loaded_text, shipped_example, uncomment, uncomment_block,
+};
 use sima_core::{Error, Hash, Result};
 use sima_domains::substrates::cellular::Grid;
-use sima_pipeline::{BinaryChange, Engagement, LoadedConfig, RunControl, RunOutcome, orchestrate};
+use sima_pipeline::{
+    BinaryChange, Cost, DeviceSelector, Engagement, LoadedConfig, Pool, RunControl, RunOutcome,
+    orchestrate,
+};
 use sima_store::Store;
+
+/// The shipped example this suite guards.
+const EXAMPLE: &str = "gray-scott-cuda-search.toml";
+
+/// The commented blocks a fleet needs, in the order the example declares them.
+const FLEET_BLOCKS: [&str; 7] = [
+    "[host.gpubox]",
+    "[host_class.lab]",
+    "[host_class.oldlab]",
+    "[host.slingshot]",
+    "[host_class.rtx4090]",
+    "[fleet]",
+    "[budget]",
+];
 
 /// The relative tolerance the two backends' grids are held to: the same
 /// figure their engines' own cross-backend comparison uses. A fused
@@ -210,6 +231,89 @@ fn the_shipped_search_config_loads_with_the_snapshot_predicate_enabled() -> Resu
     assert!(
         names.iter().any(|name| name == "activity"),
         "the example's scalar is a reduction name: {names:?}"
+    );
+    Ok(())
+}
+
+// The variants below each enable one commented group of the example and load
+// the result, so every knob the file ships is parsed by a test rather than only
+// read by a human. The `[domain."<format>"]` block is in no variant: the binary
+// it names is spawned when the config loads, so enabling it would run a program.
+
+#[test]
+fn the_shipped_search_config_loads_with_its_deadlines_and_cadences() -> Result<()> {
+    let text = uncomment(
+        &shipped_example(EXAMPLE),
+        &[
+            "attempt_timeout_ms",
+            "answer_timeout_ms",
+            "checkpoint_interval_ms",
+            "checkpoint_interval_steps",
+        ],
+    );
+    let loaded = load_example_variant(EXAMPLE, &text)?;
+    let execution = &loaded.execution;
+    assert_eq!(execution.attempt_timeout, Duration::from_millis(300_000));
+    assert_eq!(execution.answer_timeout, Duration::from_millis(120_000));
+    assert_eq!(execution.checkpoint_interval, Duration::from_millis(30_000));
+    assert_eq!(execution.checkpoint_interval_steps, NonZeroU64::new(500));
+    Ok(())
+}
+
+#[test]
+fn the_shipped_search_config_loads_segmented() -> Result<()> {
+    // `segments` is exclusive with `snapshot_when`; the example ships both
+    // commented, and this variant enables the one and leaves the other.
+    let text = uncomment(&shipped_example(EXAMPLE), &["segments = 10"]);
+    let loaded = load_example_variant(EXAMPLE, &text)?;
+    assert_eq!(loaded.run.segments, NonZeroU64::new(10));
+    Ok(())
+}
+
+#[test]
+fn the_shipped_search_config_loads_with_an_orchestrator_device_table() -> Result<()> {
+    // Device tables are exclusive with `workers`, so the plain count goes
+    // behind a comment marker before the table comes out from behind one — in
+    // that order, since the table declares a worker count of its own. A host's
+    // device tables parse through the same code, so this covers that syntax
+    // too.
+    let text = comment_out(&shipped_example(EXAMPLE), &["workers = 2"]);
+    let text = uncomment_block(&text, "[[orchestrator.device]]");
+    let loaded = load_example_variant(EXAMPLE, &text)?;
+    assert_eq!(
+        loaded.orchestrator.pool,
+        Some(Pool::Devices(vec![DeviceSelector {
+            select: "nvidia".to_string(),
+            workers: 2,
+        }])),
+        "the pool comes from the device table"
+    );
+    Ok(())
+}
+
+#[test]
+fn the_shipped_search_config_loads_with_its_whole_fleet() -> Result<()> {
+    let text = uncomment(&shipped_example(EXAMPLE), &["migrate"]);
+    let text = FLEET_BLOCKS
+        .iter()
+        .fold(text, |text, header| uncomment_block(&text, header));
+    let loaded = load_example_variant(EXAMPLE, &text)?;
+    assert_eq!(loaded.orchestrator.migrate.as_deref(), Some("slingshot"));
+    assert_eq!(loaded.fleet.members, ["gpubox", "lab", "rtx4090"]);
+    assert_eq!(loaded.budget.max_spend, Some(Cost(5_000_000)));
+    assert_eq!(
+        loaded.budget.max_wall_clock,
+        Some(Duration::from_millis(3_600_000))
+    );
+    // Every declared machine parsed, in both forms: two hosts and three
+    // classes, owned and rented among them.
+    assert_eq!(
+        loaded.hosts.keys().collect::<Vec<_>>(),
+        ["gpubox", "slingshot"]
+    );
+    assert_eq!(
+        loaded.host_classes.keys().collect::<Vec<_>>(),
+        ["lab", "oldlab", "rtx4090"]
     );
     Ok(())
 }
