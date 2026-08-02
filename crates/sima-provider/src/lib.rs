@@ -34,6 +34,8 @@ mod provider;
 mod reconcile;
 mod reputation;
 pub mod stub;
+
+pub use stub::STUB_PROVIDER_ID;
 #[cfg(test)]
 mod testutil;
 

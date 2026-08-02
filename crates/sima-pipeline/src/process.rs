@@ -125,7 +125,7 @@ pub(crate) fn command_stdout(argv: &[String]) -> Result<String> {
 /// This is one of the two environment channels the pipeline reads. The other is
 /// `SIMA_STUB_SSH`, which points the stub backend at a machine that is really
 /// there so the ssh path runs against a throwaway server; it is read in
-/// `rental::provider_for` and nowhere else.
+/// `providers` and nowhere else.
 pub(crate) fn worker_binary() -> Result<PathBuf> {
     if let Some(path) = std::env::var_os("SIMA_WORKER") {
         return Ok(PathBuf::from(path));

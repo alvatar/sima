@@ -16,84 +16,35 @@ use sima_contracts::DeviceBinding;
 use sima_core::{Error, Result};
 use sima_domains::devices::DeviceInfo;
 use sima_model::FormatId;
-use sima_provider::stub::StubProvider;
 use sima_provider::{
     AcquireLimits, Budget, Exhaustion, IncidentKind, InstanceGuard, InstanceStatus, Objective,
-    Offer, OfferId, Price, Provider, Reachability, SshEndpoint, Verdict, acquire, assess, now_ms,
-    record_incident,
+    Provider, Reachability, SshEndpoint, Verdict, acquire, assess, now_ms, record_incident,
 };
-use sima_provider_vast::{VastConfig, VastProvider};
 use sima_scheduler::ExecutionConfig;
 use sima_store::{Rental as RentalRole, RunLock, Store};
 use sima_trace::{Emitter, Event};
 use sima_transport::{SpawnMode, SpawnPolicy, SpawnSettings, SshDestination, SshTransport};
 
-use crate::config::{FillPolicy, ProviderId, Rented};
+use crate::config::{FillPolicy, Rented};
 use crate::devices::{parse_enumeration, usable};
 use crate::fleet::Rental;
 use crate::process::{command_stdout, worker_binary};
+use crate::providers::{ProviderSettings, provider_for as backend_for};
 
-/// The environment channel that points the stub backend at a machine that is
-/// really there, as `user@host:port`.
+/// The control-plane backend a rental acquires its machines through.
 ///
-/// It exists so a test can exercise the ssh path against a throwaway server of
-/// its own, without a key in the configuration schema that would be valid for
-/// one provider and rejected for every other. Unset, the stub fabricates an
-/// endpoint naming no machine and is reached in process.
-const STUB_SSH: &str = "SIMA_STUB_SSH";
-
-/// Builds the control-plane backend a rental acquires its machines through.
-///
-/// The `vast` backend reads its key from `VAST_API_KEY`; an absent key is an
-/// [`Error::Provider`](sima_core::Error::Provider) naming the variable, raised
-/// here before any store mutation. The `stub` backend is in-process, listing a
-/// generous always-available marketplace so a stub rental fills its declared
-/// count. An unknown id never reaches here — the config load rejects it.
-///
-/// [`STUB_SSH`] is read here and nowhere else, so a config naming any other
-/// provider never looks at it.
+/// The rental's declared image, disk, and count are the settings the backend is
+/// built with; which backend that is comes from the one provider registry, so a
+/// run and a reconciliation resolve the same id the same way.
 pub(crate) fn provider_for(rental: &Rental<'_>) -> Result<Box<dyn Provider + Sync>> {
-    match rental.spec.provider {
-        ProviderId::Vast => {
-            let config = VastConfig::from_env(&rental.spec.image, rental.spec.disk_gb)?;
-            Ok(Box::new(VastProvider::new(config)))
-        }
-        ProviderId::Stub => {
-            let stub = StubProvider::new(stub_offers(rental.count));
-            Ok(Box::new(match std::env::var_os(STUB_SSH) {
-                Some(value) => {
-                    let endpoint = stub_endpoint(&value.to_string_lossy())?;
-                    stub.endpoint(&endpoint.host, endpoint.port, &endpoint.user)
-                }
-                None => stub,
-            }))
-        }
-    }
-}
-
-/// The endpoint a `user@host:port` value names.
-///
-/// A value that does not parse is an error naming the variable rather than a
-/// fall back to the in-process path. A caller that set it meant to cross a hop,
-/// and one that quietly did not would report a success that tested nothing.
-fn stub_endpoint(value: &str) -> Result<SshEndpoint> {
-    let malformed = || {
-        Error::Validation(format!(
-            "{STUB_SSH} is {value:?}, which is not a user@host:port endpoint"
-        ))
-    };
-    let (user, rest) = value.split_once('@').ok_or_else(malformed)?;
-    // From the right: an IPv6 literal in brackets holds colons of its own.
-    let (host, port) = rest.rsplit_once(':').ok_or_else(malformed)?;
-    let port: u16 = port.parse().map_err(|_| malformed())?;
-    if user.is_empty() || host.is_empty() || port == 0 {
-        return Err(malformed());
-    }
-    Ok(SshEndpoint {
-        host: host.to_string(),
-        port,
-        user: user.to_string(),
-    })
+    backend_for(
+        rental.spec.provider.as_str(),
+        &ProviderSettings {
+            image: &rental.spec.image,
+            disk_gb: rental.spec.disk_gb,
+            count: rental.count,
+        },
+    )
 }
 
 /// The transport mode a control plane's machines are reached through, from what
@@ -820,31 +771,10 @@ impl Drop for SupervisorExit<'_, '_> {
     }
 }
 
-/// The stub marketplace: `count` always-available offers, each generous enough
-/// to pass typical constraints, priced distinctly so selection's ranking is
-/// deterministic.
-fn stub_offers(count: usize) -> Vec<Offer> {
-    (0..count.max(1))
-        .map(|n| Offer {
-            id: OfferId(format!("stub-offer-{n}")),
-            machine: format!("stub-machine-{n}"),
-            gpu_model: "stub-gpu".to_string(),
-            gpu_count: 1,
-            vram_mb: 24_000,
-            // Distinct rates keep the cheapest-per-hour ranking a total order;
-            // $0.10/hr and up, low enough to sit under an ordinary price cap.
-            price: Price(100_000 + n as u64),
-            reliability: 1.0,
-            verified: true,
-            disk_gb: 1_000,
-            bandwidth_mbps: 10_000,
-            location: String::new(),
-        })
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
+    use crate::config::ProviderId;
+    use sima_provider::{Offer, OfferId, Price};
     use std::path::PathBuf;
     use std::sync::Arc;
 
@@ -1216,45 +1146,6 @@ mod tests {
         machines.sort();
         assert_eq!(machines, vec!["machine-a", "machine-b"]);
         Ok(())
-    }
-
-    #[test]
-    fn a_stub_endpoint_reads_as_a_user_a_host_and_a_port() -> Result<()> {
-        assert_eq!(
-            stub_endpoint("tester@127.0.0.1:41022")?,
-            SshEndpoint {
-                host: "127.0.0.1".to_string(),
-                port: 41022,
-                user: "tester".to_string(),
-            }
-        );
-        // Taken from the right, so a bracketed IPv6 literal keeps its own
-        // colons.
-        assert_eq!(stub_endpoint("root@[::1]:22")?.host, "[::1]");
-        Ok(())
-    }
-
-    #[test]
-    fn a_malformed_stub_endpoint_names_the_variable_and_falls_back_to_nothing() {
-        // Falling back to the in-process path would report a success that
-        // tested nothing, which is the failure this whole boundary exists to avoid.
-        for value in [
-            "127.0.0.1:41022",
-            "tester@127.0.0.1",
-            "tester@127.0.0.1:0",
-            "tester@127.0.0.1:not-a-port",
-            "@127.0.0.1:22",
-            "tester@:22",
-            "",
-        ] {
-            match stub_endpoint(value) {
-                Err(Error::Validation(message)) => assert!(
-                    message.contains(STUB_SSH) && message.contains(value),
-                    "names the variable and the value: {message}"
-                ),
-                other => panic!("expected {value:?} to be refused, got {other:?}"),
-            }
-        }
     }
 
     #[test]

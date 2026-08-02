@@ -75,6 +75,10 @@ struct StubInstance {
     destroyed: bool,
 }
 
+/// The id this backend answers to, and the one a ledger record written by a
+/// stub rental carries.
+pub const STUB_PROVIDER_ID: &str = "stub";
+
 /// An in-memory provider over a fixed marketplace.
 pub struct StubProvider {
     state: Mutex<StubState>,
@@ -221,7 +225,7 @@ impl StubProvider {
 
 impl Provider for StubProvider {
     fn id(&self) -> &'static str {
-        "stub"
+        STUB_PROVIDER_ID
     }
 
     fn offers(&self) -> Result<Vec<Offer>> {

@@ -439,6 +439,18 @@ pub enum ProviderId {
     Stub,
 }
 
+impl ProviderId {
+    /// The id the backend answers to, and the one a ledger record carries. It
+    /// is what the provider registry dispatches on, so config and ledger name
+    /// one backend the same way.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ProviderId::Vast => sima_provider_vast::PROVIDER_ID,
+            ProviderId::Stub => sima_provider::STUB_PROVIDER_ID,
+        }
+    }
+}
+
 /// What a rented class does when it cannot acquire its full declared count.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FillPolicy {
