@@ -1,6 +1,6 @@
 //! [`seeded_patch`]: the general seeded-ignition primitive shared by CA models.
 
-use sima_core::{Result, prng};
+use sima_core::{Error, Result, prng};
 
 use crate::substrates::cellular::Grid;
 
@@ -48,12 +48,19 @@ pub(crate) fn seeded_patch(
         noise,
     } = spec;
     let channels = channels as usize;
-    debug_assert_eq!(
-        background.len(),
-        channels,
-        "one background value per channel"
-    );
-    debug_assert_eq!(patch.len(), channels, "one patch value per channel");
+    // A model declaring a channel count its background or patch does not cover
+    // would index past the row it writes. A debug assertion catches that in a
+    // test build and lets a release build read whatever follows, so the arity
+    // is a real check: it costs two comparisons per ignition, once per
+    // candidate.
+    if background.len() != channels || patch.len() != channels {
+        return Err(Error::Validation(format!(
+            "an ignition of {channels} channels takes one background and one patch value each; \
+             it was given {} background and {} patch values",
+            background.len(),
+            patch.len()
+        )));
+    }
     // The payload allocation needs the element count up front. Zero and
     // overflowing extents are Grid::new's rules: hand it an empty payload so its
     // own validation produces the error — its zero and overflow checks precede
@@ -131,6 +138,36 @@ mod tests {
     /// `f32(base * (1.0 + (t - 0.5) * 0.02))` with `base = 0.5` for channel 0 and
     /// `0.25` for channel 1 — never read off this crate's output.
     const PATCH_CELL_7_7_BITS: [u32; 2] = [0x3f01_05db, 0x3e7f_a8cc];
+
+    #[test]
+    fn an_ignition_whose_values_do_not_cover_its_channels_is_refused() {
+        // A debug assertion caught this in a test build and let a release build
+        // index past the row it writes, on values that come from a model's own
+        // declaration. Both directions are refused, and the message names what
+        // was wanted against what arrived.
+        for (background, patch) in [
+            (&[1.0_f32][..], &[0.5_f32, 0.25][..]),
+            (&[1.0_f32, 0.0][..], &[0.5_f32][..]),
+        ] {
+            let error = seeded_patch(
+                4,
+                4,
+                2,
+                PatchSpec {
+                    background,
+                    patch,
+                    side_divisor: 2,
+                    noise: 0.0,
+                },
+                7,
+            )
+            .expect_err("an arity the channels do not cover");
+            let Error::Validation(message) = error else {
+                panic!("expected a validation error");
+            };
+            assert!(message.contains('2'), "names the channel count: {message}");
+        }
+    }
 
     #[test]
     fn the_background_fills_the_untouched_cells() -> Result<()> {

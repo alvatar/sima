@@ -161,7 +161,11 @@ impl<M: CaModel, E: CellularEngine> Executor for CaExecutor<M, E> {
         let artifacts = if keep {
             let last = evaluation.grid()?;
             let bytes = match step_base {
-                Some(base) => encode_continuation(base + u64::from(shared.steps()), &last),
+                // The base came out of the predecessor's committed artifact and
+                // is identity-bearing: the successor's task key hashes it, so a
+                // wrapped sum would mint a key for a step this chain never
+                // reached and quietly resolve to another segment's result.
+                Some(base) => encode_continuation(reached_step(base, shared.steps())?, &last),
                 None => last.to_bytes(),
             };
             vec![Artifact {
@@ -246,6 +250,21 @@ fn keep_snapshot(
     }
 }
 
+/// The absolute step a segment resuming at `base` reaches after `steps`.
+///
+/// The base comes out of the predecessor's committed artifact and is
+/// identity-bearing: the successor's task key hashes it, so a wrapped sum would
+/// mint a key for a step this chain never reached and quietly resolve to
+/// another segment's result. Decoded input is not trusted to be small.
+fn reached_step(base: u64, steps: u32) -> Result<u64> {
+    base.checked_add(u64::from(steps)).ok_or_else(|| {
+        Error::Validation(format!(
+            "a segment resuming at step {base} would reach {base} + {steps}, past what a step \
+             index holds"
+        ))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use sima_contracts::NoCheckpoint;
@@ -308,6 +327,28 @@ mod tests {
             environment: env(),
             input_state,
         }
+    }
+
+    #[test]
+    fn a_segment_that_would_step_past_the_index_is_refused() {
+        // The base is decoded from the predecessor's committed artifact and
+        // enters the successor's task key, so a wrapped sum would mint a key
+        // for a step the chain never reached.
+        let error = reached_step(u64::MAX - 3, 4).expect_err("past the index");
+        let Error::Validation(message) = error else {
+            panic!("expected a validation error");
+        };
+        assert!(message.contains(&(u64::MAX - 3).to_string()), "{message}");
+    }
+
+    #[test]
+    fn a_segment_reaching_the_last_representable_step_is_allowed() {
+        // The bound is the wrap, not a margin below it.
+        assert_eq!(
+            reached_step(u64::MAX - 4, 4).expect("the last step"),
+            u64::MAX
+        );
+        assert_eq!(reached_step(100, 50).expect("an ordinary chain"), 150);
     }
 
     #[test]

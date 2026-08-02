@@ -114,7 +114,15 @@ fn decode_gen_params<M: CaModel>(bytes: &[u8]) -> Result<(u64, M::GenConfig)> {
 /// The shared `count` key: a TOML integer at least 1.
 fn parse_count<M: CaModel>(table: &toml::Table) -> Result<u64> {
     match required(table, M::FORMAT_ID, "generator", "count")? {
-        toml::Value::Integer(n) if *n >= 1 => Ok(*n as u64),
+        // The same bound the decode applies, stated where a person can act on
+        // it: a config naming too many candidates fails at load rather than at
+        // the first draw.
+        toml::Value::Integer(n) if *n >= 1 => validated_count(*n as u64).map_err(|_| {
+            Error::Validation(format!(
+                "generator {} count is {n}; a run draws at most {MAX_CANDIDATES} candidates",
+                M::FORMAT_ID
+            ))
+        }),
         toml::Value::Integer(n) => Err(Error::Validation(format!(
             "generator {} count must be at least 1, got {n}",
             M::FORMAT_ID
@@ -127,15 +135,30 @@ fn parse_count<M: CaModel>(table: &toml::Table) -> Result<u64> {
     }
 }
 
-/// Validates the candidate count: at least 1. A zero-candidate run is
-/// meaningless, so a params blob encoding zero fails to decode.
+/// The most candidates one run draws.
+///
+/// The bound exists because the count arrives as decoded bytes and is what
+/// sizes the draw's allocations: a blob claiming 2^60 candidates would ask for
+/// that much memory before a single genome is sampled. A million candidates is
+/// far past any search this substrate runs and small enough that reserving for
+/// it is ordinary.
+pub(crate) const MAX_CANDIDATES: u64 = 1_000_000;
+
+/// Validates the candidate count: at least 1, at most [`MAX_CANDIDATES`].
+///
+/// A zero-candidate run is meaningless, so a params blob encoding zero fails to
+/// decode; a count past the cap is refused before it sizes an allocation,
+/// since the blob is decoded input and nothing upstream of here has to be
+/// trusted to have written a sane one.
 fn validated_count(count: u64) -> Result<u64> {
-    if count >= 1 {
-        Ok(count)
-    } else {
-        Err(Error::Validation(format!(
-            "generator count must be at least 1, got {count}"
-        )))
+    match count {
+        0 => Err(Error::Validation(
+            "generator count must be at least 1, got 0".to_string(),
+        )),
+        n if n > MAX_CANDIDATES => Err(Error::Validation(format!(
+            "generator count is {n}; a run draws at most {MAX_CANDIDATES} candidates"
+        ))),
+        n => Ok(n),
     }
 }
 
@@ -150,6 +173,42 @@ mod tests {
     /// range `[lo, hi]`.
     fn params(count: u64, lo: f32, hi: f32) -> Vec<u8> {
         encode_gen_params::<Toy>(count, &Toy::gen_config([lo, hi]))
+    }
+
+    #[test]
+    fn a_count_past_the_cap_is_refused_before_it_sizes_an_allocation() {
+        // The blob is decoded input: a hostile or corrupt one claiming 2^60
+        // candidates would reserve that much before a genome is drawn. The
+        // refusal names the count and the cap.
+        let blob = params(1 << 60, 0.0, 1.0);
+        let Err(Error::Validation(message)) = decode_gen_params::<Toy>(&blob) else {
+            panic!("expected a count past the cap to be refused");
+        };
+        assert!(message.contains(&(1u64 << 60).to_string()), "{message}");
+        assert!(message.contains(&MAX_CANDIDATES.to_string()), "{message}");
+    }
+
+    #[test]
+    fn the_cap_is_stated_at_load_as_well_as_at_decode() {
+        // A config naming too many candidates fails where a person can act on
+        // it, rather than at the first draw of a run that already has a store.
+        let table: toml::Table = format!("count = {}\nlo = 0.0\nhi = 1.0", MAX_CANDIDATES + 1)
+            .parse()
+            .expect("a table");
+        let Err(Error::Validation(message)) = translate::<Toy>(&table) else {
+            panic!("expected a count past the cap to be refused at load");
+        };
+        assert!(message.contains(&MAX_CANDIDATES.to_string()), "{message}");
+    }
+
+    #[test]
+    fn the_cap_itself_still_draws() {
+        // The bound is inclusive: a run at exactly the cap is a run, not an
+        // off-by-one refusal.
+        assert_eq!(
+            validated_count(MAX_CANDIDATES).expect("the cap"),
+            MAX_CANDIDATES
+        );
     }
 
     #[test]
