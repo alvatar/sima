@@ -192,14 +192,17 @@ fn the_shipped_cuda_search_config_loads() -> Result<()> {
     // The committed `examples/gray-scott-cuda-search.toml` parses cleanly
     // through the full load path, device-free — a guard on the shipped file
     // itself, so an edit that breaks it fails here rather than only at run
-    // time. The workspace root is two levels up from this integration crate.
-    let path =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/gray-scott-cuda-search.toml");
-    let loaded = sima_pipeline::load(&path)?;
+    // time.
+    let loaded = load_example_variant(EXAMPLE, &shipped_example(EXAMPLE))?;
     assert_eq!(loaded.run.format.as_str(), CUDA_FORMAT);
     assert_eq!(loaded.execution.workers, 2);
     Ok(())
 }
+
+// The variants below each enable one commented group of the example and load
+// the result, so every knob the file ships is parsed by a test rather than only
+// read by a human. The `[domain."<format>"]` block is in no variant: the binary
+// it names is spawned when the config loads, so enabling it would run a program.
 
 #[test]
 fn the_shipped_search_config_loads_with_the_snapshot_predicate_enabled() -> Result<()> {
@@ -209,21 +212,8 @@ fn the_shipped_search_config_loads_with_the_snapshot_predicate_enabled() -> Resu
     // validates the scalar against the reduction's names, so a load that
     // succeeds proves the shipped syntax parses and the scalar is one the
     // reduction emits.
-    let path =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/gray-scott-cuda-search.toml");
-    let text = std::fs::read_to_string(&path).expect("read the example");
-    // Strip the leading comment marker from the predicate line alone; the
-    // surrounding explanatory comments stay commented.
-    let enabled = text.replace("# snapshot_when =", "snapshot_when =");
-    assert!(
-        enabled.contains("\nsnapshot_when ="),
-        "the predicate line was uncommented"
-    );
-
-    let dir = tempfile::tempdir().expect("temp dir");
-    let config = dir.path().join("gray-scott-cuda-search.toml");
-    std::fs::write(&config, &enabled).expect("write the enabled config");
-    sima_pipeline::load(&config)?;
+    let text = uncomment(&shipped_example(EXAMPLE), &["snapshot_when"]);
+    load_example_variant(EXAMPLE, &text)?;
 
     // Gray-Scott is a two-channel model (u, v); the example's scalar must be a
     // name the reduction emits for it.
@@ -234,11 +224,6 @@ fn the_shipped_search_config_loads_with_the_snapshot_predicate_enabled() -> Resu
     );
     Ok(())
 }
-
-// The variants below each enable one commented group of the example and load
-// the result, so every knob the file ships is parsed by a test rather than only
-// read by a human. The `[domain."<format>"]` block is in no variant: the binary
-// it names is spawned when the config loads, so enabling it would run a program.
 
 #[test]
 fn the_shipped_search_config_loads_with_its_deadlines_and_cadences() -> Result<()> {
