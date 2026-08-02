@@ -1,5 +1,7 @@
 # PROJECT_RULES
 
+GIVE SHORT REPLIES
+
 ## Communication (read first)
 
 - Use only dry and professional tone.
@@ -26,7 +28,7 @@
 - Rust tests live in the same file as the code they cover, in a `#[cfg(test)] mod tests` at the end of the file. A separate test file is justified only for integration tests spanning multiple files/modules.
 - Cross-crate and end-to-end behavior is tested in integration tests under the consuming crate's `tests/` directory (workspace: each crate owns its integration tests).
 - End-to-end tests of real domains through the full spine live in `crates/sima-integration`.
-- Do not ignore tests. This is strictly forbidden.
+- Do not ignore tests. `#[ignore]` is permitted only for tests that rent machines, call a paid API, or are manual benchmarks — always with a reason string naming the requirement. Needing a device is never grounds for it; that is what the `on_device` marker is for.
 - A test that needs a real device carries `on_device` in its path — a containing `mod on_device`, or an `_on_device` suffix where the file holds a single such test. CI is hosted and runs the unmarked subset, `cargo test --workspace --no-fail-fast -- --skip on_device`, so that substring is what keeps the test on the device machine. The marked tests run there, in the pre-merge device gate: `env -u VK_DRIVER_FILES cargo test --workspace --no-fail-fast`.
 
 ## TODOs
