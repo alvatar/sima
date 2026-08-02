@@ -62,7 +62,7 @@ workers = 2
 # migrate  = "slingshot"                  # the host `sima migrate` moves the run onto
 # image    = "localhost/sima:latest"      # run this machine's workers in a container
 # runtime  = "podman"                     # docker | podman; default docker, needs an image
-# run_args = ["--device", "/dev/dri"]     # verbatim container-run flags, needs an image
+# run_args = ["--gpus", "all"]            # verbatim container-run flags, needs an image
 
 # Device tables replace `workers` and are exclusive with it; the pool is their
 # sum, and each `select` is a case-insensitive substring of the device name or
