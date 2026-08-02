@@ -70,6 +70,16 @@ impl Store {
             Err(e) if e.kind() == ErrorKind::NotFound => return Ok((Vec::new(), 0)),
             Err(e) => return Err(io_error(&path, e)),
         };
+        // The read below runs to the file's end, so only a regular file — a
+        // thing with an extent — is readable; a special file in the journal's
+        // place (a device, a pipe) would be read forever and is refused
+        // instead.
+        let meta = file.metadata().map_err(|e| io_error(&path, e))?;
+        if !meta.is_file() {
+            return Err(Error::Corruption(format!(
+                "journal of run {run} is not a regular file"
+            )));
+        }
         // Read only the tail past the offset; the region before it was
         // consumed by earlier calls.
         file.seek(SeekFrom::Start(offset))
@@ -235,6 +245,19 @@ mod tests {
         // The garbage sits past the last newline: a torn write, ignored.
         fs::write(&path, b"valid line\n\xff\xfe").expect("write journal");
         assert_eq!(store.journal(&run)?, ["valid line"]);
+        Ok(())
+    }
+
+    #[test]
+    fn a_journal_that_is_not_a_regular_file_is_refused() -> Result<()> {
+        let (dir, store) = temp_store();
+        let run = created_run(&store)?;
+        let path = journal_path(dir.path(), &run);
+        // /dev/full reads as an endless stream of zeros, so a special file in
+        // the journal's place must be refused up front — a read to its end
+        // would allocate until the machine dies.
+        std::os::unix::fs::symlink("/dev/full", &path).expect("symlink journal to /dev/full");
+        assert!(matches!(store.journal(&run), Err(Error::Corruption(_))));
         Ok(())
     }
 

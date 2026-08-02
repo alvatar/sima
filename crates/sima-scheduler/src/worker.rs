@@ -13,6 +13,8 @@
 //! handle, so a result reaches durable state only by passing through this
 //! commit path — the child is never given the store.
 
+use std::collections::HashMap;
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use sima_contracts::{Artifact, DeviceBinding, Outcome, Stats, WorkerId};
@@ -47,6 +49,11 @@ pub(crate) struct WorkerContext<'a> {
     /// the backend's default selection, the single-class case.
     pub(crate) device: Option<DeviceBinding>,
     pub(crate) events: Emitter,
+    /// The driver each (host, device) last reported, seeded from the run's
+    /// journal and advanced with each spawn — the comparison state behind
+    /// `DriverChanged`. Shared across the pool's workers so one transition
+    /// is journaled once.
+    pub(crate) drivers: &'a Mutex<HashMap<(String, String), String>>,
 }
 
 /// Runs the worker: spawn the child, then lease a task, drive it on the
@@ -129,14 +136,36 @@ fn spawn_bound(ctx: &WorkerContext<'_>, worker: WorkerId) -> Result<SpawnOutcome
         .transport
         .spawn(worker.0, ctx.device.as_ref(), ctx.events.clone())?;
     if let SpawnOutcome::Link(link) = &outcome {
+        let device = link.device_name().to_string();
+        let driver = link.driver().to_string();
         ctx.events.emit(Event::WorkerBound {
             worker: worker.0,
-            device: link.device_name().to_string(),
-            driver: link.driver().to_string(),
+            device: device.clone(),
+            driver: driver.clone(),
             // The child's device and driver are its own; the host is the
             // parent's account of the pool — empty for a local slot.
             host: ctx.host.clone(),
         });
+        // The comparison against the journal's last driver for this (host,
+        // device), and its advance, under one lock section: the first spawn
+        // to see a transition journals it and moves the recorded driver, so
+        // sibling slots and respawns compare against the current one. The
+        // driver never enters identity — the event is a warning, and the
+        // spawn proceeds unconditionally.
+        let mut drivers = ctx
+            .drivers
+            .lock()
+            .expect("the driver map lock is never poisoned");
+        if let Some(previous) = drivers.insert((ctx.host.clone(), device.clone()), driver.clone())
+            && previous != driver
+        {
+            ctx.events.emit(Event::DriverChanged {
+                host: ctx.host.clone(),
+                device,
+                from: previous,
+                to: driver,
+            });
+        }
     }
     Ok(outcome)
 }
@@ -892,6 +921,7 @@ mod tests {
         let (tx, rx) = mpsc::channel();
         {
             let transport = stub_transport(&exec);
+            let drivers = Mutex::new(HashMap::new());
             let ctx = WorkerContext {
                 coordinator: &coordinator,
                 store: &store,
@@ -902,6 +932,7 @@ mod tests {
                 exec: &exec,
                 device: None,
                 events: Emitter::from(tx),
+                drivers: &drivers,
             };
             let pending = Pending {
                 key: identity.key(),
@@ -1047,6 +1078,7 @@ mod tests {
             // The transport field is required by the context but never used:
             // `process` drives the link it is handed.
             let transport = stub_transport(&exec);
+            let drivers = Mutex::new(HashMap::new());
             let ctx = WorkerContext {
                 coordinator: &coordinator,
                 store: &store,
@@ -1057,6 +1089,7 @@ mod tests {
                 exec: &exec,
                 device: None,
                 events: Emitter::from(tx),
+                drivers: &drivers,
             };
             let pending = Pending {
                 key,
@@ -1177,6 +1210,7 @@ mod tests {
             let (tx, rx) = mpsc::channel();
             {
                 let transport = stub_transport(&exec);
+                let drivers = Mutex::new(HashMap::new());
                 let ctx = WorkerContext {
                     coordinator: &coordinator,
                     store: &self.store,
@@ -1187,6 +1221,7 @@ mod tests {
                     exec: &exec,
                     device: None,
                     events: Emitter::from(tx),
+                    drivers: &drivers,
                 };
                 let pending = Pending {
                     key: self.key(),

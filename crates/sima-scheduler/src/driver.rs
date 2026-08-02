@@ -12,6 +12,7 @@
 //! [`RunOutcome::Interrupted`], the resumable outcome.
 
 use std::collections::HashMap;
+use std::sync::Mutex;
 use std::sync::atomic::Ordering;
 use std::thread;
 use std::time::Duration;
@@ -159,6 +160,13 @@ pub fn run(
     }
     let coordinator = Coordinator::with_placement(eligible_classes(pools), chains);
     let coordinator = &coordinator;
+    // The driver each (host, device) last reported to this run's journal,
+    // read before this session appends: the baseline each spawn's report is
+    // compared against. One lock shared by every worker keeps the state
+    // advancing with the spawns, so a driver transition is journaled once,
+    // not once per slot.
+    let drivers = Mutex::new(prior_drivers(store, &run));
+    let drivers = &drivers;
 
     // Two nested scopes: the outer one holds the trace collector — a scoped
     // thread, so it can call the caller's borrowed observer — and the inner
@@ -201,6 +209,7 @@ pub fn run(
                         // the pool's and each worker owns its binding.
                         device: device.clone(),
                         events: events.clone(),
+                        drivers,
                     };
                     scope.spawn(move || worker_loop(WorkerId(worker), ctx));
                     worker += 1;
@@ -278,6 +287,28 @@ pub fn worker_slots(exec: &ExecutionConfig) -> Vec<Option<DeviceBinding>> {
         }
     }
     slots
+}
+
+/// The driver each (host, device) pair last reported in `run`'s journal,
+/// from its `WorkerBound` events. A line that does not parse is skipped, and
+/// a journal that cannot be read seeds nothing: the journal is observational
+/// — a crash can tear its final write, and a degraded journal must fail the
+/// run through its own write path, never through this baseline read.
+fn prior_drivers(store: &Store, run: &RunId) -> HashMap<(String, String), String> {
+    let mut drivers = HashMap::new();
+    for line in store.journal(run).unwrap_or_default() {
+        if let Ok(record) = sima_trace::Record::from_line(&line)
+            && let Event::WorkerBound {
+                host,
+                device,
+                driver,
+                ..
+            } = record.event
+        {
+            drivers.insert((host, device), driver);
+        }
+    }
+    drivers
 }
 
 /// The device classes the run's pools carry, distinct, in pool-then-slot

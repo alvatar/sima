@@ -947,13 +947,23 @@ model or metric. Last active phase before the pause.
       deletion — the snapshot predicate prevents the dominant waste at commit
       time, and a thinned-run state would cost retention side-files and closure
       and sync changes for no observed need
-- [ ] M8.3 Driver provenance in the environment hash: a driver update can shift
+- [x] M8.3 Driver provenance in the environment hash: a driver update can shift
       float results, and the driver is currently journaled as operational
       provenance rather than hashed, on the reasoning that a hash cannot see it
       across machines of one class. If that reasoning does not hold, stale
       results are reused as valid. Decide it: fold the driver in, or reaffirm the
       journal and record why. Scoped to the decision and its consequences —
-      no tolerance policy, no strict-IEEE path
+      no tolerance policy, no strict-IEEE path.
+      Decided: the journal is reaffirmed. The driver stays out of the
+      environment hash — task keys exist before any machine is chosen, so a
+      machine-read value has nowhere to enter them — and `WorkerBound` remains
+      the per-spawn audit trail. Hardened with the `DriverChanged` journal
+      event: a session compares each spawn's reported driver against the last
+      one the run's journal recorded for the same host and device, journals
+      one event per transition, and the CLI renders it as a warning; the run
+      proceeds. Re-evaluation of a finalized run opens no device, so that path
+      stays journal-audit only, recorded as such in
+      `docs/architecture.md` (`Driver provenance`)
 
 ## Future work
 
