@@ -39,8 +39,9 @@ serialization and the compute shape. Required families across the ladder:
 reaction-diffusion, Lenia/Flow-Lenia, Neural CA, Physarum.
 Visualization is out of scope: snapshots in the store are
 consumed by external tools (the `../luz` renderer reads them as volumes).
-CI is in place (`.github/workflows/ci.yml`: fmt + clippy on a hosted runner,
-the workspace test suite on a self-hosted runner carrying both GPU classes).
+CI is in place and entirely hosted (`.github/workflows/ci.yml`: fmt + clippy,
+and the tests that need no device, on GitHub runners); the whole suite, the
+device tests included, runs on a real-device machine as the gate before merge.
 No test is `#[ignore]`d for needing a device: the whole suite runs under a
 plain `cargo test`, and the only ignored tests are those that rent machines or
 call a paid API. Reproducibility is declared

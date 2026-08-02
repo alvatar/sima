@@ -4,6 +4,10 @@ on:
   push:
   pull_request:
 
+# Every job here runs on a GitHub-hosted runner, so a green run claims format,
+# lint, and the tests that need only a CPU. The whole suite, the marked device
+# tests included, runs on a real-device machine as the gate before merge.
+
 jobs:
   # Format and lint touch no hardware, so they stay on a hosted runner.
   check:
@@ -14,8 +18,7 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
 
   # The tests that need only a CPU, on every push. Green here claims exactly
-  # the unmarked subset, on a hosted runner; the marked tests are the `test`
-  # lane's claim.
+  # the unmarked subset; the marked tests are the device gate's claim.
   test-cpu:
     runs-on: ubuntu-latest
     steps:
@@ -28,22 +31,3 @@ jobs:
       # `--no-fail-fast` keeps every target running, so a red lane names all of
       # its failures rather than the first failing binary's.
       - run: cargo test --workspace --no-fail-fast -- --skip on_device
-
-  # The whole suite, the marked tests included, on a machine with a Vulkan
-  # device and an NVIDIA device. Green here claims the marked tests ran on real
-  # hardware, which is what the marker reserves them for. NVRTC arrives with the
-  # build: `build.rs` vendors the pinned release onto the binaries' `RUNPATH`,
-  # so this runner supplies the drivers and the cards alone. A staged NVRTC on
-  # `LD_LIBRARY_PATH` would resolve ahead of that `RUNPATH` and shadow the pin
-  # the byte-for-byte PTX known-answer tests compare against.
-  #
-  # This job stays queued until a self-hosted runner labelled `gpu` is
-  # registered on such a machine. A queued `test` beside a green `test-cpu`
-  # says the hosted subset held and the device runner is offline.
-  test:
-    runs-on: [self-hosted, gpu]
-    steps:
-      - uses: actions/checkout@v4
-      # `--no-fail-fast` for the same reason as the hosted lane: one run on the
-      # hardware reports all of its failures, rather than one binary's.
-      - run: cargo test --workspace --no-fail-fast
