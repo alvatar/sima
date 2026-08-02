@@ -1958,6 +1958,9 @@ The vocabulary:
   only trace.
 - **worker bound** — a worker's child reported the device it computes on, at
   every spawn and respawn.
+- **driver changed** — a worker's child reported a driver other than the one
+  the run's journal last recorded for the same host and device; a warning,
+  never a gate.
 - **chain rebound** — a chain's device class was absent from the run's
   devices, so its work moved to a class that is present.
 - **run finalized** — every task committed and the manifest was written.
@@ -1981,6 +1984,36 @@ observer sees records in journal order. Event arrival order across threads
 varies between runs; the journal is observational and excluded from every
 equality criterion, so the manifest — sorted by task key at finalize — is
 byte-identical across runs regardless.
+
+### Driver provenance
+
+The driver never enters task identity. Environment components are
+content-derived — an engine version constant, a build-input digest — and two
+machines with equal environments must produce equal results. A driver version
+is a fact about one machine, read only where a child spawns, while task keys
+exist before any machine is chosen; a machine-read value therefore has no
+place a key derivation could read it from.
+
+The decision, on record:
+
+- **Identity**: the environment hash excludes the driver. A driver update
+  that shifts float results keeps every task key, so stored results stay
+  valid to the store.
+- **Journal**: every spawn records its child's device and driver in
+  `worker bound` — the audit trail for which driver produced which session's
+  results.
+- **Warning**: a session emits `driver changed` when a spawn's reported
+  driver differs from the last one the run's journal recorded for the same
+  host and device. The comparison state is seeded from the journal before the
+  session appends and advances with each spawn, so one transition is
+  journaled once, however many slots spawn on the pair. The CLI renders the
+  event as a warning line; the run proceeds — the driver is provenance, never
+  an admission gate.
+- **Uncovered**: re-evaluation of a finalized run opens no device, so no
+  driver is read and nothing is compared. A finalized run re-finalized under
+  a new driver reuses its results with only the journal to say which driver
+  produced them; covering that case would mean probing the driver stack on a
+  path that deliberately needs no GPU.
 
 ## `sima-pipeline` (L7)
 
