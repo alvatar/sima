@@ -165,7 +165,7 @@ pub fn run(
     // compared against. One lock shared by every worker keeps the state
     // advancing with the spawns, so a driver transition is journaled once,
     // not once per slot.
-    let drivers = Mutex::new(prior_drivers(store, &run)?);
+    let drivers = Mutex::new(prior_drivers(store, &run));
     let drivers = &drivers;
 
     // Two nested scopes: the outer one holds the trace collector — a scoped
@@ -290,12 +290,13 @@ pub fn worker_slots(exec: &ExecutionConfig) -> Vec<Option<DeviceBinding>> {
 }
 
 /// The driver each (host, device) pair last reported in `run`'s journal,
-/// from its `WorkerBound` events. A line that does not parse is skipped: the
-/// journal is observational, and a crash can tear its final write, so a torn
-/// or foreign line states nothing about what drove the run.
-fn prior_drivers(store: &Store, run: &RunId) -> Result<HashMap<(String, String), String>> {
+/// from its `WorkerBound` events. A line that does not parse is skipped, and
+/// a journal that cannot be read seeds nothing: the journal is observational
+/// — a crash can tear its final write, and a degraded journal must fail the
+/// run through its own write path, never through this baseline read.
+fn prior_drivers(store: &Store, run: &RunId) -> HashMap<(String, String), String> {
     let mut drivers = HashMap::new();
-    for line in store.journal(run)? {
+    for line in store.journal(run).unwrap_or_default() {
         if let Ok(record) = sima_trace::Record::from_line(&line)
             && let Event::WorkerBound {
                 host,
@@ -307,7 +308,7 @@ fn prior_drivers(store: &Store, run: &RunId) -> Result<HashMap<(String, String),
             drivers.insert((host, device), driver);
         }
     }
-    Ok(drivers)
+    drivers
 }
 
 /// The device classes the run's pools carry, distinct, in pool-then-slot
