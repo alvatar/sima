@@ -228,14 +228,21 @@ equality criterion.
   global and no thread-local propagation. Causality context is the natural
   keys: events carry `run`, `task`, `attempt`, `worker`, and `host`
   directly as fields.
-- **`Collector`** — one scoped thread drains the channel; for each event
-  it stamps `ts_ms` (a single clock, read at append time — remote events
-  are stamped on arrival), appends the record's line through a
-  **`DurableSink`**, then hands the record to the run's observer. The
-  ordering guarantee: the journal write for an event happens before the
-  observer sees it, and the observer sees records in journal order, from
-  one calling thread. The first append or encoding
-  failure stops the collector and surfaces when it is joined.
+- **`Collector`** — one scoped thread drains the channel; it takes one
+  blocking event and everything already queued behind it, stamps each
+  `ts_ms` (a single clock, read at append time — remote events are
+  stamped on arrival), appends the batch's lines through a
+  **`DurableSink`**, then hands the records to the run's observer in
+  order. The ordering guarantee: the journal write for an event happens
+  before the observer sees it, and the observer sees records in journal
+  order, from one calling thread. The batch is what keeps a durability
+  barrier from being paid per event — a run committing tasks faster than
+  that would otherwise be capped at the sink's own rate however many
+  workers it has. A crash mid-batch loses the events the sink had not
+  made durable, which the observational journal already permits: it is
+  not a write-ahead log, and a resume derives its frontier from the
+  store's records. The first append or encoding failure stops the
+  collector and surfaces when it is joined.
 
 `DurableSink` is the boundary that keeps the crate below the store:
 `sima-store` implements it for its journal writer, so the collector appends
@@ -483,7 +490,10 @@ the definition of every run it holds.
 A run's observational history: append-only, one event per line, its meaning
 owned by the emitting layers above the trace facade. The store owns the
 framing only: a payload is one nonempty line free of embedded line breaks;
-appends are single-write, newline-terminated, fsynced. On read, a torn
+appends are single-write, newline-terminated, fsynced. A batch of lines is
+one write and one fsync, and every line of it is validated before anything
+is written, so the framing rules are per line however many travel together.
+On read, a torn
 final line (bytes past the last newline) is ignored; invalid UTF-8 inside
 the intact region is corruption. Journals legitimately differ between
 identical runs and are excluded from every equality criterion.

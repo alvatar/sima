@@ -109,6 +109,10 @@ impl sima_trace::DurableSink for JournalWriter {
     fn append_line(&mut self, line: &str) -> Result<()> {
         self.append(line)
     }
+
+    fn append_lines(&mut self, lines: &[String]) -> Result<()> {
+        self.append_batch(lines)
+    }
 }
 
 impl JournalWriter {
@@ -117,19 +121,40 @@ impl JournalWriter {
     /// nonempty and free of `\n`/`\r` ([`Error::Validation`] otherwise),
     /// so one line stays one event.
     pub fn append(&mut self, line: &str) -> Result<()> {
-        if line.is_empty() {
-            return Err(Error::Validation(
-                "journal line must be nonempty".to_string(),
-            ));
+        self.append_batch(std::slice::from_ref(&line.to_string()))
+    }
+
+    /// Appends every line of `lines`, in order, and fsyncs once.
+    ///
+    /// The framing rules are per line and unchanged: each payload is nonempty,
+    /// free of `\n`/`\r`, and newline-terminated, so one line stays one event
+    /// however many are written together. What the batch shares is the
+    /// durability barrier — a run committing tasks faster than one fsync each
+    /// is otherwise capped at the disk's fsync rate however many workers it
+    /// has.
+    ///
+    /// Every line is validated before anything is written, so a malformed one
+    /// leaves the journal exactly as it was rather than partway through the
+    /// batch.
+    pub fn append_batch(&mut self, lines: &[String]) -> Result<()> {
+        if lines.is_empty() {
+            return Ok(());
         }
-        if line.bytes().any(|b| b == b'\n' || b == b'\r') {
-            return Err(Error::Validation(format!(
-                "journal line {line:?} contains a line break"
-            )));
+        let mut framed = Vec::with_capacity(lines.iter().map(|l| l.len() + 1).sum());
+        for line in lines {
+            if line.is_empty() {
+                return Err(Error::Validation(
+                    "journal line must be nonempty".to_string(),
+                ));
+            }
+            if line.bytes().any(|b| b == b'\n' || b == b'\r') {
+                return Err(Error::Validation(format!(
+                    "journal line {line:?} contains a line break"
+                )));
+            }
+            framed.extend_from_slice(line.as_bytes());
+            framed.push(b'\n');
         }
-        let mut framed = Vec::with_capacity(line.len() + 1);
-        framed.extend_from_slice(line.as_bytes());
-        framed.push(b'\n');
         self.file
             .write_all(&framed)
             .map_err(|e| io_error(&self.path, e))?;
