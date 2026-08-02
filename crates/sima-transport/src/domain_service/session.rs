@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use sima_contracts::DeviceInfo;
 use sima_core::{Error, Result, read_frame, write_frame};
@@ -267,6 +267,11 @@ impl DomainService {
                 return Err(expired);
             }
             Err(RecvTimeoutError::Disconnected) => {
+                // The answer stream ended, which means the program's stdout
+                // closed. The process itself may still be there — a program
+                // that closed its output and stayed — so it is settled here
+                // rather than left for the drop to wait on.
+                self.kill();
                 return Err(Error::Transport(format!(
                     "the domain service {} ended before answering",
                     self.binary.display()
@@ -304,6 +309,16 @@ impl DomainService {
         self.scratch = None;
     }
 
+    /// How long the farewell waits for the program to leave: the session's own
+    /// answer deadline where it states one, and a fixed few seconds otherwise.
+    ///
+    /// A session with no deadline is one whose questions may take as long as
+    /// the program lives; the farewell still needs a bound, because it runs
+    /// where a run is being torn down.
+    fn farewell_bound(&self) -> Duration {
+        bounded_farewell(self.answer_timeout)
+    }
+
     /// Joins the reader thread at the end of a session that ended on its own
     /// terms; it exits when the program's stdout ends, which a program reaped
     /// off the farewell has already closed.
@@ -315,18 +330,67 @@ impl DomainService {
 }
 
 impl Drop for DomainService {
-    /// Says goodbye, then closes the pipe and reaps the program. A farewell
-    /// that cannot be written means the program is already gone, so the close
-    /// and the reap are what settle it. The reader thread and the scratch
-    /// directory go last, once nothing is left running in it.
+    /// Says goodbye, then closes the pipe and reaps the program within a bound.
+    /// A farewell that cannot be written means the program is already gone, so
+    /// the close and the reap are what settle it. The reader thread and the
+    /// scratch directory go last, once nothing is left running in it.
+    ///
+    /// The wait is bounded because a program that ignores its closed stdin
+    /// would otherwise hold this drop forever — and this drop runs on the
+    /// thread tearing a run down, so a program that will not leave would keep
+    /// the process alive after the run ended. Past the bound it is killed and
+    /// reaped, which is what frees the scratch directory too.
     fn drop(&mut self) {
         if let Some(stdin) = self.stdin.as_mut() {
             let _ = write_frame(stdin, &ToDomain::Goodbye.encode());
         }
         self.stdin = None;
-        let _ = self.child.wait();
+        let bound = self.farewell_bound();
+        if !reaped_within(&mut self.child, bound) {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
         self.join_reader();
         self.scratch = None;
+    }
+}
+
+/// How long a program gets to leave on its own once its stdin is closed, when
+/// the session states no answer deadline of its own.
+const FAREWELL_BOUND: Duration = Duration::from_secs(5);
+
+/// The farewell bound for a session whose questions wait `answer_timeout`.
+fn bounded_farewell(answer_timeout: Duration) -> Duration {
+    if answer_timeout == Duration::MAX {
+        FAREWELL_BOUND
+    } else {
+        answer_timeout
+    }
+}
+
+/// How often the farewell wait looks at the child. Short enough that an
+/// ordinary exit is noticed at once, long enough that the wait is not a spin.
+const REAP_POLL: Duration = Duration::from_millis(20);
+
+/// Waits up to `bound` for `child` to exit, reporting whether it did.
+///
+/// `try_wait` rather than `wait`, because the point is to give up: a program
+/// that will not leave is killed by the caller rather than waited on.
+fn reaped_within(child: &mut Child, bound: Duration) -> bool {
+    let deadline = Instant::now() + bound;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return true,
+            // A child that cannot be waited on is one this side cannot settle
+            // by waiting; the caller's kill is the remaining move.
+            Err(_) => return false,
+            Ok(None) => {}
+        }
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return false;
+        }
+        std::thread::sleep(REAP_POLL.min(left));
     }
 }
 
@@ -424,6 +488,56 @@ mod tests {
             &SpawnPolicy::Inherit,
             within,
         )
+    }
+
+    #[test]
+    fn a_program_that_ignores_its_closed_stdin_is_killed_within_the_bound() {
+        // The drop runs on the thread tearing a run down, so a program that
+        // will not leave must not hold it: past the bound it is killed and
+        // reaped. `sleep` ignores its stdin entirely, which is exactly the
+        // shape that used to hang.
+        let mut child = Command::new("sleep")
+            .arg("300")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn a program that ignores its stdin");
+        let bound = Duration::from_millis(100);
+        let started = Instant::now();
+        assert!(
+            !reaped_within(&mut child, bound),
+            "a program that ignores its stdin does not leave on its own"
+        );
+        // The wait gave up rather than blocking: comfortably inside the sleep.
+        assert!(
+            started.elapsed() < Duration::from_secs(30),
+            "the wait is bounded"
+        );
+        child.kill().expect("kill the program");
+        child.wait().expect("reap the program");
+    }
+
+    #[test]
+    fn a_program_that_has_already_left_is_reaped_at_once() {
+        let mut child = Command::new("true")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn a program that exits");
+        assert!(reaped_within(&mut child, Duration::from_secs(5)));
+    }
+
+    #[test]
+    fn the_farewell_bound_follows_the_sessions_own_deadline() {
+        // A session that states a deadline uses it; one that does not — every
+        // question waiting as long as the program lives — still bounds the
+        // farewell, because that runs where a run is ending.
+        assert_eq!(
+            bounded_farewell(Duration::from_millis(250)),
+            Duration::from_millis(250)
+        );
+        assert_eq!(bounded_farewell(Duration::MAX), FAREWELL_BOUND);
     }
 
     #[test]

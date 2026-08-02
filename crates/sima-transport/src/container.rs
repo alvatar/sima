@@ -16,9 +16,9 @@
 //! container, then kills the local client.
 
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use sima_contracts::DeviceBinding;
 use sima_core::Result;
@@ -122,6 +122,7 @@ impl WorkerTransport for ContainerTransport {
         Ok(SpawnOutcome::Link(Box::new(ContainerLink {
             inner,
             kill_command,
+            killers: Vec::new(),
         })))
     }
 }
@@ -133,6 +134,11 @@ struct ContainerLink {
     inner: Box<dyn WorkerLink>,
     /// The container-kill argv, fired before the local kill.
     kill_command: Vec<String>,
+    /// The kill clients this link has fired, held so they are reaped rather
+    /// than left as zombies. One preemption is one client; a run that preempts
+    /// often would otherwise accumulate one entry in the process table per
+    /// preemption for as long as the orchestrator lives.
+    killers: Vec<Child>,
 }
 
 impl WorkerLink for ContainerLink {
@@ -154,13 +160,53 @@ impl WorkerLink for ContainerLink {
 
     fn kill(&mut self) {
         // The second channel first: the container outlives its detached client,
-        // so stop it before freeing the local slot. Best-effort and never
-        // awaited — a dead ssh connection must not block the scheduler; the
-        // local kill and the container's `--rm` are the fallback.
-        fire_and_forget(&self.kill_command);
+        // so stop it before freeing the local slot. Never awaited — a dead ssh
+        // connection must not block the scheduler; the local kill and the
+        // container's `--rm` are the fallback. The client is kept rather than
+        // dropped, so it is reaped instead of becoming a zombie.
+        self.reap_finished_killers();
+        if let Some(killer) = spawn_detached(&self.kill_command) {
+            self.killers.push(killer);
+        }
         self.inner.kill();
     }
 }
+
+impl ContainerLink {
+    /// Reaps every kill client that has already exited, leaving the ones still
+    /// running. Called where a new one is spawned, so the held set stays the
+    /// size of what is actually in flight rather than the count of preemptions.
+    fn reap_finished_killers(&mut self) {
+        self.killers
+            .retain_mut(|killer| !matches!(killer.try_wait(), Ok(Some(_)) | Err(_)));
+    }
+}
+
+impl Drop for ContainerLink {
+    /// Settles whatever kill clients are still running. Each is given a short
+    /// bound to finish its own work — an ssh hop to stop a container — and then
+    /// killed, because a link drop happens where a worker slot is being freed
+    /// and must not wait on a hop that will not answer.
+    fn drop(&mut self) {
+        let deadline = Instant::now() + KILLER_REAP_BOUND;
+        for killer in &mut self.killers {
+            while Instant::now() < deadline {
+                match killer.try_wait() {
+                    Ok(Some(_)) | Err(_) => break,
+                    Ok(None) => std::thread::sleep(KILLER_REAP_POLL),
+                }
+            }
+            let _ = killer.kill();
+            let _ = killer.wait();
+        }
+    }
+}
+
+/// How long a link drop waits for its kill clients, in total.
+const KILLER_REAP_BOUND: Duration = Duration::from_secs(2);
+
+/// How often that wait looks at a client.
+const KILLER_REAP_POLL: Duration = Duration::from_millis(20);
 
 /// The container name for the `n`-th spawn of a pool.
 pub(crate) fn container_name(prefix: &str, n: u64) -> String {
@@ -258,19 +304,20 @@ fn ssh_prefix(host: Option<&str>) -> Vec<String> {
     }
 }
 
-/// Spawns a best-effort fire-and-forget command: its streams are discarded and
-/// it is never waited on. A spawn failure is ignored — the local kill and the
-/// container's `--rm` are the fallback if the second channel cannot run.
-fn fire_and_forget(argv: &[String]) {
-    let Some((program, args)) = argv.split_first() else {
-        return;
-    };
-    let _ = Command::new(program)
+/// Spawns a best-effort command with its streams discarded, handing the child
+/// back so the caller can reap it rather than orphaning it.
+///
+/// A spawn failure is `None` and is ignored by the caller — the local kill and
+/// the container's `--rm` are the fallback if the second channel cannot run.
+fn spawn_detached(argv: &[String]) -> Option<Child> {
+    let (program, args) = argv.split_first()?;
+    Command::new(program)
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .spawn();
+        .spawn()
+        .ok()
 }
 
 #[cfg(test)]

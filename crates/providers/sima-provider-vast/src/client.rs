@@ -7,6 +7,8 @@
 //! itself carries meaning — an offer already taken, an instance already
 //! gone — and otherwise hand the answer to [`Answer::ok`].
 
+use std::time::Duration;
+
 use serde_json::Value;
 use sima_core::{Error, Result};
 use ureq::Agent;
@@ -61,6 +63,12 @@ impl Answer {
     }
 }
 
+/// How long a call waits to make its connection.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// How long a whole call may take, connection and body together.
+const CALL_TIMEOUT: Duration = Duration::from_secs(60);
+
 /// An authenticated client for one API root.
 pub(crate) struct VastClient {
     /// The API root every path is appended to.
@@ -77,8 +85,18 @@ impl VastClient {
         // Statuses carry meaning this backend maps itself, so the agent
         // hands every answer back rather than turning some into transport
         // errors.
+        //
+        // Both deadlines are here because a call with neither can hang for as
+        // long as the far side holds the socket open, and every call on this
+        // path runs on a thread a run is waiting on: an acquisition before the
+        // first task, a heartbeat between them, a teardown at the end. The
+        // connect bound is short — a reachable service answers a handshake in
+        // well under it — while the overall bound covers a listing the service
+        // is slow to assemble.
         let agent: Agent = Agent::config_builder()
             .http_status_as_error(false)
+            .timeout_connect(Some(CONNECT_TIMEOUT))
+            .timeout_global(Some(CALL_TIMEOUT))
             .build()
             .into();
         VastClient {
