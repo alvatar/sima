@@ -2,7 +2,7 @@
 
 use cudarc::driver::{LaunchConfig, PushKernelArg};
 
-use sima_core::Result;
+use sima_core::{Error, Result};
 
 use crate::buffer::Buffer;
 use crate::context::Context;
@@ -15,12 +15,21 @@ impl Context {
     ///
     /// Each buffer becomes one pointer parameter, matched by position to the
     /// kernel's declaration, so a kernel taking four pointers is dispatched
-    /// with four buffers in the order it declares them. The launch is
-    /// submitted to the context's stream and drained before returning: the
-    /// stream already orders one dispatch's writes against the next one's
-    /// reads, and draining trades batching for failures that surface at the
-    /// call that caused them.
+    /// with four buffers in the order it declares them. A count that disagrees
+    /// with the declaration is rejected here: the driver takes whatever a
+    /// launch pushes, so an unchecked mismatch would leave the kernel reading a
+    /// pointer that was never supplied. The launch is submitted to the
+    /// context's stream and drained before returning: the stream already orders
+    /// one dispatch's writes against the next one's reads, and draining trades
+    /// batching for failures that surface at the call that caused them.
     pub fn dispatch(&self, kernel: &Kernel, buffers: &[&Buffer], groups: [u32; 3]) -> Result<()> {
+        if buffers.len() != kernel.params() {
+            return Err(Error::Backend(format!(
+                "dispatch expects {} buffers for the kernel's parameters, got {}",
+                kernel.params(),
+                buffers.len()
+            )));
+        }
         let config = LaunchConfig {
             grid_dim: (groups[0], groups[1], groups[2]),
             block_dim: (kernel.block_width(), 1, 1),

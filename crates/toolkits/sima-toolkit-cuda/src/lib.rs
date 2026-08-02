@@ -71,6 +71,7 @@ mod context;
 mod dispatch;
 mod driver;
 mod kernel;
+mod reflect;
 mod selection;
 mod vendored;
 

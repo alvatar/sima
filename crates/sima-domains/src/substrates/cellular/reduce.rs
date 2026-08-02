@@ -49,12 +49,16 @@ pub struct ReduceKernels {
 
 impl ReduceKernels {
     /// Compiles the four passes from the one shared source.
+    ///
+    /// The two level-1 passes launch one invocation per partition; the two
+    /// combine passes are single-threaded folds, so they carry a width of one —
+    /// the same split the CUDA reduction makes.
     pub fn build(context: &Context) -> Result<ReduceKernels> {
         Ok(ReduceKernels {
             pass1: context.kernel(REDUCE_WGSL, "pass1", BLOCK_WIDTH)?,
-            combine1: context.kernel(REDUCE_WGSL, "combine1", BLOCK_WIDTH)?,
+            combine1: context.kernel(REDUCE_WGSL, "combine1", 1)?,
             pass2: context.kernel(REDUCE_WGSL, "pass2", BLOCK_WIDTH)?,
-            combine2: context.kernel(REDUCE_WGSL, "combine2", BLOCK_WIDTH)?,
+            combine2: context.kernel(REDUCE_WGSL, "combine2", 1)?,
         })
     }
 }

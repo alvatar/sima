@@ -9,6 +9,7 @@ use sima_core::{Error, Hash, Result, hash_bytes};
 use crate::compile::COMPILER_ID;
 use crate::context::Context;
 use crate::driver;
+use crate::reflect;
 
 /// A kernel loaded from PTX: its device function, the width of the thread block
 /// it launches with, and the identity input a domain records.
@@ -18,6 +19,8 @@ use crate::driver;
 pub struct Kernel {
     function: CudaFunction,
     block_width: u32,
+    /// Parameters the entry point declares; the buffer count a dispatch binds.
+    params: usize,
     ptx_digest: Hash,
 }
 
@@ -26,7 +29,9 @@ impl Kernel {
     ///
     /// The PTX is what the driver executes, so hashing it covers the compiled
     /// artifact exactly, and the compiler that produced it needs no separate
-    /// version to be trusted.
+    /// version to be trusted. The WGSL toolkit pairs differently: it hashes the
+    /// shader source, because it compiles that source in process, and its
+    /// compiler id names the lowering.
     pub fn ptx_digest(&self) -> Hash {
         self.ptx_digest
     }
@@ -48,6 +53,12 @@ impl Kernel {
     pub(crate) fn function(&self) -> &CudaFunction {
         &self.function
     }
+
+    /// The parameters the entry point declares, which a dispatch binds one
+    /// buffer to each.
+    pub(crate) fn params(&self) -> usize {
+        self.params
+    }
 }
 
 impl Context {
@@ -58,11 +69,13 @@ impl Context {
     /// this device as the module loads, so a PTX targeting an architecture the
     /// device cannot run fails here rather than at the first launch.
     ///
-    /// `block_width` is the thread count per block along x, matching the
-    /// `__launch_bounds__` the kernel source declares: CUDA takes the block
-    /// dimensions at launch rather than from the compiled artifact, so the
-    /// width is supplied here and every launch of this kernel uses it.
+    /// `block_width` is the thread count per block along x. CUDA takes the
+    /// block dimensions at launch rather than from the compiled artifact, so
+    /// the width is supplied here, checked against the `.maxntid` the PTX
+    /// declares and against what the device can launch, and every launch of
+    /// this kernel uses it.
     pub fn kernel(&self, ptx: &str, entry: &str, block_width: u32) -> Result<Kernel> {
+        let signature = reflect::entry_signature(ptx, entry)?;
         let context = self.stream().context();
         let maximum = context
             .attribute(sys::CUdevice_attribute_enum::CU_DEVICE_ATTRIBUTE_MAX_THREADS_PER_BLOCK)
@@ -71,6 +84,14 @@ impl Context {
             return Err(Error::Backend(format!(
                 "kernel entry point '{entry}' asks for {block_width} threads per block; this \
                  device takes 1..={maximum}"
+            )));
+        }
+        if let Some(declared) = signature.max_block
+            && declared != [block_width, 1, 1]
+        {
+            return Err(Error::Backend(format!(
+                "kernel entry point '{entry}' declares launch bounds {declared:?}; the caller \
+                 sizes its grids by {block_width} threads along x"
             )));
         }
         let module = context
@@ -85,6 +106,7 @@ impl Context {
         Ok(Kernel {
             function,
             block_width,
+            params: signature.params,
             ptx_digest: hash_bytes(ptx.as_bytes()),
         })
     }
@@ -146,11 +168,14 @@ mod tests {
         }
 
         #[test]
-        fn malformed_ptx_is_rejected_by_the_driver() {
+        fn text_that_is_not_a_module_is_rejected() {
+            // Reflection reads the entry point's declaration out of the text
+            // before anything is loaded, so text carrying no declaration fails
+            // naming the entry point that was asked for.
             let context = Context::new().expect("create compute context");
             match context.kernel("this is not PTX", "main_kernel", 64) {
                 Err(Error::Backend(message)) => {
-                    assert!(message.contains("load the PTX module"), "{message}");
+                    assert!(message.contains("main_kernel"), "{message}");
                 }
                 Err(other) => panic!("expected a backend load error, got {other:?}"),
                 Ok(_) => panic!("expected malformed PTX to be rejected"),
@@ -163,13 +188,29 @@ mod tests {
             // toolkit error rather than an opaque launch failure later.
             let context = Context::new().expect("create compute context");
             for width in [0, 1 << 20] {
-                match context.kernel("", "main_kernel", width) {
+                match context.kernel(SMOKE_PTX, "main_kernel", width) {
                     Err(Error::Backend(message)) => {
                         assert!(message.contains("threads per block"), "{message}");
                     }
                     Err(other) => panic!("expected a backend width error, got {other:?}"),
                     Ok(_) => panic!("expected block width {width} to be rejected"),
                 }
+            }
+        }
+
+        #[test]
+        fn a_block_width_the_kernel_does_not_declare_is_rejected() {
+            // 32 is a width this device launches happily; what rejects it is
+            // the `.maxntid` the artifact carries. A caller sizing its grid by
+            // 32 while the kernel runs 64-wide would cover half the elements,
+            // and no launch could tell.
+            let context = Context::new().expect("create compute context");
+            match context.kernel(SMOKE_PTX, "main_kernel", 32) {
+                Err(Error::Backend(message)) => {
+                    assert!(message.contains("launch bounds"), "{message}");
+                }
+                Err(other) => panic!("expected a backend width error, got {other:?}"),
+                Ok(_) => panic!("expected an undeclared block width to be rejected"),
             }
         }
     }
