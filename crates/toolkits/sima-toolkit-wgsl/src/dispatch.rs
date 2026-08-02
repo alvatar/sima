@@ -188,6 +188,8 @@ mod tests {
 
     /// The shipped compute kernel: `out[i] = in[i] * 2 + 1`.
     const SMOKE_WGSL: &str = include_str!("../shaders/smoke.wgsl");
+    /// The workgroup width that shader declares.
+    const SMOKE_WIDTH: u32 = 64;
 
     /// Every dispatch test launches a kernel, which needs a Vulkan device.
     mod on_device {
@@ -196,7 +198,9 @@ mod tests {
         #[test]
         fn dispatch_applies_the_kernel() {
             let context = Context::new().expect("create compute context");
-            let kernel = context.kernel(SMOKE_WGSL, "main").expect("build kernel");
+            let kernel = context
+                .kernel(SMOKE_WGSL, "main", SMOKE_WIDTH)
+                .expect("build kernel");
             let input: [u32; 4] = [1, 2, 3, 4];
             let bytes: &[u8] = bytemuck::cast_slice(&input);
             let in_buffer = context.buffer(bytes.len()).expect("input buffer");
@@ -220,7 +224,9 @@ mod tests {
         #[test]
         fn a_dispatch_observes_a_prior_dispatchs_writes() {
             let context = Context::new().expect("create compute context");
-            let kernel = context.kernel(SMOKE_WGSL, "main").expect("build kernel");
+            let kernel = context
+                .kernel(SMOKE_WGSL, "main", SMOKE_WIDTH)
+                .expect("build kernel");
             let input: [u32; 4] = [1, 2, 3, 4];
             let bytes: &[u8] = bytemuck::cast_slice(&input);
             let a = context.buffer(bytes.len()).expect("buffer a");

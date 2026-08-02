@@ -34,6 +34,7 @@ pub use step::{Trajectory, run};
 pub(crate) use cuda_engine::CudaEngine;
 pub(crate) use engine::{CellularEngine, CellularEvaluation, EvaluationInput};
 pub(crate) use reduce::{
-    GridPair, MAX_CHANNELS, PARTITIONS, REDUCE_WGSL, ReduceKernels, name_scalars, reduce,
+    BLOCK_WIDTH, GridPair, MAX_CHANNELS, PARTITIONS, REDUCE_WGSL, ReduceKernels, name_scalars,
+    reduce,
 };
 pub(crate) use wgsl_engine::WgslEngine;

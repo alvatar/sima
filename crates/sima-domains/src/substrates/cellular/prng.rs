@@ -19,6 +19,7 @@ mod tests {
     use sima_core::prng;
 
     use super::PRNG_WGSL;
+    use crate::substrates::cellular::BLOCK_WIDTH;
 
     // Probe operation codes for the u64 emulation helpers, dispatched by the
     // `op` field of a request row. The two composed PRNG entries take the
@@ -86,7 +87,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let rows = requests.len() / 5;
         let context = Context::new().expect("create compute context");
         let kernel = context
-            .kernel(&probe_source(), "main")
+            .kernel(&probe_source(), "main", BLOCK_WIDTH)
             .expect("build probe kernel");
         let request_bytes: &[u8] = bytemuck::cast_slice(requests);
         let request_buffer = context.buffer(request_bytes.len()).expect("request buffer");
@@ -96,7 +97,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let result_buffer = context
             .buffer(rows * 2 * std::mem::size_of::<u32>())
             .expect("result buffer");
-        let groups = [(rows as u32).div_ceil(64), 1, 1];
+        let groups = [(rows as u32).div_ceil(kernel.block_width()), 1, 1];
         context
             .dispatch(&kernel, &[&request_buffer, &result_buffer], groups)
             .expect("dispatch probe");

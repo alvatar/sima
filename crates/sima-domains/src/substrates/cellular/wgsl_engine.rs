@@ -5,7 +5,7 @@ use sima_core::{Hash, Result, hash_bytes};
 use sima_toolkit_wgsl::{Buffer, Context, Kernel, selected_device_desc};
 
 use crate::substrates::cellular::{
-    CellularEngine, CellularEvaluation, EvaluationInput, Grid, GridPair, REDUCE_WGSL,
+    BLOCK_WIDTH, CellularEngine, CellularEvaluation, EvaluationInput, Grid, GridPair, REDUCE_WGSL,
     ReduceKernels, Trajectory, reduce as reduce_pair, run,
 };
 
@@ -32,7 +32,7 @@ impl CellularEngine for WgslEngine {
             Some(device) => Context::for_class(device.class(), device.member)?,
             None => Context::new()?,
         };
-        let kernel = context.kernel(kernel, "main")?;
+        let kernel = context.kernel(kernel, "main", BLOCK_WIDTH)?;
         let reduce = ReduceKernels::build(&context)?;
         Ok(WgslEngine {
             kernel,
@@ -252,7 +252,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             // The same work through the toolkit directly, on a context of its own.
             let context = Context::new().expect("context");
             let kernel = context
-                .kernel(ADD_UNIFORM_WGSL, "main")
+                .kernel(ADD_UNIFORM_WGSL, "main", BLOCK_WIDTH)
                 .expect("build kernel");
             let reduce = ReduceKernels::build(&context).expect("reduction kernels");
             let uniform_bytes: &[u8] = bytemuck::cast_slice(&uniforms);

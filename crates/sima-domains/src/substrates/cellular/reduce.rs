@@ -31,6 +31,13 @@ pub(crate) const MAX_CHANNELS: u32 = 16;
 /// parameter buffer, so one constant drives both and they accumulate alike.
 pub(crate) const PARTITIONS: u32 = 64;
 
+/// The threads per block every cellular kernel is launched with, on either
+/// backend. Each kernel states the same width in its own source — WGSL with
+/// `@workgroup_size`, CUDA with `__launch_bounds__` — and each toolkit checks
+/// the two agree, so a grid sized by this constant covers exactly the
+/// invocations the kernel launches.
+pub(crate) const BLOCK_WIDTH: u32 = 64;
+
 /// The four compiled reduction passes, built once and held for the engine's
 /// lifetime alongside the step kernel.
 pub struct ReduceKernels {
@@ -44,10 +51,10 @@ impl ReduceKernels {
     /// Compiles the four passes from the one shared source.
     pub fn build(context: &Context) -> Result<ReduceKernels> {
         Ok(ReduceKernels {
-            pass1: context.kernel(REDUCE_WGSL, "pass1")?,
-            combine1: context.kernel(REDUCE_WGSL, "combine1")?,
-            pass2: context.kernel(REDUCE_WGSL, "pass2")?,
-            combine2: context.kernel(REDUCE_WGSL, "combine2")?,
+            pass1: context.kernel(REDUCE_WGSL, "pass1", BLOCK_WIDTH)?,
+            combine1: context.kernel(REDUCE_WGSL, "combine1", BLOCK_WIDTH)?,
+            pass2: context.kernel(REDUCE_WGSL, "pass2", BLOCK_WIDTH)?,
+            combine2: context.kernel(REDUCE_WGSL, "combine2", BLOCK_WIDTH)?,
         })
     }
 }
@@ -124,7 +131,7 @@ pub fn reduce(
         &partials2,
         &out,
     ];
-    let level1 = [PARTITIONS.div_ceil(64), 1, 1];
+    let level1 = [PARTITIONS.div_ceil(BLOCK_WIDTH), 1, 1];
     let single = [1, 1, 1];
     context.dispatch(&kernels.pass1, &bound, level1)?;
     context.dispatch(&kernels.combine1, &bound, single)?;
@@ -379,7 +386,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             let context = Context::new().expect("context");
             let kernels = ReduceKernels::build(&context).expect("kernels");
             let kernel = context
-                .kernel(ADD_ONE_WGSL, "main")
+                .kernel(ADD_ONE_WGSL, "main", BLOCK_WIDTH)
                 .expect("add-one kernel");
 
             let cells = 16u32;

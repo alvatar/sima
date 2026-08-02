@@ -26,6 +26,7 @@ pub struct Context {
     queue: vk::Queue,
     command_pool: vk::CommandPool,
     memory_properties: vk::PhysicalDeviceMemoryProperties,
+    limits: vk::PhysicalDeviceLimits,
     device_name: String,
     driver_version: String,
     /// Debug-utils messenger, present only when validation is enabled.
@@ -123,6 +124,7 @@ impl Context {
             queue,
             command_pool: command_pool.finish()?,
             memory_properties,
+            limits: properties.limits,
             device_name,
             driver_version,
             validation,
@@ -147,6 +149,12 @@ impl Context {
     /// The device's memory properties, for memory-type selection.
     pub(crate) fn memory_properties(&self) -> &vk::PhysicalDeviceMemoryProperties {
         &self.memory_properties
+    }
+
+    /// The device's reported limits, for the bounds a kernel build and a
+    /// dispatch are checked against.
+    pub(crate) fn limits(&self) -> &vk::PhysicalDeviceLimits {
+        &self.limits
     }
 
     /// Records a one-time command buffer through `recorder`, submits it to the

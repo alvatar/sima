@@ -161,6 +161,7 @@ pub fn run<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::substrates::cellular::BLOCK_WIDTH;
 
     /// The neighborhood-max kernel that exercises the path. Its bindings and
     /// dispatch match the cellular-kind convention the harness encodes.
@@ -190,7 +191,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     /// Builds a context and compiles the smoke kernel, or panics with context.
     fn smoke(context: &Context) -> Kernel {
         context
-            .kernel(SMOKE_WGSL, "main")
+            .kernel(SMOKE_WGSL, "main", BLOCK_WIDTH)
             .expect("build smoke kernel")
     }
 
@@ -284,7 +285,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             // any single dispatch — not only the last — changes the total.
             let context = Context::new().expect("create compute context");
             let kernel = context
-                .kernel(STEP_PROBE_WGSL, "main")
+                .kernel(STEP_PROBE_WGSL, "main", BLOCK_WIDTH)
                 .expect("build step probe kernel");
             let initial = Grid::new(4, 4, 1, vec![0.0; 16]).expect("grid");
             let (base, steps) = (100u64, 5u32);

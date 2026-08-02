@@ -14,8 +14,7 @@
 use sima_core::{Error, Result};
 use sima_toolkit_cuda::{Buffer, Context, Kernel};
 
-use crate::substrates::cellular::cuda::step::BLOCK_WIDTH;
-use crate::substrates::cellular::{MAX_CHANNELS, PARTITIONS, name_scalars};
+use crate::substrates::cellular::{BLOCK_WIDTH, MAX_CHANNELS, PARTITIONS, name_scalars};
 
 /// The committed PTX of the reduction kernel. Its digest joins the environment
 /// because the reduction's output gates committed bytes, so regenerating it

@@ -7,13 +7,7 @@
 use sima_core::Result;
 use sima_toolkit_cuda::{Buffer, Context, Kernel};
 
-use crate::substrates::cellular::Grid;
-
-/// The threads per block every cellular kernel is launched with, matching the
-/// WGSL side's `@workgroup_size(64)`. CUDA takes the block dimensions at launch
-/// rather than from the compiled module, so the kernel declares the same width
-/// with `__launch_bounds__(64)` and the toolkit checks the two agree.
-pub(crate) const BLOCK_WIDTH: u32 = 64;
+use crate::substrates::cellular::{BLOCK_WIDTH, Grid};
 
 /// The result of a [`run`]: the two ping-pong buffers left resident on the
 /// device — the final grid $G_N$ and the step before it $G_{N-1}$ — over the

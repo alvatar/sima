@@ -7,8 +7,10 @@ use sima_toolkit_cuda::{Buffer, Context, Kernel, selected_device_desc};
 use crate::substrates::cellular::cuda::reduce::{
     GridPair, REDUCE_PTX, ReduceKernels, reduce as reduce_pair,
 };
-use crate::substrates::cellular::cuda::step::{BLOCK_WIDTH, Trajectory, run};
-use crate::substrates::cellular::{CellularEngine, CellularEvaluation, EvaluationInput, Grid};
+use crate::substrates::cellular::cuda::step::{Trajectory, run};
+use crate::substrates::cellular::{
+    BLOCK_WIDTH, CellularEngine, CellularEvaluation, EvaluationInput, Grid,
+};
 
 /// The entry point every cellular CUDA kernel declares. `main` is spoken for in
 /// C++, so the convention's single entry point takes the name the toolkit's own

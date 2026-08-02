@@ -41,12 +41,14 @@ impl CellularRule for SmokeMax {
 
 /// The kernel the reference mirrors.
 const SMOKE_WGSL: &str = include_str!("../shaders/smoke.wgsl");
+/// The workgroup width that kernel declares.
+const SMOKE_WIDTH: u32 = 64;
 
 #[test]
 fn harness_matches_reference_over_k_steps_on_device() {
     let context = Context::new().expect("create compute context");
     let kernel = context
-        .kernel(SMOKE_WGSL, "main")
+        .kernel(SMOKE_WGSL, "main", SMOKE_WIDTH)
         .expect("build smoke kernel");
 
     // Distinct per-cell values so the neighborhood max is non-trivial; several
