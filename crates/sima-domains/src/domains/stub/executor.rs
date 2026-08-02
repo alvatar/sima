@@ -72,7 +72,14 @@ impl Executor for StubExecutor {
                 reason: "programmed rejection".to_string(),
                 stats: stats(ctx),
             }),
-            StubBehavior::Accumulate(k) => accumulate(input, ctx, checkpoint, k),
+            StubBehavior::Accumulate(k) => accumulate(input, ctx, checkpoint, k, Duration::ZERO),
+            StubBehavior::PacedAccumulate { steps, step_ms } => accumulate(
+                input,
+                ctx,
+                checkpoint,
+                steps,
+                Duration::from_millis(step_ms),
+            ),
         }
     }
 }
@@ -82,12 +89,14 @@ impl Executor for StubExecutor {
 /// segmentation cuts fall — offering a checkpoint at every step boundary, and
 /// commit the resulting state as the `state` artifact. The stats carry the
 /// steps this attempt actually executed, so a test can prove a resume
-/// checkpoint shortened re-execution.
+/// checkpoint shortened re-execution. `pace` is `PacedAccumulate`'s sleep per
+/// step; zero for the unpaced behavior.
 fn accumulate(
     input: &TaskInput<'_>,
     ctx: &ExecutionContext,
     checkpoint: &dyn Checkpoint,
     k: u64,
+    pace: Duration,
 ) -> Result<Outcome> {
     // Malformed input state is a structural input fault, like a malformed
     // spec: the identity referenced bytes that are not a stub state.
@@ -115,6 +124,11 @@ fn accumulate(
     }
     let mut steps_executed: u64 = 0;
     while state.step < end {
+        // The pace is wall clock alone: it precedes the step so an interrupt
+        // lands before work, and it never touches the state trajectory.
+        if !pace.is_zero() {
+            std::thread::sleep(pace);
+        }
         state.acc = sima_core::prng::derive(state.acc, state.step);
         state.step += 1;
         steps_executed += 1;
@@ -596,6 +610,34 @@ mod tests {
         let attempt = scalar(stats, "attempt") as u32;
         let steps = scalar(stats, "steps") as u64;
         (artifacts[0].bytes.clone(), attempt, steps)
+    }
+
+    #[test]
+    fn paced_accumulate_commits_the_bytes_accumulate_commits() -> Result<()> {
+        // The pace is operational alone: the paced behavior's trajectory,
+        // committed state, and step stats equal the unpaced behavior's.
+        let exec = StubExecutor::new()?;
+        let spec = spec_for(
+            StubBehavior::PacedAccumulate {
+                steps: 3,
+                step_ms: 1,
+            },
+            0,
+        )?;
+        let params = params();
+        let input = TaskInput {
+            spec: &spec,
+            params: &params,
+            seed: 42,
+            environment: env(),
+            input_state: None,
+        };
+        let paced = exec.execute(&input, &ctx(0, 0), &NoCheckpoint)?;
+        let (state_bytes, _, steps) = state_and_stats(&paced);
+        let unpaced = run_accumulate(3, 42, None, 0, &NoCheckpoint)?;
+        assert_eq!(state_bytes, state_and_stats(&unpaced).0);
+        assert_eq!(steps, 3);
+        Ok(())
     }
 
     #[test]

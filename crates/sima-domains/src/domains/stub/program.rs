@@ -31,6 +31,13 @@ pub enum StubBehavior {
     /// commit the resulting state — the stateful behavior segmented runs
     /// chain through. The argument is k, the steps one task performs.
     Accumulate(u64),
+    /// [`Accumulate`](StubBehavior::Accumulate), paced: each of the `steps`
+    /// sleeps `step_ms` before it lands, so a segmented chain occupies wall
+    /// clock in proportion to its remaining steps. The trajectory and the
+    /// committed bytes equal the unpaced behavior's — the pace is
+    /// operational. This is what an interrupt test paces a chain with: a run
+    /// that cannot finish while a wind-down is deciding.
+    PacedAccumulate { steps: u64, step_ms: u64 },
 }
 
 impl StubBehavior {
@@ -56,6 +63,9 @@ impl StubBehavior {
             StubBehavior::Accumulate(k) => {
                 enc.u8(5).u64(*k);
             }
+            StubBehavior::PacedAccumulate { steps, step_ms } => {
+                enc.u8(6).u64(*steps).u64(*step_ms);
+            }
         }
     }
 
@@ -69,6 +79,10 @@ impl StubBehavior {
             3 => Ok(StubBehavior::Sleep(dec.u64()?)),
             4 => Ok(StubBehavior::Reject),
             5 => Ok(StubBehavior::Accumulate(dec.u64()?)),
+            6 => Ok(StubBehavior::PacedAccumulate {
+                steps: dec.u64()?,
+                step_ms: dec.u64()?,
+            }),
             tag => Err(Error::Encoding(format!("unknown stub behavior tag {tag}"))),
         }
     }
@@ -143,6 +157,14 @@ mod tests {
                 "056400000000000000",
                 "0000000000000000",
             ),
+            (
+                StubBehavior::PacedAccumulate {
+                    steps: 2,
+                    step_ms: 250,
+                },
+                "060200000000000000fa00000000000000",
+                "0000000000000000",
+            ),
         ];
         for (behavior, behavior_hex, nonce_hex) in cases {
             let program = StubProgram { behavior, nonce: 0 };
@@ -162,6 +184,10 @@ mod tests {
             StubBehavior::Sleep(7),
             StubBehavior::Reject,
             StubBehavior::Accumulate(100),
+            StubBehavior::PacedAccumulate {
+                steps: 2,
+                step_ms: 250,
+            },
         ];
         for behavior in behaviors {
             for nonce in [0u64, 1, 0x0102_0304_0506_0708] {
