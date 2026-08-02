@@ -15,7 +15,7 @@ use sima_model::{TaskKey, TaskRecord};
 
 use crate::catalog::referenced_objects;
 use crate::store::Store;
-use crate::sync::message::{SYNC_PROTOCOL_VERSION, SyncMessage};
+use crate::sync::message::{INVENTORY_CHUNK, SYNC_PROTOCOL_VERSION, SyncMessage};
 
 /// Which objects a side advertises, and therefore the most the peer can ask it
 /// for: the scope bounds the peer's want, since a want is `theirs − mine` over
@@ -63,6 +63,13 @@ pub struct SyncReport {
 /// and the objects they reference.
 type PeerInventory = (Vec<(TaskKey, Hash)>, Vec<Hash>);
 
+/// One chunk of a peer's inventory: its records, its objects, and whether
+/// another chunk follows.
+type HaveChunk = (Vec<(TaskKey, Hash)>, Vec<Hash>, bool);
+
+/// One chunk of a peer's request, shaped as [`HaveChunk`] is.
+type WantChunk = (Vec<TaskKey>, Vec<Hash>, bool);
+
 /// A want request: the wanted record keys and object digests.
 type Want = (Vec<TaskKey>, Vec<Hash>);
 
@@ -109,17 +116,17 @@ impl Store {
         }
 
         // Advertise this side's inventory within the key set; read the peer's.
+        // Each travels as a sequence of bounded chunks, so an inventory of any
+        // size crosses rather than running into the frame cap.
         let (my_records, my_objects) = self.have(keys, scope)?;
-        let my_have = SyncMessage::Have {
-            records: my_records.iter().map(|(k, h)| (*k, *h)).collect(),
-            objects: my_objects.iter().copied().collect(),
-        };
+        let advertised: Vec<(TaskKey, Hash)> = my_records.iter().map(|(k, h)| (*k, *h)).collect();
+        let my_object_list: Vec<Hash> = my_objects.iter().copied().collect();
         let (peer_records, peer_objects) = if initiator {
-            send(writer, &my_have)?;
-            expect_have(recv(reader)?)?
+            send_have(writer, &advertised, &my_object_list)?;
+            recv_have(reader)?
         } else {
-            let peer = expect_have(recv(reader)?)?;
-            send(writer, &my_have)?;
+            let peer = recv_have(reader)?;
+            send_have(writer, &advertised, &my_object_list)?;
             peer
         };
 
@@ -148,24 +155,21 @@ impl Store {
             .copied()
             .filter(|h| !my_objects.contains(h))
             .collect();
-        let my_want = SyncMessage::Want {
-            records: want_records.iter().map(|(k, _)| *k).collect(),
-            objects: want_objects.clone(),
-        };
+        let want_keys: Vec<TaskKey> = want_records.iter().map(|(k, _)| *k).collect();
 
         // Want and fulfillment interlock: the initiator sends its want and
         // takes the peer's fulfillment, then serves the peer's want; the
         // responder mirrors. One side writes while the other reads throughout.
         let (peer_want_records, peer_want_objects): Want = if initiator {
-            send(writer, &my_want)?;
+            send_want(writer, &want_keys, &want_objects)?;
             self.receive_fulfillment(reader, &want_objects, &want_records)?;
-            let peer_want = expect_want(recv(reader)?)?;
+            let peer_want = recv_want(reader)?;
             self.send_fulfillment(writer, &peer_want.1, &peer_want.0)?;
             peer_want
         } else {
-            let peer_want = expect_want(recv(reader)?)?;
+            let peer_want = recv_want(reader)?;
             self.send_fulfillment(writer, &peer_want.1, &peer_want.0)?;
-            send(writer, &my_want)?;
+            send_want(writer, &want_keys, &want_objects)?;
             self.receive_fulfillment(reader, &want_objects, &want_records)?;
             peer_want
         };
@@ -359,18 +363,123 @@ fn expect_hello(message: SyncMessage) -> Result<()> {
     }
 }
 
-/// Accepts a [`SyncMessage::Have`], returning its records and objects.
-fn expect_have(message: SyncMessage) -> Result<PeerInventory> {
+/// Writes an inventory as a sequence of bounded chunks, the last with `more`
+/// clear. An empty inventory is one empty chunk, so the end of the sequence is
+/// always stated rather than inferred.
+fn send_have(writer: &mut dyn Write, records: &[(TaskKey, Hash)], objects: &[Hash]) -> Result<()> {
+    chunked(
+        records,
+        objects,
+        INVENTORY_CHUNK,
+        |records, objects, more| {
+            send(
+                writer,
+                &SyncMessage::Have {
+                    records: records.to_vec(),
+                    objects: objects.to_vec(),
+                    more,
+                },
+            )
+        },
+    )
+}
+
+/// Writes a request as a sequence of bounded chunks, exactly as [`send_have`]
+/// writes an inventory.
+fn send_want(writer: &mut dyn Write, records: &[TaskKey], objects: &[Hash]) -> Result<()> {
+    chunked(
+        records,
+        objects,
+        INVENTORY_CHUNK,
+        |records, objects, more| {
+            send(
+                writer,
+                &SyncMessage::Want {
+                    records: records.to_vec(),
+                    objects: objects.to_vec(),
+                    more,
+                },
+            )
+        },
+    )
+}
+
+/// Splits two lists into chunks of at most `bound` entries each and hands every
+/// chunk to `emit`, with `more` set on all but the last.
+///
+/// The two lists are drained independently and paired up, so a long record list
+/// beside a short object list still fills its chunks rather than being paced by
+/// the shorter one. `emit` sees at least one chunk however empty the lists are.
+fn chunked<R: Clone, O: Clone>(
+    records: &[R],
+    objects: &[O],
+    bound: usize,
+    mut emit: impl FnMut(&[R], &[O], bool) -> Result<()>,
+) -> Result<()> {
+    let mut records = records;
+    let mut objects = objects;
+    loop {
+        let (record_chunk, record_rest) = records.split_at(bound.min(records.len()));
+        let (object_chunk, object_rest) = objects.split_at(bound.min(objects.len()));
+        let more = !record_rest.is_empty() || !object_rest.is_empty();
+        emit(record_chunk, object_chunk, more)?;
+        if !more {
+            return Ok(());
+        }
+        records = record_rest;
+        objects = object_rest;
+    }
+}
+
+/// Reads an inventory: one chunk after another until one clears `more`,
+/// accumulating what they carry.
+fn recv_have(reader: &mut dyn Read) -> Result<PeerInventory> {
+    let (mut records, mut objects) = (Vec::new(), Vec::new());
+    loop {
+        let chunk = expect_have(recv(reader)?)?;
+        records.extend(chunk.0);
+        objects.extend(chunk.1);
+        if !chunk.2 {
+            return Ok((records, objects));
+        }
+    }
+}
+
+/// Reads a request the same way [`recv_have`] reads an inventory.
+fn recv_want(reader: &mut dyn Read) -> Result<Want> {
+    let (mut records, mut objects) = (Vec::new(), Vec::new());
+    loop {
+        let chunk = expect_want(recv(reader)?)?;
+        records.extend(chunk.0);
+        objects.extend(chunk.1);
+        if !chunk.2 {
+            return Ok((records, objects));
+        }
+    }
+}
+
+/// Accepts a [`SyncMessage::Have`] chunk, returning its records, objects, and
+/// whether another follows.
+fn expect_have(message: SyncMessage) -> Result<HaveChunk> {
     match message {
-        SyncMessage::Have { records, objects } => Ok((records, objects)),
+        SyncMessage::Have {
+            records,
+            objects,
+            more,
+        } => Ok((records, objects, more)),
         other => Err(unexpected("have", &other)),
     }
 }
 
-/// Accepts a [`SyncMessage::Want`], returning its records and objects.
-fn expect_want(message: SyncMessage) -> Result<Want> {
+/// Accepts a [`SyncMessage::Want`] chunk, returning its records, objects, and
+/// whether another follows.
+fn expect_want(message: SyncMessage) -> Result<WantChunk> {
     match message {
-        SyncMessage::Want { records, objects } => Ok((records, objects)),
+        SyncMessage::Want {
+            records,
+            objects,
+            more,
+        } => Ok((records, objects, more)),
         other => Err(unexpected("want", &other)),
     }
 }
@@ -429,12 +538,69 @@ mod tests {
             SyncMessage::Hello {
                 protocol: SYNC_PROTOCOL_VERSION,
             },
-            SyncMessage::Have { records, objects },
+            SyncMessage::Have {
+                records,
+                objects,
+                more: false,
+            },
             SyncMessage::Want {
                 records: Vec::new(),
                 objects: Vec::new(),
+                more: false,
             },
         ]
+    }
+
+    #[test]
+    fn an_inventory_larger_than_one_chunk_travels_whole() {
+        // The chunking is what makes an inventory of any size syncable: one
+        // frame capped a run at about 1.3M tasks, past which sync was
+        // impossible rather than slow. The bound is a parameter here so the
+        // case runs on a handful of entries instead of a quarter of a gigabyte.
+        let records: Vec<(TaskKey, Hash)> = (0..7u8)
+            .map(|i| (TaskKey::from_hash(hash_bytes(&[i])), hash_bytes(&[i, 1])))
+            .collect();
+        let objects: Vec<Hash> = (0..5u8).map(|i| hash_bytes(&[i, 2])).collect();
+
+        let mut chunks: Vec<(usize, usize, bool)> = Vec::new();
+        chunked(&records, &objects, 3, |r, o, more| {
+            chunks.push((r.len(), o.len(), more));
+            Ok(())
+        })
+        .expect("the split succeeds");
+
+        // Seven records at three per chunk is three chunks; the objects run out
+        // first and their chunks empty rather than pacing the records.
+        assert_eq!(chunks, vec![(3, 3, true), (3, 2, true), (1, 0, false)]);
+    }
+
+    #[test]
+    fn an_empty_inventory_is_one_chunk_that_states_it_is_the_last() {
+        // The end of the sequence is stated rather than inferred, so a side
+        // holding nothing still says so and the peer stops reading.
+        let mut chunks = 0;
+        chunked::<TaskKey, Hash>(&[], &[], 4, |r, o, more| {
+            chunks += 1;
+            assert!(r.is_empty() && o.is_empty() && !more);
+            Ok(())
+        })
+        .expect("the split succeeds");
+        assert_eq!(chunks, 1);
+    }
+
+    #[test]
+    fn a_chunk_carries_at_most_the_bound() {
+        // What keeps a frame under the cap: no chunk exceeds the bound on
+        // either list, whatever the two lengths are.
+        let records: Vec<(TaskKey, Hash)> = (0..10u8)
+            .map(|i| (TaskKey::from_hash(hash_bytes(&[i])), hash_bytes(&[i, 1])))
+            .collect();
+        let objects: Vec<Hash> = (0..25u8).map(|i| hash_bytes(&[i, 2])).collect();
+        chunked(&records, &objects, 4, |r, o, _| {
+            assert!(r.len() <= 4 && o.len() <= 4, "{} {}", r.len(), o.len());
+            Ok(())
+        })
+        .expect("the split succeeds");
     }
 
     #[test]
@@ -444,7 +610,10 @@ mod tests {
         let (_dir, store) = temp_store();
         match responder_reads(&store, [SyncMessage::Hello { protocol: 999 }]) {
             Err(Error::Validation(msg)) => {
-                assert!(msg.contains("999") && msg.contains('1'), "{msg}");
+                assert!(
+                    msg.contains("999") && msg.contains(&SYNC_PROTOCOL_VERSION.to_string()),
+                    "{msg}"
+                );
             }
             other => panic!("expected a version-mismatch refusal, got {other:?}"),
         }

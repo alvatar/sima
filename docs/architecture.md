@@ -1777,7 +1777,18 @@ computes `want = theirs − mine`, and streams the difference; every received
 object and record is matched against the item requested at that position and
 the digest it was advertised under (content addressing is the integrity check),
 and a record held on both sides under one key must be byte-identical or the
-sync fails naming the key. Its scope is deliberately narrow:
+sync fails naming the key.
+
+An inventory and a request each travel as a sequence of bounded chunks, the
+last stating that it is the last. A run's whole inventory in one frame would
+cross the frame cap at around 1.3M tasks, past which sync is impossible rather
+than slow; chunking bounds the frame instead of the run. Each side still reads
+the whole peer inventory before computing the difference — the set arithmetic
+is over the accumulated inventory, and per-item verification is unchanged — so
+the O(N) read per session stands, which is the design: verified reads are what
+the integrity check is made of.
+
+Its scope is deliberately narrow:
 
 | Data              | Synced? | Why                                              |
 |-------------------|---------|--------------------------------------------------|
