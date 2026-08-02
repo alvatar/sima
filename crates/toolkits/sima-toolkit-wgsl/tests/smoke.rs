@@ -20,9 +20,9 @@ fn smoke_kernel_runs_end_to_end_on_device() {
     // in-shader bounds guard against the rounded-up workgroup count.
     let input: Vec<u32> = (0..1000u32).collect();
     let bytes: &[u8] = bytemuck::cast_slice(&input);
-    let in_buffer = context.buffer(bytes.len()).expect("input buffer");
+    let mut in_buffer = context.buffer(bytes.len()).expect("input buffer");
     let out_buffer = context.buffer(bytes.len()).expect("output buffer");
-    context.upload(&in_buffer, bytes).expect("upload input");
+    context.upload(&mut in_buffer, bytes).expect("upload input");
 
     // The grid is sized by the width the kernel reports rather than a literal
     // repeated here, which is what the kernel build made possible.

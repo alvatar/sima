@@ -82,8 +82,14 @@ impl Context {
     ///
     /// The host writes into a host-visible staging buffer, then a transfer copy
     /// carries the bytes to the device-local destination. `data` must not
-    /// exceed the destination's size.
-    pub fn upload(&self, dst: &Buffer, data: &[u8]) -> Result<()> {
+    /// exceed the destination's size, and the copy carries `data.len()` bytes
+    /// into the head of the buffer, so a destination larger than what it is
+    /// given keeps the rest of its contents.
+    ///
+    /// The destination is taken exclusively: an upload is a write, and holding
+    /// it that way is what keeps a buffer from being read as a binding while it
+    /// is being written.
+    pub fn upload(&self, dst: &mut Buffer, data: &[u8]) -> Result<()> {
         if data.is_empty() {
             return Ok(());
         }
@@ -290,8 +296,8 @@ mod tests {
         fn buffer_round_trips_bytes() {
             let context = Context::new().expect("create compute context");
             let data: Vec<u8> = (0..=255).collect();
-            let buffer = context.buffer(data.len()).expect("allocate buffer");
-            context.upload(&buffer, &data).expect("upload");
+            let mut buffer = context.buffer(data.len()).expect("allocate buffer");
+            context.upload(&mut buffer, &data).expect("upload");
             let read_back = context.download(&buffer).expect("download");
             assert_eq!(read_back, data);
         }
@@ -311,8 +317,8 @@ mod tests {
             // Uploads are sized by what they carry, not by the destination, so
             // the untouched tail is what the allocation zeroed.
             let context = Context::new().expect("create compute context");
-            let buffer = context.buffer(8).expect("allocate buffer");
-            context.upload(&buffer, &[1, 2, 3, 4]).expect("upload");
+            let mut buffer = context.buffer(8).expect("allocate buffer");
+            context.upload(&mut buffer, &[1, 2, 3, 4]).expect("upload");
             assert_eq!(
                 context.download(&buffer).expect("download"),
                 vec![1, 2, 3, 4, 0, 0, 0, 0]

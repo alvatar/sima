@@ -314,9 +314,9 @@ mod tests {
                 .expect("build kernel");
             let input: [u32; 4] = [1, 2, 3, 4];
             let bytes: &[u8] = bytemuck::cast_slice(&input);
-            let in_buffer = context.buffer(bytes.len()).expect("input buffer");
+            let mut in_buffer = context.buffer(bytes.len()).expect("input buffer");
             let out_buffer = context.buffer(bytes.len()).expect("output buffer");
-            context.upload(&in_buffer, bytes).expect("upload input");
+            context.upload(&mut in_buffer, bytes).expect("upload input");
 
             context
                 .dispatch(&kernel, &[&in_buffer, &out_buffer], [1, 1, 1])
@@ -340,9 +340,9 @@ mod tests {
                 .expect("build kernel");
             let input: [u32; 4] = [1, 2, 3, 4];
             let bytes: &[u8] = bytemuck::cast_slice(&input);
-            let a = context.buffer(bytes.len()).expect("buffer a");
+            let mut a = context.buffer(bytes.len()).expect("buffer a");
             let b = context.buffer(bytes.len()).expect("buffer b");
-            context.upload(&a, bytes).expect("upload input");
+            context.upload(&mut a, bytes).expect("upload input");
 
             // First pass writes b = a * 2 + 1 through the shader; the second pass
             // reads that shader output back out of b and writes a.

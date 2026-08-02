@@ -110,8 +110,8 @@ pub fn reduce(
         input.alive_min.to_bits(),
         PARTITIONS,
     ];
-    let params_buffer = context.buffer(std::mem::size_of_val(&params))?;
-    context.upload(&params_buffer, bytemuck::cast_slice(&params))?;
+    let mut params_buffer = context.buffer(std::mem::size_of_val(&params))?;
+    context.upload(&mut params_buffer, bytemuck::cast_slice(&params))?;
 
     // Level-1 partials (per channel a sum, min, max, then the alive count and
     // the activity sum), the published means, the variance-pass partials, and
@@ -194,9 +194,9 @@ mod tests {
 
     /// Uploads `data` (cell-major interleaved f32) into a fresh device buffer.
     fn upload(context: &Context, data: &[f32]) -> Buffer {
-        let buffer = context.buffer(std::mem::size_of_val(data)).expect("buffer");
+        let mut buffer = context.buffer(std::mem::size_of_val(data)).expect("buffer");
         context
-            .upload(&buffer, bytemuck::cast_slice(data))
+            .upload(&mut buffer, bytemuck::cast_slice(data))
             .expect("upload");
         buffer
     }

@@ -104,15 +104,15 @@ pub fn run<'a>(
     let byte_len = std::mem::size_of_val(payload);
 
     // Two ping-pong buffers for the state and one fixed dimensions buffer.
-    let a = context.buffer(byte_len)?;
-    let b = context.buffer(byte_len)?;
+    let mut a = context.buffer(byte_len)?;
+    let mut b = context.buffer(byte_len)?;
     let dims_values = [width, height, channels];
-    let dims = context.buffer(std::mem::size_of_val(&dims_values))?;
-    context.upload(&dims, bytemuck::cast_slice(&dims_values))?;
+    let mut dims = context.buffer(std::mem::size_of_val(&dims_values))?;
+    context.upload(&mut dims, bytemuck::cast_slice(&dims_values))?;
     // A f32 -> u8 cast is alignment-safe, so the payload uploads zero-copy.
     // Both buffers start on `initial` so a zero-step run leaves the pair equal.
-    context.upload(&a, bytemuck::cast_slice(payload))?;
-    context.upload(&b, bytemuck::cast_slice(payload))?;
+    context.upload(&mut a, bytemuck::cast_slice(payload))?;
+    context.upload(&mut b, bytemuck::cast_slice(payload))?;
 
     // The per-step index buffer, created once and rewritten by each dispatch
     // when the model opts in. Two u32 words carry the step as a little-endian

@@ -64,8 +64,8 @@ impl CellularEngine for WgslEngine {
             [] => None,
             values => {
                 let bytes: &[u8] = bytemuck::cast_slice(values);
-                let buffer = self.context.buffer(bytes.len())?;
-                self.context.upload(&buffer, bytes)?;
+                let mut buffer = self.context.buffer(bytes.len())?;
+                self.context.upload(&mut buffer, bytes)?;
                 Some(buffer)
             }
         };
@@ -77,8 +77,8 @@ impl CellularEngine for WgslEngine {
             Some(seed) => {
                 let words = [seed as u32, (seed >> 32) as u32];
                 let seed_bytes: &[u8] = bytemuck::cast_slice(&words);
-                let buffer = self.context.buffer(seed_bytes.len())?;
-                self.context.upload(&buffer, seed_bytes)?;
+                let mut buffer = self.context.buffer(seed_bytes.len())?;
+                self.context.upload(&mut buffer, seed_bytes)?;
                 Some(buffer)
             }
             None => None,
@@ -256,9 +256,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 .expect("build kernel");
             let reduce = ReduceKernels::build(&context).expect("reduction kernels");
             let uniform_bytes: &[u8] = bytemuck::cast_slice(&uniforms);
-            let uniform_buffer = context.buffer(uniform_bytes.len()).expect("uniform buffer");
+            let mut uniform_buffer = context.buffer(uniform_bytes.len()).expect("uniform buffer");
             context
-                .upload(&uniform_buffer, uniform_bytes)
+                .upload(&mut uniform_buffer, uniform_bytes)
                 .expect("upload uniforms");
             let trajectory = run(&context, &kernel, &initial, steps, &[&uniform_buffer], None)
                 .expect("direct run");

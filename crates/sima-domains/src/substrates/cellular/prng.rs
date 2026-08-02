@@ -90,9 +90,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             .kernel(&probe_source(), "main", BLOCK_WIDTH)
             .expect("build probe kernel");
         let request_bytes: &[u8] = bytemuck::cast_slice(requests);
-        let request_buffer = context.buffer(request_bytes.len()).expect("request buffer");
+        let mut request_buffer = context.buffer(request_bytes.len()).expect("request buffer");
         context
-            .upload(&request_buffer, request_bytes)
+            .upload(&mut request_buffer, request_bytes)
             .expect("upload requests");
         let result_buffer = context
             .buffer(rows * 2 * std::mem::size_of::<u32>())
