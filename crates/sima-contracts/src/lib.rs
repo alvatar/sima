@@ -27,6 +27,13 @@
 //! under it; like the execution context, it is operational and never reaches a
 //! committed artifact or a task key.
 //!
+//! Beside that vocabulary sits the selection policy every execution backend
+//! shares — [`class_of`], [`number_members`], [`resolve_member`],
+//! [`choose_device`], [`requested_device_index`]. Minting classes in one place
+//! is what makes one physical card one class name whichever backend enumerated
+//! it, and each function is pure over the candidate list a backend supplies, so
+//! the policy is verifiable without a device.
+//!
 //! [`Domain`] is the declaration side: what a program hands over so a run can
 //! reach its executor. It carries the format's environment, the devices its
 //! work runs on, and the translation of the program's own configuration, which
@@ -44,7 +51,10 @@ mod executor;
 mod generator;
 
 pub use checkpoint::{Checkpoint, NoCheckpoint};
-pub use device::{DeviceBinding, DeviceClass, DeviceInfo, DeviceType};
+pub use device::{
+    DeviceBinding, DeviceClass, DeviceInfo, DeviceType, choose_device, class_of, number_members,
+    requested_device_index, resolve_member,
+};
 pub use domain::Domain;
 pub use executor::{
     Artifact, ExecutionContext, Executor, Outcome, STATE_ARTIFACT, Stats, TaskInput, WorkerId,
