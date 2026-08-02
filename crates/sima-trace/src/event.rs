@@ -146,6 +146,17 @@ pub enum Event {
         binary: String,
         digest: String,
     },
+    /// A worker's child reported a driver other than the one this run's
+    /// journal last recorded for the same host and device. The driver never
+    /// enters identity, so results and checkpoints from the previous driver
+    /// stay valid to the store; this event is the visible record that they
+    /// and the new spawns' results come from different driver builds.
+    DriverChanged {
+        host: String,
+        device: String,
+        from: String,
+        to: String,
+    },
     /// A chain's device class was absent from the run's devices, so its work
     /// moved to a class that is present. Classes render `vendor:device`.
     ChainRebound {

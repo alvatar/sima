@@ -125,6 +125,21 @@ pub fn describe(event: &Event, committed: usize, tasks: usize) -> Option<String>
         Event::BudgetWallClockExhausted { deadline_ms } => format!(
             "budget exhausted: rental deadline (epoch ms {deadline_ms}) passed, winding down"
         ),
+        // The one warning-class provenance line: results already stored and
+        // those about to be computed come from different driver builds.
+        Event::DriverChanged {
+            host,
+            device,
+            from,
+            to,
+        } => {
+            let place = if host.is_empty() {
+                device.clone()
+            } else {
+                format!("{device} on {host}")
+            };
+            format!("warning: the driver for {place} changed: {from} is now {to}")
+        }
         Event::Queued { .. }
         | Event::Leased { .. }
         | Event::WorkerBound { .. }

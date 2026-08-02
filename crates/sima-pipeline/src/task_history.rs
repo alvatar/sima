@@ -216,6 +216,7 @@ impl TaskHistory {
             | Event::RunInterrupted { .. }
             | Event::WorkerBound { .. }
             | Event::ProgramBound { .. }
+            | Event::DriverChanged { .. }
             | Event::ChainRebound { .. }
             | Event::Diagnostic { .. }
             | Event::InstanceOnline { .. }
@@ -265,6 +266,7 @@ fn lifecycle_task(event: &Event) -> Option<&str> {
         | Event::RunInterrupted { .. }
         | Event::WorkerBound { .. }
         | Event::ProgramBound { .. }
+        | Event::DriverChanged { .. }
         | Event::ChainRebound { .. }
         | Event::Diagnostic { .. }
         | Event::InstanceOnline { .. }

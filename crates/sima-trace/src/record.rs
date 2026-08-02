@@ -108,6 +108,24 @@ mod tests {
     }
 
     #[test]
+    fn a_driver_changed_line_round_trips() -> Result<()> {
+        let record = fixed_stamp(Event::DriverChanged {
+            host: "gpubox".to_string(),
+            device: "NVIDIA RTX PRO 2000".to_string(),
+            from: "570.86.15".to_string(),
+            to: "580.65.6".to_string(),
+        });
+        assert_eq!(Record::from_line(&record.to_line()?)?, record);
+        Ok(())
+    }
+
+    #[test]
+    fn a_driver_changed_line_without_both_versions_is_rejected() {
+        let line = r#"{"ts_ms":1234,"event":"driver_changed","host":"","device":"gpu","from":"570.86.15"}"#;
+        assert!(matches!(Record::from_line(line), Err(Error::Encoding(_))));
+    }
+
+    #[test]
     fn a_run_started_line_without_a_commit_count_is_rejected() {
         let run = "cd".repeat(32);
         let line = format!(r#"{{"ts_ms":1234,"event":"run_started","run":"{run}","tasks":3}}"#);
