@@ -1,5 +1,6 @@
 //! Binding buffers to a kernel and launching thread blocks.
 
+use cudarc::driver::sys;
 use cudarc::driver::{LaunchConfig, PushKernelArg};
 
 use sima_core::{Error, Result};
@@ -31,6 +32,31 @@ pub struct BufferUpdate<'a> {
 }
 
 impl Context {
+    /// The largest grid this device launches, per axis.
+    ///
+    /// A caller sizing a grid by its element count has to check: past the limit
+    /// the launch is refused by the driver rather than clamped. Reading the
+    /// device's own figure keeps the check exact rather than conservative.
+    pub fn max_groups(&self) -> Result<[u32; 3]> {
+        use sys::CUdevice_attribute_enum as Attribute;
+        let context = self.stream().context();
+        let mut limits = [0u32; 3];
+        for (axis, attribute) in [
+            Attribute::CU_DEVICE_ATTRIBUTE_MAX_GRID_DIM_X,
+            Attribute::CU_DEVICE_ATTRIBUTE_MAX_GRID_DIM_Y,
+            Attribute::CU_DEVICE_ATTRIBUTE_MAX_GRID_DIM_Z,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let reported = context
+                .attribute(attribute)
+                .map_err(|e| driver::backend_error("read the device's maximum grid size", e))?;
+            limits[axis] = reported.max(0) as u32;
+        }
+        Ok(limits)
+    }
+
     /// Binds `buffers` to the kernel's parameters in order and launches
     /// `groups` thread blocks of the kernel's own width.
     ///

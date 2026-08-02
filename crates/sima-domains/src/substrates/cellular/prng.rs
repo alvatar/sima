@@ -2,7 +2,7 @@
 //! reproduced in WGSL, bit-identical to the CPU implementation. Any cellular
 //! kernel needing result-affecting randomness composes this source.
 //!
-//! The kernels compose the snippet with `include_str!("shaders/prng.wgsl")`
+//! The kernels compose the snippet with `include_str!("wgsl/shaders/prng.wgsl")`
 //! (a string literal, which `concat!` in a `const KERNEL_WGSL` requires); the
 //! [`PRNG_WGSL`] handle names the same file as the substrate home and anchors
 //! the parity test below.
@@ -12,7 +12,7 @@
 /// parity test, which composes it into a probe kernel; production kernels
 /// `include_str!` the same file directly.
 #[cfg(test)]
-const PRNG_WGSL: &str = include_str!("shaders/prng.wgsl");
+const PRNG_WGSL: &str = include_str!("wgsl/shaders/prng.wgsl");
 
 #[cfg(test)]
 mod tests {

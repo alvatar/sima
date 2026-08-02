@@ -1,10 +1,13 @@
-//! The GPU reduction of a final grid pair into the per-candidate stat scalars.
+//! The GPU reduction of a final grid pair into the per-candidate stat scalars,
+//! written once over the [`CellularOps`] boundary and monomorphized per backend.
 //!
-//! The kernel is [`REDUCE_WGSL`], four compute passes dispatched in order;
-//! [`ReduceKernels`] compiles them once per engine and [`reduce`] runs them
-//! over the two live ping-pong buffers a [`run`](super::run) left resident. The
-//! scalars are named as the reporting layer expects: `c<i>.mean`, `c<i>.var`,
-//! `c<i>.min`, `c<i>.max` per channel, then `population` and `activity`.
+//! Each backend ships its own transcription of the kernel — four compute passes
+//! dispatched in order over the same fixed partition topology — and
+//! [`CellularOps::REDUCE_SOURCE`] names it. [`ReduceKernels`] builds the four
+//! passes once per engine and [`reduce`] runs them over the two live ping-pong
+//! buffers a [`run`](super::run) left resident. The scalars are named as the
+//! reporting layer expects: `c<i>.mean`, `c<i>.var`, `c<i>.min`, `c<i>.max` per
+//! channel, then `population` and `activity`.
 //!
 //! A diverged candidate carries non-finite values into the scalars as-is. WGSL
 //! permits fast-math relaxation, so whether an evaluation that would yield a NaN
@@ -13,12 +16,8 @@
 //! all-finite check is what catches a partially diverged grid.
 
 use sima_core::{Error, Result};
-use sima_toolkit_wgsl::{Buffer, Context, Kernel};
 
-/// The reduction kernel source. Its digest joins the environment because the
-/// reduction's output gates committed bytes, so editing it must change task
-/// keys exactly as editing a step kernel does.
-pub const REDUCE_WGSL: &str = include_str!("shaders/reduce.wgsl");
+use crate::substrates::cellular::ops::CellularOps;
 
 /// The upper bound on channels the reduction handles; each kernel's
 /// per-channel scratch arrays are sized to it, so a model exceeding it is
@@ -38,38 +37,42 @@ pub(crate) const PARTITIONS: u32 = 64;
 /// invocations the kernel launches.
 pub(crate) const BLOCK_WIDTH: u32 = 64;
 
+/// The four reduction passes, in dispatch order, with the block width each
+/// launches at.
+///
+/// The two level-1 passes launch one invocation per partition; the two combine
+/// passes are single-threaded folds, so they carry a width of one.
+const PASSES: [(&str, u32); 4] = [
+    ("pass1", BLOCK_WIDTH),
+    ("combine1", 1),
+    ("pass2", BLOCK_WIDTH),
+    ("combine2", 1),
+];
+
 /// The four compiled reduction passes, built once and held for the engine's
 /// lifetime alongside the step kernel.
-pub struct ReduceKernels {
-    pass1: Kernel,
-    combine1: Kernel,
-    pass2: Kernel,
-    combine2: Kernel,
+pub(crate) struct ReduceKernels<O: CellularOps> {
+    passes: Vec<O::Kernel>,
 }
 
-impl ReduceKernels {
-    /// Compiles the four passes from the one shared source.
-    ///
-    /// The two level-1 passes launch one invocation per partition; the two
-    /// combine passes are single-threaded folds, so they carry a width of one —
-    /// the same split the CUDA reduction makes.
-    pub fn build(context: &Context) -> Result<ReduceKernels> {
-        Ok(ReduceKernels {
-            pass1: context.kernel(REDUCE_WGSL, "pass1", BLOCK_WIDTH)?,
-            combine1: context.kernel(REDUCE_WGSL, "combine1", 1)?,
-            pass2: context.kernel(REDUCE_WGSL, "pass2", BLOCK_WIDTH)?,
-            combine2: context.kernel(REDUCE_WGSL, "combine2", 1)?,
-        })
+impl<O: CellularOps> ReduceKernels<O> {
+    /// Builds the four passes from this backend's one reduction source.
+    pub(crate) fn build(ops: &O) -> Result<ReduceKernels<O>> {
+        let passes = PASSES
+            .iter()
+            .map(|&(entry, width)| ops.kernel(O::REDUCE_SOURCE, entry, width))
+            .collect::<Result<Vec<_>>>()?;
+        Ok(ReduceKernels { passes })
     }
 }
 
 /// One reduction's inputs: the resident grid pair, its shape, and the model's
 /// liveness rule.
-pub struct GridPair<'a> {
+pub(crate) struct GridPair<'a, O: CellularOps> {
     /// The final grid $G_N$, resident on the device, cell-major interleaved.
-    pub current: &'a Buffer,
+    pub current: &'a O::Buffer,
     /// The grid one step before, $G_{N-1}$, resident on the device.
-    pub previous: &'a Buffer,
+    pub previous: &'a O::Buffer,
     /// Channels per cell.
     pub channels: u32,
     /// Cells in the grid: `width * height`.
@@ -81,10 +84,10 @@ pub struct GridPair<'a> {
 }
 
 /// Reduces the final grid pair into the named stat scalars, in emission order.
-pub fn reduce(
-    context: &Context,
-    kernels: &ReduceKernels,
-    input: &GridPair<'_>,
+pub(crate) fn reduce<O: CellularOps>(
+    ops: &O,
+    kernels: &ReduceKernels<O>,
+    input: &GridPair<'_, O>,
 ) -> Result<Vec<(String, f64)>> {
     let channels = input.channels;
     if channels == 0 || channels > MAX_CHANNELS {
@@ -93,7 +96,7 @@ pub fn reduce(
         )));
     }
     // The liveness channel indexes into the cell's channels; out of range, the
-    // shader would read past the cell. A model misdeclaring it is caught here.
+    // kernel would read past the cell. A model misdeclaring it is caught here.
     if input.alive_channel >= channels {
         return Err(Error::Validation(format!(
             "reduction alive_channel {} is out of range for {channels} channels",
@@ -101,8 +104,8 @@ pub fn reduce(
         )));
     }
 
-    // The parameter buffer the shader reads: the alive minimum travels as its
-    // f32 bits, since the toolkit's buffers are untyped byte storage.
+    // The parameter buffer the kernel reads: the alive minimum travels as its
+    // f32 bits, since the toolkits' buffers are untyped byte storage.
     let params = [
         channels,
         input.cell_count,
@@ -110,23 +113,23 @@ pub fn reduce(
         input.alive_min.to_bits(),
         PARTITIONS,
     ];
-    let mut params_buffer = context.buffer(std::mem::size_of_val(&params))?;
-    context.upload(&mut params_buffer, bytemuck::cast_slice(&params))?;
+    let mut params_buffer = ops.buffer(std::mem::size_of_val(&params))?;
+    ops.upload(&mut params_buffer, bytemuck::cast_slice(&params))?;
 
     // Level-1 partials (per channel a sum, min, max, then the alive count and
     // the activity sum), the published means, the variance-pass partials, and
     // the final scalars — all f32.
     let stride = 3 * channels + 2;
-    let partials = context.buffer((PARTITIONS * stride) as usize * 4)?;
-    let means = context.buffer(channels as usize * 4)?;
-    let partials2 = context.buffer((PARTITIONS * channels) as usize * 4)?;
+    let partials = ops.buffer((PARTITIONS * stride) as usize * 4)?;
+    let means = ops.buffer(channels as usize * 4)?;
+    let partials2 = ops.buffer((PARTITIONS * channels) as usize * 4)?;
     let out_len = (4 * channels + 2) as usize;
-    let out = context.buffer(out_len * 4)?;
+    let out = ops.buffer(out_len * 4)?;
 
-    // Every pass binds the same seven buffers: the toolkit reflects one
-    // descriptor set for the whole module, and a pass ignores what it does not
-    // read.
-    let bound: [&Buffer; 7] = [
+    // Every pass binds the same seven buffers: the WGSL module reflects one
+    // descriptor set for all four entry points and the CUDA transcription
+    // declares the same seven pointers, so a pass ignores what it does not read.
+    let bound: [&O::Buffer; 7] = [
         input.current,
         input.previous,
         &params_buffer,
@@ -135,14 +138,16 @@ pub fn reduce(
         &partials2,
         &out,
     ];
+    // The level-1 passes cover one partition per invocation; the combines are
+    // one invocation each. Every dispatch completes before the next begins, so
+    // each pass reads what the one before it wrote.
     let level1 = [PARTITIONS.div_ceil(BLOCK_WIDTH), 1, 1];
     let single = [1, 1, 1];
-    context.dispatch(&kernels.pass1, &bound, level1)?;
-    context.dispatch(&kernels.combine1, &bound, single)?;
-    context.dispatch(&kernels.pass2, &bound, level1)?;
-    context.dispatch(&kernels.combine2, &bound, single)?;
+    for (kernel, groups) in kernels.passes.iter().zip([level1, single, level1, single]) {
+        ops.dispatch(kernel, &bound, groups)?;
+    }
 
-    let bytes = context.download(&out)?;
+    let bytes = ops.download(&out)?;
     let values: Vec<f32> = bytes
         .chunks_exact(4)
         .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
@@ -174,7 +179,7 @@ pub fn scalar_names(channels: u32) -> Vec<String> {
 /// answer: pairing them positionally would emit the metrics that happen to line
 /// up and drop the rest, so a snapshot predicate naming a missing scalar would
 /// read the run as having no such scalar rather than as having failed.
-pub(crate) fn name_scalars(channels: u32, values: &[f32]) -> Result<Vec<(String, f64)>> {
+fn name_scalars(channels: u32, values: &[f32]) -> Result<Vec<(String, f64)>> {
     let names = scalar_names(channels);
     if names.len() != values.len() {
         return Err(Error::Backend(format!(
@@ -193,61 +198,11 @@ pub(crate) fn name_scalars(channels: u32, values: &[f32]) -> Result<Vec<(String,
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sima_toolkit_wgsl::check;
-    use std::collections::HashMap;
 
-    /// The CUDA reduction's source, for the checks that read a bound out of
-    /// every kernel that declares one.
+    /// The two reduction sources, for the checks that read a bound out of every
+    /// kernel that declares one.
+    const REDUCE_WGSL: &str = include_str!("wgsl/shaders/reduce.wgsl");
     const REDUCE_CU: &str = include_str!("cuda/kernels/reduce.cu");
-
-    #[test]
-    fn every_pass_compiles_and_reflects_seven_bindings() -> Result<()> {
-        // The four entry points share one module, so each reflects the module's
-        // full seven-buffer descriptor set.
-        for entry in ["pass1", "combine1", "pass2", "combine2"] {
-            check(REDUCE_WGSL, entry)?;
-        }
-        Ok(())
-    }
-
-    /// Uploads `data` (cell-major interleaved f32) into a fresh device buffer.
-    fn upload(context: &Context, data: &[f32]) -> Buffer {
-        let mut buffer = context.buffer(std::mem::size_of_val(data)).expect("buffer");
-        context
-            .upload(&mut buffer, bytemuck::cast_slice(data))
-            .expect("upload");
-        buffer
-    }
-
-    /// The reduction's scalars as a name → value map. `alive` is the
-    /// `(channel, minimum)` liveness rule.
-    fn reduced(
-        context: &Context,
-        kernels: &ReduceKernels,
-        current: &[f32],
-        previous: &[f32],
-        channels: u32,
-        cell_count: u32,
-        alive: (u32, f32),
-    ) -> HashMap<String, f64> {
-        let cur = upload(context, current);
-        let prev = upload(context, previous);
-        reduce(
-            context,
-            kernels,
-            &GridPair {
-                current: &cur,
-                previous: &prev,
-                channels,
-                cell_count,
-                alive_channel: alive.0,
-                alive_min: alive.1,
-            },
-        )
-        .expect("reduce")
-        .into_iter()
-        .collect()
-    }
 
     #[test]
     fn every_kernel_sizes_its_scratch_to_the_bound_this_module_enforces() {
@@ -342,245 +297,242 @@ mod tests {
         assert_eq!(named[9].1, 9.0);
     }
 
-    /// Reducing a grid dispatches the reduction passes, which needs a real Vulkan device.
+    /// Reducing a grid dispatches the reduction passes, which needs a real
+    /// device. The reduction is one implementation, so each case is written
+    /// once over the ops boundary and run against both backends.
     mod on_device {
+        use std::collections::HashMap;
+
         use super::*;
+        use crate::substrates::cellular::cuda::CudaOps;
+        use crate::substrates::cellular::harness::run;
+        use crate::substrates::cellular::reference::{SMOKE_PTX, SMOKE_WGSL};
+        use crate::substrates::cellular::wgsl::WgslOps;
+        use crate::substrates::cellular::{Grid, ops::CellularOps};
+
+        /// One reduction over uploaded grids, as a name → value map. `alive` is
+        /// the `(channel, minimum)` liveness rule.
+        fn reduced<O: CellularOps>(
+            ops: &O,
+            kernels: &ReduceKernels<O>,
+            current: &[f32],
+            previous: &[f32],
+            channels: u32,
+            cell_count: u32,
+            alive: (u32, f32),
+        ) -> HashMap<String, f64> {
+            let upload = |data: &[f32]| {
+                let mut buffer = ops.buffer(std::mem::size_of_val(data)).expect("buffer");
+                ops.upload(&mut buffer, bytemuck::cast_slice(data))
+                    .expect("upload");
+                buffer
+            };
+            let (cur, prev) = (upload(current), upload(previous));
+            reduce(
+                ops,
+                kernels,
+                &GridPair {
+                    current: &cur,
+                    previous: &prev,
+                    channels,
+                    cell_count,
+                    alive_channel: alive.0,
+                    alive_min: alive.1,
+                },
+            )
+            .expect("reduce")
+            .into_iter()
+            .collect()
+        }
+
+        /// Runs `case` against every backend, with that backend's reduction
+        /// passes already built.
+        fn on_each_backend(
+            case: impl Fn(&dyn Fn(&[f32], &[f32], u32, u32, (u32, f32)) -> HashMap<String, f64>),
+        ) {
+            let wgsl = WgslOps::open(None).expect("open a Vulkan device");
+            let wgsl_kernels = ReduceKernels::build(&wgsl).expect("build the WGSL reduction");
+            case(&|current, previous, channels, cells, alive| {
+                reduced(
+                    &wgsl,
+                    &wgsl_kernels,
+                    current,
+                    previous,
+                    channels,
+                    cells,
+                    alive,
+                )
+            });
+
+            let cuda = CudaOps::open(None).expect("open a CUDA device");
+            let cuda_kernels = ReduceKernels::build(&cuda).expect("build the CUDA reduction");
+            case(&|current, previous, channels, cells, alive| {
+                reduced(
+                    &cuda,
+                    &cuda_kernels,
+                    current,
+                    previous,
+                    channels,
+                    cells,
+                    alive,
+                )
+            });
+        }
 
         #[test]
         fn a_single_channel_grid_reduces_to_known_scalars() {
-            // Four cells [1, 2, 3, 4]; the previous grid is all zeros. Every figure
-            // is exact in f32. mean 2.5, min 1, max 4, variance 1.25; alive threshold
-            // 3 counts {3, 4}, so population 0.5; activity is the mean |Δ| = 10/4.
-            let context = Context::new().expect("context");
-            let kernels = ReduceKernels::build(&context).expect("kernels");
-            let map = reduced(
-                &context,
-                &kernels,
-                &[1.0, 2.0, 3.0, 4.0],
-                &[0.0, 0.0, 0.0, 0.0],
-                1,
-                4,
-                (0, 3.0),
-            );
-            assert_eq!(map["c0.mean"], 2.5);
-            assert_eq!(map["c0.min"], 1.0);
-            assert_eq!(map["c0.max"], 4.0);
-            assert_eq!(map["c0.var"], 1.25);
-            assert_eq!(map["population"], 0.5);
-            assert_eq!(map["activity"], 2.5);
+            // Four cells [1, 2, 3, 4]; the previous grid is all zeros. Every
+            // figure is exact in f32. mean 2.5, min 1, max 4, variance 1.25; the
+            // alive threshold 3 counts {3, 4}, so population 0.5; activity is
+            // the mean |Δ| = 10/4.
+            on_each_backend(|reduce_on_device| {
+                let map = reduce_on_device(&[1.0, 2.0, 3.0, 4.0], &[0.0; 4], 1, 4, (0, 3.0));
+                assert_eq!(map["c0.mean"], 2.5);
+                assert_eq!(map["c0.min"], 1.0);
+                assert_eq!(map["c0.max"], 4.0);
+                assert_eq!(map["c0.var"], 1.25);
+                assert_eq!(map["population"], 0.5);
+                assert_eq!(map["activity"], 2.5);
+            });
         }
 
         #[test]
         fn each_channel_reduces_independently() {
-            // Two cells, two channels, cell-major: cell0 = (1, 2), cell1 = (3, 4).
-            // Channel 0 is [1, 3] (mean 2, var 1), channel 1 is [2, 4] (mean 3,
-            // var 1). Alive on channel 1 at threshold 3 counts cell1 alone, so
-            // population 0.5; activity against a zero previous is 10/(2·2).
-            let context = Context::new().expect("context");
-            let kernels = ReduceKernels::build(&context).expect("kernels");
-            let map = reduced(
-                &context,
-                &kernels,
-                &[1.0, 2.0, 3.0, 4.0],
-                &[0.0, 0.0, 0.0, 0.0],
-                2,
-                2,
-                (1, 3.0),
-            );
-            assert_eq!(map["c0.mean"], 2.0);
-            assert_eq!(map["c0.var"], 1.0);
-            assert_eq!(map["c0.min"], 1.0);
-            assert_eq!(map["c0.max"], 3.0);
-            assert_eq!(map["c1.mean"], 3.0);
-            assert_eq!(map["c1.var"], 1.0);
-            assert_eq!(map["c1.min"], 2.0);
-            assert_eq!(map["c1.max"], 4.0);
-            assert_eq!(map["population"], 0.5);
-            assert_eq!(map["activity"], 2.5);
+            // Two cells, two channels, cell-major: cell0 = (1, 2),
+            // cell1 = (3, 4). Channel 0 is [1, 3] (mean 2, var 1), channel 1 is
+            // [2, 4] (mean 3, var 1). Alive on channel 1 at threshold 3 counts
+            // cell1 alone, so population 0.5; activity against a zero previous
+            // is 10/(2·2).
+            on_each_backend(|reduce_on_device| {
+                let map = reduce_on_device(&[1.0, 2.0, 3.0, 4.0], &[0.0; 4], 2, 2, (1, 3.0));
+                assert_eq!(map["c0.mean"], 2.0);
+                assert_eq!(map["c0.var"], 1.0);
+                assert_eq!(map["c0.min"], 1.0);
+                assert_eq!(map["c0.max"], 3.0);
+                assert_eq!(map["c1.mean"], 3.0);
+                assert_eq!(map["c1.var"], 1.0);
+                assert_eq!(map["c1.min"], 2.0);
+                assert_eq!(map["c1.max"], 4.0);
+                assert_eq!(map["population"], 0.5);
+                assert_eq!(map["activity"], 2.5);
+            });
         }
 
         #[test]
         fn activity_is_the_mean_absolute_change() {
-            // Current [4, 1, 3, 2], previous [1, 3, 3, 6]: |Δ| = 3 + 2 + 0 + 4 = 9
+            // Current [4, 1, 3, 2], previous [1, 3, 3, 6]: |Δ| = 3+2+0+4 = 9
             // over four cells and one channel, so activity is 9/4 = 2.25.
-            let context = Context::new().expect("context");
-            let kernels = ReduceKernels::build(&context).expect("kernels");
-            let map = reduced(
-                &context,
-                &kernels,
-                &[4.0, 1.0, 3.0, 2.0],
-                &[1.0, 3.0, 3.0, 6.0],
-                1,
-                4,
-                (0, 0.0),
-            );
-            assert_eq!(map["activity"], 2.25);
+            on_each_backend(|reduce_on_device| {
+                let map =
+                    reduce_on_device(&[4.0, 1.0, 3.0, 2.0], &[1.0, 3.0, 3.0, 6.0], 1, 4, (0, 0.0));
+                assert_eq!(map["activity"], 2.25);
+            });
         }
 
         #[test]
         fn population_spans_none_and_all_alive() {
-            // The same grid: a threshold above every value counts none alive, one
-            // below every value counts all.
-            let context = Context::new().expect("context");
-            let kernels = ReduceKernels::build(&context).expect("kernels");
-            let grid = [1.0, 2.0, 3.0, 4.0];
-            let zeros = [0.0; 4];
-            let none = reduced(&context, &kernels, &grid, &zeros, 1, 4, (0, 100.0));
-            assert_eq!(none["population"], 0.0);
-            let all = reduced(&context, &kernels, &grid, &zeros, 1, 4, (0, 0.0));
-            assert_eq!(all["population"], 1.0);
+            // The same grid: a threshold above every value counts none alive,
+            // one below every value counts all.
+            on_each_backend(|reduce_on_device| {
+                let grid = [1.0, 2.0, 3.0, 4.0];
+                assert_eq!(
+                    reduce_on_device(&grid, &[0.0; 4], 1, 4, (0, 100.0))["population"],
+                    0.0
+                );
+                assert_eq!(
+                    reduce_on_device(&grid, &[0.0; 4], 1, 4, (0, 0.0))["population"],
+                    1.0
+                );
+            });
         }
 
         #[test]
         fn the_reduction_is_deterministic() {
-            // The fixed topology folds every sum in the same order, so reducing the
-            // same grid twice yields byte-identical scalars.
-            let context = Context::new().expect("context");
-            let kernels = ReduceKernels::build(&context).expect("kernels");
-            let cur = upload(&context, &[1.0, 2.0, 3.0, 4.0]);
-            let prev = upload(&context, &[0.5, 1.5, 2.5, 3.5]);
-            let pair = GridPair {
-                current: &cur,
-                previous: &prev,
-                channels: 1,
-                cell_count: 4,
-                alive_channel: 0,
-                alive_min: 2.0,
-            };
-            let first = reduce(&context, &kernels, &pair).expect("first");
-            let second = reduce(&context, &kernels, &pair).expect("second");
-            let first_bits: Vec<u64> = first.iter().map(|(_, v)| v.to_bits()).collect();
-            let second_bits: Vec<u64> = second.iter().map(|(_, v)| v.to_bits()).collect();
-            assert_eq!(first_bits, second_bits);
+            // The fixed topology folds every sum in the same order, so reducing
+            // the same grid twice yields byte-identical scalars.
+            on_each_backend(|reduce_on_device| {
+                let bits = |map: HashMap<String, f64>| {
+                    let mut pairs: Vec<(String, u64)> =
+                        map.into_iter().map(|(n, v)| (n, v.to_bits())).collect();
+                    pairs.sort();
+                    pairs
+                };
+                let once =
+                    reduce_on_device(&[1.0, 2.0, 3.0, 4.0], &[0.5, 1.5, 2.5, 3.5], 1, 4, (0, 2.0));
+                let twice =
+                    reduce_on_device(&[1.0, 2.0, 3.0, 4.0], &[0.5, 1.5, 2.5, 3.5], 1, 4, (0, 2.0));
+                assert_eq!(bits(once), bits(twice));
+            });
+        }
+
+        #[test]
+        fn a_shape_the_reduction_cannot_handle_is_rejected() {
+            // Both guards are validation faults caught before any dispatch: a
+            // channel count past the scratch-array bound, and a liveness channel
+            // that indexes past the cell.
+            let ops = WgslOps::open(None).expect("open a Vulkan device");
+            let kernels = ReduceKernels::build(&ops).expect("build the reduction");
+            let mut grid = ops.buffer(16).expect("buffer");
+            ops.upload(&mut grid, &[0u8; 16]).expect("upload");
+            for (channels, cell_count, alive_channel) in [(MAX_CHANNELS + 1, 4, 0), (2, 2, 2)] {
+                assert!(matches!(
+                    reduce(
+                        &ops,
+                        &kernels,
+                        &GridPair {
+                            current: &grid,
+                            previous: &grid,
+                            channels,
+                            cell_count,
+                            alive_channel,
+                            alive_min: 0.0,
+                        },
+                    ),
+                    Err(Error::Validation(_))
+                ));
+            }
         }
 
         #[test]
         fn the_reduction_reads_the_harness_resident_pair() {
             // The reduction runs over the two ping-pong buffers `run` leaves
-            // resident, not synthetic uploads, so `Trajectory::previous` (G_{N-1})
-            // is exercised end to end. A kernel that adds one per step keeps every
-            // sum exact: after k steps the final grid is `initial + k` and the step
-            // before is `initial + (k - 1)`, so the absolute change is one in every
-            // cell.
-            const ADD_ONE_WGSL: &str = r#"
-@group(0) @binding(0) var<storage, read> in_grid: array<f32>;
-@group(0) @binding(1) var<storage, read_write> out_grid: array<f32>;
-@group(0) @binding(2) var<storage, read> dims: array<u32>;
-@compute @workgroup_size(64)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-    let cell = gid.x;
-    if (cell >= dims[0] * dims[1]) { return; }
-    out_grid[cell] = in_grid[cell] + 1.0;
-}
-"#;
-            let context = Context::new().expect("context");
-            let kernels = ReduceKernels::build(&context).expect("kernels");
-            let kernel = context
-                .kernel(ADD_ONE_WGSL, "main", BLOCK_WIDTH)
-                .expect("add-one kernel");
-
-            let cells = 16u32;
-            let initial =
-                crate::substrates::cellular::Grid::new(4, 4, 1, vec![0.0; cells as usize])
-                    .expect("grid");
-            let steps = 3u32;
-            let trajectory =
-                crate::substrates::cellular::run(&context, &kernel, &initial, steps, &[], None)
-                    .expect("run");
-
-            // The two resident buffers, downloaded as the reduction reads them.
-            let read = |buffer: &Buffer| -> Vec<f32> {
-                context
-                    .download(buffer)
-                    .expect("download")
-                    .chunks_exact(4)
-                    .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-                    .collect()
-            };
-            let current = read(trajectory.current());
-            let previous = read(trajectory.previous());
-
-            // Activity is the mean absolute change over every cell and channel; the
-            // mean is over the final grid alone. Both are computed here from the
-            // downloaded pair, independent of the reduction.
-            let activity: f64 = current
-                .iter()
-                .zip(&previous)
-                .map(|(&c, &p)| f64::from((c - p).abs()))
-                .sum::<f64>()
-                / f64::from(cells);
-            let mean: f64 = current.iter().map(|&v| f64::from(v)).sum::<f64>() / f64::from(cells);
-
-            // The reduction reads the resident buffers in place, not the downloads.
-            let map: HashMap<String, f64> = reduce(
-                &context,
-                &kernels,
-                &GridPair {
-                    current: trajectory.current(),
-                    previous: trajectory.previous(),
-                    channels: trajectory.channels(),
-                    cell_count: trajectory.cell_count(),
-                    alive_channel: 0,
-                    alive_min: 0.0,
-                },
-            )
-            .expect("reduce")
-            .into_iter()
-            .collect();
-            // Activity ties the reduction to the resident G_{N-1}; the mean is over
-            // G_N alone, so it catches a reduction that read the pair swapped.
-            assert_eq!(map["activity"], activity);
-            assert_eq!(map["activity"], 1.0);
-            assert_eq!(map["c0.mean"], mean);
-            assert_eq!(map["c0.mean"], f64::from(steps));
-        }
-
-        #[test]
-        fn too_many_channels_is_rejected() {
-            // A channel count past the scratch-array bound is a validation fault,
-            // caught before any dispatch.
-            let context = Context::new().expect("context");
-            let kernels = ReduceKernels::build(&context).expect("kernels");
-            let grid = upload(&context, &[0.0; 4]);
-            assert!(matches!(
-                reduce(
-                    &context,
+            // resident, not synthetic uploads, so `Trajectory::previous`
+            // ($G_{N-1}$) is exercised end to end. A kernel that raises every
+            // cell to its neighborhood max over a grid that is already a
+            // maximum is a fixed point, so the pair is equal and activity is
+            // zero; the mean is the grid's own, which catches a reduction
+            // reading the pair swapped.
+            fn case<O: CellularOps>(ops: &O, source: &str) {
+                let kernels = ReduceKernels::build(ops).expect("build the reduction");
+                let kernel = ops
+                    .kernel(source, O::ENTRY, BLOCK_WIDTH)
+                    .expect("build the smoke kernel");
+                let initial = Grid::new(4, 4, 1, vec![2.0; 16]).expect("grid");
+                let trajectory = run(ops, &kernel, &initial, 3, &[], None).expect("run");
+                let map: HashMap<String, f64> = reduce(
+                    ops,
                     &kernels,
                     &GridPair {
-                        current: &grid,
-                        previous: &grid,
-                        channels: MAX_CHANNELS + 1,
-                        cell_count: 4,
+                        current: trajectory.current(),
+                        previous: trajectory.previous(),
+                        channels: trajectory.channels(),
+                        cell_count: trajectory.cell_count(),
                         alive_channel: 0,
                         alive_min: 0.0,
                     },
-                ),
-                Err(Error::Validation(_))
-            ));
-        }
-
-        #[test]
-        fn an_out_of_range_alive_channel_is_rejected() {
-            // A two-channel grid with the liveness channel at index 2 is out of
-            // range: a validation fault, caught before any dispatch.
-            let context = Context::new().expect("context");
-            let kernels = ReduceKernels::build(&context).expect("kernels");
-            let grid = upload(&context, &[0.0; 4]);
-            assert!(matches!(
-                reduce(
-                    &context,
-                    &kernels,
-                    &GridPair {
-                        current: &grid,
-                        previous: &grid,
-                        channels: 2,
-                        cell_count: 2,
-                        alive_channel: 2,
-                        alive_min: 0.0,
-                    },
-                ),
-                Err(Error::Validation(_))
-            ));
+                )
+                .expect("reduce")
+                .into_iter()
+                .collect();
+                assert_eq!(map["c0.mean"], 2.0);
+                assert_eq!(map["activity"], 0.0);
+                assert_eq!(map["population"], 1.0);
+            }
+            case(
+                &WgslOps::open(None).expect("open a Vulkan device"),
+                SMOKE_WGSL,
+            );
+            case(&CudaOps::open(None).expect("open a CUDA device"), SMOKE_PTX);
         }
     }
 }

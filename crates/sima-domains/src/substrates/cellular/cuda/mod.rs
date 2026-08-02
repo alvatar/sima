@@ -1,16 +1,17 @@
-//! The CUDA backend's dispatch loop and reduction, behind
-//! [`CudaEngine`](crate::substrates::cellular::CudaEngine).
+//! The CUDA half of the cellular substrate: the adapter onto
+//! [`sima_toolkit_cuda`], and the kernels this backend ships.
 //!
-//! Both files are transcriptions of their WGSL counterparts one level up:
-//! [`step`] mirrors [`cellular::step`](crate::substrates::cellular::step) and [`reduce`]
-//! mirrors [`cellular::reduce`](crate::substrates::cellular::reduce). Reading a pair side
-//! by side is the point — where the CUDA version departs from the WGSL one, the
-//! departure carries an inline comment saying why.
+//! Everything the substrate does with a device is written once above the
+//! [`CellularOps`](super::ops::CellularOps) boundary; what lives here is the
+//! translation into one toolkit's surface, plus the kernels only this backend
+//! can execute.
 //!
-//! What the two backends genuinely share stays shared: the scalar naming, the
-//! channel bound, and the partition count all come from
-//! [`cellular::reduce`](crate::substrates::cellular::reduce), so the two reductions cannot
-//! drift into folding differently.
+//! The kernels are the deliberate per-backend transcription. `reduce.cu` is
+//! written against `wgsl/shaders/reduce.wgsl` pass for pass, over the same
+//! fixed partition topology, and the constants the two must agree on — the
+//! channel bound, the partition count, the block width — come from
+//! [`cellular::reduce`](super::reduce) rather than from either kernel.
 
-pub(crate) mod reduce;
-pub(crate) mod step;
+mod ops;
+
+pub(crate) use ops::CudaOps;

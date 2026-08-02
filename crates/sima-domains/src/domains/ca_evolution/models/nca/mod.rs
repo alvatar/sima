@@ -60,7 +60,7 @@ impl CaModel for Nca {
     // kernel's source digest covers both, which is correct: both determine the
     // compiled SPIR-V.
     const KERNEL_SOURCE: &'static str = concat!(
-        include_str!("../../../../substrates/cellular/shaders/prng.wgsl"),
+        include_str!("../../../../substrates/cellular/wgsl/shaders/prng.wgsl"),
         include_str!("nca.wgsl"),
     );
     // The kernel reads the candidate seed at runtime for the async mask, so the

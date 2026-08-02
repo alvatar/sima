@@ -31,6 +31,17 @@ pub struct BufferUpdate<'a> {
 }
 
 impl Context {
+    /// The largest workgroup count this device launches, per axis.
+    ///
+    /// Vulkan guarantees only 65535 on each axis, so a caller sizing a grid by
+    /// its element count has to check: past the limit the dispatch is refused
+    /// by the driver rather than clamped, and on a machine that happens to
+    /// allow more it would run. Reading the device's own figure keeps the
+    /// check exact rather than conservative.
+    pub fn max_groups(&self) -> Result<[u32; 3]> {
+        Ok(self.limits().max_compute_work_group_count)
+    }
+
     /// Binds `buffers` to the kernel's group-0 storage bindings in order and
     /// dispatches `groups` workgroups.
     ///

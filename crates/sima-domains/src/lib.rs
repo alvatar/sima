@@ -17,11 +17,11 @@
 //! Below the concrete domains — the stub and `ca_evolution` — the
 //! [`substrates`] layer holds the structural kinds a domain's executor is built
 //! on. Today that is the [`cellular`](substrates::cellular) substrate: the
-//! [`Grid`](substrates::cellular::Grid) state, the
-//! [`run`](substrates::cellular::run) double-buffered dispatch harness, and the
-//! [`CellularRule`](substrates::cellular::CellularRule) CPU-reference contract
-//! used solely to cross-check that harness against an independent implementation
-//! in tests.
+//! [`Grid`](substrates::cellular::Grid) state, the double-buffered dispatch
+//! harness that advances it, and the stats reduction over the result. Each is
+//! written once over an internal boundary and instantiated per execution
+//! backend, so what a backend supplies is the translation onto its own toolkit
+//! and the kernels only it can run.
 //!
 //! The same domains are reachable as objects through [`BuiltinDomain`] and
 //! [`generators_for`], the shape a program outside the workspace supplies, so a
