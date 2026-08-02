@@ -5,7 +5,7 @@
 //! order, and the same per-step index transport.
 
 use sima_core::Result;
-use sima_toolkit_cuda::{Buffer, Context, Kernel};
+use sima_toolkit_cuda::{Buffer, BufferUpdate, Context, Kernel};
 
 use crate::substrates::cellular::{BLOCK_WIDTH, Grid};
 
@@ -79,11 +79,11 @@ impl Trajectory<'_> {
 /// parameters 0 and 1 swap.
 ///
 /// `step_base` transports the per-step index to the kernel. When `Some(base)`,
-/// one two-word `u32` buffer is created, and before dispatch `i` the value
-/// `base + i` is uploaded to it and passed last, so a kernel that depends on the
-/// absolute step reads it as a `u64`. The upload runs on the same stream as the
-/// launches, which orders it against the kernel's read. When `None`, no step
-/// buffer is created or passed and the launch is identical to a run without one.
+/// one two-word `u32` buffer is created, and dispatch `i` carries the value
+/// `base + i` into it inside its own submission, passed last, so a kernel that
+/// depends on the absolute step reads it as a `u64`. When `None`, no step
+/// buffer is created or passed and the launch is identical to a run without
+/// one.
 ///
 /// `steps == 0` dispatches nothing and leaves both buffers holding `initial`,
 /// so a reduction over the pair reports no activity.
@@ -130,23 +130,28 @@ pub(crate) fn run<'a>(
     // counts alike.
     let mut current_is_a = true;
     for i in 0..steps {
-        // The step upload borrows the buffer mutably, so it happens before the
-        // argument list is built rather than inside it.
-        if let (Some(base), Some(buffer)) = (step_base, step_buffer.as_mut()) {
-            let step = base + u64::from(i);
-            let words = [step as u32, (step >> 32) as u32];
-            context.upload(buffer, bytemuck::cast_slice(&words))?;
-        }
         let (src, dst) = if current_is_a { (&a, &b) } else { (&b, &a) };
-        let mut bound: Vec<&Buffer> = Vec::with_capacity(3 + params.len() + 1);
+        let mut bound: Vec<&Buffer> = Vec::with_capacity(3 + params.len());
         bound.push(src);
         bound.push(dst);
         bound.push(&dims);
         bound.extend_from_slice(params);
-        if let Some(buffer) = step_buffer.as_ref() {
-            bound.push(buffer);
+        match (step_base, step_buffer.as_mut()) {
+            (Some(base), Some(buffer)) => {
+                let step = base + u64::from(i);
+                let words = [step as u32, (step >> 32) as u32];
+                context.dispatch_with_update(
+                    kernel,
+                    &bound,
+                    BufferUpdate {
+                        buffer,
+                        bytes: bytemuck::cast_slice(&words),
+                    },
+                    groups,
+                )?;
+            }
+            _ => context.dispatch(kernel, &bound, groups)?,
         }
-        context.dispatch(kernel, &bound, groups)?;
         current_is_a = !current_is_a;
     }
 

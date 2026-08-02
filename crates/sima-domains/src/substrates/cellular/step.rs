@@ -1,7 +1,7 @@
 //! The double-buffered GPU dispatch harness that advances a [`Grid`].
 
 use sima_core::Result;
-use sima_toolkit_wgsl::{Buffer, Context, Kernel};
+use sima_toolkit_wgsl::{Buffer, BufferUpdate, Context, Kernel};
 
 use crate::substrates::cellular::Grid;
 
@@ -77,12 +77,13 @@ impl<'a> Trajectory<'a> {
 /// bindings 0 and 1 swap.
 ///
 /// `step_base` transports the per-step index to the kernel. When `Some(base)`,
-/// one two-word `u32` buffer is created, and before dispatch `i` the value
-/// `base + i` is uploaded to it as `[lo, hi]` and bound last, so a kernel that
-/// depends on the absolute step reads it as a `u64`. The dispatch's leading
-/// transfer barrier orders each upload against the shader read. When `None`, no
-/// step buffer is created or bound and the dispatch is byte-identical to a run
-/// without one.
+/// one two-word `u32` buffer is created, and dispatch `i` carries the value
+/// `base + i` into it as `[lo, hi]` inside its own submission, bound last, so a
+/// kernel that depends on the absolute step reads it as a `u64`. Riding the
+/// dispatch is what keeps a stepped run to one submission per step: the same
+/// bytes land before the same dispatch as a separate upload would have put
+/// them. When `None`, no step buffer is created or bound and the dispatch is
+/// byte-identical to a run without one.
 ///
 /// `steps == 0` dispatches nothing and leaves both buffers holding `initial`,
 /// so a reduction over the pair reports no activity. The harness is
@@ -113,9 +114,10 @@ pub fn run<'a>(
     context.upload(&a, bytemuck::cast_slice(payload))?;
     context.upload(&b, bytemuck::cast_slice(payload))?;
 
-    // The per-step index buffer, created once and re-uploaded each dispatch when
-    // the model opts in. Two u32 words carry the step as a little-endian u64.
-    let step_buffer = match step_base {
+    // The per-step index buffer, created once and rewritten by each dispatch
+    // when the model opts in. Two u32 words carry the step as a little-endian
+    // u64.
+    let mut step_buffer = match step_base {
         Some(_) => Some(context.buffer(2 * std::mem::size_of::<u32>())?),
         None => None,
     };
@@ -132,18 +134,27 @@ pub fn run<'a>(
     let mut current_is_a = true;
     for i in 0..steps {
         let (src, dst) = if current_is_a { (&a, &b) } else { (&b, &a) };
-        let mut bound: Vec<&Buffer> = Vec::with_capacity(3 + params.len() + 1);
+        let mut bound: Vec<&Buffer> = Vec::with_capacity(3 + params.len());
         bound.push(src);
         bound.push(dst);
         bound.push(&dims);
         bound.extend_from_slice(params);
-        if let (Some(base), Some(buffer)) = (step_base, step_buffer.as_ref()) {
-            let step = base + u64::from(i);
-            let words = [step as u32, (step >> 32) as u32];
-            context.upload(buffer, bytemuck::cast_slice(&words))?;
-            bound.push(buffer);
+        match (step_base, step_buffer.as_mut()) {
+            (Some(base), Some(buffer)) => {
+                let step = base + u64::from(i);
+                let words = [step as u32, (step >> 32) as u32];
+                context.dispatch_with_update(
+                    kernel,
+                    &bound,
+                    BufferUpdate {
+                        buffer,
+                        bytes: bytemuck::cast_slice(&words),
+                    },
+                    groups,
+                )?;
+            }
+            _ => context.dispatch(kernel, &bound, groups)?,
         }
-        context.dispatch(kernel, &bound, groups)?;
         current_is_a = !current_is_a;
     }
 
