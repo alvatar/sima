@@ -18,6 +18,7 @@
 
 mod common;
 
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Once;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -556,4 +557,67 @@ fn committed_steps(config: &LoadedConfig) -> Vec<u64> {
             _ => None,
         })
         .collect()
+}
+
+/// One frame: the payload's u32 little-endian length, then the payload. The
+/// wire's own framing, written by hand so a test can put a frame on it that no
+/// encoder in this workspace would produce.
+fn write_frame(stream: &mut impl Write, payload: &[u8]) {
+    stream
+        .write_all(&(payload.len() as u32).to_le_bytes())
+        .expect("write the frame length");
+    stream.write_all(payload).expect("write the frame payload");
+    stream.flush().expect("flush the frame");
+}
+
+/// Reads one frame's payload, or `None` at the end of the stream.
+fn read_frame(stream: &mut impl Read) -> Option<Vec<u8>> {
+    let mut prefix = [0u8; 4];
+    stream.read_exact(&mut prefix).ok()?;
+    let mut payload = vec![0u8; u32::from_le_bytes(prefix) as usize];
+    stream.read_exact(&mut payload).ok()?;
+    Some(payload)
+}
+
+#[test]
+fn a_protocol_violation_ends_the_python_session_rather_than_being_answered() {
+    // The two failures a program can meet are different things, and the SDK
+    // has to tell them apart the way the Rust host does. A refusal the program
+    // itself raises is answered as `Failed` and the session continues; a
+    // message tag this side does not know means the stream may no longer be at
+    // a frame boundary, so every later answer would be about the wrong
+    // question — the session ends instead.
+    //
+    // Answering it and reading on is what this pins against: the program used
+    // to reply `Failed` to a tag it could not parse and wait for the next one.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let program = wrapper(dir.path(), &[]);
+    let mut child = std::process::Command::new(&program)
+        .args(["--serve-domain", FORMAT])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn the program's domain service");
+    let mut stdin = child.stdin.take().expect("the piped stdin");
+    let mut stdout = child.stdout.take().expect("the piped stdout");
+
+    // Hello, tag 0, then the protocol version: the handshake the program
+    // answers with Ready before any question.
+    let mut hello = vec![0u8];
+    hello.extend(1u32.to_le_bytes());
+    write_frame(&mut stdin, &hello);
+    assert!(
+        read_frame(&mut stdout).is_some_and(|ready| ready.first() == Some(&0)),
+        "the program answers the handshake with Ready"
+    );
+
+    // A tag no version of this protocol assigns.
+    write_frame(&mut stdin, &[u8::MAX]);
+    assert!(
+        read_frame(&mut stdout).is_none(),
+        "a tag the program cannot parse ends the session rather than being answered"
+    );
+    let status = child.wait().expect("reap the program");
+    assert!(!status.success(), "the session ends on the violation");
 }

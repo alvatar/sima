@@ -275,7 +275,7 @@ impl<W: Write> Checkpoint for SaveChannel<'_, W> {
     }
 
     fn offer(&self, produce: &dyn Fn() -> Vec<u8>) {
-        if self.failed.borrow().is_some() || !self.cadence.save_due() {
+        if self.failed.borrow().is_some() || !self.cadence.advance_due() {
             return;
         }
         // The cadence resets before the write is attempted, matching the

@@ -18,7 +18,7 @@ import time
 import traceback
 from typing import BinaryIO, Sequence
 
-from .encode import Dec, Enc
+from .encode import Dec, Enc, EncodingError
 from .frame import TransportError, read_frame, write_frame
 from .model import (
     Checkpoint,
@@ -170,10 +170,19 @@ def _serve_domain_service(
             return
         if tag == _ASK_HELLO:
             raise TransportError("unexpected second Hello after the handshake")
-        # What the program cannot answer crosses as its own rendering, and the
-        # session survives it: the next question is still answered.
+        # Two failures, told apart because they mean different things.
+        #
+        # What the program cannot answer crosses as its own rendering and the
+        # session survives it: the next question is still answered. A protocol
+        # violation — a tag this side does not know, a payload that does not
+        # decode — ends the session, because the stream may no longer be at a
+        # frame boundary and every later answer would be about the wrong
+        # question. This is what the Rust host does with the same wire, so a
+        # parent sees one behaviour whichever side it is talking to.
         try:
             answer = _answer(domain, generators, tag, dec)
+        except (TransportError, EncodingError):
+            raise
         except Exception as e:
             answer = Enc().u8(_ANSWER_FAILED).str(str(e)).finish()
         write_frame(writer, answer)
@@ -409,7 +418,7 @@ class _SaveChannel(Checkpoint):
         return self._resume
 
     def offer(self, produce) -> None:
-        if self.failure is not None or not self._save_due():
+        if self.failure is not None or not self._advance_due():
             return
         # The cadence resets before the write is attempted, so a persistently
         # failing pipe degrades once per cadence period instead of once per
@@ -421,10 +430,13 @@ class _SaveChannel(Checkpoint):
         except Exception as e:
             self.failure = e
 
-    def _save_due(self) -> bool:
-        """Whether this offer triggers a save, under either axis. The step axis
-        counts every offer exactly once; the clock axis reads the time since the
-        last save."""
+    def _advance_due(self) -> bool:
+        """Advances the offer counter and reports whether this offer triggers a
+        save, under either axis.
+
+        The name states the mutation: the step axis counts every offer exactly
+        once here, so asking twice about one offer would count it twice. The
+        clock axis reads the time since the last save."""
         step_due = False
         if self._step_interval is not None:
             self._offers_since_save += 1
