@@ -151,11 +151,55 @@ pub(crate) fn stub_environment() -> Environment {
         .environment
 }
 
+/// Wraps the stub executor so evaluations past the first `free` completed
+/// ones park until `flag` rises. The interrupt a test raises from its
+/// observer races the run — the observer sees a commit only after the
+/// collector processes it, and a fast chain can finalize first — so the tail
+/// holds still until the flag is up, and `Interrupted` is the only reachable
+/// outcome. The park is bounded: a flag that never rises releases the tail
+/// rather than hanging the run.
+struct ParkedTail {
+    inner: StubExecutor,
+    /// Evaluations that run unparked — the commits the test wants.
+    free: usize,
+    /// Completed evaluations so far.
+    completed: AtomicUsize,
+    flag: Arc<AtomicBool>,
+}
+
+impl Executor for ParkedTail {
+    fn format(&self) -> &FormatId {
+        self.inner.format()
+    }
+
+    fn execute(
+        &self,
+        input: &sima_contracts::TaskInput<'_>,
+        ctx: &sima_contracts::ExecutionContext,
+        checkpoint: &dyn sima_contracts::Checkpoint,
+    ) -> Result<sima_contracts::Outcome> {
+        if self.completed.load(Ordering::Relaxed) >= self.free {
+            let deadline = std::time::Instant::now() + Duration::from_secs(30);
+            while !self.flag.load(Ordering::Relaxed) && std::time::Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(2));
+            }
+        }
+        let outcome = self.inner.execute(input, ctx, checkpoint)?;
+        if matches!(outcome, sima_contracts::Outcome::Completed { .. }) {
+            self.completed.fetch_add(1, Ordering::Relaxed);
+        }
+        Ok(outcome)
+    }
+}
+
 /// Drives `config` into `store` over in-memory workers, so a test has a store
 /// of real records without a worker binary or a device.
 ///
 /// `stop_after` interrupts the run once that many tasks have committed, which
-/// is how a test leaves a chain partway; `None` runs it to its end.
+/// is how a test leaves a chain partway; `None` runs it to its end. The stop
+/// is deterministic, not a race: evaluations past the stop point park until
+/// the interrupt is raised, so the run can never finalize first, whatever the
+/// machine's load.
 pub(crate) fn drive_run(
     store: &Store,
     config: &RunConfig,
@@ -163,12 +207,19 @@ pub(crate) fn drive_run(
 ) -> RunOutcome {
     let exec = ExecutionConfig::new(1, 1, Duration::MAX, Duration::MAX, Duration::MAX, None)
         .expect("execution config");
+    let flag = Arc::new(AtomicBool::new(false));
+    let resolver_flag = flag.clone();
     let transport = LoopbackTransport::new(
         config.format.clone(),
         exec.checkpoint_interval,
         exec.checkpoint_interval_steps,
-        Arc::new(|_, _| {
-            let executor: Box<dyn Executor> = Box::new(StubExecutor::new()?);
+        Arc::new(move |_, _| {
+            let executor: Box<dyn Executor> = Box::new(ParkedTail {
+                inner: StubExecutor::new()?,
+                free: stop_after.unwrap_or(usize::MAX),
+                completed: AtomicUsize::new(0),
+                flag: resolver_flag.clone(),
+            });
             Ok((executor, String::new(), String::new()))
         }),
     );
@@ -177,7 +228,6 @@ pub(crate) fn drive_run(
         host: String::new(),
         slots: worker_slots(&exec),
     }];
-    let interrupt = AtomicBool::new(false);
     let committed = AtomicUsize::new(0);
     let control = RunControl {
         observer: &|record: &Record| {
@@ -185,10 +235,10 @@ pub(crate) fn drive_run(
                 && matches!(record.event, Event::Committed { .. })
                 && committed.fetch_add(1, Ordering::Relaxed) + 1 >= stop_after
             {
-                interrupt.store(true, Ordering::Relaxed);
+                flag.store(true, Ordering::Relaxed);
             }
         },
-        interrupt: &interrupt,
+        interrupt: flag.as_ref(),
         on_start: None,
     };
     run(

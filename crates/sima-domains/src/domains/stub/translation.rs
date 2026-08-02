@@ -85,7 +85,8 @@ pub(crate) fn generator_params(table: &toml::Table) -> Result<Vec<u8>> {
 }
 
 /// Parses one behavior word: `succeed`, `flaky:N`, `sleep:MS`, `reject`,
-/// `panic`, or `accumulate:K` with K ≥ 1. Anything else is
+/// `panic`, `accumulate:K` with K ≥ 1, or `accumulate:K:MS` — the paced
+/// form, sleeping MS ≥ 1 milliseconds per step. Anything else is
 /// [`Error::Validation`] naming the entry.
 fn parse_behavior(entry: &str) -> Result<StubBehavior> {
     let (word, argument) = match entry.split_once(':') {
@@ -95,7 +96,7 @@ fn parse_behavior(entry: &str) -> Result<StubBehavior> {
     let bad = || {
         Error::Validation(format!(
             "unknown stub behavior {entry:?}: expected succeed, flaky:N, sleep:MS, reject, \
-             panic, or accumulate:K"
+             panic, accumulate:K, or accumulate:K:MS"
         ))
     };
     match (word, argument) {
@@ -104,11 +105,19 @@ fn parse_behavior(entry: &str) -> Result<StubBehavior> {
         ("panic", None) => Ok(StubBehavior::Panic),
         ("flaky", Some(n)) => n.parse().map(StubBehavior::Flaky).map_err(|_| bad()),
         ("sleep", Some(millis)) => millis.parse().map(StubBehavior::Sleep).map_err(|_| bad()),
-        ("accumulate", Some(k)) => match k.parse() {
-            // A zero-step segment does no work and commits its input
-            // unchanged; requiring K ≥ 1 keeps every task meaningful.
-            Ok(0) | Err(_) => Err(bad()),
-            Ok(k) => Ok(StubBehavior::Accumulate(k)),
+        // The paced form carries a second argument; a zero pace is the
+        // unpaced word's job, as a zero-step segment is nobody's.
+        ("accumulate", Some(rest)) => match rest.split_once(':') {
+            Some((steps, millis)) => match (steps.parse(), millis.parse()) {
+                (Ok(0), _) | (_, Ok(0)) | (Err(_), _) | (_, Err(_)) => Err(bad()),
+                (Ok(steps), Ok(step_ms)) => Ok(StubBehavior::PacedAccumulate { steps, step_ms }),
+            },
+            None => match rest.parse() {
+                // A zero-step segment does no work and commits its input
+                // unchanged; requiring K ≥ 1 keeps every task meaningful.
+                Ok(0) | Err(_) => Err(bad()),
+                Ok(k) => Ok(StubBehavior::Accumulate(k)),
+            },
         },
         _ => Err(bad()),
     }
@@ -160,6 +169,13 @@ mod tests {
             ("reject", StubBehavior::Reject),
             ("panic", StubBehavior::Panic),
             ("accumulate:100", StubBehavior::Accumulate(100)),
+            (
+                "accumulate:2:250",
+                StubBehavior::PacedAccumulate {
+                    steps: 2,
+                    step_ms: 250,
+                },
+            ),
         ] {
             assert_eq!(parse_behavior(word)?, expected, "{word}");
         }

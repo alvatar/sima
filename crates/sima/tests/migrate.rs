@@ -37,7 +37,7 @@ use sima_store::Store;
 ///
 /// `[run]` is the only hashed section, so two configs written from the same
 /// `segments` describe the same run whatever machine drives them.
-fn run_section(segments: u64) -> String {
+fn run_section(segments: u64, behaviors: &str) -> String {
     format!(
         r#"
         [run]
@@ -47,7 +47,7 @@ fn run_section(segments: u64) -> String {
 
         [run.generator]
         id = "stub.v1"
-        behaviors = ["accumulate:2", "accumulate:2"]
+        behaviors = [{behaviors}]
 
         [config]
         store = "./store"
@@ -57,17 +57,17 @@ fn run_section(segments: u64) -> String {
 }
 
 /// Writes a config under `dir` naming a store beside it, plus `machines`.
-fn config(dir: &Path, name: &str, segments: u64, machines: &str) -> PathBuf {
+fn config(dir: &Path, name: &str, segments: u64, behaviors: &str, machines: &str) -> PathBuf {
     let text = format!(
         "{}\n[orchestrator]\nworkers = 2\n{machines}\n",
-        run_section(segments)
+        run_section(segments, behaviors)
     );
     common::write_config_text(dir, name, &text)
 }
 
 /// A config whose orchestrator migrates onto a rented stub machine, rooted at
 /// `root` and driving the `sima` binary this build produced.
-fn migrating(dir: &Path, root: &Path, segments: u64) -> PathBuf {
+fn migrating(dir: &Path, root: &Path, segments: u64, behaviors: &str) -> PathBuf {
     // The stub provider's machines are reached on this machine, so the far side
     // is a local subprocess with its own store; the bounds are the readiness
     // bounds a wind-down also waits on, kept short so no test sleeps.
@@ -75,6 +75,7 @@ fn migrating(dir: &Path, root: &Path, segments: u64) -> PathBuf {
         dir,
         "migrating.toml",
         segments,
+        behaviors,
         &format!(
             r#"
             migrate = "far"
@@ -173,10 +174,21 @@ fn journaled_commits(config: &Path) -> Vec<String> {
 /// fraction of a second.
 const SEGMENTS: u64 = 6;
 
-/// The segment count a run cannot finish while a migration is watching its
-/// first record arrive. It makes the interrupt test decide on the ordering of
-/// events rather than on how fast this machine is.
+/// The candidate behaviors of a run meant to complete: fast accumulating
+/// chains.
+const CHAINS: &str = r#""accumulate:2", "accumulate:2""#;
+
+/// The segment count of a run that cannot finish while a migration is
+/// watching its first record arrive. It pairs with [`PACED`]: the count alone
+/// is a bet on how fast a loaded machine runs, the sleep per segment is what
+/// bounds the chain in time.
 const UNFINISHABLE: u64 = 400;
+
+/// The candidate behaviors of a run that cannot finish: paced accumulation,
+/// each step sleeping, so the [`UNFINISHABLE`] chain has a hundred seconds
+/// of work left whenever the wind-down lands — the interrupt test decides on
+/// the ordering of events, never on how fast this machine is.
+const PACED: &str = r#""accumulate:2:250", "accumulate:2:250""#;
 
 /// Builds the worker binary once, so both the enumeration probe here and the
 /// far side's own `sima run` find it beside the test's executable.
@@ -198,7 +210,7 @@ fn a_migrated_run_finalizes_to_the_manifest_an_uninterrupted_run_writes() -> Res
     // The reference: the same run, never interrupted, driven here throughout.
     let reference_dir = dir.path().join("reference");
     std::fs::create_dir_all(&reference_dir).expect("reference dir");
-    let reference = config(&reference_dir, "reference.toml", SEGMENTS, "");
+    let reference = config(&reference_dir, "reference.toml", SEGMENTS, CHAINS, "");
     assert!(matches!(
         drive(&reference, None)?,
         RunOutcome::Finalized { .. }
@@ -208,7 +220,7 @@ fn a_migrated_run_finalizes_to_the_manifest_an_uninterrupted_run_writes() -> Res
     // partway and the rest is the far side's to finish.
     let migrated_dir = dir.path().join("migrated");
     std::fs::create_dir_all(&migrated_dir).expect("migrated dir");
-    let migrated = migrating(&migrated_dir, &far_root, SEGMENTS);
+    let migrated = migrating(&migrated_dir, &far_root, SEGMENTS, CHAINS);
     assert!(matches!(
         drive(&migrated, Some(2))?,
         RunOutcome::Interrupted { .. }
@@ -289,7 +301,7 @@ fn a_second_migration_over_a_finished_run_finalizes_to_the_same_manifest() -> Re
     workers_built();
     let dir = tempfile::tempdir().expect("temp dir");
     let far_root = dir.path().join("far");
-    let migrated = migrating(dir.path(), &far_root, SEGMENTS);
+    let migrated = migrating(dir.path(), &far_root, SEGMENTS, CHAINS);
     assert!(matches!(
         drive(&migrated, Some(2))?,
         RunOutcome::Interrupted { .. }
@@ -318,9 +330,11 @@ fn a_migration_interrupted_during_the_follow_still_pulls_and_tears_down() -> Res
     let dir = tempfile::tempdir().expect("temp dir");
     let far_root = dir.path().join("far");
     // A chain the far side cannot reach the end of while this migration is
-    // still reading its first record, so the wind-down decides the outcome
-    // rather than a race with how fast this machine runs.
-    let migrated = migrating(dir.path(), &far_root, UNFINISHABLE);
+    // still reading its first record: every segment sleeps, so a hundred
+    // seconds of far-side work remain when the wind-down lands, and the
+    // outcome is decided by the wind-down rather than by a race with how
+    // fast this machine runs.
+    let migrated = migrating(dir.path(), &far_root, UNFINISHABLE, PACED);
     assert!(matches!(
         drive(&migrated, Some(2))?,
         RunOutcome::Interrupted { .. }
@@ -621,7 +635,7 @@ fn a_run_migrated_over_a_real_ssh_hop_finalizes_and_the_server_saw_it() -> Resul
     let sshd = Sshd::start(dir.path(), binaries);
 
     let far_root = dir.path().join("far");
-    let migrated = migrating(dir.path(), &far_root, SEGMENTS);
+    let migrated = migrating(dir.path(), &far_root, SEGMENTS, CHAINS);
     assert!(matches!(
         drive(&migrated, Some(2))?,
         RunOutcome::Interrupted { .. }
@@ -669,7 +683,7 @@ fn a_destination_that_cannot_be_reached_fails_rather_than_hanging() -> Result<()
     workers_built();
     let dir = tempfile::tempdir().expect("temp dir");
     let far_root = dir.path().join("far");
-    let migrated = migrating(dir.path(), &far_root, SEGMENTS);
+    let migrated = migrating(dir.path(), &far_root, SEGMENTS, CHAINS);
     assert!(matches!(
         drive(&migrated, Some(2))?,
         RunOutcome::Interrupted { .. }
@@ -706,7 +720,7 @@ fn a_malformed_stub_endpoint_is_refused_by_name() -> Result<()> {
     // instead of quietly falling back to the in-process path.
     workers_built();
     let dir = tempfile::tempdir().expect("temp dir");
-    let migrated = migrating(dir.path(), &dir.path().join("far"), SEGMENTS);
+    let migrated = migrating(dir.path(), &dir.path().join("far"), SEGMENTS, CHAINS);
     let output = migrate_over(
         &migrated,
         "not-an-endpoint",
