@@ -74,7 +74,7 @@ pub use sima_store::RemovalReport;
 // The scheduler types a caller drives and observes runs through, re-exported
 // so the CLI consumes one coherent surface.
 pub use sima_scheduler::{Event, Level, Record, RunControl, RunOutcome};
-pub use status::{Occupancy, RunState, RunStatus, status, status_records};
+pub use status::{Occupancy, RunState, RunStatus, seeded_status, status, status_records};
 pub use task_history::{
     Attempt, AttemptResult, TaskHistory, TaskOutcome, failures, failures_records, task_history,
     task_history_records,

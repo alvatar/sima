@@ -177,24 +177,24 @@ impl Remote {
             // terminal as it happens.
             .stderr(Stdio::inherit())
             .spawn()
-            .map_err(|e| Error::Validation(format!("cannot run {program:?} on {label}: {e}")))?;
+            .map_err(|e| Error::Transport(format!("cannot run {program:?} on {label}: {e}")))?;
         child
             .stdin
             .take()
             .expect("the spawn configured a piped stdin")
             .write_all(script.as_bytes())
-            .map_err(|e| Error::Validation(format!("cannot send a command to {label}: {e}")))?;
+            .map_err(|e| Error::Transport(format!("cannot send a command to {label}: {e}")))?;
         let output = child
             .wait_with_output()
-            .map_err(|e| Error::Validation(format!("cannot reap the shell on {label}: {e}")))?;
+            .map_err(|e| Error::Transport(format!("cannot reap the shell on {label}: {e}")))?;
         if !output.status.success() {
-            return Err(Error::Validation(format!(
+            return Err(Error::Transport(format!(
                 "a command on {label} exited with {}",
                 output.status
             )));
         }
         String::from_utf8(output.stdout)
-            .map_err(|e| Error::Validation(format!("output from {label} is not UTF-8: {e}")))
+            .map_err(|e| Error::Transport(format!("output from {label} is not UTF-8: {e}")))
     }
 }
 

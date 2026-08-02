@@ -53,7 +53,7 @@ pub(crate) fn bootstrap_image(host: Option<&str>, container: &Container) -> Resu
     if let Some(host) = host
         && status.code() == Some(SSH_UNREACHABLE)
     {
-        return Ok(ImageCheck::Unreachable(Error::Validation(format!(
+        return Ok(ImageCheck::Unreachable(Error::Transport(format!(
             "cannot reach {host:?}: ssh exited with {status}"
         ))));
     }
@@ -88,7 +88,7 @@ fn command_status(argv: &[String]) -> Result<ExitStatus> {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
-        .map_err(|e| Error::Validation(format!("running {program:?} failed: {e}")))
+        .map_err(|e| Error::Transport(format!("running {program:?} failed: {e}")))
 }
 
 /// Runs `argv` and returns its stdout, or an error if it fails or its output
@@ -100,15 +100,15 @@ pub(crate) fn command_stdout(argv: &[String]) -> Result<String> {
         .stdin(Stdio::null())
         .stderr(Stdio::inherit())
         .output()
-        .map_err(|e| Error::Validation(format!("running {program:?} failed: {e}")))?;
+        .map_err(|e| Error::Transport(format!("running {program:?} failed: {e}")))?;
     if !output.status.success() {
-        return Err(Error::Validation(format!(
+        return Err(Error::Transport(format!(
             "{program:?} exited with {}",
             output.status
         )));
     }
     String::from_utf8(output.stdout)
-        .map_err(|e| Error::Validation(format!("{program:?} output is not UTF-8: {e}")))
+        .map_err(|e| Error::Transport(format!("{program:?} output is not UTF-8: {e}")))
 }
 
 /// Locates the `sima-worker` binary, in order:

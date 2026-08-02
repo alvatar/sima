@@ -245,12 +245,12 @@ impl Stream {
             .stderr(Stdio::piped())
             .spawn()
             .map_err(|e| {
-                Error::Validation(format!("cannot run {program:?} to follow {label}: {e}"))
+                Error::Transport(format!("cannot run {program:?} to follow {label}: {e}"))
             })?;
         // The pipes exist iff the spawn configured them; taking them cannot
         // fail past a successful spawn.
         let (Some(stdout), Some(stderr)) = (child.stdout.take(), child.stderr.take()) else {
-            return Err(Error::Validation(format!(
+            return Err(Error::Transport(format!(
                 "the process following {label} has no piped output"
             )));
         };

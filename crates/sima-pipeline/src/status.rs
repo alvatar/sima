@@ -262,6 +262,22 @@ pub fn status(config: &LoadedConfig) -> Result<RunStatus> {
     Ok(status_records(config.run.id(), &journal::records(config)?))
 }
 
+/// The status of the run a loaded config describes, or the zeroed status when
+/// there is no such run yet: no store at that root, or a run never driven in
+/// it.
+///
+/// What a display seeded from prior progress wants: absence is the ordinary
+/// case on a first run and reads as zeroes, while a corrupt journal or an I/O
+/// fault still surfaces. A caller reading absence off an error variant would
+/// bucket every other failure on this path with it and open on wrong counts.
+pub fn seeded_status(config: &LoadedConfig) -> Result<RunStatus> {
+    let run = config.run.id();
+    Ok(match journal::journaled(config)? {
+        Some(records) => status_records(run, &records),
+        None => RunStatus::new(run),
+    })
+}
+
 /// Folds `records` — a run's lifecycle events in append order — into the
 /// status of `run`. The fold half of [`status`], over records from any
 /// source: a journal read locally, or a stream from the host that drives the
@@ -279,6 +295,8 @@ pub fn status_records(run: RunId, records: &[Record]) -> RunStatus {
 mod tests {
     use super::*;
     use sima_core::hash_bytes;
+
+    use sima_store::Store;
 
     use crate::fixtures::{journal_with, stub_config};
 
@@ -379,6 +397,50 @@ mod tests {
             task: task.to_string(),
             attempt,
         }
+    }
+
+    #[test]
+    fn a_store_that_does_not_exist_seeds_a_zeroed_status() -> Result<()> {
+        // The ordinary first run: nothing has been driven, so a display seeded
+        // from prior progress opens on zeroes rather than failing. A query must
+        // not create the store, so the absence is observed rather than probed
+        // by opening.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let config = crate::fixtures::loaded(dir.path().join("no-such-store"))?;
+        let seeded = seeded_status(&config)?;
+        assert_eq!(seeded.run, config.run.id());
+        assert_eq!(seeded.committed, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn a_run_never_driven_in_an_existing_store_seeds_a_zeroed_status() -> Result<()> {
+        // The store is there because another run used it; this run has no
+        // journal in it, which is the same absence.
+        let dir = tempfile::tempdir().expect("temp dir");
+        Store::open(dir.path())?;
+        let config = crate::fixtures::loaded(dir.path().to_path_buf())?;
+        assert_eq!(seeded_status(&config)?.committed, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn a_corrupt_journal_surfaces_rather_than_seeding_zeroes() -> Result<()> {
+        // The failure this exists to catch: a journal that cannot be read is a
+        // real problem, and seeding zeroes over it would open a display on
+        // counts that are simply wrong. Absence is answered as absence and
+        // everything else is still an error, which is what reading the error
+        // variant instead could not tell apart.
+        let (_dir, config) = journal_with(&[])?;
+        let store = Store::open(&config.store)?;
+        let mut writer = store.journal_writer(&config.run.id())?;
+        writer.append("this is not a journal line")?;
+        drop(writer);
+        assert!(matches!(
+            seeded_status(&config),
+            Err(sima_core::Error::Corruption(_))
+        ));
+        Ok(())
     }
 
     #[test]

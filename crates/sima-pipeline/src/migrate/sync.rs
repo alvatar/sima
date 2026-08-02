@@ -99,7 +99,7 @@ pub(crate) fn sync_over(
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
         .spawn()
-        .map_err(|e| Error::Validation(format!("cannot run {program:?} to sync: {e}")))?;
+        .map_err(|e| Error::Transport(format!("cannot run {program:?} to sync: {e}")))?;
     // The pipes exist iff the spawn configured them; taking them cannot fail
     // past a successful spawn.
     let (Some(stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {
@@ -113,14 +113,14 @@ pub(crate) fn sync_over(
     drop(writer);
     let status = child
         .wait()
-        .map_err(|e| Error::Validation(format!("cannot reap {program:?}: {e}")))?;
+        .map_err(|e| Error::Transport(format!("cannot reap {program:?}: {e}")))?;
     match (report, status.success()) {
         (Ok(report), true) => Ok(report),
         // A far half that exited non-zero is the cause, and this side's own
         // session error is the symptom of its stream ending, so the exit is
         // what the operator is told about. Its diagnostics already reached
         // stderr, which is inherited.
-        (_, false) => Err(Error::Validation(format!(
+        (_, false) => Err(Error::Transport(format!(
             "the far half of the sync failed: {program:?} exited with {status}"
         ))),
         (Err(error), true) => Err(error),
@@ -131,7 +131,7 @@ pub(crate) fn sync_over(
 fn kill(mut child: Child, reason: &str) -> Error {
     let _ = child.kill();
     let _ = child.wait();
-    Error::Validation(reason.to_string())
+    Error::Transport(reason.to_string())
 }
 
 /// How a far-side command is reached: over ssh, or as a program on this
@@ -365,14 +365,14 @@ mod tests {
             let (_dir, store) = store();
             let reach = Reach::Here("/bin/false".into());
             match sync_over(&store, &[], ObjectScope::Referenced, &reach, "far.toml") {
-                Err(Error::Validation(message)) => {
+                Err(Error::Transport(message)) => {
                     assert!(
                         message.contains("/bin/false"),
                         "names the command: {message}"
                     );
                     assert!(message.contains("exited"), "names the exit: {message}");
                 }
-                other => panic!("expected a validation error, got {other:?}"),
+                other => panic!("expected a transport error, got {other:?}"),
             }
         }
 
@@ -381,10 +381,10 @@ mod tests {
             let (_dir, store) = store();
             let reach = Reach::Here("/nonexistent/sima".into());
             match sync_over(&store, &[], ObjectScope::Referenced, &reach, "far.toml") {
-                Err(Error::Validation(message)) => {
+                Err(Error::Transport(message)) => {
                     assert!(message.contains("/nonexistent/sima"), "{message}");
                 }
-                other => panic!("expected a validation error, got {other:?}"),
+                other => panic!("expected a transport error, got {other:?}"),
             }
         }
     }

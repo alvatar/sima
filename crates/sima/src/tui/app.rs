@@ -148,10 +148,8 @@ fn finish(result: io::Result<u8>) -> ExitCode {
 /// and a query must not create the store — so both read as free and the drive
 /// session proceeds.
 fn observed_holder(config: &LoadedConfig) -> sima_core::Result<Option<(LocalFeed, String)>> {
-    let feed = match LocalFeed::open(config) {
-        Ok(feed) => feed,
-        Err(Error::Validation(_)) => return Ok(None),
-        Err(e) => return Err(e),
+    let Some(feed) = LocalFeed::opened(config)? else {
+        return Ok(None);
     };
     Ok(feed.holder()?.map(|holder| (feed, holder)))
 }

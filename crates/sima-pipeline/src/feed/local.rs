@@ -28,6 +28,19 @@ impl LocalFeed {
             observer: RunObserver::new(config)?,
         })
     }
+
+    /// The feed for a run that has one, or `None` when there is nothing to
+    /// follow yet: no store at that root, or a run never driven in it.
+    ///
+    /// Absence is the ordinary case on a first run; every other failure on the
+    /// read path is still an error, rather than being read off a variant and
+    /// bucketed with it.
+    pub fn opened(config: &LoadedConfig) -> Result<Option<LocalFeed>> {
+        if journal::journaled(config)?.is_none() {
+            return Ok(None);
+        }
+        LocalFeed::open(config).map(Some)
+    }
 }
 
 /// Reads the whole journal of the run a loaded config describes, with the

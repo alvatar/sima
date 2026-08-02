@@ -126,8 +126,10 @@ pub fn migrate(
     // The file's own text is what travels: `[run]` is carried across as a
     // parsed value rather than re-derived, so no translation here can perturb
     // the run id.
-    let local_text = std::fs::read_to_string(config)
-        .map_err(|e| Error::Validation(format!("cannot read config {}: {e}", config.display())))?;
+    let local_text = std::fs::read_to_string(config).map_err(|source| Error::Io {
+        path: config.to_path_buf(),
+        source,
+    })?;
     let loaded = load(config)?;
     // A run whose format a `[domain.*]` entry routes to a program stays on the
     // machine that program is installed on. The refusal precedes the

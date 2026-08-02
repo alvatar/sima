@@ -32,6 +32,35 @@ pub(crate) fn followable(config: &LoadedConfig) -> Result<()> {
     lines(config).map(|_| ())
 }
 
+/// The records of the run a loaded config describes, or `None` when there is
+/// no such run to read: no store at that root, or a run never driven in it.
+///
+/// The distinction is what a caller that seeds a display from prior progress
+/// needs. Reading it off the error variant instead would put every future
+/// `Validation` on this path — a malformed store marker, a bad run id — into
+/// the same bucket as "nothing here yet", and the caller would open on zeroed
+/// counts rather than report the fault. Absence is answered here as absence;
+/// everything else is still an error.
+pub(crate) fn journaled(config: &LoadedConfig) -> Result<Option<Vec<Record>>> {
+    if !config.store.is_dir() {
+        return Ok(None);
+    }
+    let store = Store::open(&config.store)?;
+    let run = config.run.id();
+    let lines = store.journal(&run)?;
+    if lines.is_empty() {
+        return Ok(None);
+    }
+    lines
+        .iter()
+        .map(|line| {
+            Record::from_line(line)
+                .map_err(|e| Error::Corruption(format!("journal of run {run}: {e}")))
+        })
+        .collect::<Result<Vec<Record>>>()
+        .map(Some)
+}
+
 /// The journal lines of the run a loaded config describes, with the run they
 /// belong to, under the guards every read-only query applies.
 fn lines(config: &LoadedConfig) -> Result<(RunId, Vec<String>)> {
