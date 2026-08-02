@@ -1,6 +1,10 @@
 [run]
 root_seed = 1
 format = "ca_evolution.gray_scott.v1"
+# Split the run into a chain of segments executed in sequence, each continuing
+# the previous one's state. It is identity-bearing, so changing it changes every
+# task key, and it is exclusive with the snapshot predicate below.
+# segments = 10
 
 [run.generator]
 id = "ca_evolution.gray_scott.v1"
@@ -30,11 +34,16 @@ noise_width = 0.02
 [config]
 store = "./store"
 max_attempts = 3
-# attempt_timeout_ms        = 300000      # absent disables the attempt deadline
+# The two deadlines bound waiting: one an attempt's lease, one a protocol
+# answer. Each is enforced while its key is present and off while it is absent.
+# The two checkpoint cadences are unioned: a save is due when either fires, and
+# checkpointing is on as soon as either is present.
+# attempt_timeout_ms        = 300000      # per-attempt deadline
+# answer_timeout_ms         = 120000      # per-answer deadline: the worker
+                                          # handshake and each question the run
+                                          # asks a program about its format
 # checkpoint_interval_ms    = 30000       # wall-clock checkpoint cadence
 # checkpoint_interval_steps = 500         # step-count cadence, >= 1
-# Both cadences are unioned: a save is due when either fires, and with both
-# absent no checkpoint is ever written.
 
 # This machine. Its workers run as plain subprocesses unless it names an image,
 # in which case they run in a container here.
@@ -44,6 +53,7 @@ workers = 2
 # image    = "localhost/sima:latest"      # run this machine's workers in a container
 # runtime  = "podman"                     # docker | podman; default docker, needs an image
 # run_args = ["--device", "/dev/dri"]     # verbatim container-run flags, needs an image
+
 # Device tables replace `workers` and are exclusive with it; the pool is their
 # sum, and each `select` is a case-insensitive substring of the device name or
 # its exact vendor:device hex pair.
@@ -54,14 +64,16 @@ workers = 2
 # A machine you have, reached over ssh at the entry's own name. Its workers run
 # in a container, so two lines is a whole declaration.
 # [host.gpubox]
-# workers = 4
+# workers  = 4                            # exclusive with the device table below
 # ssh      = "user@10.0.0.5"              # override the address
 # image    = "localhost/sima:latest"      # default as shown
 # runtime  = "podman"                     # docker | podman; default docker
 # run_args = ["--gpus", "all"]            # verbatim container-run flags
 # root     = "~/sima-runs"                # where a migrated run lives here; default as shown
 # binary   = "sima"                       # the sima binary here; default as shown
-# [[host.gpubox.device]]                  # exclusive with `workers`
+
+# That machine's workers placed per device class instead of by plain count.
+# [[host.gpubox.device]]
 # select  = "nvidia"
 # workers = 2
 
@@ -99,17 +111,23 @@ workers = 2
 # min_disk_gb        = 32
 # min_bandwidth_mbps = 100
 
-# Several machines rented to one specification.
+# Several machines rented to one specification. `fill` decides what a partial
+# acquisition means: strict fails the run unless the full count is acquired,
+# best-effort runs on whatever came up.
 # [host_class.rtx4090]
 # provider = "vast"
 # count    = 4
-# fill     = "best-effort"                # strict | best-effort; default strict.
-                                          # strict fails the run unless the full
-                                          # count is acquired; best-effort runs
-                                          # on whatever came up.
+# fill     = "best-effort"                # strict | best-effort; default strict
+# disk_gb  = 32                           # default as shown
 # [host_class.rtx4090.constraints]
-# gpu_models  = ["RTX 4090"]
-# min_vram_mb = 16000
+# gpu_models         = ["RTX 4090"]
+# min_gpu_count      = 1
+# min_vram_mb        = 16000
+# max_price_usd_hour = 0.45
+# min_reliability    = 0.95
+# verified_only      = true
+# min_disk_gb        = 32
+# min_bandwidth_mbps = 100
 
 # The machines a run may draw on. `sima run` uses the orchestrator alone;
 # `sima run --fleet` adds every member listed here. Without the flag no provider
@@ -122,3 +140,11 @@ workers = 2
 # [budget]
 # max_spend_usd     = 20.0
 # max_wall_clock_ms = 21600000
+
+# A format answered by a program of its own rather than by this build. sima
+# spawns the binary when the config loads and asks it what the format binds,
+# which is why the block ships commented: enabling it runs a program.
+# [domain."ca_evolution.gray_scott.v1"]
+# binary = "/opt/acme/worker"             # resolved against this file's directory
+# env    = ["ACME_ASSETS"]                # variable names it receives on top of
+                                          # the explicit baseline environment

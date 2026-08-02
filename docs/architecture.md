@@ -388,6 +388,29 @@ packs it has not seen. A reader whose cached entry names a pack that has
 since been rewritten meets the vanished file, forgets it, and searches once
 more.
 
+### Retention
+
+**What is kept.** A finalized run's closure, whole: its config object, every
+record, and every object those records reference. Which candidates contribute a
+state snapshot at all is settled earlier, at commit time, by the snapshot
+predicate of `sima-domains`; retention holds what the run committed.
+
+**For how long.** Until the operator asks for a deletion. The two operations are
+the *removal* and the *sweep* above: `sima rm` deletes one run and everything no
+surviving closure references, `sima pack --gc` deletes everything outside the
+union of the finalized runs' closures. Both are run-grained and
+reference-guarded, so the smallest thing either erases is a whole run's private
+objects. Expiry is the operator's act alone, as consolidation is: the store
+reads no clock.
+
+**The floor.** Re-evaluation reads the record spine — the config, the task
+index, the records, the journal — and finds its answer there. A finalized run
+whose snapshot objects are gone therefore re-finalizes to the same manifest: the
+frontier re-derives from index entries, and finalization reads records. The
+snapshots serve consumers outside the spine, external renderers and selection
+funnels among them, which is what makes their retention a policy question while
+the spine's is a matter of correctness.
+
 ### Atomic durability
 
 Every durable file is written to `tmp/<pid>-<seq>`, fsynced, then placed into

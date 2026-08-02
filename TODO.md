@@ -934,10 +934,19 @@ model or metric. Last active phase before the pause.
       pays; retention policy, which is M8.2 (M8.1 ships mechanism, not
       policy); automatic pack triggers, the operator being the trigger; and
       delta compression between objects.
-- [ ] M8.2 Snapshot retention policy: what is kept, for how long, and what
-      re-evaluation minimally requires. The policy deferred from M3.4, where the
-      mechanism (drop an object when no live manifest references it) already
-      landed under disk pressure
+- [x] M8.2 Snapshot retention policy: what is kept, for how long, and what
+      re-evaluation minimally requires. The policy is the levers that already
+      existed, stated and proven: a finalized run's closure is kept whole until
+      the operator runs `sima rm` or `sima pack --gc`, both run-grained and
+      reference-guarded, and re-evaluation reads the record spine — config,
+      task index, records, journal — and never the snapshots. What landed: the
+      CLI test that deletes a finalized run's snapshot objects and asks for the
+      run again, the `Retention` passage in `docs/architecture.md`, and both
+      search examples completed to the whole config schema with a load variant
+      per knob group. Rejected at elaboration: a mid-grain "thin a run"
+      deletion — the snapshot predicate prevents the dominant waste at commit
+      time, and a thinned-run state would cost retention side-files and closure
+      and sync changes for no observed need
 - [ ] M8.3 Driver provenance in the environment hash: a driver update can shift
       float results, and the driver is currently journaled as operational
       provenance rather than hashed, on the reasoning that a hash cannot see it
