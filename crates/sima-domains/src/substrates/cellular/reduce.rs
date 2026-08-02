@@ -147,7 +147,7 @@ pub fn reduce(
         .chunks_exact(4)
         .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
         .collect();
-    Ok(name_scalars(channels, &values))
+    name_scalars(channels, &values)
 }
 
 /// The scalar names the reduction emits for a `channels`-channel grid, in
@@ -169,11 +169,25 @@ pub fn scalar_names(channels: u32) -> Vec<String> {
 /// Pairs the reduction's flat output with its names, widening each `f32` to
 /// `f64`. The output layout matches [`scalar_names`] element for element, and
 /// is the same for every backend.
-pub(crate) fn name_scalars(channels: u32, values: &[f32]) -> Vec<(String, f64)> {
-    scalar_names(channels)
+///
+/// A readback whose length disagrees with the names is a fault, not a shorter
+/// answer: pairing them positionally would emit the metrics that happen to line
+/// up and drop the rest, so a snapshot predicate naming a missing scalar would
+/// read the run as having no such scalar rather than as having failed.
+pub(crate) fn name_scalars(channels: u32, values: &[f32]) -> Result<Vec<(String, f64)>> {
+    let names = scalar_names(channels);
+    if names.len() != values.len() {
+        return Err(Error::Backend(format!(
+            "the reduction of a {channels}-channel grid emits {} scalars; {} values were read \
+             back",
+            names.len(),
+            values.len()
+        )));
+    }
+    Ok(names
         .into_iter()
         .zip(values.iter().map(|&v| f64::from(v)))
-        .collect()
+        .collect())
 }
 
 #[cfg(test)]
@@ -232,10 +246,31 @@ mod tests {
     }
 
     #[test]
+    fn a_readback_of_the_wrong_length_is_rejected() {
+        // The names and the values are paired positionally, so a readback that
+        // is short emits fewer scalars than the reduction computed — and a
+        // predicate looking for one of the missing names would read the run as
+        // having no such scalar rather than as having failed. Two channels want
+        // ten values.
+        for values in [vec![0.0_f32; 9], vec![0.0_f32; 11]] {
+            let count = values.len();
+            let error = name_scalars(2, &values).expect_err("a mismatched readback");
+            let Error::Backend(message) = error else {
+                panic!("expected a backend error for {count} values");
+            };
+            assert!(message.contains("10"), "names what was wanted: {message}");
+            assert!(
+                message.contains(&count.to_string()),
+                "names what arrived: {message}"
+            );
+        }
+    }
+
+    #[test]
     fn scalar_names_follow_the_channel_then_grid_order() {
         // Two channels: eight per-channel metrics, then population and activity.
         let values: Vec<f32> = (0..10).map(|i| i as f32).collect();
-        let named = name_scalars(2, &values);
+        let named = name_scalars(2, &values).expect("ten values for two channels");
         let names: Vec<&str> = named.iter().map(|(n, _)| n.as_str()).collect();
         assert_eq!(
             names,
