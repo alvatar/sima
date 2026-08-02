@@ -26,7 +26,7 @@ use sima_transport::protocol::Assignment;
 use sima_transport::{LinkEvent, SpawnOutcome, WorkerLink, WorkerTransport};
 
 use crate::config::ExecutionConfig;
-use crate::coordinator::{Coordinator, Pending, RunState};
+use crate::coordinator::{Coordinator, Pending};
 use crate::placement::{self, ChainPlacement};
 use crate::task_source::RunnableTask;
 
@@ -542,7 +542,7 @@ fn process(
                 return ChildState::Dead;
             }
             LinkEvent::DeadlineExpired => {
-                if !matches!(ctx.coordinator.lock().state, RunState::Running) {
+                if !ctx.coordinator.is_running() {
                     // The run is winding down: kill the child and abandon the
                     // attempt. The store's crash-safety makes the abandoned
                     // attempt free — resume re-derives it in the frontier.
@@ -680,6 +680,7 @@ fn task_fault(ctx: &WorkerContext<'_>, task: String, attempt: u32, key: TaskKey,
 
 #[cfg(test)]
 mod tests {
+    use crate::coordinator::RunState;
     use sima_core::Codec;
     use std::num::NonZeroU64;
     use std::sync::Arc;
@@ -797,34 +798,32 @@ mod tests {
     fn a_panicking_worker_releases_its_lease_as_a_fault() {
         let coordinator = Coordinator::new();
         let key = a_key();
-        coordinator.lock().leases.insert(key);
+        coordinator.hold_lease(key);
         // A panic escaping the guarded region unwinds through the guard's Drop.
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let _guard = PanicGuard::arm(&coordinator, key);
             panic!("worker body panicked");
         }));
         assert!(result.is_err());
-        let shared = coordinator.lock();
         // The lease is released and the run winds down, so drive() can observe
         // quiescence instead of blocking forever.
-        assert!(!shared.leases.contains(&key));
-        assert!(matches!(shared.state, RunState::Fault(_)));
+        assert!(!coordinator.holds_lease(&key));
+        assert!(coordinator.with_state(|state| matches!(state, RunState::Fault(_))));
     }
 
     #[test]
     fn a_disarmed_guard_leaves_the_run_running() {
         let coordinator = Coordinator::new();
         let key = a_key();
-        coordinator.lock().leases.insert(key);
+        coordinator.hold_lease(key);
         {
             let guard = PanicGuard::arm(&coordinator, key);
             guard.disarm();
         }
-        let shared = coordinator.lock();
         // Disarm settles nothing itself — the normal process() path does — so
         // the state is untouched: no fault, and the lease still stands.
-        assert!(matches!(shared.state, RunState::Running));
-        assert!(shared.leases.contains(&key));
+        assert!(coordinator.is_running());
+        assert!(coordinator.holds_lease(&key));
     }
 
     /// The outcome of running `process` once against a stub `Succeed` candidate
@@ -981,11 +980,11 @@ mod tests {
         // A local (non-wire) fault keeps the store's own classification: the
         // absent object surfaces as `MissingObject`, never flattened to a
         // carried-verbatim `Reported`, which is reserved for the wire path.
-        match &run.coordinator.lock().state {
+        run.coordinator.with_state(|state| match state {
             RunState::Fault(Error::MissingObject(_)) => {}
             RunState::Fault(e) => panic!("expected a MissingObject fault, got {e}"),
             _ => panic!("expected the run to fault"),
-        }
+        });
         assert!(
             run.events
                 .iter()
@@ -1074,7 +1073,7 @@ mod tests {
         )?;
         let coordinator = Coordinator::new();
         let key = identity.key();
-        coordinator.lock().leases.insert(key);
+        coordinator.hold_lease(key);
         let (tx, rx) = mpsc::channel();
         {
             // The transport field is required by the context but never used:
@@ -1108,10 +1107,10 @@ mod tests {
             process(&ctx, WorkerId(0), pending, &mut link);
         }
         // The run faulted, and the fault renders exactly as the far side did.
-        match &coordinator.lock().state {
+        coordinator.with_state(|state| match state {
             RunState::Fault(e) => assert_eq!(e.to_string(), "backend error: device lost"),
             _ => panic!("expected the run to fault"),
-        }
+        });
         // The `Faulted` event carries the same verbatim rendering.
         let events: Vec<Event> = rx.into_iter().collect();
         let faulted = events

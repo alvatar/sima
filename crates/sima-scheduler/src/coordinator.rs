@@ -3,11 +3,14 @@
 //! One `Coordinator` per run holds everything the scheduler threads share — the
 //! ready queue, the lease table, and the wind-down state — behind a single
 //! mutex, plus the condition variable every thread waits on. Its methods are
-//! the only mutations: leasing the next task and the settlement methods that
-//! release a lease and apply the outcome atomically.
+//! the only access: leasing the next task, the settlement methods that release
+//! a lease and apply the outcome atomically, and the gate the driver reads to
+//! decide what to do next. Nothing outside this module holds the lock, so the
+//! invariant is enforced by visibility rather than asserted in prose.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Condvar, Mutex, MutexGuard};
+use std::time::Duration;
 
 use sima_contracts::DeviceClass;
 use sima_core::Error;
@@ -31,6 +34,17 @@ pub(crate) struct Pending {
 pub(crate) struct Leased {
     pub(crate) pending: Pending,
     pub(crate) placement: ChainPlacement,
+}
+
+/// What the driver's next step is, as the shared state decides it.
+pub(crate) enum Gate {
+    /// The run wound down and every lease is released; the payload is the
+    /// reason, taken by value.
+    Terminal(RunState),
+    /// The queue is empty and work has settled since the last poll, so the
+    /// source is asked for more. `idle` is whether any lease is outstanding —
+    /// an empty poll finalizes only when none is.
+    Poll { idle: bool, settled: u64 },
 }
 
 /// A definitive candidate failure: the task that could not produce a result,
@@ -62,18 +76,19 @@ pub(crate) enum RunState {
     Finished,
 }
 
-/// The mutable state every scheduler thread shares.
-pub(crate) struct Shared {
+/// The mutable state every scheduler thread shares. Every field is private:
+/// the methods of [`Coordinator`] are the only way in.
+struct Shared {
     /// FIFO of tasks ready to lease.
-    pub(crate) queue: VecDeque<Pending>,
+    queue: VecDeque<Pending>,
     /// The in-memory lease table: the set of tasks in flight. Every insertion
     /// and removal pairs with the task being leased or settled under this
     /// lock; the holding worker and the attempt travel in the journal events,
     /// and leases live in memory only — a process death drops them all, and
     /// resume re-derives the frontier from the store.
-    pub(crate) leases: HashSet<TaskKey>,
+    leases: HashSet<TaskKey>,
     /// The run's wind-down state.
-    pub(crate) state: RunState,
+    state: RunState,
     /// Monotonic count of lease releases: incremented once per settled
     /// attempt, whatever the outcome. The driver records this count at each
     /// poll of the task source and polls again only after it has moved.
@@ -81,7 +96,7 @@ pub(crate) struct Shared {
     /// frontier from committed records, only workers commit them, and a
     /// worker commits before releasing its lease — so an unchanged count
     /// means a re-poll would derive the same frontier.
-    pub(crate) settled: u64,
+    settled: u64,
     /// The device class each chain's work runs on, seeded at run start from
     /// the store's placement slots and extended as chains bind. Empty and
     /// unread when the run has one implicit class.
@@ -146,8 +161,8 @@ impl Shared {
 
 /// The shared state plus the condition every thread waits on.
 pub(crate) struct Coordinator {
-    pub(crate) state: Mutex<Shared>,
-    pub(crate) state_changed: Condvar,
+    state: Mutex<Shared>,
+    state_changed: Condvar,
     /// The classes the run has. Empty for the single implicit class, which is
     /// what makes [`Coordinator::next_task`] short-circuit placement entirely.
     classes: Vec<DeviceClass>,
@@ -189,7 +204,7 @@ impl Coordinator {
     /// a thread panicked holding the lock; the scheduler panics only inside the
     /// worker's `catch_unwind`, which holds no lock, so the lock is not
     /// poisoned in practice.
-    pub(crate) fn lock(&self) -> MutexGuard<'_, Shared> {
+    fn lock(&self) -> MutexGuard<'_, Shared> {
         self.state
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
@@ -344,6 +359,103 @@ impl Coordinator {
         self.state_changed.notify_all();
     }
 
+    /// Whether the run is still in its steady state, for a caller deciding
+    /// whether to keep working rather than to wind down.
+    pub(crate) fn is_running(&self) -> bool {
+        matches!(self.lock().state, RunState::Running)
+    }
+
+    /// What the driver does next, given the settle count it last polled at.
+    ///
+    /// Returns `None` after parking for up to `park`: there was nothing to do,
+    /// and the caller loops around to re-check whatever it watches outside the
+    /// lock. The park happens under the same lock acquisition as the decision,
+    /// so a notification arriving between the two is not missed.
+    pub(crate) fn next_gate(&self, polled_at: Option<u64>, park: Duration) -> Option<Gate> {
+        let mut shared = self.lock();
+        if !matches!(shared.state, RunState::Running) {
+            // Drained means every lease is released; the queue may still hold
+            // tasks no worker will take, which is what a wind-down leaves.
+            if shared.leases.is_empty() {
+                // Take the terminal reason by value: the payload moves out to
+                // be returned, and the `Finished` left in its place is the
+                // signal that makes every worker's next_task exit.
+                let terminal = std::mem::replace(&mut shared.state, RunState::Finished);
+                self.state_changed.notify_all();
+                return Some(Gate::Terminal(terminal));
+            }
+        } else if shared.queue.is_empty() && polled_at != Some(shared.settled) {
+            // The gate ignores outstanding leases, so a chain task's successor
+            // is handed out the moment its own predecessor commits, while other
+            // tasks still run.
+            return Some(Gate::Poll {
+                idle: shared.leases.is_empty(),
+                settled: shared.settled,
+            });
+        }
+        // Nothing to do: park under the same lock acquisition, so a
+        // notification arriving between the decision and the park is not
+        // missed.
+        drop(
+            self.state_changed
+                .wait_timeout(shared, park)
+                .unwrap_or_else(|p| p.into_inner()),
+        );
+        None
+    }
+
+    /// Installs the drained sentinel: the driver saw the work through and the
+    /// pool may exit.
+    pub(crate) fn finish(&self) {
+        self.lock().state = RunState::Finished;
+        self.state_changed.notify_all();
+    }
+
+    /// Puts freshly polled tasks at the back of the ready queue and wakes the
+    /// workers waiting for them.
+    pub(crate) fn push_ready(&self, pending: Vec<Pending>) {
+        self.lock().queue.extend(pending);
+        self.state_changed.notify_all();
+    }
+
+    /// The run's wind-down state, for an assertion about which one it reached.
+    /// Reading it costs the lock, so it is handed to a closure rather than
+    /// cloned: `RunState` carries an `Error` and a `Failure`, neither of which
+    /// is cloneable.
+    #[cfg(test)]
+    pub(crate) fn with_state<T>(&self, read: impl FnOnce(&RunState) -> T) -> T {
+        read(&self.lock().state)
+    }
+
+    /// The count of lease releases so far, the figure the poll gate turns on.
+    #[cfg(test)]
+    pub(crate) fn releases(&self) -> u64 {
+        self.lock().settled
+    }
+
+    /// The keys waiting in the ready queue, in order.
+    #[cfg(test)]
+    pub(crate) fn queued(&self) -> Vec<TaskKey> {
+        self.lock()
+            .queue
+            .iter()
+            .map(|pending| pending.key)
+            .collect()
+    }
+
+    /// Records `key` as in flight without a worker having leased it, for a
+    /// test that exercises what a settlement does to a standing lease.
+    #[cfg(test)]
+    pub(crate) fn hold_lease(&self, key: TaskKey) {
+        self.lock().leases.insert(key);
+    }
+
+    /// Whether `key` is in flight.
+    #[cfg(test)]
+    pub(crate) fn holds_lease(&self, key: &TaskKey) -> bool {
+        self.lock().leases.contains(key)
+    }
+
     /// Seeds the live-worker count to `count`, the pool's slot total, before
     /// the workers spawn. Set once at run start.
     pub(crate) fn set_live_workers(&self, count: usize) {
@@ -423,6 +535,11 @@ mod tests {
             attempt: 0,
         }
     }
+
+    /// A park short enough that a test which reaches it is not held up, and
+    /// long enough that nothing races it: every gate test here expects a
+    /// decision rather than the park.
+    const PARK: Duration = Duration::from_millis(1);
 
     /// A coordinator over both classes, holding `queue`.
     fn placed(queue: Vec<Pending>, chains: HashMap<u64, DeviceClass>) -> Coordinator {
@@ -554,6 +671,93 @@ mod tests {
         assert_eq!(leased.pending.key, first_key);
         assert_eq!(leased.placement, ChainPlacement::Settled);
         assert!(shared.chains.is_empty());
+    }
+
+    #[test]
+    fn every_settled_attempt_moves_the_release_count_once() {
+        // The driver polls the source only when this count has moved, so a
+        // settlement that failed to move it would leave a chain's successor
+        // unqueued until some other task settled. Every outcome counts: a
+        // resolution, a requeue, and a termination alike.
+        let coordinator = Coordinator::new();
+        let task = pending(Some(0), 1);
+        let key = task.key;
+        assert_eq!(coordinator.releases(), 0);
+
+        coordinator.hold_lease(key);
+        coordinator.resolve(key);
+        assert_eq!(coordinator.releases(), 1);
+
+        coordinator.hold_lease(key);
+        coordinator.requeue(key, task.task, 1);
+        assert_eq!(coordinator.releases(), 2);
+
+        coordinator.hold_lease(key);
+        coordinator.terminate(key, "candidate rejected".to_string());
+        assert_eq!(coordinator.releases(), 3);
+    }
+
+    #[test]
+    fn the_poll_gate_opens_once_per_settlement() {
+        // The gate is what turns a settlement into a poll: it opens while the
+        // queue is empty and the count has moved past the caller's last poll,
+        // and stays shut until the next settlement moves it again.
+        let coordinator = Coordinator::new();
+        let task = pending(Some(0), 1);
+        let key = task.key;
+        coordinator.hold_lease(key);
+        coordinator.resolve(key);
+
+        let Some(Gate::Poll { idle, settled }) = coordinator.next_gate(None, PARK) else {
+            panic!("a settlement with an empty queue opens the poll gate");
+        };
+        assert!(idle, "no lease is outstanding");
+        assert_eq!(settled, 1);
+
+        // Polled at that count, the gate parks rather than polling again.
+        assert!(coordinator.next_gate(Some(settled), PARK).is_none());
+    }
+
+    #[test]
+    fn a_wound_down_run_yields_its_terminal_reason_once() {
+        // The driver takes the reason by value and leaves `Finished` behind,
+        // which is the signal every worker's next_task exits on — so a second
+        // look yields the sentinel rather than the reason again.
+        let coordinator = Coordinator::new();
+        coordinator.interrupt();
+        assert!(matches!(
+            coordinator.next_gate(None, PARK),
+            Some(Gate::Terminal(RunState::Interrupted))
+        ));
+        assert!(matches!(
+            coordinator.next_gate(None, PARK),
+            Some(Gate::Terminal(RunState::Finished))
+        ));
+    }
+
+    #[test]
+    fn a_wound_down_run_holding_a_lease_is_not_terminal_yet() {
+        // The in-flight attempt has to settle first, or the driver would
+        // return while a worker still holds a task.
+        let coordinator = Coordinator::new();
+        let key = a_key();
+        coordinator.hold_lease(key);
+        coordinator.interrupt();
+        assert!(coordinator.next_gate(None, PARK).is_none());
+        coordinator.resolve(key);
+        assert!(matches!(
+            coordinator.next_gate(None, PARK),
+            Some(Gate::Terminal(RunState::Interrupted))
+        ));
+    }
+
+    #[test]
+    fn queued_work_shuts_the_poll_gate() {
+        // A non-empty queue means the workers have something to take, so the
+        // source is not asked for more however much has settled.
+        let coordinator = Coordinator::new();
+        coordinator.push_ready(vec![pending(Some(0), 1)]);
+        assert!(coordinator.next_gate(None, PARK).is_none());
     }
 
     #[test]
