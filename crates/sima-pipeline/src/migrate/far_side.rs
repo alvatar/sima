@@ -33,7 +33,7 @@ use crate::feed::{RemoteFeed, RunFeed};
 use crate::migrate::destination::Destination;
 use crate::migrate::far_config::FarLayout;
 use crate::migrate::sync::{Reach, sync_over};
-use crate::orchestrate::{ImageCheck, bootstrap_image, command_stdout};
+use crate::process::{ImageCheck, bootstrap_image, command_stdout};
 use crate::rental::{endpoint_target, transport_mode};
 
 /// The far side of a migration: the machine the run moves onto, and every

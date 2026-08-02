@@ -30,6 +30,7 @@ mod machines;
 mod migrate;
 mod observe;
 mod orchestrate;
+mod process;
 mod program_binding;
 mod remove;
 mod rental;

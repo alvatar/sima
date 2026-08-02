@@ -99,7 +99,7 @@ impl DomainSource for BuiltinSource {
     }
 
     fn worker_binary(&self) -> Result<PathBuf> {
-        crate::orchestrate::worker_binary()
+        crate::process::worker_binary()
     }
 
     fn spawn_policy(&self) -> SpawnPolicy {

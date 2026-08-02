@@ -31,7 +31,7 @@ use sima_transport::{SpawnMode, SpawnPolicy, SpawnSettings, SshDestination, SshT
 use crate::config::{FillPolicy, ProviderId, Rented};
 use crate::devices::{parse_enumeration, usable};
 use crate::fleet::Rental;
-use crate::orchestrate::{command_stdout, worker_binary};
+use crate::process::{command_stdout, worker_binary};
 
 /// The environment channel that points the stub backend at a machine that is
 /// really there, as `user@host:port`.
