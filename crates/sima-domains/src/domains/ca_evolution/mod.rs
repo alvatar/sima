@@ -18,6 +18,7 @@ mod ignition;
 mod model;
 mod models;
 mod params;
+mod values;
 
 #[cfg(test)]
 mod toy_model;

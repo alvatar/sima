@@ -83,3 +83,37 @@ fn lines(config: &LoadedConfig) -> Result<(RunId, Vec<String>)> {
     }
     Ok((run, lines))
 }
+
+#[cfg(test)]
+mod tests {
+    use sima_store::Store;
+
+    use super::*;
+    use crate::fixtures::loaded;
+
+    #[test]
+    fn a_read_over_a_missing_store_is_refused_before_it_touches_the_disk() -> Result<()> {
+        // Opening a store creates its skeleton, and a query must not, so the
+        // absence is observed rather than probed. Every read-only query goes
+        // through here, so the guard is stated once for all of them.
+        let config = loaded(std::path::PathBuf::from("/no/such/store/here"))?;
+        assert!(matches!(records(&config), Err(Error::Validation(_))));
+        assert!(matches!(followable(&config), Err(Error::Validation(_))));
+        assert!(journaled(&config)?.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn a_read_of_a_run_never_started_in_an_existing_store_is_refused() -> Result<()> {
+        // The store is there because another run used it; this run has no
+        // journal in it, which a query reports rather than answering with an
+        // empty history.
+        let dir = tempfile::tempdir().expect("temp dir");
+        Store::open(dir.path())?;
+        let config = loaded(dir.path().to_path_buf())?;
+        assert!(matches!(records(&config), Err(Error::Validation(_))));
+        assert!(matches!(followable(&config), Err(Error::Validation(_))));
+        assert!(journaled(&config)?.is_none());
+        Ok(())
+    }
+}

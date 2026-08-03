@@ -44,11 +44,8 @@ impl NcaGenConfig {
     /// and rounded once to f32.
     pub(crate) fn sample(&self, seed: u64, index: u64) -> NcaGenome {
         let s = prng::derive(seed, index);
-        let lo = -(self.weight_scale as f64);
-        let hi = self.weight_scale as f64;
         let weights: Box<[f32; N]> = Box::new(std::array::from_fn(|j| {
-            let t = prng::unit_f64(prng::next(s, j as u64));
-            (lo + t * (hi - lo)) as f32
+            prng::uniform_f32(s, j as u64, -self.weight_scale, self.weight_scale)
         }));
         NcaGenome::new(weights).expect("a draw from a finite positive scale is finite")
     }

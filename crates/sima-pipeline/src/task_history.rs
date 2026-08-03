@@ -7,8 +7,6 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::config::LoadedConfig;
-use crate::journal;
 use crate::stats::render_stats;
 use sima_core::{Error, Result};
 use sima_scheduler::{Event, Record};
@@ -341,13 +339,6 @@ pub(crate) fn resolve_task_key(records: &[Record], prefix: &str) -> Result<Strin
     }
 }
 
-/// One task's lifecycle in the run a loaded config describes, addressed by a
-/// prefix of its key. The committed outcome carries the stats line, the same
-/// rendering [`report`](crate::report) prints.
-pub fn task_history(config: &LoadedConfig, prefix: &str) -> Result<TaskHistory> {
-    task_history_records(&journal::records(config)?, prefix)
-}
-
 /// Projects one task's lifecycle from `records` — a run's lifecycle events in
 /// append order. The fold half of [`task_history`], over records from any
 /// source.
@@ -356,12 +347,6 @@ pub fn task_history_records(records: &[Record], prefix: &str) -> Result<TaskHist
     ledger(records)
         .remove(&task)
         .ok_or_else(|| Error::Corruption(format!("task {task} resolved to no history")))
-}
-
-/// Every task the run ended on a definitive failure, ordered by key: the
-/// tasks a finished run did not commit, and why.
-pub fn failures(config: &LoadedConfig) -> Result<Vec<TaskHistory>> {
-    Ok(failures_records(&journal::records(config)?))
 }
 
 /// The histories of the tasks `records` shows the run did not commit, ordered
@@ -377,9 +362,8 @@ pub fn failures_records(records: &[Record]) -> Vec<TaskHistory> {
 mod tests {
     use super::*;
     use sima_scheduler::StatScalar;
-    use sima_store::Store;
 
-    use crate::fixtures::{journal_with, loaded};
+    use crate::fixtures::journal_with;
 
     /// Wraps an event as a record stamped `ts_ms`.
     fn at(ts_ms: u64, event: Event) -> Record {
@@ -798,7 +782,7 @@ mod tests {
             leased("bb", 2, 0, 10),
             rejected("bb", 0, 20),
         ])?;
-        let failed: Vec<String> = failures(&config)?
+        let failed: Vec<String> = failures_records(&crate::journal::records(&config)?)
             .into_iter()
             .map(|history| history.task)
             .collect();
@@ -809,7 +793,7 @@ mod tests {
     #[test]
     fn a_run_that_committed_everything_has_no_failures() -> Result<()> {
         let (_dir, config) = journal_with(&[leased("aa", 0, 0, 10), committed("aa", 20)])?;
-        assert!(failures(&config)?.is_empty());
+        assert!(failures_records(&crate::journal::records(&config)?).is_empty());
         Ok(())
     }
 
@@ -820,33 +804,9 @@ mod tests {
             leased("abcd", 0, 0, 10),
             committed("abcd", 20),
         ])?;
-        let history = task_history(&config, "ab")?;
+        let history = task_history_records(&crate::journal::records(&config)?, "ab")?;
         assert_eq!(history.task, "abcd");
         assert!(matches!(history.outcome, TaskOutcome::Committed { .. }));
-        Ok(())
-    }
-
-    #[test]
-    fn a_query_over_a_missing_store_is_a_validation_error() -> Result<()> {
-        let config = loaded(std::path::PathBuf::from("/no/such/store/here"))?;
-        assert!(matches!(
-            task_history(&config, "aa"),
-            Err(Error::Validation(_))
-        ));
-        assert!(matches!(failures(&config), Err(Error::Validation(_))));
-        Ok(())
-    }
-
-    #[test]
-    fn a_query_over_a_run_never_started_is_a_validation_error() -> Result<()> {
-        let dir = tempfile::tempdir().expect("temp dir");
-        Store::open(dir.path())?;
-        let config = loaded(dir.path().to_path_buf())?;
-        assert!(matches!(
-            task_history(&config, "aa"),
-            Err(Error::Validation(_))
-        ));
-        assert!(matches!(failures(&config), Err(Error::Validation(_))));
         Ok(())
     }
 
@@ -863,9 +823,12 @@ mod tests {
         let (_dir, config) = journal_with(&records)?;
         assert_eq!(
             task_history_records(&records, "ab")?,
-            task_history(&config, "ab")?
+            task_history_records(&crate::journal::records(&config)?, "ab")?
         );
-        assert_eq!(failures_records(&records), failures(&config)?);
+        assert_eq!(
+            failures_records(&records),
+            failures_records(&crate::journal::records(&config)?)
+        );
         Ok(())
     }
 }

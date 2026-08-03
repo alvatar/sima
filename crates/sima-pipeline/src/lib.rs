@@ -61,7 +61,7 @@ pub use orchestrate::orchestrate;
 pub use program_binding::BinaryChange;
 pub use providers::{ProviderSettings, provider_for};
 pub use remove::remove;
-pub use report::{ReportRow, report, report_records, report_task, report_task_records};
+pub use report::{ReportRow, report, report_records, report_task_records};
 pub use spend::spend;
 // The rental-ledger and reputation types a caller renders those reports
 // through.
@@ -76,8 +76,7 @@ pub use sima_store::RemovalReport;
 pub use sima_scheduler::{Event, Level, Record, RunControl, RunOutcome};
 pub use status::{Occupancy, RunState, RunStatus, seeded_status, status, status_records};
 pub use task_history::{
-    Attempt, AttemptResult, TaskHistory, TaskOutcome, failures, failures_records, task_history,
-    task_history_records,
+    Attempt, AttemptResult, TaskHistory, TaskOutcome, failures_records, task_history_records,
 };
 pub use task_keys::task_keys;
-pub use timeline::{RetryStats, RunTimeline, WorkerMetrics, timeline, timeline_records};
+pub use timeline::{RetryStats, RunTimeline, WorkerMetrics, timeline_records};
