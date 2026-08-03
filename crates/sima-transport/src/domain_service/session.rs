@@ -338,17 +338,24 @@ impl Drop for DomainService {
     /// thread tearing a run down, so a program that will not leave would keep
     /// the process alive after the run ended. Past the bound it is killed and
     /// reaped, which is what frees the scratch directory too.
+    ///
+    /// The reader is joined only on the path where the program left on its own:
+    /// killing the child does not close a stdout a grandchild also holds, so a
+    /// join there would give back the unbounded wait the kill exists to avoid.
+    /// Past the bound the handle is released, as [`kill`](Self::kill) does.
     fn drop(&mut self) {
         if let Some(stdin) = self.stdin.as_mut() {
             let _ = write_frame(stdin, &ToDomain::Goodbye.encode());
         }
         self.stdin = None;
         let bound = self.farewell_bound();
-        if !reaped_within(&mut self.child, bound) {
+        if reaped_within(&mut self.child, bound) {
+            self.join_reader();
+        } else {
             let _ = self.child.kill();
             let _ = self.child.wait();
+            self.reader = None;
         }
-        self.join_reader();
         self.scratch = None;
     }
 }
@@ -358,12 +365,12 @@ impl Drop for DomainService {
 const FAREWELL_BOUND: Duration = Duration::from_secs(5);
 
 /// The farewell bound for a session whose questions wait `answer_timeout`.
+///
+/// The shorter of the two: a session may wait minutes on a question and still
+/// owe a teardown a prompt exit, and one whose questions wait as long as the
+/// program lives owes it the fixed bound.
 fn bounded_farewell(answer_timeout: Duration) -> Duration {
-    if answer_timeout == Duration::MAX {
-        FAREWELL_BOUND
-    } else {
-        answer_timeout
-    }
+    answer_timeout.min(FAREWELL_BOUND)
 }
 
 /// How often the farewell wait looks at the child. Short enough that an
@@ -527,13 +534,17 @@ mod tests {
     }
 
     #[test]
-    fn the_farewell_bound_follows_the_sessions_own_deadline() {
-        // A session that states a deadline uses it; one that does not — every
-        // question waiting as long as the program lives — still bounds the
-        // farewell, because that runs where a run is ending.
+    fn the_farewell_bound_is_the_shorter_of_the_deadline_and_the_fixed_bound() {
+        // A deadline shorter than the fixed bound is the farewell's; a longer
+        // one is not, because a teardown owes a prompt exit however long a
+        // question may wait. A session with no deadline takes the fixed bound.
         assert_eq!(
             bounded_farewell(Duration::from_millis(250)),
             Duration::from_millis(250)
+        );
+        assert_eq!(
+            bounded_farewell(FAREWELL_BOUND + Duration::from_secs(60)),
+            FAREWELL_BOUND
         );
         assert_eq!(bounded_farewell(Duration::MAX), FAREWELL_BOUND);
     }

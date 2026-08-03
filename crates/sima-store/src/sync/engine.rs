@@ -410,7 +410,7 @@ fn send_want(writer: &mut dyn Write, records: &[TaskKey], objects: &[Hash]) -> R
 /// The two lists are drained independently and paired up, so a long record list
 /// beside a short object list still fills its chunks rather than being paced by
 /// the shorter one. `emit` sees at least one chunk however empty the lists are.
-fn chunked<R: Clone, O: Clone>(
+fn chunked<R, O>(
     records: &[R],
     objects: &[O],
     bound: usize,
@@ -601,6 +601,70 @@ mod tests {
             Ok(())
         })
         .expect("the split succeeds");
+    }
+
+    #[test]
+    fn an_inventory_and_a_request_arriving_in_two_chunks_are_read_whole() {
+        // The receive side of the chunking: `more` is what says another frame
+        // follows, so a peer whose inventory or request spans two frames must
+        // have both read before either is acted on. A reader that stopped at
+        // the first chunk would serve half a request and silently drop the
+        // rest, which is the failure this pins against.
+        let (_dir, store) = temp_store();
+        let first = store
+            .put(b"the first object the peer asks for")
+            .expect("put");
+        let second = store
+            .put(b"the second object the peer asks for")
+            .expect("put");
+
+        // The peer advertises two objects it holds across two `Have` chunks —
+        // neither is in this store, so both must reach the responder's want —
+        // and asks for two of this store's objects across two `Want` chunks.
+        let held: [Vec<u8>; 2] = [b"the peer's first object".to_vec(), b"its second".to_vec()];
+        let frames = [
+            SyncMessage::Hello {
+                protocol: SYNC_PROTOCOL_VERSION,
+            },
+            SyncMessage::Have {
+                records: Vec::new(),
+                objects: vec![hash_bytes(&held[0])],
+                more: true,
+            },
+            SyncMessage::Have {
+                records: Vec::new(),
+                objects: vec![hash_bytes(&held[1])],
+                more: false,
+            },
+            SyncMessage::Want {
+                records: Vec::new(),
+                objects: vec![first],
+                more: true,
+            },
+            SyncMessage::Want {
+                records: Vec::new(),
+                objects: vec![second],
+                more: false,
+            },
+            // The peer serves both objects it advertised. That the responder
+            // accepts them at all is the proof the second `Have` chunk reached
+            // its want: an object nobody asked for is refused.
+            SyncMessage::Object {
+                hash: hash_bytes(&held[0]),
+                bytes: held[0].clone(),
+            },
+            SyncMessage::Object {
+                hash: hash_bytes(&held[1]),
+                bytes: held[1].clone(),
+            },
+            SyncMessage::Done,
+        ];
+        let report = responder_reads(&store, frames).expect("the session completes");
+        assert_eq!(report.objects_sent, 2, "both requested chunks were served");
+        assert_eq!(
+            report.objects_received, 2,
+            "both advertised chunks were asked for"
+        );
     }
 
     #[test]
