@@ -25,15 +25,11 @@ use sima_core::Result;
 use sima_model::FormatId;
 use sima_trace::Emitter;
 
-use crate::link::{LinkEvent, SpawnOutcome, WorkerLink, WorkerTransport};
+use crate::link::{LinkEvent, SpawnOutcome, WORKER_ENTRYPOINT, WorkerLink, WorkerTransport};
 use crate::protocol::Assignment;
 use crate::spawn_settings::SpawnSettings;
 use crate::ssh::SshDestination;
 use crate::subprocess::{EventContext, spawn_worker};
-
-/// The container command the worker runs as; the runtime execs it as the
-/// container's entrypoint argument.
-const WORKER_ENTRYPOINT: &str = "sima-worker";
 
 /// Spawns workers inside a container runtime for one run. Each spawn launches a
 /// fresh container with a unique name; when [`host`](ContainerTransport::host) is

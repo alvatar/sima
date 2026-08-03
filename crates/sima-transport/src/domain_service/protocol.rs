@@ -207,7 +207,7 @@ impl ToDomain {
             TAG_TRANSLATE_CONFIG => ToDomain::TranslateConfig {
                 format: FormatId::new(dec.str()?)?,
                 toml: dec.str()?.to_string(),
-                segmented: decode_flag(&mut dec)?,
+                segmented: dec.flag()?,
             },
             TAG_TRANSLATE_GENERATOR_CONFIG => ToDomain::TranslateGeneratorConfig {
                 generator: GeneratorId::new(dec.str()?)?,
@@ -343,17 +343,6 @@ fn device_type(tag: u8) -> Result<DeviceType> {
         DEVICE_OTHER => Ok(DeviceType::Other),
         tag => Err(Error::Encoding(format!(
             "unknown device category tag {tag}"
-        ))),
-    }
-}
-
-/// Reads a boolean flag byte, rejecting values other than 0 and 1.
-fn decode_flag(dec: &mut Dec<'_>) -> Result<bool> {
-    match dec.u8()? {
-        0 => Ok(false),
-        1 => Ok(true),
-        flag => Err(Error::Encoding(format!(
-            "invalid flag byte {flag}, expected 0 or 1"
         ))),
     }
 }

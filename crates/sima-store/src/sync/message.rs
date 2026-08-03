@@ -108,7 +108,7 @@ impl SyncMessage {
                 for object in objects {
                     enc.hash(object);
                 }
-                enc.u8(u8::from(*more));
+                enc.flag(*more);
             }
             SyncMessage::Want {
                 records,
@@ -123,7 +123,7 @@ impl SyncMessage {
                 for object in objects {
                     enc.hash(object);
                 }
-                enc.u8(u8::from(*more));
+                enc.flag(*more);
             }
             SyncMessage::Record { key, bytes } => {
                 enc.u8(TAG_RECORD).hash(key.as_hash()).bytes(bytes);
@@ -165,7 +165,7 @@ impl SyncMessage {
                 SyncMessage::Have {
                     records,
                     objects,
-                    more: decode_more(&mut dec)?,
+                    more: dec.flag()?,
                 }
             }
             TAG_WANT => {
@@ -174,7 +174,7 @@ impl SyncMessage {
                 SyncMessage::Want {
                     records,
                     objects,
-                    more: decode_more(&mut dec)?,
+                    more: dec.flag()?,
                 }
             }
             TAG_RECORD => SyncMessage::Record {
@@ -192,19 +192,6 @@ impl SyncMessage {
         };
         dec.finish()?;
         Ok(message)
-    }
-}
-
-/// Reads the chunk-continuation flag: 0 or 1, and nothing else, so a byte no
-/// encoder here writes fails to decode rather than reading as "another chunk
-/// follows".
-fn decode_more(dec: &mut Dec<'_>) -> Result<bool> {
-    match dec.u8()? {
-        0 => Ok(false),
-        1 => Ok(true),
-        other => Err(Error::Encoding(format!(
-            "invalid sync chunk continuation byte {other}, expected 0 or 1"
-        ))),
     }
 }
 

@@ -242,7 +242,7 @@ impl ToChild {
                 let resume = decode_opt_bytes(&mut dec)?;
                 let attempt = dec.u32()?;
                 let worker = dec.u64()?;
-                let checkpointing = decode_flag(&mut dec)?;
+                let checkpointing = dec.flag()?;
                 ToChild::Assign(Assignment {
                     spec,
                     params,
@@ -431,17 +431,6 @@ fn decode_opt_device(dec: &mut Dec<'_>) -> Result<Option<DeviceBinding>> {
         })),
         flag => Err(Error::Encoding(format!(
             "invalid optional-device flag byte {flag}, expected 0 or 1"
-        ))),
-    }
-}
-
-/// Reads a boolean flag byte, rejecting values other than 0 and 1.
-fn decode_flag(dec: &mut Dec<'_>) -> Result<bool> {
-    match dec.u8()? {
-        0 => Ok(false),
-        1 => Ok(true),
-        flag => Err(Error::Encoding(format!(
-            "invalid flag byte {flag}, expected 0 or 1"
         ))),
     }
 }

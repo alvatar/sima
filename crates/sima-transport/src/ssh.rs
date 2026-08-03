@@ -52,13 +52,9 @@ use sima_core::Result;
 use sima_model::FormatId;
 use sima_trace::Emitter;
 
-use crate::link::{SpawnOutcome, WorkerLink, WorkerTransport};
+use crate::link::{SpawnOutcome, WORKER_ENTRYPOINT, WorkerLink, WorkerTransport};
 use crate::spawn_settings::SpawnSettings;
 use crate::subprocess::{EventContext, spawn_worker};
-
-/// The command the worker runs as: `sima-worker`, over ssh the remote command,
-/// in local mode the binary's own name is its path instead.
-const WORKER_ENTRYPOINT: &str = "sima-worker";
 
 /// Where an ssh command lands, and the trust policy for getting there. Named
 /// for the TOML key it answers to. A plain value defined here so the transport

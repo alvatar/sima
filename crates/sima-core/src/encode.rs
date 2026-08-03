@@ -43,6 +43,15 @@ impl Enc {
         self
     }
 
+    /// Writes a boolean as one byte: 0 or 1.
+    ///
+    /// A flag is a byte because the encoding is byte-framed, and the pairing
+    /// with [`Dec::flag`] is what keeps every reader refusing the bytes no
+    /// writer here produces.
+    pub fn flag(&mut self, v: bool) -> &mut Self {
+        self.u8(u8::from(v))
+    }
+
     /// Writes a `u16`, little-endian.
     pub fn u16(&mut self, v: u16) -> &mut Self {
         self.buf.extend_from_slice(&v.to_le_bytes());
@@ -175,6 +184,20 @@ impl<'a> Dec<'a> {
     /// Reads a `u8`.
     pub fn u8(&mut self) -> Result<u8> {
         Ok(self.array::<1>()?[0])
+    }
+
+    /// Reads a boolean written by [`Enc::flag`]: 0 or 1, and nothing else.
+    ///
+    /// Any other byte is [`Error::Encoding`], so a payload no writer here
+    /// produced fails to decode rather than reading as `true`.
+    pub fn flag(&mut self) -> Result<bool> {
+        match self.u8()? {
+            0 => Ok(false),
+            1 => Ok(true),
+            other => Err(Error::Encoding(format!(
+                "invalid flag byte {other}, expected 0 or 1"
+            ))),
+        }
     }
 
     /// Reads a little-endian `u16`.

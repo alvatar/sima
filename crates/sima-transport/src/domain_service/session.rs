@@ -30,10 +30,8 @@ use tempfile::TempDir;
 
 use crate::answer_deadline::receive_within;
 use crate::domain_service::protocol::{FromDomain, PROTOCOL_VERSION, ToDomain};
+use crate::serve::SERVE_DOMAIN;
 use crate::spawn_policy::SpawnPolicy;
-
-/// The flag that puts a program in its domain-service role.
-const SERVE_DOMAIN: &str = "--serve-domain";
 
 /// One program, spawned to answer for one format.
 #[derive(Debug)]

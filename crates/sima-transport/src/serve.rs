@@ -14,8 +14,10 @@ use crate::domain_service::host::served;
 use crate::{domain_service, host};
 
 /// The flag that asks a program for the domain-service role, followed by the
-/// format id it is asked about.
-const SERVE_DOMAIN: &str = "--serve-domain";
+/// format id it is asked about. Read here to route a spawned program into its
+/// role, and written by the session that spawns it, so the two halves of one
+/// invocation cannot spell it differently.
+pub(crate) const SERVE_DOMAIN: &str = "--serve-domain";
 
 /// What a program was spawned to be.
 #[derive(Debug, Clone, PartialEq, Eq)]
