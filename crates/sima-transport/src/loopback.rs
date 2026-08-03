@@ -23,7 +23,7 @@ use sima_trace::Emitter;
 
 use crate::host;
 use crate::link::{LinkEvent, SpawnOutcome, WorkerLink, WorkerTransport};
-use crate::protocol::{Assignment, Hello, ToChild, ToParent};
+use crate::protocol::{Assignment, Hello, ToChild, ToParent, encode_assign};
 use crate::subprocess::{self, next_event, read_events};
 
 /// A [`host::Resolver`] the loopback shares across its host threads: one
@@ -130,7 +130,10 @@ impl WorkerLink for LoopbackLink {
         let stdin = self.stdin.as_mut().ok_or_else(|| {
             Error::Transport("the loopback host's stdin is already closed".to_string())
         })?;
-        write_frame(stdin, &ToChild::Assign(assignment.clone()).encode())
+        // Encoded from the borrow: an assignment carries the candidate's
+        // state, which would otherwise be copied once per attempt only to be
+        // wrapped in a message value and dropped.
+        write_frame(stdin, &encode_assign(assignment))
     }
 
     fn next(&mut self, deadline: Option<Instant>) -> Result<LinkEvent> {

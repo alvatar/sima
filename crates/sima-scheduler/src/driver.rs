@@ -403,13 +403,17 @@ fn drive(
                     RunState::Running => unreachable!("the terminal branch excludes Running"),
                 };
             }
-            Gate::Poll { idle, settled } => {
+            Gate::Poll {
+                idle,
+                settled,
+                keys,
+            } => {
                 polled_at = Some(settled);
                 // A poll fault set the terminal state; the next iteration
                 // drains the in-flight work and the terminal branch returns
                 // it. An empty poll finalizes only at an idle pool; with
                 // leases outstanding, their releases trigger the next poll.
-                match poll_source(coordinator, source) {
+                match poll_source(coordinator, source, &keys) {
                     None => {}
                     Some(more) if more.is_empty() => {
                         if idle {
@@ -430,8 +434,9 @@ fn drive(
 fn poll_source(
     coordinator: &Coordinator,
     source: &mut dyn TaskSource,
+    settled: &[TaskKey],
 ) -> Option<Vec<RunnableTask>> {
-    match source.poll() {
+    match source.poll(settled) {
         Ok(tasks) => Some(tasks),
         Err(e) => {
             coordinator.fault_run(e);
@@ -556,7 +561,7 @@ mod tests {
     struct FailingSource;
 
     impl TaskSource for FailingSource {
-        fn poll(&mut self) -> Result<Vec<RunnableTask>> {
+        fn poll(&mut self, _settled: &[TaskKey]) -> Result<Vec<RunnableTask>> {
             Err(Error::Validation("source poll failed".to_string()))
         }
 
@@ -581,7 +586,7 @@ mod tests {
     }
 
     impl TaskSource for ScriptedSource {
-        fn poll(&mut self) -> Result<Vec<RunnableTask>> {
+        fn poll(&mut self, _settled: &[TaskKey]) -> Result<Vec<RunnableTask>> {
             Ok(self.polls.pop_front().unwrap_or_default())
         }
 
@@ -816,7 +821,7 @@ mod tests {
             first: Option<Vec<RunnableTask>>,
         }
         impl TaskSource for FaultAfterFirst {
-            fn poll(&mut self) -> Result<Vec<RunnableTask>> {
+            fn poll(&mut self, _settled: &[TaskKey]) -> Result<Vec<RunnableTask>> {
                 match self.first.take() {
                     Some(tasks) => Ok(tasks),
                     None => Err(Error::Validation("source poll failed".to_string())),

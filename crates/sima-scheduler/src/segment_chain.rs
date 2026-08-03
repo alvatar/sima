@@ -9,6 +9,7 @@
 //! state hop by hop and the frontier is derived from `(config, store
 //! state)` — resume is the same construction.
 
+use std::collections::HashMap;
 use std::collections::HashSet;
 
 use sima_contracts::{Generator, STATE_ARTIFACT};
@@ -137,6 +138,10 @@ pub struct SegmentChain<'a> {
     segments: u64,
     chains: Vec<Chain>,
     keys: KeySet,
+    /// The chain each handed-out task key belongs to. A settled key is looked
+    /// up here so a poll re-probes that chain alone; a key from another run, or
+    /// one already walked past, simply is not here.
+    chain_of: HashMap<TaskKey, usize>,
     /// The segments the store already answered at construction, across every
     /// chain: what the fast-forward walked past.
     prior_committed: usize,
@@ -196,30 +201,45 @@ impl<'a> SegmentChain<'a> {
             prior_committed: chains.iter().map(|c| c.committed as usize).sum(),
             chains,
             keys,
+            // Filled as frontiers are handed out; a chain nothing has taken
+            // yet has no key to be settled under.
+            chain_of: HashMap::new(),
         })
     }
 }
 
 impl TaskSource for SegmentChain<'_> {
-    fn poll(&mut self) -> Result<Vec<RunnableTask>> {
+    fn poll(&mut self, settled: &[TaskKey]) -> Result<Vec<RunnableTask>> {
+        // Only a chain whose own frontier settled can have gained a successor,
+        // so those are the chains re-probed. Re-probing every handed-out chain
+        // instead costs one store read per chain per poll, and with workers at
+        // or above the chain count a poll follows nearly every settle — which
+        // is O(chains) reads per settle over the whole run.
+        //
+        // The first poll of a run settles nothing and hands out every chain's
+        // segment 0, which the loop below reaches through the second arm.
+        for key in settled {
+            let Some(&i) = self.chain_of.get(key) else {
+                continue;
+            };
+            // A handed-out frontier committed: re-run the fast-forward step,
+            // which also skips any successors the store already answers (a
+            // fixed point or cross-run reuse).
+            self.chains[i].advance(
+                self.store,
+                self.params,
+                self.environment,
+                self.segments,
+                &mut self.keys,
+            )?;
+        }
         let mut out = Vec::new();
         for (i, chain) in self.chains.iter_mut().enumerate() {
-            // A handed-out frontier may have committed since the last poll:
-            // re-run the fast-forward step, which also skips any successors
-            // the store already answers (a fixed point or cross-run reuse).
-            if chain.handed_out {
-                chain.advance(
-                    self.store,
-                    self.params,
-                    self.environment,
-                    self.segments,
-                    &mut self.keys,
-                )?;
-            }
             // At most one runnable task per chain: its frontier, exactly once.
             if !chain.handed_out
                 && let Some(identity) = &chain.frontier
             {
+                self.chain_of.insert(identity.key(), i);
                 out.push(RunnableTask {
                     spec: chain.spec.clone(),
                     identity: *identity,
@@ -328,7 +348,7 @@ mod tests {
         let env = environment()?;
         let mut source = SegmentChain::new(&generator, &config, &env, &store)?;
         assert_eq!(source.task_total(), 6, "2 chains x 3 segments");
-        let tasks = source.poll()?;
+        let tasks = source.poll(&[])?;
         assert_eq!(tasks.len(), 2, "one segment-0 task per chain");
         for (i, task) in tasks.iter().enumerate() {
             assert_eq!(task.identity.input_state, None);
@@ -341,12 +361,56 @@ mod tests {
     }
 
     #[test]
+    fn a_poll_re_probes_only_the_chains_that_settled() -> Result<()> {
+        // The cost this exists to bound: re-probing every handed-out chain
+        // costs one store read per chain per poll, and with workers at or above
+        // the chain count a poll follows nearly every settle — O(chains) reads
+        // per settle over the whole run. Only the chain a settled key belongs
+        // to can have gained a successor.
+        let (_dir, store) = temp_store();
+        let generator = StubGenerator::new()?;
+        let config = config(vec![StubBehavior::Accumulate(1); 4], 3)?;
+        let env = environment()?;
+        store.put(&config.params.to_bytes())?;
+        store.put(&env.to_bytes())?;
+        let mut source = SegmentChain::new(&generator, &config, &env, &store)?;
+
+        // Every chain hands out its segment 0.
+        let handed = source.poll(&[])?;
+        assert_eq!(handed.len(), 4);
+
+        // One of them commits. The poll that follows advances that chain and
+        // yields its successor; the other three are untouched, so nothing else
+        // becomes runnable and the three handed-out frontiers stay out.
+        let settled = &handed[1];
+        commit_with_state(&store, settled, b"state 0")?;
+        let next = source.poll(&[settled.identity.key()])?;
+        assert_eq!(next.len(), 1, "one chain settled, so one successor");
+        assert_eq!(next[0].chain, settled.chain);
+
+        // A key from no chain of this source — another run's, or one already
+        // walked past — advances nothing rather than faulting.
+        let stranger = handed[0].identity.key();
+        assert!(source.poll(&[])?.is_empty());
+        assert!(
+            source.poll(&[stranger])?.is_empty(),
+            "uncommitted, so nothing"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn a_commit_makes_the_next_poll_yield_the_successor() -> Result<()> {
         let (_dir, store) = temp_store();
         let (_config, mut source) = one_chain(&store, 3)?;
-        let first = source.poll()?.pop().expect("segment 0");
+        let first = source.poll(&[])?.pop().expect("segment 0");
         let state_hash = commit_with_state(&store, &first, b"state after segment 0")?;
-        let successor = source.poll()?.pop().expect("segment 1");
+        // The poll is told what settled, which is what makes it re-probe this
+        // chain rather than every chain it has handed out.
+        let successor = source
+            .poll(&[first.identity.key()])?
+            .pop()
+            .expect("segment 1");
         assert_eq!(successor.identity.input_state, Some(state_hash));
         assert_eq!(successor.identity.seed, first.identity.seed);
         assert_eq!(successor.identity.spec, first.identity.spec);
@@ -358,10 +422,12 @@ mod tests {
     fn a_handed_out_task_is_not_re_yielded_while_uncommitted() -> Result<()> {
         let (_dir, store) = temp_store();
         let (_config, mut source) = one_chain(&store, 3)?;
-        assert_eq!(source.poll()?.len(), 1);
-        // Nothing committed: repeated polls yield nothing new.
-        assert!(source.poll()?.is_empty());
-        assert!(source.poll()?.is_empty());
+        let handed = source.poll(&[])?;
+        assert_eq!(handed.len(), 1);
+        // Nothing committed: repeated polls yield nothing new, whether or not
+        // the key is offered as settled.
+        assert!(source.poll(&[])?.is_empty());
+        assert!(source.poll(&[handed[0].identity.key()])?.is_empty());
         Ok(())
     }
 
@@ -369,9 +435,9 @@ mod tests {
     fn a_record_without_the_state_artifact_faults_naming_it() -> Result<()> {
         let (_dir, store) = temp_store();
         let (_config, mut source) = one_chain(&store, 3)?;
-        let first = source.poll()?.pop().expect("segment 0");
+        let first = source.poll(&[])?.pop().expect("segment 0");
         commit_stateless(&store, &first)?;
-        match source.poll() {
+        match source.poll(&[first.identity.key()]) {
             Err(Error::Validation(msg)) => {
                 assert!(msg.contains(STATE_ARTIFACT), "names the artifact: {msg}");
                 assert!(
@@ -389,13 +455,16 @@ mod tests {
         let (_dir, store) = temp_store();
         // Commit segments 0 and 1 through a first source.
         let (_config, mut source) = one_chain(&store, 3)?;
-        let first = source.poll()?.pop().expect("segment 0");
+        let first = source.poll(&[])?.pop().expect("segment 0");
         commit_with_state(&store, &first, b"state 0")?;
-        let second = source.poll()?.pop().expect("segment 1");
+        let second = source
+            .poll(&[first.identity.key()])?
+            .pop()
+            .expect("segment 1");
         let state_hash = commit_with_state(&store, &second, b"state 1")?;
         // A fresh source over the same store resumes at segment 2.
         let (_config, mut resumed) = one_chain(&store, 3)?;
-        let third = resumed.poll()?.pop().expect("segment 2");
+        let third = resumed.poll(&[])?.pop().expect("segment 2");
         assert_eq!(third.identity.input_state, Some(state_hash));
         assert_eq!(
             resumed.all_keys(),
@@ -416,17 +485,18 @@ mod tests {
     fn a_fully_committed_chain_yields_nothing_and_lists_every_key() -> Result<()> {
         let (_dir, store) = temp_store();
         let (_config, mut source) = one_chain(&store, 2)?;
-        let mut keys = Vec::new();
+        let mut keys: Vec<sima_model::TaskKey> = Vec::new();
         for state in [b"state 0".as_slice(), b"state 1"] {
-            let task = source.poll()?.pop().expect("a segment");
+            let settled = keys.last().copied().into_iter().collect::<Vec<_>>();
+            let task = source.poll(&settled)?.pop().expect("a segment");
             keys.push(task.identity.key());
             commit_with_state(&store, &task, state)?;
         }
-        assert!(source.poll()?.is_empty());
+        assert!(source.poll(&[keys[1]])?.is_empty());
         assert_eq!(source.all_keys(), keys.as_slice());
         // Resume over the fully committed store: nothing runnable, same keys.
         let (_config, mut resumed) = one_chain(&store, 2)?;
-        assert!(resumed.poll()?.is_empty());
+        assert!(resumed.poll(&[])?.is_empty());
         assert_eq!(resumed.all_keys(), keys.as_slice());
         Ok(())
     }
@@ -439,11 +509,17 @@ mod tests {
         // S again, so segment 2's identity equals segment 1's — a fixed
         // point. The walk terminates at the segment count with the key set
         // deduplicated to two entries.
-        let first = source.poll()?.pop().expect("segment 0");
+        let first = source.poll(&[])?.pop().expect("segment 0");
         commit_with_state(&store, &first, b"fixed point")?;
-        let second = source.poll()?.pop().expect("segment 1");
+        let second = source
+            .poll(&[first.identity.key()])?
+            .pop()
+            .expect("segment 1");
         commit_with_state(&store, &second, b"fixed point")?;
-        assert!(source.poll()?.is_empty(), "the chain is exhausted");
+        assert!(
+            source.poll(&[second.identity.key()])?.is_empty(),
+            "the chain is exhausted"
+        );
         assert_eq!(
             source.all_keys(),
             &[first.identity.key(), second.identity.key()]
@@ -460,8 +536,8 @@ mod tests {
         let (_config, mut source_a) = one_chain(&store_a, 3)?;
         let (_config, mut source_b) = one_chain(&store_b, 3)?;
         assert_eq!(source_a.all_keys(), source_b.all_keys());
-        let task_a = source_a.poll()?.pop().expect("segment 0");
-        let task_b = source_b.poll()?.pop().expect("segment 0");
+        let task_a = source_a.poll(&[])?.pop().expect("segment 0");
+        let task_b = source_b.poll(&[])?.pop().expect("segment 0");
         assert_eq!(task_a.identity.key(), task_b.identity.key());
         Ok(())
     }

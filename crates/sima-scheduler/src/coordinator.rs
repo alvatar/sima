@@ -43,8 +43,13 @@ pub(crate) enum Gate {
     Terminal(RunState),
     /// The queue is empty and work has settled since the last poll, so the
     /// source is asked for more. `idle` is whether any lease is outstanding —
-    /// an empty poll finalizes only when none is.
-    Poll { idle: bool, settled: u64 },
+    /// an empty poll finalizes only when none is — and `keys` is what settled
+    /// since the last poll, for a source that derives successors from it.
+    Poll {
+        idle: bool,
+        settled: u64,
+        keys: Vec<TaskKey>,
+    },
 }
 
 /// A definitive candidate failure: the task that could not produce a result,
@@ -97,6 +102,14 @@ struct Shared {
     /// worker commits before releasing its lease — so an unchanged count
     /// means a re-poll would derive the same frontier.
     settled: u64,
+    /// The keys settled since the driver's last poll, in settlement order.
+    ///
+    /// A task source derives successors from committed records, and only the
+    /// chain a settled task belongs to can have gained one — so handing the
+    /// source what settled lets it re-probe those chains alone instead of every
+    /// chain it has handed out. Drained by the poll gate, so the list is the
+    /// size of one poll's worth of settlements rather than the run's.
+    settled_keys: Vec<TaskKey>,
     /// The device class each chain's work runs on, seeded at run start from
     /// the store's placement slots and extended as chains bind. Empty and
     /// unread when the run has one implicit class.
@@ -191,6 +204,7 @@ impl Coordinator {
                 leases: HashSet::new(),
                 state: RunState::Running,
                 settled: 0,
+                settled_keys: Vec::new(),
                 chains,
                 stateless: HashMap::new(),
                 live_workers: 0,
@@ -279,6 +293,7 @@ impl Coordinator {
         let mut shared = self.lock();
         shared.leases.remove(&key);
         shared.settled += 1;
+        shared.settled_keys.push(key);
         let result = apply(&mut shared);
         self.state_changed.notify_all();
         result
@@ -391,6 +406,7 @@ impl Coordinator {
             return Some(Gate::Poll {
                 idle: shared.leases.is_empty(),
                 settled: shared.settled,
+                keys: std::mem::take(&mut shared.settled_keys),
             });
         }
         // Nothing to do: park under the same lock acquisition, so a
@@ -708,11 +724,19 @@ mod tests {
         coordinator.hold_lease(key);
         coordinator.resolve(key);
 
-        let Some(Gate::Poll { idle, settled }) = coordinator.next_gate(None, PARK) else {
+        let Some(Gate::Poll {
+            idle,
+            settled,
+            keys,
+        }) = coordinator.next_gate(None, PARK)
+        else {
             panic!("a settlement with an empty queue opens the poll gate");
         };
         assert!(idle, "no lease is outstanding");
         assert_eq!(settled, 1);
+        // The gate hands over what settled, so the source re-probes that work
+        // alone rather than everything it has handed out.
+        assert_eq!(keys, vec![key]);
 
         // Polled at that count, the gate parks rather than polling again.
         assert!(coordinator.next_gate(Some(settled), PARK).is_none());

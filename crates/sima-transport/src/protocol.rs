@@ -171,6 +171,28 @@ pub enum ToParent {
     Event(Vec<u8>),
 }
 
+/// The frame payload of an [`ToChild::Assign`], from a borrowed assignment.
+///
+/// A link writes this rather than building the message value: an assignment
+/// carries the candidate's spec, its params, and its input state, which for a
+/// grid domain is megabytes, and wrapping it to encode it would copy all of it
+/// once per attempt. The bytes are exactly what [`ToChild::encode`] writes for
+/// the same assignment — that arm delegates here, so there is one encoding.
+pub fn encode_assign(assignment: &Assignment) -> Vec<u8> {
+    let mut enc = Enc::new();
+    enc.u8(TAG_ASSIGN)
+        .bytes(&assignment.spec)
+        .bytes(&assignment.params)
+        .u64(assignment.seed)
+        .hash(assignment.environment.as_hash());
+    opt_bytes(&mut enc, assignment.input_state.as_deref());
+    opt_bytes(&mut enc, assignment.resume.as_deref());
+    enc.u32(assignment.attempt)
+        .u64(assignment.worker)
+        .u8(assignment.checkpointing as u8);
+    enc.finish()
+}
+
 impl ToChild {
     /// The message's frame payload: tag byte, then fields in wire order.
     pub fn encode(&self) -> Vec<u8> {
@@ -185,18 +207,7 @@ impl ToChild {
                     .u64(hello.checkpoint_interval_steps);
                 opt_device(&mut enc, hello.device.as_ref());
             }
-            ToChild::Assign(assignment) => {
-                enc.u8(TAG_ASSIGN)
-                    .bytes(&assignment.spec)
-                    .bytes(&assignment.params)
-                    .u64(assignment.seed)
-                    .hash(assignment.environment.as_hash());
-                opt_bytes(&mut enc, assignment.input_state.as_deref());
-                opt_bytes(&mut enc, assignment.resume.as_deref());
-                enc.u32(assignment.attempt)
-                    .u64(assignment.worker)
-                    .u8(assignment.checkpointing as u8);
-            }
+            ToChild::Assign(assignment) => return encode_assign(assignment),
         }
         enc.finish()
     }
@@ -560,6 +571,33 @@ mod tests {
             ),
             ToParent::Event(Vec::new()),
         ]
+    }
+
+    #[test]
+    fn an_assignment_encodes_from_a_borrow() {
+        // The point of the borrowing encoder: the same bytes, without the
+        // assignment being copied to be wrapped in a message value. The
+        // assignment is still usable afterwards, which is the shape the link
+        // needs — a copy would be one clone of the candidate's state per
+        // attempt, megabytes for a grid domain.
+        let assignment = Assignment {
+            spec: vec![1, 2, 3],
+            params: vec![4, 5],
+            seed: 42,
+            environment: EnvironmentId::from_hash(hash_bytes(b"env")),
+            input_state: Some(vec![6; 100]),
+            resume: Some(Vec::new()),
+            attempt: 3,
+            worker: 7,
+            checkpointing: true,
+        };
+        let from_borrow = encode_assign(&assignment);
+        assert_eq!(assignment.spec, vec![1, 2, 3], "the assignment still holds");
+        assert_eq!(
+            from_borrow,
+            ToChild::Assign(assignment).encode(),
+            "the borrowing encoder and the message value write one encoding"
+        );
     }
 
     #[test]

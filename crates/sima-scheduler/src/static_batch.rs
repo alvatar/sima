@@ -74,7 +74,9 @@ impl StaticBatch {
 }
 
 impl TaskSource for StaticBatch {
-    fn poll(&mut self) -> Result<Vec<RunnableTask>> {
+    /// The batch is stateless — every task is runnable from the start — so
+    /// nothing settling can make another one runnable and `settled` is ignored.
+    fn poll(&mut self, _settled: &[TaskKey]) -> Result<Vec<RunnableTask>> {
         if self.polled {
             return Ok(Vec::new());
         }
@@ -139,8 +141,8 @@ mod tests {
         let config = config(vec![StubBehavior::Succeed, StubBehavior::Succeed])?;
         let mut batch = StaticBatch::new(&generator, &config, &environment()?, &store)?;
         assert_eq!(batch.all_keys().len(), 2);
-        assert_eq!(batch.poll()?.len(), 2);
-        assert!(batch.poll()?.is_empty());
+        assert_eq!(batch.poll(&[])?.len(), 2);
+        assert!(batch.poll(&[])?.is_empty());
         Ok(())
     }
 
@@ -170,7 +172,7 @@ mod tests {
         assert_eq!(batch.all_keys(), &[key]);
 
         let mut batch = batch;
-        let task = batch.poll()?.pop().expect("one runnable task");
+        let task = batch.poll(&[])?.pop().expect("one runnable task");
         store.put(&config.params.to_bytes())?;
         store.put(&env.to_bytes())?;
         let record = sima_model::TaskRecord::new(task.identity, Vec::new())?;
@@ -180,7 +182,7 @@ mod tests {
         let resumed = StaticBatch::new(&generator, &config, &env, &store)?;
         assert_eq!(resumed.all_keys(), &[key]);
         let mut resumed = resumed;
-        assert!(resumed.poll()?.is_empty());
+        assert!(resumed.poll(&[])?.is_empty());
         Ok(())
     }
 
@@ -200,7 +202,7 @@ mod tests {
         // no journal line: the state a crash between a record write and its
         // journal append leaves behind.
         let mut batch = StaticBatch::new(&generator, &config, &env, &store)?;
-        let task = batch.poll()?.remove(0);
+        let task = batch.poll(&[])?.remove(0);
         store.put(&config.params.to_bytes())?;
         store.put(&env.to_bytes())?;
         store.commit(&sima_model::TaskRecord::new(task.identity, Vec::new())?)?;
