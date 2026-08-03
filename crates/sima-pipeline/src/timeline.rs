@@ -108,9 +108,8 @@ struct WorkerAccumulator {
 }
 
 /// Merges `records` — a run's lifecycle events in append order — into the
-/// metrics of `run`. The merge half of [`timeline`], over records from any
-/// source: a journal read locally, or a stream from the host that drives the
-/// run. Every figure is an infrastructure fact the journal states, so no
+/// metrics of `run`, over records from any source: a journal read locally,
+/// or a stream from the host that drives the run. Every figure is an infrastructure fact the journal states, so no
 /// domain is consulted and the merge cannot fail.
 pub fn timeline_records(run: RunId, records: &[Record]) -> RunTimeline {
     let bindings = worker_bindings(records);

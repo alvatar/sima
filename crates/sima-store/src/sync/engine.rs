@@ -435,9 +435,9 @@ fn chunked<R, O>(
 ///
 /// A peer sets `more` on every chunk but the last, so a peer that never clears
 /// it keeps this side reading and accumulating forever. The ceiling is what
-/// makes the loop terminate on a peer that will not: at [`INVENTORY_CHUNK`]
-/// entries each it admits about a billion entries per list, past any real store
-/// and far short of exhausting memory.
+/// makes the loop terminate on a peer that will not. With each chunk's lists
+/// capped at [`INVENTORY_CHUNK`] entries on receive, it admits about a billion
+/// entries per list, past any real store and far short of exhausting memory.
 const MAX_INVENTORY_CHUNKS: usize = 262_144;
 
 /// Reads an inventory: one chunk after another until one clears `more`,
@@ -452,7 +452,10 @@ fn recv_want(reader: &mut dyn Read) -> Result<Want> {
 }
 
 /// Reads chunks through `accept` until one clears `more`, accumulating both
-/// lists, and refuses a peer that passes `limit` chunks without clearing it.
+/// lists, and refuses a peer that passes `limit` chunks without clearing it or
+/// sends a chunk carrying more than [`INVENTORY_CHUNK`] entries in either list
+/// — more than a compliant sender ever puts in one chunk, and what keeps the
+/// chunk ceiling an actual memory bound.
 ///
 /// `noun` names what was being read, so the refusal says which of the two
 /// sequences ran away. The limit is a parameter so the ceiling can be exercised
@@ -466,6 +469,14 @@ fn recv_chunks<R, O>(
     let (mut records, mut objects) = (Vec::new(), Vec::new());
     for _ in 0..limit {
         let (chunk_records, chunk_objects, more) = accept(recv(reader)?)?;
+        if chunk_records.len() > INVENTORY_CHUNK || chunk_objects.len() > INVENTORY_CHUNK {
+            return Err(Error::Validation(format!(
+                "sync protocol error: a {noun} chunk carries {} records and {} objects, \
+                 over the {INVENTORY_CHUNK}-entry chunk bound",
+                chunk_records.len(),
+                chunk_objects.len()
+            )));
+        }
         records.extend(chunk_records);
         objects.extend(chunk_objects);
         if !more {
@@ -708,6 +719,33 @@ mod tests {
         };
         assert!(
             message.contains("inventory") && message.contains('3'),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn an_oversized_chunk_is_refused_naming_the_bound() {
+        // A compliant sender never puts more than INVENTORY_CHUNK entries in
+        // one chunk, so a chunk past that is a protocol violation — and
+        // refusing it is what keeps the chunk ceiling a memory bound rather
+        // than a termination bound alone.
+        let mut incoming = Vec::new();
+        let chunk = SyncMessage::Have {
+            records: Vec::new(),
+            objects: (0..=INVENTORY_CHUNK)
+                .map(|i| hash_bytes(&(i as u64).to_le_bytes()))
+                .collect(),
+            more: false,
+        };
+        write_frame(&mut incoming, &chunk.encode()).expect("frame");
+        let mut reader = incoming.as_slice();
+        let refusal = recv_chunks(&mut reader, 3, "inventory", expect_have)
+            .expect_err("an oversized chunk is refused");
+        let Error::Validation(message) = refusal else {
+            panic!("expected a protocol refusal");
+        };
+        assert!(
+            message.contains("inventory") && message.contains(&INVENTORY_CHUNK.to_string()),
             "{message}"
         );
     }

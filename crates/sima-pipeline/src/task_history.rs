@@ -340,8 +340,7 @@ pub(crate) fn resolve_task_key(records: &[Record], prefix: &str) -> Result<Strin
 }
 
 /// Projects one task's lifecycle from `records` — a run's lifecycle events in
-/// append order. The merge half of [`task_history`], over records from any
-/// source.
+/// append order, over records from any source.
 pub fn task_history_records(records: &[Record], prefix: &str) -> Result<TaskHistory> {
     let task = resolve_task_key(records, prefix)?;
     ledger(records)
@@ -350,7 +349,7 @@ pub fn task_history_records(records: &[Record], prefix: &str) -> Result<TaskHist
 }
 
 /// The histories of the tasks `records` shows the run did not commit, ordered
-/// by key. The merge half of [`failures`], over records from any source.
+/// by key, over records from any source.
 pub fn failures_records(records: &[Record]) -> Vec<TaskHistory> {
     ledger(records)
         .into_values()
