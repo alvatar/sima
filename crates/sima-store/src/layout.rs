@@ -197,3 +197,123 @@ pub(crate) fn placement_path(root: &Path, run: &RunId, chain: u64) -> PathBuf {
 pub(crate) fn remove_intent_path(root: &Path, run: &RunId) -> PathBuf {
     run_dir(root, run).join("remove-intent")
 }
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use sima_core::{Result, hash_bytes};
+
+    use super::*;
+
+    /// The root every pinned path below is derived against.
+    fn root() -> &'static Path {
+        Path::new("/store")
+    }
+
+    /// A digest whose hex form is fixed, for the fanned-out paths.
+    fn digest() -> Hash {
+        hash_bytes(b"a pinned object")
+    }
+
+    #[test]
+    fn every_top_level_directory_sits_where_the_format_says() {
+        // The store format is a contract with whatever else reads the
+        // directory — an operator, a backup, a future version — so the names
+        // are pinned here rather than only implied by the tests that happen to
+        // walk them.
+        assert_eq!(objects_dir(root()), Path::new("/store/objects"));
+        assert_eq!(packs_dir(root()), Path::new("/store/packs"));
+        assert_eq!(tasks_dir(root()), Path::new("/store/tasks"));
+        assert_eq!(runs_dir(root()), Path::new("/store/runs"));
+        assert_eq!(instances_dir(root()), Path::new("/store/instances"));
+        assert_eq!(spend_ledger_dir(root()), Path::new("/store/spend"));
+        assert_eq!(machines_ledger_dir(root()), Path::new("/store/machines"));
+        assert_eq!(tmp_dir(root()), Path::new("/store/tmp"));
+        assert_eq!(format_marker_path(root()), Path::new("/store/format"));
+        assert_eq!(
+            maintenance_lock_path(root()),
+            Path::new("/store/packs/maintenance.lock")
+        );
+    }
+
+    #[test]
+    fn an_object_fans_out_by_the_first_two_characters_of_its_address() {
+        // The fan-out is what keeps one directory from holding every object,
+        // and it is derived rather than stored — so a change of width or of
+        // which characters are taken would strand every object already written.
+        let hash = digest();
+        let hex = hash.to_string();
+        assert_eq!(
+            object_path(root(), &hash),
+            Path::new("/store/objects").join(&hex[..2]).join(&hex)
+        );
+        assert_eq!(
+            fanout_dir(root(), &hex[..2]),
+            Path::new("/store/objects").join(&hex[..2])
+        );
+    }
+
+    #[test]
+    fn a_pack_and_a_task_are_named_by_their_own_identity() {
+        let hash = digest();
+        assert_eq!(
+            pack_path(root(), &hash),
+            Path::new("/store/packs").join(format!("{hash}.pack"))
+        );
+        let key = TaskKey::from_hash(hash);
+        assert_eq!(
+            task_path(root(), &key),
+            Path::new("/store/tasks").join(key.to_string())
+        );
+    }
+
+    #[test]
+    fn a_run_holds_its_files_under_its_own_directory() -> Result<()> {
+        // Everything a run owns is one subtree, which is what makes removing a
+        // run a directory removal rather than a scan.
+        let run = RunId::from_hash(hash_bytes(b"a pinned run"));
+        let dir = Path::new("/store/runs").join(run.to_string());
+        assert_eq!(run_dir(root(), &run), dir);
+        assert_eq!(manifest_path(root(), &run), dir.join("manifest.json"));
+        assert_eq!(journal_path(root(), &run), dir.join("journal"));
+        assert_eq!(lock_path(root(), &run), dir.join("orchestrator.lock"));
+        assert_eq!(remove_intent_path(root(), &run), dir.join("remove-intent"));
+        assert_eq!(checkpoint_dir(root(), &run), dir.join("checkpoint"));
+        assert_eq!(checkpoint_path(root(), &run, 7), dir.join("checkpoint/7"));
+        assert_eq!(placement_dir(root(), &run), dir.join("placement"));
+        assert_eq!(placement_path(root(), &run, 3), dir.join("placement/3"));
+        Ok(())
+    }
+
+    #[test]
+    fn a_ledger_entry_is_named_by_what_it_records() {
+        assert_eq!(
+            instance_path(root(), "sima-tag-1"),
+            Path::new("/store/instances/sima-tag-1")
+        );
+        assert_eq!(spend_dir(root(), "abcd"), Path::new("/store/spend/abcd"));
+        assert_eq!(
+            spend_path(root(), "abcd", "sima-tag-1", 42),
+            Path::new("/store/spend/abcd").join(crate::spend::key("sima-tag-1", 42))
+        );
+        assert_eq!(
+            machine_dir(root(), "vastai", "machine-7"),
+            Path::new("/store/machines").join(crate::machines::machine_key("vastai", "machine-7"))
+        );
+        assert_eq!(
+            machine_incident_path(root(), "vastai", "machine-7", "sima-tag-1", 42),
+            machine_dir(root(), "vastai", "machine-7")
+                .join(crate::machines::incident_key("sima-tag-1", 42))
+        );
+    }
+
+    #[test]
+    fn a_temporary_file_names_the_writer_that_owns_it() {
+        // Placement is write-to-tmp then rename, and two writers must not pick
+        // one name: the pid and the sequence are what keep them apart.
+        assert_eq!(tmp_file(root(), 91, 3), Path::new("/store/tmp/91-3"));
+        assert_ne!(tmp_file(root(), 91, 3), tmp_file(root(), 92, 3));
+        assert_ne!(tmp_file(root(), 91, 3), tmp_file(root(), 91, 4));
+    }
+}
