@@ -278,8 +278,8 @@ pub fn seeded_status(config: &LoadedConfig) -> Result<RunStatus> {
     })
 }
 
-/// Folds `records` — a run's lifecycle events in append order — into the
-/// status of `run`. The fold half of [`status`], over records from any
+/// Merges `records` — a run's lifecycle events in append order — into the
+/// status of `run`. The merge half of [`status`], over records from any
 /// source: a journal read locally, or a stream from the host that drives the
 /// run. It renders nothing through a domain, so it needs no format and cannot
 /// fail.
@@ -740,7 +740,7 @@ mod tests {
         assert_eq!(
             status_records(config.run.id(), &records),
             status(&config)?,
-            "the fold over records is the status the journal path computes"
+            "the merge over records is the status the journal path computes"
         );
         Ok(())
     }

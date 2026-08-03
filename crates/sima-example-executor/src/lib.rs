@@ -33,7 +33,7 @@
 //! id = "example.doubler.v1"
 //! count = 8                          # step 3 translates this
 //!
-//! [[execution.device]]
+//! [[orchestrator.device]]
 //! select = "example:cpu"             # step 5 lists this
 //! workers = 2
 //!
@@ -294,7 +294,7 @@ impl Domain for DoublerDomain {
     // 5. Declare the hardware. Three methods, one lifecycle.
     //
     // `enumerate_devices` lists every device this program can compute on. A run
-    // resolves its `[[execution.device]]` selectors against the list and
+    // resolves its `[[orchestrator.device]]` selectors against the list and
     // spreads its workers over the members of the class each one names. A
     // **class** promises its members are interchangeable, so two identical
     // cards are two members of one class and a card beside an integrated chip

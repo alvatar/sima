@@ -11,7 +11,7 @@
 //! code that owns them; it never interprets their content.
 //!
 //! Beside the driven run sit the read-only queries over what a run left
-//! behind. Each folds the run's journal and touches no store object:
+//! behind. Each merges the run's journal and touches no store object:
 //! [`status`] and [`task_history`] project execution — the run's state, and
 //! one task's attempts — [`failures`] names the tasks that did not commit,
 //! and [`report`] and [`report_task`] render the results committed tasks

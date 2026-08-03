@@ -11,7 +11,7 @@ use sima_core::{Error, Result};
 use sima_domains::devices::{DeviceInfo, DeviceType};
 use sima_scheduler::DeviceEntry;
 
-/// One `[[execution.device]]` entry as written: which device, and how many
+/// One `[[orchestrator.device]]` entry as written: which device, and how many
 /// workers on it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeviceSelector {

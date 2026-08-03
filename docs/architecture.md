@@ -558,7 +558,7 @@ Selection is two separate steps, and keeping them separate is the design:
 - **Hard constraints disqualify.** Minimum VRAM, GPU count, disk and
   bandwidth; a maximum price; a reliability floor; verified hosts only; and
   an any-of list of acceptable GPU models, matched case-insensitively by
-  substring — the rule `[[execution.device]]` selectors already use for
+  substring — the rule `[[orchestrator.device]]` selectors already use for
   hardware names. Each optional constraint judges only when set.
 - **One scalar objective ranks.** `Objective::CheapestPerHour` sorts
   ascending by price, ties broken by offer id, so the order is

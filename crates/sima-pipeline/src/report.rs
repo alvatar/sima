@@ -34,7 +34,7 @@ pub fn report(config: &LoadedConfig) -> Result<Vec<ReportRow>> {
 }
 
 /// Renders each committed task's stats from `records` — a run's lifecycle
-/// events in append order. The fold half of [`report`], over records from any
+/// events in append order. The merge half of [`report`], over records from any
 /// source.
 pub fn report_records(records: &[Record]) -> Result<Vec<ReportRow>> {
     Ok(committed_stats(records)
@@ -44,7 +44,7 @@ pub fn report_records(records: &[Record]) -> Result<Vec<ReportRow>> {
 }
 
 /// Renders one committed task's stats from `records`, addressed by a prefix
-/// of its key. The fold half of [`report_task`], over records from any
+/// of its key. The merge half of [`report_task`], over records from any
 /// source.
 pub fn report_task_records(records: &[Record], prefix: &str) -> Result<ReportRow> {
     let task = resolve_task_key(records, prefix)?;
@@ -215,7 +215,7 @@ mod tests {
             matches!(reported, Err(Error::Validation(_))),
             "{reported:?}"
         );
-        // The fold runs over records from any source, local or streamed from
+        // The merge runs over records from any source, local or streamed from
         // another host, so its message states the fact and suggests no
         // command: a command naming a config path resolves on the machine that
         // reads it, which is where the records came from only half the time.

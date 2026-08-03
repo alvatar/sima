@@ -592,9 +592,6 @@ fn retry(spec: sima_model::Spec, identity: TaskIdentity, chain: Option<u64>) -> 
     }
 }
 
-/// Journals a transient failure and applies the retry policy. One settlement
-/// for every way an attempt fails transiently without stats: a child death,
-/// a preemption, a broken pipe, a protocol violation.
 /// Maps executor stats into the journal event's structured form: the named
 /// scalars verbatim, and the opaque family blob as hex. The scheduler is the
 /// boundary between the contracts type and the trace facade's own representation.
@@ -610,6 +607,9 @@ fn journal_stats(stats: &Stats) -> (Vec<StatScalar>, String) {
     (scalars, to_hex(&stats.blob))
 }
 
+/// Journals a transient failure and applies the retry policy. One settlement
+/// for every way an attempt fails transiently without stats: a child death,
+/// a preemption, a broken pipe, a protocol violation.
 fn fail_transiently(
     ctx: &WorkerContext<'_>,
     key: TaskKey,

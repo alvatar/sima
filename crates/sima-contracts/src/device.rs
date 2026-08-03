@@ -306,7 +306,7 @@ mod tests {
     #[test]
     fn a_class_renders_the_name_the_backend_minted() {
         // The rendered form is a contract: a config selector matches this exact
-        // string (`[[execution.device]] select = "8086:7d51"`), and the journal
+        // string (`[[orchestrator.device]] select = "8086:7d51"`), and the journal
         // and placement slots spell a class the same way. A change of width,
         // separator, or case would leave selector matching silently missing its
         // device; here it fails loudly instead.

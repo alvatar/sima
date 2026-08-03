@@ -1,6 +1,6 @@
 //! [`TaskHistory`]: one task's lifecycle, projected from a run's journal.
 //!
-//! Every per-task view folds the journal once through [`ledger`]: the attempt
+//! Every per-task view merges the journal once through [`ledger`]: the attempt
 //! timeline of a single task, the digest of the tasks that did not commit, and
 //! the prefix resolution that turns a short key into the full one. The journal
 //! is the only source; no store object is read.
@@ -11,7 +11,7 @@ use crate::stats::render_stats;
 use sima_core::{Error, Result};
 use sima_scheduler::{Event, Record};
 
-/// One task's lifecycle, folded from the run journal.
+/// One task's lifecycle, merged from the run journal.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TaskHistory {
     /// The task's key, as journaled — the lowercase-hex string.
@@ -207,7 +207,7 @@ impl TaskHistory {
             // checkpoint leaves the attempt's result untouched.
             Event::Retried { .. } | Event::CheckpointDegraded { .. } => {}
             // The run-level frame and the bookkeeping events name no task, so
-            // the fold routes none of them here.
+            // the merge routes none of them here.
             Event::RunStarted { .. }
             | Event::RunFinalized { .. }
             | Event::RunFailed { .. }
@@ -340,7 +340,7 @@ pub(crate) fn resolve_task_key(records: &[Record], prefix: &str) -> Result<Strin
 }
 
 /// Projects one task's lifecycle from `records` — a run's lifecycle events in
-/// append order. The fold half of [`task_history`], over records from any
+/// append order. The merge half of [`task_history`], over records from any
 /// source.
 pub fn task_history_records(records: &[Record], prefix: &str) -> Result<TaskHistory> {
     let task = resolve_task_key(records, prefix)?;
@@ -350,7 +350,7 @@ pub fn task_history_records(records: &[Record], prefix: &str) -> Result<TaskHist
 }
 
 /// The histories of the tasks `records` shows the run did not commit, ordered
-/// by key. The fold half of [`failures`], over records from any source.
+/// by key. The merge half of [`failures`], over records from any source.
 pub fn failures_records(records: &[Record]) -> Vec<TaskHistory> {
     ledger(records)
         .into_values()

@@ -536,8 +536,8 @@ mod tests {
 
     #[test]
     fn absent_snapshot_when_leaves_no_predicate() -> Result<()> {
-        // The pre-milestone behavior: no predicate key means the snapshot always
-        // commits, and the params carry no gate.
+        // No predicate key means the snapshot always commits, and the params
+        // carry no gate.
         let blob = translate::<Toy>(&params_table(FULL_PARAMS), false)?.bytes;
         let (shared, _) = decode_params::<Toy>(&blob)?;
         assert_eq!(shared.snapshot_when(), None);

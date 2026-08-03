@@ -56,10 +56,13 @@ use crate::provider::{InstanceId, InstanceStatus, Provider, TaggedInstance};
 
 /// Which rentals a reconciliation pass considers.
 ///
-/// A hosting rental has the shape reconciliation reaps — its owner holds no
-/// lock, because a migration detaches the far side deliberately — so it is
-/// spared unless a caller says otherwise. Every other rental is an orphan when
-/// its owner's lock is free.
+/// A run's orchestrator holds its lock while it drives, so a record whose owner
+/// holds no lock is normally an orphan of a crash and is destroyed. A migration
+/// breaks that inference: it detaches the far side deliberately, and the local
+/// process may be gone while the rental is working and paid for, so a
+/// [`Rental::Orchestrator`] record has exactly the shape reconciliation reaps.
+/// It is therefore spared unless a caller says otherwise; every other rental is
+/// an orphan when its owner's lock is free.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReconcileScope {
     /// Rentals carrying workers alone. The default, and what every acquisition
