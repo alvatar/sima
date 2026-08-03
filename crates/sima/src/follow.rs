@@ -53,7 +53,7 @@ fn follow(target: &Target) -> Result<u8> {
             // A reader that closed the pipe (`sima follow ... | head`) has
             // stopped listening; there is nothing left to stream to it.
             if !crate::line_written(writeln!(out, "{line}"))? {
-                return Ok(exit_code(&status.state));
+                return Ok(crate::state_exit_code(&status.state));
             }
         }
         if let Some(code) = ended(&status.state) {
@@ -63,7 +63,7 @@ fn follow(target: &Target) -> Result<u8> {
             // The stream has drained. A run nobody drives will gain nothing
             // more, whatever state its journal ended in.
             if feed.holder()?.is_none() {
-                return Ok(exit_code(&status.state));
+                return Ok(crate::state_exit_code(&status.state));
             }
             sleep(TICK);
         }
@@ -75,19 +75,7 @@ fn follow(target: &Target) -> Result<u8> {
 fn ended(state: &RunState) -> Option<u8> {
     match state {
         RunState::InProgress => None,
-        terminal => Some(exit_code(terminal)),
-    }
-}
-
-/// The exit code a run's state carries — the mapping `run` and `tui` share,
-/// over the state a journal projects rather than the outcome an orchestrator
-/// returns. A run still in progress when its stream drains is resumable, not
-/// failed, so it leaves successfully.
-fn exit_code(state: &RunState) -> u8 {
-    match state {
-        RunState::Finalized | RunState::InProgress => 0,
-        RunState::Failed { .. } => crate::EXIT_FAILED,
-        RunState::Interrupted => crate::EXIT_INTERRUPTED,
+        terminal => Some(crate::state_exit_code(terminal)),
     }
 }
 
@@ -97,17 +85,20 @@ mod tests {
 
     #[test]
     fn each_run_state_maps_to_its_exit_code() {
-        assert_eq!(exit_code(&RunState::Finalized), 0);
+        assert_eq!(crate::state_exit_code(&RunState::Finalized), 0);
         assert_eq!(
-            exit_code(&RunState::Failed {
+            crate::state_exit_code(&RunState::Failed {
                 task: "aa".to_string(),
                 reason: "rejected".to_string(),
             }),
             crate::EXIT_FAILED
         );
-        assert_eq!(exit_code(&RunState::Interrupted), crate::EXIT_INTERRUPTED);
+        assert_eq!(
+            crate::state_exit_code(&RunState::Interrupted),
+            crate::EXIT_INTERRUPTED
+        );
         // A drained stream over a run nobody drives: resumable, not failed.
-        assert_eq!(exit_code(&RunState::InProgress), 0);
+        assert_eq!(crate::state_exit_code(&RunState::InProgress), 0);
     }
 
     #[test]

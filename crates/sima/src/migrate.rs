@@ -12,13 +12,11 @@
 
 use std::path::Path;
 use std::process::ExitCode;
-use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
 
 use sima_core::Result;
 use sima_pipeline::{MigrateOutcome, load, migrate};
 
-use crate::{EXIT_ERROR, EXIT_FAILED, EXIT_INTERRUPTED, register_error, render, report};
+use crate::{EXIT_ERROR, EXIT_FAILED, EXIT_INTERRUPTED, render, report};
 
 /// `sima migrate <config.toml>`: moves the run onto its destination, renders
 /// the far run's events as they arrive, and exits on the outcome.
@@ -35,20 +33,24 @@ pub(crate) fn migrate_command(config: &Path) -> ExitCode {
 /// Registers the interrupt flag before any output — so Ctrl-C winds the far run
 /// down from the first line on — and moves the run.
 fn moved(config: &Path) -> Result<MigrateOutcome> {
-    let interrupt = Arc::new(AtomicBool::new(false));
-    signal_hook::flag::register_conditional_default(signal_hook::consts::SIGINT, interrupt.clone())
-        .map_err(register_error)?;
-    signal_hook::flag::register(signal_hook::consts::SIGINT, interrupt.clone())
-        .map_err(register_error)?;
+    let interrupt = crate::register_interrupt()?;
 
     // Named before the move, as `sima run` names it: the far side's directory
     // is derived from the run id, so an operator looking at the destination's
-    // `run.log` needs it while the migration is still going.
-    println!("run {}", load(config)?.run.id());
+    // `run.log` needs it while the migration is still going. The load is the
+    // migration's own: one translation of one file, handed on rather than
+    // repeated.
+    let loaded = load(config)?;
+    println!("run {}", loaded.run.id());
     // The far run's records reach the same renderer a local run's do, so one
     // run reads the same whichever machine drove it.
     let progress = render::Progress::new();
-    migrate(config, &|record| progress.event(record), &interrupt)
+    migrate(
+        config,
+        &loaded,
+        &|record| progress.event(record),
+        &interrupt,
+    )
 }
 
 /// The migration's own closing line: what the local store holds now that the

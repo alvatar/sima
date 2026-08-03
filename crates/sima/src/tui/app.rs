@@ -135,10 +135,9 @@ fn remote_command(host: &str, config: &str) -> ExitCode {
 fn finish(result: io::Result<u8>) -> ExitCode {
     match result {
         Ok(code) => ExitCode::from(code),
-        Err(e) => {
-            eprintln!("sima tui: {e}");
-            ExitCode::from(crate::EXIT_ERROR)
-        }
+        // Through the one reporter, so a terminal failure reads as every other
+        // failure this binary prints rather than as a second format.
+        Err(e) => crate::report(Error::System(format!("the terminal session failed: {e}"))),
     }
 }
 

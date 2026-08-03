@@ -122,7 +122,8 @@ fn drive(config: &Path, stop_after: Option<usize>) -> Result<RunOutcome> {
 /// Moves the run `config` describes onto its destination, discarding the
 /// records it forwards.
 fn move_run(config: &Path) -> Result<MigrateOutcome> {
-    migrate(config, &|_: &Record| {}, &AtomicBool::new(false))
+    let loaded = sima_pipeline::load(config)?;
+    migrate(config, &loaded, &|_: &Record| {}, &AtomicBool::new(false))
 }
 
 /// Every record the store of the run `config` describes currently holds, keyed
@@ -344,8 +345,10 @@ fn a_migration_interrupted_during_the_follow_still_pulls_and_tears_down() -> Res
     // Wound down as soon as the far run's first record arrives: the far side is
     // signalled, whatever it committed is pulled, and the rental is destroyed.
     let interrupt = AtomicBool::new(false);
+    let loaded = sima_pipeline::load(&migrated)?;
     let outcome = migrate(
         &migrated,
+        &loaded,
         &|_: &Record| interrupt.store(true, Ordering::Relaxed),
         &interrupt,
     )?;

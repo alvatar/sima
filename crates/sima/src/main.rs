@@ -52,10 +52,10 @@ use std::sync::atomic::AtomicBool;
 use sima_core::{Error, Result};
 use sima_pipeline::{
     BinaryChange, Engagement, FeedInfo, LoadedConfig, LocalFeed, Record, RemoteFeed, RemovalReport,
-    ReportRow, RunControl, RunFeed, RunId, RunOutcome, RunStatus, RunTimeline, TaskHistory,
-    failures_records, follow_serve, load, local_snapshot, orchestrate, remote_snapshot,
-    report_records, report_task_records, seeded_status, status_records, sync_serve,
-    task_history_records, timeline_records,
+    ReportRow, RunControl, RunFeed, RunId, RunOutcome, RunState, RunStatus, RunTimeline,
+    TaskHistory, failures_records, follow_serve, load, local_snapshot, orchestrate,
+    remote_snapshot, report_records, report_task_records, seeded_status, status_records,
+    sync_serve, task_history_records, timeline_records,
 };
 use sima_provider::ReconcileScope;
 
@@ -309,17 +309,10 @@ fn run_command(config: &Path, engagement: Engagement, accept: BinaryChange) -> E
     }
 }
 
-/// Loads the config and drives its run. The interrupt flag is registered
-/// before any output, so Ctrl-C is graceful from the first line on; a
-/// second Ctrl-C falls through to default death — which is safe, since
-/// that is exactly the crash the recovery guarantees cover.
+/// Loads the config and drives its run.
 fn drive(config: &Path, engagement: Engagement, accept: BinaryChange) -> Result<RunOutcome> {
     let loaded = load(config)?;
-    let interrupt = Arc::new(AtomicBool::new(false));
-    signal_hook::flag::register_conditional_default(signal_hook::consts::SIGINT, interrupt.clone())
-        .map_err(register_error)?;
-    signal_hook::flag::register(signal_hook::consts::SIGINT, interrupt.clone())
-        .map_err(register_error)?;
+    let interrupt = register_interrupt()?;
 
     println!("run {}", loaded.run.id());
     // The run's own `RunStarted` carries the prior commits, counted from the
@@ -676,6 +669,38 @@ pub(crate) fn outcome_exit_code(outcome: &RunOutcome) -> u8 {
         RunOutcome::Failed { .. } => EXIT_FAILED,
         RunOutcome::Interrupted { .. } => EXIT_INTERRUPTED,
     }
+}
+
+/// The exit code a run's state carries, over the state a journal projects
+/// rather than the outcome an orchestrator returns.
+///
+/// `run` returns an outcome and every observational command projects a state,
+/// so the two mappings exist; this is the one the observers share. A run still
+/// in progress when its stream drains is resumable, not failed, so it leaves
+/// successfully.
+pub(crate) fn state_exit_code(state: &RunState) -> u8 {
+    match state {
+        RunState::Finalized | RunState::InProgress => 0,
+        RunState::Failed { .. } => EXIT_FAILED,
+        RunState::Interrupted => EXIT_INTERRUPTED,
+    }
+}
+
+/// Registers the SIGINT flag every long-running command winds down on.
+///
+/// Registered before any output, so Ctrl-C is graceful from the first line on;
+/// a second Ctrl-C falls through to the default death, which is safe because
+/// that is exactly the crash the recovery guarantees cover. Both registrations
+/// are needed and in this order: the conditional default is what lets the
+/// second signal kill, and it must be in place before the flag that swallows
+/// the first.
+pub(crate) fn register_interrupt() -> Result<Arc<AtomicBool>> {
+    let interrupt = Arc::new(AtomicBool::new(false));
+    signal_hook::flag::register_conditional_default(signal_hook::consts::SIGINT, interrupt.clone())
+        .map_err(register_error)?;
+    signal_hook::flag::register(signal_hook::consts::SIGINT, interrupt.clone())
+        .map_err(register_error)?;
+    Ok(interrupt)
 }
 
 #[cfg(test)]
