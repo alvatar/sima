@@ -1266,9 +1266,9 @@ The float families — reaction-diffusion, Neural CA, Lenia — share one execut
 kind, the **cellular kind**: a multi-channel float grid advanced by an update
 kernel dispatched over it, each output cell a function of a neighborhood of the
 input. Its state, dispatch harness, and cross-check scaffold live once in the
-`cellular` module; a family supplies the update kernel, the genome, and the CPU
-reference, differing in those and the channel count, not in the state shape or
-the harness.
+`cellular` module; a family supplies the update kernel and the genome,
+differing in those and the channel count, not in the state shape or the
+harness.
 
 **The substrate boundary.** Two boundaries stack here, and they answer
 different questions.
@@ -1366,11 +1366,12 @@ declare `__launch_bounds__` and the toolkit reads that from the PTX. The device
 limit is checked first on both, so a width no device could launch reports the
 device bound rather than a declaration mismatch.
 
-**CPU reference and cross-check.** `CellularRule` is the CPU reference a family's
-kernel is checked against: one step maps a whole input grid to a whole output
-grid. A family confirms its kernel by advancing the same initial grid through
-the reference and through the harness for equal step counts and comparing the
-resulting grids. Where a kernel uses only exact operations — a neighborhood max
+**CPU reference and cross-check.** `CellularRule` is the CPU reference the
+substrate's own tests check the harness against: one step maps a whole input
+grid to a whole output grid. The cross-check advances the same initial grid
+through the reference and through the harness for equal step counts and
+compares the resulting grids. The reference is test scaffolding, compiled only
+for those tests; a family supplies no reference of its own. Where a kernel uses only exact operations — a neighborhood max
 — the two agree byte for byte with no tolerance; agreement across distinct GPU
 backend classes is a separate tolerance policy.
 
@@ -1444,15 +1445,18 @@ toolchain. The surface is three types:
   command pool for one headless compute session, and is the single owner of the
   true Vulkan lifetime. It allocates buffers, compiles kernels, uploads and
   downloads bytes, and dispatches.
-- **`Buffer`** — a device-local storage buffer. Host transfers go through a
+- **`Buffer`** — a device-local storage buffer, allocated zeroed, so a fresh
+  buffer's contents are defined before any upload. Host transfers go through a
   per-transfer host-visible staging buffer; there is no pooled allocator.
 - **`Kernel`** — a compute pipeline compiled from WGSL for one entry point,
   plus the identity inputs it surfaces.
 
-**Device selection** keeps devices exposing a compute queue family and picks
-deterministically by type — discrete, then integrated, then virtual, then CPU,
-then other — with the lowest enumeration index breaking ties;
-`SIMA_GPU_DEVICE` overrides the pick by index. Validation is opt-in under
+**Device selection** applies the shared policy in `sima-contracts`' device
+module, as every backend does: keep the devices that can compute — here, those
+exposing a compute queue family — and pick deterministically by type —
+discrete, then integrated, then virtual, then CPU, then other — with the
+lowest enumeration index breaking ties. `SIMA_GPU_DEVICE` overrides the pick
+by index on every backend alike. Validation is opt-in under
 `SIMA_VULKAN_VALIDATION` and off at zero cost otherwise.
 
 **Ownership** follows a wait-idle-before-drop contract. `Buffer` and `Kernel`
@@ -1525,13 +1529,15 @@ so the source is hashed and the compiler that lowers it is named.
 identifier for each. The class this toolkit mints comes from the PCI
 configuration under `/sys/bus/pci/devices`, spelled as the vendor and device
 identifiers in hex, and `member` is the position within the class in
-enumeration order. The WGSL toolkit mints the same spelling from what Vulkan
-reports directly, so one physical card is one class whichever backend reached
-it.
+enumeration order. The spelling itself is minted by the shared device module
+in `sima-contracts`; the WGSL toolkit feeds it what Vulkan reports directly,
+so one physical card is one class whichever backend reached it.
 
-**Launch model.** Launches are one-dimensional: a kernel declares its block
-width with `__launch_bounds__`, the caller passes the matching width, and a
-dispatch binds one buffer per pointer parameter in declaration order. Every
+**Launch model.** Launches are one-dimensional: a kernel is built with the
+block width its grids are sized by, checked against the `__launch_bounds__`
+its source declares and against the device, and a dispatch binds one buffer
+per pointer parameter in declaration order, refusing a count that disagrees
+with the kernel's declaration. Every
 dispatch is submitted to the context's one stream and drained before returning,
 which both orders a dispatch's writes against the next one's reads and surfaces
 a failure at the call that caused it.
