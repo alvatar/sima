@@ -153,19 +153,21 @@ fn check_block_width(
     entry: &str,
     block_width: u32,
 ) -> Result<()> {
-    let declared = compile::workgroup_size(module, entry)?;
-    if declared != [block_width, 1, 1] {
-        return Err(Error::Backend(format!(
-            "kernel entry point '{entry}' declares workgroup size {declared:?}; the caller sizes \
-             its grids by {block_width} threads along x"
-        )));
-    }
+    // The device limit is checked first, as the CUDA side checks it first, so
+    // one bad width reports the same failure class on either backend.
     let maximum =
         limits.max_compute_work_group_size[0].min(limits.max_compute_work_group_invocations);
     if block_width == 0 || block_width > maximum {
         return Err(Error::Backend(format!(
             "kernel entry point '{entry}' asks for {block_width} threads per workgroup; this \
              device takes 1..={maximum}"
+        )));
+    }
+    let declared = compile::workgroup_size(module, entry)?;
+    if declared != [block_width, 1, 1] {
+        return Err(Error::Backend(format!(
+            "kernel entry point '{entry}' declares workgroup size {declared:?}; the caller sizes \
+             its grids by {block_width} threads along x"
         )));
     }
     Ok(())
@@ -305,12 +307,27 @@ mod tests {
             }
         }
 
+        /// A shader declaring a workgroup no device launches, so the caller's
+        /// width agrees with the source and the device limit is what refuses
+        /// it. Asking for a width the source does not declare would report the
+        /// other failure and leave this branch untested.
+        const WIDE_WGSL: &str = r#"
+@group(0) @binding(0) var<storage, read> in_buf: array<u32>;
+
+@compute @workgroup_size(2048)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    if (gid.x >= arrayLength(&in_buf)) { return; }
+}
+"#;
+
         #[test]
         fn a_block_width_the_device_cannot_launch_is_rejected() {
             // Caught before the pipeline is built, so an impossible width is a
             // clear toolkit error rather than an opaque dispatch failure later.
+            // Vulkan guarantees only 128 invocations per workgroup, so 2048 is
+            // past what any device here launches.
             let context = Context::new().expect("create compute context");
-            match context.kernel(SMOKE_WGSL, "main", 1 << 20) {
+            match context.kernel(WIDE_WGSL, "main", 2048) {
                 Err(Error::Backend(message)) => {
                     assert!(message.contains("threads per workgroup"), "{message}");
                 }
