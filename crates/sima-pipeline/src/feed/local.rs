@@ -6,7 +6,7 @@ use sima_scheduler::Record;
 use crate::config::LoadedConfig;
 use crate::feed::{FeedInfo, RunFeed};
 use crate::journal;
-use crate::observe::RunObserver;
+use crate::run_observer::RunObserver;
 
 /// Follows a run through the store on this machine: a [`RunObserver`] paired
 /// with the metadata the loaded config carries.

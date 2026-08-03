@@ -59,7 +59,7 @@ where
     R: Fn(&str) -> Result<Box<dyn Provider>>,
 {
     let providers: BTreeSet<String> = store
-        .instances()?
+        .instance_records()?
         .into_iter()
         .map(|record| record.provider)
         .collect();
@@ -187,7 +187,7 @@ mod tests {
         )?;
         assert_eq!(report.destroyed, vec![InstanceId("i-1".to_string())]);
         assert_eq!(report.cleared, vec!["sima-tag-0".to_string()]);
-        assert!(store.instances()?.is_empty());
+        assert!(store.instance_records()?.is_empty());
         Ok(())
     }
 
@@ -209,7 +209,7 @@ mod tests {
             ReconcileScope::Workers,
         )?;
         assert!(report.destroyed.is_empty());
-        assert_eq!(store.instances()?.len(), 1);
+        assert_eq!(store.instance_records()?.len(), 1);
         Ok(())
     }
 
@@ -243,7 +243,7 @@ mod tests {
             Err(Error::Provider(message)) if message.contains("nowhere")
         ));
         // The record survives: nothing could judge the machine it names.
-        assert_eq!(store.instances()?.len(), 1);
+        assert_eq!(store.instance_records()?.len(), 1);
         Ok(())
     }
 }

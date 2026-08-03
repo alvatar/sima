@@ -28,7 +28,6 @@ mod fleet;
 mod journal;
 mod machines;
 mod migrate;
-mod observe;
 mod orchestrate;
 mod process;
 mod program_binding;
@@ -36,6 +35,7 @@ mod providers;
 mod remove;
 mod rental;
 mod report;
+mod run_observer;
 mod spend;
 mod stats;
 mod status;
@@ -56,12 +56,12 @@ pub use feed::{
 pub use fleet::Engagement;
 pub use machines::machines;
 pub use migrate::{MigrateOutcome, migrate, sync_serve};
-pub use observe::RunObserver;
 pub use orchestrate::orchestrate;
 pub use program_binding::BinaryChange;
 pub use providers::{ProviderSettings, provider_for};
 pub use remove::remove;
 pub use report::{ReportRow, report, report_records, report_task_records};
+pub use run_observer::RunObserver;
 pub use spend::spend;
 // The rental-ledger and reputation types a caller renders those reports
 // through.

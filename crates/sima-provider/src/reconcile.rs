@@ -107,7 +107,7 @@ pub fn reconcile<P: Provider + ?Sized>(
     scope: ReconcileScope,
 ) -> Result<ReconcileReport> {
     let records: Vec<InstanceRecord> = store
-        .instances()?
+        .instance_records()?
         .into_iter()
         .filter(|record| record.provider == provider.id() && scope.covers(record.role))
         .collect();
@@ -245,7 +245,7 @@ mod tests {
         assert_eq!(report.destroyed, vec![InstanceId("i-1".to_string())]);
         assert_eq!(report.cleared, vec!["sima-tag-0".to_string()]);
         assert!(stub.live().is_empty());
-        assert!(store.instances()?.is_empty());
+        assert!(store.instance_records()?.is_empty());
         Ok(())
     }
 
@@ -280,7 +280,7 @@ mod tests {
         // Nothing states a rate for a machine that no longer exists, so the
         // record's own is what the entry books.
         assert_eq!(entries[0].price_micro_usd_hour, orphan.price_micro_usd_hour);
-        assert!(store.instances()?.is_empty());
+        assert!(store.instance_records()?.is_empty());
         Ok(())
     }
 
@@ -301,7 +301,7 @@ mod tests {
         assert_eq!(entries.len(), 1);
         // No listing row is in hand, so the record's rate is what it costs.
         assert_eq!(entries[0].price_micro_usd_hour, orphan.price_micro_usd_hour);
-        assert!(store.instances()?.is_empty());
+        assert!(store.instance_records()?.is_empty());
         Ok(())
     }
 
@@ -317,7 +317,7 @@ mod tests {
             reconcile(&stub, &store, ReconcileScope::Workers),
             Err(Error::Provider(message)) if message == "show instance: 503"
         ));
-        assert_eq!(store.instances()?, vec![orphan]);
+        assert_eq!(store.instance_records()?, vec![orphan]);
         assert!(spend_entries(&store, &sample_run(7))?.is_empty());
         Ok(())
     }
@@ -393,7 +393,7 @@ mod tests {
         let entries = spend_entries(&store, &sample_run(7))?;
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].tag, "sima-tag-0");
-        assert!(store.instances()?.is_empty());
+        assert!(store.instance_records()?.is_empty());
         Ok(())
     }
 
@@ -456,7 +456,7 @@ mod tests {
         assert!(report.destroyed.is_empty());
         assert!(report.cleared.is_empty());
         assert_eq!(stub.live(), vec![InstanceId("i-1".to_string())]);
-        assert_eq!(store.instances()?.len(), 1);
+        assert_eq!(store.instance_records()?.len(), 1);
         Ok(())
     }
 
@@ -469,7 +469,7 @@ mod tests {
         assert!(report.destroyed.is_empty());
         assert_eq!(report.cleared, vec!["sima-tag-0".to_string()]);
         assert!(stub.destroyed().is_empty());
-        assert!(store.instances()?.is_empty());
+        assert!(store.instance_records()?.is_empty());
         Ok(())
     }
 
@@ -485,7 +485,7 @@ mod tests {
         assert_eq!(report.destroyed, vec![InstanceId("i-2".to_string())]);
         assert_eq!(report.cleared, vec!["sima-tag-0".to_string()]);
         assert!(stub.live().is_empty());
-        assert!(store.instances()?.is_empty());
+        assert!(store.instance_records()?.is_empty());
         Ok(())
     }
 
@@ -528,7 +528,7 @@ mod tests {
         let report = reconcile(&stub, &store, ReconcileScope::Workers)?;
         assert!(report.destroyed.is_empty());
         assert!(report.cleared.is_empty());
-        assert_eq!(store.instances()?, vec![foreign]);
+        assert_eq!(store.instance_records()?, vec![foreign]);
         assert_eq!(stub.live(), vec![InstanceId("i-5".to_string())]);
         Ok(())
     }
@@ -564,7 +564,7 @@ mod tests {
         // ledger holds the new attempt alone.
         assert_eq!(stub.destroyed(), vec![InstanceId("orphan".to_string())]);
         assert_eq!(stub.live(), vec![guard.id().clone()]);
-        let records = store.instances()?;
+        let records = store.instance_records()?;
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].tag, guard.tag());
         Ok(())
@@ -617,7 +617,11 @@ mod tests {
 
         let report = reconcile(&stub, &store, ReconcileScope::Workers)?;
         assert_eq!(report.cleared, vec!["sima-worker-0".to_string()]);
-        let left: Vec<String> = store.instances()?.into_iter().map(|r| r.tag).collect();
+        let left: Vec<String> = store
+            .instance_records()?
+            .into_iter()
+            .map(|r| r.tag)
+            .collect();
         assert_eq!(
             left,
             vec!["sima-hosting-0".to_string()],
@@ -636,7 +640,7 @@ mod tests {
 
         let report = reconcile(&stub, &store, ReconcileScope::Hosted)?;
         assert_eq!(report.cleared.len(), 2);
-        assert!(store.instances()?.is_empty());
+        assert!(store.instance_records()?.is_empty());
         assert!(stub.live().is_empty());
         Ok(())
     }

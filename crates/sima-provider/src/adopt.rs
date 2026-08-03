@@ -47,7 +47,7 @@ pub fn adopt<'a, P: Provider + ?Sized>(
     limits: &AcquireLimits,
 ) -> Result<Option<InstanceGuard<'a, P>>> {
     let owner = lock.run().to_string();
-    let Some(record) = store.instances()?.into_iter().find(|record| {
+    let Some(record) = store.instance_records()?.into_iter().find(|record| {
         record.provider == provider.id()
             && record.owner == owner
             && record.role == Rental::Orchestrator
@@ -158,7 +158,7 @@ mod tests {
         assert_eq!(guard.tag(), "sima-tag-0");
         // The record is untouched: the charged window stays anchored where the
         // rental began.
-        assert_eq!(store.instances()?, vec![record]);
+        assert_eq!(store.instance_records()?, vec![record]);
         // Releasing it is an ordinary teardown, so a reattached migration tears
         // its machine down exactly as the first one would have.
         guard.release()?;
@@ -183,7 +183,7 @@ mod tests {
 
         assert!(adopt(&stub, &store, &lock, &limits())?.is_none());
         assert!(
-            store.instances()?.is_empty(),
+            store.instance_records()?.is_empty(),
             "the record is all that was left of it"
         );
         Ok(())
@@ -216,7 +216,7 @@ mod tests {
             Ok(_) => panic!("a rental past its readiness bound must not be adopted"),
         }
         assert!(stub.destroyed().is_empty(), "nothing was destroyed");
-        assert_eq!(store.instances()?.len(), 1, "the record stands");
+        assert_eq!(store.instance_records()?.len(), 1, "the record stands");
         Ok(())
     }
 
@@ -245,7 +245,11 @@ mod tests {
         ))?;
 
         assert!(adopt(&stub, &store, &lock, &limits())?.is_none());
-        assert_eq!(store.instances()?.len(), 2, "neither record is touched");
+        assert_eq!(
+            store.instance_records()?.len(),
+            2,
+            "neither record is touched"
+        );
         Ok(())
     }
 

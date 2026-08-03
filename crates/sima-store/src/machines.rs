@@ -343,7 +343,7 @@ mod tests {
         store.put_machine_incident(&incident("81234", IncidentKind::Lost, "sima-tag-0", 1))?;
         // The reputation ledger is a separate directory: the existing record
         // listings read exactly what they did before it held anything.
-        assert!(store.instances()?.is_empty());
+        assert!(store.instance_records()?.is_empty());
         assert_eq!(store.machine_incidents()?.len(), 1);
         Ok(())
     }

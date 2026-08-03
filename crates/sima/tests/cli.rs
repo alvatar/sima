@@ -1325,5 +1325,5 @@ fn reconcile_over_a_record_naming_an_unknown_provider_fails_naming_it() {
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     assert!(stderr(&output).contains("nowhere"), "{output:?}");
     // Nothing judged the machine the record names, so the record stands.
-    assert_eq!(store.instances().expect("read the ledger").len(), 1);
+    assert_eq!(store.instance_records().expect("read the ledger").len(), 1);
 }

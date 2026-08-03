@@ -1778,7 +1778,7 @@ mod tests {
         );
         let store = Store::open(&loaded.store)?;
         assert!(
-            store.instances()?.is_empty(),
+            store.instance_records()?.is_empty(),
             "a machine of yours rents nothing"
         );
         Ok(())

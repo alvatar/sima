@@ -106,7 +106,7 @@ fn a_rental_falls_through_a_lost_offer_and_is_given_back_on_release() -> Result<
 
     let (guard, _lock) = rent(&provider, &store, &owner(11))?;
     assert_eq!(guard.endpoint().user, "root");
-    let records = store.instances()?;
+    let records = store.instance_records()?;
     assert_eq!(records.len(), 1, "one record for the machine held");
     assert_eq!(records[0].price_micro_usd_hour, 200_000, "the lost offer");
     assert_eq!(records[0].owner, owner(11).to_string());
@@ -115,7 +115,7 @@ fn a_rental_falls_through_a_lost_offer_and_is_given_back_on_release() -> Result<
     guard.release()?;
     assert_eq!(provider.destroyed(), vec![id]);
     assert!(provider.live().is_empty());
-    assert!(store.instances()?.is_empty());
+    assert!(store.instance_records()?.is_empty());
     Ok(())
 }
 
@@ -137,12 +137,16 @@ fn a_machine_a_dead_process_left_running_is_destroyed_by_reconciliation() -> Res
 
     // A later invocation, over the same store root.
     let store = Store::open(dir.path())?;
-    assert_eq!(store.instances()?.len(), 1, "the orphan's record survived");
+    assert_eq!(
+        store.instance_records()?.len(),
+        1,
+        "the orphan's record survived"
+    );
     let report = reconcile(&provider, &store, ReconcileScope::Workers)?;
     assert_eq!(report.destroyed, vec![leaked.clone()]);
     assert_eq!(provider.destroyed(), vec![leaked]);
     assert!(provider.live().is_empty());
-    assert!(store.instances()?.is_empty());
+    assert!(store.instance_records()?.is_empty());
     Ok(())
 }
 
@@ -165,7 +169,7 @@ fn acquiring_cleans_a_dead_runs_orphan_before_renting_a_new_machine() -> Result<
     // free was down before the new machine came up.
     assert_eq!(provider.destroyed(), vec![leaked]);
     assert_eq!(provider.live(), vec![guard.id().clone()]);
-    let records = store.instances()?;
+    let records = store.instance_records()?;
     assert_eq!(records.len(), 1);
     assert_eq!(records[0].tag, guard.tag());
     Ok(())
@@ -191,7 +195,7 @@ fn a_runs_own_leftover_survives_its_next_acquisition_while_it_holds_the_lock() -
     // from a machine the live process is using.
     assert!(provider.destroyed().is_empty());
     assert_eq!(provider.live(), vec![leaked.clone(), guard.id().clone()]);
-    assert_eq!(store.instances()?.len(), 2);
+    assert_eq!(store.instance_records()?.len(), 2);
 
     // Once the run's lock is free, the leftover is reaped like any orphan.
     std::mem::forget(guard);
@@ -199,7 +203,7 @@ fn a_runs_own_leftover_survives_its_next_acquisition_while_it_holds_the_lock() -
     let report = reconcile(&provider, &store, ReconcileScope::Workers)?;
     assert_eq!(report.destroyed.len(), 2);
     assert!(report.destroyed.contains(&leaked));
-    assert!(store.instances()?.is_empty());
+    assert!(store.instance_records()?.is_empty());
     Ok(())
 }
 
@@ -216,7 +220,7 @@ fn a_rental_given_back_leaves_what_it_cost_behind() -> Result<()> {
     guard.release()?;
 
     // The record is gone with the machine, and what the machine cost stays.
-    assert!(store.instances()?.is_empty());
+    assert!(store.instance_records()?.is_empty());
     let entries = store.spend_entries(&owner(11).to_string())?;
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].tag, tag);
@@ -254,7 +258,7 @@ fn a_machine_a_dead_process_left_running_is_charged_by_reconciliation() -> Resul
 
     let store = Store::open(dir.path())?;
     reconcile(&provider, &store, ReconcileScope::Workers)?;
-    assert!(store.instances()?.is_empty());
+    assert!(store.instance_records()?.is_empty());
     let entries = store.spend_entries(&owner(11).to_string())?;
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].tag, tag);
@@ -291,6 +295,6 @@ fn a_budget_an_earlier_rental_consumed_refuses_the_next_one() -> Result<()> {
     ));
     // Nothing was rented under the refusal: no second machine, no record.
     assert_eq!(provider.live().len(), 0);
-    assert!(store.instances()?.is_empty());
+    assert!(store.instance_records()?.is_empty());
     Ok(())
 }
