@@ -48,6 +48,7 @@ mod checkpoint;
 mod instances;
 mod journal;
 mod layout;
+mod ledger;
 mod lock;
 mod machines;
 mod manifest;

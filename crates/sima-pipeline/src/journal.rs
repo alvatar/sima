@@ -14,6 +14,16 @@ use crate::config::LoadedConfig;
 /// line that fails to parse is [`Error::Corruption`].
 pub(crate) fn records(config: &LoadedConfig) -> Result<Vec<Record>> {
     let (run, lines) = lines(config)?;
+    parse(&run, &lines)
+}
+
+/// Parses journal lines into records, naming the run a malformed one belongs
+/// to.
+///
+/// Every reader of a journal goes through here — the one-shot queries, the
+/// live observer, and the feed that forwards a far side's lines — so a line
+/// that does not parse reads as the same corruption whichever of them met it.
+pub(crate) fn parse(run: &RunId, lines: &[String]) -> Result<Vec<Record>> {
     lines
         .iter()
         .map(|line| {
@@ -51,14 +61,7 @@ pub(crate) fn journaled(config: &LoadedConfig) -> Result<Option<Vec<Record>>> {
     if lines.is_empty() {
         return Ok(None);
     }
-    lines
-        .iter()
-        .map(|line| {
-            Record::from_line(line)
-                .map_err(|e| Error::Corruption(format!("journal of run {run}: {e}")))
-        })
-        .collect::<Result<Vec<Record>>>()
-        .map(Some)
+    parse(&run, &lines).map(Some)
 }
 
 /// The journal lines of the run a loaded config describes, with the run they

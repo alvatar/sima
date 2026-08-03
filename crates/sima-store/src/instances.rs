@@ -19,6 +19,7 @@ use sima_core::{Error, Result};
 
 use crate::atomic::{self, io_error};
 use crate::layout;
+use crate::ledger;
 use crate::store::Store;
 
 /// One acquisition attempt's durable trace: what a later invocation needs
@@ -119,29 +120,11 @@ impl Store {
     /// [`Error::Corruption`] naming the file: the ledger is store state, so
     /// a read either verifies or fails.
     pub fn instances(&self) -> Result<Vec<InstanceRecord>> {
-        let dir = layout::instances_dir(self.root());
-        let entries = match fs::read_dir(&dir) {
-            Ok(entries) => entries,
-            Err(e) if e.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(e) => return Err(io_error(&dir, e)),
-        };
         let mut records = Vec::new();
-        for entry in entries {
-            let path = entry.map_err(|e| io_error(&dir, e))?.path();
-            let bytes = match fs::read(&path) {
-                Ok(bytes) => bytes,
-                // The record was cleared between the scan and the read: a
-                // teardown finished, which is exactly the state the reader
-                // would have found one moment later.
-                Err(e) if e.kind() == ErrorKind::NotFound => continue,
-                Err(e) => return Err(io_error(&path, e)),
-            };
-            let record: InstanceRecord = serde_json::from_slice(&bytes).map_err(|e| {
-                Error::Corruption(format!(
-                    "instance record {} does not parse: {e}",
-                    path.display()
-                ))
-            })?;
+        for (path, record) in ledger::entries::<InstanceRecord>(
+            &layout::instances_dir(self.root()),
+            "instance record",
+        )? {
             if Some(record.tag.as_str()) != path.file_name().and_then(|name| name.to_str()) {
                 return Err(Error::Corruption(format!(
                     "instance record {} names the tag {:?}",
