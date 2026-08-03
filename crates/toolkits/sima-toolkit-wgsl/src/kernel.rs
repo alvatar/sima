@@ -307,27 +307,30 @@ mod tests {
             }
         }
 
-        /// A shader declaring a workgroup no device launches, so the caller's
-        /// width agrees with the source and the device limit is what refuses
-        /// it. Asking for a width the source does not declare would report the
-        /// other failure and leave this branch untested.
-        const WIDE_WGSL: &str = r#"
-@group(0) @binding(0) var<storage, read> in_buf: array<u32>;
-
-@compute @workgroup_size(2048)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-    if (gid.x >= arrayLength(&in_buf)) { return; }
-}
-"#;
-
         #[test]
         fn a_block_width_the_device_cannot_launch_is_rejected() {
             // Caught before the pipeline is built, so an impossible width is a
             // clear toolkit error rather than an opaque dispatch failure later.
-            // Vulkan guarantees only 128 invocations per workgroup, so 2048 is
-            // past what any device here launches.
+            // The shader declares one past the device's own reported maximum,
+            // so the caller's width agrees with the source and the device
+            // limit is what refuses it — on hardware with any limit. Asking
+            // for a width the source does not declare would report the other
+            // failure and leave this branch untested.
             let context = Context::new().expect("create compute context");
-            match context.kernel(WIDE_WGSL, "main", 2048) {
+            let over = context.limits().max_compute_work_group_size[0]
+                .min(context.limits().max_compute_work_group_invocations)
+                + 1;
+            let source = format!(
+                r#"
+@group(0) @binding(0) var<storage, read> in_buf: array<u32>;
+
+@compute @workgroup_size({over})
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {{
+    if (gid.x >= arrayLength(&in_buf)) {{ return; }}
+}}
+"#
+            );
+            match context.kernel(&source, "main", over) {
                 Err(Error::Backend(message)) => {
                     assert!(message.contains("threads per workgroup"), "{message}");
                 }
