@@ -415,7 +415,7 @@ fn panic_fault(payload: Box<dyn Any + Send>) -> Error {
         .map(|s| (*s).to_string())
         .or_else(|| payload.downcast_ref::<String>().cloned())
         .unwrap_or_else(|| "unknown cause".to_string());
-    Error::Validation(format!("the run thread panicked: {text}"))
+    Error::System(format!("the run thread panicked: {text}"))
 }
 
 /// Restores the terminal on a UI-thread panic before the default hook prints,

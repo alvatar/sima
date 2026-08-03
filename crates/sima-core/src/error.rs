@@ -56,6 +56,13 @@ pub enum Error {
     /// qualifying offer was lost or never came up. The payload names the
     /// operation and the underlying cause.
     Provider(String),
+    /// An OS or process-level fact: a handler that could not be installed, a
+    /// thread that panicked, a signal that could not be delivered. It is
+    /// neither a model or configuration invariant nor an I/O operation on a
+    /// path, so it belongs to none of the variants above; what it names is
+    /// something the process asked of the system and did not get. The payload
+    /// names the operation and the underlying cause.
+    System(String),
     /// A failure carried verbatim from the process where it was rendered — a
     /// worker child, possibly on this same machine, holding no store of its
     /// own. The classification belongs to that process, so re-classifying it
@@ -76,6 +83,7 @@ impl fmt::Display for Error {
             Error::Backend(msg) => write!(f, "backend error: {msg}"),
             Error::Transport(msg) => write!(f, "worker transport error: {msg}"),
             Error::Provider(msg) => write!(f, "provider error: {msg}"),
+            Error::System(msg) => write!(f, "system error: {msg}"),
             Error::Reported(msg) => write!(f, "{msg}"),
         }
     }
@@ -130,6 +138,15 @@ mod tests {
         // here would prefix one classification with another.
         let e = Error::Reported("validation error: run was never started".to_string());
         assert_eq!(e.to_string(), "validation error: run was never started");
+    }
+
+    #[test]
+    fn display_renders_system_context() {
+        let e = Error::System("cannot register the SIGINT handler: denied".to_string());
+        assert_eq!(
+            e.to_string(),
+            "system error: cannot register the SIGINT handler: denied"
+        );
     }
 
     #[test]

@@ -664,7 +664,7 @@ pub(crate) fn report(error: Error) -> ExitCode {
 /// Wraps a signal-registration failure: an OS-level refusal to install
 /// the handler, surfaced before the run starts.
 fn register_error(e: std::io::Error) -> Error {
-    Error::Validation(format!("cannot register the SIGINT handler: {e}"))
+    Error::System(format!("cannot register the SIGINT handler: {e}"))
 }
 
 /// The exit code a finished run maps to — the mapping `run` and `tui` share:
