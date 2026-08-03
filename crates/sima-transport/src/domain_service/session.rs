@@ -316,15 +316,6 @@ impl DomainService {
     fn farewell_bound(&self) -> Duration {
         bounded_farewell(self.answer_timeout)
     }
-
-    /// Joins the reader thread at the end of a session that ended on its own
-    /// terms; it exits when the program's stdout ends, which a program reaped
-    /// off the farewell has already closed.
-    fn join_reader(&mut self) {
-        if let Some(reader) = self.reader.take() {
-            let _ = reader.join();
-        }
-    }
 }
 
 impl Drop for DomainService {
@@ -339,23 +330,22 @@ impl Drop for DomainService {
     /// the process alive after the run ended. Past the bound it is killed and
     /// reaped, which is what frees the scratch directory too.
     ///
-    /// The reader is joined only on the path where the program left on its own:
-    /// killing the child does not close a stdout a grandchild also holds, so a
-    /// join there would give back the unbounded wait the kill exists to avoid.
-    /// Past the bound the handle is released, as [`kill`](Self::kill) does.
+    /// The reader handle is released on every path, never joined: the thread
+    /// ends when the program's stdout closes, and anything the program spawned
+    /// may hold that pipe past the program's own exit — even past a clean one —
+    /// so a join anywhere here would wait on a process this drop does not
+    /// control. [`kill`](Self::kill) releases for the same reason.
     fn drop(&mut self) {
         if let Some(stdin) = self.stdin.as_mut() {
             let _ = write_frame(stdin, &ToDomain::Goodbye.encode());
         }
         self.stdin = None;
         let bound = self.farewell_bound();
-        if reaped_within(&mut self.child, bound) {
-            self.join_reader();
-        } else {
+        if !reaped_within(&mut self.child, bound) {
             let _ = self.child.kill();
             let _ = self.child.wait();
-            self.reader = None;
         }
+        self.reader = None;
         self.scratch = None;
     }
 }
