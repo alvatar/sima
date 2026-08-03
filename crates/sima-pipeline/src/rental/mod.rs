@@ -14,7 +14,7 @@ mod supervisor;
 mod fixtures;
 
 pub(crate) use acquire::{
-    RentalGroup, acquire_hosts, budget_exhausted, endpoint_target, provider_for, release_all,
-    transport_mode,
+    RentalGroup, acquire_hosts, budget_exhausted, endpoint_target, provider_for_rental,
+    release_all, transport_mode,
 };
 pub(crate) use supervisor::{StopSignal, Supervisor};

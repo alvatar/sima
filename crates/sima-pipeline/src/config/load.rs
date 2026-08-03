@@ -411,6 +411,26 @@ mod tests {
     }
 
     #[test]
+    fn a_generator_of_another_format_is_refused_at_load() {
+        // Format and generator are separate keys, so a config can name a
+        // generator that draws for a different format. Minting a run id over
+        // that pairing would defer the failure to the first stored spec, on a
+        // run whose id is already fixed; the load refuses it instead, naming
+        // both ids because either could be the typo.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let mismatched = BASE.replace(
+            "[run.generator]\n        id = \"stub.v1\"",
+            "[run.generator]\n        id = \"ca_evolution.nca.v1\"",
+        );
+        let path = write_config(dir.path(), "sima.toml", &mismatched);
+        let Err(Error::Validation(message)) = load(&path) else {
+            panic!("expected a mismatched generator to be refused");
+        };
+        assert!(message.contains("ca_evolution.nca.v1"), "{message}");
+        assert!(message.contains("stub.v1"), "{message}");
+    }
+
+    #[test]
     fn every_identity_field_changes_the_run_id() {
         // Every [run] field whose variation still names dispatchable ids: the
         // format and generator ids admit one value in this build, and the

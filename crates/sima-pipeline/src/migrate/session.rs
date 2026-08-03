@@ -69,7 +69,7 @@ use crate::migrate::destination::{Destination, destination_for};
 use crate::migrate::far_config::{FarWorkers, far_config};
 use crate::migrate::far_side::{Contact, FarSide, Remote};
 use crate::migrate::objects::push_objects;
-use crate::rental::{budget_exhausted, provider_for};
+use crate::rental::{budget_exhausted, provider_for_rental};
 use crate::status::{RunState, RunStatus};
 use crate::task_keys::task_keys;
 
@@ -184,7 +184,7 @@ pub fn migrate(
                 count: 1,
                 fill: FillPolicy::Strict,
             };
-            let provider = provider_for(&rental)?;
+            let provider = provider_for_rental(&rental)?;
             // The clock on this machine starts here, where it is first asked
             // for, and every stage that waits for it runs under the one
             // deadline: its readiness and its reachability are stages of the

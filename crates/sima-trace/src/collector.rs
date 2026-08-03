@@ -153,18 +153,39 @@ fn drain<S: DurableSink>(mut sink: S, rx: Receiver<Event>, observer: Observer) -
     // the stamps stay in the order the events arrived.
     while let Ok(first) = rx.recv() {
         let mut records = vec![Record::stamped(first)];
-        records.extend(rx.try_iter().map(Record::stamped));
-        let lines = records
-            .iter()
-            .map(Record::to_line)
-            .collect::<Result<Vec<String>>>()?;
-        sink.append_lines(&lines)?;
+        records.extend(rx.try_iter().take(DRAIN_BATCH - 1).map(Record::stamped));
+        // Encoded one at a time so a record that cannot be rendered costs only
+        // itself: the lines before it are valid, are made durable, and reach
+        // the observer before the failure ends the collector.
+        let mut lines = Vec::with_capacity(records.len());
+        let mut failure = None;
         for record in &records {
+            match record.to_line() {
+                Ok(line) => lines.push(line),
+                Err(e) => {
+                    failure = Some(e);
+                    break;
+                }
+            }
+        }
+        sink.append_lines(&lines)?;
+        for record in records.iter().take(lines.len()) {
             observer(record);
+        }
+        if let Some(e) = failure {
+            return Err(e);
         }
     }
     Ok(())
 }
+
+/// The most records one batch carries.
+///
+/// The drain takes whatever is queued, and a batch holds its records and their
+/// rendered lines at once, so an unbounded take would let a burst decide this
+/// thread's memory. Past the cap the burst is appended as several batches,
+/// which costs one durability barrier each and bounds nothing else.
+const DRAIN_BATCH: usize = 4096;
 
 #[cfg(test)]
 mod tests {
@@ -241,6 +262,37 @@ mod tests {
             "a queued burst shares its barriers: {batches:?}"
         );
         assert_eq!(lines.lock().expect("line lock").len(), 16);
+    }
+
+    #[test]
+    fn a_burst_past_the_cap_is_appended_as_several_batches() {
+        // The cap is what keeps a burst from deciding this thread's memory: a
+        // batch holds its records and their rendered lines at once. Past the
+        // cap the burst still lands whole, in several batches.
+        let batches = Arc::new(Mutex::new(Vec::new()));
+        let lines = Arc::new(Mutex::new(Vec::new()));
+        let (tx, rx) = std::sync::mpsc::channel();
+        let queued = DRAIN_BATCH + 1;
+        for i in 0..queued {
+            tx.send(Event::Queued {
+                task: format!("task {i}"),
+            })
+            .expect("queue an event");
+        }
+        drop(tx);
+        drain(
+            BatchSink {
+                batches: Arc::clone(&batches),
+                lines: Arc::clone(&lines),
+            },
+            rx,
+            &|_| {},
+        )
+        .expect("the drain succeeds");
+
+        let batches = batches.lock().expect("batch lock");
+        assert_eq!(batches.as_slice(), [DRAIN_BATCH, 1], "{batches:?}");
+        assert_eq!(lines.lock().expect("line lock").len(), queued);
     }
 
     #[test]

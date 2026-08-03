@@ -212,3 +212,32 @@ pub(super) fn fs_read(path: &Path) -> Result<String> {
         source: e,
     })
 }
+
+/// Every key the `[config]` section admits, read off the section's own schema.
+///
+/// `deny_unknown_fields` makes serde's rejection of an unknown key name every
+/// key it would have accepted, so the list comes from the struct rather than
+/// from a copy of it that a new field would leave behind.
+#[cfg(test)]
+pub(crate) fn config_section_keys() -> Vec<String> {
+    let refusal = toml::Value::Table(
+        [(
+            "a key no section admits".to_string(),
+            toml::Value::Integer(0),
+        )]
+        .into_iter()
+        .collect(),
+    )
+    .try_into::<ConfigSection>()
+    .err()
+    .expect("an unknown key is refused")
+    .to_string();
+    let (_, expected) = refusal
+        .split_once("expected one of ")
+        .expect("the refusal names the keys it would have taken");
+    expected
+        .split(", ")
+        .map(|key| key.trim().trim_matches('`').to_string())
+        .take_while(|key| !key.is_empty())
+        .collect()
+}

@@ -207,3 +207,6 @@ pub use machines::{
 /// so it spends no wall clock — so the re-export follows the same gate.
 #[cfg(not(test))]
 pub(crate) use machines::{DEFAULT_READY_POLL_MS, DEFAULT_READY_TIMEOUT_MS};
+
+#[cfg(test)]
+pub(crate) use file::config_section_keys;

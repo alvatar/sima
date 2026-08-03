@@ -139,7 +139,7 @@ pub(crate) fn far_config(local_text: &str, workers: FarWorkers<'_>) -> Result<St
     );
 
     toml::to_string_pretty(&far)
-        .map_err(|e| Error::Validation(format!("the far-side config cannot be written: {e}")))
+        .map_err(|e| Error::Encoding(format!("the far-side config cannot be written: {e}")))
 }
 
 /// The far side's `[config]`: the store beside its own file, and every setting
@@ -270,6 +270,8 @@ mod tests {
     use sima_domains::devices::DeviceType;
     use sima_model::RunId;
 
+    use std::collections::BTreeSet;
+
     use super::*;
     use crate::config::LoadedConfig;
     use crate::devices::DeviceSelector;
@@ -360,12 +362,24 @@ mod tests {
     #[test]
     fn every_setting_the_section_admits_travels() {
         // A key added to `[config]` and forgotten in the synthesis would be
-        // silently dropped from every migrated run. The far section is compared
-        // against the local one key for key, so a new key breaks this test
-        // rather than the migration.
+        // silently dropped from every migrated run. The fixture is held to the
+        // section's schema and the far section to the fixture, so a new key
+        // breaks this test rather than the migration.
         let local: toml::Table = EVERY_SETTING.parse().expect("the local config parses");
         let far = far_settings(&local).expect("the synthesis succeeds");
         let local_settings = local["config"].as_table().expect("a [config] table");
+        // The fixture is checked against the section's own schema first:
+        // comparing the far section to a local one that itself omits a key
+        // would pass while the key was dropped.
+        // Set comparison: the fixture is a TOML table, so its keys arrive
+        // sorted while the schema's arrive in declaration order.
+        assert_eq!(
+            local_settings.keys().cloned().collect::<BTreeSet<String>>(),
+            crate::config::config_section_keys()
+                .into_iter()
+                .collect::<BTreeSet<String>>(),
+            "the fixture sets every key the section admits"
+        );
         assert_eq!(
             far.keys().collect::<Vec<_>>(),
             local_settings.keys().collect::<Vec<_>>(),

@@ -16,7 +16,8 @@ use crate::fleet::{Engagement, Members, OwnedMachine, members};
 use crate::process::{ImageCheck, bootstrap_image, command_stdout};
 use crate::program_binding::{BinaryChange, bind};
 use crate::rental::{
-    RentalGroup, StopSignal, Supervisor, acquire_hosts, provider_for, release_all, transport_mode,
+    RentalGroup, StopSignal, Supervisor, acquire_hosts, provider_for_rental, release_all,
+    transport_mode,
 };
 
 /// Drives the run a loaded config describes: opens the store (creating it
@@ -81,7 +82,7 @@ pub fn orchestrate(
     let providers = members
         .rentals
         .iter()
-        .map(provider_for)
+        .map(provider_for_rental)
         .collect::<Result<Vec<_>>>()?;
     let modes = providers
         .iter()

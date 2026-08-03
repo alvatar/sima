@@ -28,15 +28,15 @@ use crate::config::{FillPolicy, Rented};
 use crate::devices::{parse_enumeration, usable};
 use crate::fleet::Rental;
 use crate::process::{command_stdout, worker_binary};
-use crate::providers::{ProviderSettings, provider_for as backend_for};
+use crate::providers::{ProviderSettings, provider_for};
 
 /// The control-plane backend a rental acquires its machines through.
 ///
 /// The rental's declared image, disk, and count are the settings the backend is
 /// built with; which backend that is comes from the one provider registry, so a
 /// run and a reconciliation resolve the same id the same way.
-pub(crate) fn provider_for(rental: &Rental<'_>) -> Result<Box<dyn Provider + Sync>> {
-    backend_for(
+pub(crate) fn provider_for_rental(rental: &Rental<'_>) -> Result<Box<dyn Provider + Sync>> {
+    provider_for(
         rental.spec.provider.as_str(),
         &ProviderSettings {
             image: &rental.spec.image,
@@ -643,7 +643,7 @@ mod tests {
     #[test]
     fn the_stub_provider_lists_an_offer_per_requested_machine() -> Result<()> {
         let spec = spec();
-        let provider = provider_for(&rental(&spec, 3, FillPolicy::Strict))?;
+        let provider = provider_for_rental(&rental(&spec, 3, FillPolicy::Strict))?;
         assert_eq!(provider.id(), "stub");
         assert_eq!(provider.offers()?.len(), 3);
         Ok(())
@@ -655,7 +655,7 @@ mod tests {
         // own status call reports Ready with an ssh endpoint, which maps to a
         // transport target.
         let spec = spec();
-        let provider = provider_for(&rental(&spec, 1, FillPolicy::Strict))?;
+        let provider = provider_for_rental(&rental(&spec, 1, FillPolicy::Strict))?;
         let offer = provider.offers()?.into_iter().next().expect("an offer");
         let Provision::Provisioned(instance) = provider.provision(&offer.id, "tag-0")? else {
             panic!("the stub provisions an always-available offer");

@@ -621,3 +621,44 @@ fn a_protocol_violation_ends_the_python_session_rather_than_being_answered() {
     let status = child.wait().expect("reap the program");
     assert!(!status.success(), "the session ends on the violation");
 }
+
+#[test]
+fn a_malformed_format_id_ends_the_python_session_rather_than_being_answered() {
+    // The same distinction on a well-formed tag carrying an id that is not a
+    // name. Rust decodes these ids into validated types, so a malformed one
+    // fails the decode and ends the session; the SDK reads a plain string, and
+    // an id it merely compared and refused would be answered `Failed` with the
+    // session running on. The two sides answer a malformed frame the same way.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let program = wrapper(dir.path(), &[]);
+    let mut child = std::process::Command::new(&program)
+        .args(["--serve-domain", FORMAT])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn the program's domain service");
+    let mut stdin = child.stdin.take().expect("the piped stdin");
+    let mut stdout = child.stdout.take().expect("the piped stdout");
+
+    let mut hello = vec![0u8];
+    hello.extend(1u32.to_le_bytes());
+    write_frame(&mut stdin, &hello);
+    assert!(
+        read_frame(&mut stdout).is_some_and(|ready| ready.first() == Some(&0)),
+        "the program answers the handshake with Ready"
+    );
+
+    // Describe, tag 2, carrying a format id with a byte the name rule excludes.
+    let malformed = "NOT A NAME";
+    let mut describe = vec![2u8];
+    describe.extend((malformed.len() as u64).to_le_bytes());
+    describe.extend(malformed.as_bytes());
+    write_frame(&mut stdin, &describe);
+    assert!(
+        read_frame(&mut stdout).is_none(),
+        "an id the program cannot decode ends the session rather than being answered"
+    );
+    let status = child.wait().expect("reap the program");
+    assert!(!status.success(), "the session ends on the violation");
+}

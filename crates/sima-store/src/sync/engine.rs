@@ -431,31 +431,50 @@ fn chunked<R, O>(
     }
 }
 
+/// The most chunks one inventory or request may span.
+///
+/// A peer sets `more` on every chunk but the last, so a peer that never clears
+/// it keeps this side reading and accumulating forever. The ceiling is what
+/// makes the loop terminate on a peer that will not: at [`INVENTORY_CHUNK`]
+/// entries each it admits about a billion entries per list, past any real store
+/// and far short of exhausting memory.
+const MAX_INVENTORY_CHUNKS: usize = 262_144;
+
 /// Reads an inventory: one chunk after another until one clears `more`,
 /// accumulating what they carry.
 fn recv_have(reader: &mut dyn Read) -> Result<PeerInventory> {
-    let (mut records, mut objects) = (Vec::new(), Vec::new());
-    loop {
-        let chunk = expect_have(recv(reader)?)?;
-        records.extend(chunk.0);
-        objects.extend(chunk.1);
-        if !chunk.2 {
-            return Ok((records, objects));
-        }
-    }
+    recv_chunks(reader, MAX_INVENTORY_CHUNKS, "inventory", expect_have)
 }
 
 /// Reads a request the same way [`recv_have`] reads an inventory.
 fn recv_want(reader: &mut dyn Read) -> Result<Want> {
+    recv_chunks(reader, MAX_INVENTORY_CHUNKS, "request", expect_want)
+}
+
+/// Reads chunks through `accept` until one clears `more`, accumulating both
+/// lists, and refuses a peer that passes `limit` chunks without clearing it.
+///
+/// `noun` names what was being read, so the refusal says which of the two
+/// sequences ran away. The limit is a parameter so the ceiling can be exercised
+/// on a handful of chunks rather than the real one.
+fn recv_chunks<R, O>(
+    reader: &mut dyn Read,
+    limit: usize,
+    noun: &str,
+    accept: impl Fn(SyncMessage) -> Result<(Vec<R>, Vec<O>, bool)>,
+) -> Result<(Vec<R>, Vec<O>)> {
     let (mut records, mut objects) = (Vec::new(), Vec::new());
-    loop {
-        let chunk = expect_want(recv(reader)?)?;
-        records.extend(chunk.0);
-        objects.extend(chunk.1);
-        if !chunk.2 {
+    for _ in 0..limit {
+        let (chunk_records, chunk_objects, more) = accept(recv(reader)?)?;
+        records.extend(chunk_records);
+        objects.extend(chunk_objects);
+        if !more {
             return Ok((records, objects));
         }
     }
+    Err(Error::Validation(format!(
+        "sync protocol error: the peer's {noun} passed {limit} chunks without clearing `more`"
+    )))
 }
 
 /// Accepts a [`SyncMessage::Have`] chunk, returning its records, objects, and
@@ -664,6 +683,32 @@ mod tests {
         assert_eq!(
             report.objects_received, 2,
             "both advertised chunks were asked for"
+        );
+    }
+
+    #[test]
+    fn a_peer_that_never_clears_more_is_refused_at_the_ceiling() {
+        // `more` is the peer's to clear, so a peer that never does keeps this
+        // side reading and accumulating without end. The ceiling is what makes
+        // the loop terminate on it; the refusal names what ran away.
+        let mut incoming = Vec::new();
+        for _ in 0..4 {
+            let chunk = SyncMessage::Have {
+                records: Vec::new(),
+                objects: Vec::new(),
+                more: true,
+            };
+            write_frame(&mut incoming, &chunk.encode()).expect("frame");
+        }
+        let mut reader = incoming.as_slice();
+        let refusal = recv_chunks(&mut reader, 3, "inventory", expect_have)
+            .expect_err("a peer past the ceiling is refused");
+        let Error::Validation(message) = refusal else {
+            panic!("expected a protocol refusal");
+        };
+        assert!(
+            message.contains("inventory") && message.contains('3'),
+            "{message}"
         );
     }
 
