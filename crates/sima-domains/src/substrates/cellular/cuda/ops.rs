@@ -92,10 +92,13 @@ mod tests {
     use sima_core::hash_bytes;
     use sima_toolkit_cuda::{PTX_OPTIONS, compile};
 
+    use crate::substrates::cellular::reference::{SMOKE_PTX, STEP_PROBE_PTX};
     use crate::substrates::cellular::{CellularEngine, CudaEngine, WgslEngine};
 
     /// The CUDA C the committed PTX is generated from.
     const REDUCE_CU: &str = include_str!("kernels/reduce.cu");
+    const SMOKE_CU: &str = include_str!("kernels/smoke.cu");
+    const STEP_PROBE_CU: &str = include_str!("kernels/step_probe.cu");
 
     #[test]
     fn the_committed_ptx_declares_the_four_entry_points() {
@@ -128,11 +131,17 @@ mod tests {
         // the committed source compiles to. A mismatch means one of the two was
         // edited without the other, or that this NVRTC differs from the one
         // that produced the commit — the version is in the PTX header.
-        assert_eq!(
-            compile(REDUCE_CU).expect("compile the reduction"),
-            CudaOps::REDUCE_SOURCE,
-            "regenerate with the compile step in the crate's kernel documentation"
-        );
+        for (source, committed, name) in [
+            (REDUCE_CU, CudaOps::REDUCE_SOURCE, "the reduction"),
+            (SMOKE_CU, SMOKE_PTX, "the smoke kernel"),
+            (STEP_PROBE_CU, STEP_PROBE_PTX, "the step probe"),
+        ] {
+            assert_eq!(
+                compile(source).expect("compile"),
+                committed,
+                "{name}: regenerate with the compile step in the crate's kernel documentation"
+            );
+        }
     }
 
     #[test]

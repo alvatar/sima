@@ -244,7 +244,9 @@ mod tests {
     mod on_device {
         use super::*;
         use crate::substrates::cellular::cuda::CudaOps;
-        use crate::substrates::cellular::reference::{SMOKE_PTX, SMOKE_WGSL, SmokeMax, advance};
+        use crate::substrates::cellular::reference::{
+            SMOKE_PTX, SMOKE_WGSL, STEP_PROBE_PTX, STEP_PROBE_WGSL, SmokeMax, advance,
+        };
         use crate::substrates::cellular::wgsl::WgslOps;
 
         /// Runs `case` against every backend, with that backend's smoke kernel
@@ -351,26 +353,17 @@ mod tests {
             });
         }
 
-        /// A one-channel probe kernel that adds the low word of the per-step
-        /// index to every cell. It declares the step buffer at binding 3 (no
-        /// params), so after `steps` dispatches from `base` every cell holds the
-        /// sum of the step indices `base ..= base + steps - 1`. Accumulating
-        /// makes every dispatch's update contribute, so a wrong intermediate
-        /// index is caught, not only a wrong final one.
-        const STEP_PROBE_WGSL: &str = r#"
-@group(0) @binding(0) var<storage, read> in_grid: array<f32>;
-@group(0) @binding(1) var<storage, read_write> out_grid: array<f32>;
-@group(0) @binding(2) var<storage, read> dims: array<u32>;
-@group(0) @binding(3) var<storage, read> step_words: array<u32>;
-
-@compute @workgroup_size(64)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-    let cell = gid.x;
-    if (cell >= dims[0] * dims[1]) { return; }
-    // The test keeps the running sum well under 2^24, so the f32 holds it exactly.
-    out_grid[cell] = in_grid[cell] + f32(step_words[0]);
-}
-"#;
+        /// The step probe's expectation and its check, over whichever backend
+        /// advanced the grid.
+        fn assert_step_indices_transported(advanced: &Grid, base: u64, steps: u32, backend: &str) {
+            // Sum of base ..= base + steps - 1.
+            let expected = (base..base + u64::from(steps)).sum::<u64>() as f32;
+            assert!(
+                advanced.data().iter().all(|&v| v == expected),
+                "{backend}: every cell holds the summed step indices {expected}, got {:?}",
+                advanced.data()
+            );
+        }
 
         #[test]
         fn run_transports_the_per_step_index() {
@@ -378,23 +371,29 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             // `i`. The probe accumulates, so a wrong index on any single
             // dispatch — not only the last — changes the total, which is what
             // pins the update riding inside each dispatch's own submission.
-            let ops = WgslOps::open(None).expect("open a Vulkan device");
-            let kernel = ops
-                .kernel(STEP_PROBE_WGSL, WgslOps::ENTRY, BLOCK_WIDTH)
-                .expect("build the step probe");
+            // Both backends carry the update their own way, so both are asked.
             let initial = Grid::new(4, 4, 1, vec![0.0; 16]).expect("grid");
             let (base, steps) = (100u64, 5u32);
-            let result = run(&ops, &kernel, &initial, steps, &[], Some(base))
-                .expect("run")
+
+            let wgsl = WgslOps::open(None).expect("open a Vulkan device");
+            let wgsl_kernel = wgsl
+                .kernel(STEP_PROBE_WGSL, WgslOps::ENTRY, BLOCK_WIDTH)
+                .expect("build the step probe shader");
+            let advanced = run(&wgsl, &wgsl_kernel, &initial, steps, &[], Some(base))
+                .expect("WGSL run")
                 .grid()
-                .expect("grid");
-            // Sum of base ..= base + steps - 1 = 100 + 101 + 102 + 103 + 104.
-            let expected = (base..base + u64::from(steps)).sum::<u64>() as f32;
-            assert!(
-                result.data().iter().all(|&v| v == expected),
-                "every cell holds the summed step indices {expected}, got {:?}",
-                result.data()
-            );
+                .expect("WGSL grid");
+            assert_step_indices_transported(&advanced, base, steps, "WGSL");
+
+            let cuda = CudaOps::open(None).expect("open a CUDA device");
+            let cuda_kernel = cuda
+                .kernel(STEP_PROBE_PTX, CudaOps::ENTRY, BLOCK_WIDTH)
+                .expect("load the step probe PTX");
+            let advanced = run(&cuda, &cuda_kernel, &initial, steps, &[], Some(base))
+                .expect("CUDA run")
+                .grid()
+                .expect("CUDA grid");
+            assert_step_indices_transported(&advanced, base, steps, "CUDA");
         }
     }
 }

@@ -27,6 +27,16 @@ pub(crate) trait CellularRule {
 pub(crate) const SMOKE_WGSL: &str = include_str!("wgsl/shaders/smoke.wgsl");
 pub(crate) const SMOKE_PTX: &str = include_str!("cuda/kernels/smoke.ptx");
 
+/// The step probe, transcribed per backend: every cell accumulates the low word
+/// of the per-step index its dispatch was given.
+///
+/// It has no CPU reference and needs none — what it checks is not arithmetic but
+/// that the value a step reads is the value that step was dispatched with, which
+/// only a device can answer. Its two transcriptions let the one test case pin
+/// that on either backend.
+pub(crate) const STEP_PROBE_WGSL: &str = include_str!("wgsl/shaders/step_probe.wgsl");
+pub(crate) const STEP_PROBE_PTX: &str = include_str!("cuda/kernels/step_probe.ptx");
+
 /// The CPU reference the smoke kernels mirror.
 pub(crate) struct SmokeMax;
 
