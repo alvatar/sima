@@ -54,8 +54,9 @@ use sima_provider::{
     AcquireLimits, Budget, InstanceGuard, Objective, Provider, Verdict, acquire, adopt, assess,
     now_ms,
 };
+use sima_scheduler::{Event, Level};
 use sima_store::{ObjectScope, Rental as RentalRole, RunLock, Store};
-use sima_trace::{Collector, Emitter, Event, Level, Observer};
+use sima_trace::{Collector, Emitter, Observer};
 
 use crate::config::{FillPolicy, HostForm, LoadedConfig, Rented};
 // The readiness defaults are what a destination stating none falls back on,

@@ -31,7 +31,11 @@ pub use control::RunControl;
 pub use driver::{RunOutcome, run, run_keys, worker_slots};
 pub use segment_chain::SegmentChain;
 // The event vocabulary and journal line type are the trace facade's; the
-// scheduler re-exports them as the emitting layer consumers import from.
+// scheduler is the layer that emits them, so it re-exports them and every
+// crate above imports them from here. The collector machinery — `Emitter`,
+// `Collector`, `Observer`, `DurableSink` — is not re-exported: wiring a
+// collector is not something the scheduler does for its callers, so a caller
+// that wires one takes it from the facade directly.
 pub use sima_trace::{Event, Level, Record, StatScalar};
 pub use static_batch::StaticBatch;
 pub use task_source::{RunnableTask, TaskSource};

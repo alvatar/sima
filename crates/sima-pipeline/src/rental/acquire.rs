@@ -6,8 +6,8 @@
 //! the entry's own declaration: strict fails the run and tears down what came
 //! up, best-effort runs on whatever did.
 
-use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
+use std::sync::{Mutex, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -19,9 +19,9 @@ use sima_provider::{
     AcquireLimits, Budget, Exhaustion, IncidentKind, InstanceGuard, Objective, Provider,
     Reachability, SshEndpoint, acquire, now_ms, record_incident,
 };
+use sima_scheduler::Event;
 use sima_scheduler::ExecutionConfig;
 use sima_store::{Rental as RentalRole, RunLock, Store};
-use sima_trace::Event;
 use sima_transport::{SpawnMode, SpawnPolicy, SpawnSettings, SshDestination, SshTransport};
 
 use crate::config::{FillPolicy, Rented};
@@ -341,7 +341,7 @@ pub(crate) fn release_all(groups: Vec<RentalGroup<'_>>) -> Result<()> {
             let guard = host
                 .guard
                 .into_inner()
-                .expect("the rental guard lock is never poisoned");
+                .unwrap_or_else(PoisonError::into_inner);
             if let Some(guard) = guard
                 && let Err(error) = guard.release()
                 && first.is_none()

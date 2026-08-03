@@ -173,7 +173,9 @@ pub fn orchestrate(
         // closure.
         let emitter: std::sync::Mutex<Option<sima_trace::Emitter>> = std::sync::Mutex::new(None);
         let on_start = |e: sima_trace::Emitter| {
-            *emitter.lock().expect("the emitter lock is never poisoned") = Some(e);
+            *emitter
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(e);
         };
         // Aborts a replacement acquisition in flight, so teardown never waits
         // out an offer walk. Set on the terminal event and again after the
@@ -187,14 +189,14 @@ pub fn orchestrate(
         // `Faulted` is a stop trigger too. The same event cancels a replacement
         // still acquiring.
         let caller_observer = control.observer;
-        let stopper = |record: &sima_trace::Record| {
+        let stopper = |record: &sima_scheduler::Record| {
             (caller_observer)(record);
             if matches!(
                 record.event,
-                sima_trace::Event::RunFinalized { .. }
-                    | sima_trace::Event::RunFailed { .. }
-                    | sima_trace::Event::RunInterrupted { .. }
-                    | sima_trace::Event::Faulted { .. }
+                sima_scheduler::Event::RunFinalized { .. }
+                    | sima_scheduler::Event::RunFailed { .. }
+                    | sima_scheduler::Event::RunInterrupted { .. }
+                    | sima_scheduler::Event::Faulted { .. }
             ) {
                 cancel.store(true, std::sync::atomic::Ordering::Relaxed);
                 stop.raise();

@@ -14,7 +14,7 @@
 //! commit path — the child is never given the store.
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use sima_contracts::{Artifact, DeviceBinding, Outcome, Stats, WorkerId};
@@ -152,10 +152,7 @@ fn spawn_bound(ctx: &WorkerContext<'_>, worker: WorkerId) -> Result<SpawnOutcome
         // sibling slots and respawns compare against the current one. The
         // driver never enters identity — the event is a warning, and the
         // spawn proceeds unconditionally.
-        let mut drivers = ctx
-            .drivers
-            .lock()
-            .expect("the driver map lock is never poisoned");
+        let mut drivers = ctx.drivers.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(previous) = drivers.insert((ctx.host.clone(), device.clone()), driver.clone())
             && previous != driver
         {

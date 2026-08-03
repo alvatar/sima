@@ -17,8 +17,9 @@ use sima_provider::{
     AcquireLimits, Budget, Exhaustion, IncidentKind, InstanceGuard, InstanceStatus, Objective,
     Provider, Verdict, acquire, assess, now_ms, record_incident,
 };
+use sima_scheduler::Event;
 use sima_store::{Rental as RentalRole, RunLock, Store};
-use sima_trace::{Emitter, Event};
+use sima_trace::Emitter;
 
 use crate::config::FillPolicy;
 use crate::rental::acquire::{
@@ -429,7 +430,8 @@ mod tests {
     use sima_model::{FormatId, RunId};
     use sima_provider::Cost;
     use sima_provider::stub::StubProvider;
-    use sima_trace::{Collector, DurableSink, Record};
+    use sima_scheduler::Record;
+    use sima_trace::{Collector, DurableSink};
 
     use super::*;
     use crate::rental::acquire::{acquire_hosts, release_all};
