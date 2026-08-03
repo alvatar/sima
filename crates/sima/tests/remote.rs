@@ -1,30 +1,33 @@
 //! Remote-execution acceptance over the real binaries and the built worker
 //! image, in two tiers by carrier.
 //!
+//! Every scenario drives a real run of a GPU format, so all of them carry the
+//! `on_device` marker and stay on the device machine. What separates the tiers
+//! is the carrier, and each states its own environment requirement: a tier
+//! whose environment is absent prints why and passes, so the suite is clean on
+//! a device machine with no container runtime and no remote.
+//!
 //! **Tier A — a container pool on this machine, no ssh.** The acceptance
 //! scenarios run against the real sima image over a local container runtime:
 //! an `[orchestrator]` naming an `image`, so the worker pool's transport is
 //! `podman run --rm -i --name <name> <run_args> <image> sima-worker` with no ssh
 //! prefix — every layer of the container-worker mechanism except the ssh hop,
-//! which the transport cannot distinguish from any other pipe carrier. These are
-//! `#[ignore]` and skip clean when the image is absent (`SIMA_TEST_IMAGE`
-//! unset); they run on any machine with a container runtime and the image.
+//! which the transport cannot distinguish from any other pipe carrier. Gated on
+//! `SIMA_TEST_IMAGE`.
 //!
 //! **Tier B — a container pool across ssh.** The ssh-specific variants: a mixed
 //! run over this machine and a declared host, the two-stage kill through a
 //! second ssh connection, and the BatchMode refusal on an unreachable host. A
 //! declared host is engaged only under `--fleet`, so every Tier B run passes it.
-//! Double-gated — `#[ignore]` plus a `SIMA_TEST_REMOTE` ssh destination — so a
-//! blanket `--ignored` run passes clean where no remote is provisioned.
+//! Gated on a `SIMA_TEST_REMOTE` ssh destination as well as the image.
 //!
 //! ```text
-//! # Tier A, on a machine with podman and the image:
-//! SIMA_TEST_IMAGE=localhost/sima:latest \
-//!   cargo test -p sima --test remote -- --ignored
+//! # Tier A, on a device machine with podman and the image:
+//! SIMA_TEST_IMAGE=localhost/sima:latest cargo test -p sima --test remote
 //!
 //! # Tier B additionally, with an ssh destination:
 //! SIMA_TEST_REMOTE=gpubox SIMA_TEST_IMAGE=localhost/sima:latest \
-//!   cargo test -p sima --test remote -- --ignored
+//!   cargo test -p sima --test remote
 //! ```
 //!
 //! The environment configures the container pool so one suite runs against a
@@ -282,304 +285,306 @@ fn assert_no_chain_split(events: &[Event]) {
 }
 
 // ---------------------------------------------------------------------------
-// Tier A — a container pool on this machine, no ssh.
-// ---------------------------------------------------------------------------
 
-/// A container pool spread over two device classes commits from both, and no
-/// chain splits across the class boundary. The pool runs on this machine, so the
-/// journal cannot tell its classes apart by host; commits on both prove both
-/// were scheduled onto.
-#[test]
-#[ignore = "requires a container runtime and the sima image (SIMA_TEST_IMAGE)"]
-fn a_two_class_container_run_commits_from_both_classes() {
-    let env = local_or_skip!();
-    let dir = tempfile::tempdir().expect("temp dir");
-    let config = write_config_text(
-        dir.path(),
-        "mixed.toml",
-        &config_text(
-            "./store",
-            CANDIDATES,
-            SEGMENTS,
-            &env.machine_tables(&[("intel", 2), ("nvidia", 2)]),
-        ),
-    );
-    run_to_completion(&config, env.engages_fleet());
+/// Every scenario here drives a real run of a GPU format through a container
+/// pool, so each needs a device as well as the runtime that carries it. The
+/// marker is what keeps them on the device machine; the runtime and the ssh
+/// destination are the environment guards inside each tier.
+mod on_device {
+    use super::*;
 
-    let events = journal_events(&config);
-    // Commits on two distinct device classes: both classes pulled work.
-    assert!(
-        devices_reported(&events).len() >= 2,
-        "both device classes bound workers: {:?}",
-        devices_reported(&events)
-    );
-    assert_no_chain_split(&events);
-    assert!(
-        manifest_of(&config).is_some(),
-        "the two-class run finalized"
-    );
-}
+    // Tier A — a container pool on this machine, no ssh.
+    // ---------------------------------------------------------------------------
 
-/// The same single-class run on a bare pool and on a container pool commits a
-/// byte-identical manifest: both resolve to the NVIDIA class on this machine, so
-/// driver parity is exact and the transport carrying an attempt never reaches
-/// run identity.
-#[test]
-#[ignore = "requires a container runtime and the sima image (SIMA_TEST_IMAGE)"]
-fn single_class_manifests_are_identical_bare_and_container() {
-    let env = local_or_skip!();
-    let dir = tempfile::tempdir().expect("temp dir");
+    /// A container pool spread over two device classes commits from both, and no
+    /// chain splits across the class boundary. The pool runs on this machine, so the
+    /// journal cannot tell its classes apart by host; commits on both prove both
+    /// were scheduled onto.
+    #[test]
+    fn a_two_class_container_run_commits_from_both_classes() {
+        let env = local_or_skip!();
+        let dir = tempfile::tempdir().expect("temp dir");
+        let config = write_config_text(
+            dir.path(),
+            "mixed.toml",
+            &config_text(
+                "./store",
+                CANDIDATES,
+                SEGMENTS,
+                &env.machine_tables(&[("intel", 2), ("nvidia", 2)]),
+            ),
+        );
+        run_to_completion(&config, env.engages_fleet());
 
-    let bare = write_config_text(
-        dir.path(),
-        "bare.toml",
-        &config_text(
-            "./bare-store",
-            CANDIDATES,
-            SEGMENTS,
-            "[orchestrator]\n        [[orchestrator.device]]\n        select = \"nvidia\"\n        workers = 2",
-        ),
-    );
-    let container = write_config_text(
-        dir.path(),
-        "container.toml",
-        &config_text(
-            "./container-store",
-            CANDIDATES,
-            SEGMENTS,
-            &env.machine_tables(&[("nvidia", 2)]),
-        ),
-    );
-    run_to_completion(&bare, false);
-    run_to_completion(&container, env.engages_fleet());
+        let events = journal_events(&config);
+        // Commits on two distinct device classes: both classes pulled work.
+        assert!(
+            devices_reported(&events).len() >= 2,
+            "both device classes bound workers: {:?}",
+            devices_reported(&events)
+        );
+        assert_no_chain_split(&events);
+        assert!(
+            manifest_of(&config).is_some(),
+            "the two-class run finalized"
+        );
+    }
 
-    let bare_manifest = manifest_bytes(&bare).expect("the bare run finalized");
-    let container_manifest = manifest_bytes(&container).expect("the container run finalized");
-    assert_eq!(
-        bare_manifest, container_manifest,
-        "one class, one manifest, whatever transport carried the attempts"
-    );
-}
+    /// The same single-class run on a bare pool and on a container pool commits a
+    /// byte-identical manifest: both resolve to the NVIDIA class on this machine, so
+    /// driver parity is exact and the transport carrying an attempt never reaches
+    /// run identity.
+    #[test]
+    fn single_class_manifests_are_identical_bare_and_container() {
+        let env = local_or_skip!();
+        let dir = tempfile::tempdir().expect("temp dir");
 
-/// A container killed mid-lease is a transient failure: the run converges
-/// through retry to a valid manifest, and the journal records it.
-#[test]
-#[ignore = "requires a container runtime and the sima image (SIMA_TEST_IMAGE)"]
-fn a_killed_container_converges_through_retry() {
-    let env = local_or_skip!();
-    converges_after_a_mid_lease_kill(&env, "kill-local.toml");
-}
+        let bare = write_config_text(
+            dir.path(),
+            "bare.toml",
+            &config_text(
+                "./bare-store",
+                CANDIDATES,
+                SEGMENTS,
+                "[orchestrator]\n        [[orchestrator.device]]\n        select = \"nvidia\"\n        workers = 2",
+            ),
+        );
+        let container = write_config_text(
+            dir.path(),
+            "container.toml",
+            &config_text(
+                "./container-store",
+                CANDIDATES,
+                SEGMENTS,
+                &env.machine_tables(&[("nvidia", 2)]),
+            ),
+        );
+        run_to_completion(&bare, false);
+        run_to_completion(&container, env.engages_fleet());
 
-/// A run resumed without one of its container pool's device classes rebinds the
-/// chains bound to the absent class and converges — the rebind machinery
-/// composing with container pools.
-#[test]
-#[ignore = "requires a container runtime and the sima image (SIMA_TEST_IMAGE)"]
-fn a_resume_without_a_container_class_rebinds_loudly() {
-    let env = local_or_skip!();
-    let dir = tempfile::tempdir().expect("temp dir");
-    // First session: a container pool over the Intel and NVIDIA classes. Chains
-    // bind across both.
-    let full = write_config_text(
-        dir.path(),
-        "full.toml",
-        &config_text(
-            "./store",
-            CANDIDATES,
-            SEGMENTS,
-            &env.machine_tables(&[("intel", 2), ("nvidia", 2)]),
-        ),
-    );
-    let mut child = sima_command()
-        .args(run_argv(&full, env.engages_fleet()))
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("spawn sima");
-    // Let some chains bind, then kill the orchestrator.
-    let bound = poll_until(Duration::from_secs(120), || {
-        journal_events(&full)
+        let bare_manifest = manifest_bytes(&bare).expect("the bare run finalized");
+        let container_manifest = manifest_bytes(&container).expect("the container run finalized");
+        assert_eq!(
+            bare_manifest, container_manifest,
+            "one class, one manifest, whatever transport carried the attempts"
+        );
+    }
+
+    /// A container killed mid-lease is a transient failure: the run converges
+    /// through retry to a valid manifest, and the journal records it.
+    #[test]
+    fn a_killed_container_converges_through_retry() {
+        let env = local_or_skip!();
+        converges_after_a_mid_lease_kill(&env, "kill-local.toml");
+    }
+
+    /// A run resumed without one of its container pool's device classes rebinds the
+    /// chains bound to the absent class and converges — the rebind machinery
+    /// composing with container pools.
+    #[test]
+    fn a_resume_without_a_container_class_rebinds_loudly() {
+        let env = local_or_skip!();
+        let dir = tempfile::tempdir().expect("temp dir");
+        // First session: a container pool over the Intel and NVIDIA classes. Chains
+        // bind across both.
+        let full = write_config_text(
+            dir.path(),
+            "full.toml",
+            &config_text(
+                "./store",
+                CANDIDATES,
+                SEGMENTS,
+                &env.machine_tables(&[("intel", 2), ("nvidia", 2)]),
+            ),
+        );
+        let mut child = sima_command()
+            .args(run_argv(&full, env.engages_fleet()))
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn sima");
+        // Let some chains bind, then kill the orchestrator.
+        let bound = poll_until(Duration::from_secs(120), || {
+            journal_events(&full)
+                .iter()
+                .filter(|e| matches!(e, Event::WorkerBound { .. }))
+                .count()
+                >= 4
+        });
+        assert!(bound, "workers bound before the kill");
+        child.kill().expect("kill the orchestrator");
+        let _ = child.wait();
+
+        // Resume over the Intel class alone: the same store, the same container
+        // pool, one class fewer. Chains bound to the absent NVIDIA class must
+        // rebind.
+        let one_class = write_config_text(
+            dir.path(),
+            "one-class.toml",
+            &config_text(
+                "./store",
+                CANDIDATES,
+                SEGMENTS,
+                &env.machine_tables(&[("intel", 2)]),
+            ),
+        );
+        run_to_completion(&one_class, env.engages_fleet());
+        let events = journal_events(&one_class);
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, Event::ChainRebound { .. })),
+            "a chain whose class was gone rebound loudly"
+        );
+        assert!(
+            manifest_of(&one_class).is_some(),
+            "the resumed run finalized"
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // Tier B — a container pool across ssh.
+    // ---------------------------------------------------------------------------
+
+    /// A mixed run over a local pool and a remote container pool across ssh commits
+    /// from both, and no chain splits. Here the pools sit on different machines, so
+    /// the journal names the local pool and the ssh host separately.
+    #[test]
+    fn a_mixed_local_and_ssh_run_commits_from_both_pools() {
+        let env = remote_or_skip!();
+        let host = env.host.clone().expect("Tier B names an ssh host");
+        let dir = tempfile::tempdir().expect("temp dir");
+        let machines = format!(
+            "[orchestrator]\n        [[orchestrator.device]]\n        select = \"nvidia\"\n        workers = 2\n{}",
+            env.machine_tables(&[("nvidia", 2)])
+        );
+        let config = write_config_text(
+            dir.path(),
+            "mixed-ssh.toml",
+            &config_text("./store", CANDIDATES, SEGMENTS, &machines),
+        );
+        run_to_completion(&config, true);
+
+        let events = journal_events(&config);
+        let hosts = bound_hosts(&events);
+        assert!(
+            hosts.contains("") && hosts.contains(&host),
+            "both the local pool and {host} bound workers: {hosts:?}",
+        );
+        assert_no_chain_split(&events);
+        assert!(manifest_of(&config).is_some(), "the mixed run finalized");
+    }
+
+    /// A remote container killed mid-lease over ssh converges through retry — the
+    /// two-stage kill's second channel is a second ssh connection to the host.
+    #[test]
+    fn a_killed_ssh_container_converges_through_retry() {
+        let env = remote_or_skip!();
+        converges_after_a_mid_lease_kill(&env, "kill-ssh.toml");
+    }
+
+    /// A declared host that resolves nowhere fails cleanly at run start rather than
+    /// hanging: `BatchMode=yes` turns an unauthenticated or unreachable destination
+    /// into a spawn error the image bootstrap surfaces.
+    #[test]
+    fn an_unreachable_host_fails_cleanly() {
+        let _ = remote_or_skip!();
+        let dir = tempfile::tempdir().expect("temp dir");
+        // A host that resolves nowhere: the bootstrap image-inspect over ssh fails
+        // under BatchMode, a clean non-zero exit rather than a prompt or a hang.
+        let unreachable = ContainerEnv {
+            host: Some("sima-nonexistent.invalid".to_string()),
+            image: "localhost/sima:latest".to_string(),
+            runtime: "docker".to_string(),
+            run_args: vec!["--gpus".to_string(), "all".to_string()],
+        };
+        let config = write_config_text(
+            dir.path(),
+            "unreachable.toml",
+            &config_text(
+                "./store",
+                CANDIDATES,
+                SEGMENTS,
+                &unreachable.machine_tables(&[("nvidia", 2)]),
+            ),
+        );
+        let output = sima_command()
+            .args(run_argv(&config, true))
+            .output()
+            .expect("spawn sima");
+        assert!(
+            !output.status.success(),
+            "an unreachable remote is a clean failure, not a finalized run"
+        );
+        assert!(
+            manifest_of(&config).is_none(),
+            "no manifest for a run that never spawned a worker"
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // Shared scenario bodies.
+    // ---------------------------------------------------------------------------
+
+    /// Runs a container-only NVIDIA pool, kills one of its containers mid-lease
+    /// through the pool's own carrier, and asserts the run converges through retry
+    /// to a finalized manifest with the retry recorded.
+    fn converges_after_a_mid_lease_kill(env: &ContainerEnv, config_name: &str) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let config = write_config_text(
+            dir.path(),
+            config_name,
+            &config_text(
+                "./store",
+                CANDIDATES,
+                SEGMENTS,
+                &env.machine_tables(&[("nvidia", 2)]),
+            ),
+        );
+        let mut child = sima_command()
+            .args(run_argv(&config, env.engages_fleet()))
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn sima");
+
+        // Wait until a worker container is running, then kill it — the
+        // second-channel kill the remote path uses.
+        let killed = poll_until(Duration::from_secs(120), || kill_one_container(env));
+        assert!(killed, "a worker container was running to kill");
+
+        let status = child.wait().expect("wait for the run");
+        assert_eq!(status.code(), Some(0), "the run converged after the kill");
+
+        let events = journal_events(&config);
+        let retried = events
             .iter()
-            .filter(|e| matches!(e, Event::WorkerBound { .. }))
-            .count()
-            >= 4
-    });
-    assert!(bound, "workers bound before the kill");
-    child.kill().expect("kill the orchestrator");
-    let _ = child.wait();
+            .any(|event| matches!(event, Event::Retried { .. }));
+        assert!(retried, "the killed attempt was retried");
+        assert!(manifest_of(&config).is_some(), "the run finalized");
+    }
 
-    // Resume over the Intel class alone: the same store, the same container
-    // pool, one class fewer. Chains bound to the absent NVIDIA class must
-    // rebind.
-    let one_class = write_config_text(
-        dir.path(),
-        "one-class.toml",
-        &config_text(
-            "./store",
-            CANDIDATES,
-            SEGMENTS,
-            &env.machine_tables(&[("intel", 2)]),
-        ),
-    );
-    run_to_completion(&one_class, env.engages_fleet());
-    let events = journal_events(&one_class);
-    assert!(
-        events
-            .iter()
-            .any(|e| matches!(e, Event::ChainRebound { .. })),
-        "a chain whose class was gone rebound loudly"
-    );
-    assert!(
-        manifest_of(&one_class).is_some(),
-        "the resumed run finalized"
-    );
-}
-
-// ---------------------------------------------------------------------------
-// Tier B — a container pool across ssh.
-// ---------------------------------------------------------------------------
-
-/// A mixed run over a local pool and a remote container pool across ssh commits
-/// from both, and no chain splits. Here the pools sit on different machines, so
-/// the journal names the local pool and the ssh host separately.
-#[test]
-#[ignore = "requires a container runtime and the sima image on SIMA_TEST_REMOTE"]
-fn a_mixed_local_and_ssh_run_commits_from_both_pools() {
-    let env = remote_or_skip!();
-    let host = env.host.clone().expect("Tier B names an ssh host");
-    let dir = tempfile::tempdir().expect("temp dir");
-    let machines = format!(
-        "[orchestrator]\n        [[orchestrator.device]]\n        select = \"nvidia\"\n        workers = 2\n{}",
-        env.machine_tables(&[("nvidia", 2)])
-    );
-    let config = write_config_text(
-        dir.path(),
-        "mixed-ssh.toml",
-        &config_text("./store", CANDIDATES, SEGMENTS, &machines),
-    );
-    run_to_completion(&config, true);
-
-    let events = journal_events(&config);
-    let hosts = bound_hosts(&events);
-    assert!(
-        hosts.contains("") && hosts.contains(&host),
-        "both the local pool and {host} bound workers: {hosts:?}",
-    );
-    assert_no_chain_split(&events);
-    assert!(manifest_of(&config).is_some(), "the mixed run finalized");
-}
-
-/// A remote container killed mid-lease over ssh converges through retry — the
-/// two-stage kill's second channel is a second ssh connection to the host.
-#[test]
-#[ignore = "requires a container runtime and the sima image on SIMA_TEST_REMOTE"]
-fn a_killed_ssh_container_converges_through_retry() {
-    let env = remote_or_skip!();
-    converges_after_a_mid_lease_kill(&env, "kill-ssh.toml");
-}
-
-/// A declared host that resolves nowhere fails cleanly at run start rather than
-/// hanging: `BatchMode=yes` turns an unauthenticated or unreachable destination
-/// into a spawn error the image bootstrap surfaces.
-#[test]
-#[ignore = "requires ssh present on the machine (SIMA_TEST_REMOTE gates the tier)"]
-fn an_unreachable_host_fails_cleanly() {
-    let _ = remote_or_skip!();
-    let dir = tempfile::tempdir().expect("temp dir");
-    // A host that resolves nowhere: the bootstrap image-inspect over ssh fails
-    // under BatchMode, a clean non-zero exit rather than a prompt or a hang.
-    let unreachable = ContainerEnv {
-        host: Some("sima-nonexistent.invalid".to_string()),
-        image: "localhost/sima:latest".to_string(),
-        runtime: "docker".to_string(),
-        run_args: vec!["--gpus".to_string(), "all".to_string()],
-    };
-    let config = write_config_text(
-        dir.path(),
-        "unreachable.toml",
-        &config_text(
-            "./store",
-            CANDIDATES,
-            SEGMENTS,
-            &unreachable.machine_tables(&[("nvidia", 2)]),
-        ),
-    );
-    let output = sima_command()
-        .args(run_argv(&config, true))
-        .output()
-        .expect("spawn sima");
-    assert!(
-        !output.status.success(),
-        "an unreachable remote is a clean failure, not a finalized run"
-    );
-    assert!(
-        manifest_of(&config).is_none(),
-        "no manifest for a run that never spawned a worker"
-    );
-}
-
-// ---------------------------------------------------------------------------
-// Shared scenario bodies.
-// ---------------------------------------------------------------------------
-
-/// Runs a container-only NVIDIA pool, kills one of its containers mid-lease
-/// through the pool's own carrier, and asserts the run converges through retry
-/// to a finalized manifest with the retry recorded.
-fn converges_after_a_mid_lease_kill(env: &ContainerEnv, config_name: &str) {
-    let dir = tempfile::tempdir().expect("temp dir");
-    let config = write_config_text(
-        dir.path(),
-        config_name,
-        &config_text(
-            "./store",
-            CANDIDATES,
-            SEGMENTS,
-            &env.machine_tables(&[("nvidia", 2)]),
-        ),
-    );
-    let mut child = sima_command()
-        .args(run_argv(&config, env.engages_fleet()))
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("spawn sima");
-
-    // Wait until a worker container is running, then kill it — the
-    // second-channel kill the remote path uses.
-    let killed = poll_until(Duration::from_secs(120), || kill_one_container(env));
-    assert!(killed, "a worker container was running to kill");
-
-    let status = child.wait().expect("wait for the run");
-    assert_eq!(status.code(), Some(0), "the run converged after the kill");
-
-    let events = journal_events(&config);
-    let retried = events
-        .iter()
-        .any(|event| matches!(event, Event::Retried { .. }));
-    assert!(retried, "the killed attempt was retried");
-    assert!(manifest_of(&config).is_some(), "the run finalized");
-}
-
-/// Kills one worker container whose name carries the pool's stem, best-effort,
-/// through the pool's own carrier (local runtime or ssh). Returns whether a
-/// container was killed.
-fn kill_one_container(env: &ContainerEnv) -> bool {
-    let listed = env
-        .runtime_command(&["ps", "--filter", "name=sima-w-", "--format", "{{.Names}}"])
-        .output();
-    let Ok(output) = listed else {
-        return false;
-    };
-    let Some(name) = String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .map(str::trim)
-        .find(|line| !line.is_empty())
-        .map(str::to_string)
-    else {
-        return false;
-    };
-    env.runtime_command(&["kill", &name])
-        .status()
-        .map(|status| status.success())
-        .unwrap_or(false)
+    /// Kills one worker container whose name carries the pool's stem, best-effort,
+    /// through the pool's own carrier (local runtime or ssh). Returns whether a
+    /// container was killed.
+    fn kill_one_container(env: &ContainerEnv) -> bool {
+        let listed = env
+            .runtime_command(&["ps", "--filter", "name=sima-w-", "--format", "{{.Names}}"])
+            .output();
+        let Ok(output) = listed else {
+            return false;
+        };
+        let Some(name) = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(str::trim)
+            .find(|line| !line.is_empty())
+            .map(str::to_string)
+        else {
+            return false;
+        };
+        env.runtime_command(&["kill", &name])
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false)
+    }
 }

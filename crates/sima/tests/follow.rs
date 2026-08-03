@@ -8,12 +8,12 @@
 //! them. What is absent is the network hop, which the stream cannot
 //! distinguish from any other pipe carrier. These run everywhere.
 //!
-//! **Tier B — a real ssh hop.** The same views across a real connection.
-//! `#[ignore]` and gated on `SIMA_TEST_FOLLOW_HOST`, so a blanket `--ignored`
-//! run passes clean where no destination is configured.
+//! **Tier B — a real ssh hop.** The same views across a real connection, gated
+//! on `SIMA_TEST_FOLLOW_HOST`: with no destination configured each prints why
+//! and passes, so the suite is clean on a machine that has none.
 //!
 //! ```text
-//! SIMA_TEST_FOLLOW_HOST=localhost cargo test -p sima --test follow -- --ignored
+//! SIMA_TEST_FOLLOW_HOST=localhost cargo test -p sima --test follow
 //! ```
 //!
 //! The destination must satisfy two conditions, which `localhost` satisfies
@@ -323,7 +323,6 @@ fn a_followed_run_finalizes_to_the_manifest_an_unobserved_run_produces() {
 }
 
 #[test]
-#[ignore = "requires an ssh destination in SIMA_TEST_FOLLOW_HOST"]
 fn a_remote_view_over_ssh_renders_exactly_what_the_local_one_renders() {
     let Some(host) = follow_host() else {
         return;
@@ -342,7 +341,6 @@ fn a_remote_view_over_ssh_renders_exactly_what_the_local_one_renders() {
 }
 
 #[test]
-#[ignore = "requires an ssh destination in SIMA_TEST_FOLLOW_HOST"]
 fn a_remote_follow_over_ssh_streams_a_live_run_to_its_end() {
     let Some(host) = follow_host() else {
         return;
@@ -359,7 +357,6 @@ fn a_remote_follow_over_ssh_streams_a_live_run_to_its_end() {
 }
 
 #[test]
-#[ignore = "requires an ssh destination in SIMA_TEST_FOLLOW_HOST"]
 fn a_followed_run_over_ssh_finalizes_to_the_unobserved_manifest() {
     let Some(host) = follow_host() else {
         return;
@@ -388,7 +385,6 @@ fn a_followed_run_over_ssh_finalizes_to_the_unobserved_manifest() {
 }
 
 #[test]
-#[ignore = "requires an ssh destination in SIMA_TEST_FOLLOW_HOST"]
 fn an_unreachable_host_fails_promptly_and_names_it() {
     if follow_host().is_none() {
         return;
