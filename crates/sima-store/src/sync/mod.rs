@@ -14,4 +14,3 @@ mod engine;
 mod message;
 
 pub use engine::{ObjectScope, SyncReport, SyncRole};
-pub use message::SYNC_PROTOCOL_VERSION;

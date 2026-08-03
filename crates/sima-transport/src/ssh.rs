@@ -478,7 +478,7 @@ const SSH_CONNECT_TIMEOUT_SECS: u64 = 10;
 /// The argv that runs `sima-worker` at `destination` over ssh: the
 /// destination's own [`prefix`](SshDestination::prefix), then the worker, with
 /// `--enumerate-devices <format>` appended when `probe` names the run's format.
-pub fn ssh_argv(destination: &SshDestination, probe: Option<&FormatId>) -> Vec<String> {
+pub(crate) fn ssh_argv(destination: &SshDestination, probe: Option<&FormatId>) -> Vec<String> {
     let mut argv = destination.prefix();
     argv.push(WORKER_ENTRYPOINT.to_string());
     if let Some(format) = probe {

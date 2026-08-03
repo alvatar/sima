@@ -70,4 +70,4 @@ pub use pack::PackReport;
 pub use retention::{GcReport, RemovalReport};
 pub use spend::SpendEntry;
 pub use store::Store;
-pub use sync::{ObjectScope, SYNC_PROTOCOL_VERSION, SyncReport, SyncRole};
+pub use sync::{ObjectScope, SyncReport, SyncRole};

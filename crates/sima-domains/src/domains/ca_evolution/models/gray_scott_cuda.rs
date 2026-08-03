@@ -16,9 +16,9 @@
 
 use sima_core::Result;
 
-use super::super::model::CaModel;
-use super::super::params::CaParams;
 use super::gray_scott::{GrayScott, GrayScottGenConfig, GrayScottGenome, GrayScottIgnition};
+use crate::domains::ca_evolution::model::CaModel;
+use crate::domains::ca_evolution::params::CaParams;
 use crate::substrates::cellular::Grid;
 
 /// The Gray-Scott model bound to the CUDA backend. Zero-sized, like every
@@ -38,7 +38,7 @@ impl CaModel for GrayScottCuda {
     const ALIVE_MIN: f32 = GrayScott::ALIVE_MIN;
     /// The committed PTX, not the CUDA C beside it: the engine loads the
     /// artifact the device executes, and the environment hashes what it loads.
-    const KERNEL_SOURCE: &'static str = include_str!("gray_scott.ptx");
+    const KERNEL_SOURCE: &'static str = include_str!("gray_scott_cuda/gray_scott.ptx");
 
     fn uniforms(genome: &GrayScottGenome, shared: &CaParams) -> Vec<f32> {
         GrayScott::uniforms(genome, shared)
@@ -60,12 +60,12 @@ mod tests {
 
     use sima_contracts::Domain;
 
-    use super::super::super::domain::CaDomain;
     use super::*;
+    use crate::domains::ca_evolution::domain::CaDomain;
     use crate::substrates::cellular::{CudaEngine, WgslEngine};
 
     /// The CUDA C the committed PTX is generated from.
-    const KERNEL_CU: &str = include_str!("gray_scott.cu");
+    const KERNEL_CU: &str = include_str!("gray_scott_cuda/gray_scott.cu");
 
     #[test]
     fn the_committed_ptx_declares_the_convention_entry_point() {

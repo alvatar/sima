@@ -98,11 +98,6 @@ impl Stream {
         self.counter = self.counter.wrapping_add(1);
         value
     }
-
-    /// Draws the next `u64` mapped to `[0, 1)` via [`unit_f64`].
-    pub fn next_f64(&mut self) -> f64 {
-        unit_f64(self.next_u64())
-    }
 }
 
 #[cfg(test)]
@@ -159,10 +154,6 @@ mod tests {
         let mut stream = Stream::new(seed);
         for counter in 0..16 {
             assert_eq!(stream.next_u64(), next(seed, counter));
-        }
-        let mut float_stream = Stream::new(seed);
-        for counter in 0..16 {
-            assert_eq!(float_stream.next_f64(), unit_f64(next(seed, counter)));
         }
     }
 

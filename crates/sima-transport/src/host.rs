@@ -10,9 +10,11 @@
 //! arrive as loaded bytes and results leave as frames.
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::num::NonZeroU64;
 use std::sync::Mutex;
+use std::thread::ThreadId;
 use std::time::Duration;
 
 use sima_contracts::{
@@ -26,10 +28,17 @@ use crate::checkpoint_cadence::CheckpointCadence;
 use crate::protocol::{Assignment, Hello, PROTOCOL_VERSION, ToChild, ToParent};
 
 /// The most recent panic's message and backtrace, latched by the hook
-/// [`capture_panics`] installs. The executor catch in [`serve`] takes it, so
-/// the correlated diagnostic carries the backtrace the default hook would
-/// only print to stderr.
-static CAPTURED_PANIC: Mutex<Option<String>> = Mutex::new(None);
+/// [`capture_panics`] installs, under the thread that panicked. The executor
+/// catch in [`serve`] takes its own thread's entry, so the correlated
+/// diagnostic carries the backtrace the default hook would only print to
+/// stderr.
+///
+/// Keyed by thread because the hook is process-global while the catch is not:
+/// an executor that spawns threads of its own, or a host serving more than one
+/// slot in process, would otherwise attribute a foreign thread's panic to
+/// whichever task happened to be catching. A capture is taken by the thread
+/// that made it and by nothing else.
+static CAPTURED_PANIC: Mutex<Option<HashMap<ThreadId, String>>> = Mutex::new(None);
 
 /// Installs a process-global panic hook that latches each panic's message and
 /// backtrace into a slot the serve loop reads, then delegates to the
@@ -48,21 +57,30 @@ pub fn capture_panics() {
             "non-string payload".to_string()
         };
         let backtrace = std::backtrace::Backtrace::force_capture();
-        *CAPTURED_PANIC
+        CAPTURED_PANIC
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) =
-            Some(format!("panic: {message}\n{backtrace}"));
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get_or_insert_with(HashMap::new)
+            .insert(
+                std::thread::current().id(),
+                format!("panic: {message}\n{backtrace}"),
+            );
         previous(info);
     }));
 }
 
-/// Takes the panic message-and-backtrace the hook latched, if the capture
-/// hook is installed and a panic happened since the last take.
+/// Takes the panic message-and-backtrace the hook latched for this thread, if
+/// the capture hook is installed and this thread panicked since the last take.
+///
+/// Removing rather than reading is what keeps a capture from outliving the
+/// attempt that made it: the next panic-free attempt on this thread finds
+/// nothing and falls back to its own rendered reason.
 fn take_captured_panic() -> Option<String> {
     CAPTURED_PANIC
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .take()
+        .as_mut()?
+        .remove(&std::thread::current().id())
 }
 
 /// Turns a handshake into the executor a host serves: the format id and the
