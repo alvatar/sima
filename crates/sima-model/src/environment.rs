@@ -7,7 +7,7 @@
 //! component: two machines with equal environments must produce equal
 //! results, so only result-relevant identity may enter.
 
-use sima_core::{Dec, Enc, Error, Hash, Result, hash_bytes};
+use sima_core::{Codec, Dec, Enc, Error, Hash, Result, hash_bytes};
 
 use crate::canonical::{self, TAG_ENVIRONMENT};
 

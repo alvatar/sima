@@ -128,7 +128,7 @@ pub fn spend_report(store: &Store, owner: &RunId, now_ms: u64) -> Result<SpendRe
         .map(|entry| (entry.tag.as_str(), entry.started_ms))
         .collect();
     let open: Vec<OpenSpend> = store
-        .instances()?
+        .instance_records()?
         .into_iter()
         .filter(|record| {
             record.owner == owner && !closed.contains(&(record.tag.as_str(), record.created_ms))

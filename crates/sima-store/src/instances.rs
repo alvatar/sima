@@ -19,6 +19,7 @@ use sima_core::{Error, Result};
 
 use crate::atomic::{self, io_error};
 use crate::layout;
+use crate::ledger;
 use crate::store::Store;
 
 /// One acquisition attempt's durable trace: what a later invocation needs
@@ -68,28 +69,23 @@ impl InstanceRecord {
     }
 }
 
-/// How far one acquisition attempt got. The instance id lives in the live
-/// variant, so a record names a machine exactly when the attempt reached
-/// one, and the type carries that pairing.
 /// What a rented instance carries for the run that rented it.
 ///
-/// Reconciliation decides from it. A run's orchestrator holds its lock while it
-/// drives, so a record whose owner holds no lock is normally an orphan of a
-/// crash and is destroyed. A migration breaks that inference: it detaches the
-/// far side deliberately and the local process may be gone while the rental is
-/// working and paid for, so a hosting rental has exactly the shape
-/// reconciliation reaps.
+/// The store records the role and nothing about what follows from it: which
+/// roles a reconciliation pass reaps is the control plane's policy, stated at
+/// `sima_provider::ReconcileScope`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Rental {
-    /// Workers the local orchestrator drives. Its owner holds the run lock for
-    /// as long as the rental is wanted, so a lock-less record is an orphan.
+    /// Workers the local orchestrator drives.
     Worker,
-    /// The run's orchestrator itself. Nothing local holds a lock while it runs,
-    /// so reconciliation spares it unless a caller asks for it by name.
+    /// The run's orchestrator itself, on a machine a migration moved it onto.
     Orchestrator,
 }
 
+/// How far one acquisition attempt got. The instance id lives in the live
+/// variant, so a record names a machine exactly when the attempt reached
+/// one, and the type carries that pairing.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum InstanceRecordState {
@@ -118,30 +114,12 @@ impl Store {
     /// record names a different tag than its file name, is
     /// [`Error::Corruption`] naming the file: the ledger is store state, so
     /// a read either verifies or fails.
-    pub fn instances(&self) -> Result<Vec<InstanceRecord>> {
-        let dir = layout::instances_dir(self.root());
-        let entries = match fs::read_dir(&dir) {
-            Ok(entries) => entries,
-            Err(e) if e.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(e) => return Err(io_error(&dir, e)),
-        };
+    pub fn instance_records(&self) -> Result<Vec<InstanceRecord>> {
         let mut records = Vec::new();
-        for entry in entries {
-            let path = entry.map_err(|e| io_error(&dir, e))?.path();
-            let bytes = match fs::read(&path) {
-                Ok(bytes) => bytes,
-                // The record was cleared between the scan and the read: a
-                // teardown finished, which is exactly the state the reader
-                // would have found one moment later.
-                Err(e) if e.kind() == ErrorKind::NotFound => continue,
-                Err(e) => return Err(io_error(&path, e)),
-            };
-            let record: InstanceRecord = serde_json::from_slice(&bytes).map_err(|e| {
-                Error::Corruption(format!(
-                    "instance record {} does not parse: {e}",
-                    path.display()
-                ))
-            })?;
+        for (path, record) in ledger::entries::<InstanceRecord>(
+            &layout::instances_dir(self.root()),
+            "instance record",
+        )? {
             if Some(record.tag.as_str()) != path.file_name().and_then(|name| name.to_str()) {
                 return Err(Error::Corruption(format!(
                     "instance record {} names the tag {:?}",
@@ -158,8 +136,8 @@ impl Store {
     /// teardown closing one rental out, where reading the whole ledger
     /// would be a directory scan for a single file. A record that does not
     /// parse, or that names a different tag, is [`Error::Corruption`], as
-    /// in [`instances`](Store::instances).
-    pub fn instance(&self, tag: &str) -> Result<Option<InstanceRecord>> {
+    /// in [`instance_records`](Store::instance_records).
+    pub fn instance_record(&self, tag: &str) -> Result<Option<InstanceRecord>> {
         validate_tag(tag)?;
         let path = layout::instance_path(self.root(), tag);
         let bytes = match fs::read(&path) {
@@ -246,7 +224,7 @@ mod tests {
         let (dir, store) = temp_store();
         let record = intent("sima-0123456789abcdef-42-0", 7);
         store.put_instance(&record)?;
-        assert_eq!(store.instances()?, vec![record]);
+        assert_eq!(store.instance_records()?, vec![record]);
         // The record path is part of the fixed layout contract.
         assert!(
             dir.path()
@@ -300,7 +278,7 @@ mod tests {
             text.contains(r#""instance": "i-9""#),
             "the live state carries the instance: {text}"
         );
-        assert_eq!(store.instances()?, vec![record]);
+        assert_eq!(store.instance_records()?, vec![record]);
         Ok(())
     }
 
@@ -319,7 +297,7 @@ mod tests {
         store.put_instance(&live)?;
         // One tag is one acquisition attempt: the upgrade replaces, never
         // appends.
-        assert_eq!(store.instances()?, vec![live]);
+        assert_eq!(store.instance_records()?, vec![live]);
         Ok(())
     }
 
@@ -329,7 +307,7 @@ mod tests {
         let tag = "sima-0123456789abcdef-42-0";
         store.put_instance(&intent(tag, 7))?;
         store.remove_instance(tag)?;
-        assert!(store.instances()?.is_empty());
+        assert!(store.instance_records()?.is_empty());
         // Idempotent: a reconciliation pass may race the guard that already
         // cleared the record.
         store.remove_instance(tag)?;
@@ -342,8 +320,8 @@ mod tests {
         let tag = "sima-0123456789abcdef-42-0";
         let record = intent(tag, 7);
         store.put_instance(&record)?;
-        assert_eq!(store.instance(tag)?, Some(record));
-        assert_eq!(store.instance("sima-never-written")?, None);
+        assert_eq!(store.instance_record(tag)?, Some(record));
+        assert_eq!(store.instance_record("sima-never-written")?, None);
         Ok(())
     }
 
@@ -351,7 +329,7 @@ mod tests {
     fn reading_one_record_rejects_a_tag_outside_the_charset() -> Result<()> {
         let (_dir, store) = temp_store();
         assert!(matches!(
-            store.instance("../escape"),
+            store.instance_record("../escape"),
             Err(Error::Validation(_))
         ));
         Ok(())
@@ -362,7 +340,7 @@ mod tests {
         let (dir, store) = temp_store();
         fs::write(dir.path().join("instances").join("sima-bad"), b"not json")
             .expect("write a garbage record");
-        let read = store.instance("sima-bad");
+        let read = store.instance_record("sima-bad");
         let Err(Error::Corruption(msg)) = read else {
             panic!("a malformed record must be corruption, got {read:?}");
         };
@@ -385,7 +363,7 @@ mod tests {
         )
         .expect("move the record off its key");
         assert!(matches!(
-            store.instance("sima-other"),
+            store.instance_record("sima-other"),
             Err(Error::Corruption(_))
         ));
         Ok(())
@@ -394,7 +372,7 @@ mod tests {
     #[test]
     fn a_ledger_with_no_records_lists_empty() -> Result<()> {
         let (_dir, store) = temp_store();
-        assert!(store.instances()?.is_empty());
+        assert!(store.instance_records()?.is_empty());
         Ok(())
     }
 
@@ -403,7 +381,7 @@ mod tests {
         let (dir, store) = temp_store();
         fs::write(dir.path().join("instances").join("sima-bad"), b"not json")
             .expect("write a garbage record");
-        let listed = store.instances();
+        let listed = store.instance_records();
         let Err(Error::Corruption(msg)) = listed else {
             panic!("a malformed record must be corruption, got {listed:?}");
         };
@@ -422,7 +400,10 @@ mod tests {
             dir.path().join("instances").join("sima-other"),
         )
         .expect("move the record off its key");
-        assert!(matches!(store.instances(), Err(Error::Corruption(_))));
+        assert!(matches!(
+            store.instance_records(),
+            Err(Error::Corruption(_))
+        ));
         Ok(())
     }
 
@@ -457,7 +438,7 @@ mod tests {
             store.put_instance(&record)?;
             written.push(record);
         }
-        let listed = store.instances()?;
+        let listed = store.instance_records()?;
         assert_eq!(listed.len(), written.len());
         for record in &written {
             assert!(listed.contains(record), "missing record {record:?}");
@@ -474,7 +455,7 @@ mod tests {
         fs::remove_dir_all(dir.path().join("instances")).expect("remove the ledger directory");
         let store = Store::open(dir.path())?;
         assert!(dir.path().join("instances").is_dir());
-        assert!(store.instances()?.is_empty());
+        assert!(store.instance_records()?.is_empty());
         Ok(())
     }
 }

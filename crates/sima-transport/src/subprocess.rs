@@ -26,7 +26,7 @@ use tempfile::TempDir;
 
 use crate::answer_deadline::receive_within;
 use crate::link::{LinkEvent, SpawnOutcome, WorkerLink, WorkerTransport};
-use crate::protocol::{Assignment, Hello, PROTOCOL_VERSION, ToChild, ToParent};
+use crate::protocol::{Assignment, Hello, PROTOCOL_VERSION, ToChild, ToParent, encode_assign};
 use crate::spawn_settings::SpawnSettings;
 
 /// Spawns worker processes for one run: the command vector to run — a program
@@ -249,11 +249,16 @@ struct SubprocessLink {
 impl SubprocessLink {
     /// Writes one frame to the child's stdin; a closed pipe is `Err`.
     fn write(&mut self, message: &ToChild) -> Result<()> {
+        self.write_payload(&message.encode())
+    }
+
+    /// Writes one already-encoded frame payload to the child's stdin.
+    fn write_payload(&mut self, payload: &[u8]) -> Result<()> {
         let stdin = self
             .stdin
             .as_mut()
             .ok_or_else(|| Error::Transport("the worker's stdin is already closed".to_string()))?;
-        write_frame(stdin, &message.encode())
+        write_frame(stdin, payload)
     }
 }
 
@@ -267,7 +272,10 @@ impl WorkerLink for SubprocessLink {
     }
 
     fn assign(&mut self, assignment: &Assignment) -> Result<()> {
-        self.write(&ToChild::Assign(assignment.clone()))
+        // Encoded from the borrow: an assignment carries the candidate's state,
+        // which for a grid domain is megabytes, and it would be copied once per
+        // attempt only to be wrapped in a message value and dropped.
+        self.write_payload(&encode_assign(assignment))
     }
 
     fn next(&mut self, deadline: Option<Instant>) -> Result<LinkEvent> {

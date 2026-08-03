@@ -39,6 +39,7 @@ ones are added the same way.
 - Two serialization worlds: identity-bearing bytes (anything hashed) go through the canonical `Enc`/`Dec` encoding exclusively; human-readable artifacts are serde and never identity-bearing.
 - Reproducibility is declared per domain across two tiers (README, Determinism), not assumed uniform. The infrastructure guarantees run identity regardless: manifests are canonicalized so run hashes are independent of worker completion order, and journals are observational, excluded from equality criteria.
 - Structured events are the `sima-trace` facade at L0.5, directly above `sima-core`: the typed event vocabulary, journal records, emitters, and one collector thread any layer emits into without an upward edge. The collector is the single-writer boundary — it stamps each event, appends the journal line through a `DurableSink` the store implements (which keeps the facade below the store), then hands the record to the run's observer; the journal write precedes the observer, and a child's events cross the wire as opaque frames the parent forwards to the collector.
+- A poisoned in-process `Mutex` is recovered, never propagated: every `lock` here reads `unwrap_or_else(PoisonError::into_inner)`. Poisoning means some thread panicked holding the lock, and the panic itself is already reported through the path that caught it — the run thread's `catch_unwind`, the worker's, the collector's join. Escalating a second panic out of an unrelated reader adds no information and takes down a run that is otherwise winding down cleanly. Where a panic could leave state half-written, the guarded value is shaped so a torn state is not reachable: a slot holds a whole value or none.
 
 ### Principles
 
@@ -228,14 +229,21 @@ equality criterion.
   global and no thread-local propagation. Causality context is the natural
   keys: events carry `run`, `task`, `attempt`, `worker`, and `host`
   directly as fields.
-- **`Collector`** — one scoped thread drains the channel; for each event
-  it stamps `ts_ms` (a single clock, read at append time — remote events
-  are stamped on arrival), appends the record's line through a
-  **`DurableSink`**, then hands the record to the run's observer. The
-  ordering guarantee: the journal write for an event happens before the
-  observer sees it, and the observer sees records in journal order, from
-  one calling thread. The first append or encoding
-  failure stops the collector and surfaces when it is joined.
+- **`Collector`** — one scoped thread drains the channel; it takes one
+  blocking event and everything already queued behind it, stamps each
+  `ts_ms` (a single clock, read at append time — remote events are
+  stamped on arrival), appends the batch's lines through a
+  **`DurableSink`**, then hands the records to the run's observer in
+  order. The ordering guarantee: the journal write for an event happens
+  before the observer sees it, and the observer sees records in journal
+  order, from one calling thread. The batch is what keeps a durability
+  barrier from being paid per event — a run committing tasks faster than
+  that would otherwise be capped at the sink's own rate however many
+  workers it has. A crash mid-batch loses the events the sink had not
+  made durable, which the observational journal already permits: it is
+  not a write-ahead log, and a resume derives its frontier from the
+  store's records. The first append or encoding failure stops the
+  collector and surfaces when it is joined.
 
 `DurableSink` is the boundary that keeps the crate below the store:
 `sima-store` implements it for its journal writer, so the collector appends
@@ -483,7 +491,10 @@ the definition of every run it holds.
 A run's observational history: append-only, one event per line, its meaning
 owned by the emitting layers above the trace facade. The store owns the
 framing only: a payload is one nonempty line free of embedded line breaks;
-appends are single-write, newline-terminated, fsynced. On read, a torn
+appends are single-write, newline-terminated, fsynced. A batch of lines is
+one write and one fsync, and every line of it is validated before anything
+is written, so the framing rules are per line however many travel together.
+On read, a torn
 final line (bytes past the last newline) is ignored; invalid UTF-8 inside
 the intact region is corruption. Journals legitimately differ between
 identical runs and are excluded from every equality criterion.
@@ -548,7 +559,7 @@ Selection is two separate steps, and keeping them separate is the design:
 - **Hard constraints disqualify.** Minimum VRAM, GPU count, disk and
   bandwidth; a maximum price; a reliability floor; verified hosts only; and
   an any-of list of acceptable GPU models, matched case-insensitively by
-  substring — the rule `[[execution.device]]` selectors already use for
+  substring — the rule `[[orchestrator.device]]` selectors already use for
   hardware names. Each optional constraint judges only when set.
 - **One scalar objective ranks.** `Objective::CheapestPerHour` sorts
   ascending by price, ties broken by offer id, so the order is
@@ -1255,20 +1266,33 @@ The float families — reaction-diffusion, Neural CA, Lenia — share one execut
 kind, the **cellular kind**: a multi-channel float grid advanced by an update
 kernel dispatched over it, each output cell a function of a neighborhood of the
 input. Its state, dispatch harness, and cross-check scaffold live once in the
-`cellular` module; a family supplies the update kernel, the genome, and the CPU
-reference, differing in those and the channel count, not in the state shape or
-the harness.
+`cellular` module; a family supplies the update kernel and the genome,
+differing in those and the channel count, not in the state shape or the
+harness.
 
-**The substrate boundary.** Which execution toolkit a kernel runs on is the
-`CellularEngine` trait, one operation wide: advance a grid on a device and hold
-the result, with the reduced scalars and the final grid as separate calls on the
-handle it returns. Everything around that operation — decoding a spec, igniting
-or resuming a grid, deciding whether to keep a snapshot — is written once above
-the boundary and shared by every substrate. Below it sit one implementation per
-toolkit: `WgslEngine` over `step` and `reduce`, and `CudaEngine` over their
-transcriptions in `cellular/cuda`. The two dispatch loops are duplicated
-deliberately; what would drift if duplicated — the scalar naming, the channel
-bound, the partition count the two reductions must fold by — stays shared.
+**The substrate boundary.** Two boundaries stack here, and they answer
+different questions.
+
+`CellularEngine` is the domain-facing one, one operation wide: advance a grid on
+a device and hold the result, with the reduced scalars and the final grid as
+separate calls on the handle it returns. Everything around that operation —
+decoding a spec, igniting or resuming a grid, deciding whether to keep a
+snapshot — is written once above it and shared by every substrate.
+
+`CellularOps` is the backend-facing one, internal to the `cellular` module: the
+device operations the substrate needs from a compute backend — allocate, upload,
+build a kernel at a block width, dispatch, dispatch with a small buffer update,
+read back — plus the backend's own identity constants. The dispatch harness, the
+stats reduction, and the engine are written once over it and monomorphized per
+backend, so `CellularBackend<O>` is the single `CellularEngine` implementation
+and `WgslEngine` and `CudaEngine` name two instantiations of it. The adapters
+that satisfy `CellularOps` live under `cellular/wgsl` and `cellular/cuda` and
+are about fifty lines each.
+
+The lower boundary is internal by design rather than a trait on the toolkit
+surface. A toolkit is a compute library that knows nothing of grids or scalars,
+and each isolates its own dependency set; making one implement a domain's trait
+would tie the two together in the direction the layering forbids.
 
 A model declares no engine. The pairing is made where a format id is
 registered, one line naming both, so a rule ported to a second substrate is a
@@ -1292,12 +1316,26 @@ carries no dtype tag.
 **Dispatch harness.** `run` advances a grid by a step count of double-buffered
 dispatches. It allocates two device buffers plus a fixed dimensions buffer,
 uploads the payload, and for each step dispatches the kernel over the whole
-grid — one invocation per cell, $\lceil width \cdot height / 64 \rceil$ groups
-along x — then swaps the input and output buffers. The swap after each dispatch
-leaves the result on the most recently written buffer for both even and odd
-step counts. Each step is one fence-waited submission, reusing the toolkit's
-per-op synchronization. The harness is neighborhood-agnostic: a small stencil
-and a large-radius convolution are both just the kernel argument.
+grid — one invocation per cell, $\lceil width \cdot height / \text{BLOCK\_WIDTH}
+\rceil$ groups along x — then swaps the input and output buffers. The swap after
+each dispatch leaves the result on the most recently written buffer for both
+even and odd step counts. Each step is one fence-waited submission, reusing the
+toolkit's per-op synchronization. The harness is neighborhood-agnostic: a small
+stencil and a large-radius convolution are both just the kernel argument.
+
+The dispatch is one-dimensional, so every cell rides the x axis and the group
+count runs into that axis's limit long before memory runs out — Vulkan
+guarantees only 65535 groups there, which a 2048×2048 grid already exceeds.
+Spreading the excess onto y would change how a kernel derives a cell index from
+its invocation, and with it every task key, so `run` reports the limit and
+refuses before allocating anything.
+
+A model that reads the step it is on opts into a per-step index. The harness
+then allocates one small buffer up front and rewrites it inside each dispatch's
+own submission, so the value a step reads is the value that step was dispatched
+with. The index is a `u64` counted from a caller-supplied base, carried as two
+little-endian `u32` words, which is what lets a resumed segment continue the
+count rather than restart it.
 
 `run` returns a `Trajectory` over the two buffers left resident — the final
 grid $G_N$ and the step before it $G_{N-1}$ — rather than a downloaded grid.
@@ -1311,21 +1349,29 @@ fixed order — group-0 storage bindings in WGSL, pointer parameters in CUDA C:
 - binding 0 the input grid,
 - binding 1 the output grid,
 - binding 2 the dimensions `[width, height, channels]`,
-- bindings 3+ the family parameters.
+- bindings 3+ the family parameters,
+- and last, when the model opts into it, the per-step index as two `u32` words.
 
-A kernel runs one invocation per cell over a fixed width of 64, guards the cell
-index against the cell count, and loops its channels internally. The harness
-ping-pongs the first two each step and holds the dimensions and parameters
-fixed. WGSL states the width in the kernel with `@workgroup_size`; CUDA takes
-block dimensions at launch rather than from the compiled module, so its kernels
-declare `__launch_bounds__` and the caller passes the matching width, which the
-toolkit checks against the device.
+A kernel runs one invocation per cell over the fixed `BLOCK_WIDTH`, guards the
+cell index against the cell count, and loops its channels internally. The
+harness ping-pongs the first two each step and holds the dimensions and
+parameters fixed; the step-index buffer, when present, is the one it rewrites.
 
-**CPU reference and cross-check.** `CellularRule` is the CPU reference a family's
-kernel is checked against: one step maps a whole input grid to a whole output
-grid. A family confirms its kernel by advancing the same initial grid through
-the reference and through the harness for equal step counts and comparing the
-resulting grids. Where a kernel uses only exact operations — a neighborhood max
+Both toolkits build a kernel at the block width its grids will be sized by, and
+both check that width twice: against what the device can launch, and against
+what the kernel itself declares. WGSL states the width in the shader with
+`@workgroup_size` and the toolkit reads it back from the compiled module; CUDA
+takes block dimensions at launch rather than from the module, so its kernels
+declare `__launch_bounds__` and the toolkit reads that from the PTX. The device
+limit is checked first on both, so a width no device could launch reports the
+device bound rather than a declaration mismatch.
+
+**CPU reference and cross-check.** `CellularRule` is the CPU reference the
+substrate's own tests check the harness against: one step maps a whole input
+grid to a whole output grid. The cross-check advances the same initial grid
+through the reference and through the harness for equal step counts and
+compares the resulting grids. The reference is test scaffolding, compiled only
+for those tests; a family supplies no reference of its own. Where a kernel uses only exact operations — a neighborhood max
 — the two agree byte for byte with no tolerance; agreement across distinct GPU
 backend classes is a separate tolerance policy.
 
@@ -1399,15 +1445,18 @@ toolchain. The surface is three types:
   command pool for one headless compute session, and is the single owner of the
   true Vulkan lifetime. It allocates buffers, compiles kernels, uploads and
   downloads bytes, and dispatches.
-- **`Buffer`** — a device-local storage buffer. Host transfers go through a
+- **`Buffer`** — a device-local storage buffer, allocated zeroed, so a fresh
+  buffer's contents are defined before any upload. Host transfers go through a
   per-transfer host-visible staging buffer; there is no pooled allocator.
 - **`Kernel`** — a compute pipeline compiled from WGSL for one entry point,
   plus the identity inputs it surfaces.
 
-**Device selection** keeps devices exposing a compute queue family and picks
-deterministically by type — discrete, then integrated, then virtual, then CPU,
-then other — with the lowest enumeration index breaking ties;
-`SIMA_GPU_DEVICE` overrides the pick by index. Validation is opt-in under
+**Device selection** applies the shared policy in `sima-contracts`' device
+module, as every backend does: keep the devices that can compute — here, those
+exposing a compute queue family — and pick deterministically by type —
+discrete, then integrated, then virtual, then CPU, then other — with the
+lowest enumeration index breaking ties. `SIMA_GPU_DEVICE` overrides the pick
+by index on every backend alike. Validation is opt-in under
 `SIMA_VULKAN_VALIDATION` and off at zero cost otherwise.
 
 **Ownership** follows a wait-idle-before-drop contract. `Buffer` and `Kernel`
@@ -1480,13 +1529,15 @@ so the source is hashed and the compiler that lowers it is named.
 identifier for each. The class this toolkit mints comes from the PCI
 configuration under `/sys/bus/pci/devices`, spelled as the vendor and device
 identifiers in hex, and `member` is the position within the class in
-enumeration order. The WGSL toolkit mints the same spelling from what Vulkan
-reports directly, so one physical card is one class whichever backend reached
-it.
+enumeration order. The spelling itself is minted by the shared device module
+in `sima-contracts`; the WGSL toolkit feeds it what Vulkan reports directly,
+so one physical card is one class whichever backend reached it.
 
-**Launch model.** Launches are one-dimensional: a kernel declares its block
-width with `__launch_bounds__`, the caller passes the matching width, and a
-dispatch binds one buffer per pointer parameter in declaration order. Every
+**Launch model.** Launches are one-dimensional: a kernel is built with the
+block width its grids are sized by, checked against the `__launch_bounds__`
+its source declares and against the device, and a dispatch binds one buffer
+per pointer parameter in declaration order, refusing a count that disagrees
+with the kernel's declaration. Every
 dispatch is submitted to the context's one stream and drained before returning,
 which both orders a dispatch's writes against the next one's reads and surfaces
 a failure at the call that caused it.
@@ -1767,7 +1818,18 @@ computes `want = theirs − mine`, and streams the difference; every received
 object and record is matched against the item requested at that position and
 the digest it was advertised under (content addressing is the integrity check),
 and a record held on both sides under one key must be byte-identical or the
-sync fails naming the key. Its scope is deliberately narrow:
+sync fails naming the key.
+
+An inventory and a request each travel as a sequence of bounded chunks, the
+last stating that it is the last. A run's whole inventory in one frame would
+cross the frame cap at around 1.3M tasks, past which sync is impossible rather
+than slow; chunking bounds the frame instead of the run. Each side still reads
+the whole peer inventory before computing the difference — the set arithmetic
+is over the accumulated inventory, and per-item verification is unchanged — so
+the O(N) read per session stands, which is the design: verified reads are what
+the integrity check is made of.
+
+Its scope is deliberately narrow:
 
 | Data              | Synced? | Why                                              |
 |-------------------|---------|--------------------------------------------------|

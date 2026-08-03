@@ -64,6 +64,19 @@ pub fn unit_f64(x: u64) -> f64 {
     (x >> 11) as f64 * (1.0 / (1u64 << 53) as f64)
 }
 
+/// A uniform `f32` in `[lo, hi]`, drawn from the stream `seed` at `counter`.
+///
+/// Identity-bearing arithmetic, frozen: the unit draw is an `f64`, the affine
+/// map happens in `f64`, and the result rounds once to `f32`, to nearest even.
+/// A caller writing the same intent a second way would give one genome a second
+/// byte image, which is why the spelling lives here rather than at each draw
+/// site. The result lies in `[lo, hi]`: the unit draw's half-open top closes
+/// when the final rounding lands on `hi`.
+pub fn uniform_f32(seed: u64, counter: u64, lo: f32, hi: f32) -> f32 {
+    let t = unit_f64(next(seed, counter));
+    (lo as f64 + t * (hi as f64 - lo as f64)) as f32
+}
+
 /// Sequential convenience over the pure counter form: holds `(seed,
 /// counter)` and advances. Every draw equals the corresponding [`next`]
 /// call, proven by test.
@@ -84,11 +97,6 @@ impl Stream {
         let value = next(self.seed, self.counter);
         self.counter = self.counter.wrapping_add(1);
         value
-    }
-
-    /// Draws the next `u64` mapped to `[0, 1)` via [`unit_f64`].
-    pub fn next_f64(&mut self) -> f64 {
-        unit_f64(self.next_u64())
     }
 }
 
@@ -146,10 +154,6 @@ mod tests {
         let mut stream = Stream::new(seed);
         for counter in 0..16 {
             assert_eq!(stream.next_u64(), next(seed, counter));
-        }
-        let mut float_stream = Stream::new(seed);
-        for counter in 0..16 {
-            assert_eq!(float_stream.next_f64(), unit_f64(next(seed, counter)));
         }
     }
 

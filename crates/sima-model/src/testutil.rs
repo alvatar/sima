@@ -4,12 +4,11 @@
 pub(crate) use sima_core::to_hex;
 use sima_core::{Hash, Result};
 
-/// Parses a pinned lowercase-hex layout back into bytes.
+/// Parses a pinned lowercase-hex layout back into bytes, through the crate that
+/// wrote it: a second parser here could disagree with `to_hex` about what a
+/// pinned layout says.
 pub(crate) fn from_hex(hex: &str) -> Vec<u8> {
-    (0..hex.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).expect("pinned hex is valid"))
-        .collect()
+    sima_core::from_hex(hex).expect("pinned hex is valid")
 }
 
 /// A synthetic digest with every byte equal to the two-digit hex `fill`.

@@ -2,7 +2,7 @@
 //! `(config, store state)`.
 
 use sima_contracts::Generator;
-use sima_core::{Error, Result};
+use sima_core::{Codec, Error, Result};
 use sima_model::{RunConfig, Spec, SpecId, TaskIdentity, TaskKey};
 use sima_store::Store;
 
@@ -33,7 +33,14 @@ pub trait TaskSource {
     /// out and watches the store for the commit. The static batch returns the
     /// full unanswered set on the first call and an empty vec thereafter; a
     /// chain source returns successors as their predecessors commit.
-    fn poll(&mut self) -> Result<Vec<RunnableTask>>;
+    ///
+    /// `settled` is the keys that settled since the last poll, which is what
+    /// gated this one. A source deriving successors from committed records
+    /// needs only re-probe the work those keys belong to: nothing else can have
+    /// gained a successor. It is a hint about where to look, not a promise
+    /// about what to return — a source free to ignore it, as the static batch
+    /// does, is still correct.
+    fn poll(&mut self, settled: &[TaskKey]) -> Result<Vec<RunnableTask>>;
 
     /// The task keys the run comprises, as materialized so far. The set is
     /// complete once a poll has returned empty at an idle pool — the point at

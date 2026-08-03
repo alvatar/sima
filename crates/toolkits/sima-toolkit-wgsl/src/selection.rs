@@ -1,15 +1,17 @@
-//! Physical-device enumeration and selection, memory-type queries, and
-//! provenance decoding.
+//! Physical-device enumeration, memory-type queries, and provenance decoding.
 //!
-//! Two selection policies share one enumeration pass: the default picks a
-//! device by type rank, while a caller naming a device class picks the class
-//! member it asks for. Both policies are pure functions over the enumerated
-//! candidates, so they are verifiable without a device.
+//! This module is the Vulkan half of device selection: it enumerates what the
+//! loader exposes and translates each candidate into the vocabulary
+//! [`sima_contracts`] selects over. The policy itself — class minting, member
+//! numbering, the `SIMA_GPU_DEVICE` override, the default type ranking — is
+//! shared with every other backend and lives there, so the two backends cannot
+//! spell one card's class two ways or rank two devices differently.
 
 use std::ffi::CStr;
 
 use ash::vk;
 
+use sima_contracts::{DeviceClass, DeviceInfo, DeviceType};
 use sima_core::{Error, Result};
 
 use crate::instance;
@@ -18,61 +20,6 @@ use crate::instance;
 pub(crate) struct DeviceChoice {
     pub physical_device: vk::PhysicalDevice,
     pub queue_family_index: u32,
-}
-
-/// A compute-capable physical device as enumerated: what it is, what it is
-/// called, and which card it is among identical ones.
-///
-/// The class is minted here from what Vulkan reports, and `member` is the
-/// position within the class, ordered by Vulkan enumeration index. Two
-/// identical cards are one class with two members.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DeviceInfo {
-    pub class: String,
-    pub name: String,
-    pub device_type: DeviceType,
-    pub member: u32,
-}
-
-/// The class of a device with configuration-space identifiers.
-///
-/// This backend defines its own class names, so it is the one that reads them
-/// back: every comparison against a caller's class goes through this spelling.
-pub fn class_of(vendor_id: u32, device_id: u32) -> String {
-    format!("{vendor_id:04x}:{device_id:04x}")
-}
-
-/// The device categories Vulkan reports.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DeviceType {
-    Discrete,
-    Integrated,
-    Virtual,
-    Cpu,
-    Other,
-}
-
-impl DeviceType {
-    fn from_vk(device_type: vk::PhysicalDeviceType) -> DeviceType {
-        match device_type {
-            vk::PhysicalDeviceType::DISCRETE_GPU => DeviceType::Discrete,
-            vk::PhysicalDeviceType::INTEGRATED_GPU => DeviceType::Integrated,
-            vk::PhysicalDeviceType::VIRTUAL_GPU => DeviceType::Virtual,
-            vk::PhysicalDeviceType::CPU => DeviceType::Cpu,
-            _ => DeviceType::Other,
-        }
-    }
-
-    /// Preference order across device types; lower ranks are preferred.
-    fn rank(self) -> u8 {
-        match self {
-            DeviceType::Discrete => 0,
-            DeviceType::Integrated => 1,
-            DeviceType::Virtual => 2,
-            DeviceType::Cpu => 3,
-            DeviceType::Other => 4,
-        }
-    }
 }
 
 /// Every compute-capable physical device, with member indices assigned per
@@ -87,33 +34,21 @@ impl DeviceType {
 pub fn enumerate_devices() -> Result<Vec<DeviceInfo>> {
     let devices = instance::with_query_instance_or_none(|instance| {
         let candidates = compute_capable_devices(instance)?;
-        // Members count within a class, so each class gets its own running
-        // index as enumeration order is walked.
-        let mut members_seen: Vec<(String, u32)> = Vec::new();
-        let mut devices = Vec::with_capacity(candidates.len());
-        for candidate in &candidates {
-            let class = class_of(
-                candidate.properties.vendor_id,
-                candidate.properties.device_id,
-            );
-            let member = match members_seen.iter_mut().find(|(seen, _)| *seen == class) {
-                Some((_, next)) => {
-                    *next += 1;
-                    *next - 1
-                }
-                None => {
-                    members_seen.push((class.clone(), 1));
-                    0
-                }
-            };
-            devices.push(DeviceInfo {
-                class,
+        let classes: Vec<DeviceClass> = candidates
+            .iter()
+            .map(|candidate| candidate.class())
+            .collect();
+        Ok(candidates
+            .iter()
+            .zip(sima_contracts::number_members(&classes))
+            .zip(classes.iter())
+            .map(|((candidate, member), class)| DeviceInfo {
+                class: class.clone(),
                 name: device_name(&candidate.properties),
-                device_type: DeviceType::from_vk(candidate.properties.device_type),
+                device_type: device_type_of(candidate.properties.device_type),
                 member,
-            });
-        }
-        Ok(devices)
+            })
+            .collect())
     })?;
     Ok(devices.unwrap_or_default())
 }
@@ -124,7 +59,7 @@ pub fn enumerate_devices() -> Result<Vec<DeviceInfo>> {
 /// Resolved over an instance of its own, so a caller can report the device it is
 /// bound to before any GPU engine is initialized. Name and driver resolve
 /// together over the one short-lived instance the query opens.
-pub fn selected_device_desc(device: Option<(&str, u32)>) -> Result<(String, String)> {
+pub fn selected_device_desc(device: Option<(&DeviceClass, u32)>) -> Result<(String, String)> {
     instance::with_query_instance(|instance| {
         let choice = match device {
             Some((class, member)) => select_class_member(instance, class, member)?,
@@ -145,6 +80,13 @@ struct Candidate {
     index: usize,
     choice: DeviceChoice,
     properties: vk::PhysicalDeviceProperties,
+}
+
+impl Candidate {
+    /// The class this device belongs to, minted from its configuration space.
+    fn class(&self) -> DeviceClass {
+        sima_contracts::class_of(self.properties.vendor_id, self.properties.device_id)
+    }
 }
 
 /// Every physical device exposing a compute queue family, in enumeration order.
@@ -171,11 +113,6 @@ fn compute_capable_devices(instance: &ash::Instance) -> Result<Vec<Candidate>> {
             properties,
         });
     }
-    if candidates.is_empty() {
-        return Err(Error::Backend(
-            "no Vulkan device exposes a compute queue family".to_string(),
-        ));
-    }
     Ok(candidates)
 }
 
@@ -190,122 +127,47 @@ fn take_candidate(candidates: Vec<Candidate>, winner: usize) -> Result<DeviceCho
 
 /// Selects the physical device to run on.
 ///
-/// Keeps only devices exposing a compute queue family, then applies the
-/// `SIMA_GPU_DEVICE` enumeration-index override when set, or otherwise picks
-/// deterministically: discrete before integrated before virtual before CPU
-/// before other, with the lowest enumeration index breaking ties.
+/// Keeps only devices exposing a compute queue family, then hands the shared
+/// policy the `(index, type)` ranking it decides over.
 pub(crate) fn select_physical_device(instance: &ash::Instance) -> Result<DeviceChoice> {
     let candidates = compute_capable_devices(instance)?;
-    let ranking: Vec<(usize, vk::PhysicalDeviceType)> = candidates
+    let ranking: Vec<(usize, DeviceType)> = candidates
         .iter()
-        .map(|candidate| (candidate.index, candidate.properties.device_type))
+        .map(|candidate| {
+            (
+                candidate.index,
+                device_type_of(candidate.properties.device_type),
+            )
+        })
         .collect();
-    let winner = choose_device(&ranking, requested_device_index()?)?;
+    let winner =
+        sima_contracts::choose_device(&ranking, sima_contracts::requested_device_index()?)?;
     take_candidate(candidates, winner)
 }
 
 /// Selects the given member of the given device class.
 pub(crate) fn select_class_member(
     instance: &ash::Instance,
-    class: &str,
+    class: &DeviceClass,
     member: u32,
 ) -> Result<DeviceChoice> {
     let candidates = compute_capable_devices(instance)?;
-    let classes: Vec<(String, usize)> = candidates
+    let classes: Vec<(DeviceClass, usize)> = candidates
         .iter()
-        .map(|candidate| {
-            (
-                class_of(
-                    candidate.properties.vendor_id,
-                    candidate.properties.device_id,
-                ),
-                candidate.index,
-            )
-        })
+        .map(|candidate| (candidate.class(), candidate.index))
         .collect();
-    let winner = resolve_member(&classes, class, member)?;
+    let winner = sima_contracts::resolve_member(&classes, class, member)?;
     take_candidate(candidates, winner)
 }
 
-/// Picks the enumeration index of one member of a device class from
-/// `(class, enumeration index)` pairs.
-///
-/// Members of a class are ordered by enumeration index, so `member` counts
-/// within the class alone. Pure over the candidate list so the mapping is
-/// verifiable without a device.
-fn resolve_member(candidates: &[(String, usize)], class: &str, member: u32) -> Result<usize> {
-    let mut members: Vec<usize> = candidates
-        .iter()
-        .filter(|(candidate, _)| candidate == class)
-        .map(|(_, index)| *index)
-        .collect();
-    members.sort_unstable();
-    if members.is_empty() {
-        return Err(Error::Backend(format!(
-            "no compute-capable device {class} exists; present: {}",
-            render_classes(candidates)
-        )));
-    }
-    members.get(member as usize).copied().ok_or_else(|| {
-        Error::Backend(format!(
-            "device {class} has {} member(s); member {member} requested",
-            members.len()
-        ))
-    })
-}
-
-/// The candidates' classes, each listed once.
-fn render_classes(candidates: &[(String, usize)]) -> String {
-    let mut classes: Vec<&str> = Vec::new();
-    for (class, _) in candidates {
-        if !classes.contains(&class.as_str()) {
-            classes.push(class);
-        }
-    }
-    classes.join(", ")
-}
-
-/// Picks the winning enumeration index from `(index, type)` pairs.
-///
-/// With `requested` set, the named index wins when it is compute-capable and
-/// fails otherwise; without it, the lowest `(type rank, index)` pair wins.
-/// Pure over the ranking inputs so the policy is verifiable without a device.
-fn choose_device(
-    candidates: &[(usize, vk::PhysicalDeviceType)],
-    requested: Option<usize>,
-) -> Result<usize> {
-    if let Some(requested) = requested {
-        return candidates
-            .iter()
-            .find(|(index, _)| *index == requested)
-            .map(|(index, _)| *index)
-            .ok_or_else(|| {
-                Error::Backend(format!(
-                    "SIMA_GPU_DEVICE={requested} does not name a compute-capable device"
-                ))
-            });
-    }
-    candidates
-        .iter()
-        .min_by_key(|(index, device_type)| (type_rank(*device_type), *index))
-        .map(|(index, _)| *index)
-        .ok_or_else(|| Error::Backend("no compute-capable device to select".to_string()))
-}
-
-/// Preference order across device types; lower ranks are preferred.
-fn type_rank(device_type: vk::PhysicalDeviceType) -> u8 {
-    DeviceType::from_vk(device_type).rank()
-}
-
-/// The `SIMA_GPU_DEVICE` override as an enumeration index, if set and valid.
-fn requested_device_index() -> Result<Option<usize>> {
-    match std::env::var("SIMA_GPU_DEVICE") {
-        Ok(value) => value.trim().parse::<usize>().map(Some).map_err(|_| {
-            Error::Backend(format!(
-                "SIMA_GPU_DEVICE must be a device index, got {value:?}"
-            ))
-        }),
-        Err(_) => Ok(None),
+/// The category Vulkan reports for a device, in the shared vocabulary.
+fn device_type_of(device_type: vk::PhysicalDeviceType) -> DeviceType {
+    match device_type {
+        vk::PhysicalDeviceType::DISCRETE_GPU => DeviceType::Discrete,
+        vk::PhysicalDeviceType::INTEGRATED_GPU => DeviceType::Integrated,
+        vk::PhysicalDeviceType::VIRTUAL_GPU => DeviceType::Virtual,
+        vk::PhysicalDeviceType::CPU => DeviceType::Cpu,
+        _ => DeviceType::Other,
     }
 }
 
@@ -370,59 +232,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn type_rank_orders_discrete_first() {
-        assert!(
-            type_rank(vk::PhysicalDeviceType::DISCRETE_GPU)
-                < type_rank(vk::PhysicalDeviceType::INTEGRATED_GPU)
-        );
-        assert!(
-            type_rank(vk::PhysicalDeviceType::INTEGRATED_GPU)
-                < type_rank(vk::PhysicalDeviceType::VIRTUAL_GPU)
-        );
-        assert!(
-            type_rank(vk::PhysicalDeviceType::VIRTUAL_GPU) < type_rank(vk::PhysicalDeviceType::CPU)
-        );
-        assert!(type_rank(vk::PhysicalDeviceType::CPU) < type_rank(vk::PhysicalDeviceType::OTHER));
-    }
-
-    #[test]
-    fn deterministic_pick_prefers_discrete_over_lower_index() {
-        let candidates = [
-            (0, vk::PhysicalDeviceType::INTEGRATED_GPU),
-            (1, vk::PhysicalDeviceType::DISCRETE_GPU),
-        ];
-        assert_eq!(choose_device(&candidates, None).expect("pick a device"), 1);
-    }
-
-    #[test]
-    fn deterministic_pick_breaks_ties_by_lowest_index() {
-        let candidates = [
-            (2, vk::PhysicalDeviceType::DISCRETE_GPU),
-            (0, vk::PhysicalDeviceType::DISCRETE_GPU),
-            (1, vk::PhysicalDeviceType::DISCRETE_GPU),
-        ];
-        assert_eq!(choose_device(&candidates, None).expect("pick a device"), 0);
-    }
-
-    #[test]
-    fn override_selects_named_index() {
-        let candidates = [
-            (0, vk::PhysicalDeviceType::DISCRETE_GPU),
-            (1, vk::PhysicalDeviceType::CPU),
-        ];
-        assert_eq!(
-            choose_device(&candidates, Some(1)).expect("named index wins"),
-            1
-        );
-    }
-
-    #[test]
-    fn override_out_of_range_is_rejected() {
-        let candidates = [(0, vk::PhysicalDeviceType::DISCRETE_GPU)];
-        assert!(matches!(
-            choose_device(&candidates, Some(7)),
-            Err(Error::Backend(_))
-        ));
+    fn every_vulkan_device_category_maps_to_the_shared_vocabulary() {
+        // The shared ranking decides over these, so a category translated to
+        // the wrong one would silently change which device a machine picks.
+        for (reported, shared) in [
+            (vk::PhysicalDeviceType::DISCRETE_GPU, DeviceType::Discrete),
+            (
+                vk::PhysicalDeviceType::INTEGRATED_GPU,
+                DeviceType::Integrated,
+            ),
+            (vk::PhysicalDeviceType::VIRTUAL_GPU, DeviceType::Virtual),
+            (vk::PhysicalDeviceType::CPU, DeviceType::Cpu),
+            (vk::PhysicalDeviceType::OTHER, DeviceType::Other),
+        ] {
+            assert_eq!(device_type_of(reported), shared);
+        }
     }
 
     #[test]
@@ -431,95 +255,23 @@ mod tests {
         assert_eq!(driver_version(packed), "1.2.3");
     }
 
-    /// Two identical cards and one of another class, in enumeration order.
-    fn candidates() -> Vec<(String, usize)> {
-        vec![
-            (class_of(0x8086, 0x7d51), 0),
-            (class_of(0x10de, 0x2d39), 1),
-            (class_of(0x10de, 0x2d39), 2),
-        ]
-    }
-
-    #[test]
-    fn a_class_is_minted_as_the_vendor_device_hex_pair() {
-        // The rendered form is a contract: a config selector matches this exact
-        // string, and the journal and placement slots spell a class the same
-        // way. A change of width, separator, or case would leave selector
-        // matching silently missing its device.
-        assert_eq!(class_of(0x8086, 0x7d51), "8086:7d51");
-        assert_eq!(class_of(0x10de, 0x2d39), "10de:2d39");
-    }
-
-    #[test]
-    fn member_zero_selects_the_first_card_of_its_class() {
-        assert_eq!(
-            resolve_member(&candidates(), "10de:2d39", 0).expect("first member"),
-            1
-        );
-    }
-
-    #[test]
-    fn members_are_ordered_by_enumeration_index() {
-        assert_eq!(
-            resolve_member(&candidates(), "10de:2d39", 1).expect("second member"),
-            2
-        );
-        // The class's own members are consecutive here, but its position among
-        // all candidates is not: member indices count within the class only.
-        assert_eq!(
-            resolve_member(&candidates(), "8086:7d51", 0).expect("sole member"),
-            0
-        );
-    }
-
-    #[test]
-    fn member_order_follows_enumeration_even_when_candidates_are_unsorted() {
-        let unsorted = [(class_of(0x10de, 0x2d39), 2), (class_of(0x10de, 0x2d39), 1)];
-        assert_eq!(
-            resolve_member(&unsorted, "10de:2d39", 0).expect("lowest index first"),
-            1
-        );
-    }
-
-    #[test]
-    fn unknown_class_error_names_the_request_and_what_exists() {
-        let error = resolve_member(&candidates(), "1002:1234", 0).expect_err("absent class");
-        let Error::Backend(message) = error else {
-            panic!("expected a backend error");
-        };
-        assert!(
-            message.contains("1002:1234"),
-            "names the request: {message}"
-        );
-        assert!(
-            message.contains("10de:2d39"),
-            "names what exists: {message}"
-        );
-        assert!(
-            message.contains("8086:7d51"),
-            "names what exists: {message}"
-        );
-    }
-
-    #[test]
-    fn member_out_of_range_error_names_the_member_count() {
-        let error = resolve_member(&candidates(), "8086:7d51", 1).expect_err("one member only");
-        let Error::Backend(message) = error else {
-            panic!("expected a backend error");
-        };
-        assert!(message.contains("8086:7d51"), "names the class: {message}");
-        assert!(message.contains('1'), "names the member count: {message}");
-    }
-
     #[test]
     fn naming_an_absent_device_fails_to_resolve() {
         // A worker answers `Ready` with this name, so this is where a binding
         // onto hardware the machine does not have is caught: executor
         // construction is lazy and would not notice until the first task.
+        let absent = DeviceClass::new("dead:beef").expect("class id");
         assert!(matches!(
-            selected_device_desc(Some(("dead:beef", 0))),
+            selected_device_desc(Some((&absent, 0))),
             Err(Error::Backend(_))
         ));
+    }
+
+    #[test]
+    fn enumeration_never_fails_for_want_of_a_driver() {
+        // The probe answers "none" on a machine with no Vulkan rather than
+        // failing, which is what the worker's enumeration relies on.
+        enumerate_devices().expect("enumeration answers on any machine");
     }
 
     /// Enumeration answers from the Vulkan loader, so this one needs a device.
@@ -532,9 +284,8 @@ mod tests {
             assert!(!devices.is_empty(), "at least one compute-capable device");
             for device in &devices {
                 assert!(!device.name.is_empty());
-                let (name, driver) =
-                    selected_device_desc(Some((device.class.as_str(), device.member)))
-                        .expect("resolve the device description");
+                let (name, driver) = selected_device_desc(Some((&device.class, device.member)))
+                    .expect("resolve the device description");
                 assert_eq!(name, device.name);
                 // The driver version is operational provenance; it decodes to the
                 // standard three-part layout and is never empty for a real device.

@@ -3,12 +3,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use sima_core::Result;
 use sima_model::RunId;
 use sima_scheduler::{Event, Record};
 
-use crate::config::LoadedConfig;
-use crate::journal;
 use crate::task_history::worker_bindings;
 
 /// A run's execution metrics and temporal shape, merged from its journal.
@@ -108,19 +105,6 @@ struct WorkerAccumulator {
     attempts: usize,
     /// The worker's closed lease spans.
     spans: Vec<(u64, u64)>,
-}
-
-/// The metrics of the run a loaded config describes, from its journal alone —
-/// one of the read-only queries over what a run left behind. The journal is
-/// read under the guards every such query applies: a missing store root and a
-/// run never started there are
-/// [`Error::Validation`](sima_core::Error::Validation), and a line that fails
-/// to parse is [`Error::Corruption`](sima_core::Error::Corruption).
-pub fn timeline(config: &LoadedConfig) -> Result<RunTimeline> {
-    Ok(timeline_records(
-        config.run.id(),
-        &journal::records(config)?,
-    ))
 }
 
 /// Merges `records` — a run's lifecycle events in append order — into the
@@ -313,10 +297,9 @@ fn metrics(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sima_core::{Error, hash_bytes};
-    use sima_store::Store;
+    use sima_core::{Result, hash_bytes};
 
-    use crate::fixtures::{journal_with, loaded, stub_config};
+    use crate::fixtures::{journal_with, stub_config};
 
     fn run_id() -> RunId {
         RunId::from_hash(hash_bytes(b"timeline test run"))
@@ -694,24 +677,8 @@ mod tests {
         let (_dir, config) = journal_with(&records)?;
         assert_eq!(
             timeline_records(stub_config()?.id(), &records),
-            timeline(&config)?
+            timeline_records(config.run.id(), &crate::journal::records(&config)?)
         );
-        Ok(())
-    }
-
-    #[test]
-    fn a_query_over_a_missing_store_is_a_validation_error() -> Result<()> {
-        let config = loaded(std::path::PathBuf::from("/no/such/store/here"))?;
-        assert!(matches!(timeline(&config), Err(Error::Validation(_))));
-        Ok(())
-    }
-
-    #[test]
-    fn a_query_over_a_run_never_started_is_a_validation_error() -> Result<()> {
-        let dir = tempfile::tempdir().expect("temp dir");
-        Store::open(dir.path())?;
-        let config = loaded(dir.path().to_path_buf())?;
-        assert!(matches!(timeline(&config), Err(Error::Validation(_))));
         Ok(())
     }
 }

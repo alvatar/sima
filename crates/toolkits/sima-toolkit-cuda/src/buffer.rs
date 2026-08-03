@@ -23,15 +23,10 @@ impl Buffer {
         &self.bytes
     }
 
-    /// The allocation's size in bytes.
-    pub fn len(&self) -> usize {
+    /// The allocation's size in bytes, for the bound a dispatch update is
+    /// checked against.
+    pub(crate) fn len(&self) -> usize {
         self.bytes.len()
-    }
-
-    /// Whether the allocation is empty. Never true: [`Context::buffer`] rejects
-    /// a zero-sized request.
-    pub fn is_empty(&self) -> bool {
-        self.bytes.is_empty()
     }
 }
 

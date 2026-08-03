@@ -14,8 +14,8 @@
 
 use sima_core::{Error, Result};
 use sima_model::{RunConfig, RunId};
+use sima_scheduler::{Event, Record};
 use sima_store::Store;
-use sima_trace::{Event, Record};
 
 use crate::domain_registry::RoutedProgram;
 

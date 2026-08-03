@@ -18,14 +18,14 @@ use std::thread;
 use std::time::Duration;
 
 use sima_contracts::{DeviceBinding, DeviceClass, Generator, WorkerId};
-use sima_core::{Error, Result};
+use sima_core::{Codec, Error, Result};
 use sima_model::{Environment, RunConfig, RunId, TaskKey};
 use sima_store::Store;
 use sima_trace::{Collector, Emitter, Event};
 
 use crate::config::ExecutionConfig;
 use crate::control::RunControl;
-use crate::coordinator::{Coordinator, Failure, Pending, RunState, Shared};
+use crate::coordinator::{Coordinator, Failure, Gate, Pending, RunState};
 use crate::placement;
 use crate::segment_chain::SegmentChain;
 use crate::static_batch::StaticBatch;
@@ -355,25 +355,6 @@ enum DriveOutcome {
 /// acquisitions.
 const INTERRUPT_POLL: Duration = Duration::from_millis(50);
 
-/// Whether a wound-down pool has drained: no lease outstanding. Queued tasks
-/// are then abandoned. Gates only the terminal states; a healthy run is
-/// driven by the poll gate instead.
-fn drained(shared: &Shared) -> bool {
-    shared.leases.is_empty()
-}
-
-/// What one locked look at the shared state told the driver to do next.
-enum Gate {
-    /// Nothing to do until the next wakeup.
-    Wait,
-    /// The run wound down and the pool drained; the taken terminal reason.
-    Terminal(RunState),
-    /// Poll the source: the queue is empty and a lease release moved
-    /// `settled` past the last poll. `idle` is whether the pool also holds
-    /// no leases; `settled` is the release count the poll is current as of.
-    Poll { idle: bool, settled: u64 },
-}
-
 /// Feeds the queue and waits for the pool, deciding the run's outcome.
 /// Three ideas govern the loop:
 ///
@@ -403,46 +384,12 @@ fn drive(
         if control.interrupt.load(Ordering::Relaxed) {
             coordinator.interrupt();
         }
-        // Decide the next action in one block-scoped lock region; a poll runs
-        // outside it. Without anything to do, park for one bounded wait —
-        // under the same lock acquisition, so a notification between the
-        // decision and the park is not missed — and loop around to re-check
-        // the interrupt flag.
-        let gate = {
-            let mut shared = coordinator.lock();
-            let decision = if !matches!(shared.state, RunState::Running) {
-                if drained(&shared) {
-                    // Take the terminal reason by value: the Error/Failure
-                    // payload moves out to be returned, and the Finished left
-                    // in its place is the signal that makes every worker's
-                    // next_task exit.
-                    let terminal = std::mem::replace(&mut shared.state, RunState::Finished);
-                    coordinator.state_changed.notify_all();
-                    Gate::Terminal(terminal)
-                } else {
-                    Gate::Wait
-                }
-            } else if shared.queue.is_empty() && polled_at != Some(shared.settled) {
-                // The gate ignores outstanding leases, so a chain task's
-                // successor is handed out the moment its own predecessor
-                // commits, while other tasks still run.
-                Gate::Poll {
-                    idle: shared.leases.is_empty(),
-                    settled: shared.settled,
-                }
-            } else {
-                Gate::Wait
-            };
-            if matches!(decision, Gate::Wait) {
-                drop(
-                    coordinator
-                        .state_changed
-                        .wait_timeout(shared, INTERRUPT_POLL)
-                        .unwrap_or_else(|p| p.into_inner()),
-                );
-                continue;
-            }
-            decision
+        // The shared state decides; a poll runs outside its lock. Without
+        // anything to do the gate parks for one bounded wait and answers
+        // `None`, so this loop comes back around to re-check the interrupt
+        // flag.
+        let Some(gate) = coordinator.next_gate(polled_at, INTERRUPT_POLL) else {
+            continue;
         };
         match gate {
             Gate::Terminal(terminal) => {
@@ -456,26 +403,27 @@ fn drive(
                     RunState::Running => unreachable!("the terminal branch excludes Running"),
                 };
             }
-            Gate::Poll { idle, settled } => {
+            Gate::Poll {
+                idle,
+                settled,
+                keys,
+            } => {
                 polled_at = Some(settled);
                 // A poll fault set the terminal state; the next iteration
                 // drains the in-flight work and the terminal branch returns
                 // it. An empty poll finalizes only at an idle pool; with
                 // leases outstanding, their releases trigger the next poll.
-                match poll_source(coordinator, source) {
+                match poll_source(coordinator, source, &keys) {
                     None => {}
                     Some(more) if more.is_empty() => {
                         if idle {
-                            let mut shared = coordinator.lock();
-                            shared.state = RunState::Finished;
-                            coordinator.state_changed.notify_all();
+                            coordinator.finish();
                             return Ok(DriveOutcome::Finalize);
                         }
                     }
                     Some(more) => enqueue(coordinator, events, more),
                 }
             }
-            Gate::Wait => unreachable!("a Wait decision parks and continues above"),
         }
     }
 }
@@ -486,15 +434,12 @@ fn drive(
 fn poll_source(
     coordinator: &Coordinator,
     source: &mut dyn TaskSource,
+    settled: &[TaskKey],
 ) -> Option<Vec<RunnableTask>> {
-    match source.poll() {
+    match source.poll(settled) {
         Ok(tasks) => Some(tasks),
         Err(e) => {
-            let mut shared = coordinator.lock();
-            if matches!(shared.state, RunState::Running) {
-                shared.state = RunState::Fault(e);
-            }
-            coordinator.state_changed.notify_all();
+            coordinator.fault_run(e);
             None
         }
     }
@@ -521,9 +466,7 @@ fn enqueue(coordinator: &Coordinator, events: &Emitter, tasks: Vec<RunnableTask>
             task: p.key.to_string(),
         });
     }
-    let mut shared = coordinator.lock();
-    shared.queue.extend(pending);
-    coordinator.state_changed.notify_all();
+    coordinator.push_ready(pending);
 }
 
 #[cfg(test)]
@@ -618,7 +561,7 @@ mod tests {
     struct FailingSource;
 
     impl TaskSource for FailingSource {
-        fn poll(&mut self) -> Result<Vec<RunnableTask>> {
+        fn poll(&mut self, _settled: &[TaskKey]) -> Result<Vec<RunnableTask>> {
             Err(Error::Validation("source poll failed".to_string()))
         }
 
@@ -643,7 +586,7 @@ mod tests {
     }
 
     impl TaskSource for ScriptedSource {
-        fn poll(&mut self) -> Result<Vec<RunnableTask>> {
+        fn poll(&mut self, _settled: &[TaskKey]) -> Result<Vec<RunnableTask>> {
             Ok(self.polls.pop_front().unwrap_or_default())
         }
 
@@ -707,7 +650,7 @@ mod tests {
         assert!(matches!(result, Err(Error::Validation(_))));
         // The terminal state is what a real pool observes to drain: a poll
         // error that left `Running` in place would park the workers forever.
-        assert!(!matches!(coordinator.lock().state, RunState::Running));
+        assert!(!coordinator.is_running());
     }
 
     #[test]
@@ -725,16 +668,14 @@ mod tests {
             &RunControl::detached(),
         );
         assert!(matches!(result, Ok(DriveOutcome::Finalize)));
-        assert!(matches!(coordinator.lock().state, RunState::Finished));
+        assert!(coordinator.with_state(|state| matches!(state, RunState::Finished)));
     }
 
     #[test]
     fn a_preset_failure_is_reported_and_the_pool_asked_to_exit() {
         let coordinator = Coordinator::new();
-        coordinator.lock().state = RunState::Failed(Failure {
-            task: a_key(),
-            reason: "candidate rejected".to_string(),
-        });
+        coordinator.hold_lease(a_key());
+        coordinator.terminate(a_key(), "candidate rejected".to_string());
         let (tx, _rx) = mpsc::channel();
         let events = Emitter::from(tx);
         let result = drive(
@@ -751,13 +692,13 @@ mod tests {
             _ => panic!("expected the preset failure to be reported"),
         }
         // Finished is left in the state's place: the pool's exit signal.
-        assert!(matches!(coordinator.lock().state, RunState::Finished));
+        assert!(coordinator.with_state(|state| matches!(state, RunState::Finished)));
     }
 
     #[test]
     fn a_preset_fault_is_returned_as_the_run_error() {
         let coordinator = Coordinator::new();
-        coordinator.lock().state = RunState::Fault(Error::Corruption("store broke".to_string()));
+        coordinator.fault_run(Error::Corruption("store broke".to_string()));
         let (tx, _rx) = mpsc::channel();
         let events = Emitter::from(tx);
         let result = drive(
@@ -770,7 +711,7 @@ mod tests {
             Err(e) => assert_eq!(e.to_string(), "store corruption: store broke"),
             Ok(_) => panic!("expected the preset fault to be returned"),
         }
-        assert!(matches!(coordinator.lock().state, RunState::Finished));
+        assert!(coordinator.with_state(|state| matches!(state, RunState::Finished)));
     }
 
     /// Drains `rx` until a `Queued` event for `key` arrives, bounded by
@@ -880,7 +821,7 @@ mod tests {
             first: Option<Vec<RunnableTask>>,
         }
         impl TaskSource for FaultAfterFirst {
-            fn poll(&mut self) -> Result<Vec<RunnableTask>> {
+            fn poll(&mut self, _settled: &[TaskKey]) -> Result<Vec<RunnableTask>> {
                 match self.first.take() {
                     Some(tasks) => Ok(tasks),
                     None => Err(Error::Validation("source poll failed".to_string())),
@@ -975,13 +916,7 @@ mod tests {
             );
         }
         // Both tasks sit in the queue at attempt 0 with their key precomputed.
-        let shared = coordinator.lock();
-        assert_eq!(shared.queue.len(), 2);
-        for (pending, key) in shared.queue.iter().zip(&keys) {
-            assert_eq!(pending.key, *key);
-            assert_eq!(pending.key, pending.task.identity.key());
-            assert_eq!(pending.attempt, 0);
-        }
+        assert_eq!(coordinator.queued(), keys);
     }
 
     #[test]
@@ -992,6 +927,6 @@ mod tests {
         enqueue(&coordinator, &events, Vec::new());
         drop(events);
         assert_eq!(rx.into_iter().count(), 0);
-        assert!(coordinator.lock().queue.is_empty());
+        assert!(coordinator.queued().is_empty());
     }
 }

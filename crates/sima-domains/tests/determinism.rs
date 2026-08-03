@@ -9,7 +9,7 @@
 use sima_contracts::{
     ExecutionContext, Executor, Generator, NoCheckpoint, Outcome, TaskInput, WorkerId,
 };
-use sima_core::{Hash, Result, hash_bytes, prng};
+use sima_core::{Codec, Hash, Result, hash_bytes, prng};
 use sima_domains::{StubBehavior, StubExecutor, StubGenerator, StubGeneratorConfig};
 use sima_model::{ArtifactRef, EnvironmentId, Params, TaskIdentity, TaskRecord};
 

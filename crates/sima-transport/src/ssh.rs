@@ -44,7 +44,7 @@
 //! above the transport exercises identically without a network.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Condvar, Mutex};
+use std::sync::{Condvar, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use sima_contracts::DeviceBinding;
@@ -52,13 +52,9 @@ use sima_core::Result;
 use sima_model::FormatId;
 use sima_trace::Emitter;
 
-use crate::link::{SpawnOutcome, WorkerLink, WorkerTransport};
+use crate::link::{SpawnOutcome, WORKER_ENTRYPOINT, WorkerLink, WorkerTransport};
 use crate::spawn_settings::SpawnSettings;
 use crate::subprocess::{EventContext, spawn_worker};
-
-/// The command the worker runs as: `sima-worker`, over ssh the remote command,
-/// in local mode the binary's own name is its path instead.
-const WORKER_ENTRYPOINT: &str = "sima-worker";
 
 /// Where an ssh command lands, and the trust policy for getting there. Named
 /// for the TOML key it answers to. A plain value defined here so the transport
@@ -334,7 +330,7 @@ impl SshTransport {
                     slot = self
                         .settled
                         .wait(slot)
-                        .expect("the destination lock is never poisoned");
+                        .unwrap_or_else(PoisonError::into_inner);
                 }
             }
         }
@@ -352,16 +348,14 @@ impl SshTransport {
         let (slot, _) = self
             .settled
             .wait_timeout(slot, poll)
-            .expect("the destination lock is never poisoned");
+            .unwrap_or_else(PoisonError::into_inner);
         slot.generation != generation
     }
 
-    /// The lock over the target slot, panicking on poisoning — a poisoned
-    /// lock means a prior holder panicked, which is a bug, not a runtime fault.
+    /// The lock over the target slot, recovering a poisoned lock: a slot holds
+    /// a whole target or none, so a panicking holder leaves nothing torn.
     fn lock(&self) -> std::sync::MutexGuard<'_, TargetSlot> {
-        self.state
-            .lock()
-            .expect("the destination lock is never poisoned")
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
 
@@ -482,7 +476,7 @@ const SSH_CONNECT_TIMEOUT_SECS: u64 = 10;
 /// The argv that runs `sima-worker` at `destination` over ssh: the
 /// destination's own [`prefix`](SshDestination::prefix), then the worker, with
 /// `--enumerate-devices <format>` appended when `probe` names the run's format.
-pub fn ssh_argv(destination: &SshDestination, probe: Option<&FormatId>) -> Vec<String> {
+pub(crate) fn ssh_argv(destination: &SshDestination, probe: Option<&FormatId>) -> Vec<String> {
     let mut argv = destination.prefix();
     argv.push(WORKER_ENTRYPOINT.to_string());
     if let Some(format) = probe {

@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use cudarc::driver::{CudaContext, CudaStream};
 
+use sima_contracts::DeviceClass;
 use sima_core::Result;
 
 use crate::driver;
@@ -31,19 +32,18 @@ impl Context {
 
     /// Creates a compute context on the given member of the given device class.
     ///
-    /// The class is one this backend minted, and `member` counts within it,
-    /// ordered by CUDA ordinal — the numbering
-    /// [`enumerate_devices`](crate::enumerate_devices) reports. An absent class
-    /// or a member out of range is an
+    /// `member` counts within the class, ordered by CUDA ordinal — the
+    /// numbering [`enumerate_devices`](crate::enumerate_devices) reports. An
+    /// absent class or a member out of range is an
     /// [`Error::Backend`](sima_core::Error::Backend) naming the request and
     /// what exists.
-    pub fn for_class(class: &str, member: u32) -> Result<Context> {
+    pub fn for_class(class: &DeviceClass, member: u32) -> Result<Context> {
         Context::build(Some((class, member)))
     }
 
     /// Builds a context on the device the binding resolves to, or on the
     /// default selection for `None`.
-    fn build(device: Option<(&str, u32)>) -> Result<Context> {
+    fn build(device: Option<(&DeviceClass, u32)>) -> Result<Context> {
         let ordinal = selection::resolve_ordinal(device)?;
         let context = CudaContext::new(ordinal)
             .map_err(|e| driver::backend_error("create the CUDA context", e))?;
@@ -80,8 +80,9 @@ mod tests {
 
     #[test]
     fn opening_an_absent_device_class_fails() {
+        let absent = DeviceClass::new("dead:beef").expect("class id");
         assert!(matches!(
-            Context::for_class("dead:beef", 0),
+            Context::for_class(&absent, 0),
             Err(Error::Backend(_))
         ));
     }

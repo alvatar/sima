@@ -12,15 +12,13 @@
 //! rental reproduces that key and overwrites, while two rentals that reused
 //! a tag across process restarts carry distinct stamps and coexist.
 
-use std::fs;
-use std::io::ErrorKind;
-
 use serde::{Deserialize, Serialize};
 use sima_core::{Error, Result};
 
-use crate::atomic::{self, io_error};
+use crate::atomic;
 use crate::instances::validate_tag;
 use crate::layout;
+use crate::ledger;
 use crate::store::Store;
 
 /// Characters an owner directory name is made of: the run id's hex form.
@@ -72,22 +70,10 @@ impl Store {
     /// file: the ledger is store state, so a read either verifies or fails.
     pub fn spend_entries(&self, owner: &str) -> Result<Vec<SpendEntry>> {
         validate_owner(owner)?;
-        let dir = layout::spend_dir(self.root(), owner);
-        let entries = match fs::read_dir(&dir) {
-            Ok(entries) => entries,
-            Err(e) if e.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(e) => return Err(io_error(&dir, e)),
-        };
         let mut spend = Vec::new();
-        for entry in entries {
-            let path = entry.map_err(|e| io_error(&dir, e))?.path();
-            let bytes = fs::read(&path).map_err(|e| io_error(&path, e))?;
-            let entry: SpendEntry = serde_json::from_slice(&bytes).map_err(|e| {
-                Error::Corruption(format!(
-                    "spend entry {} does not parse: {e}",
-                    path.display()
-                ))
-            })?;
+        for (path, entry) in
+            ledger::entries::<SpendEntry>(&layout::spend_dir(self.root(), owner), "spend entry")?
+        {
             if Some(key(&entry.tag, entry.started_ms).as_str())
                 != path.file_name().and_then(|name| name.to_str())
             {

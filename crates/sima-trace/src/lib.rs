@@ -3,8 +3,11 @@
 //! The crate sits directly above `sima-core`, so any layer — scheduler,
 //! transport, worker host — can emit without an upward edge. Three pieces:
 //!
-//! - [`Event`] — the typed vocabulary: the run-lifecycle variants plus a
-//!   correlated [`Diagnostic`](Event::Diagnostic) line.
+//! - [`Event`] — the typed vocabulary, spanning what a run does and what it
+//!   runs on: the run and per-task lifecycle, the bindings a worker resolved
+//!   (its program, its device, the chain it took over), the rented instances
+//!   that came online, were lost, or were replaced, the budget ceilings a run
+//!   reached, and a correlated [`Diagnostic`](Event::Diagnostic) line.
 //! - [`Record`] — one journal line: the event plus the wall-clock stamp the
 //!   collector applied at append time.
 //! - [`Collector`] / [`Emitter`] — the funnel: emitters send events over an

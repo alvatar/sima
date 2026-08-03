@@ -11,7 +11,7 @@ use std::fs;
 use std::io::ErrorKind;
 use std::str;
 
-use sima_core::{Error, Hash, Result, hash_bytes};
+use sima_core::{Codec, Error, Hash, Result, hash_bytes};
 use sima_model::{RunConfig, RunId, TaskKey, TaskRecord};
 
 use crate::atomic::{self, io_error};
@@ -293,7 +293,7 @@ mod tests {
     use crate::testutil::{
         record_with_stored_artifact, sample_identity, store_identity_components, temp_store,
     };
-    use sima_core::{Error, Result, hash_bytes};
+    use sima_core::{Codec, Error, Result, hash_bytes};
     use sima_model::{SpecId, TaskIdentity, TaskRecord};
     use std::fs;
 

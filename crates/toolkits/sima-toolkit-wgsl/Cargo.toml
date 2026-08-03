@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+sima-contracts = { path = "../../sima-contracts" }
 sima-core = { path = "../../sima-core" }
 ash.workspace = true
 naga.workspace = true

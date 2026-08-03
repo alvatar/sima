@@ -173,10 +173,10 @@ impl CaModel for Toy {
 /// model-agnostic — a second model plugs in by implementing [`CaModel`] alone.
 #[cfg(test)]
 mod tests {
-    use sima_contracts::Generator;
+    use sima_contracts::{Domain, Generator};
     use sima_model::FormatId;
 
-    use super::super::binding::build_binding;
+    use super::super::domain::CaDomain;
     use super::super::generator::{CaGenerator, translate as translate_generator};
     use super::super::params::{decode_params, translate as translate_params};
     use super::*;
@@ -184,12 +184,12 @@ mod tests {
 
     #[test]
     fn the_environment_names_derive_from_the_model() -> Result<()> {
-        // build_binding forms the component names from M::NAME, so a different
-        // model yields different names with no change to the builder.
-        let domain = build_binding::<Toy, WgslEngine>()?;
-        assert_eq!(domain.format.as_str(), "toy.v1");
+        // The component names form from M::NAME, so a different model yields
+        // different names with no change to the domain that assembles them.
+        let domain = CaDomain::<Toy, WgslEngine>::new()?;
+        assert_eq!(domain.format().as_str(), "toy.v1");
         let names: Vec<&str> = domain
-            .environment
+            .environment()
             .components()
             .iter()
             .map(|c| c.name())

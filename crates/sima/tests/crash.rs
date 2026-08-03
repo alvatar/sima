@@ -10,6 +10,8 @@
 
 mod common;
 
+use std::collections::BTreeSet;
+use std::fs;
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Stdio};
@@ -94,6 +96,100 @@ fn object_file_count(store: &Path) -> usize {
 /// A run removal SIGKILLed at each of its crashpoints resumes to the same
 /// empty store an uninterrupted removal produces: the intent written before
 /// any deletion makes the removal replayable.
+
+/// The crashpoints this suite arms, one entry per plant in the workspace.
+///
+/// The guard below scans the sources for `crashpoint(` calls and asserts the
+/// two sets are equal, so a new plant that nobody armed fails the build rather
+/// than sitting untested — and a name removed from the code without being
+/// removed here fails too.
+const ARMED: [&str; 13] = [
+    "commit.after-object",
+    "finalize.pre-write",
+    "lease.held",
+    "object.mid-write",
+    "pack.after-pack-write",
+    "pack.mid-loose-delete",
+    "provider.destroyed",
+    "provider.entry-written",
+    "provider.intent-written",
+    "provider.provisioned",
+    "remove.after-intent",
+    "remove.mid-objects",
+    "stub.accumulate.step",
+];
+
+/// Every crashpoint planted in the workspace's sources, by name.
+///
+/// Read from the text rather than from a registry, because a registry is the
+/// thing that would go stale: what this suite must cover is what the code
+/// calls, and the call is the only statement of that.
+fn planted() -> BTreeSet<String> {
+    /// The workspace root: two levels above this crate's manifest.
+    fn workspace() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(Path::parent)
+            .expect("the workspace root above crates/sima")
+            .to_path_buf()
+    }
+
+    /// Every `.rs` file under `dir`, skipping build output.
+    fn sources(dir: &Path, out: &mut Vec<PathBuf>) {
+        let Ok(listing) = fs::read_dir(dir) else {
+            return;
+        };
+        for entry in listing.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if path.file_name().is_some_and(|name| name == "target") {
+                    continue;
+                }
+                sources(&path, out);
+            } else if path.extension().is_some_and(|ext| ext == "rs")
+                // The module that defines the mechanism calls it in its own
+                // tests; those are the mechanism under test, not a plant in a
+                // code path this suite must cover.
+                && !path.ends_with("sima-core/src/crashpoint.rs")
+            {
+                out.push(path);
+            }
+        }
+    }
+
+    let mut files = Vec::new();
+    sources(&workspace().join("crates"), &mut files);
+    let mut names = BTreeSet::new();
+    for file in files {
+        let text = fs::read_to_string(&file).expect("read a source file");
+        let mut rest = text.as_str();
+        while let Some(at) = rest.find("crashpoint(\"") {
+            let after = &rest[at + "crashpoint(\"".len()..];
+            let end = after.find('"').expect("a closed crashpoint name");
+            names.insert(after[..end].to_string());
+            rest = &after[end..];
+        }
+    }
+    names
+}
+
+#[test]
+fn every_planted_crashpoint_is_armed_by_this_suite() {
+    // The matrix is only a crash-safety guarantee over the points it arms. A
+    // plant nobody armed is a code path with no test behind it, and nothing
+    // else would say so.
+    let planted = planted();
+    let armed: BTreeSet<String> = ARMED.iter().map(|name| (*name).to_string()).collect();
+    assert!(
+        !planted.is_empty(),
+        "the scan found no crashpoints at all, so it is not reading the sources"
+    );
+    let unarmed: Vec<&String> = planted.difference(&armed).collect();
+    assert!(unarmed.is_empty(), "planted but never armed: {unarmed:?}");
+    let stale: Vec<&String> = armed.difference(&planted).collect();
+    assert!(stale.is_empty(), "armed but no longer planted: {stale:?}");
+}
+
 #[test]
 fn a_removal_death_resumes_to_an_empty_store() {
     for arming in ["remove.after-intent", "remove.mid-objects"] {

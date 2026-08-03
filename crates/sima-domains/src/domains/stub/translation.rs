@@ -9,31 +9,63 @@
 //! - the params section's optional `hex` string becomes the raw run-params
 //!   bytes, since stub params carry no meaning of their own.
 
+use sima_contracts::{DeviceBinding, DeviceInfo, Domain, Executor};
 use sima_core::{Error, Result};
 use sima_model::{Environment, EnvironmentComponent, EnvironmentValue, FormatId, Params};
 
 use super::{StubBehavior, StubExecutor, StubGeneratorConfig};
-use crate::domains::translate::reject_unknown_keys;
-use crate::format_binding::FormatBinding;
+use crate::domains::translate::{reject_unknown_keys, table};
 
 /// The stub format id, doubling as the stub generator id.
 pub(crate) const ID: &str = "stub.v1";
 
-/// The stub format binding: the stub executor and a one-component environment
-/// carrying its version.
-pub(crate) fn binding() -> Result<FormatBinding> {
-    Ok(FormatBinding {
-        format: FormatId::new(ID)?,
-        // The stub computes on the CPU, so it has no use for a device binding
-        // and no device or driver to name.
-        executor: |_| Ok(Box::new(StubExecutor::new()?)),
-        device_desc: |_| Ok((String::new(), String::new())),
-        enumerate_devices: || Ok(Vec::new()),
-        environment: Environment::new(vec![EnvironmentComponent::new(
-            "stub.executor",
-            EnvironmentValue::Version("v1".to_string()),
-        )?])?,
-    })
+/// The stub format, behind the domain contract: the stub executor and a
+/// one-component environment carrying its version.
+pub(crate) struct StubDomain {
+    format: FormatId,
+    environment: Environment,
+}
+
+impl StubDomain {
+    /// Assembles the stub domain. Device-free, like every domain's assembly.
+    pub(crate) fn new() -> Result<StubDomain> {
+        Ok(StubDomain {
+            format: FormatId::new(ID)?,
+            environment: Environment::new(vec![EnvironmentComponent::new(
+                "stub.executor",
+                EnvironmentValue::Version("v1".to_string()),
+            )?])?,
+        })
+    }
+}
+
+impl Domain for StubDomain {
+    fn format(&self) -> &FormatId {
+        &self.format
+    }
+
+    fn environment(&self) -> &Environment {
+        &self.environment
+    }
+
+    fn executor(&self, _device: Option<&DeviceBinding>) -> Result<Box<dyn Executor + Sync>> {
+        // The stub computes on the CPU, so a binding changes nothing about it.
+        Ok(Box::new(StubExecutor::new()?))
+    }
+
+    fn device_desc(&self, _device: Option<&DeviceBinding>) -> Result<(String, String)> {
+        Ok((String::new(), String::new()))
+    }
+
+    fn enumerate_devices(&self) -> Result<Vec<DeviceInfo>> {
+        Ok(Vec::new())
+    }
+
+    fn translate_config(&self, toml: &str, _segmented: bool) -> Result<Params> {
+        // Stub params carry no meaning, so nothing about them can conflict with
+        // a segmented run.
+        params(&table(toml)?)
+    }
 }
 
 /// Translates the `[run.params]` table: an optional `hex` string, decoded
@@ -302,17 +334,20 @@ mod tests {
     }
 
     #[test]
-    fn the_binding_holds_the_stub_pieces() -> Result<()> {
-        let domain = binding()?;
-        assert_eq!(domain.format.as_str(), ID);
-        assert_eq!((domain.executor)(None)?.format().as_str(), ID);
-        let components = domain.environment.components();
+    fn the_domain_holds_the_stub_pieces() -> Result<()> {
+        let domain = StubDomain::new()?;
+        assert_eq!(domain.format().as_str(), ID);
+        assert_eq!(domain.executor(None)?.format().as_str(), ID);
+        let components = domain.environment().components();
         assert_eq!(components.len(), 1);
         assert_eq!(components[0].name(), "stub.executor");
         assert_eq!(
             *components[0].value(),
             EnvironmentValue::Version("v1".to_string())
         );
+        // The stub uses no device, so the binding changes nothing.
+        assert!(domain.enumerate_devices()?.is_empty());
+        assert_eq!(domain.device_desc(None)?, (String::new(), String::new()));
         Ok(())
     }
 }

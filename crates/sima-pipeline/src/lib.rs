@@ -11,7 +11,7 @@
 //! code that owns them; it never interprets their content.
 //!
 //! Beside the driven run sit the read-only queries over what a run left
-//! behind. Each folds the run's journal and touches no store object:
+//! behind. Each merges the run's journal and touches no store object:
 //! [`status`] and [`task_history`] project execution — the run's state, and
 //! one task's attempts — [`failures`] names the tasks that did not commit,
 //! and [`report`] and [`report_task`] render the results committed tasks
@@ -28,12 +28,14 @@ mod fleet;
 mod journal;
 mod machines;
 mod migrate;
-mod observe;
 mod orchestrate;
+mod process;
 mod program_binding;
+mod providers;
 mod remove;
 mod rental;
 mod report;
+mod run_observer;
 mod spend;
 mod stats;
 mod status;
@@ -54,11 +56,12 @@ pub use feed::{
 pub use fleet::Engagement;
 pub use machines::machines;
 pub use migrate::{MigrateOutcome, migrate, sync_serve};
-pub use observe::RunObserver;
 pub use orchestrate::orchestrate;
 pub use program_binding::BinaryChange;
+pub use providers::{ProviderSettings, provider_for};
 pub use remove::remove;
-pub use report::{ReportRow, report, report_records, report_task, report_task_records};
+pub use report::{ReportRow, report, report_records, report_task_records};
+pub use run_observer::RunObserver;
 pub use spend::spend;
 // The rental-ledger and reputation types a caller renders those reports
 // through.
@@ -71,10 +74,9 @@ pub use sima_store::RemovalReport;
 // The scheduler types a caller drives and observes runs through, re-exported
 // so the CLI consumes one coherent surface.
 pub use sima_scheduler::{Event, Level, Record, RunControl, RunOutcome};
-pub use status::{Occupancy, RunState, RunStatus, status, status_records};
+pub use status::{Occupancy, RunState, RunStatus, seeded_status, status, status_records};
 pub use task_history::{
-    Attempt, AttemptResult, TaskHistory, TaskOutcome, failures, failures_records, task_history,
-    task_history_records,
+    Attempt, AttemptResult, TaskHistory, TaskOutcome, failures_records, task_history_records,
 };
 pub use task_keys::task_keys;
-pub use timeline::{RetryStats, RunTimeline, WorkerMetrics, timeline, timeline_records};
+pub use timeline::{RetryStats, RunTimeline, WorkerMetrics, timeline_records};

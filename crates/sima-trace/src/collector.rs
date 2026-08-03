@@ -22,6 +22,23 @@ use crate::record::Record;
 pub trait DurableSink: Send {
     /// Appends one line durably; the collector stops on the first error.
     fn append_line(&mut self, line: &str) -> Result<()>;
+
+    /// Appends every line of `lines` durably, as one batch.
+    ///
+    /// The collector drains what is queued and hands it here in one call, so a
+    /// sink whose durability costs a syscall per call pays it once for the
+    /// batch rather than once per line. The default appends one at a time, so a
+    /// sink with nothing to gain from batching implements nothing.
+    ///
+    /// The guarantee is per batch: on return every line is durable, and on
+    /// error nothing after the failing line is written. The collector hands the
+    /// observer only what this returned `Ok` for.
+    fn append_lines(&mut self, lines: &[String]) -> Result<()> {
+        for line in lines {
+            self.append_line(line)?;
+        }
+        Ok(())
+    }
 }
 
 /// A cloneable emission handle wrapping the collector's channel sender.
@@ -113,20 +130,62 @@ impl<'scope> Collector<'scope> {
     }
 }
 
-/// Stamps and appends each event's line and then hands the record to the
-/// observer, until the channel closes. Stops at the first append or encoding
-/// failure, returning it; remaining events are dropped — unappended events
-/// never reach the observer — and their emitters' sends become no-ops.
+/// Stamps and appends the queued events' lines and then hands their records to
+/// the observer, in order, until the channel closes. Stops at the first append
+/// or encoding failure, returning it; remaining events are dropped —
+/// unappended events never reach the observer — and their emitters' sends
+/// become no-ops.
+///
+/// Each iteration takes one blocking event and then everything else already
+/// queued behind it, appends the batch, and only then walks the observer. The
+/// journal write for an event still happens before the observer sees it, which
+/// is the guarantee; what changes is that a burst of events costs one
+/// durability barrier instead of one per event, which is what caps a run's task
+/// throughput at the sink's own rate.
+///
+/// A crash mid-batch loses the events the sink had not made durable, which the
+/// observational-journal contract already permits: a journal is not a
+/// write-ahead log, and the store's own records are what a resume derives the
+/// frontier from.
 fn drain<S: DurableSink>(mut sink: S, rx: Receiver<Event>, observer: Observer) -> Result<()> {
-    for event in rx {
-        // One clock, read on this thread at append time — remote events are
-        // stamped on arrival.
-        let record = Record::stamped(event);
-        sink.append_line(&record.to_line()?)?;
-        observer(&record);
+    // One clock, read on this thread at append time — remote events are
+    // stamped on arrival. A batch's records are stamped as they are taken, so
+    // the stamps stay in the order the events arrived.
+    while let Ok(first) = rx.recv() {
+        let mut records = vec![Record::stamped(first)];
+        records.extend(rx.try_iter().take(DRAIN_BATCH - 1).map(Record::stamped));
+        // Encoded one at a time so a record that cannot be rendered costs only
+        // itself: the lines before it are valid, are made durable, and reach
+        // the observer before the failure ends the collector.
+        let mut lines = Vec::with_capacity(records.len());
+        let mut failure = None;
+        for record in &records {
+            match record.to_line() {
+                Ok(line) => lines.push(line),
+                Err(e) => {
+                    failure = Some(e);
+                    break;
+                }
+            }
+        }
+        sink.append_lines(&lines)?;
+        for record in records.iter().take(lines.len()) {
+            observer(record);
+        }
+        if let Some(e) = failure {
+            return Err(e);
+        }
     }
     Ok(())
 }
+
+/// The most records one batch carries.
+///
+/// The drain takes whatever is queued, and a batch holds its records and their
+/// rendered lines at once, so an unbounded take would let a burst decide this
+/// thread's memory. Past the cap the burst is appended as several batches,
+/// which costs one durability barrier each and bounds nothing else.
+const DRAIN_BATCH: usize = 4096;
 
 #[cfg(test)]
 mod tests {
@@ -136,6 +195,144 @@ mod tests {
     use sima_core::Error;
 
     use super::*;
+    use crate::Level;
+
+    /// A sink recording the size of every batch it was handed, so a test can
+    /// see how many durability barriers a burst of events cost.
+    struct BatchSink {
+        batches: Arc<Mutex<Vec<usize>>>,
+        lines: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl DurableSink for BatchSink {
+        fn append_line(&mut self, line: &str) -> Result<()> {
+            self.batches.lock().expect("batch lock").push(1);
+            self.lines.lock().expect("line lock").push(line.to_string());
+            Ok(())
+        }
+
+        fn append_lines(&mut self, lines: &[String]) -> Result<()> {
+            self.batches.lock().expect("batch lock").push(lines.len());
+            self.lines
+                .lock()
+                .expect("line lock")
+                .extend(lines.iter().cloned());
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn queued_events_share_one_durability_barrier() {
+        // A run committing tasks faster than one fsync each is capped at the
+        // disk's fsync rate however many workers it has. The collector takes
+        // one blocking event and everything queued behind it, so a burst costs
+        // one barrier rather than one per event.
+        //
+        // The events are queued before the collector starts, so what it drains
+        // on its first pass is all of them.
+        let batches = Arc::new(Mutex::new(Vec::new()));
+        let lines = Arc::new(Mutex::new(Vec::new()));
+        let (tx, rx) = std::sync::mpsc::channel();
+        for i in 0..16 {
+            tx.send(Event::Diagnostic {
+                level: Level::Info,
+                source: "test".to_string(),
+                message: format!("event {i}"),
+                worker: None,
+                host: None,
+                task: None,
+            })
+            .expect("queue an event");
+        }
+        drop(tx);
+        let sink = BatchSink {
+            batches: Arc::clone(&batches),
+            lines: Arc::clone(&lines),
+        };
+        drain(sink, rx, &|_| {}).expect("the drain succeeds");
+
+        let batches = batches.lock().expect("batch lock");
+        assert_eq!(
+            batches.iter().sum::<usize>(),
+            16,
+            "every event is appended: {batches:?}"
+        );
+        assert!(
+            batches.len() < 16,
+            "a queued burst shares its barriers: {batches:?}"
+        );
+        assert_eq!(lines.lock().expect("line lock").len(), 16);
+    }
+
+    #[test]
+    fn a_burst_past_the_cap_is_appended_as_several_batches() {
+        // The cap is what keeps a burst from deciding this thread's memory: a
+        // batch holds its records and their rendered lines at once. Past the
+        // cap the burst still lands whole, in several batches.
+        let batches = Arc::new(Mutex::new(Vec::new()));
+        let lines = Arc::new(Mutex::new(Vec::new()));
+        let (tx, rx) = std::sync::mpsc::channel();
+        let queued = DRAIN_BATCH + 1;
+        for i in 0..queued {
+            tx.send(Event::Queued {
+                task: format!("task {i}"),
+            })
+            .expect("queue an event");
+        }
+        drop(tx);
+        drain(
+            BatchSink {
+                batches: Arc::clone(&batches),
+                lines: Arc::clone(&lines),
+            },
+            rx,
+            &|_| {},
+        )
+        .expect("the drain succeeds");
+
+        let batches = batches.lock().expect("batch lock");
+        assert_eq!(batches.as_slice(), [DRAIN_BATCH, 1], "{batches:?}");
+        assert_eq!(lines.lock().expect("line lock").len(), queued);
+    }
+
+    #[test]
+    fn the_observer_sees_what_the_journal_holds_in_the_order_it_holds_it() {
+        // The guarantee the batching had to preserve: an event is journaled
+        // before the observer sees it, and the observer's order is the
+        // journal's. A batch appends first and walks the observer after, so
+        // both halves still hold across one.
+        let lines = Arc::new(Mutex::new(Vec::new()));
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let (tx, rx) = std::sync::mpsc::channel();
+        for i in 0..8 {
+            tx.send(Event::Diagnostic {
+                level: Level::Info,
+                source: "test".to_string(),
+                message: format!("event {i}"),
+                worker: None,
+                host: None,
+                task: None,
+            })
+            .expect("queue an event");
+        }
+        drop(tx);
+        let sink = BatchSink {
+            batches: Arc::new(Mutex::new(Vec::new())),
+            lines: Arc::clone(&lines),
+        };
+        let observed = Arc::clone(&seen);
+        drain(sink, rx, &move |record: &Record| {
+            observed
+                .lock()
+                .expect("seen lock")
+                .push(record.to_line().expect("a line"));
+        })
+        .expect("the drain succeeds");
+        assert_eq!(
+            *seen.lock().expect("seen lock"),
+            *lines.lock().expect("line lock")
+        );
+    }
 
     /// A sink that logs each appended line into the shared trace.
     struct LogSink {
@@ -190,15 +387,30 @@ mod tests {
         })?;
         let entries = trace.lock().expect("lock trace").clone();
         assert_eq!(entries.len(), 4, "{entries:?}");
-        // Per event: journal append first, then the observer; events in send
-        // order.
-        for (i, task_byte) in ["ab", "cd"].iter().enumerate() {
-            let chunk = &entries[i * 2..i * 2 + 2];
-            assert!(chunk[0].starts_with("append "), "{chunk:?}");
-            assert!(chunk[0].contains(&task_byte.repeat(32)), "{chunk:?}");
-            assert!(chunk[1].starts_with("observed "), "{chunk:?}");
-            assert!(chunk[1].contains(&task_byte.repeat(32)), "{chunk:?}");
+        // The guarantee, stated over the whole trace rather than as a strict
+        // alternation: whether the two events shared a batch or not is timing,
+        // but an event's append always precedes its own observation, and both
+        // sequences follow send order.
+        let position = |prefix: &str, task: &str| {
+            entries
+                .iter()
+                .position(|entry| entry.starts_with(prefix) && entry.contains(&task.repeat(32)))
+                .unwrap_or_else(|| panic!("{prefix}{task} is missing from {entries:?}"))
+        };
+        for task in ["ab", "cd"] {
+            assert!(
+                position("append ", task) < position("observed ", task),
+                "the journal write for {task} precedes its observation: {entries:?}"
+            );
         }
+        assert!(
+            position("append ", "ab") < position("append ", "cd"),
+            "appends follow send order: {entries:?}"
+        );
+        assert!(
+            position("observed ", "ab") < position("observed ", "cd"),
+            "observations follow send order: {entries:?}"
+        );
         Ok(())
     }
 

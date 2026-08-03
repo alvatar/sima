@@ -2,6 +2,11 @@
 
 use sima_core::{Codec, Dec, Enc, Error, Result};
 
+use crate::domains::ca_evolution::values::finite_sign_positive;
+
+/// What a refusal names these values as belonging to.
+const SUBJECT: &str = "gray_scott genome";
+
 /// The Gray-Scott genome: the four evolvable scalars of the two-chemical
 /// reaction-diffusion system
 ///
@@ -44,21 +49,6 @@ pub(crate) struct GrayScottGenome {
     diffusion_v: f32,
 }
 
-/// Validates a rate parameter: finite with positive sign. Admits `+0.0` and
-/// rejects NaN, both infinities, negatives, and `-0.0`. Rejecting `-0.0`
-/// preserves one value, one byte image: `-0.0 == 0.0` numerically but their bit
-/// patterns differ, so admitting both would give numerically identical genomes
-/// distinct content ids.
-fn finite_sign_positive(name: &str, value: f32) -> Result<f32> {
-    if value.is_finite() && value.is_sign_positive() {
-        Ok(value)
-    } else {
-        Err(Error::Validation(format!(
-            "gray_scott genome {name} must be a finite value with positive sign, got {value}"
-        )))
-    }
-}
-
 /// Validates a diffusion parameter: finite and greater than zero. Beyond the
 /// sign rule this rejects `+0.0`, because zero diffusion removes the spatial
 /// coupling that makes the model reaction-diffusion.
@@ -84,8 +74,8 @@ impl GrayScottGenome {
         diffusion_v: f32,
     ) -> Result<GrayScottGenome> {
         Ok(GrayScottGenome {
-            feed: finite_sign_positive("feed", feed)?,
-            kill: finite_sign_positive("kill", kill)?,
+            feed: finite_sign_positive(SUBJECT, "feed", feed)?,
+            kill: finite_sign_positive(SUBJECT, "kill", kill)?,
             diffusion_u: finite_positive("diffusion_u", diffusion_u)?,
             diffusion_v: finite_positive("diffusion_v", diffusion_v)?,
         })

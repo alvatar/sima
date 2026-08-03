@@ -366,12 +366,7 @@ impl TuiState {
     /// session that produced it would.
     pub fn exit_code(&self) -> u8 {
         if self.observation.is_some() {
-            return match self.status.state {
-                RunState::InProgress => 0,
-                RunState::Finalized => 0,
-                RunState::Failed { .. } => crate::EXIT_FAILED,
-                RunState::Interrupted => crate::EXIT_INTERRUPTED,
-            };
+            return crate::state_exit_code(&self.status.state);
         }
         self.exit_code
     }

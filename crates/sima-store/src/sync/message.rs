@@ -9,7 +9,21 @@ use sima_core::{Dec, Enc, Error, Hash, Result};
 use sima_model::TaskKey;
 
 /// Version of the sync protocol; the handshake refuses a mismatch.
-pub const SYNC_PROTOCOL_VERSION: u32 = 1;
+///
+/// Version 2 carries the inventory as a sequence of chunks rather than one
+/// frame, so the two are not interchangeable on the wire.
+pub const SYNC_PROTOCOL_VERSION: u32 = 2;
+
+/// The most inventory entries one [`SyncMessage::Have`] or
+/// [`SyncMessage::Want`] chunk carries.
+///
+/// A record entry is two digests and an object entry one, so a full chunk is
+/// under 400 KiB — nearly three orders of magnitude below the frame cap, which
+/// makes the bound obviously safe rather than tuned against it. The whole
+/// inventory travels as a sequence of these, so what the cap bounds is one
+/// frame rather than the size of a run, and an inventory of any size syncs. In
+/// one frame the cap would stop a run of about 1.3M tasks from syncing at all.
+pub(crate) const INVENTORY_CHUNK: usize = 4096;
 
 const TAG_HELLO: u8 = 0;
 const TAG_HAVE: u8 = 1;
@@ -26,22 +40,33 @@ pub(crate) enum SyncMessage {
         /// The sender's [`SYNC_PROTOCOL_VERSION`]; the peer refuses a mismatch.
         protocol: u32,
     },
-    /// The inventory a side holds within the run's task set: each record it
-    /// holds as a `(key, record digest)` pair, and every object those records
-    /// reference. The record digests let the peer detect divergence — a key
-    /// held on both sides under different bytes.
+    /// One chunk of the inventory a side holds within the run's task set: some
+    /// of the records it holds as `(key, record digest)` pairs, and some of the
+    /// objects those records reference. The record digests let the peer detect
+    /// divergence — a key held on both sides under different bytes.
+    ///
+    /// The inventory is a sequence of these: `more` is set on every chunk but
+    /// the last, so a receiver reads until it is clear. A side holding nothing
+    /// still sends one empty chunk with `more` clear, which is what makes the
+    /// end of the sequence explicit rather than inferred from a count nobody
+    /// sent.
     Have {
-        /// The held records as `(task key, record digest)` pairs.
+        /// This chunk's held records as `(task key, record digest)` pairs.
         records: Vec<(TaskKey, Hash)>,
-        /// The digests of every object the held records reference.
+        /// This chunk's object digests.
         objects: Vec<Hash>,
+        /// Whether another chunk of this inventory follows.
+        more: bool,
     },
-    /// A request: the records and objects the sender lacks and the peer holds.
+    /// One chunk of a request: some of the records and objects the sender lacks
+    /// and the peer holds. Chunked exactly as [`SyncMessage::Have`] is.
     Want {
-        /// The task keys of the wanted records.
+        /// This chunk's wanted task keys.
         records: Vec<TaskKey>,
-        /// The digests of the wanted objects.
+        /// This chunk's wanted object digests.
         objects: Vec<Hash>,
+        /// Whether another chunk of this request follows.
+        more: bool,
     },
     /// A wanted record's canonical bytes, under the key it answers for.
     Record {
@@ -70,7 +95,11 @@ impl SyncMessage {
             SyncMessage::Hello { protocol } => {
                 enc.u8(TAG_HELLO).u32(*protocol);
             }
-            SyncMessage::Have { records, objects } => {
+            SyncMessage::Have {
+                records,
+                objects,
+                more,
+            } => {
                 enc.u8(TAG_HAVE).u64(records.len() as u64);
                 for (key, record) in records {
                     enc.hash(key.as_hash()).hash(record);
@@ -79,8 +108,13 @@ impl SyncMessage {
                 for object in objects {
                     enc.hash(object);
                 }
+                enc.flag(*more);
             }
-            SyncMessage::Want { records, objects } => {
+            SyncMessage::Want {
+                records,
+                objects,
+                more,
+            } => {
                 enc.u8(TAG_WANT).u64(records.len() as u64);
                 for key in records {
                     enc.hash(key.as_hash());
@@ -89,6 +123,7 @@ impl SyncMessage {
                 for object in objects {
                     enc.hash(object);
                 }
+                enc.flag(*more);
             }
             SyncMessage::Record { key, bytes } => {
                 enc.u8(TAG_RECORD).hash(key.as_hash()).bytes(bytes);
@@ -127,12 +162,20 @@ impl SyncMessage {
             TAG_HAVE => {
                 let records = decode_record_pairs(&mut dec)?;
                 let objects = decode_hashes(&mut dec)?;
-                SyncMessage::Have { records, objects }
+                SyncMessage::Have {
+                    records,
+                    objects,
+                    more: dec.flag()?,
+                }
             }
             TAG_WANT => {
                 let records = decode_keys(&mut dec)?;
                 let objects = decode_hashes(&mut dec)?;
-                SyncMessage::Want { records, objects }
+                SyncMessage::Want {
+                    records,
+                    objects,
+                    more: dec.flag()?,
+                }
             }
             TAG_RECORD => SyncMessage::Record {
                 key: TaskKey::from_hash(dec.hash()?),
@@ -206,6 +249,7 @@ mod tests {
             SyncMessage::Have {
                 records: Vec::new(),
                 objects: Vec::new(),
+                more: false,
             },
             SyncMessage::Have {
                 records: vec![
@@ -213,14 +257,17 @@ mod tests {
                     (key(b"k2"), hash_bytes(b"r2")),
                 ],
                 objects: vec![hash_bytes(b"o1"), hash_bytes(b"o2"), hash_bytes(b"o3")],
+                more: true,
             },
             SyncMessage::Want {
                 records: Vec::new(),
                 objects: Vec::new(),
+                more: false,
             },
             SyncMessage::Want {
                 records: vec![key(b"k3")],
                 objects: vec![hash_bytes(b"o4")],
+                more: true,
             },
             SyncMessage::Record {
                 key: key(b"k4"),
@@ -244,8 +291,10 @@ mod tests {
 
     #[test]
     fn the_protocol_version_is_pinned() {
-        // The handshake contract; bumping it is a deliberate act.
-        assert_eq!(SYNC_PROTOCOL_VERSION, 1);
+        // The handshake contract; bumping it is a deliberate act. Version 2
+        // carries the inventory as a sequence of chunks, so a version-1 peer
+        // and this one cannot read each other's frames.
+        assert_eq!(SYNC_PROTOCOL_VERSION, 2);
     }
 
     #[test]

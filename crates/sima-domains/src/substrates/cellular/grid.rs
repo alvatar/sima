@@ -35,13 +35,26 @@ fn element_count(width: u32, height: u32, channels: u32) -> Option<usize> {
 impl Grid {
     /// Builds a grid from its dimensions and cell-major interleaved payload.
     ///
-    /// Each dimension must be at least 1 and `data.len()` must equal
-    /// `width * height * channels`; either violation is [`Error::Validation`],
-    /// as is a dimension product that overflows a `usize`.
+    /// Each dimension must be at least 1, `width * height` must fit a `u32`,
+    /// and `data.len()` must equal `width * height * channels`; every violation
+    /// is [`Error::Validation`], as is a dimension product that overflows a
+    /// `usize`.
     pub fn new(width: u32, height: u32, channels: u32, data: Vec<f32>) -> Result<Grid> {
         if width == 0 || height == 0 || channels == 0 {
             return Err(Error::Validation(format!(
                 "grid dimensions must each be at least 1, got {width}x{height}x{channels}"
+            )));
+        }
+        // The cell count travels as a `u32` from here on — the dispatch harness
+        // sizes its grid by it and every kernel reads it out of its dimensions
+        // buffer — so an extent whose product does not fit one is refused here.
+        // Unchecked, it would wrap: 65536x65536 becomes zero cells, dispatching
+        // nothing and committing a grid of NaN scalars.
+        let cells = width as u64 * height as u64;
+        if cells > u64::from(u32::MAX) {
+            return Err(Error::Validation(format!(
+                "grid extent {width}x{height} is {cells} cells; a grid holds at most {}",
+                u32::MAX
             )));
         }
         let count = element_count(width, height, channels).ok_or_else(|| {
@@ -76,6 +89,15 @@ impl Grid {
     /// The number of channels per cell.
     pub fn channels(&self) -> u32 {
         self.channels
+    }
+
+    /// The cells in the grid, `width * height`.
+    ///
+    /// Infallible: [`Grid::new`] refuses an extent whose product does not fit a
+    /// `u32`, which is the width the dispatch harness and every kernel's
+    /// dimensions buffer carry it at.
+    pub fn cell_count(&self) -> u32 {
+        self.width * self.height
     }
 
     /// The cell-major interleaved payload.
@@ -186,6 +208,38 @@ mod tests {
             Grid::new(u32::MAX, u32::MAX, u32::MAX, Vec::new()),
             Err(Error::Validation(_))
         ));
+    }
+
+    #[test]
+    fn new_rejects_a_cell_count_past_a_u32() {
+        // The dispatch harness carries the cell count as a `u32` — it is what a
+        // kernel reads out of its dimensions buffer — so an extent whose
+        // product does not fit one is refused here rather than wrapping. A
+        // 65536x65536 grid is exactly 2^32 cells, which would wrap to zero and
+        // dispatch nothing while committing a grid of NaN scalars.
+        let error = Grid::new(65536, 65536, 1, Vec::new()).expect_err("2^32 cells");
+        let Error::Validation(message) = error else {
+            panic!("expected a validation error");
+        };
+        assert!(
+            message.contains("4294967296 cells"),
+            "names the cell count: {message}"
+        );
+
+        // One row short of the bound is the largest extent the harness carries,
+        // so what refuses the grid above is the product and not either extent.
+        // With no payload it falls through to the length check instead.
+        assert!(matches!(
+            Grid::new(65536, 65535, 1, Vec::new()),
+            Err(Error::Validation(message)) if message.contains("data length")
+        ));
+    }
+
+    #[test]
+    fn a_grids_cell_count_is_its_extent() {
+        // Infallible by construction: `new` refused every extent whose product
+        // does not fit, so no caller multiplies the two itself.
+        assert_eq!(sample().cell_count(), 2);
     }
 
     #[test]

@@ -2,7 +2,7 @@
 
 use sima_core::{Codec, Dec, Enc, Error, Result};
 
-use super::{C_STATE, H, P};
+use super::rule::{C_STATE, H, P};
 
 /// Perception block: `P` depthwise filters, each 3×3.
 const PERCEPTION: usize = P * 3 * 3;

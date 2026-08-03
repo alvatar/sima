@@ -31,8 +31,9 @@ pub struct DeviceEntry {
 /// layers.
 #[derive(Debug, Clone)]
 pub struct ExecutionConfig {
-    /// Number of worker processes; at least 1. With device entries present it
-    /// is their sum.
+    /// Number of local worker processes. `0` is a run whose workers come from
+    /// another machine. With device entries present it is their sum, and each
+    /// entry carries at least one worker.
     pub workers: usize,
     /// Total attempts per task before a transient failure becomes definitive;
     /// at least 1.

@@ -16,9 +16,9 @@
 
 use sima_core::Result;
 
-use super::super::model::CaModel;
-use super::super::params::CaParams;
 use super::gray_scott::{GrayScott, GrayScottGenConfig, GrayScottGenome, GrayScottIgnition};
+use crate::domains::ca_evolution::model::CaModel;
+use crate::domains::ca_evolution::params::CaParams;
 use crate::substrates::cellular::Grid;
 
 /// The Gray-Scott model bound to the CUDA backend. Zero-sized, like every
@@ -38,7 +38,7 @@ impl CaModel for GrayScottCuda {
     const ALIVE_MIN: f32 = GrayScott::ALIVE_MIN;
     /// The committed PTX, not the CUDA C beside it: the engine loads the
     /// artifact the device executes, and the environment hashes what it loads.
-    const KERNEL_SOURCE: &'static str = include_str!("gray_scott.ptx");
+    const KERNEL_SOURCE: &'static str = include_str!("gray_scott_cuda/gray_scott.ptx");
 
     fn uniforms(genome: &GrayScottGenome, shared: &CaParams) -> Vec<f32> {
         GrayScott::uniforms(genome, shared)
@@ -58,12 +58,14 @@ mod tests {
     use sima_core::hash_bytes;
     use sima_model::EnvironmentValue;
 
-    use super::super::super::binding::build_binding;
+    use sima_contracts::Domain;
+
     use super::*;
+    use crate::domains::ca_evolution::domain::CaDomain;
     use crate::substrates::cellular::{CudaEngine, WgslEngine};
 
     /// The CUDA C the committed PTX is generated from.
-    const KERNEL_CU: &str = include_str!("gray_scott.cu");
+    const KERNEL_CU: &str = include_str!("gray_scott_cuda/gray_scott.cu");
 
     #[test]
     fn the_committed_ptx_declares_the_convention_entry_point() {
@@ -91,9 +93,9 @@ mod tests {
     fn the_environment_pins_the_ptx_digest_and_the_cuda_compiler() -> Result<()> {
         // The environment is derived device-free, hashing the artifact the
         // engine loads. Regenerating the PTX changes every task key.
-        let domain = build_binding::<GrayScottCuda, CudaEngine>()?;
-        assert_eq!(domain.format.as_str(), GrayScottCuda::FORMAT_ID);
-        let components = domain.environment.components();
+        let domain = CaDomain::<GrayScottCuda, CudaEngine>::new()?;
+        assert_eq!(domain.format().as_str(), GrayScottCuda::FORMAT_ID);
+        let components = domain.environment().components();
         let names: Vec<&str> = components.iter().map(|c| c.name()).collect();
         assert_eq!(
             names,
@@ -116,10 +118,10 @@ mod tests {
         // The rule is shared, the identity is not: a task key from one program
         // must never resolve to a result the other backend produced, since
         // the two agree only to a tolerance.
-        let cuda = build_binding::<GrayScottCuda, CudaEngine>()?;
-        let wgsl = build_binding::<GrayScott, WgslEngine>()?;
-        assert_ne!(cuda.format, wgsl.format);
-        assert_ne!(cuda.environment.id(), wgsl.environment.id());
+        let cuda = CaDomain::<GrayScottCuda, CudaEngine>::new()?;
+        let wgsl = CaDomain::<GrayScott, WgslEngine>::new()?;
+        assert_ne!(cuda.format(), wgsl.format());
+        assert_ne!(cuda.environment().id(), wgsl.environment().id());
         Ok(())
     }
 

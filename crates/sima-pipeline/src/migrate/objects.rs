@@ -77,6 +77,7 @@ pub(crate) fn push_objects(store: &Store, keys: &[TaskKey]) -> Result<Vec<Hash>>
 
 #[cfg(test)]
 mod tests {
+    use sima_core::Codec;
     use sima_core::hash_bytes;
     use sima_model::{
         ArtifactRef, Environment, EnvironmentComponent, EnvironmentValue, FormatId, Params, Spec,

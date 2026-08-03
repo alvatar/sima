@@ -20,10 +20,9 @@ use std::collections::BTreeSet;
 use std::path::Path;
 use std::process::ExitCode;
 
-use sima_core::{Error, Result};
+use sima_core::Result;
 use sima_pipeline::load;
 use sima_provider::{Provider, ReconcileReport, ReconcileScope, reconcile};
-use sima_provider_vast::{VastConfig, VastProvider};
 use sima_store::Store;
 
 use crate::report;
@@ -60,7 +59,7 @@ where
     R: Fn(&str) -> Result<Box<dyn Provider>>,
 {
     let providers: BTreeSet<String> = store
-        .instances()?
+        .instance_records()?
         .into_iter()
         .map(|record| record.provider)
         .collect();
@@ -73,20 +72,18 @@ where
     Ok(report)
 }
 
-/// The backend a ledger record's provider id names.
+/// The backend a ledger record's provider id names, through the one registry a
+/// run resolves its own providers with — so a build that carries a backend for
+/// a run carries it here too.
 ///
-/// The vast.ai backend is keyed from the environment. The image and disk a
-/// rental would boot are empty: they enter a request only when an instance is
-/// created, which no path from here does.
+/// The settings are the read-only ones: the image and disk a rental would boot
+/// enter a request only when an instance is created, which no path from here
+/// does.
 fn backend(id: &str) -> Result<Box<dyn Provider>> {
-    match id {
-        sima_provider_vast::PROVIDER_ID => {
-            Ok(Box::new(VastProvider::new(VastConfig::from_env("", 0)?)))
-        }
-        unknown => Err(Error::Provider(format!(
-            "the instance ledger names the provider {unknown:?}, which this build has no backend for"
-        ))),
-    }
+    Ok(sima_pipeline::provider_for(
+        id,
+        &sima_pipeline::ProviderSettings::read_only(),
+    )?)
 }
 
 /// Prints what the pass did, or that the store held nothing to act on.
@@ -104,9 +101,10 @@ fn print_report(report: &ReconcileReport) {
 
 #[cfg(test)]
 mod tests {
+    use sima_core::Error;
     use std::cell::Cell;
 
-    use sima_core::{Error, Result};
+    use sima_core::Result;
     use sima_model::{FormatId, GeneratorConfig, GeneratorId, Params, RunConfig, RunId};
     use sima_provider::ReconcileScope;
     use sima_provider::stub::StubProvider;
@@ -189,7 +187,7 @@ mod tests {
         )?;
         assert_eq!(report.destroyed, vec![InstanceId("i-1".to_string())]);
         assert_eq!(report.cleared, vec!["sima-tag-0".to_string()]);
-        assert!(store.instances()?.is_empty());
+        assert!(store.instance_records()?.is_empty());
         Ok(())
     }
 
@@ -211,7 +209,7 @@ mod tests {
             ReconcileScope::Workers,
         )?;
         assert!(report.destroyed.is_empty());
-        assert_eq!(store.instances()?.len(), 1);
+        assert_eq!(store.instance_records()?.len(), 1);
         Ok(())
     }
 
@@ -245,7 +243,7 @@ mod tests {
             Err(Error::Provider(message)) if message.contains("nowhere")
         ));
         // The record survives: nothing could judge the machine it names.
-        assert_eq!(store.instances()?.len(), 1);
+        assert_eq!(store.instance_records()?.len(), 1);
         Ok(())
     }
 }

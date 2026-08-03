@@ -11,8 +11,8 @@
 use std::collections::VecDeque;
 use std::io::{Read, Write};
 use std::num::NonZeroU64;
-use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -23,7 +23,7 @@ use sima_trace::Emitter;
 
 use crate::host;
 use crate::link::{LinkEvent, SpawnOutcome, WorkerLink, WorkerTransport};
-use crate::protocol::{Assignment, Hello, ToChild, ToParent};
+use crate::protocol::{Assignment, Hello, ToChild, ToParent, encode_assign};
 use crate::subprocess::{self, next_event, read_events};
 
 /// A [`host::Resolver`] the loopback shares across its host threads: one
@@ -67,11 +67,17 @@ impl WorkerTransport for LoopbackTransport {
         let (mut stdin, host_reader) = pipe();
         let (host_writer, stdout) = pipe();
         let resolver = self.resolver.clone();
-        // The host thread is the "child": serve's return value has no one to
-        // go to — its ending, whatever the reason, is what the link observes
-        // as the event stream closing, exactly like a process death.
+        // The host thread is the "child": its ending is what the link observes
+        // as the event stream closing, exactly like a process death. What the
+        // serve returned is the death's reason, so it is kept rather than
+        // discarded — a loopback host that failed for a nameable reason would
+        // otherwise read as an unexplained closed pipe.
+        let failure: Arc<Mutex<Option<Error>>> = Arc::new(Mutex::new(None));
+        let host_failure = Arc::clone(&failure);
         let host = std::thread::spawn(move || {
-            let _ = host::serve(host_reader, host_writer, resolver.as_ref());
+            if let Err(e) = host::serve(host_reader, host_writer, resolver.as_ref()) {
+                *host_failure.lock().unwrap_or_else(PoisonError::into_inner) = Some(e);
+            }
         });
         let (sender, link_events) = channel();
         // The loopback host runs in-process on this machine: Event frames
@@ -90,9 +96,19 @@ impl WorkerTransport for LoopbackTransport {
             ..self.hello.clone()
         };
         write_frame(&mut stdin, &ToChild::Hello(hello).encode())?;
+        // A handshake that ends with the stream is the host having returned;
+        // its own reason, if it gave one, is what the caller is told rather
+        // than the bare fact that the pipe closed.
         let (device_name, driver) =
-            subprocess::ready_desc("loopback host", link_events.recv().ok())?;
+            subprocess::ready_desc("loopback host", link_events.recv().ok()).map_err(|closed| {
+                failure
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .take()
+                    .unwrap_or(closed)
+            })?;
         Ok(SpawnOutcome::Link(Box::new(LoopbackLink {
+            failure,
             stdin: Some(stdin),
             events: link_events,
             host: Some(host),
@@ -110,6 +126,10 @@ struct LoopbackLink {
     stdin: Option<PipeWriter>,
     events: Receiver<Result<ToParent>>,
     host: Option<JoinHandle<()>>,
+    /// What the host's serve returned, if it failed. Read when the event
+    /// stream ends, so a death carries the reason the host gave rather than
+    /// only the fact that its pipe closed.
+    failure: Arc<Mutex<Option<Error>>>,
     reader: Option<JoinHandle<()>>,
     /// The device the host reported at the handshake.
     device_name: String,
@@ -130,11 +150,25 @@ impl WorkerLink for LoopbackLink {
         let stdin = self.stdin.as_mut().ok_or_else(|| {
             Error::Transport("the loopback host's stdin is already closed".to_string())
         })?;
-        write_frame(stdin, &ToChild::Assign(assignment.clone()).encode())
+        // Encoded from the borrow: an assignment carries the candidate's
+        // state, which would otherwise be copied once per attempt only to be
+        // wrapped in a message value and dropped.
+        write_frame(stdin, &encode_assign(assignment))
     }
 
     fn next(&mut self, deadline: Option<Instant>) -> Result<LinkEvent> {
-        next_event(&self.events, deadline)
+        match next_event(&self.events, deadline)? {
+            // The stream ended: the host thread has returned, so its own
+            // reason — if it had one — is what the death is named by.
+            LinkEvent::Died(reason) => Ok(LinkEvent::Died(
+                self.failure
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .take()
+                    .map_or(reason, |e| e.to_string()),
+            )),
+            event => Ok(event),
+        }
     }
 
     fn kill(&mut self) {
@@ -399,6 +433,29 @@ mod tests {
             }
             other => panic!("expected Panicked, got {other:?}"),
         }
+        Ok(())
+    }
+
+    #[test]
+    fn a_serve_failure_names_the_death_it_caused() -> Result<()> {
+        // The host thread's ending is what the link sees, and without its
+        // reason a nameable failure reads as an unexplained closed pipe. A
+        // resolver that refuses the handshake is the reachable case: the serve
+        // returns its error before any frame crosses.
+        let transport = LoopbackTransport::new(
+            FormatId::new("stub.v1").expect("format id"),
+            Duration::MAX,
+            None,
+            Arc::new(|_, _| Err(Error::Backend("the device is already held".to_string()))),
+        );
+        // The handshake is what fails, so the spawn itself carries the reason.
+        let Err(error) = transport.spawn(0, None, discarding_emitter()) else {
+            panic!("a resolver that refuses ends the session");
+        };
+        assert!(
+            error.to_string().contains("the device is already held"),
+            "the reason the host gave reaches the caller: {error}"
+        );
         Ok(())
     }
 

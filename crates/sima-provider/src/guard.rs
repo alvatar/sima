@@ -150,7 +150,7 @@ pub(crate) fn teardown<P: Provider + ?Sized>(
     // reconcile re-runs the close-out under the same key, so the ledger holds
     // exactly one entry and the machine is never double-charged.
     sima_core::crashpoint("provider.destroyed");
-    match store.instance(tag)? {
+    match store.instance_record(tag)? {
         Some(record) => close_out(store, &record, listed),
         None => Ok(()),
     }
@@ -241,7 +241,7 @@ mod tests {
         let stub = one_offer().charging_instances_at(Price(250_000));
         let guard = acquire_any(&stub, &store)?;
         let tag = guard.tag().to_string();
-        let record = store.instance(&tag)?.expect("the rental's record");
+        let record = store.instance_record(&tag)?.expect("the rental's record");
         guard.release()?;
         let entries = spend_entries(&store, &sample_run(7))?;
         assert_eq!(entries.len(), 1);
@@ -299,7 +299,7 @@ mod tests {
         // The machine is down, and the record survives the failure, so the
         // next reconciliation pass closes the rental out.
         assert_eq!(stub.destroyed(), vec![id]);
-        assert!(store.instance(&tag)?.is_some());
+        assert!(store.instance_record(&tag)?.is_some());
         Ok(())
     }
 
@@ -319,7 +319,7 @@ mod tests {
             None,
         );
         assert!(matches!(outcome, Err(Error::Provider(_))));
-        assert_eq!(store.instance("sima-tag-0")?, Some(record));
+        assert_eq!(store.instance_record("sima-tag-0")?, Some(record));
         assert!(spend_entries(&store, &sample_run(7))?.is_empty());
         Ok(())
     }
@@ -363,7 +363,7 @@ mod tests {
         guard.release()?;
         assert_eq!(stub.destroyed(), vec![id]);
         assert!(stub.live().is_empty());
-        assert!(store.instances()?.is_empty());
+        assert!(store.instance_records()?.is_empty());
         Ok(())
     }
 
@@ -376,7 +376,7 @@ mod tests {
             guard.id().clone()
         };
         assert_eq!(stub.destroyed(), vec![id]);
-        assert!(store.instances()?.is_empty());
+        assert!(store.instance_records()?.is_empty());
         Ok(())
     }
 
@@ -392,7 +392,7 @@ mod tests {
         // The unwind ran the guard's drop, so nothing is still rented.
         assert_eq!(stub.destroyed().len(), 1);
         assert!(stub.live().is_empty());
-        assert!(store.instances()?.is_empty());
+        assert!(store.instance_records()?.is_empty());
         Ok(())
     }
 

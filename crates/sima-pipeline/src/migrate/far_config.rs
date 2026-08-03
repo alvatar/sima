@@ -139,11 +139,19 @@ pub(crate) fn far_config(local_text: &str, workers: FarWorkers<'_>) -> Result<St
     );
 
     toml::to_string_pretty(&far)
-        .map_err(|e| Error::Validation(format!("the far-side config cannot be written: {e}")))
+        .map_err(|e| Error::Encoding(format!("the far-side config cannot be written: {e}")))
 }
 
-/// The far side's `[config]`: the store beside its own file, and the settings
-/// that describe the run rather than this machine.
+/// The far side's `[config]`: the store beside its own file, and every setting
+/// that describes the run rather than this machine.
+///
+/// `store` is the one key that does not travel — the far side names its own —
+/// and every other key of the section is carried through verbatim rather than
+/// picked from a list. A hand-mirrored list is a second place to edit: a key
+/// added to the section and forgotten here would be silently dropped from
+/// every migrated run, and nothing would say so. The local section has already
+/// been through the loader, which rejects a key the section does not declare,
+/// so what is copied here is exactly what the section admits.
 fn far_settings(local: &toml::Table) -> Result<toml::Table> {
     let settings = local
         .get("config")
@@ -156,17 +164,9 @@ fn far_settings(local: &toml::Table) -> Result<toml::Table> {
         "store".to_string(),
         toml::Value::String(FAR_STORE.to_string()),
     );
-    // `max_attempts` is required, so its absence would already have failed the
-    // load; the cadences and the two deadlines travel when present.
-    for key in [
-        "max_attempts",
-        "attempt_timeout_ms",
-        "answer_timeout_ms",
-        "checkpoint_interval_ms",
-        "checkpoint_interval_steps",
-    ] {
-        if let Some(value) = settings.get(key) {
-            far.insert(key.to_string(), value.clone());
+    for (key, value) in settings {
+        if key != "store" {
+            far.insert(key.clone(), value.clone());
         }
     }
     Ok(far)
@@ -270,6 +270,8 @@ mod tests {
     use sima_domains::devices::DeviceType;
     use sima_model::RunId;
 
+    use std::collections::BTreeSet;
+
     use super::*;
     use crate::config::LoadedConfig;
     use crate::devices::DeviceSelector;
@@ -325,6 +327,83 @@ mod tests {
     /// The synthesized config, loaded back.
     fn synthesized(workers: FarWorkers<'_>) -> LoadedConfig {
         load_str(&far_config(LOCAL, workers).expect("the synthesis succeeds"))
+    }
+
+    /// A local config whose `[config]` section sets every key the section
+    /// admits, so the completeness check below has every one to carry.
+    const EVERY_SETTING: &str = r#"
+        [run]
+        root_seed = 9
+        format = "stub.v1"
+
+        [run.generator]
+        id = "stub.v1"
+        behaviors = ["succeed"]
+
+        [run.params]
+        hex = "0a"
+
+        [config]
+        store = "/somewhere/else/store"
+        max_attempts = 3
+        attempt_timeout_ms = 300000
+        answer_timeout_ms = 120000
+        checkpoint_interval_ms = 30000
+        checkpoint_interval_steps = 500
+
+        [orchestrator]
+        migrate = "gpubox"
+        workers = 1
+
+        [host.gpubox]
+        workers = 4
+    "#;
+
+    #[test]
+    fn every_setting_the_section_admits_travels() {
+        // A key added to `[config]` and forgotten in the synthesis would be
+        // silently dropped from every migrated run. The fixture is held to the
+        // section's schema and the far section to the fixture, so a new key
+        // breaks this test rather than the migration.
+        let local: toml::Table = EVERY_SETTING.parse().expect("the local config parses");
+        let far = far_settings(&local).expect("the synthesis succeeds");
+        let local_settings = local["config"].as_table().expect("a [config] table");
+        // The fixture is checked against the section's own schema first:
+        // comparing the far section to a local one that itself omits a key
+        // would pass while the key was dropped.
+        // Set comparison: the fixture is a TOML table, so its keys arrive
+        // sorted while the schema's arrive in declaration order.
+        assert_eq!(
+            local_settings.keys().cloned().collect::<BTreeSet<String>>(),
+            crate::config::config_section_keys()
+                .into_iter()
+                .collect::<BTreeSet<String>>(),
+            "the fixture sets every key the section admits"
+        );
+        assert_eq!(
+            far.keys().collect::<Vec<_>>(),
+            local_settings.keys().collect::<Vec<_>>(),
+            "the far section carries every key of the local one"
+        );
+        // Every value travels verbatim but the store, which the far side names
+        // for itself beside its own config file.
+        for (key, value) in &far {
+            if key == "store" {
+                assert_eq!(value.as_str(), Some(FAR_STORE));
+            } else {
+                assert_eq!(value, &local_settings[key], "{key} travels verbatim");
+            }
+        }
+    }
+
+    #[test]
+    fn the_far_side_names_its_own_store() {
+        // The one key that does not travel: a far side pointed at this
+        // machine's store path would write nothing this machine can read.
+        let local: toml::Table = EVERY_SETTING.parse().expect("the local config parses");
+        let far = far_settings(&local).expect("the synthesis succeeds");
+        assert_eq!(far["store"].as_str(), Some(FAR_STORE));
+        assert_ne!(far["store"], local["config"]["store"]);
     }
 
     /// The `gpubox` entry `LOCAL` declares.

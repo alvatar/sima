@@ -17,7 +17,7 @@ use sima_core::{Result, write_frame};
 use crate::config::load;
 use crate::feed::protocol::{FOLLOW_PROTOCOL_VERSION, FollowFrame};
 use crate::journal;
-use crate::observe::RunObserver;
+use crate::run_observer::RunObserver;
 
 /// How long the live loop waits between journal reads.
 const POLL_INTERVAL: Duration = Duration::from_millis(100);

@@ -34,11 +34,14 @@ impl CheckpointCadence {
         }
     }
 
-    /// Whether this offer triggers a save, under either cadence axis. The
-    /// step-count axis advances its offer counter here, so every offer is
-    /// counted exactly once; the wall-clock axis reads the elapsed time since
-    /// the last save. A save is due when either axis fires.
-    pub(crate) fn save_due(&self) -> bool {
+    /// Advances the offer counter and reports whether this offer triggers a
+    /// save, under either cadence axis.
+    ///
+    /// The name states the mutation: the step-count axis advances its counter
+    /// here, so every offer is counted exactly once and a caller asking twice
+    /// about one offer would count it twice. The wall-clock axis reads the
+    /// elapsed time since the last save. A save is due when either axis fires.
+    pub(crate) fn advance_due(&self) -> bool {
         let step_due = match self.step_interval {
             Some(n) => {
                 let count = self.offers_since_save.get() + 1;
@@ -70,57 +73,57 @@ mod tests {
     fn both_axes_disabled_is_never_due() {
         let cadence = CheckpointCadence::new(Duration::MAX, None);
         for _ in 0..100 {
-            assert!(!cadence.save_due());
+            assert!(!cadence.advance_due());
         }
     }
 
     #[test]
     fn a_zero_interval_is_due_at_every_offer() {
         let cadence = CheckpointCadence::new(Duration::ZERO, None);
-        assert!(cadence.save_due());
+        assert!(cadence.advance_due());
         cadence.reset();
-        assert!(cadence.save_due());
+        assert!(cadence.advance_due());
     }
 
     #[test]
     fn the_step_axis_fires_every_nth_offer() {
         let cadence = CheckpointCadence::new(Duration::MAX, NonZeroU64::new(3));
         // Offers 1 and 2 are below the cadence; offer 3 fires.
-        assert!(!cadence.save_due());
-        assert!(!cadence.save_due());
-        assert!(cadence.save_due());
+        assert!(!cadence.advance_due());
+        assert!(!cadence.advance_due());
+        assert!(cadence.advance_due());
     }
 
     #[test]
     fn reset_restarts_the_step_counter() {
         let cadence = CheckpointCadence::new(Duration::MAX, NonZeroU64::new(2));
-        assert!(!cadence.save_due());
-        assert!(cadence.save_due());
+        assert!(!cadence.advance_due());
+        assert!(cadence.advance_due());
         cadence.reset();
         // The counter restarts: one offer below cadence, the second fires.
-        assert!(!cadence.save_due());
-        assert!(cadence.save_due());
+        assert!(!cadence.advance_due());
+        assert!(cadence.advance_due());
     }
 
     #[test]
     fn an_unreset_step_axis_stays_due() {
-        // save_due never resets by itself: past the cadence it keeps firing
-        // until the owner performs a save and resets.
+        // The step axis never resets by itself: past the cadence it keeps
+        // firing until the owner performs a save and resets.
         let cadence = CheckpointCadence::new(Duration::MAX, NonZeroU64::new(2));
-        assert!(!cadence.save_due());
-        assert!(cadence.save_due());
-        assert!(cadence.save_due());
+        assert!(!cadence.advance_due());
+        assert!(cadence.advance_due());
+        assert!(cadence.advance_due());
     }
 
     #[test]
     fn the_axes_union_step_fires_under_a_far_off_clock() {
         let cadence = CheckpointCadence::new(Duration::from_secs(3600), NonZeroU64::new(1));
-        assert!(cadence.save_due());
+        assert!(cadence.advance_due());
     }
 
     #[test]
     fn the_axes_union_clock_fires_under_a_far_off_step_cadence() {
         let cadence = CheckpointCadence::new(Duration::ZERO, NonZeroU64::new(1000));
-        assert!(cadence.save_due());
+        assert!(cadence.advance_due());
     }
 }

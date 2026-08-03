@@ -1034,9 +1034,12 @@ fn sigint_interrupts_gracefully_and_a_rerun_matches_an_uninterrupted_store() {
         .stdout(std::process::Stdio::null())
         .spawn()
         .expect("spawn sima run");
-    // Let the run get in flight, then interrupt it; the drain outlasts the
+    // Interrupt once work is actually in flight; the drain outlasts the
     // in-flight sleeps, so a prompt exit proves graceful wind-down.
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    assert!(
+        common::wait_for_first_lease(&config, Duration::from_secs(30)),
+        "the run leased a task before the interrupt"
+    );
     let kill = Command::new("kill")
         .args(["-INT", &child.id().to_string()])
         .status()
@@ -1187,7 +1190,10 @@ fn follow_over_an_interrupted_run_exits_130() {
         .stdout(std::process::Stdio::null())
         .spawn()
         .expect("spawn sima run");
-    std::thread::sleep(Duration::from_millis(500));
+    assert!(
+        common::wait_for_first_lease(&config, Duration::from_secs(30)),
+        "the run leased a task before the interrupt"
+    );
     assert!(
         Command::new("kill")
             .args(["-INT", &child.id().to_string()])
@@ -1319,5 +1325,5 @@ fn reconcile_over_a_record_naming_an_unknown_provider_fails_naming_it() {
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     assert!(stderr(&output).contains("nowhere"), "{output:?}");
     // Nothing judged the machine the record names, so the record stands.
-    assert_eq!(store.instances().expect("read the ledger").len(), 1);
+    assert_eq!(store.instance_records().expect("read the ledger").len(), 1);
 }

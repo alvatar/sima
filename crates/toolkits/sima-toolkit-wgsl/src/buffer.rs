@@ -37,34 +37,59 @@ impl Drop for Buffer {
 }
 
 impl Context {
-    /// Allocates a device-local storage buffer of `size` bytes.
+    /// Allocates a device-local storage buffer of `size` bytes, zeroed.
     ///
     /// Usage is `STORAGE | TRANSFER_SRC | TRANSFER_DST`, so the buffer can bind
     /// to a kernel and take part in uploads and downloads. `size` must be
-    /// greater than zero: Vulkan rejects a zero-sized buffer.
+    /// greater than zero: Vulkan rejects a zero-sized buffer, and it is rounded
+    /// up to a whole 4-byte word — the granularity of a whole-buffer fill, and
+    /// the element size of every storage buffer a kernel here declares.
+    ///
+    /// Zeroing costs one device-side fill per allocation and buys a defined
+    /// starting value, so a kernel reading a byte no upload covered reads a
+    /// zero rather than whatever the last allocation left there. On a
+    /// determinism substrate that difference would otherwise reach a committed
+    /// artifact.
     pub fn buffer(&self, size: usize) -> Result<Buffer> {
         if size == 0 {
             return Err(Error::Backend(
                 "buffer size must be greater than zero".to_string(),
             ));
         }
-        create_buffer(
+        let buffer = create_buffer(
             self.device(),
             self.memory_properties(),
-            size as vk::DeviceSize,
+            size.next_multiple_of(4) as vk::DeviceSize,
             vk::BufferUsageFlags::STORAGE_BUFFER
                 | vk::BufferUsageFlags::TRANSFER_SRC
                 | vk::BufferUsageFlags::TRANSFER_DST,
             vk::MemoryPropertyFlags::DEVICE_LOCAL,
-        )
+        )?;
+        self.submit_immediate(|command_buffer| {
+            // SAFETY: `command_buffer` is recording; `buffer` outlives the
+            // fence-waited submission. The rounded-up size makes the whole
+            // buffer a whole number of 4-byte words, which is what a
+            // `VK_WHOLE_SIZE` fill covers.
+            unsafe {
+                self.device()
+                    .cmd_fill_buffer(command_buffer, buffer.buffer, 0, vk::WHOLE_SIZE, 0);
+            }
+        })?;
+        Ok(buffer)
     }
 
     /// Copies host bytes into a device-local buffer through a staging buffer.
     ///
     /// The host writes into a host-visible staging buffer, then a transfer copy
     /// carries the bytes to the device-local destination. `data` must not
-    /// exceed the destination's size.
-    pub fn upload(&self, dst: &Buffer, data: &[u8]) -> Result<()> {
+    /// exceed the destination's size, and the copy carries `data.len()` bytes
+    /// into the head of the buffer, so a destination larger than what it is
+    /// given keeps the rest of its contents.
+    ///
+    /// The destination is taken exclusively: an upload is a write, and holding
+    /// it that way is what keeps a buffer from being read as a binding while it
+    /// is being written.
+    pub fn upload(&self, dst: &mut Buffer, data: &[u8]) -> Result<()> {
         if data.is_empty() {
             return Ok(());
         }
@@ -271,10 +296,33 @@ mod tests {
         fn buffer_round_trips_bytes() {
             let context = Context::new().expect("create compute context");
             let data: Vec<u8> = (0..=255).collect();
-            let buffer = context.buffer(data.len()).expect("allocate buffer");
-            context.upload(&buffer, &data).expect("upload");
+            let mut buffer = context.buffer(data.len()).expect("allocate buffer");
+            context.upload(&mut buffer, &data).expect("upload");
             let read_back = context.download(&buffer).expect("download");
             assert_eq!(read_back, data);
+        }
+
+        #[test]
+        fn a_fresh_buffer_reads_back_zeroed() {
+            // The defined starting value the allocation promises: a kernel
+            // reading a byte no upload covered reads a zero, not whatever the
+            // last allocation on this device left there.
+            let context = Context::new().expect("create compute context");
+            let buffer = context.buffer(64).expect("allocate buffer");
+            assert_eq!(context.download(&buffer).expect("download"), vec![0u8; 64]);
+        }
+
+        #[test]
+        fn a_partial_upload_leaves_the_tail_zeroed() {
+            // Uploads are sized by what they carry, not by the destination, so
+            // the untouched tail is what the allocation zeroed.
+            let context = Context::new().expect("create compute context");
+            let mut buffer = context.buffer(8).expect("allocate buffer");
+            context.upload(&mut buffer, &[1, 2, 3, 4]).expect("upload");
+            assert_eq!(
+                context.download(&buffer).expect("download"),
+                vec![1, 2, 3, 4, 0, 0, 0, 0]
+            );
         }
     }
 }

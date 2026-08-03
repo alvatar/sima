@@ -115,6 +115,14 @@ pub(crate) fn status(client: &VastClient, id: &InstanceId) -> Result<InstanceSta
     }
 }
 
+/// The most pages one listing walks.
+///
+/// The cursor comes from the service, so the walk is only as bounded as the
+/// service is well-behaved. An account holding more instances than this has
+/// problems a listing cannot fix, and the bound turns a cursor that never ends
+/// into an error naming it instead of a loop that never returns.
+const MAX_PAGES: usize = 1_000;
+
 /// Every instance the account holds, with the tag it was created under.
 ///
 /// An instance carrying no label is omitted: the listing's key is the tag,
@@ -125,7 +133,7 @@ pub(crate) fn status(client: &VastClient, id: &InstanceId) -> Result<InstanceSta
 pub(crate) fn held(client: &VastClient) -> Result<Vec<TaggedInstance>> {
     let mut held = Vec::new();
     let mut cursor: Option<String> = None;
-    loop {
+    for _ in 0..MAX_PAGES {
         let body = client
             .get(&list_path(cursor.as_deref()), LIST_OPERATION)?
             .ok(LIST_OPERATION)?;
@@ -138,11 +146,23 @@ pub(crate) fn held(client: &VastClient) -> Result<Vec<TaggedInstance>> {
         }));
         // The API reports a cursor for as long as a page follows, so an
         // absent one is the end of the listing.
-        match page.next_token {
-            Some(token) => cursor = Some(token),
-            None => return Ok(held),
+        let Some(token) = page.next_token else {
+            return Ok(held);
+        };
+        // A cursor equal to the one that fetched this page would ask for it
+        // again forever. The service is not this side's to trust, so a repeat
+        // is a provider fault rather than a loop.
+        if cursor.as_deref() == Some(token.as_str()) {
+            return Err(Error::Provider(format!(
+                "{LIST_OPERATION}: the listing repeated its cursor {token:?}, so the pages do \
+                 not advance"
+            )));
         }
+        cursor = Some(token);
     }
+    Err(Error::Provider(format!(
+        "{LIST_OPERATION}: the listing ran past {MAX_PAGES} pages without ending"
+    )))
 }
 
 /// Ends the rental of `id`. An instance the account no longer holds is
@@ -306,6 +326,31 @@ mod tests {
             Err(Error::Provider(message))
                 if message.starts_with("show instance: HTTP 404: the response body is not JSON")
         ));
+    }
+
+    #[test]
+    fn a_listing_that_repeats_its_cursor_is_refused() -> Result<()> {
+        // The cursor is the service's, so the walk is only as bounded as the
+        // service is well-behaved: one that hands back the token that fetched
+        // the page would be asked for it forever. The refusal names the token.
+        let page = |token: &str| {
+            answer(
+                200,
+                &format!(
+                    r#"{{"instances": [{{"id": 1, "label": "sima-tag-1", "dph_total": 0.1}}],
+                        "next_token": "{token}"}}"#
+                ),
+            )
+        };
+        let server = TestServer::new(vec![page("c-25"), page("c-25")]);
+        let client = VastClient::new(&server.url(), "k-secret");
+        let Err(Error::Provider(message)) = held(&client) else {
+            panic!("expected a repeated cursor to be refused");
+        };
+        assert!(message.contains("c-25"), "names the cursor: {message}");
+        // Two requests: the walk stopped at the repeat rather than going on.
+        assert_eq!(server.requests().len(), 2);
+        Ok(())
     }
 
     #[test]

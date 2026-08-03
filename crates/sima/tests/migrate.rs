@@ -122,7 +122,8 @@ fn drive(config: &Path, stop_after: Option<usize>) -> Result<RunOutcome> {
 /// Moves the run `config` describes onto its destination, discarding the
 /// records it forwards.
 fn move_run(config: &Path) -> Result<MigrateOutcome> {
-    migrate(config, &|_: &Record| {}, &AtomicBool::new(false))
+    let loaded = sima_pipeline::load(config)?;
+    migrate(config, &loaded, &|_: &Record| {}, &AtomicBool::new(false))
 }
 
 /// Every record the store of the run `config` describes currently holds, keyed
@@ -290,7 +291,7 @@ fn a_migrated_run_finalizes_to_the_manifest_an_uninterrupted_run_writes() -> Res
     // The rental is gone: the ledger holds nothing to reconcile.
     let store = Store::open(&load(&migrated)?.store)?;
     assert!(
-        store.instances()?.is_empty(),
+        store.instance_records()?.is_empty(),
         "the machine that hosted the run was torn down"
     );
     Ok(())
@@ -320,7 +321,10 @@ fn a_second_migration_over_a_finished_run_finalizes_to_the_same_manifest() -> Re
     ));
     assert_eq!(manifest_bytes(&migrated), Some(manifest));
     let store = Store::open(&load(&migrated)?.store)?;
-    assert!(store.instances()?.is_empty(), "nothing was left rented");
+    assert!(
+        store.instance_records()?.is_empty(),
+        "nothing was left rented"
+    );
     Ok(())
 }
 
@@ -344,8 +348,10 @@ fn a_migration_interrupted_during_the_follow_still_pulls_and_tears_down() -> Res
     // Wound down as soon as the far run's first record arrives: the far side is
     // signalled, whatever it committed is pulled, and the rental is destroyed.
     let interrupt = AtomicBool::new(false);
+    let loaded = sima_pipeline::load(&migrated)?;
     let outcome = migrate(
         &migrated,
+        &loaded,
         &|_: &Record| interrupt.store(true, Ordering::Relaxed),
         &interrupt,
     )?;
@@ -381,7 +387,7 @@ fn a_migration_interrupted_during_the_follow_still_pulls_and_tears_down() -> Res
 
     let store = Store::open(&load(&migrated)?.store)?;
     assert!(
-        store.instances()?.is_empty(),
+        store.instance_records()?.is_empty(),
         "the machine was torn down on the interrupt path"
     );
     Ok(())
@@ -672,7 +678,10 @@ fn a_run_migrated_over_a_real_ssh_hop_finalizes_and_the_server_saw_it() -> Resul
     }
     assert!(after.len() > before.len(), "the far side did the rest");
     let store = Store::open(&load(&migrated)?.store)?;
-    assert!(store.instances()?.is_empty(), "nothing was left rented");
+    assert!(
+        store.instance_records()?.is_empty(),
+        "nothing was left rented"
+    );
     Ok(())
 }
 

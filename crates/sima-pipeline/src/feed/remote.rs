@@ -20,7 +20,6 @@ use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
 use std::thread::JoinHandle;
 
 use sima_core::{Error, Result, read_frame};
-use sima_model::RunId;
 use sima_scheduler::Record;
 use sima_transport::SshDestination;
 
@@ -69,7 +68,7 @@ impl RemoteFeed {
         // poll that arrives before the first frame reads as a run that did
         // nothing, and a caller that ends on a drained feed would end at once.
         let history = match stream.next()? {
-            Some(FollowFrame::Records(lines)) => parse(&info.run, &lines)?,
+            Some(FollowFrame::Records(lines)) => crate::journal::parse(&info.run, &lines)?,
             Some(FollowFrame::Fault(message)) => return Err(Error::Reported(message)),
             Some(frame) => {
                 return Err(stream.failure(&format!("unexpected {frame:?} after the handshake")));
@@ -96,7 +95,7 @@ impl RunFeed for RemoteFeed {
             match self.stream.pending()? {
                 Pending::Empty => return Ok(records),
                 Pending::Frame(FollowFrame::Records(lines)) => {
-                    records.extend(parse(&self.info.run, &lines)?);
+                    records.extend(crate::journal::parse(&self.info.run, &lines)?);
                 }
                 Pending::Frame(FollowFrame::Holder(holder)) => self.holder = holder,
                 Pending::Frame(FollowFrame::Fault(message)) => {
@@ -134,7 +133,9 @@ fn snapshot_over(mut stream: Stream) -> Result<(FeedInfo, Vec<Record>)> {
     let mut records = Vec::new();
     loop {
         match stream.next()? {
-            Some(FollowFrame::Records(lines)) => records.extend(parse(&info.run, &lines)?),
+            Some(FollowFrame::Records(lines)) => {
+                records.extend(crate::journal::parse(&info.run, &lines)?)
+            }
             Some(FollowFrame::Complete) => return Ok((info, records)),
             // A holder update is meaningless to a snapshot, which reports what
             // the run produced rather than whether it is running.
@@ -180,18 +181,6 @@ fn hello(stream: &mut Stream) -> Result<(FeedInfo, Option<String>)> {
         ))),
         None => Err(stream.failure("the remote follow stream produced nothing")),
     }
-}
-
-/// Parses journal lines the far side forwarded, exactly as a local observer
-/// parses the file they came from.
-fn parse(run: &RunId, lines: &[String]) -> Result<Vec<Record>> {
-    lines
-        .iter()
-        .map(|line| {
-            Record::from_line(line)
-                .map_err(|e| Error::Corruption(format!("journal of run {run}: {e}")))
-        })
-        .collect()
 }
 
 /// The argv that serves a run's follow stream from `host`: the destination's
@@ -245,12 +234,12 @@ impl Stream {
             .stderr(Stdio::piped())
             .spawn()
             .map_err(|e| {
-                Error::Validation(format!("cannot run {program:?} to follow {label}: {e}"))
+                Error::Transport(format!("cannot run {program:?} to follow {label}: {e}"))
             })?;
         // The pipes exist iff the spawn configured them; taking them cannot
         // fail past a successful spawn.
         let (Some(stdout), Some(stderr)) = (child.stdout.take(), child.stderr.take()) else {
-            return Err(Error::Validation(format!(
+            return Err(Error::Transport(format!(
                 "the process following {label} has no piped output"
             )));
         };

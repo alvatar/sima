@@ -1260,6 +1260,7 @@ dependencies = [
  "bytemuck",
  "cudarc",
  "libloading 0.9.0",
+ "sima-contracts",
  "sima-core",
 ]
 
@@ -1270,6 +1271,7 @@ dependencies = [
  "ash",
  "bytemuck",
  "naga",
+ "sima-contracts",
  "sima-core",
 ]
 

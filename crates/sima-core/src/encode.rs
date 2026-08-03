@@ -43,6 +43,15 @@ impl Enc {
         self
     }
 
+    /// Writes a boolean as one byte: 0 or 1.
+    ///
+    /// A flag is a byte because the encoding is byte-framed, and the pairing
+    /// with [`Dec::flag`] is what keeps every reader refusing the bytes no
+    /// writer here produces.
+    pub fn flag(&mut self, v: bool) -> &mut Self {
+        self.u8(u8::from(v))
+    }
+
     /// Writes a `u16`, little-endian.
     pub fn u16(&mut self, v: u16) -> &mut Self {
         self.buf.extend_from_slice(&v.to_le_bytes());
@@ -64,14 +73,6 @@ impl Enc {
     /// Writes an `i64`, two's-complement little-endian.
     pub fn i64(&mut self, v: i64) -> &mut Self {
         self.buf.extend_from_slice(&v.to_le_bytes());
-        self
-    }
-
-    /// Writes three `u32`s in order, each little-endian.
-    pub fn u32x3(&mut self, v: [u32; 3]) -> &mut Self {
-        for part in v {
-            self.u32(part);
-        }
         self
     }
 
@@ -177,6 +178,20 @@ impl<'a> Dec<'a> {
         Ok(self.array::<1>()?[0])
     }
 
+    /// Reads a boolean written by [`Enc::flag`]: 0 or 1, and nothing else.
+    ///
+    /// Any other byte is [`Error::Encoding`], so a payload no writer here
+    /// produced fails to decode rather than reading as `true`.
+    pub fn flag(&mut self) -> Result<bool> {
+        match self.u8()? {
+            0 => Ok(false),
+            1 => Ok(true),
+            other => Err(Error::Encoding(format!(
+                "invalid flag byte {other}, expected 0 or 1"
+            ))),
+        }
+    }
+
     /// Reads a little-endian `u16`.
     pub fn u16(&mut self) -> Result<u16> {
         Ok(u16::from_le_bytes(self.array()?))
@@ -195,11 +210,6 @@ impl<'a> Dec<'a> {
     /// Reads a two's-complement little-endian `i64`.
     pub fn i64(&mut self) -> Result<i64> {
         Ok(i64::from_le_bytes(self.array()?))
-    }
-
-    /// Reads three little-endian `u32`s.
-    pub fn u32x3(&mut self) -> Result<[u32; 3]> {
-        Ok([self.u32()?, self.u32()?, self.u32()?])
     }
 
     /// Reads an `f32` from its little-endian IEEE-754 bits.
@@ -337,7 +347,7 @@ mod tests {
             .u32(0x0405_0607)
             .u64(0x0809_0A0B_0C0D_0E0F)
             .i64(-2)
-            .u32x3([1, 2, 3])
+            .flag(true)
             .bytes(&[0xAA, 0xBB])
             .str("hi")
             .hash(&h1)
@@ -357,7 +367,7 @@ mod tests {
         assert_eq!(dec.u32()?, 0x0405_0607);
         assert_eq!(dec.u64()?, 0x0809_0A0B_0C0D_0E0F);
         assert_eq!(dec.i64()?, -2);
-        assert_eq!(dec.u32x3()?, [1, 2, 3]);
+        assert!(dec.flag()?);
         assert_eq!(dec.bytes()?, &[0xAA, 0xBB]);
         assert_eq!(dec.str()?, "hi");
         assert_eq!(dec.hash()?, sample_hash("11")?);
@@ -379,7 +389,7 @@ mod tests {
             "07060504",                               // u32 LE
             "0f0e0d0c0b0a0908",                       // u64 LE
             "feffffffffffffff",                       // i64 -2, two's complement LE
-            "010000000200000003000000",               // [u32; 3] LE each
+            "01",                                     // flag: true
             "0200000000000000aabb",                   // bytes: u64 len + payload
             "02000000000000006869",                   // str: u64 len + UTF-8 "hi"
             &"11".repeat(Hash::LEN),                  // hash digest
@@ -500,10 +510,7 @@ mod tests {
         assert!(matches!(Dec::new(&[0; 3]).u32(), Err(Error::Encoding(_))));
         assert!(matches!(Dec::new(&[0; 7]).u64(), Err(Error::Encoding(_))));
         assert!(matches!(Dec::new(&[0; 7]).i64(), Err(Error::Encoding(_))));
-        assert!(matches!(
-            Dec::new(&[0; 11]).u32x3(),
-            Err(Error::Encoding(_))
-        ));
+        assert!(matches!(Dec::new(&[0; 3]).u32(), Err(Error::Encoding(_))));
         assert!(matches!(Dec::new(&[0; 31]).hash(), Err(Error::Encoding(_))));
         // Present-flag says a digest follows, but input ends.
         assert!(matches!(Dec::new(&[1]).opt_hash(), Err(Error::Encoding(_))));

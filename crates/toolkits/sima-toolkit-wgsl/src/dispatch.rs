@@ -8,7 +8,40 @@ use crate::buffer::Buffer;
 use crate::context::Context;
 use crate::kernel::Kernel;
 
+/// The largest update a dispatch carries, in bytes: what Vulkan writes inline
+/// from a command buffer. Both backends hold the same bound, so an update a
+/// domain writes is portable between them.
+const MAX_UPDATE: usize = 65536;
+
+/// A small host-side write folded into a dispatch's own submission.
+///
+/// The bytes land in `buffer` before the kernel reads it, inside the one
+/// command buffer the dispatch submits, so a value that changes per dispatch —
+/// a step index, a pass number — costs no submission, no fence wait, and no
+/// staging allocation of its own.
+///
+/// The updated buffer binds after every buffer in the dispatch's own list. That
+/// is what makes the write sound to express: the update holds it exclusively
+/// while the rest of the bindings are shared.
+pub struct BufferUpdate<'a> {
+    pub buffer: &'a mut Buffer,
+    /// The bytes to write, from the start of the buffer: a whole number of
+    /// 4-byte words, at most 64 KiB, and no longer than the buffer.
+    pub bytes: &'a [u8],
+}
+
 impl Context {
+    /// The largest workgroup count this device launches, per axis.
+    ///
+    /// Vulkan guarantees only 65535 on each axis, so a caller sizing a grid by
+    /// its element count has to check: past the limit the dispatch is refused
+    /// by the driver rather than clamped, and on a machine that happens to
+    /// allow more it would run. Reading the device's own figure keeps the
+    /// check exact rather than conservative.
+    pub fn max_groups(&self) -> Result<[u32; 3]> {
+        Ok(self.limits().max_compute_work_group_count)
+    }
+
     /// Binds `buffers` to the kernel's group-0 storage bindings in order and
     /// dispatches `groups` workgroups.
     ///
@@ -19,6 +52,38 @@ impl Context {
     /// upload or an earlier dispatch — available to the shader, so a buffer a
     /// previous dispatch wrote can be read by this one.
     pub fn dispatch(&self, kernel: &Kernel, buffers: &[&Buffer], groups: [u32; 3]) -> Result<()> {
+        self.dispatch_bound(kernel, buffers, groups, None)
+    }
+
+    /// Dispatches as [`dispatch`](Context::dispatch) does, with `update` applied
+    /// to its own buffer first and that buffer bound last.
+    ///
+    /// The write is recorded into the dispatch's command buffer ahead of the
+    /// leading barrier, so the same barrier that makes prior writes visible to
+    /// the shader covers this one: the bytes land before the kernel that reads
+    /// them, in one submission rather than two.
+    pub fn dispatch_with_update(
+        &self,
+        kernel: &Kernel,
+        buffers: &[&Buffer],
+        update: BufferUpdate<'_>,
+        groups: [u32; 3],
+    ) -> Result<()> {
+        check_update(update.bytes, update.buffer.size)?;
+        let mut bound: Vec<&Buffer> = buffers.to_vec();
+        bound.push(update.buffer);
+        self.dispatch_bound(kernel, &bound, groups, Some(update.bytes))
+    }
+
+    /// The one dispatch path: validate the binding count, build the descriptor
+    /// set, and submit the recorded command buffer.
+    fn dispatch_bound(
+        &self,
+        kernel: &Kernel,
+        buffers: &[&Buffer],
+        groups: [u32; 3],
+        update: Option<&[u8]>,
+    ) -> Result<()> {
         let bindings = kernel.bindings();
         if buffers.len() != bindings.len() {
             return Err(Error::Backend(format!(
@@ -65,13 +130,39 @@ impl Context {
                 buffers,
                 descriptor_set,
                 groups,
+                update,
             );
         })
         // `pool` drops here, after the fence wait, freeing the set with it.
     }
 }
 
-/// Records the barrier, pipeline and set binds, and the dispatch.
+/// Confirms an update fits what Vulkan writes inline and what the buffer holds.
+fn check_update(bytes: &[u8], size: vk::DeviceSize) -> Result<()> {
+    if bytes.is_empty() || !bytes.len().is_multiple_of(4) || bytes.len() > MAX_UPDATE {
+        return Err(Error::Backend(format!(
+            "a dispatch update is 4 to {MAX_UPDATE} bytes in whole 4-byte words, got {}",
+            bytes.len()
+        )));
+    }
+    if bytes.len() as vk::DeviceSize > size {
+        return Err(Error::Backend(format!(
+            "a dispatch update of {} bytes exceeds buffer size {size}",
+            bytes.len()
+        )));
+    }
+    Ok(())
+}
+
+/// Records the update, the barrier, the pipeline and set binds, and the
+/// dispatch.
+///
+/// The update is written before the barrier so the barrier's transfer source
+/// scope covers it: the same edge that makes an earlier upload or dispatch
+/// visible to the shader makes these bytes visible too. The update always
+/// targets the last-bound buffer, which is where the caller's `BufferUpdate`
+/// put it.
+#[allow(clippy::too_many_arguments)]
 fn record_dispatch(
     device: &ash::Device,
     command_buffer: vk::CommandBuffer,
@@ -79,7 +170,16 @@ fn record_dispatch(
     buffers: &[&Buffer],
     descriptor_set: vk::DescriptorSet,
     groups: [u32; 3],
+    update: Option<&[u8]>,
 ) {
+    if let (Some(bytes), Some(target)) = (update, buffers.last()) {
+        // SAFETY: `command_buffer` is recording; `target` outlives the
+        // fence-waited submission, and `check_update` held the size to a whole
+        // number of 4-byte words within both the inline bound and the buffer.
+        unsafe {
+            device.cmd_update_buffer(command_buffer, target.buffer, 0, bytes);
+        }
+    }
     let barriers: Vec<vk::BufferMemoryBarrier> = buffers
         .iter()
         .map(|buffer| {
@@ -188,6 +288,30 @@ mod tests {
 
     /// The shipped compute kernel: `out[i] = in[i] * 2 + 1`.
     const SMOKE_WGSL: &str = include_str!("../shaders/smoke.wgsl");
+    /// The workgroup width that shader declares.
+    const SMOKE_WIDTH: u32 = 64;
+
+    #[test]
+    fn an_update_is_whole_words_within_the_inline_bound() {
+        // The three ways an update can be malformed, each rejected before any
+        // command buffer is recorded.
+        assert!(check_update(&[], 64).is_err(), "empty");
+        assert!(check_update(&[0; 6], 64).is_err(), "not whole 4-byte words");
+        assert!(
+            check_update(&[0; MAX_UPDATE + 4], 1 << 20).is_err(),
+            "past the inline bound"
+        );
+        check_update(&[0; 8], 64).expect("eight bytes into a 64-byte buffer");
+    }
+
+    #[test]
+    fn an_update_longer_than_its_buffer_is_rejected() {
+        let error = check_update(&[0; 16], 8).expect_err("past the buffer");
+        let Error::Backend(message) = error else {
+            panic!("expected a backend error");
+        };
+        assert!(message.contains("exceeds buffer size 8"), "{message}");
+    }
 
     /// Every dispatch test launches a kernel, which needs a Vulkan device.
     mod on_device {
@@ -196,12 +320,14 @@ mod tests {
         #[test]
         fn dispatch_applies_the_kernel() {
             let context = Context::new().expect("create compute context");
-            let kernel = context.kernel(SMOKE_WGSL, "main").expect("build kernel");
+            let kernel = context
+                .kernel(SMOKE_WGSL, "main", SMOKE_WIDTH)
+                .expect("build kernel");
             let input: [u32; 4] = [1, 2, 3, 4];
             let bytes: &[u8] = bytemuck::cast_slice(&input);
-            let in_buffer = context.buffer(bytes.len()).expect("input buffer");
+            let mut in_buffer = context.buffer(bytes.len()).expect("input buffer");
             let out_buffer = context.buffer(bytes.len()).expect("output buffer");
-            context.upload(&in_buffer, bytes).expect("upload input");
+            context.upload(&mut in_buffer, bytes).expect("upload input");
 
             context
                 .dispatch(&kernel, &[&in_buffer, &out_buffer], [1, 1, 1])
@@ -220,12 +346,14 @@ mod tests {
         #[test]
         fn a_dispatch_observes_a_prior_dispatchs_writes() {
             let context = Context::new().expect("create compute context");
-            let kernel = context.kernel(SMOKE_WGSL, "main").expect("build kernel");
+            let kernel = context
+                .kernel(SMOKE_WGSL, "main", SMOKE_WIDTH)
+                .expect("build kernel");
             let input: [u32; 4] = [1, 2, 3, 4];
             let bytes: &[u8] = bytemuck::cast_slice(&input);
-            let a = context.buffer(bytes.len()).expect("buffer a");
+            let mut a = context.buffer(bytes.len()).expect("buffer a");
             let b = context.buffer(bytes.len()).expect("buffer b");
-            context.upload(&a, bytes).expect("upload input");
+            context.upload(&mut a, bytes).expect("upload input");
 
             // First pass writes b = a * 2 + 1 through the shader; the second pass
             // reads that shader output back out of b and writes a.

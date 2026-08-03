@@ -54,10 +54,11 @@ use sima_provider::{
     AcquireLimits, Budget, InstanceGuard, Objective, Provider, Verdict, acquire, adopt, assess,
     now_ms,
 };
+use sima_scheduler::{Event, Level};
 use sima_store::{ObjectScope, Rental as RentalRole, RunLock, Store};
-use sima_trace::{Collector, Emitter, Event, Level, Observer};
+use sima_trace::{Collector, Emitter, Observer};
 
-use crate::config::{FillPolicy, HostForm, LoadedConfig, Rented, load};
+use crate::config::{FillPolicy, HostForm, LoadedConfig, Rented};
 // The readiness defaults are what a destination stating none falls back on,
 // which under test comes from the session's test overrides instead.
 #[cfg(not(test))]
@@ -68,7 +69,7 @@ use crate::migrate::destination::{Destination, destination_for};
 use crate::migrate::far_config::{FarWorkers, far_config};
 use crate::migrate::far_side::{Contact, FarSide, Remote};
 use crate::migrate::objects::push_objects;
-use crate::rental::{budget_exhausted, provider_for};
+use crate::rental::{budget_exhausted, provider_for_rental};
 use crate::status::{RunState, RunStatus};
 use crate::task_keys::task_keys;
 
@@ -120,15 +121,18 @@ pub enum MigrateOutcome {
 /// reconciles this run while it is away.
 pub fn migrate(
     config: &Path,
+    loaded: &LoadedConfig,
     observer: Observer<'_>,
     interrupt: &AtomicBool,
 ) -> Result<MigrateOutcome> {
     // The file's own text is what travels: `[run]` is carried across as a
     // parsed value rather than re-derived, so no translation here can perturb
-    // the run id.
-    let local_text = std::fs::read_to_string(config)
-        .map_err(|e| Error::Validation(format!("cannot read config {}: {e}", config.display())))?;
-    let loaded = load(config)?;
+    // the run id. The caller hands over what it already loaded, since a second
+    // translation of one file is a second chance for the two to disagree.
+    let local_text = std::fs::read_to_string(config).map_err(|source| Error::Io {
+        path: config.to_path_buf(),
+        source,
+    })?;
     // A run whose format a `[domain.*]` entry routes to a program stays on the
     // machine that program is installed on. The refusal precedes the
     // destination, the store, the lock, and any provider, so the refusal is
@@ -142,7 +146,7 @@ pub fn migrate(
             routed.binary.display()
         )));
     }
-    let destination = destination_for(&loaded)?;
+    let destination = destination_for(loaded)?;
     let store = Store::open(&loaded.store)?;
     // Registering the run is what gives it a journal to forward into, and it is
     // the same idempotent registration a local `sima run` performs.
@@ -157,7 +161,7 @@ pub fn migrate(
             Session {
                 far: &far,
                 store: &store,
-                config: &loaded,
+                config: loaded,
                 destination: &destination,
                 local_text: &local_text,
                 rental: None,
@@ -180,7 +184,7 @@ pub fn migrate(
                 count: 1,
                 fill: FillPolicy::Strict,
             };
-            let provider = provider_for(&rental)?;
+            let provider = provider_for_rental(&rental)?;
             // The clock on this machine starts here, where it is first asked
             // for, and every stage that waits for it runs under the one
             // deadline: its readiness and its reachability are stages of the
@@ -205,7 +209,7 @@ pub fn migrate(
             Session {
                 far: &far,
                 store: &store,
-                config: &loaded,
+                config: loaded,
                 destination: &destination,
                 local_text: &local_text,
                 rental: Some(guard),
@@ -1766,16 +1770,16 @@ mod tests {
         )
         .expect("write the config");
         let observer = |_: &Record| {};
-        let error = migrate(&path, &observer, &AtomicBool::new(false))
+        let loaded = crate::config::load(&path)?;
+        let error = migrate(&path, &loaded, &observer, &AtomicBool::new(false))
             .expect_err("the machine cannot be reached");
         assert!(
             error.to_string().contains("sima.invalid.test"),
             "the reach check is what failed, naming what it could not reach: {error}"
         );
-        let loaded = crate::config::load(&path)?;
         let store = Store::open(&loaded.store)?;
         assert!(
-            store.instances()?.is_empty(),
+            store.instance_records()?.is_empty(),
             "a machine of yours rents nothing"
         );
         Ok(())

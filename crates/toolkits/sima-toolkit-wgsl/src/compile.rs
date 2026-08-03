@@ -85,6 +85,22 @@ pub(crate) fn storage_bindings(module: &naga::Module) -> Vec<u32> {
     bindings
 }
 
+/// The workgroup dimensions the named compute entry point declares.
+///
+/// The width is stated in the shader with `@workgroup_size`, and a caller
+/// sizing a grid needs the same number; reflecting it here is what lets
+/// [`Context::kernel`](crate::Context::kernel) reject a caller whose width
+/// disagrees with the shader's, rather than launching a grid that covers the
+/// wrong element count.
+pub(crate) fn workgroup_size(module: &naga::Module, entry: &str) -> Result<[u32; 3]> {
+    module
+        .entry_points
+        .iter()
+        .find(|point| point.name == entry)
+        .map(|point| point.workgroup_size)
+        .ok_or_else(|| Error::Backend(format!("no entry point '{entry}' in this module")))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -154,6 +170,24 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     #[test]
     fn compiler_id_is_pinned() {
         assert_eq!(COMPILER_ID, "naga 30.0.0; spirv=1.5; opt=none");
+    }
+
+    #[test]
+    fn reflects_the_declared_workgroup_size() {
+        let compiled = compile(SAMPLE, "main").expect("compile sample");
+        assert_eq!(
+            workgroup_size(&compiled.module, "main").expect("the entry point"),
+            [64, 1, 1]
+        );
+    }
+
+    #[test]
+    fn an_unknown_entry_point_has_no_workgroup_size() {
+        let compiled = compile(SAMPLE, "main").expect("compile sample");
+        assert!(matches!(
+            workgroup_size(&compiled.module, "absent"),
+            Err(Error::Backend(_))
+        ));
     }
 
     #[test]

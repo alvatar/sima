@@ -18,4 +18,4 @@ pub use executor::StubExecutor;
 pub use generator::{StubGenerator, StubGeneratorConfig};
 pub use program::{StubBehavior, StubProgram};
 pub use state::StubState;
-pub(crate) use translation::{ID, binding, generator_params, params};
+pub(crate) use translation::{ID, StubDomain, generator_params};

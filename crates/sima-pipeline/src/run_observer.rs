@@ -49,13 +49,7 @@ impl RunObserver {
     /// next poll reports it again.
     pub fn poll(&mut self) -> Result<Vec<Record>> {
         let (lines, offset) = self.store.journal_from(&self.run, self.offset)?;
-        let records = lines
-            .iter()
-            .map(|line| {
-                Record::from_line(line)
-                    .map_err(|e| Error::Corruption(format!("journal of run {}: {e}", self.run)))
-            })
-            .collect::<Result<Vec<_>>>()?;
+        let records = crate::journal::parse(&self.run, &lines)?;
         // Consume the region only once every line in it parsed.
         self.offset = offset;
         Ok(records)

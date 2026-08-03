@@ -146,17 +146,27 @@ impl Codec for CaParams {
     }
 }
 
-impl TomlConfig for CaParams {
-    /// Reads the shared `[run.params]` keys, rejecting any key outside the set,
-    /// and funnels them through [`CaParams::new`].
-    fn parse(table: &toml::Table, id: &str, section: &str) -> Result<CaParams> {
-        reject_unknown_keys(id, table, &SHARED_KEYS, section)?;
-        let width = integer(table, id, section, "width")?;
-        let height = integer(table, id, section, "height")?;
-        let steps = integer(table, id, section, "steps")?;
-        let dt = float(table, id, section, "dt")?;
-        CaParams::new(width, height, steps, dt)
-    }
+/// Reads every shared `[run.params]` key for model `M`, rejecting any key
+/// outside the set, and funnels them through [`CaParams::new`].
+///
+/// The snapshot predicate is read here rather than patched in afterwards: it is
+/// one of the shared keys, and a parse that accepted the key while dropping its
+/// value would hand back a `CaParams` missing a predicate the config states.
+/// Reading it needs the model — the scalar is validated against the names its
+/// reduction emits — and whether the run is segmented, which is why this is a
+/// model-aware function rather than a [`TomlConfig`] impl.
+fn parse_shared<M: CaModel>(table: &toml::Table, segmented: bool) -> Result<CaParams> {
+    let (id, section) = (M::FORMAT_ID, "params");
+    reject_unknown_keys(id, table, &SHARED_KEYS, section)?;
+    let width = integer(table, id, section, "width")?;
+    let height = integer(table, id, section, "height")?;
+    let steps = integer(table, id, section, "steps")?;
+    let dt = float(table, id, section, "dt")?;
+    let params = CaParams::new(width, height, steps, dt)?;
+    Ok(match table.get("snapshot_when") {
+        Some(value) => params.with_snapshot_when(Some(parse_snapshot_when::<M>(value, segmented)?)),
+        None => params,
+    })
 }
 
 /// The canonical run-params blob: the shared fields, then the model's ignition.
@@ -196,10 +206,7 @@ pub(crate) fn translate<M: CaModel>(table: &toml::Table, segmented: bool) -> Res
             shared_table.insert(key.to_string(), value);
         }
     }
-    let mut shared = CaParams::parse(&shared_table, M::FORMAT_ID, "params")?;
-    if let Some(value) = shared_table.get("snapshot_when") {
-        shared = shared.with_snapshot_when(Some(parse_snapshot_when::<M>(value, segmented)?));
-    }
+    let shared = parse_shared::<M>(&shared_table, segmented)?;
     let ignition = M::Ignition::parse(&model_keys, M::FORMAT_ID, "params")?;
     Ok(Params {
         bytes: encode_params::<M>(&shared, &ignition),
@@ -281,6 +288,47 @@ mod tests {
     /// little-endian `u32`, dt 1.0 as its f32 bits (`0x3F800000`) little-endian,
     /// then the snapshot-predicate presence flag `00` (absent).
     const SAMPLE_BYTES_HEX: &str = "4000000030000000640000000000803f00";
+
+    #[test]
+    fn the_shared_parse_keeps_the_predicate_the_config_states() -> Result<()> {
+        // The key sits in the shared set, so a parse that accepted it and
+        // dropped its value would hand back params missing a predicate the
+        // config asked for — and the caller that patched it back in was the
+        // only thing keeping that from happening.
+        let table: toml::Table = r#"
+            width = 8
+            height = 8
+            steps = 4
+            dt = 1.0
+            snapshot_when = { scalar = "activity", min = 0.5 }
+        "#
+        .parse()
+        .expect("a table");
+        let shared = parse_shared::<Toy>(&table, false)?;
+        assert_eq!(shared.snapshot_when(), Some(&("activity".to_string(), 0.5)));
+        Ok(())
+    }
+
+    #[test]
+    fn the_shared_parse_refuses_a_predicate_on_a_segmented_run() -> Result<()> {
+        // The rule the predicate carries, applied where the predicate is read
+        // rather than at one caller: one params-carried predicate would gate
+        // every segment identically and break the chain.
+        let table: toml::Table = r#"
+            width = 8
+            height = 8
+            steps = 4
+            dt = 1.0
+            snapshot_when = { scalar = "activity", min = 0.5 }
+        "#
+        .parse()
+        .expect("a table");
+        assert!(matches!(
+            parse_shared::<Toy>(&table, true),
+            Err(Error::Validation(_))
+        ));
+        Ok(())
+    }
 
     #[test]
     fn new_rejects_zero_counts() {
@@ -488,8 +536,8 @@ mod tests {
 
     #[test]
     fn absent_snapshot_when_leaves_no_predicate() -> Result<()> {
-        // The pre-milestone behavior: no predicate key means the snapshot always
-        // commits, and the params carry no gate.
+        // No predicate key means the snapshot always commits, and the params
+        // carry no gate.
         let blob = translate::<Toy>(&params_table(FULL_PARAMS), false)?.bytes;
         let (shared, _) = decode_params::<Toy>(&blob)?;
         assert_eq!(shared.snapshot_when(), None);

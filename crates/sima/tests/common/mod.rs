@@ -11,7 +11,7 @@ use std::sync::{Mutex, Once};
 use std::time::{Duration, Instant};
 
 use sima_core::Error;
-use sima_domains::{binding_for, generator_for};
+use sima_domains::{domain_for, generator_for};
 use sima_model::{FormatId, TaskIdentity};
 use sima_pipeline::{Event, Record, RunObserver, load};
 use sima_store::{Manifest, Store};
@@ -224,10 +224,11 @@ impl ChainTrail {
 pub fn chain_trails(config_path: &Path) -> Vec<ChainTrail> {
     let config = load(config_path).expect("load config");
     let store = Store::open(&config.store).expect("open store");
-    let generator = generator_for(&config.run.generator.id).expect("dispatch the generator");
-    let environment = binding_for(&config.run.format)
+    let generator = generator_for(&config.run.format, &config.run.generator.id)
+        .expect("dispatch the generator");
+    let environment = domain_for(&config.run.format)
         .expect("dispatch the domain")
-        .environment
+        .environment()
         .id();
     let specs = generator
         .generate(config.run.root_seed, &config.run.generator.params)
@@ -467,4 +468,47 @@ fn comm_of(stat: &str) -> Option<&str> {
     let open = stat.find('(')?;
     let close = stat.rfind(')')?;
     Some(&stat[open + 1..close])
+}
+
+/// Blocks until the run `config_path` describes has leased its first task, and
+/// reports whether it did within `within`.
+///
+/// A fixed sleep before signalling a run is a race in both directions: too
+/// short and the interrupt lands before any work is in flight, too long and the
+/// run may already have finished, so the test proves nothing about a wind-down.
+/// The journal states when a task was leased, so the signal follows that fact.
+///
+/// The store may not exist yet, and the run may have no journal yet; both are
+/// the ordinary early state of a run that is still starting, so they read as
+/// "not yet" rather than as failures.
+pub fn wait_for_first_lease(config_path: &Path, within: Duration) -> bool {
+    let deadline = Instant::now() + within;
+    while Instant::now() < deadline {
+        if leased_yet(config_path) {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    leased_yet(config_path)
+}
+
+/// Whether the run's journal already holds a `Leased` event, tolerating every
+/// state a run that has not got there yet can be in.
+fn leased_yet(config_path: &Path) -> bool {
+    let Ok(config) = load(config_path) else {
+        return false;
+    };
+    if !config.store.is_dir() {
+        return false;
+    }
+    let Ok(store) = Store::open(&config.store) else {
+        return false;
+    };
+    let Ok(lines) = store.journal(&config.run.id()) else {
+        return false;
+    };
+    lines
+        .iter()
+        .filter_map(|line| Record::from_line(line).ok())
+        .any(|record| matches!(record.event, Event::Leased { .. }))
 }

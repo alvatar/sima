@@ -3,6 +3,11 @@
 
 use sima_core::{Codec, Dec, Enc, Error, Result};
 
+use crate::domains::ca_evolution::values::finite_sign_positive;
+
+/// What a refusal names these values as belonging to.
+const SUBJECT: &str = "gray_scott ignition";
+
 use crate::domains::translate::{self, TomlConfig};
 
 /// The ignition configuration of the Gray-Scott model's initial grid: the base
@@ -35,20 +40,6 @@ pub(crate) struct GrayScottIgnition {
     noise_width: f32,
 }
 
-/// Validates an ignition parameter: finite with positive sign. Admits `+0.0` —
-/// zero noise width is the legitimate noiseless configuration — and rejects NaN,
-/// both infinities, negatives, and `-0.0`, keeping one value, one byte image
-/// once these values enter run params.
-fn finite_sign_positive(name: &str, value: f32) -> Result<f32> {
-    if value.is_finite() && value.is_sign_positive() {
-        Ok(value)
-    } else {
-        Err(Error::Validation(format!(
-            "gray_scott ignition {name} must be a finite value with positive sign, got {value}"
-        )))
-    }
-}
-
 impl GrayScottIgnition {
     /// Builds an ignition configuration, validating each field: `base_u`,
     /// `base_v`, and `noise_width` must be finite with positive sign (`+0.0`
@@ -67,10 +58,10 @@ impl GrayScottIgnition {
             ));
         }
         Ok(GrayScottIgnition {
-            base_u: finite_sign_positive("base_u", base_u)?,
-            base_v: finite_sign_positive("base_v", base_v)?,
+            base_u: finite_sign_positive(SUBJECT, "base_u", base_u)?,
+            base_v: finite_sign_positive(SUBJECT, "base_v", base_v)?,
             side_divisor,
-            noise_width: finite_sign_positive("noise_width", noise_width)?,
+            noise_width: finite_sign_positive(SUBJECT, "noise_width", noise_width)?,
         })
     }
 

@@ -78,14 +78,9 @@ impl GrayScottGenConfig {
     pub(crate) fn sample(&self, seed: u64, index: u64) -> GrayScottGenome {
         let s = prng::derive(seed, index);
         let ranges = [self.feed, self.kill, self.diffusion_u, self.diffusion_v];
-        let draw = |counter: u64, [lo, hi]: [f32; 2]| -> f32 {
-            // Frozen identity-bearing arithmetic: t ∈ [0, 1) in f64, mapped
-            // affinely and rounded once to f32 (to nearest even). The result lies
-            // in [lo, hi], and every point of the validated box is a valid
-            // genome, so construction cannot fail.
-            let t = prng::unit_f64(prng::next(s, counter));
-            (lo as f64 + t * (hi as f64 - lo as f64)) as f32
-        };
+        // Every point of the validated box is a valid genome, so construction
+        // cannot fail.
+        let draw = |counter: u64, [lo, hi]: [f32; 2]| prng::uniform_f32(s, counter, lo, hi);
         GrayScottGenome::new(
             draw(0, ranges[0]),
             draw(1, ranges[1]),

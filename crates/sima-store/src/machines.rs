@@ -16,15 +16,13 @@
 //! The provider, machine, and tag become path components, so each is validated
 //! against its charset before it reaches the filesystem.
 
-use std::fs;
-use std::io::ErrorKind;
-
 use serde::{Deserialize, Serialize};
 use sima_core::{Error, Result};
 
-use crate::atomic::{self, io_error};
+use crate::atomic;
 use crate::instances::{validate_charset, validate_tag};
 use crate::layout;
+use crate::ledger;
 use crate::store::Store;
 
 /// One operational incident against a marketplace machine: the durable trace
@@ -88,24 +86,13 @@ impl Store {
     /// or attempt than its path, is [`Error::Corruption`] naming the file: the
     /// ledger is store state, so a read either verifies or fails.
     pub fn machine_incidents(&self) -> Result<Vec<MachineIncident>> {
-        let ledger = layout::machines_ledger_dir(self.root());
-        let machine_dirs = match fs::read_dir(&ledger) {
-            Ok(entries) => entries,
-            Err(e) if e.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(e) => return Err(io_error(&ledger, e)),
-        };
         let mut incidents = Vec::new();
-        for machine_dir in machine_dirs {
-            let dir = machine_dir.map_err(|e| io_error(&ledger, e))?.path();
-            for incident_file in fs::read_dir(&dir).map_err(|e| io_error(&dir, e))? {
-                let path = incident_file.map_err(|e| io_error(&dir, e))?.path();
-                let bytes = fs::read(&path).map_err(|e| io_error(&path, e))?;
-                let incident: MachineIncident = serde_json::from_slice(&bytes).map_err(|e| {
-                    Error::Corruption(format!(
-                        "machine incident {} does not parse: {e}",
-                        path.display()
-                    ))
-                })?;
+        // Keyed one level deeper than the other ledgers: a directory per
+        // machine, an incident file per attempt within it.
+        for machine in ledger::groups(&layout::machines_ledger_dir(self.root()))? {
+            for (path, incident) in
+                ledger::entries::<MachineIncident>(&machine, "machine incident")?
+            {
                 verify_placement(&path, &incident)?;
                 incidents.push(incident);
             }
@@ -356,7 +343,7 @@ mod tests {
         store.put_machine_incident(&incident("81234", IncidentKind::Lost, "sima-tag-0", 1))?;
         // The reputation ledger is a separate directory: the existing record
         // listings read exactly what they did before it held anything.
-        assert!(store.instances()?.is_empty());
+        assert!(store.instance_records()?.is_empty());
         assert_eq!(store.machine_incidents()?.len(), 1);
         Ok(())
     }

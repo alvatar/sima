@@ -18,6 +18,11 @@
 
 use std::time::Instant;
 
+/// The command a worker runs as inside a container or at the far end of an ssh
+/// hop: the binary's name on the `PATH` there. A local spawn names a path
+/// instead, since the binary it runs is the one this build found.
+pub(crate) const WORKER_ENTRYPOINT: &str = "sima-worker";
+
 use sima_contracts::{DeviceBinding, Outcome};
 use sima_core::Result;
 use sima_trace::Emitter;

@@ -16,10 +16,17 @@ use sima_core::{Error, Result};
 /// The Khronos validation layer name.
 const VALIDATION_LAYER: &CStr = c"VK_LAYER_KHRONOS_validation";
 
-/// Whether the environment opts into validation (`SIMA_VULKAN_VALIDATION` set
-/// to anything but empty or `0`).
+/// Whether a `SIMA_VULKAN_VALIDATION` value opts into validation.
+///
+/// Unset, empty and `0` are the three ways to be off; every other value is on,
+/// so `1` and `true` both work and a caller has no value vocabulary to learn.
+fn opts_in(value: Option<&str>) -> bool {
+    value.is_some_and(|value| !value.is_empty() && value != "0")
+}
+
+/// Whether the environment opts into validation.
 fn validation_requested() -> bool {
-    std::env::var("SIMA_VULKAN_VALIDATION").is_ok_and(|value| !value.is_empty() && value != "0")
+    opts_in(std::env::var("SIMA_VULKAN_VALIDATION").ok().as_deref())
 }
 
 /// Whether the Khronos validation layer is installed on this system.
@@ -126,4 +133,42 @@ unsafe extern "system" fn validation_callback(
     eprintln!("vulkan validation [{severity:?}]: {message}");
     // The spec requires FALSE: the triggering call proceeds.
     vk::FALSE
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The switch is read as a value, not as a process fact, so the three
+    /// off-states and the on-state are checked without touching the
+    /// environment — which a test cannot do without racing its siblings.
+    #[test]
+    fn only_an_unset_empty_or_zero_switch_leaves_validation_off() {
+        assert!(!opts_in(None));
+        assert!(!opts_in(Some("")));
+        assert!(!opts_in(Some("0")));
+    }
+
+    #[test]
+    fn any_other_switch_value_opts_in() {
+        for value in ["1", "true", "yes", "00", "0 ", " 0"] {
+            assert!(opts_in(Some(value)), "{value} opts in");
+        }
+    }
+
+    /// The names handed to instance creation are the ones the loader knows the
+    /// layer and the extension by; a typo would silently disable validation
+    /// rather than fail, so they are pinned.
+    #[test]
+    fn the_layer_and_extension_names_are_the_ones_the_loader_knows() {
+        let [layer] = validation_layer_names();
+        // SAFETY: the pointer comes from a `&'static CStr` that outlives the
+        // borrow taken here.
+        assert_eq!(unsafe { CStr::from_ptr(layer) }, VALIDATION_LAYER);
+        // SAFETY: as above — ash's extension name is a `&'static CStr`.
+        assert_eq!(
+            unsafe { CStr::from_ptr(debug_utils_extension_name()) },
+            ext::debug_utils::NAME
+        );
+    }
 }

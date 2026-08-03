@@ -409,7 +409,7 @@ mod tests {
         fn provision(&self, offer: &OfferId, tag: &str) -> Result<Provision> {
             self.calls.fetch_add(1, Ordering::Relaxed);
             let store = Store::open(&self.root).expect("open the store the loop writes to");
-            let records = store.instances().expect("list the ledger");
+            let records = store.instance_records().expect("list the ledger");
             let intent = records
                 .iter()
                 .find(|record| record.tag == tag)
@@ -445,7 +445,7 @@ mod tests {
         let guard = acquire_any(&stub, &store)?;
         assert_eq!(guard.endpoint().port, 22);
         assert_eq!(guard.endpoint().user, "root");
-        let records = store.instances()?;
+        let records = store.instance_records()?;
         assert_eq!(records.len(), 1);
         let record = &records[0];
         assert_eq!(record.provider, "stub");
@@ -511,7 +511,7 @@ mod tests {
         let stub = StubProvider::new(vec![cheap.clone(), dearer])
             .gone_at_provision(OfferId("cheap".to_string()));
         let guard = acquire_any(&stub, &store)?;
-        let records = store.instances()?;
+        let records = store.instance_records()?;
         // The lost attempt left nothing behind; the taken one is the only
         // record.
         assert_eq!(records.len(), 1);
@@ -543,7 +543,7 @@ mod tests {
             &Budget::default(),
             never_cancelled(),
         )?;
-        let records = store.instances()?;
+        let records = store.instance_records()?;
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].price_micro_usd_hour, 200_000);
         assert_eq!(records[0].tag, guard.tag());
@@ -672,7 +672,7 @@ mod tests {
             stub_offer("dearer", 200_000),
         ]);
         let guard = acquire_any(&stub, &store)?;
-        let records = store.instances()?;
+        let records = store.instance_records()?;
         assert_eq!(records.len(), 1);
         // The blacklisted machine was skipped for the dearer, clean one; the
         // cheapest offer was never even provisioned.
@@ -693,7 +693,7 @@ mod tests {
             stub_offer("dearer", 200_000),
         ]);
         let guard = acquire_any(&stub, &store)?;
-        assert_eq!(store.instances()?[0].machine, "m-cheap");
+        assert_eq!(store.instance_records()?[0].machine, "m-cheap");
         assert_eq!(guard.machine(), "m-cheap");
         Ok(())
     }
@@ -708,7 +708,7 @@ mod tests {
             stub_offer("dearer", 200_000),
         ]);
         let guard = acquire_any(&stub, &store)?;
-        assert_eq!(store.instances()?[0].machine, "m-cheap");
+        assert_eq!(store.instance_records()?[0].machine, "m-cheap");
         assert_eq!(guard.machine(), "m-cheap");
         Ok(())
     }
@@ -748,7 +748,7 @@ mod tests {
                 never_cancelled(),
             )?;
             Ok(store
-                .instance(guard.tag())?
+                .instance_record(guard.tag())?
                 .expect("the rented record's tag"))
         };
         let stub1 = round("f1", "c1");
@@ -853,7 +853,7 @@ mod tests {
                 if message == "the run's rental budget is exhausted: spent 120000 of 100000 micro-USD"
         ));
         assert_eq!(watching.calls(), 0);
-        assert!(store.instances()?.is_empty());
+        assert!(store.instance_records()?.is_empty());
         Ok(())
     }
 
@@ -875,7 +875,7 @@ mod tests {
                 if message == "the run's rental budget is exhausted: the rental deadline (epoch ms 1) has passed"
         ));
         assert_eq!(watching.calls(), 0);
-        assert!(store.instances()?.is_empty());
+        assert!(store.instance_records()?.is_empty());
         Ok(())
     }
 
@@ -917,7 +917,7 @@ mod tests {
         // The second offer was never provisioned: what the first machine
         // cost is already past the cap.
         assert_eq!(watching.provisioned_tags().len(), 1);
-        assert!(store.instances()?.is_empty());
+        assert!(store.instance_records()?.is_empty());
         Ok(())
     }
 
@@ -931,7 +931,7 @@ mod tests {
         assert_eq!(guard.endpoint().port, 22);
         // The machine was waited for, not abandoned.
         assert!(stub.destroyed().is_empty());
-        let records = store.instances()?;
+        let records = store.instance_records()?;
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].instance(), Some(guard.id().0.as_str()));
         Ok(())
@@ -961,7 +961,7 @@ mod tests {
             &Budget::default(),
             never_cancelled(),
         )?;
-        let records = store.instances()?;
+        let records = store.instance_records()?;
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].price_micro_usd_hour, 200_000);
         assert_eq!(records[0].tag, guard.tag());
@@ -982,7 +982,7 @@ mod tests {
             acquire_any(&stub, &store),
             Err(Error::Provider(_))
         ));
-        assert!(store.instances()?.is_empty());
+        assert!(store.instance_records()?.is_empty());
         assert!(stub.live().is_empty());
         Ok(())
     }
@@ -1010,7 +1010,7 @@ mod tests {
         assert!(matches!(outcome, Err(Error::Provider(_))));
         // Nothing was rented, so nothing is owed.
         assert!(stub.instances()?.is_empty());
-        assert!(store.instances()?.is_empty());
+        assert!(store.instance_records()?.is_empty());
         Ok(())
     }
 
@@ -1020,7 +1020,7 @@ mod tests {
         let stub = StubProvider::new(vec![stub_offer("a", 100_000)])
             .failing_provision("create instance: 500");
         assert!(acquire_any(&stub, store).is_err());
-        let records = store.instances()?;
+        let records = store.instance_records()?;
         assert_eq!(records.len(), 1);
         Ok(records[0].tag.clone())
     }
@@ -1042,7 +1042,7 @@ mod tests {
         // The attempt's intent record survives: the error says nothing about
         // whether the request landed, so the machine that may carry the tag
         // stays discoverable.
-        let records = store.instances()?;
+        let records = store.instance_records()?;
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].state, InstanceRecordState::Intent);
         assert_eq!(records[0].tag, watching.provisioned_tags()[0]);
@@ -1059,7 +1059,7 @@ mod tests {
         let report = reconcile(&provider, &store, ReconcileScope::Workers)?;
         assert!(report.destroyed.is_empty());
         assert_eq!(report.cleared, vec![tag.clone()]);
-        assert!(store.instances()?.is_empty());
+        assert!(store.instance_records()?.is_empty());
         // The attempt is charged: the failure says nothing about whether a
         // machine was created, and an overcounted phantom is the safe
         // direction to be wrong in.
@@ -1081,7 +1081,7 @@ mod tests {
         assert_eq!(report.destroyed, vec![landed]);
         assert_eq!(report.cleared, vec![tag]);
         assert!(provider.live().is_empty());
-        assert!(store.instances()?.is_empty());
+        assert!(store.instance_records()?.is_empty());
         Ok(())
     }
 
@@ -1111,7 +1111,7 @@ mod tests {
         )?;
         assert!(stub.destroyed().is_empty());
         let tags: Vec<String> = store
-            .instances()?
+            .instance_records()?
             .into_iter()
             .map(|record| record.tag)
             .collect();
@@ -1140,7 +1140,7 @@ mod tests {
         let _guard = acquire_any(&watching, &store)?;
         let intent = watching.observed_intents();
         assert_eq!(intent.len(), 1);
-        let records = store.instances()?;
+        let records = store.instance_records()?;
         assert_eq!(records.len(), 1);
         assert!(matches!(records[0].state, InstanceRecordState::Live { .. }));
         // The record is stamped at intent, which is what its field says.
@@ -1209,7 +1209,7 @@ mod tests {
             Err(Error::Provider(message)) if message.contains("cancelled")
         ));
         // Nothing was rented: the walk stopped before the first provision.
-        assert!(store.instances()?.is_empty());
+        assert!(store.instance_records()?.is_empty());
         assert!(stub.live().is_empty());
         Ok(())
     }
@@ -1253,7 +1253,7 @@ mod tests {
             "the pending machine is torn down"
         );
         assert!(provider.inner.live().is_empty());
-        assert!(store.instances()?.is_empty());
+        assert!(store.instance_records()?.is_empty());
         // A cancelled wait is our wind-down, not the machine's fault, so it
         // records no incident.
         assert!(store.machine_incidents()?.is_empty());

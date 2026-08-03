@@ -5,8 +5,6 @@
 //! charged from their stamp to now. It touches no store object and mutates
 //! nothing.
 
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use sima_core::Result;
 use sima_provider::{SpendReport, spend_report};
 use sima_store::Store;
@@ -18,9 +16,5 @@ use crate::config::LoadedConfig;
 /// ledger outlives both the machines and the process that rented them.
 pub fn spend(config: &LoadedConfig) -> Result<SpendReport> {
     let store = Store::open(&config.store)?;
-    let now_ms = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0);
-    spend_report(&store, &config.run.id(), now_ms)
+    spend_report(&store, &config.run.id(), sima_provider::now_ms())
 }

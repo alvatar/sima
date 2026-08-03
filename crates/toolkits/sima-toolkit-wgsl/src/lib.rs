@@ -7,6 +7,22 @@
 //! execution backend a domain depends on, a compute library rather than an
 //! executor: it holds no store handle and builds no run identity.
 //!
+//! # What pairs with the CUDA toolkit
+//!
+//! The two toolkits present the same shape — a [`Context`] that allocates
+//! zeroed [`Buffer`]s, builds a [`Kernel`] at a stated block width, and
+//! dispatches over reflected bindings, optionally carrying a [`BufferUpdate`]
+//! — and differ only where the backends genuinely do:
+//!
+//! - **Identity.** This toolkit compiles WGSL in process, so a kernel reports
+//!   [`source_digest`] and [`COMPILER_ID`] states the lowering. The CUDA
+//!   toolkit loads committed PTX, so it reports the digest of that artifact and
+//!   its compiler id names only what the artifact targets.
+//! - **The compiler on the surface.** Lowering happens here at run time, so
+//!   [`check`] is what a domain calls to validate a kernel without a device.
+//!   CUDA compiles offline instead, so its surface carries the regeneration
+//!   entry point and no run-time check.
+//!
 //! # Tests
 //!
 //! Tests split by whether they touch a real device. Compilation and identity
@@ -30,5 +46,6 @@ mod validation;
 pub use buffer::Buffer;
 pub use compile::{COMPILER_ID, check, source_digest};
 pub use context::Context;
+pub use dispatch::BufferUpdate;
 pub use kernel::Kernel;
-pub use selection::{DeviceInfo, DeviceType, class_of, enumerate_devices, selected_device_desc};
+pub use selection::{enumerate_devices, selected_device_desc};

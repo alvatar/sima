@@ -2,6 +2,7 @@
 
 use ash::vk;
 
+use sima_contracts::DeviceClass;
 use sima_core::{Error, Result};
 
 use crate::instance::{self, InstanceGuard};
@@ -25,6 +26,7 @@ pub struct Context {
     queue: vk::Queue,
     command_pool: vk::CommandPool,
     memory_properties: vk::PhysicalDeviceMemoryProperties,
+    limits: vk::PhysicalDeviceLimits,
     device_name: String,
     driver_version: String,
     /// Debug-utils messenger, present only when validation is enabled.
@@ -34,7 +36,10 @@ pub struct Context {
 impl Context {
     /// Creates a headless compute context on the auto-selected device.
     ///
-    /// The device is chosen by [`selection::select_physical_device`].
+    /// The pick is the shared selection policy's: the `SIMA_GPU_DEVICE`
+    /// enumeration index when it is set, and otherwise discrete before
+    /// integrated before virtual before CPU, with the lowest enumeration index
+    /// breaking ties.
     pub fn new() -> Result<Context> {
         Context::build(selection::select_physical_device)
     }
@@ -42,12 +47,11 @@ impl Context {
     /// Creates a headless compute context on the given member of the given
     /// device class.
     ///
-    /// The class is one this backend minted, and `member` counts within it,
-    /// ordered by Vulkan enumeration index — the numbering
-    /// [`enumerate_devices`](crate::enumerate_devices) reports. An absent class
-    /// or a member out of range is an [`Error::Backend`] naming the request and
-    /// what exists.
-    pub fn for_class(class: &str, member: u32) -> Result<Context> {
+    /// `member` counts within the class, ordered by Vulkan enumeration index —
+    /// the numbering [`enumerate_devices`](crate::enumerate_devices) reports.
+    /// An absent class or a member out of range is an [`Error::Backend`] naming
+    /// the request and what exists.
+    pub fn for_class(class: &DeviceClass, member: u32) -> Result<Context> {
         Context::build(|instance| selection::select_class_member(instance, class, member))
     }
 
@@ -123,6 +127,7 @@ impl Context {
             queue,
             command_pool: command_pool.finish()?,
             memory_properties,
+            limits: properties.limits,
             device_name,
             driver_version,
             validation,
@@ -147,6 +152,12 @@ impl Context {
     /// The device's memory properties, for memory-type selection.
     pub(crate) fn memory_properties(&self) -> &vk::PhysicalDeviceMemoryProperties {
         &self.memory_properties
+    }
+
+    /// The device's reported limits, for the bounds a kernel build and a
+    /// dispatch are checked against.
+    pub(crate) fn limits(&self) -> &vk::PhysicalDeviceLimits {
+        &self.limits
     }
 
     /// Records a one-time command buffer through `recorder`, submits it to the
@@ -358,8 +369,9 @@ mod tests {
 
     #[test]
     fn opening_an_absent_device_class_fails() {
+        let absent = DeviceClass::new("dead:beef").expect("class id");
         assert!(matches!(
-            Context::for_class("dead:beef", 0),
+            Context::for_class(&absent, 0),
             Err(Error::Backend(_))
         ));
     }

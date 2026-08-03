@@ -94,9 +94,10 @@ fn every_format_describes_the_environment_its_dispatch_supplies() {
         let answer = service.ask(ToDomain::Describe {
             format: format(name),
         });
-        let expected = sima_domains::binding_for(&format(name))
+        let expected = sima_domains::domain_for(&format(name))
             .expect("a registered format")
-            .environment;
+            .environment()
+            .clone();
         assert_eq!(
             answer,
             FromDomain::Described {
@@ -140,12 +141,10 @@ fn params_translate_to_the_bytes_the_dispatch_produces() {
         toml: text.to_string(),
         segmented: false,
     });
-    let expected = sima_domains::params_for(
-        &format("stub.v1"),
-        &text.parse::<toml::Table>().expect("a table"),
-        false,
-    )
-    .expect("the stub translates its params");
+    let expected = sima_domains::domain_for(&format("stub.v1"))
+        .expect("a registered format")
+        .translate_config(text, false)
+        .expect("the stub translates its params");
     assert_eq!(
         answer,
         FromDomain::TranslatedConfig {
@@ -164,7 +163,7 @@ fn generator_params_translate_to_the_bytes_the_dispatch_produces() {
         generator: generator.clone(),
         toml: text.to_string(),
     });
-    let expected = sima_domains::generator_for(&generator)
+    let expected = sima_domains::generator_for(&format("stub.v1"), &generator)
         .expect("a registered generator")
         .translate_config(text)
         .expect("the stub translates its generator params");
@@ -179,7 +178,7 @@ fn generation_answers_the_specs_the_in_process_generator_produces() {
     // which is what keeps every task key of the run the same.
     let text = "behaviors = [\"succeed\", \"reject\", \"panic\"]\n";
     let generator = GeneratorId::new("stub.v1").expect("generator id");
-    let params = sima_domains::generator_for(&generator)
+    let params = sima_domains::generator_for(&format("stub.v1"), &generator)
         .expect("a registered generator")
         .translate_config(text)
         .expect("the stub translates its generator params");
@@ -190,7 +189,7 @@ fn generation_answers_the_specs_the_in_process_generator_produces() {
         root_seed: 42,
         params: params.clone(),
     });
-    let expected = sima_domains::generator_for(&generator)
+    let expected = sima_domains::generator_for(&format("stub.v1"), &generator)
         .expect("a registered generator")
         .generate(42, &params)
         .expect("the stub generates");
@@ -269,9 +268,9 @@ mod session {
         let generator = sima_model::GeneratorId::new("stub.v1").expect("generator id");
         assert_eq!(
             service.environment(&format).expect("an environment"),
-            sima_domains::binding_for(&format)
+            *sima_domains::domain_for(&format)
                 .expect("a registered format")
-                .environment
+                .environment()
         );
         assert_eq!(
             service.enumerate_devices(&format).expect("an enumeration"),

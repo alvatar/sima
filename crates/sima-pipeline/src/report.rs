@@ -34,7 +34,7 @@ pub fn report(config: &LoadedConfig) -> Result<Vec<ReportRow>> {
 }
 
 /// Renders each committed task's stats from `records` — a run's lifecycle
-/// events in append order. The fold half of [`report`], over records from any
+/// events in append order. The merge half of [`report`], over records from any
 /// source.
 pub fn report_records(records: &[Record]) -> Result<Vec<ReportRow>> {
     Ok(committed_stats(records)
@@ -43,17 +43,8 @@ pub fn report_records(records: &[Record]) -> Result<Vec<ReportRow>> {
         .collect())
 }
 
-/// Renders one committed task's per-candidate stats, addressed by a prefix of
-/// its key. A task the run journaled but never committed is
-/// [`Error::Validation`]: this is the view of what the run produced, and a
-/// task's execution history is what [`task_history`](crate::task_history)
-/// answers.
-pub fn report_task(config: &LoadedConfig, prefix: &str) -> Result<ReportRow> {
-    report_task_records(&journal::records(config)?, prefix)
-}
-
 /// Renders one committed task's stats from `records`, addressed by a prefix
-/// of its key. The fold half of [`report_task`], over records from any
+/// of its key. The merge half of [`report_task`], over records from any
 /// source.
 pub fn report_task_records(records: &[Record], prefix: &str) -> Result<ReportRow> {
     let task = resolve_task_key(records, prefix)?;
@@ -191,7 +182,7 @@ mod tests {
             committed("bcde", vec![scalar("attempt", 1.0)]),
         ])?;
         assert_eq!(
-            report_task(&config, "ab")?,
+            report_task_records(&crate::journal::records(&config)?, "ab")?,
             ReportRow {
                 task: "abcd".to_string(),
                 stats: "attempt=0".to_string(),
@@ -219,12 +210,12 @@ mod tests {
                 stats_blob_hex: String::new(),
             }),
         ])?;
-        let reported = report_task(&config, "ab");
+        let reported = report_task_records(&crate::journal::records(&config)?, "ab");
         assert!(
             matches!(reported, Err(Error::Validation(_))),
             "{reported:?}"
         );
-        // The fold runs over records from any source, local or streamed from
+        // The merge runs over records from any source, local or streamed from
         // another host, so its message states the fact and suggests no
         // command: a command naming a config path resolves on the machine that
         // reads it, which is where the records came from only half the time.
@@ -245,7 +236,7 @@ mod tests {
         assert_eq!(report_records(&records)?, report(&config)?);
         assert_eq!(
             report_task_records(&records, "ab")?,
-            report_task(&config, "ab")?
+            report_task_records(&crate::journal::records(&config)?, "ab")?
         );
         Ok(())
     }

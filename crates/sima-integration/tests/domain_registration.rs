@@ -620,7 +620,8 @@ fn a_migration_of_a_config_routed_run_is_refused_where_it_is_asked_for() -> Resu
     let observer = |_: &Record| {
         observed.fetch_add(1, Ordering::Relaxed);
     };
-    let Err(error) = migrate(&path, &observer, &interrupt) else {
+    let loaded = sima_pipeline::load(&path).expect("the config loads");
+    let Err(error) = migrate(&path, &loaded, &observer, &interrupt) else {
         panic!("expected a config-routed run to be refused a migration");
     };
     assert!(matches!(error, Error::Validation(_)), "{error:?}");

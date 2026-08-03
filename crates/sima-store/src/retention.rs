@@ -78,7 +78,7 @@ struct RemovalPlan {
 impl Store {
     /// Every run registered in the store, sorted by id. A `runs/` entry whose
     /// name is not a run-id hex string is [`Error::Corruption`]. Retention and
-    /// store sync both enumerate runs this way.
+    /// the CLI's run removal both enumerate runs this way.
     pub fn runs(&self) -> Result<Vec<RunId>> {
         let dir = layout::runs_dir(self.root());
         let mut runs = Vec::new();

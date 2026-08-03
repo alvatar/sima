@@ -5,7 +5,7 @@
 use std::fs;
 use std::path::Path;
 
-use sima_core::Result;
+use sima_core::{Codec, Result};
 use sima_model::{
     ArtifactRef, Environment, EnvironmentComponent, EnvironmentValue, FormatId, GeneratorConfig,
     GeneratorId, Params, RunConfig, RunId, Spec, TaskIdentity, TaskKey, TaskRecord,

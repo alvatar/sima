@@ -2,7 +2,7 @@
 //! reproduced in WGSL, bit-identical to the CPU implementation. Any cellular
 //! kernel needing result-affecting randomness composes this source.
 //!
-//! The kernels compose the snippet with `include_str!("shaders/prng.wgsl")`
+//! The kernels compose the snippet with `include_str!("wgsl/shaders/prng.wgsl")`
 //! (a string literal, which `concat!` in a `const KERNEL_WGSL` requires); the
 //! [`PRNG_WGSL`] handle names the same file as the substrate home and anchors
 //! the parity test below.
@@ -12,13 +12,14 @@
 /// parity test, which composes it into a probe kernel; production kernels
 /// `include_str!` the same file directly.
 #[cfg(test)]
-const PRNG_WGSL: &str = include_str!("shaders/prng.wgsl");
+const PRNG_WGSL: &str = include_str!("wgsl/shaders/prng.wgsl");
 
 #[cfg(test)]
 mod tests {
     use sima_core::prng;
 
     use super::PRNG_WGSL;
+    use crate::substrates::cellular::BLOCK_WIDTH;
 
     // Probe operation codes for the u64 emulation helpers, dispatched by the
     // `op` field of a request row. The two composed PRNG entries take the
@@ -86,17 +87,17 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let rows = requests.len() / 5;
         let context = Context::new().expect("create compute context");
         let kernel = context
-            .kernel(&probe_source(), "main")
+            .kernel(&probe_source(), "main", BLOCK_WIDTH)
             .expect("build probe kernel");
         let request_bytes: &[u8] = bytemuck::cast_slice(requests);
-        let request_buffer = context.buffer(request_bytes.len()).expect("request buffer");
+        let mut request_buffer = context.buffer(request_bytes.len()).expect("request buffer");
         context
-            .upload(&request_buffer, request_bytes)
+            .upload(&mut request_buffer, request_bytes)
             .expect("upload requests");
         let result_buffer = context
             .buffer(rows * 2 * std::mem::size_of::<u32>())
             .expect("result buffer");
-        let groups = [(rows as u32).div_ceil(64), 1, 1];
+        let groups = [(rows as u32).div_ceil(kernel.block_width()), 1, 1];
         context
             .dispatch(&kernel, &[&request_buffer, &result_buffer], groups)
             .expect("dispatch probe");

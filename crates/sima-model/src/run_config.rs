@@ -10,7 +10,7 @@
 
 use std::num::NonZeroU64;
 
-use sima_core::{Dec, Enc, Error, Result, hash_bytes};
+use sima_core::{Codec, Dec, Enc, Error, Result, hash_bytes};
 
 use crate::canonical::{self, TAG_RUN_CONFIG};
 use crate::params::Params;
