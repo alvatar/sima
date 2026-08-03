@@ -141,10 +141,11 @@ mod tests {
 
     #[test]
     fn an_ignition_whose_values_do_not_cover_its_channels_is_refused() {
-        // A debug assertion caught this in a test build and let a release build
-        // index past the row it writes, on values that come from a model's own
-        // declaration. Both directions are refused, and the message names what
-        // was wanted against what arrived.
+        // The values come from a model's own declaration, so a count that does
+        // not cover the channels is a build error rather than bad input — and a
+        // debug assertion alone would let a release build index past the row it
+        // writes. Both directions are refused, and the message names what was
+        // wanted against what arrived.
         for (background, patch) in [
             (&[1.0_f32][..], &[0.5_f32, 0.25][..]),
             (&[1.0_f32, 0.0][..], &[0.5_f32][..]),

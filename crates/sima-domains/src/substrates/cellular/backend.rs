@@ -1,9 +1,9 @@
 //! [`CellularBackend`]: the one [`CellularEngine`] implementation, over any
 //! [`CellularOps`].
 //!
-//! What used to be one engine per backend is one engine parameterized by the
-//! adapter, so the device is opened, the kernels are built, the uniform and
-//! seed buffers are packed, and the reduction is run in exactly one place.
+//! One engine parameterized by the adapter, so the device is opened, the
+//! kernels are built, the uniform and seed buffers are packed, and the
+//! reduction is run in exactly one place whatever backend answers.
 //! `WgslEngine` and `CudaEngine` name two instantiations of it.
 
 use sima_contracts::{DeviceBinding, DeviceInfo};
@@ -150,8 +150,10 @@ mod tests {
     use crate::substrates::cellular::reference::{SMOKE_PTX, SMOKE_WGSL};
     use crate::substrates::cellular::{CudaEngine, WgslEngine};
 
-    /// A grid whose values are distinct and exactly representable, so a backend
-    /// that read the wrong cell shows up as a different maximum.
+    /// A grid of exactly representable values that vary cell to cell, so a
+    /// backend reading the wrong cell shows up as a different maximum. The
+    /// values repeat every 13 cells; the maximum reaches 12 wherever the
+    /// reduction covers a full period.
     fn a_grid() -> Grid {
         Grid::new(8, 8, 2, (0..128).map(|i| (i % 13) as f32).collect()).expect("grid")
     }

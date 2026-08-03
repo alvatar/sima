@@ -107,8 +107,8 @@ mod tests {
 
     #[test]
     fn an_unreset_step_axis_stays_due() {
-        // save_due never resets by itself: past the cadence it keeps firing
-        // until the owner performs a save and resets.
+        // The step axis never resets by itself: past the cadence it keeps
+        // firing until the owner performs a save and resets.
         let cadence = CheckpointCadence::new(Duration::MAX, NonZeroU64::new(2));
         assert!(!cadence.advance_due());
         assert!(cadence.advance_due());

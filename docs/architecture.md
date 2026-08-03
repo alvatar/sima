@@ -1270,16 +1270,29 @@ input. Its state, dispatch harness, and cross-check scaffold live once in the
 reference, differing in those and the channel count, not in the state shape or
 the harness.
 
-**The substrate boundary.** Which execution toolkit a kernel runs on is the
-`CellularEngine` trait, one operation wide: advance a grid on a device and hold
-the result, with the reduced scalars and the final grid as separate calls on the
-handle it returns. Everything around that operation — decoding a spec, igniting
-or resuming a grid, deciding whether to keep a snapshot — is written once above
-the boundary and shared by every substrate. Below it sit one implementation per
-toolkit: `WgslEngine` over `step` and `reduce`, and `CudaEngine` over their
-transcriptions in `cellular/cuda`. The two dispatch loops are duplicated
-deliberately; what would drift if duplicated — the scalar naming, the channel
-bound, the partition count the two reductions must fold by — stays shared.
+**The substrate boundary.** Two boundaries stack here, and they answer
+different questions.
+
+`CellularEngine` is the domain-facing one, one operation wide: advance a grid on
+a device and hold the result, with the reduced scalars and the final grid as
+separate calls on the handle it returns. Everything around that operation —
+decoding a spec, igniting or resuming a grid, deciding whether to keep a
+snapshot — is written once above it and shared by every substrate.
+
+`CellularOps` is the backend-facing one, internal to the `cellular` module: the
+device operations the substrate needs from a compute backend — allocate, upload,
+build a kernel at a block width, dispatch, dispatch with a small buffer update,
+read back — plus the backend's own identity constants. The dispatch harness, the
+stats reduction, and the engine are written once over it and monomorphized per
+backend, so `CellularBackend<O>` is the single `CellularEngine` implementation
+and `WgslEngine` and `CudaEngine` name two instantiations of it. The adapters
+that satisfy `CellularOps` live under `cellular/wgsl` and `cellular/cuda` and
+are about fifty lines each.
+
+The lower boundary is internal by design rather than a trait on the toolkit
+surface. A toolkit is a compute library that knows nothing of grids or scalars,
+and each isolates its own dependency set; making one implement a domain's trait
+would tie the two together in the direction the layering forbids.
 
 A model declares no engine. The pairing is made where a format id is
 registered, one line naming both, so a rule ported to a second substrate is a
@@ -1303,12 +1316,26 @@ carries no dtype tag.
 **Dispatch harness.** `run` advances a grid by a step count of double-buffered
 dispatches. It allocates two device buffers plus a fixed dimensions buffer,
 uploads the payload, and for each step dispatches the kernel over the whole
-grid — one invocation per cell, $\lceil width \cdot height / 64 \rceil$ groups
-along x — then swaps the input and output buffers. The swap after each dispatch
-leaves the result on the most recently written buffer for both even and odd
-step counts. Each step is one fence-waited submission, reusing the toolkit's
-per-op synchronization. The harness is neighborhood-agnostic: a small stencil
-and a large-radius convolution are both just the kernel argument.
+grid — one invocation per cell, $\lceil width \cdot height / \text{BLOCK\_WIDTH}
+\rceil$ groups along x — then swaps the input and output buffers. The swap after
+each dispatch leaves the result on the most recently written buffer for both
+even and odd step counts. Each step is one fence-waited submission, reusing the
+toolkit's per-op synchronization. The harness is neighborhood-agnostic: a small
+stencil and a large-radius convolution are both just the kernel argument.
+
+The dispatch is one-dimensional, so every cell rides the x axis and the group
+count runs into that axis's limit long before memory runs out — Vulkan
+guarantees only 65535 groups there, which a 2048×2048 grid already exceeds.
+Spreading the excess onto y would change how a kernel derives a cell index from
+its invocation, and with it every task key, so `run` reports the limit and
+refuses before allocating anything.
+
+A model that reads the step it is on opts into a per-step index. The harness
+then allocates one small buffer up front and rewrites it inside each dispatch's
+own submission, so the value a step reads is the value that step was dispatched
+with. The index is a `u64` counted from a caller-supplied base, carried as two
+little-endian `u32` words, which is what lets a resumed segment continue the
+count rather than restart it.
 
 `run` returns a `Trajectory` over the two buffers left resident — the final
 grid $G_N$ and the step before it $G_{N-1}$ — rather than a downloaded grid.
@@ -1322,15 +1349,22 @@ fixed order — group-0 storage bindings in WGSL, pointer parameters in CUDA C:
 - binding 0 the input grid,
 - binding 1 the output grid,
 - binding 2 the dimensions `[width, height, channels]`,
-- bindings 3+ the family parameters.
+- bindings 3+ the family parameters,
+- and last, when the model opts into it, the per-step index as two `u32` words.
 
-A kernel runs one invocation per cell over a fixed width of 64, guards the cell
-index against the cell count, and loops its channels internally. The harness
-ping-pongs the first two each step and holds the dimensions and parameters
-fixed. WGSL states the width in the kernel with `@workgroup_size`; CUDA takes
-block dimensions at launch rather than from the compiled module, so its kernels
-declare `__launch_bounds__` and the caller passes the matching width, which the
-toolkit checks against the device.
+A kernel runs one invocation per cell over the fixed `BLOCK_WIDTH`, guards the
+cell index against the cell count, and loops its channels internally. The
+harness ping-pongs the first two each step and holds the dimensions and
+parameters fixed; the step-index buffer, when present, is the one it rewrites.
+
+Both toolkits build a kernel at the block width its grids will be sized by, and
+both check that width twice: against what the device can launch, and against
+what the kernel itself declares. WGSL states the width in the shader with
+`@workgroup_size` and the toolkit reads it back from the compiled module; CUDA
+takes block dimensions at launch rather than from the module, so its kernels
+declare `__launch_bounds__` and the toolkit reads that from the PTX. The device
+limit is checked first on both, so a width no device could launch reports the
+device bound rather than a declaration mismatch.
 
 **CPU reference and cross-check.** `CellularRule` is the CPU reference a family's
 kernel is checked against: one step maps a whole input grid to a whole output

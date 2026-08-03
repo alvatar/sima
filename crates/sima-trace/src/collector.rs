@@ -27,13 +27,12 @@ pub trait DurableSink: Send {
     ///
     /// The collector drains what is queued and hands it here in one call, so a
     /// sink whose durability costs a syscall per call pays it once for the
-    /// batch rather than once per line. The default appends one at a time,
-    /// which is exactly the old behaviour: a sink with nothing to gain from
-    /// batching implements nothing.
+    /// batch rather than once per line. The default appends one at a time, so a
+    /// sink with nothing to gain from batching implements nothing.
     ///
-    /// The guarantee is per batch and unchanged in kind: on return every line
-    /// is durable, and on error nothing after the failing line is written. The
-    /// collector hands the observer only what this returned `Ok` for.
+    /// The guarantee is per batch: on return every line is durable, and on
+    /// error nothing after the failing line is written. The collector hands the
+    /// observer only what this returned `Ok` for.
     fn append_lines(&mut self, lines: &[String]) -> Result<()> {
         for line in lines {
             self.append_line(line)?;

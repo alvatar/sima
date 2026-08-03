@@ -21,8 +21,8 @@ pub const SYNC_PROTOCOL_VERSION: u32 = 2;
 /// under 400 KiB — nearly three orders of magnitude below the frame cap, which
 /// makes the bound obviously safe rather than tuned against it. The whole
 /// inventory travels as a sequence of these, so what the cap bounds is one
-/// frame rather than the size of a run: an inventory of any size syncs, where a
-/// single frame made a run of about 1.3M tasks impossible to sync at all.
+/// frame rather than the size of a run, and an inventory of any size syncs. In
+/// one frame the cap would stop a run of about 1.3M tasks from syncing at all.
 pub(crate) const INVENTORY_CHUNK: usize = 4096;
 
 const TAG_HELLO: u8 = 0;

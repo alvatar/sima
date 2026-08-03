@@ -588,8 +588,8 @@ fn a_protocol_violation_ends_the_python_session_rather_than_being_answered() {
     // a frame boundary, so every later answer would be about the wrong
     // question — the session ends instead.
     //
-    // Answering it and reading on is what this pins against: the program used
-    // to reply `Failed` to a tag it could not parse and wait for the next one.
+    // What this pins against is the opposite answer: replying `Failed` to a tag
+    // the program could not parse and reading on for the next one.
     let dir = tempfile::tempdir().expect("temp dir");
     let program = wrapper(dir.path(), &[]);
     let mut child = std::process::Command::new(&program)

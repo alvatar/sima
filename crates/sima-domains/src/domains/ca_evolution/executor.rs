@@ -128,9 +128,9 @@ impl<M: CaModel, E: CellularEngine> Executor for CaExecutor<M, E> {
         // require external synchronization and the worker threads share this
         // one executor. Initializing the engine inside the lock is why
         // `binding_for` needs no device: nothing touches the GPU until the first
-        // execute. A poisoned lock is safe to enter: the slot only ever holds
-        // None or a fully constructed engine, assigned after construction
-        // completes.
+        // execute. A poisoned lock is safe to enter: the slot holds None or a
+        // fully constructed engine, assigned after construction completes, so
+        // nothing torn is reachable through it.
         let mut slot = self
             .engine
             .lock()
