@@ -44,8 +44,8 @@ pub fn report_records(records: &[Record]) -> Result<Vec<ReportRow>> {
 }
 
 /// Renders one committed task's stats from `records`, addressed by a prefix
-/// of its key. The merge half of [`report_task`], over records from any
-/// source.
+/// of its key, over records from any source: a journal read locally, or a
+/// stream from the host that drives the run.
 pub fn report_task_records(records: &[Record], prefix: &str) -> Result<ReportRow> {
     let task = resolve_task_key(records, prefix)?;
     let (scalars, blob_hex) = committed_stats(records)
