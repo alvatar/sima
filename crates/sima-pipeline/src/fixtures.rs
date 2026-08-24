@@ -280,9 +280,9 @@ pub(crate) fn drive_run(
 /// initiator under `scope` and `far` as the responder over everything its own
 /// records reference — the shape `sima sync-serve` gives the far half.
 ///
-/// Each side brings its own key set, as each derives it independently from
-/// (config, store state); no key list crosses the wire. Returns the initiator's
-/// report.
+/// Each side brings its own key set, derived where it sits: no key list crosses
+/// the wire, so a caller passes whichever derivation the side it is standing in
+/// for uses. Returns the initiator's report.
 pub(crate) fn sync_between(
     near: &Store,
     near_keys: &[TaskKey],

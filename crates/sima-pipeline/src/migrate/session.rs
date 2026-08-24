@@ -1020,8 +1020,10 @@ mod tests {
                 ObjectScope::Referenced => PULL,
             });
             match self.far {
-                // The far side derives its own key set over its own store, as
-                // `sima sync-serve` does; no key list crosses the wire.
+                // The far side derives its own key set where it sits, as
+                // `sima sync-serve` does over the run's journal; no key list
+                // crosses the wire. This double holds the config, so it
+                // derives the same set the far side's journal would name.
                 Some((far, config)) => {
                     let far_keys = task_keys(config, far)?;
                     sync_between(store, keys, scope, far, &far_keys)

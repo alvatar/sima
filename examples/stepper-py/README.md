@@ -20,10 +20,16 @@ adds nothing and is rejected.
 
 ## Where it runs
 
-This program answers a registered format, so it runs on the machine the
-orchestrator runs on and nowhere else: its tasks are not routed to fleet
-machines, and `sima migrate` refuses a registered format outright. Distributing
-work across machines is available to the formats sima carries in process.
+`sima run search.toml` drives it here. `sima migrate search.toml` moves the
+whole run onto the machine `[orchestrator].migrate` names: the entry's
+`payload` key states what travels, the destination installs it at load, and the
+results come home to this store. The commented block in `search.toml` is the
+declaration that turns that on.
+
+Spreading one run's tasks across several machines — `sima run --fleet` — is not
+available to a registered format: a worker elsewhere would need this program
+installed there, and nothing installs it. That workflow is available to the
+formats sima carries in process.
 
 ## Running it
 

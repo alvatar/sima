@@ -25,3 +25,29 @@ binary = "./stepper.py"
 # it needs are listed here and their values come from this shell: PATH for
 # the shebang's interpreter lookup, PYTHONPATH for `import sima`.
 env = ["PATH", "PYTHONPATH"]
+# What travels when `sima migrate` moves this run onto another machine. One
+# file is the program itself: the destination installs it as the entry point
+# and needs no script. A directory would need one, naming it here as
+# `install`, and that script leaves an executable $SIMA_INSTALL_DIR/program.
+#
+# This example's payload runs on the destination only where `import sima`
+# resolves there, which the names above do not carry — a value belongs to the
+# machine it is read on. A directory payload plus an install script that
+# builds a virtualenv is the general answer; see TUTORIAL.md.
+payload = "./stepper.py"
+
+# Move the whole run onto another machine: its store and its orchestrator go
+# there, this machine holds the lock and follows, and the results come home.
+# The program travels with it as content-addressed objects, so an unchanged
+# one crosses the wire once. `--accept-binary` is how an edited payload is
+# accepted by the run that already ran under the previous build.
+# [orchestrator]
+# migrate = "gpubox"
+
+# A machine you have, reached over ssh at the entry's own name.
+# [host.gpubox]
+# workers = 4                             # exclusive with a device table
+# ssh     = "user@10.0.0.5"               # override the address
+# root    = "~/sima-runs"                 # where a migrated run lives there
+# binary  = "sima"                        # the sima binary there
+

@@ -114,6 +114,36 @@
 //! environment, and a name the orchestrator does not hold is simply absent in
 //! the program.
 //!
+//! ### What travels when the run moves
+//!
+//! `binary` says how the program runs here; `payload` says what a migration
+//! carries to the destination — one file or one directory, resolved against
+//! this file's directory. An entry that states none describes a program this
+//! machine holds and no other, and `sima migrate` refuses it, naming the key.
+//! A plain local `sima run` validates both keys and otherwise ignores them.
+//!
+//! `install` is the shell script the destination runs over the materialized
+//! payload. It is optional for a single-file payload, which is its own entry
+//! point, and required for a directory, where which file runs is what the
+//! script decides. The contract:
+//!
+//! - it runs as `/bin/sh install.sh`, working directory the program tree, under
+//!   the destination's own environment plus `SIMA_PAYLOAD_DIR` (the
+//!   materialized payload) and `SIMA_INSTALL_DIR` (where to leave what it
+//!   builds). Nothing is forwarded from the machine that sent the payload;
+//! - after exit 0, `$SIMA_INSTALL_DIR/program` must exist and be executable.
+//!   The entry point is found by convention, so the script reports no path;
+//! - a non-zero exit, or an exit leaving no entry point, fails the load naming
+//!   the script, its status, and its log.
+//!
+//! `payload_digest` is the far side of the same thing: the manifest object the
+//! store already holds, which a migration writes into the config it
+//! synthesizes. An entry carrying it has its program materialized and installed
+//! where the config resolves, before the binary it names is spawned, and a
+//! stamp makes a second load install nothing. It admits neither `payload` nor
+//! `install`: the digest names one program, and the manifest carries its own
+//! script.
+//!
 //! ## Addressing
 //!
 //! The entry's name is its ssh destination unless `ssh` says otherwise, so a
