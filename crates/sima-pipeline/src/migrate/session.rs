@@ -69,7 +69,7 @@ use crate::migrate::destination::{Destination, destination_for};
 use crate::migrate::far_config::{FarWorkers, Registration, far_config};
 use crate::migrate::far_side::{Contact, FarSide, Remote};
 use crate::migrate::objects::push_objects;
-use crate::payload::{closure, ingest};
+use crate::payload::{PayloadSpec, closure, ingest};
 use crate::program_binding::BinaryChange;
 use crate::rental::{budget_exhausted, provider_for_rental};
 use crate::status::{RunState, RunStatus};
@@ -140,29 +140,10 @@ pub fn migrate(
         path: config.to_path_buf(),
         source,
     })?;
-    // A run whose format a `[domain.*]` entry routes to a program carries that
-    // program with it, and an entry that states nothing to carry states that
-    // the program is this machine's alone. The refusal precedes the
+    // The refusal a routed format with nothing to carry gets precedes the
     // destination, the store, the lock, and any provider, so it is stated
     // before anything is opened, moved, or rented.
-    let carried = match loaded.domains.routed(&loaded.run.format) {
-        None => None,
-        Some(routed) => {
-            let Some(payload) = routed.payload else {
-                return Err(Error::Validation(format!(
-                    "the run's format {:?} is served by the program {}, and the [domain.{:?}] \
-                     entry states no payload: a migration carries the program to the destination \
-                     as objects, so the entry names what travels. Add a payload key naming the \
-                     file or directory that is the program, or drive this run on the machine the \
-                     program is installed on.",
-                    loaded.run.format.as_str(),
-                    routed.binary.display(),
-                    loaded.run.format.as_str(),
-                )));
-            };
-            Some((payload.clone(), routed.env.to_vec()))
-        }
-    };
+    let carried = carried(loaded)?;
     let destination = destination_for(loaded)?;
     let store = Store::open(&loaded.store)?;
     // The program's bytes become objects before the lock is taken: the ingest
@@ -171,10 +152,10 @@ pub fn migrate(
     // bytes to the same address.
     let registration = match carried {
         None => None,
-        Some((payload, env)) => Some(Registration {
+        Some(carried) => Some(Registration {
             format: loaded.run.format.as_str().to_string(),
-            payload_digest: ingest(&store, &payload)?,
-            env,
+            payload_digest: ingest(&store, &carried.payload)?,
+            env: carried.env,
         }),
     };
     // Registering the run is what gives it a journal to forward into, and it is
@@ -255,6 +236,43 @@ pub fn migrate(
             .drive()
         }
     }
+}
+
+/// What a migration of this run has to carry to the destination beyond the
+/// run's own closure: the program its format is served by, as the `[domain.*]`
+/// entry declares it travels.
+struct Carried {
+    payload: PayloadSpec,
+    /// The variable names the entry declared, which reach the far entry as
+    /// names; each value is the destination's own.
+    env: Vec<String>,
+}
+
+/// What `loaded` must carry, and `None` for a run whose format this build
+/// answers — there is no program, so nothing travels.
+///
+/// A routed format whose entry states no payload is a program this machine
+/// holds and no other, and that is refused here: naming the format, the
+/// program, and the key that would make it travel.
+fn carried(loaded: &LoadedConfig) -> Result<Option<Carried>> {
+    let Some(routed) = loaded.domains.routed(&loaded.run.format) else {
+        return Ok(None);
+    };
+    let Some(payload) = routed.payload else {
+        return Err(Error::Validation(format!(
+            "the run's format {format:?} is served by the program {}, and the \
+             [domain.{format:?}] entry states no payload: a migration carries the program to \
+             the destination as objects, so the entry names what travels. Add a payload key \
+             naming the file or directory that is the program, or drive this run on the \
+             machine the program is installed on.",
+            routed.binary.display(),
+            format = loaded.run.format.as_str(),
+        )));
+    };
+    Ok(Some(Carried {
+        payload: payload.clone(),
+        env: routed.env.to_vec(),
+    }))
 }
 
 /// The rented machine hosting this run: the one already hosting it, or a fresh
