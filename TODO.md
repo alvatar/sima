@@ -836,8 +836,8 @@ portability (P1 acceptance (d)) hold across the boundary.
       (Landlock, seccomp, namespaces, mandatory containers), which stays a
       deliberate future opt-in with the container transport as its carrier; a
       deadline on `Generate`; fleet routing of registered formats and the
-      migrated run's absent `[domain.*]` entry, both still M7.3 leftovers; and
-      program identity in the environment hash, which is M7.5.
+      migrated run's absent `[domain.*]` entry, both P9; and program identity
+      in the environment hash, which is M7.5.
 - [x] M7.5 Identity and packaging: fold a custom executor's identity (version,
       build/content hash) into the environment hash so runs stay reproducible
       and portable; define how a custom family is packaged, versioned, and
@@ -861,12 +861,12 @@ portability (P1 acceptance (d)) hold across the boundary.
       under "Identity and packaging of a registered program": one
       self-contained binary, versioned by the components it declares, with the
       in-tree pattern as the model and honesty as the obligation the digest and
-      the gate backstop. Not done here: a `pin` key on the entry, deliberately
-      absent while a registered format runs only on the orchestrator's own
-      machine — it arrives with fleet routing of registered formats or entry
-      carriage across a migration, whichever lands first, the two staying
-      paired as M7.3 leftovers; per-record build provenance, so a fresh run
-      reusing an earlier run's records passes no gate; and a deadline on
+      the gate backstop. Not done here: a config-stated pin on the entry,
+      deliberately absent while a registered format runs only on the
+      orchestrator's own machine, and settled the other way in M9.2: sima ships
+      the payload, so the digest a config would assert is already known and the
+      check belongs on the handshake; per-record build provenance, so a fresh
+      run reusing an earlier run's records passes no gate; and a deadline on
       `Generate`, still M7.4's.
 - [x] M7.6 The published protocol and a program in another language: the
       phase's proof that no fork is required. Settled what the requirement
@@ -895,8 +895,8 @@ portability (P1 acceptance (d)) hold across the boundary.
       groundwork; a conformance harness parameterized by an arbitrary command,
       which waits for a second external implementer; cross-language identity
       equivalence, rejected as irrelevant; and the standing leftovers — fleet
-      routing of registered formats with entry carriage across a migration
-      (M7.3), a deadline on `Generate` (M7.4), and per-record build provenance
+      routing of registered formats with entry carriage across a migration, both
+      P9; a deadline on `Generate` (M7.4); and per-record build provenance
       (M7.5).
 
 Expected to be re-split when reached; the registration and isolation mechanism
