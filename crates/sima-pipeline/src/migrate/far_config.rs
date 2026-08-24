@@ -25,12 +25,13 @@
 
 use std::collections::BTreeMap;
 
-use sima_core::{Error, Result};
+use sima_core::{Error, Hash, Result};
 use sima_domains::devices::DeviceInfo;
 use sima_model::RunId;
 
 use crate::config::{HostForm, OwnedHost, Pool};
 use crate::devices::usable;
+use crate::payload::relative_entry_point;
 
 /// The default `sima.toml` name the far side's `sima run` is pointed at.
 const CONFIG_FILE: &str = "sima.toml";
@@ -127,12 +128,36 @@ impl<'a> FarWorkers<'a> {
     }
 }
 
+/// How the far side answers for a format this machine routes to a program of
+/// its own: the payload already ingested here, which the destination
+/// materializes and installs at load.
+///
+/// The far entry states a digest rather than a payload, so the destination has
+/// nothing to ingest and no path of this machine's to resolve.
+pub(crate) struct Registration {
+    /// The format the entry answers for.
+    pub(crate) format: String,
+    /// The manifest object the push carries over.
+    pub(crate) payload_digest: Hash,
+    /// The variable names the local entry declared. They travel by name alone:
+    /// each value comes from the machine the program ends up running on.
+    pub(crate) env: Vec<String>,
+}
+
 /// The config the far side runs, synthesized from the local config's own text.
 ///
 /// Working from the file text rather than the loaded value is what preserves
 /// `[run]` exactly: the section is carried across as a parsed value and never
 /// re-derived, so no translation this crate performs can perturb the run id.
-pub(crate) fn far_config(local_text: &str, workers: FarWorkers<'_>) -> Result<String> {
+///
+/// `registration` is present exactly when the run's format is served by a
+/// program this machine routes it to; a format this build answers carries
+/// none, and the far config then declares no `[domain.*]` table at all.
+pub(crate) fn far_config(
+    local_text: &str,
+    workers: FarWorkers<'_>,
+    registration: Option<&Registration>,
+) -> Result<String> {
     let local: toml::Table = toml::from_str(local_text)
         .map_err(|e| Error::Validation(format!("the local config no longer parses: {e}")))?;
 
@@ -152,9 +177,48 @@ pub(crate) fn far_config(local_text: &str, workers: FarWorkers<'_>) -> Result<St
         "orchestrator".to_string(),
         toml::Value::Table(far_orchestrator(workers)),
     );
+    if let Some(registration) = registration {
+        let mut domains = toml::Table::new();
+        domains.insert(
+            registration.format.clone(),
+            toml::Value::Table(far_domain(registration)),
+        );
+        far.insert("domain".to_string(), toml::Value::Table(domains));
+    }
 
     toml::to_string_pretty(&far)
         .map_err(|e| Error::Encoding(format!("the far-side config cannot be written: {e}")))
+}
+
+/// The far side's `[domain.<format>]`: the entry point the install leaves, the
+/// manifest to install it from, and the variable names the program receives.
+///
+/// The local entry's own `binary` and `payload` do not travel — both name
+/// paths on this machine — and the destination's `binary` is the convention
+/// the install fills instead.
+fn far_domain(registration: &Registration) -> toml::Table {
+    let mut entry = toml::Table::new();
+    entry.insert(
+        "binary".to_string(),
+        toml::Value::String(relative_entry_point(&registration.format)),
+    );
+    entry.insert(
+        "payload_digest".to_string(),
+        toml::Value::String(registration.payload_digest.to_string()),
+    );
+    if !registration.env.is_empty() {
+        entry.insert(
+            "env".to_string(),
+            toml::Value::Array(
+                registration
+                    .env
+                    .iter()
+                    .map(|name| toml::Value::String(name.clone()))
+                    .collect(),
+            ),
+        );
+    }
+    entry
 }
 
 /// The far side's `[config]`: the store beside its own file, and every setting
@@ -341,7 +405,7 @@ mod tests {
 
     /// The synthesized config, loaded back.
     fn synthesized(workers: FarWorkers<'_>) -> LoadedConfig {
-        load_str(&far_config(LOCAL, workers).expect("the synthesis succeeds"))
+        load_str(&far_config(LOCAL, workers, None).expect("the synthesis succeeds"))
     }
 
     /// A local config whose `[config]` section sets every key the section
@@ -500,7 +564,7 @@ mod tests {
         };
         std::fs::write(
             &path,
-            far_config(LOCAL, FarWorkers::Declared(owned)).expect("synthesis"),
+            far_config(LOCAL, FarWorkers::Declared(owned), None).expect("synthesis"),
         )
         .expect("write");
         assert_eq!(
@@ -550,6 +614,89 @@ mod tests {
         );
         // This machine's own worker layout named its hardware, and does not.
         assert_ne!(far.orchestrator.pool, local.orchestrator.pool);
+    }
+
+    // ---- What answers for the run's format on the far side ----
+
+    /// The registration a `[domain.*]` entry with `env` synthesizes into.
+    fn registration(env: &[&str]) -> Registration {
+        Registration {
+            format: "acme.thing.v1".to_string(),
+            payload_digest: sima_core::hash_bytes(b"a payload manifest"),
+            env: env.iter().map(|name| (*name).to_string()).collect(),
+        }
+    }
+
+    /// The far config `LOCAL` synthesizes into under `registration`, as text.
+    fn far_text(registration: Option<&Registration>) -> String {
+        let local = declared();
+        let HostForm::Owned(owned) = &local.hosts["gpubox"].form else {
+            panic!("gpubox is a machine of yours");
+        };
+        far_config(LOCAL, FarWorkers::Declared(owned), registration).expect("the synthesis")
+    }
+
+    #[test]
+    fn a_builtin_format_synthesizes_no_domain_table() {
+        // Every format this build answers is answered the same way there, so
+        // nothing about a program is written down.
+        let table: toml::Table = far_text(None).parse().expect("the far config parses");
+        assert!(!table.contains_key("domain"), "{table:?}");
+    }
+
+    #[test]
+    fn a_registered_format_synthesizes_the_entry_that_installs_its_program() {
+        let registration = registration(&["PATH", "PYTHONPATH"]);
+        let table: toml::Table = far_text(Some(&registration))
+            .parse()
+            .expect("the far config parses");
+        let entry = table["domain"]["acme.thing.v1"]
+            .as_table()
+            .expect("the entry");
+        assert_eq!(
+            entry["binary"].as_str(),
+            Some("./program/acme.thing.v1/installed/program"),
+            "the binary names what the install leaves"
+        );
+        assert_eq!(
+            entry["payload_digest"].as_str(),
+            Some(registration.payload_digest.to_string().as_str())
+        );
+        assert_eq!(
+            entry["env"].as_array().expect("the names"),
+            &[
+                toml::Value::String("PATH".to_string()),
+                toml::Value::String("PYTHONPATH".to_string()),
+            ],
+            "the names travel; the values are that machine's"
+        );
+        assert_eq!(entry.len(), 3, "and nothing else: {entry:?}");
+    }
+
+    #[test]
+    fn an_entry_declaring_no_names_writes_no_env_key() {
+        // The key is optional, and an entry that omits it declares nothing
+        // beyond the baseline every spawned program receives.
+        let table: toml::Table = far_text(Some(&registration(&[])))
+            .parse()
+            .expect("the far config parses");
+        let entry = table["domain"]["acme.thing.v1"]
+            .as_table()
+            .expect("the entry");
+        assert!(!entry.contains_key("env"), "{entry:?}");
+        assert_eq!(entry.len(), 2);
+    }
+
+    #[test]
+    fn the_registration_leaves_the_run_section_byte_for_byte() {
+        // The one hashed section: a run that carries its program is the same
+        // run as one that does not.
+        let with = far_text(Some(&registration(&["PATH"])))
+            .parse::<toml::Table>()
+            .expect("parses")["run"]
+            .clone();
+        let without = far_text(None).parse::<toml::Table>().expect("parses")["run"].clone();
+        assert_eq!(with, without);
     }
 
     // ---- A machine of yours ----

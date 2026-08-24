@@ -839,18 +839,26 @@ fn run_accepts_the_binary_flag_beside_the_fleet_flag_in_either_order() {
 }
 
 #[test]
-fn the_binary_flag_belongs_to_run_alone() {
+fn the_binary_flag_belongs_to_the_commands_that_drive_a_run() {
     // Every other command keeps the flag in its arguments, where it matches no
     // form and falls to the usage error: a query has no program to accept.
     let dir = tempfile::tempdir().expect("temp dir");
     let config = write_config(dir.path(), r#""succeed""#);
     let path = config.to_str().expect("utf-8 path");
-    for command in ["status", "report", "rm", "migrate"] {
+    for command in ["status", "report", "rm"] {
         let output = sima(&[command, path, "--accept-binary"]);
         assert_eq!(output.status.code(), Some(1), "{command}: {output:?}");
         let stderr = String::from_utf8(output.stderr).expect("stderr is UTF-8");
         assert!(stderr.contains("usage: sima"), "{command}: {stderr}");
     }
+    // `migrate` takes it: the far `sima run` is where the comparison happens,
+    // so the acceptance is stated here and travels there. This config declares
+    // no destination, so the invocation fails on that — which is what proves
+    // the form itself was matched.
+    let output = sima(&["migrate", path, "--accept-binary"]);
+    let stderr = String::from_utf8(output.stderr).expect("stderr is UTF-8");
+    assert!(!stderr.contains("usage: sima"), "{stderr}");
+    assert!(stderr.contains("orchestrator"), "{stderr}");
 }
 
 #[test]

@@ -135,6 +135,10 @@ pub(crate) struct BinarySource {
     /// migration reads it through [`DomainRegistry::routed`], which is the one
     /// boundary a caller sees the program itself through.
     payload: Option<PayloadSpec>,
+    /// The variable names the entry declared, kept beside the policy they are
+    /// in: a migration writes them into the far entry, so the program sees the
+    /// same names there — with that machine's own values.
+    env: Vec<String>,
     /// The open session. One conversation serves the whole config, so the
     /// program pays its startup cost once; the lock is what makes that one
     /// conversation reachable from the threads a run drives.
@@ -173,7 +177,9 @@ impl BinarySource {
                 format.as_str()
             ))
         };
-        let policy = SpawnPolicy::Explicit { passthrough: env };
+        let policy = SpawnPolicy::Explicit {
+            passthrough: env.clone(),
+        };
         let mut service =
             DomainService::spawn(&binary, &format, &policy, answer_timeout).map_err(declared)?;
         service.environment(&format).map_err(declared)?;
@@ -182,6 +188,7 @@ impl BinarySource {
             digest,
             policy,
             payload,
+            env,
             session: Mutex::new(service),
         })
     }
@@ -316,6 +323,7 @@ impl DomainRegistry {
                 binary: &source.binary,
                 digest: &source.digest,
                 payload: source.payload.as_ref(),
+                env: &source.env,
             })
     }
 }
@@ -329,6 +337,10 @@ pub(crate) struct RoutedProgram<'a> {
     /// `None` for an entry whose program stays on the machine it is installed
     /// on, which is what a migration refuses to move.
     pub(crate) payload: Option<&'a PayloadSpec>,
+    /// The variable names the entry declared. They travel to a far entry by
+    /// name alone, as they are written here: each value comes from the machine
+    /// the program runs on.
+    pub(crate) env: &'a [String],
 }
 
 /// The text of a configuration section, as the source that owns its keys

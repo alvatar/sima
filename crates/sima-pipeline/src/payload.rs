@@ -352,6 +352,18 @@ fn ingest_file(
     })
 }
 
+/// Every object a destination needs before it can install the payload
+/// `digest` names: the manifest itself and each file it names.
+///
+/// This is the whole closure — the manifest names the files by hash, so a
+/// destination holding these can materialize and install without asking for
+/// anything else. A push appends it to the objects it advertises, and the
+/// sync's own negotiation is what skips the ones the destination already has.
+pub(crate) fn closure(store: &Store, digest: &Hash) -> Result<Vec<Hash>> {
+    let manifest = Manifest::from_bytes(&store.get(digest)?)?;
+    Ok(std::iter::once(*digest).chain(manifest.objects()).collect())
+}
+
 /// Materializes the payload `digest` names into `dest`, restoring each file's
 /// path and execute bit, and answers the manifest it worked from — which is
 /// also where the install script comes from.
@@ -1179,6 +1191,31 @@ mod tests {
             Err(Error::MissingObject(named)) => assert_eq!(named, absent),
             other => panic!("expected a missing object, got {other:?}"),
         }
+        Ok(())
+    }
+
+    #[test]
+    fn the_closure_is_the_manifest_and_every_file_it_names() -> Result<()> {
+        // What a push has to advertise: a destination holding these can
+        // install without asking for anything else.
+        let (_dir, store) = store();
+        let (_payload, spec) = tree();
+        let digest = ingest(&store, &spec)?;
+        let closure = closure(&store, &digest)?;
+        assert_eq!(closure.len(), 3, "the manifest and its two files");
+        assert_eq!(closure[0], digest, "the manifest leads");
+        for object in &closure {
+            assert!(store.has(object)?, "{object} is in the store");
+        }
+        // Materializing from a store holding exactly the closure works, which
+        // is the property the push rests on.
+        let elsewhere = tempfile::tempdir().expect("temp dir");
+        let far = Store::open(elsewhere.path()).expect("open store");
+        for object in &closure {
+            far.put(&store.get(object)?)?;
+        }
+        let dest = tempfile::tempdir().expect("temp dir");
+        materialize(&far, &digest, dest.path())?;
         Ok(())
     }
 

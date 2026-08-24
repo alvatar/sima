@@ -13,8 +13,9 @@
 //!
 //! Two boundaries around the program's identity are here too: the build that
 //! served a session is journaled and compared at the next resume, and a
-//! migration of a config-routed run is refused, since the synthesized far
-//! config carries no route to the program.
+//! migration of a run whose entry names no payload is refused, since a
+//! migration carries the program to the destination as objects and an entry
+//! that names none states the program is this machine's alone.
 
 mod common;
 
@@ -602,10 +603,12 @@ fn a_resume_over_an_unchanged_program_passes_the_gate() -> Result<()> {
 }
 
 #[test]
-fn a_migration_of_a_config_routed_run_is_refused_where_it_is_asked_for() -> Result<()> {
-    // The far config a migration synthesizes carries `[run]`, `[config]`, and
-    // `[orchestrator]`, so a format routed to a program here has no route to
-    // it there. The refusal states that before anything moves.
+fn a_migration_of_a_program_that_states_no_payload_is_refused_where_it_is_asked_for() -> Result<()>
+{
+    // A migration carries the program to the destination as objects, so the
+    // entry has to name what travels. An entry that names none is a program
+    // this machine holds and no other, and the refusal states that before
+    // anything moves.
     //
     // This config names no destination either, and the error names the program
     // rather than the missing host: the guard runs ahead of the destination,
@@ -621,12 +624,12 @@ fn a_migration_of_a_config_routed_run_is_refused_where_it_is_asked_for() -> Resu
         observed.fetch_add(1, Ordering::Relaxed);
     };
     let loaded = sima_pipeline::load(&path).expect("the config loads");
-    let Err(error) = migrate(&path, &loaded, &observer, &interrupt) else {
-        panic!("expected a config-routed run to be refused a migration");
+    let Err(error) = migrate(&path, &loaded, &observer, &interrupt, BinaryChange::Refuse) else {
+        panic!("expected a program that states no payload to be refused a migration");
     };
     assert!(matches!(error, Error::Validation(_)), "{error:?}");
     let text = error.to_string();
-    for named in ["stub.v1", &worker().display().to_string()] {
+    for named in ["stub.v1", &worker().display().to_string(), "payload"] {
         assert!(text.contains(named), "{named} is missing from {text}");
     }
     assert!(

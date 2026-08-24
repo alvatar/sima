@@ -34,6 +34,7 @@ use crate::migrate::destination::Destination;
 use crate::migrate::far_config::FarLayout;
 use crate::migrate::sync::{Reach, sync_over};
 use crate::process::{ImageCheck, bootstrap_image, command_stdout};
+use crate::program_binding::BinaryChange;
 use crate::rental::{endpoint_target, transport_mode};
 
 /// The far side of a migration: the machine the run moves onto, and every
@@ -65,7 +66,12 @@ pub(crate) trait FarSide {
 
     /// Starts the far-side `sima run` detached, records its pid in `run.pid`,
     /// and returns it.
-    fn start(&self) -> Result<u32>;
+    ///
+    /// `accept` is what this invocation stated about a program whose build
+    /// changed under the run. The comparison itself is the far run's — it
+    /// journals what it installed and compares against what it journaled — so
+    /// the acceptance travels to it rather than being decided here.
+    fn start(&self, accept: BinaryChange) -> Result<u32>;
 
     /// Asks the far run to wind down. `sima run` drains its in-flight attempts
     /// on `SIGINT` and leaves the far store resumable.
@@ -254,7 +260,7 @@ impl FarSide for Remote {
         parse_pid(stdout.trim(), &self.reach.label())
     }
 
-    fn start(&self) -> Result<u32> {
+    fn start(&self, accept: BinaryChange) -> Result<u32> {
         // `setsid` detaches the run from the session that started it, so the
         // far side keeps computing when this migration's connection drops. It
         // does not fork when it is not already a process-group leader, which a
@@ -271,15 +277,23 @@ impl FarSide for Remote {
         // The `cd` is the guard that the placement happened: without it a
         // missing directory would surface only as a redirection failure inside
         // the background job, which the script's own exit status never sees.
+        //
+        // `--accept-binary` when this invocation stated it: the far run
+        // installs the payload and compares its digest against what it
+        // journaled, so the acceptance has to reach it to have any effect.
         let stdout = self.shell(&format!(
             "cd {dir} || exit 1\n\
-             setsid nohup {binary} run {config} > {log} 2>&1 < /dev/null &\n\
+             setsid nohup {binary} run {config}{accept} > {log} 2>&1 < /dev/null &\n\
              pid=$!\n\
              echo $pid > {pid}\n\
              echo $pid\n",
             dir = self.layout.dir(),
             binary = self.reach.binary(),
             config = self.layout.config(),
+            accept = match accept {
+                BinaryChange::Accept => " --accept-binary",
+                BinaryChange::Refuse => "",
+            },
             log = self.layout.log(),
             pid = self.layout.pid(),
         ))?;
@@ -415,6 +429,62 @@ mod tests {
         path
     }
 
+    /// A stand-in for the far side's `sima` that records the arguments it was
+    /// started with, at `<dir>/argv`, before it lives for `seconds`.
+    fn recording_binary(dir: &Path, seconds: &str) -> std::path::PathBuf {
+        let path = dir.join("sima");
+        std::fs::write(
+            &path,
+            format!(
+                "#!/bin/sh\necho \"$@\" > {}\nexec sleep {seconds}\n",
+                dir.join("argv").display(),
+            ),
+        )
+        .expect("write the stand-in");
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+            .expect("make it executable");
+        path
+    }
+
+    /// The arguments the recording stand-in was started with, waited for: the
+    /// start returns when the shell that backgrounded it does, which is before
+    /// the job itself has run.
+    fn recorded_argv(dir: &Path) -> String {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Ok(argv) = std::fs::read_to_string(dir.join("argv")) {
+                return argv;
+            }
+            assert!(Instant::now() < deadline, "the stand-in never recorded");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn the_acceptance_of_a_changed_program_is_what_the_far_run_is_started_with() -> Result<()> {
+        // The far run installs the payload and compares its digest against
+        // what it journaled, so the flag has to reach its argv to have any
+        // effect there.
+        for (accept, expected) in [(BinaryChange::Accept, true), (BinaryChange::Refuse, false)] {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let binary = recording_binary(dir.path(), "30");
+            let far = here(dir.path(), &binary);
+            far.place("[run]\nroot_seed = 1\n")?;
+            let pid = far.start(accept)?;
+            let argv = recorded_argv(dir.path());
+            assert!(argv.contains("run"), "it is a run: {argv}");
+            assert_eq!(
+                argv.contains("--accept-binary"),
+                expected,
+                "{accept:?} produced {argv}"
+            );
+            kill(pid);
+            until_gone(&far)?;
+        }
+        Ok(())
+    }
+
     /// Polls `far` until nothing is driving it, or the wait runs out.
     fn until_gone(far: &Remote) -> Result<Option<u32>> {
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -494,7 +564,7 @@ mod tests {
         let far = here(dir.path(), &binary);
         far.place("[run]\nroot_seed = 1\n")?;
 
-        let pid = far.start()?;
+        let pid = far.start(BinaryChange::Refuse)?;
         assert_eq!(
             far.driving()?,
             Some(pid),
@@ -525,7 +595,7 @@ mod tests {
         let binary = sleeping_binary(dir.path(), "30");
         let far = here(dir.path(), &binary);
         far.place("[run]\nroot_seed = 1\n")?;
-        let pid = far.start()?;
+        let pid = far.start(BinaryChange::Refuse)?;
         kill(pid);
         assert_eq!(until_gone(&far)?, None);
         far.interrupt(pid)?;
@@ -579,7 +649,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let far = here(dir.path(), Path::new("/bin/true"));
         // Nothing was placed, so the run has nowhere to start.
-        assert!(far.start().is_err());
+        assert!(far.start(BinaryChange::Refuse).is_err());
     }
 
     #[test]

@@ -24,6 +24,28 @@ use sima_transport::loopback::LoopbackTransport;
 
 use crate::config::{Fleet, LoadedConfig, Orchestrator, Pool};
 use crate::domain_registry::DomainRegistry;
+use crate::payload::PayloadSpec;
+
+/// A payload of one executable file, under a fresh temporary directory: the
+/// shape a `[domain.*]` entry declares when its program is one script. The
+/// directory is returned with it, since the paths point into it.
+pub(crate) fn file_payload() -> (tempfile::TempDir, PayloadSpec) {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let payload = dir.path().join("program.sh");
+    std::fs::write(&payload, "#!/bin/sh\nexec true\n").expect("write the payload");
+    std::fs::set_permissions(
+        &payload,
+        std::os::unix::fs::PermissionsExt::from_mode(0o755),
+    )
+    .expect("make it executable");
+    (
+        dir,
+        PayloadSpec {
+            payload,
+            install: None,
+        },
+    )
+}
 
 /// A minimal stub run config; its id addresses the test's run.
 pub(crate) fn stub_config() -> Result<RunConfig> {

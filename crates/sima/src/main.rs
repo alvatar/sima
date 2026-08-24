@@ -100,7 +100,9 @@ fn main() -> ExitCode {
         ["run", config, "--fleet"] if host.is_none() => {
             run_command(&resolve_config(config), Engagement::Fleet, accept)
         }
-        ["migrate", config] if host.is_none() => migrate::migrate_command(&resolve_config(config)),
+        ["migrate", config] if host.is_none() => {
+            migrate::migrate_command(&resolve_config(config), accept)
+        }
         ["rm", config] if host.is_none() => rm_command(&resolve_config(config)),
         // The only verb whose argument is a store directory rather than a
         // config: packing needs no run knowledge, and a store defines every
@@ -159,6 +161,7 @@ fn main() -> ExitCode {
                  \x20      sima report <config> --spend       report the run's rental spend\n\
                  \x20      sima report <config> --machines    report machine reputation and blacklisting\n\
                  \x20      sima migrate <config>              move the run onto the host [orchestrator] names\n\
+                 \x20      sima migrate <config> --accept-binary  … through a changed program\n\
                  \x20      sima rm <config>                   delete the run and what only it references\n\
                  \x20      sima pack <store-dir>              consolidate the store's loose objects into packs\n\
                  \x20      sima pack <store-dir> --gc         … and delete everything outside the finalized\n\
@@ -205,15 +208,19 @@ fn split_target(args: &[String]) -> (Vec<&str>, Option<&str>) {
     (rest, host)
 }
 
-/// Splits `--accept-binary` out of a `run` invocation, wherever in it the flag
-/// appears, returning the rest and the answer it states. `run` matches on the
-/// rest, so the flag composes with `--fleet` in either order rather than
-/// multiplying the command forms.
+/// Splits `--accept-binary` out of a `run` or `migrate` invocation, wherever in
+/// it the flag appears, returning the rest and the answer it states. Both
+/// commands match on the rest, so the flag composes with `--fleet` in either
+/// order rather than multiplying the command forms.
+///
+/// `migrate` takes it because the comparison happens in the far `sima run`,
+/// which installed the program the far config names: the acceptance is the
+/// operator's, stated here, and travels to the run that acts on it.
 ///
 /// Every other command keeps the flag among its arguments, where it matches no
-/// form and falls to the usage error: the flag belongs to `run` alone.
+/// form and falls to the usage error.
 fn split_binary_change<'a>(args: &[&'a str]) -> (Vec<&'a str>, BinaryChange) {
-    if args.first() != Some(&"run") {
+    if !matches!(args.first(), Some(&"run") | Some(&"migrate")) {
         return (args.to_vec(), BinaryChange::Refuse);
     }
     let mut accept = BinaryChange::Refuse;
@@ -862,6 +869,19 @@ mod tests {
         let (rest, accept) = split_change(&["run", "exp.toml", "--accept-binary", "--fleet"]);
         assert_eq!(rest, ["run", "exp.toml", "--fleet"]);
         assert_eq!(accept, BinaryChange::Accept);
+    }
+
+    #[test]
+    fn the_binary_flag_leaves_the_migrate_form_intact() {
+        // A migration takes it because the far `sima run` is where the
+        // comparison happens: the acceptance is stated here and travels there.
+        let (rest, accept) = split_change(&["migrate", "exp.toml", "--accept-binary"]);
+        assert_eq!(rest, ["migrate", "exp.toml"]);
+        assert_eq!(accept, BinaryChange::Accept);
+
+        let (rest, accept) = split_change(&["migrate", "exp.toml"]);
+        assert_eq!(rest, ["migrate", "exp.toml"]);
+        assert_eq!(accept, BinaryChange::Refuse);
     }
 
     #[test]

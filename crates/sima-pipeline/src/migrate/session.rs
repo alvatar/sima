@@ -66,9 +66,11 @@ use crate::config::{DEFAULT_READY_POLL_MS, DEFAULT_READY_TIMEOUT_MS};
 use crate::feed::RunFeed;
 use crate::fleet::Rental;
 use crate::migrate::destination::{Destination, destination_for};
-use crate::migrate::far_config::{FarWorkers, far_config};
+use crate::migrate::far_config::{FarWorkers, Registration, far_config};
 use crate::migrate::far_side::{Contact, FarSide, Remote};
 use crate::migrate::objects::push_objects;
+use crate::payload::{closure, ingest};
+use crate::program_binding::BinaryChange;
 use crate::rental::{budget_exhausted, provider_for_rental};
 use crate::status::{RunState, RunStatus};
 use crate::task_keys::task_keys;
@@ -124,6 +126,7 @@ pub fn migrate(
     loaded: &LoadedConfig,
     observer: Observer<'_>,
     interrupt: &AtomicBool,
+    accept: BinaryChange,
 ) -> Result<MigrateOutcome> {
     // The file's own text is what travels: `[run]` is carried across as a
     // parsed value rather than re-derived, so no translation here can perturb
@@ -133,21 +136,43 @@ pub fn migrate(
         path: config.to_path_buf(),
         source,
     })?;
-    // A run whose format a `[domain.*]` entry routes to a program stays on the
-    // machine that program is installed on. The refusal precedes the
-    // destination, the store, the lock, and any provider, so the refusal is
-    // stated before anything is opened, moved, or rented.
-    if let Some(routed) = loaded.domains.routed(&loaded.run.format) {
-        return Err(Error::Validation(format!(
-            "the run's format {:?} is served by the program {}, and a migration carries no route \
-             to it: the far config is synthesized from [run], [config], and [orchestrator] alone. \
-             Drive this run on the machine the program is installed on.",
-            loaded.run.format.as_str(),
-            routed.binary.display()
-        )));
-    }
+    // A run whose format a `[domain.*]` entry routes to a program carries that
+    // program with it, and an entry that states nothing to carry states that
+    // the program is this machine's alone. The refusal precedes the
+    // destination, the store, the lock, and any provider, so it is stated
+    // before anything is opened, moved, or rented.
+    let carried = match loaded.domains.routed(&loaded.run.format) {
+        None => None,
+        Some(routed) => {
+            let Some(payload) = routed.payload else {
+                return Err(Error::Validation(format!(
+                    "the run's format {:?} is served by the program {}, and the [domain.{:?}] \
+                     entry states no payload: a migration carries the program to the destination \
+                     as objects, so the entry names what travels. Add a payload key naming the \
+                     file or directory that is the program, or drive this run on the machine the \
+                     program is installed on.",
+                    loaded.run.format.as_str(),
+                    routed.binary.display(),
+                    loaded.run.format.as_str(),
+                )));
+            };
+            Some((payload.clone(), routed.env.to_vec()))
+        }
+    };
     let destination = destination_for(loaded)?;
     let store = Store::open(&loaded.store)?;
+    // The program's bytes become objects before the lock is taken: the ingest
+    // writes content-addressed objects and nothing else, which is the one store
+    // write that needs no exclusion — two writers of one object write the same
+    // bytes to the same address.
+    let registration = match carried {
+        None => None,
+        Some((payload, env)) => Some(Registration {
+            format: loaded.run.format.as_str().to_string(),
+            payload_digest: ingest(&store, &payload)?,
+            env,
+        }),
+    };
     // Registering the run is what gives it a journal to forward into, and it is
     // the same idempotent registration a local `sima run` performs.
     let run = store.create_run(&loaded.run)?;
@@ -164,6 +189,8 @@ pub fn migrate(
                 config: loaded,
                 destination: &destination,
                 local_text: &local_text,
+                registration: registration.as_ref(),
+                accept,
                 rental: None,
                 observer,
                 interrupt,
@@ -212,6 +239,8 @@ pub fn migrate(
                 config: loaded,
                 destination: &destination,
                 local_text: &local_text,
+                registration: registration.as_ref(),
+                accept,
                 rental: Some(guard),
                 observer,
                 interrupt,
@@ -293,6 +322,14 @@ struct Session<'a> {
     destination: &'a Destination<'a>,
     /// The local config's own file text, which is what travels.
     local_text: &'a str,
+    /// How the far side answers for this run's format, when a `[domain.*]`
+    /// entry routes it to a program of this machine's. `None` for a format
+    /// this build answers, whose far config declares no `[domain.*]` table.
+    registration: Option<&'a Registration>,
+    /// What the invocation stated about a program whose build changed under
+    /// the run — carried to the far `sima run`, whose own binding guard is
+    /// what compares the two.
+    accept: BinaryChange,
     /// The rented machine hosting the run, released on every path out; `None`
     /// for a machine of yours, which is nothing to tear down.
     rental: Option<InstanceGuard<'a, dyn Provider + Sync + 'a>>,
@@ -334,6 +371,7 @@ impl Session<'_> {
         let far_text = far_config(
             self.local_text,
             FarWorkers::for_form(self.destination.form, &probed),
+            self.registration,
         )?;
         self.far.place(&far_text)?;
 
@@ -346,10 +384,16 @@ impl Session<'_> {
             Some(pid) => pid,
             None => {
                 let keys = task_keys(self.config, self.store)?;
-                let objects = push_objects(self.store, &keys)?;
+                let mut objects = push_objects(self.store, &keys)?;
+                // The program travels with the run it serves: the manifest and
+                // its files ride the same push, and the sync's negotiation is
+                // what skips the bytes the destination already holds.
+                if let Some(registration) = self.registration {
+                    objects.extend(closure(self.store, &registration.payload_digest)?);
+                }
                 self.far
                     .sync(self.store, &keys, ObjectScope::Named(&objects))?;
-                self.far.start()?
+                self.far.start(self.accept)?
             }
         };
 
@@ -733,6 +777,10 @@ mod tests {
         far: Option<(&'a Store, &'a LoadedConfig)>,
         steps: Mutex<Vec<Step>>,
         placed: Mutex<Option<String>>,
+        /// What the far `sima run` was started with about a changed program.
+        started_with: Mutex<Option<BinaryChange>>,
+        /// The objects the push named, which is what a program has to be in.
+        pushed: Mutex<Vec<sima_core::Hash>>,
     }
 
     impl<'a> Scripted<'a> {
@@ -755,6 +803,8 @@ mod tests {
                 far: None,
                 steps: Mutex::new(Vec::new()),
                 placed: Mutex::new(None),
+                started_with: Mutex::new(None),
+                pushed: Mutex::new(Vec::new()),
             }
         }
 
@@ -848,8 +898,9 @@ mod tests {
             Ok(*self.alive.lock().expect("the pid lock"))
         }
 
-        fn start(&self) -> Result<u32> {
+        fn start(&self, accept: BinaryChange) -> Result<u32> {
             self.record(Step::Start);
+            *self.started_with.lock().expect("the acceptance lock") = Some(accept);
             *self.alive.lock().expect("the pid lock") = Some(PID);
             Ok(PID)
         }
@@ -886,7 +937,10 @@ mod tests {
             scope: ObjectScope<'_>,
         ) -> Result<SyncReport> {
             self.record(match scope {
-                ObjectScope::Named(_) => PUSH,
+                ObjectScope::Named(named) => {
+                    *self.pushed.lock().expect("the push lock") = named.to_vec();
+                    PUSH
+                }
                 ObjectScope::Referenced => PULL,
             });
             match self.far {
@@ -1086,6 +1140,8 @@ mod tests {
             config: &local.config,
             destination: &destination,
             local_text: &local.text,
+            registration: None,
+            accept: BinaryChange::Refuse,
             rental,
             observer: &observer,
             interrupt,
@@ -1180,6 +1236,141 @@ mod tests {
             &Budget::default(),
             &AtomicBool::new(false),
         )
+    }
+
+    // ---- The program the run carries with it ----
+
+    /// Drives one session under `registration` and `accept`, so what the
+    /// far side is handed about the program is what the test fixes.
+    fn session_carrying(
+        local: &Local,
+        far: &dyn FarSide,
+        registration: Option<&Registration>,
+        accept: BinaryChange,
+    ) -> Result<MigrateOutcome> {
+        let observer = |_: &Record| {};
+        let destination = destination_for(&local.config).expect("the host is declared");
+        Session {
+            far,
+            store: &local.store,
+            config: &local.config,
+            destination: &destination,
+            local_text: &local.text,
+            registration,
+            accept,
+            rental: None,
+            observer: &observer,
+            interrupt: &AtomicBool::new(false),
+            usable_by: None,
+            overrides: Overrides::default(),
+        }
+        .drive()
+    }
+
+    #[test]
+    fn a_carried_program_reaches_the_far_config_and_the_push() -> Result<()> {
+        // The two halves of delivering a program: the far config states the
+        // digest to install, and the push carries the objects to install it
+        // from.
+        let local = local(RENTED, PROMPT, Some(3));
+        let run = local.config.run.id();
+        let (_payload, spec) = crate::fixtures::file_payload();
+        let digest = crate::payload::ingest(&local.store, &spec)?;
+        let registration = Registration {
+            format: "stub.v1".to_string(),
+            payload_digest: digest,
+            env: vec!["PATH".to_string()],
+        };
+        let far = Scripted::new().delivering(vec![vec![started(&run), finalized(&run)]]);
+
+        session_carrying(&local, &far, Some(&registration), BinaryChange::Refuse)?;
+
+        // The far config installs it.
+        let placed = far
+            .placed
+            .lock()
+            .expect("the placement lock")
+            .clone()
+            .expect("a config was placed");
+        let table: toml::Table = placed.parse().expect("the far config parses");
+        assert_eq!(
+            table["domain"]["stub.v1"]["payload_digest"].as_str(),
+            Some(digest.to_string().as_str())
+        );
+
+        // The push carries every object it needs to.
+        let pushed = far.pushed.lock().expect("the push lock").clone();
+        for object in crate::payload::closure(&local.store, &digest)? {
+            assert!(
+                pushed.contains(&object),
+                "{object} must travel with the run"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_run_this_build_answers_pushes_no_program_and_declares_none() -> Result<()> {
+        // The counterpart: nothing about a program is written down, and the
+        // push is the identity components and the frontier states alone.
+        let local = local(RENTED, PROMPT, Some(3));
+        let run = local.config.run.id();
+        let far = Scripted::new().delivering(vec![vec![started(&run), finalized(&run)]]);
+
+        session_carrying(&local, &far, None, BinaryChange::Refuse)?;
+        let placed = far
+            .placed
+            .lock()
+            .expect("the placement lock")
+            .clone()
+            .expect("a config was placed");
+        assert!(
+            !placed
+                .parse::<toml::Table>()
+                .expect("the far config parses")
+                .contains_key("domain"),
+            "{placed}"
+        );
+        let keys = task_keys(&local.config, &local.store)?;
+        assert_eq!(
+            far.pushed.lock().expect("the push lock").clone(),
+            push_objects(&local.store, &keys)?
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn the_acceptance_of_a_changed_program_reaches_the_far_start() -> Result<()> {
+        // The comparison is the far run's — it journals what it installed —
+        // so the operator's acceptance has to travel to it.
+        for accept in [BinaryChange::Refuse, BinaryChange::Accept] {
+            let local = local(RENTED, PROMPT, Some(3));
+            let run = local.config.run.id();
+            let far = Scripted::new().delivering(vec![vec![started(&run), finalized(&run)]]);
+            session_carrying(&local, &far, None, accept)?;
+            assert_eq!(
+                *far.started_with.lock().expect("the acceptance lock"),
+                Some(accept),
+                "the far run is started with what the invocation stated"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_reattach_carries_no_program_because_it_starts_nothing() -> Result<()> {
+        // A far run already going installed its program when it loaded; the
+        // push and the start are skipped, so nothing is sent or accepted.
+        let local = local(RENTED, PROMPT, Some(3));
+        let run = local.config.run.id();
+        let far = Scripted::new()
+            .already_driving()
+            .delivering(vec![vec![started(&run), finalized(&run)]]);
+        session_carrying(&local, &far, None, BinaryChange::Accept)?;
+        assert!(!far.steps().contains(&PUSH), "{:?}", far.steps());
+        assert!(!far.steps().contains(&Step::Start), "{:?}", far.steps());
+        assert_eq!(*far.started_with.lock().expect("the acceptance lock"), None);
+        Ok(())
     }
 
     // ---- The choreography ----
@@ -1710,7 +1901,7 @@ mod tests {
             fn driving(&self) -> Result<Option<u32>> {
                 unreachable!("the migration never got past the reach check")
             }
-            fn start(&self) -> Result<u32> {
+            fn start(&self, _: BinaryChange) -> Result<u32> {
                 unreachable!("the migration never got past the reach check")
             }
             fn interrupt(&self, _: u32) -> Result<()> {
@@ -1771,8 +1962,14 @@ mod tests {
         .expect("write the config");
         let observer = |_: &Record| {};
         let loaded = crate::config::load(&path)?;
-        let error = migrate(&path, &loaded, &observer, &AtomicBool::new(false))
-            .expect_err("the machine cannot be reached");
+        let error = migrate(
+            &path,
+            &loaded,
+            &observer,
+            &AtomicBool::new(false),
+            BinaryChange::Refuse,
+        )
+        .expect_err("the machine cannot be reached");
         assert!(
             error.to_string().contains("sima.invalid.test"),
             "the reach check is what failed, naming what it could not reach: {error}"

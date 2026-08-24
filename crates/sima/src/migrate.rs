@@ -14,14 +14,17 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use sima_core::Result;
-use sima_pipeline::{MigrateOutcome, load, migrate};
+use sima_pipeline::{BinaryChange, MigrateOutcome, load, migrate};
 
 use crate::{EXIT_ERROR, EXIT_FAILED, EXIT_INTERRUPTED, render, report};
 
-/// `sima migrate <config.toml>`: moves the run onto its destination, renders
-/// the far run's events as they arrive, and exits on the outcome.
-pub(crate) fn migrate_command(config: &Path) -> ExitCode {
-    match moved(config) {
+/// `sima migrate <config.toml> [--accept-binary]`: moves the run onto its
+/// destination, renders the far run's events as they arrive, and exits on the
+/// outcome. `accept` is what the invocation asked for about a program whose
+/// build changed under the run; it travels to the far `sima run`, whose own
+/// binding guard is what compares the two.
+pub(crate) fn migrate_command(config: &Path, accept: BinaryChange) -> ExitCode {
+    match moved(config, accept) {
         Ok(outcome) => {
             println!("{}", describe(&outcome));
             ExitCode::from(exit_code(&outcome))
@@ -32,7 +35,7 @@ pub(crate) fn migrate_command(config: &Path) -> ExitCode {
 
 /// Registers the interrupt flag before any output — so Ctrl-C winds the far run
 /// down from the first line on — and moves the run.
-fn moved(config: &Path) -> Result<MigrateOutcome> {
+fn moved(config: &Path, accept: BinaryChange) -> Result<MigrateOutcome> {
     let interrupt = crate::register_interrupt()?;
 
     // Named before the move, as `sima run` names it: the far side's directory
@@ -50,6 +53,7 @@ fn moved(config: &Path) -> Result<MigrateOutcome> {
         &loaded,
         &|record| progress.event(record),
         &interrupt,
+        accept,
     )
 }
 

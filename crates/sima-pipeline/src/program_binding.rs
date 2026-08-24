@@ -114,6 +114,7 @@ mod tests {
             binary,
             digest,
             payload: None,
+            env: &[],
         }
     }
 

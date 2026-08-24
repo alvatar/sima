@@ -123,7 +123,13 @@ fn drive(config: &Path, stop_after: Option<usize>) -> Result<RunOutcome> {
 /// records it forwards.
 fn move_run(config: &Path) -> Result<MigrateOutcome> {
     let loaded = sima_pipeline::load(config)?;
-    migrate(config, &loaded, &|_: &Record| {}, &AtomicBool::new(false))
+    migrate(
+        config,
+        &loaded,
+        &|_: &Record| {},
+        &AtomicBool::new(false),
+        BinaryChange::Refuse,
+    )
 }
 
 /// Every record the store of the run `config` describes currently holds, keyed
@@ -354,6 +360,7 @@ fn a_migration_interrupted_during_the_follow_still_pulls_and_tears_down() -> Res
         &loaded,
         &|_: &Record| interrupt.store(true, Ordering::Relaxed),
         &interrupt,
+        BinaryChange::Refuse,
     )?;
     assert!(
         matches!(outcome, MigrateOutcome::Interrupted { .. }),
