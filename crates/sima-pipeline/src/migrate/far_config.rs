@@ -55,6 +55,8 @@ const FAR_STORE: &str = "./store";
 pub(crate) struct FarLayout {
     /// The run's directory on the destination.
     dir: String,
+    /// The run living there, which the far store is addressed by.
+    run: RunId,
 }
 
 impl FarLayout {
@@ -62,6 +64,7 @@ impl FarLayout {
     pub(crate) fn new(root: &str, run: &RunId) -> FarLayout {
         FarLayout {
             dir: format!("{}/{run}", root.trim_end_matches('/')),
+            run: *run,
         }
     }
 
@@ -73,6 +76,18 @@ impl FarLayout {
     /// The synthesized config.
     pub(crate) fn config(&self) -> String {
         format!("{}/{CONFIG_FILE}", self.dir)
+    }
+
+    /// The far side's store, which `sima sync-serve` is pointed at directly:
+    /// the synthesized config names it relative to its own directory, so the
+    /// path is derivable here without reading that config back.
+    pub(crate) fn store(&self) -> String {
+        format!("{}/{}", self.dir, FAR_STORE.trim_start_matches("./"))
+    }
+
+    /// The run the far side is driving, which addresses its store.
+    pub(crate) fn run(&self) -> &RunId {
+        &self.run
     }
 
     /// The far-side `sima run` process id, what a second invocation reads to

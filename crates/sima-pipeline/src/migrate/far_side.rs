@@ -308,7 +308,14 @@ impl FarSide for Remote {
     }
 
     fn sync(&self, store: &Store, keys: &[TaskKey], scope: ObjectScope<'_>) -> Result<SyncReport> {
-        sync_over(store, keys, scope, &self.reach, &self.layout.config())
+        sync_over(
+            store,
+            keys,
+            scope,
+            &self.reach,
+            &self.layout.store(),
+            self.layout.run(),
+        )
     }
 
     fn follow(&self) -> Result<Box<dyn RunFeed>> {

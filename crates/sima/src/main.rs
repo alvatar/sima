@@ -119,7 +119,9 @@ fn main() -> ExitCode {
         ["follow-serve", config, "--once"] if host.is_none() => serve_command(config, true),
         // The far half of a store sync, invoked over ssh by a migration. Not a
         // user-facing verb either.
-        ["sync-serve", config] if host.is_none() => sync_serve_command(config),
+        ["sync-serve", store, "--run", run] if host.is_none() => {
+            sync_serve_command(Path::new(store), run)
+        }
         ["status", config] => status_command(&Target::new(config, host)),
         ["status", config, "--failed"] => status_failed_command(&Target::new(config, host)),
         ["status", config, "--task", key] => status_task_command(&Target::new(config, host), key),
@@ -581,19 +583,30 @@ fn serve_command(config: &str, once: bool) -> ExitCode {
     }
 }
 
-/// `sima sync-serve <config>`: serves one store-sync session over stdin and
-/// stdout, which carry protocol frames and nothing else — every diagnostic goes
-/// to stderr, which ssh keeps on its own channel. A migration spawns this over
-/// ssh; it is not a user-facing verb and stays out of the usage text.
+/// `sima sync-serve <store-dir> --run <run-id>`: serves one store-sync session
+/// over stdin and stdout, which carry protocol frames and nothing else — every
+/// diagnostic goes to stderr, which ssh keeps on its own channel. A migration
+/// spawns this over ssh; it is not a user-facing verb and stays out of the
+/// usage text.
+///
+/// It addresses the store and the run rather than a config, because loading a
+/// config resolves its `[domain.*]` entries — which installs and spawns the
+/// program that the very session being served may be delivering. The initiator
+/// knows both values: it derives the run id locally and the far store sits in
+/// the run's own directory.
 ///
 /// It takes the run lock for the session, so a `sima run` driving this run on
 /// this machine makes the sync fail cleanly on the lock rather than writing
 /// underneath it.
-fn sync_serve_command(config: &str) -> ExitCode {
+fn sync_serve_command(store: &Path, run: &str) -> ExitCode {
+    let run = match RunId::from_hex(run) {
+        Ok(run) => run,
+        Err(e) => return report(e),
+    };
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
     let (mut input, mut output) = (stdin.lock(), stdout.lock());
-    match sync_serve(&resolve_config(config), &mut input, &mut output) {
+    match sync_serve(store, &run, &mut input, &mut output) {
         Ok(_) => ExitCode::SUCCESS,
         Err(e) => report(e),
     }
