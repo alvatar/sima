@@ -235,6 +235,29 @@ fn a_pull_from_a_gapped_store_completes_and_a_third_sync_moves_nothing() -> Resu
     Ok(())
 }
 
+/// A named object no record references travels all the same: the scope is
+/// exactly what the caller named, and not everything a run needs on the far
+/// side is something a task record points at.
+#[test]
+fn a_named_object_outside_the_records_references_still_travels() -> Result<()> {
+    let (_da, a, keys) = store_with(&[1]);
+    let (_db, b) = empty_store();
+    // Bytes nothing in the run references — the shape a program's payload
+    // takes, which the far side needs before it can run anything at all.
+    let unreferenced = a.put(b"the program this run is served by")?;
+    let referenced = *a.record(&keys[0])?.expect("committed").artifacts()[0].object();
+
+    let (ra, rb) = run_sync_scoped(&a, &keys, ObjectScope::Named(&[unreferenced]), &b, &keys);
+    ra?;
+    rb?;
+    assert!(b.has(&unreferenced)?, "the named object travelled");
+    assert!(
+        !b.has(&referenced)?,
+        "and an unnamed one did not, whatever references it"
+    );
+    Ok(())
+}
+
 /// A name for an object this side does not hold advertises nothing: a peer's
 /// want is bounded by what was advertised, and a want that could not be
 /// fulfilled would fail the session.

@@ -26,11 +26,13 @@ pub enum ObjectScope<'a> {
     /// complete store advertises everything, which is what a pull wants: the
     /// store that comes home must be complete.
     Referenced,
-    /// Exactly the listed objects, of those this side holds. A push uses it to
-    /// send the records in full — a chain is traversable forward only, so
-    /// without the prefix records the far side cannot locate the frontier at
-    /// all — while sending only the state bytes the far side will actually
-    /// read.
+    /// Exactly the listed objects, of those this side holds — whether or not a
+    /// record in the key set references them. A push uses it to send the
+    /// records in full — a chain is traversable forward only, so without the
+    /// prefix records the far side cannot locate the frontier at all — while
+    /// sending only the state bytes the far side will actually read, plus
+    /// whatever else the run needs there: the program a config-routed format
+    /// is served by travels this way, and no task record names it.
     Named(&'a [Hash]),
 }
 
@@ -230,16 +232,13 @@ impl Store {
                 records.insert(key, hash_bytes(&record.to_bytes()));
             }
         }
-        let offered = match scope {
+        let offered: BTreeSet<Hash> = match scope {
             ObjectScope::Referenced => referenced,
-            // A named object outside the key set's references is not this
-            // side's to offer under these keys, so the named set intersects
-            // what the records reference.
-            ObjectScope::Named(named) => named
-                .iter()
-                .copied()
-                .filter(|hash| referenced.contains(hash))
-                .collect(),
+            // Exactly what the caller named. Not every object a side needs to
+            // offer is one a record references: a run whose format is served
+            // by a program of its own carries that program as objects too, and
+            // no task record names them.
+            ObjectScope::Named(named) => named.iter().copied().collect(),
         };
         let mut objects = BTreeSet::new();
         for hash in offered {
