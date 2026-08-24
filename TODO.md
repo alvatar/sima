@@ -71,9 +71,9 @@ disposable at any instant.
 
 ## Execution order
 
-Phases are numbered in the order they run, and the ladder is P1 through P8:
-P1 through P6 are done, P7 (out-of-tree executors) and P8 (store scale and
-environment provenance) remain, and then it pauses. A phase or milestone
+Phases are numbered in the order they run, and the ladder is P1 through P9:
+P1 through P8 are done, and P9 (registered programs beyond the orchestrator's
+machine) remains, after which it pauses. A phase or milestone
 number means work this version of sima will do.
 
 Everything model-specific — the evaluation funnel, continuous-family rigor,
@@ -964,6 +964,80 @@ model or metric. Last active phase before the pause.
       proceeds. Re-evaluation of a finalized run opens no device, so that path
       stays journal-audit only, recorded as such in
       `docs/architecture.md` (`Driver provenance`)
+
+## P9 — Registered programs beyond the orchestrator's machine
+
+A format bound through `[domain.*]` runs only where the orchestrator runs. The
+phase lifts that: the program travels to the machines a run uses, its build is
+agreed across them, and a migration carries the registration it needs. Fleet
+under a migrated orchestrator is out of scope and recorded at the end of the
+phase with its reasons.
+
+The decision the whole phase rests on: **the program travels per run.** sima
+ships the bytes and a script installs them, so a change reaches a machine
+without publishing anywhere and without rebuilding an image.
+
+- [ ] M9.1 Payload and install script: two keys on the `[domain.*]` entry — a
+      `payload` path, one file or one directory, and an `install` script run on
+      the far side once it lands. sima archives the payload, transfers it, runs
+      the script, and the script decides what installation means for that
+      language and environment. The script is the flexibility: an interpreter's
+      package, a compiled binary, a virtualenv, a symlink into an existing
+      image. Two settled points. **The payload is bytes sima sends, never a
+      thing the far side fetches**, so a local edit is a run away from a remote
+      machine and nothing is published to reach it. **An install that fails
+      fails the run, naming the machine**, since proceeding on the machines that
+      worked spends a fleet's price for a fraction of its capacity. Landing
+      inside a container is the script's job, which is what keeps a per-run
+      program change from becoming an image rebuild.
+- [ ] M9.2 Build agreement across machines: the payload digest is what a run
+      believes answered for the format, and a remote copy that drifted from it
+      breaks the one promise the store makes. A worker's handshake carries the
+      digest of the program that answered, the orchestrator compares it against
+      the payload it sent, and a mismatch refuses the machine naming both
+      digests. This supersedes the `pin` key M7.5 left open: sima sent the
+      bytes, so what a config would assert is already known, and the check moves
+      from a claim in a file to an agreement on the wire.
+- [ ] M9.3 Fleet routing of registered formats: a registered format's tasks
+      reach fleet machines. Placement admits a machine once its payload landed
+      and its digest agreed, so a machine that answers is one that received the
+      program. Depends on M9.1 and M9.2 and is the phase's payload — it is what
+      makes a program written outside this workspace a first-class citizen of a
+      distributed run.
+- [ ] M9.4 Migration carries its registration: the synthesized far config gains
+      the `[domain.*]` entry, its `binary` rewritten to where the install script
+      put the program on that machine. This is what lifts the outright refusal a
+      migration answers a registered format with today. `[fleet]`, `[host.*]`,
+      `[host_class.*]`, and `[budget]` stay dropped, for the reasons the phase
+      records below.
+- [ ] M9.5 Detach as a verb: `sima migrate` catches `SIGINT` alone and winds the
+      far run down, so the deliberate gesture stops the run while an accidental
+      one — a closed terminal, a dropped connection — detaches and leaves it
+      computing. The two intentions swap places, and the command takes no flag
+      to say which was meant. Split them: attaching, detaching, and winding down
+      become things an operator asks for by name rather than by which signal
+      reached the process.
+
+**Fleet under a migrated orchestrator is out of scope.** A migrated run drives
+the destination's own workers and no others, which is why the far config drops
+every section naming a machine. Lifting it is not a matter of carrying those
+sections across:
+
+- **Credentials.** Renting from the destination puts a provider key on a rented
+  machine; reaching a declared host from it puts an ssh key there.
+- **Reachability.** `[host.*]` names destinations reachable from the
+  orchestrator's own network, which says nothing about what a rented instance
+  reaches.
+- **Teardown ownership.** A far orchestrator that dies mid-run leaves rentals
+  its own machine acquired, and `sima reconcile` runs from here without knowing
+  they exist.
+
+Each is a decision in its own right, and together they are a phase rather than a
+milestone. What the exclusion costs an operator is stated plainly: **many
+machines and an unattended run are alternatives, not a pair** — a fleet needs
+the orchestrator's machine to stay up, and a migration is one machine however
+many devices it holds.
+
 
 ## Future work
 
