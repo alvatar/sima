@@ -30,17 +30,43 @@
 //! The module sits in the pipeline because a payload is a config-driven
 //! concept; the store below it stays generic bytes.
 
+use std::fs::{File, OpenOptions};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use sima_core::{Codec, Dec, Enc, Error, Hash, MAX_PAYLOAD, Result};
 use sima_store::Store;
 
 /// The mode a materialized executable file is given, and the mode a single-file
 /// payload's entry point is installed under.
-pub(crate) const EXECUTABLE_MODE: u32 = 0o755;
+const EXECUTABLE_MODE: u32 = 0o755;
 /// The mode every other materialized file is given.
 const REGULAR_MODE: u32 = 0o644;
+
+/// The directory every installed program hangs off, under the directory the
+/// config file itself sits in.
+const PROGRAM_DIR: &str = "program";
+/// Where the manifest's files are materialized. Stable, so a wrapper an
+/// install script writes may point into it.
+const PAYLOAD_DIR: &str = "payload";
+/// Where the install script puts what it built.
+const INSTALLED_DIR: &str = "installed";
+/// The entry point the config's `binary` names, found by convention inside
+/// [`INSTALLED_DIR`].
+const ENTRY_POINT: &str = "program";
+/// The install script, written out of the manifest.
+const SCRIPT_FILE: &str = "install.sh";
+/// The last install's combined stdout and stderr.
+const LOG_FILE: &str = "install.log";
+/// The manifest digest the installed tree was built from, written last.
+const STAMP_FILE: &str = "installed.digest";
+/// Held while installing, so concurrent loaders build one tree between them.
+const LOCK_FILE: &str = ".lock";
+/// How much of the install log a failure carries inline. The script's own last
+/// words are what say why it failed; the whole log is at the path the error
+/// also names.
+const LOG_TAIL_LINES: usize = 20;
 
 /// What a `[domain.*]` entry declares travels: the payload itself, and the
 /// script that turns it into a program on the destination.
@@ -345,9 +371,301 @@ pub(crate) fn materialize(store: &Store, digest: &Hash, dest: &Path) -> Result<M
     Ok(manifest)
 }
 
+/// Where the program answering for one format is installed on the machine
+/// that runs it.
+///
+/// ```text
+///   <config-dir>/program/<format>/
+///       .lock              held while installing
+///       payload/           the manifest's files, materialized
+///       install.sh         the manifest's script, when it carries one
+///       install.log        the last install's combined stdout and stderr
+///       installed/         what the script filled
+///       installed/program  the entry point the config's binary names
+///       installed.digest   the manifest digest this tree was built from
+/// ```
+///
+/// The tree hangs off the config file's own directory, which on a machine a
+/// run migrated onto is the run's directory — so two runs on one machine
+/// install into two trees. It is keyed by format below that, so a config
+/// routing two formats to two programs installs two programs rather than
+/// overwriting one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ProgramTree {
+    root: PathBuf,
+}
+
+impl ProgramTree {
+    /// The tree for `format` under the directory `config` sits in.
+    ///
+    /// The format id is a path component here, and the id rule admits `.` and
+    /// `..`, so it is held to the same rule a manifest path is: a name that
+    /// would mean a directory other than this one is refused.
+    pub(crate) fn new(config_dir: &Path, format: &str) -> Result<ProgramTree> {
+        validate_path(format)?;
+        Ok(ProgramTree {
+            root: config_dir.join(PROGRAM_DIR).join(format),
+        })
+    }
+
+    /// Where the manifest's files are materialized.
+    fn payload(&self) -> PathBuf {
+        self.root.join(PAYLOAD_DIR)
+    }
+
+    /// Where the install script puts what it built.
+    fn installed(&self) -> PathBuf {
+        self.root.join(INSTALLED_DIR)
+    }
+
+    /// The entry point the config's `binary` names.
+    fn entry_point(&self) -> PathBuf {
+        self.installed().join(ENTRY_POINT)
+    }
+}
+
+/// The entry point of `format`'s installed program, relative to the directory
+/// the config file sits in — which is what a synthesized far config writes as
+/// its `binary`.
+///
+/// Stated here beside the tree it names, so the path a config points at and the
+/// path an install fills have one definition between them.
+pub(crate) fn relative_entry_point(format: &str) -> String {
+    format!("./{PROGRAM_DIR}/{format}/{INSTALLED_DIR}/{ENTRY_POINT}")
+}
+
+/// Installs the payload `digest` names into `tree`, so the entry point is on
+/// this machine by the time the config's `binary` is spawned.
+///
+/// ```text
+///        install of digest M
+///                 │
+///                 ▼
+///     installed.digest == M and ──yes──► nothing to do
+///     installed/program exists?
+///                 │ no
+///                 ▼
+///        take the tree's lock  ◄── concurrent loaders wait here; the kernel
+///                 │                frees a crashed installer's lock
+///                 ▼
+///        re-check the stamp ──hit──► release, nothing to do
+///                 │ miss
+///                 ▼
+///        build payload/ and installed/ fresh, run the install, write
+///        installed.digest last
+/// ```
+///
+/// The stamp is what makes a reattach, a status query, and a follow attach cost
+/// one file read, and what makes a changed payload reinstall exactly once.
+pub(crate) fn install(store: &Store, digest: &Hash, tree: &ProgramTree) -> Result<()> {
+    // The cost the stamp exists to save, and nothing more: [`build`] checks it
+    // again under the lock, which is where the decision is actually made. What
+    // this buys is that a loader with nothing to do — a status query, a follow
+    // attach, a reattaching migration — reads one file instead of queueing
+    // behind an install running for someone else.
+    if installed(tree, digest)? {
+        return Ok(());
+    }
+    create_dir(&tree.root)?;
+    // Blocking, so a loader arriving mid-install waits for the tree rather
+    // than reading a half-built one. The lock lives on the open file
+    // description, so a crashed installer's is released by the kernel and no
+    // staleness protocol exists — the rule the store's run lock follows.
+    let lock = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(tree.root.join(LOCK_FILE))
+        .map_err(|source| Error::Io {
+            path: tree.root.join(LOCK_FILE),
+            source,
+        })?;
+    lock.lock().map_err(|source| Error::Io {
+        path: tree.root.join(LOCK_FILE),
+        source,
+    })?;
+    let outcome = build(store, digest, tree);
+    // Named rather than left to scope end: the release is what the next loader
+    // is waiting on, and it happens whether the build succeeded or not.
+    let _ = lock.unlock();
+    outcome
+}
+
+/// Builds the tree fresh under the lock: the stamp is re-checked, the previous
+/// trees are removed, the payload is materialized, the install runs, and the
+/// stamp is written last.
+fn build(store: &Store, digest: &Hash, tree: &ProgramTree) -> Result<()> {
+    // Another loader may have built it while this one waited for the lock.
+    if installed(tree, digest)? {
+        return Ok(());
+    }
+    // The stamp goes first, so a build that dies part-way leaves a tree
+    // nothing claims and the next loader rebuilds it.
+    remove_file(&tree.root.join(STAMP_FILE))?;
+    remove_dir(&tree.payload())?;
+    remove_dir(&tree.installed())?;
+
+    let manifest = materialize(store, digest, &tree.payload())?;
+    create_dir(&tree.installed())?;
+    match manifest.install() {
+        Some(script) => run_install(tree, script)?,
+        // With no script the payload is one file, which is the program: the
+        // convention puts it where the config's `binary` looks.
+        None => {
+            let lone = manifest
+                .lone_file()
+                .expect("a manifest with no install script names one file");
+            let bytes =
+                std::fs::read(tree.payload().join(&lone.path)).map_err(|source| Error::Io {
+                    path: tree.payload().join(&lone.path),
+                    source,
+                })?;
+            write_file(&tree.entry_point(), &bytes, EXECUTABLE_MODE)?;
+        }
+    }
+    if !executable(&tree.entry_point())? {
+        return Err(Error::Validation(format!(
+            "the install left no executable {}; a payload's install script \
+             leaves the program it built at $SIMA_INSTALL_DIR/{ENTRY_POINT}",
+            tree.entry_point().display()
+        )));
+    }
+    // Last, and atomically, so a stamp is only ever read beside the tree it
+    // names: a reader sees the whole file or none.
+    let stamp = tree.root.join(STAMP_FILE);
+    let pending = tree.root.join(format!("{STAMP_FILE}.pending"));
+    write_file(&pending, digest.to_string().as_bytes(), REGULAR_MODE)?;
+    std::fs::rename(&pending, &stamp).map_err(|source| Error::Io {
+        path: stamp,
+        source,
+    })
+}
+
+/// Whether `tree` already holds the program `digest` names: the stamp says so
+/// and the entry point is there.
+fn installed(tree: &ProgramTree, digest: &Hash) -> Result<bool> {
+    let stamp = tree.root.join(STAMP_FILE);
+    let recorded = match std::fs::read_to_string(&stamp) {
+        Ok(recorded) => recorded,
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(source) => {
+            return Err(Error::Io {
+                path: stamp,
+                source,
+            });
+        }
+    };
+    Ok(recorded.trim() == digest.to_string() && executable(&tree.entry_point())?)
+}
+
+/// Whether `path` is a file this machine can run.
+fn executable(path: &Path) -> Result<bool> {
+    match std::fs::metadata(path) {
+        Ok(metadata) => Ok(metadata.is_file() && metadata.permissions().mode() & 0o111 != 0),
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(source) => Err(Error::Io {
+            path: path.to_path_buf(),
+            source,
+        }),
+    }
+}
+
+/// Writes the manifest's script out and runs it over the materialized payload.
+///
+/// The script runs under this machine's own environment plus the two variables
+/// that tell it where to read from and where to leave what it builds. Nothing
+/// is forwarded from the machine that sent the payload: an installed program is
+/// built out of what the destination has.
+fn run_install(tree: &ProgramTree, script: &str) -> Result<()> {
+    let script_path = tree.root.join(SCRIPT_FILE);
+    write_file(&script_path, script.as_bytes(), EXECUTABLE_MODE)?;
+    let log_path = tree.root.join(LOG_FILE);
+    let log = File::create(&log_path).map_err(|source| Error::Io {
+        path: log_path.clone(),
+        source,
+    })?;
+    // One file for both streams, so the script's output reads in the order it
+    // was produced.
+    let errors = log.try_clone().map_err(|source| Error::Io {
+        path: log_path.clone(),
+        source,
+    })?;
+    // Absolute, because the script may `cd` anywhere it likes.
+    let payload = absolute(&tree.payload())?;
+    let installed = absolute(&tree.installed())?;
+    let status = Command::new("/bin/sh")
+        .arg(&script_path)
+        .current_dir(&tree.root)
+        .env("SIMA_PAYLOAD_DIR", &payload)
+        .env("SIMA_INSTALL_DIR", &installed)
+        .stdin(std::process::Stdio::null())
+        .stdout(log)
+        .stderr(errors)
+        .status()
+        .map_err(|source| Error::Io {
+            path: script_path.clone(),
+            source,
+        })?;
+    if status.success() {
+        return Ok(());
+    }
+    Err(Error::Validation(format!(
+        "the install script {} exited with {status}; the whole log is at {}, \
+         and its last lines are:\n{}",
+        script_path.display(),
+        log_path.display(),
+        log_tail(&log_path),
+    )))
+}
+
+/// The last lines of the install log, for the error that names the failure.
+/// A log that cannot be read says so rather than replacing the failure it was
+/// meant to explain.
+fn log_tail(path: &Path) -> String {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return format!("({} could not be read)", path.display());
+    };
+    let lines: Vec<&str> = text.lines().collect();
+    lines[lines.len().saturating_sub(LOG_TAIL_LINES)..].join("\n")
+}
+
+/// A path from the filesystem root, naming it on failure.
+fn absolute(path: &Path) -> Result<PathBuf> {
+    std::path::absolute(path).map_err(|source| Error::Io {
+        path: path.to_path_buf(),
+        source,
+    })
+}
+
+/// Removes a directory and everything under it; one that is not there is
+/// already removed.
+fn remove_dir(path: &Path) -> Result<()> {
+    match std::fs::remove_dir_all(path) {
+        Ok(()) => Ok(()),
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(source) => Err(Error::Io {
+            path: path.to_path_buf(),
+            source,
+        }),
+    }
+}
+
+/// Removes a file; one that is not there is already removed.
+fn remove_file(path: &Path) -> Result<()> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(source) => Err(Error::Io {
+            path: path.to_path_buf(),
+            source,
+        }),
+    }
+}
+
 /// The mode a materialized file is given: what it carried where it was
 /// ingested, reduced to the one bit that matters.
-pub(crate) fn mode_of(executable: bool) -> u32 {
+fn mode_of(executable: bool) -> u32 {
     if executable {
         EXECUTABLE_MODE
     } else {
@@ -377,7 +695,7 @@ fn read_file(path: &Path) -> Result<Vec<u8>> {
 }
 
 /// Writes `bytes` at `path` under `mode`, naming the path on failure.
-pub(crate) fn write_file(path: &Path, bytes: &[u8], mode: u32) -> Result<()> {
+fn write_file(path: &Path, bytes: &[u8], mode: u32) -> Result<()> {
     let io = |source| Error::Io {
         path: path.to_path_buf(),
         source,
@@ -387,7 +705,7 @@ pub(crate) fn write_file(path: &Path, bytes: &[u8], mode: u32) -> Result<()> {
 }
 
 /// Creates a directory and its parents, naming it on failure.
-pub(crate) fn create_dir(path: &Path) -> Result<()> {
+fn create_dir(path: &Path) -> Result<()> {
     std::fs::create_dir_all(path).map_err(|source| Error::Io {
         path: path.to_path_buf(),
         source,

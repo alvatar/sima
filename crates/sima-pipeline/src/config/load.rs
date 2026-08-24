@@ -14,6 +14,7 @@ use sima_core::{Error, Hash, Result};
 use sima_model::{FormatId, RunConfig};
 use sima_provider::Budget;
 use sima_scheduler::ExecutionConfig;
+use sima_store::Store;
 
 use super::file::{DomainSection, FileConfig, fs_read};
 use super::machines::{
@@ -23,7 +24,7 @@ use super::machines::{
 use super::run::resolve_run;
 use super::settings::{optional_bound, resolve_budget, resolve_execution};
 use crate::domain_registry::{DomainEntry, DomainRegistry};
-use crate::payload::PayloadSpec;
+use crate::payload::{PayloadSpec, ProgramTree, install};
 
 /// A `sima.toml`, loaded and translated: the identity-bearing [`RunConfig`], the
 /// operational [`ExecutionConfig`], the machines the run may draw on, and the
@@ -67,10 +68,17 @@ pub fn load(path: &Path) -> Result<LoadedConfig> {
     // asks them questions: a session opened before the deadline was read
     // would wait on its first answer without one.
     let answer_timeout = optional_bound(file.config.answer_timeout_ms);
+    // Relative to the config file's directory, never the working directory;
+    // join leaves an absolute path as written. Computed here rather than at
+    // the end, because an entry naming a payload digest reads that store to
+    // install the program the same entry's binary names. Naming a path opens
+    // nothing: a config that routes no payload never touches it.
+    let base = path.parent().unwrap_or(Path::new(""));
+    let store = base.join(&file.config.store);
     // The registry precedes the run's translation, which is answered through
     // it: a program declared for a format is spawned and asked here, so an
     // entry naming one that cannot answer fails before the run has a store.
-    let domains = resolve_domains(path, file.domain, answer_timeout)?;
+    let domains = resolve_domains(path, file.domain, answer_timeout, &store)?;
     let run = resolve_run(path, file.run, &domains)?;
     let orchestrator = resolve_orchestrator(path, file.orchestrator)?;
 
@@ -127,10 +135,6 @@ pub fn load(path: &Path) -> Result<LoadedConfig> {
 
     let budget = resolve_budget(path, file.budget)?;
     let execution = resolve_execution(path, &file.config, &orchestrator)?;
-    // Relative to the config file's directory, never the working directory;
-    // join leaves an absolute path as written.
-    let base = path.parent().unwrap_or(Path::new(""));
-    let store = base.join(&file.config.store);
 
     Ok(LoadedConfig {
         run,
@@ -152,6 +156,7 @@ fn resolve_domains(
     path: &Path,
     entries: BTreeMap<String, DomainSection>,
     answer_timeout: Duration,
+    store: &Path,
 ) -> Result<DomainRegistry> {
     // Absolute, because a spawned program runs in a scratch working directory
     // of its own: a path relative to this process would resolve against that
@@ -183,8 +188,41 @@ fn resolve_domains(
             })
         })
         .collect::<Result<Vec<_>>>()?;
+    install_payloads(path, &base, &declared, store)?;
     DomainRegistry::new(declared, answer_timeout)
         .map_err(|e| Error::Validation(format!("{}: {e}", path.display())))
+}
+
+/// Installs every payload the entries name, before any of their programs is
+/// spawned — so the file an entry's `binary` points at is on this machine by
+/// the time the registry reads it.
+///
+/// The store is opened only when an entry names a digest. Opening one creates
+/// it, and a config that routes no payload must leave the disk as it found it.
+fn install_payloads(
+    path: &Path,
+    base: &Path,
+    declared: &[DomainEntry],
+    store: &Path,
+) -> Result<()> {
+    if declared.iter().all(|entry| entry.payload_digest.is_none()) {
+        return Ok(());
+    }
+    let store = Store::open(store)?;
+    for entry in declared {
+        let Some(digest) = &entry.payload_digest else {
+            continue;
+        };
+        let format = entry.format.as_str();
+        let tree = ProgramTree::new(base, format)?;
+        install(&store, digest, &tree).map_err(|e| {
+            Error::Validation(format!(
+                "{}: [domain.{format:?}] payload {digest} could not be installed: {e}",
+                path.display()
+            ))
+        })?;
+    }
+    Ok(())
 }
 
 /// Validates what an entry declares travels, and resolves both paths against
@@ -391,6 +429,7 @@ mod tests {
 
     use crate::devices::DeviceSelector;
     use std::fs;
+    use std::os::unix::fs::PermissionsExt;
 
     use sima_domains::{StubBehavior, StubGeneratorConfig};
     use sima_model::RunId;
@@ -1963,6 +2002,350 @@ mod tests {
             .id();
         assert_eq!(plain, carrying, "what travels is operational");
         assert_eq!(plain, id_of(BASE), "and so is the entry itself");
+    }
+
+    // ---- A payload digest is installed where the config resolves ----
+
+    /// A far side: a directory holding the store a payload was ingested into,
+    /// and the digest that names it. `build` writes the payload beside the
+    /// config and answers what travels.
+    struct FarSide {
+        dir: tempfile::TempDir,
+        digest: Hash,
+    }
+
+    impl FarSide {
+        /// A far side whose store holds the payload `build` describes.
+        fn new(build: impl Fn(&Path) -> PayloadSpec) -> FarSide {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let store = Store::open(dir.path().join("store")).expect("open the store");
+            let digest =
+                crate::payload::ingest(&store, &build(dir.path())).expect("ingest the payload");
+            FarSide { dir, digest }
+        }
+
+        /// Loads the config that installs this payload, as the far `sima run`
+        /// does.
+        fn load(&self) -> Result<LoadedConfig> {
+            self.load_digest(&self.digest)
+        }
+
+        /// Loads a config naming `digest`, for the tests that change what the
+        /// entry points at.
+        fn load_digest(&self, digest: &Hash) -> Result<LoadedConfig> {
+            load(&self.place(digest))
+        }
+
+        /// Writes the config naming `digest` and answers its path. Separate
+        /// from the load, so several loaders can read one file rather than
+        /// racing to write it.
+        fn place(&self, digest: &Hash) -> PathBuf {
+            write_config(
+                self.dir.path(),
+                "sima.toml",
+                &format!(
+                    r#"{BASE}
+                    [domain."stub.v1"]
+                    binary = "{}"
+                    payload_digest = "{digest}"
+                    "#,
+                    crate::payload::relative_entry_point("stub.v1"),
+                ),
+            )
+        }
+
+        /// The entry point the install is contracted to leave.
+        fn entry_point(&self) -> PathBuf {
+            self.dir.path().join("program/stub.v1/installed/program")
+        }
+
+        /// How many times an install script that counts itself has run.
+        fn installs(&self) -> usize {
+            std::fs::read_to_string(self.dir.path().join("installs"))
+                .map(|text| text.lines().count())
+                .unwrap_or(0)
+        }
+    }
+
+    /// Writes a program that answers for `stub.v1` at `path`: a wrapper around
+    /// the built worker, which is small enough to ingest and travel.
+    fn wrapper(path: &Path) -> PathBuf {
+        fs::create_dir_all(path.parent().expect("a parent")).expect("create the parent");
+        fs::write(
+            path,
+            format!(
+                "#!/bin/sh\nexec {} \"$@\"\n",
+                crate::fixtures::built_worker().display()
+            ),
+        )
+        .expect("write the wrapper");
+        fs::set_permissions(path, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+            .expect("make it executable");
+        path.to_path_buf()
+    }
+
+    /// Writes `script` at `path`, as an install script travels.
+    fn script(path: &Path, script: &str) -> PathBuf {
+        fs::write(path, script).expect("write the script");
+        path.to_path_buf()
+    }
+
+    /// A directory payload of one wrapper, installed by a script that records
+    /// each run in `<dir>/installs` and puts the wrapper where the convention
+    /// says. `extra` is appended to the tree so two payloads can differ.
+    fn counted_payload(dir: &Path, extra: &str) -> PayloadSpec {
+        wrapper(&dir.join("src/wrapper.sh"));
+        fs::write(dir.join("src/note"), extra).expect("write the note");
+        PayloadSpec {
+            payload: dir.join("src"),
+            install: Some(script(
+                &dir.join("install.sh"),
+                &format!(
+                    "#!/bin/sh\n\
+                     set -e\n\
+                     echo ran >> {installs:?}\n\
+                     cp \"$SIMA_PAYLOAD_DIR/wrapper.sh\" \"$SIMA_INSTALL_DIR/program\"\n\
+                     chmod 755 \"$SIMA_INSTALL_DIR/program\"\n",
+                    installs = dir.join("installs").display(),
+                ),
+            )),
+        }
+    }
+
+    #[test]
+    fn a_config_routing_no_payload_opens_no_store_and_writes_nothing() -> Result<()> {
+        // The load of an ordinary config touches the disk only to read the
+        // file: opening a store creates it, and a program tree is a directory
+        // nothing asked for.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = write_config(dir.path(), "sima.toml", BASE);
+        load(&path)?;
+        assert!(!dir.path().join("store").exists(), "no store was opened");
+        assert!(
+            !dir.path().join("program").exists(),
+            "nothing was installed"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_payload_digest_installs_the_program_the_binary_names() -> Result<()> {
+        // A single-file payload is its own entry point, so it lands at the
+        // convention's path, executable, with no script involved.
+        let far = FarSide::new(|dir| PayloadSpec {
+            payload: wrapper(&dir.join("src/wrapper.sh")),
+            install: None,
+        });
+        let loaded = far.load()?;
+        let entry = far.entry_point();
+        let mode = fs::metadata(&entry)
+            .expect("the entry point")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o755, "the entry point runs");
+        // The load spawned it and it answered, which is what routing it proves.
+        assert_eq!(
+            loaded
+                .domains
+                .routed(&FormatId::new("stub.v1").expect("format id"))
+                .expect("the format is routed to the installed program")
+                .binary,
+            entry,
+            "the entry the config names is the one that answered"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn an_install_script_builds_the_entry_point_from_the_payload() -> Result<()> {
+        let far = FarSide::new(|dir| counted_payload(dir, "first"));
+        far.load()?;
+        assert!(far.entry_point().is_file());
+        assert_eq!(far.installs(), 1);
+        // The materialized payload stays where it was put, so an installed
+        // wrapper may point into it.
+        assert!(
+            far.dir
+                .path()
+                .join("program/stub.v1/payload/wrapper.sh")
+                .is_file()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn the_stamp_makes_a_second_load_install_nothing() -> Result<()> {
+        // What a reattach, a status query, and a follow attach all rest on.
+        let far = FarSide::new(|dir| counted_payload(dir, "first"));
+        far.load()?;
+        far.load()?;
+        far.load()?;
+        assert_eq!(far.installs(), 1, "the stamp answered the later loads");
+        Ok(())
+    }
+
+    #[test]
+    fn a_changed_payload_reinstalls_exactly_once() -> Result<()> {
+        let far = FarSide::new(|dir| counted_payload(dir, "first"));
+        far.load()?;
+        // The same tree with one file's content changed: a second digest over
+        // the same store.
+        let store = Store::open(far.dir.path().join("store"))?;
+        let changed = crate::payload::ingest(&store, &counted_payload(far.dir.path(), "second"))?;
+        assert_ne!(changed, far.digest);
+        far.load_digest(&changed)?;
+        far.load_digest(&changed)?;
+        assert_eq!(far.installs(), 2, "once for the change, and no more");
+        Ok(())
+    }
+
+    #[test]
+    fn a_reinstall_leaves_nothing_of_the_tree_it_replaced() -> Result<()> {
+        // The previous payload's files are not the new program's, and a
+        // wrapper that still found them would run a build nobody asked for.
+        let leaves = |dir: &Path, extra: &str| -> PayloadSpec {
+            wrapper(&dir.join("src/wrapper.sh"));
+            fs::write(dir.join("src/note"), extra).expect("write the note");
+            PayloadSpec {
+                payload: dir.join("src"),
+                install: Some(script(
+                    &dir.join("install.sh"),
+                    &format!(
+                        "#!/bin/sh\n\
+                         set -e\n\
+                         cp \"$SIMA_PAYLOAD_DIR/wrapper.sh\" \"$SIMA_INSTALL_DIR/program\"\n\
+                         chmod 755 \"$SIMA_INSTALL_DIR/program\"\n\
+                         {extra}\n",
+                    ),
+                )),
+            }
+        };
+        let far = FarSide::new(|dir| leaves(dir, "touch \"$SIMA_INSTALL_DIR/leftover\""));
+        far.load()?;
+        let leftover = far.dir.path().join("program/stub.v1/installed/leftover");
+        let stale_payload = far.dir.path().join("program/stub.v1/payload/note");
+        assert!(leftover.is_file(), "the first install left it");
+        assert_eq!(
+            fs::read_to_string(&stale_payload).expect("the note"),
+            "touch \"$SIMA_INSTALL_DIR/leftover\""
+        );
+
+        let store = Store::open(far.dir.path().join("store"))?;
+        let changed = crate::payload::ingest(&store, &leaves(far.dir.path(), "true"))?;
+        far.load_digest(&changed)?;
+        assert!(!leftover.exists(), "the replaced tree left nothing behind");
+        assert_eq!(
+            fs::read_to_string(&stale_payload).expect("the note"),
+            "true",
+            "and the materialized payload is the new one"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn an_install_that_exits_non_zero_fails_the_load_naming_what_it_said() {
+        let far = FarSide::new(|dir| PayloadSpec {
+            payload: wrapper(&dir.join("src/wrapper.sh")),
+            install: Some(script(
+                &dir.join("install.sh"),
+                "#!/bin/sh\necho 'no compiler on this machine' >&2\nexit 3\n",
+            )),
+        });
+        let Err(Error::Validation(message)) = far.load() else {
+            panic!("expected a failing install to fail the load");
+        };
+        for named in [
+            "install.sh",
+            "exit status: 3",
+            "install.log",
+            "no compiler on this machine",
+            "stub.v1",
+        ] {
+            assert!(message.contains(named), "{named} is missing from {message}");
+        }
+    }
+
+    #[test]
+    fn an_install_that_leaves_no_entry_point_fails_naming_the_contract() {
+        let far = FarSide::new(|dir| PayloadSpec {
+            payload: wrapper(&dir.join("src/wrapper.sh")),
+            install: Some(script(
+                &dir.join("install.sh"),
+                "#!/bin/sh\nmkdir -p \"$SIMA_INSTALL_DIR/lib\"\nexit 0\n",
+            )),
+        });
+        let Err(Error::Validation(message)) = far.load() else {
+            panic!("expected an install leaving no program to fail the load");
+        };
+        assert!(
+            message.contains("SIMA_INSTALL_DIR/program"),
+            "names the contract: {message}"
+        );
+    }
+
+    #[test]
+    fn a_payload_digest_the_store_lacks_fails_the_load_naming_it() {
+        let far = FarSide::new(|dir| PayloadSpec {
+            payload: wrapper(&dir.join("src/wrapper.sh")),
+            install: None,
+        });
+        let absent = sima_core::hash_bytes(b"a payload nobody pushed");
+        let Err(Error::Validation(message)) = far.load_digest(&absent) else {
+            panic!("expected a digest the store lacks to fail the load");
+        };
+        assert!(message.contains(&absent.to_string()), "{message}");
+    }
+
+    #[test]
+    fn two_concurrent_loads_build_one_tree_and_both_succeed() -> Result<()> {
+        // A `sima run` and a `sima status` can load one config at once. The
+        // lock is what makes the second wait for the tree rather than read a
+        // half-built one.
+        let far = FarSide::new(|dir| counted_payload(dir, "first"));
+        let path = far.place(&far.digest);
+        std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..4).map(|_| scope.spawn(|| load(&path))).collect();
+            for handle in handles {
+                handle.join().expect("the load thread")?;
+            }
+            Ok::<(), Error>(())
+        })?;
+        assert_eq!(far.installs(), 1, "one tree between them");
+        assert!(far.entry_point().is_file());
+        Ok(())
+    }
+
+    #[test]
+    fn a_format_id_that_would_name_another_directory_is_refused() {
+        // A format id admits `.` and `..`, and the tree is keyed by it, so the
+        // id is held to the rule a manifest path is held to: a tree under a
+        // config's directory, and never one beside it.
+        //
+        // The digest is one the store holds, so the refusal cannot be the
+        // materialization failing for want of the payload.
+        let far = FarSide::new(|dir| PayloadSpec {
+            payload: wrapper(&dir.join("src/wrapper.sh")),
+            install: None,
+        });
+        for name in [".", ".."] {
+            let text = format!(
+                r#"{BASE}
+                [domain."{name}"]
+                binary = "/bin/true"
+                payload_digest = "{}"
+                "#,
+                far.digest,
+            );
+            let path = write_config(far.dir.path(), "sima.toml", &text);
+            let Err(Error::Validation(message)) = load(&path) else {
+                panic!("the format id {name:?} must be refused");
+            };
+            assert!(
+                message.contains("payload path"),
+                "{name:?} is refused as a path: {message}"
+            );
+        }
     }
 
     #[test]
