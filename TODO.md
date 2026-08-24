@@ -986,9 +986,10 @@ without publishing anywhere and without rebuilding an image.
       image. Two settled points. **The payload is bytes sima sends, never a
       thing the far side fetches**, so a local edit is a run away from a remote
       machine and nothing is published to reach it. What the payload carries is
-      the program alone: a language runtime and sima's own SDK for it ride in
-      the machine's image, beside `sima-worker`, so nothing here waits on
-      package-index publication. **An install that fails
+      the program alone. A compiled program is the whole of it, its SDK linked
+      in; an interpreted one needs its runtime and sima's SDK for that language
+      present, and both ride in the machine's image beside `sima-worker`, so
+      nothing here waits on package-index publication. **An install that fails
       fails the run, naming the machine**, since proceeding on the machines that
       worked spends a fleet's price for a fraction of its capacity. Landing
       inside a container is the script's job, which is what keeps a per-run
