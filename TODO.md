@@ -1034,7 +1034,16 @@ without publishing anywhere and without rebuilding an image.
       computing. The two intentions swap places, and the command takes no flag
       to say which was meant. Split them: attaching, detaching, and winding down
       become things an operator asks for by name rather than by which signal
-      reached the process.
+      reached the process. The recorded limit this milestone also closes:
+      - **A far run that dies before journaling is reported as the far
+        journal's last terminal event.** The follow's first poll replays the
+        whole journal, so a second migration onto a finished run whose program
+        fails to install, or whose binding guard refuses the installed program,
+        surfaces as the earlier finalization rather than as the death.
+        Diagnosis is the far `run.log`, which the attach reads and the
+        migration prints. Telling history from this session's records needs a
+        session boundary the follow protocol carries only once following is a
+        verb of its own.
 
 **Fleet under a migrated orchestrator is out of scope.** A migrated run drives
 the destination's own workers and no others, which is why the far config drops
