@@ -74,3 +74,23 @@ fn every_example_carries_a_worker_layout_and_declares_no_machine_it_does_not_use
     }
     Ok(())
 }
+
+#[test]
+fn the_stepper_example_loads_with_its_run_id() -> Result<()> {
+    // The Python example routes its format to a program, so loading it spawns
+    // that program to translate the two sections it owns. `PYTHONPATH` reaches
+    // the child because the example declares the name in its `[domain.*] env`.
+    //
+    // The spawn is what makes this a load test and a path test at once: a
+    // program runs in a scratch working directory of its own, so a binary named
+    // relative to this process would resolve against that directory and fail to
+    // spawn at all.
+    unsafe {
+        std::env::set_var("PYTHONPATH", examples().join("../python"));
+    }
+    assert_eq!(
+        run_id("stepper-py/search.toml")?,
+        "bff61aa384aa94add7c1609ae6634ca0825ac9548b69712563af224e18b800ef"
+    );
+    Ok(())
+}

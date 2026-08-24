@@ -12,6 +12,7 @@ steps = 5
 
 [config]
 store = "./store"
+max_attempts = 3
 checkpoint_interval_ms = 0
 
 [[orchestrator.device]]
@@ -20,3 +21,7 @@ workers = 2
 
 [domain."example.stepper.v1"]
 binary = "./stepper.py"
+# A configured program is spawned with a cleared environment, so the names
+# it needs are listed here and their values come from this shell: PATH for
+# the shebang's interpreter lookup, PYTHONPATH for `import sima`.
+env = ["PATH", "PYTHONPATH"]

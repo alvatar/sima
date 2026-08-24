@@ -152,7 +152,18 @@ fn resolve_domains(
     entries: BTreeMap<String, DomainSection>,
     answer_timeout: Duration,
 ) -> Result<DomainRegistry> {
-    let base = path.parent().unwrap_or(Path::new(""));
+    // Absolute, because a spawned program runs in a scratch working directory
+    // of its own: a path relative to this process would resolve against that
+    // directory rather than against the config that named it.
+    // A bare file name has an empty parent, which is this directory.
+    let parent = match path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        _ => Path::new("."),
+    };
+    let base = std::path::absolute(parent).map_err(|source| Error::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
     let declared = entries
         .into_iter()
         .map(|(format, section)| {
