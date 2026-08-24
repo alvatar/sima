@@ -110,7 +110,11 @@ mod tests {
 
     /// A routed program over a path and the digest of `bytes`.
     fn routed<'a>(binary: &'a Path, digest: &'a sima_core::Hash) -> RoutedProgram<'a> {
-        RoutedProgram { binary, digest }
+        RoutedProgram {
+            binary,
+            digest,
+            payload: None,
+        }
     }
 
     /// A store in a fresh temporary directory.

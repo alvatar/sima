@@ -25,6 +25,8 @@ use sima_model::{Environment, FormatId, GeneratorId, Params, Spec};
 use sima_transport::SpawnPolicy;
 use sima_transport::domain_service::DomainService;
 
+use crate::payload::PayloadSpec;
+
 /// One `[domain.*]` entry, resolved: the format it answers for, the program
 /// that answers, and the environment variables that program receives beyond
 /// the baseline every spawned program gets.
@@ -35,6 +37,14 @@ pub(crate) struct DomainEntry {
     /// Exact variable names, forwarded from the orchestrator's environment
     /// where it holds them.
     pub(crate) env: Vec<String>,
+    /// What travels when this run migrates, resolved against the config file's
+    /// directory. `None` for an entry whose program stays on this machine.
+    pub(crate) payload: Option<PayloadSpec>,
+    /// The payload manifest the store already holds, which is what a
+    /// synthesized far config states. The tree it names is materialized and
+    /// installed where the config resolves, so the binary the entry spawns is
+    /// there by the time it is spawned.
+    pub(crate) payload_digest: Option<Hash>,
 }
 
 /// Where a format's domain is answered from.
@@ -121,6 +131,10 @@ pub(crate) struct BinarySource {
     /// service and every worker of the run alike, so the two halves of one
     /// program see one environment.
     policy: SpawnPolicy,
+    /// What travels when this run migrates, as the entry declared it. A
+    /// migration reads it through [`DomainRegistry::routed`], which is the one
+    /// boundary a caller sees the program itself through.
+    payload: Option<PayloadSpec>,
     /// The open session. One conversation serves the whole config, so the
     /// program pays its startup cost once; the lock is what makes that one
     /// conversation reachable from the threads a run drives.
@@ -137,6 +151,10 @@ impl BinarySource {
             format,
             binary,
             env,
+            payload,
+            // Consumed where the config resolved: the tree it names is already
+            // materialized and installed by the time the binary is spawned.
+            payload_digest: _,
         } = entry;
         // The build about to serve this config, digested before it runs. The
         // digest is provenance every session journals, so an unreadable
@@ -163,6 +181,7 @@ impl BinarySource {
             binary,
             digest,
             policy,
+            payload,
             session: Mutex::new(service),
         })
     }
@@ -296,15 +315,20 @@ impl DomainRegistry {
             .map(|source| RoutedProgram {
                 binary: &source.binary,
                 digest: &source.digest,
+                payload: source.payload.as_ref(),
             })
     }
 }
 
-/// The program answering for one format: the file a config named, and the
-/// digest of the bytes that file held when the config resolved.
+/// The program answering for one format: the file a config named, the digest
+/// of the bytes that file held when the config resolved, and what the entry
+/// declared travels when the run moves.
 pub(crate) struct RoutedProgram<'a> {
     pub(crate) binary: &'a Path,
     pub(crate) digest: &'a Hash,
+    /// `None` for an entry whose program stays on the machine it is installed
+    /// on, which is what a migration refuses to move.
+    pub(crate) payload: Option<&'a PayloadSpec>,
 }
 
 /// The text of a configuration section, as the source that owns its keys
@@ -337,16 +361,24 @@ mod tests {
         GeneratorId::new(name).expect("generator id")
     }
 
+    /// An entry routing `name` to `binary` with `env`, declaring nothing that
+    /// travels: what a program installed on this machine alone looks like.
+    fn entry(name: &str, binary: PathBuf, env: Vec<String>) -> DomainEntry {
+        DomainEntry {
+            format: format(name),
+            binary,
+            env,
+            payload: None,
+            payload_digest: None,
+        }
+    }
+
     /// A registry whose `stub.v1` is answered by the built worker binary,
     /// which serves the in-tree formats over the same protocol a program outside
     /// the workspace does.
     fn served_by_binary() -> Result<DomainRegistry> {
         DomainRegistry::new(
-            vec![DomainEntry {
-                format: format("stub.v1"),
-                binary: built_worker(),
-                env: Vec::new(),
-            }],
+            vec![entry("stub.v1", built_worker(), Vec::new())],
             Duration::MAX,
         )
     }
@@ -419,11 +451,7 @@ mod tests {
         // cannot answer for the format it is declared under fails there —
         // before a run reaches a store.
         let Err(error) = DomainRegistry::new(
-            vec![DomainEntry {
-                format: format("acme.thing.v1"),
-                binary: built_worker(),
-                env: Vec::new(),
-            }],
+            vec![entry("acme.thing.v1", built_worker(), Vec::new())],
             Duration::MAX,
         ) else {
             panic!("expected a program that serves no such format to fail");
@@ -434,11 +462,11 @@ mod tests {
     #[test]
     fn a_binary_that_cannot_be_run_names_itself() {
         let Err(error) = DomainRegistry::new(
-            vec![DomainEntry {
-                format: format("acme.thing.v1"),
-                binary: PathBuf::from("/no/such/domain/binary"),
-                env: Vec::new(),
-            }],
+            vec![entry(
+                "acme.thing.v1",
+                PathBuf::from("/no/such/domain/binary"),
+                Vec::new(),
+            )],
             Duration::MAX,
         ) else {
             panic!("expected a binary that cannot be run to fail");
@@ -560,11 +588,11 @@ mod tests {
         // One policy answers for the whole program: the session already open
         // and every worker the run will spawn from the same binary.
         let registry = DomainRegistry::new(
-            vec![DomainEntry {
-                format: format("stub.v1"),
-                binary: built_worker(),
-                env: vec!["ACME_ASSETS".to_string()],
-            }],
+            vec![entry(
+                "stub.v1",
+                built_worker(),
+                vec!["ACME_ASSETS".to_string()],
+            )],
             Duration::MAX,
         )?;
         assert_eq!(
@@ -614,11 +642,7 @@ mod tests {
         std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o111))
             .expect("make the program execute-only");
         let outcome = DomainRegistry::new(
-            vec![DomainEntry {
-                format: format("stub.v1"),
-                binary: unreadable.clone(),
-                env: Vec::new(),
-            }],
+            vec![entry("stub.v1", unreadable.clone(), Vec::new())],
             Duration::MAX,
         );
         // Restore before asserting, so a failure still leaves a removable dir.

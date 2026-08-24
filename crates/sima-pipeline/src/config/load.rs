@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use sima_core::{Error, Result};
+use sima_core::{Error, Hash, Result};
 use sima_model::{FormatId, RunConfig};
 use sima_provider::Budget;
 use sima_scheduler::ExecutionConfig;
@@ -23,6 +23,7 @@ use super::machines::{
 use super::run::resolve_run;
 use super::settings::{optional_bound, resolve_budget, resolve_execution};
 use crate::domain_registry::{DomainEntry, DomainRegistry};
+use crate::payload::PayloadSpec;
 
 /// A `sima.toml`, loaded and translated: the identity-bearing [`RunConfig`], the
 /// operational [`ExecutionConfig`], the machines the run may draw on, and the
@@ -167,6 +168,8 @@ fn resolve_domains(
     let declared = entries
         .into_iter()
         .map(|(format, section)| {
+            let payload = resolve_payload(path, &base, &format, &section)?;
+            let payload_digest = resolve_payload_digest(path, &format, section.payload_digest)?;
             let env = resolve_domain_env(path, &format, section.env)?;
             let format = FormatId::new(format).map_err(|e| {
                 Error::Validation(format!("{}: [domain.*] entry: {e}", path.display()))
@@ -175,11 +178,121 @@ fn resolve_domains(
                 format,
                 binary: base.join(section.binary),
                 env,
+                payload,
+                payload_digest,
             })
         })
         .collect::<Result<Vec<_>>>()?;
     DomainRegistry::new(declared, answer_timeout)
         .map_err(|e| Error::Validation(format!("{}: {e}", path.display())))
+}
+
+/// Validates what an entry declares travels, and resolves both paths against
+/// `base`, the config file's own directory.
+///
+/// The rules say the same thing four ways: an entry names exactly one source
+/// for the program that will run on the destination, and a source that needs a
+/// script says so.
+fn resolve_payload(
+    path: &Path,
+    base: &Path,
+    format: &str,
+    section: &DomainSection,
+) -> Result<Option<PayloadSpec>> {
+    let refuse = |message: String| -> Error {
+        Error::Validation(format!("{}: [domain.{format:?}] {message}", path.display()))
+    };
+    // A digest names a manifest the store already holds, so it is the whole
+    // description of the program: anything stating a second source is asking
+    // for two programs under one entry.
+    if section.payload_digest.is_some() {
+        if section.payload.is_some() {
+            return Err(refuse(
+                "states both payload and payload_digest; a payload is ingested here \
+                 and a digest names a manifest the store already holds, so an entry \
+                 names one or the other"
+                    .to_string(),
+            ));
+        }
+        if section.install.is_some() {
+            return Err(refuse(
+                "states both install and payload_digest; the manifest the digest names \
+                 carries its own install script"
+                    .to_string(),
+            ));
+        }
+        return Ok(None);
+    }
+    let Some(declared) = &section.payload else {
+        if section.install.is_some() {
+            return Err(refuse(
+                "states install and no payload; the script installs the payload, \
+                 so there is nothing for it to install"
+                    .to_string(),
+            ));
+        }
+        return Ok(None);
+    };
+    let payload = base.join(declared);
+    // `symlink_metadata` is deliberate: what travels is the entry as written,
+    // and a link to a directory is not a directory to walk.
+    let metadata = std::fs::symlink_metadata(&payload).map_err(|source| {
+        refuse(format!(
+            "payload {} cannot be read: {source}",
+            payload.display()
+        ))
+    })?;
+    let install = match &section.install {
+        Some(declared) => {
+            let install = base.join(declared);
+            let metadata = std::fs::symlink_metadata(&install).map_err(|source| {
+                refuse(format!(
+                    "install {} cannot be read: {source}",
+                    install.display()
+                ))
+            })?;
+            if !metadata.is_file() {
+                return Err(refuse(format!(
+                    "install {} is not a regular file; it is run as a shell script",
+                    install.display()
+                )));
+            }
+            Some(install)
+        }
+        // A directory has no entry point by convention — which of its files
+        // runs is what the script decides — while a single file is the
+        // program, so the script would only put it where the convention
+        // already puts it.
+        None if metadata.is_dir() => {
+            return Err(refuse(format!(
+                "payload {} is a directory and the entry states no install; \
+                 a directory payload names the script that turns it into a program",
+                payload.display()
+            )));
+        }
+        None => None,
+    };
+    Ok(Some(PayloadSpec { payload, install }))
+}
+
+/// Parses the manifest digest an entry states, which is a content address like
+/// any other in this system.
+fn resolve_payload_digest(
+    path: &Path,
+    format: &str,
+    digest: Option<String>,
+) -> Result<Option<Hash>> {
+    digest
+        .map(|digest| {
+            Hash::from_hex(&digest).map_err(|e| {
+                Error::Validation(format!(
+                    "{}: [domain.{format:?}] payload_digest {digest:?} is not a content \
+                     address: {e}",
+                    path.display()
+                ))
+            })
+        })
+        .transpose()
 }
 
 /// Validates the variable names an entry forwards to its program.
@@ -1608,6 +1721,248 @@ mod tests {
         let message = error.to_string();
         assert!(message.contains("wedged.sh"), "{message}");
         assert!(message.contains("Ready"), "names the answer: {message}");
+    }
+
+    // ---- What travels when the run moves: payload, install, payload_digest ----
+
+    /// A `[domain."stub.v1"]` entry over the built worker, carrying `keys`.
+    /// The directory the config sits in is handed to `keys` so a test can
+    /// place a payload beside the file it is declared in.
+    fn payload_entry(keys: impl Fn(&Path) -> String) -> Result<LoadedConfig> {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let text = format!(
+            r#"{BASE}
+            [domain."stub.v1"]
+            binary = "{}"
+            {}
+            "#,
+            crate::fixtures::built_worker().display(),
+            keys(dir.path()),
+        );
+        load(&write_config(dir.path(), "sima.toml", &text))
+    }
+
+    /// The validation message `payload_entry` is rejected with.
+    fn payload_rejection(keys: impl Fn(&Path) -> String) -> String {
+        match payload_entry(keys) {
+            Err(Error::Validation(message)) => message,
+            other => panic!("expected a validation error, got {other:?}"),
+        }
+    }
+
+    /// Writes an executable single-file payload under `dir` and answers its
+    /// path.
+    fn file_payload(dir: &Path) -> PathBuf {
+        let path = dir.join("program.sh");
+        fs::write(&path, "#!/bin/sh\nexec true\n").expect("write the payload");
+        path
+    }
+
+    /// Writes a directory payload of one file under `dir` and answers its path.
+    fn dir_payload(dir: &Path) -> PathBuf {
+        let path = dir.join("tree");
+        fs::create_dir_all(path.join("assets")).expect("create the payload tree");
+        fs::write(path.join("assets/weights.bin"), b"w").expect("write a payload file");
+        path
+    }
+
+    /// Writes an install script under `dir` and answers its path.
+    fn install_script(dir: &Path) -> PathBuf {
+        let path = dir.join("install.sh");
+        fs::write(&path, "#!/bin/sh\nexit 0\n").expect("write the script");
+        path
+    }
+
+    #[test]
+    fn a_single_file_payload_needs_no_install_script() -> Result<()> {
+        // The file itself is the entry point, so a script that would only copy
+        // it into place states nothing the convention does not.
+        let loaded = payload_entry(|dir| format!("payload = {:?}", file_payload(dir).display()))?;
+        let routed = loaded
+            .domains
+            .routed(&FormatId::new("stub.v1").expect("format id"))
+            .expect("the declared format is routed to its program");
+        let payload = routed.payload.expect("the entry states what travels");
+        assert!(payload.payload.ends_with("program.sh"));
+        assert_eq!(payload.install, None);
+        Ok(())
+    }
+
+    #[test]
+    fn a_payload_and_an_install_script_reach_the_routed_program() -> Result<()> {
+        let loaded = payload_entry(|dir| {
+            format!(
+                "payload = {:?}\ninstall = {:?}",
+                dir_payload(dir).display(),
+                install_script(dir).display(),
+            )
+        })?;
+        let routed = loaded
+            .domains
+            .routed(&FormatId::new("stub.v1").expect("format id"))
+            .expect("the declared format is routed to its program");
+        let payload = routed.payload.expect("the entry states what travels");
+        assert!(payload.payload.ends_with("tree"));
+        assert_eq!(
+            payload.install.as_deref().and_then(Path::file_name),
+            Some(std::ffi::OsStr::new("install.sh"))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_directory_payload_without_an_install_script_is_refused() {
+        // A tree has no entry point by convention: which of its files runs is
+        // what the script decides.
+        let message =
+            payload_rejection(|dir| format!("payload = {:?}", dir_payload(dir).display()));
+        assert!(message.contains("install"), "names the key: {message}");
+        assert!(message.contains("stub.v1"), "names the format: {message}");
+        assert!(message.contains("sima.toml"), "names the config: {message}");
+    }
+
+    #[test]
+    fn an_install_script_without_a_payload_is_refused() {
+        // The script installs the payload; with none declared it installs
+        // nothing.
+        let message =
+            payload_rejection(|dir| format!("install = {:?}", install_script(dir).display()));
+        assert!(message.contains("install"), "names the key: {message}");
+        assert!(message.contains("payload"), "names the key it needs");
+    }
+
+    #[test]
+    fn a_payload_beside_a_payload_digest_is_refused() {
+        // Two sources for one program: one to ingest here, one already in the
+        // store.
+        let message = payload_rejection(|dir| {
+            format!(
+                "payload = {:?}\npayload_digest = \"{}\"",
+                file_payload(dir).display(),
+                "ab".repeat(32),
+            )
+        });
+        assert!(message.contains("payload"), "{message}");
+        assert!(message.contains("payload_digest"), "{message}");
+    }
+
+    #[test]
+    fn an_install_script_beside_a_payload_digest_is_refused() {
+        // The manifest the digest names carries the script, so a second one
+        // here would be a second answer to the same question.
+        let message = payload_rejection(|dir| {
+            format!(
+                "install = {:?}\npayload_digest = \"{}\"",
+                install_script(dir).display(),
+                "ab".repeat(32),
+            )
+        });
+        assert!(message.contains("install"), "{message}");
+        assert!(message.contains("payload_digest"), "{message}");
+    }
+
+    #[test]
+    fn a_payload_that_is_not_there_is_refused_naming_the_path() {
+        let message =
+            payload_rejection(|dir| format!("payload = {:?}", dir.join("absent.py").display()));
+        assert!(message.contains("payload"), "{message}");
+        assert!(message.contains("absent.py"), "names the path: {message}");
+    }
+
+    #[test]
+    fn an_install_script_that_is_not_there_is_refused_naming_the_path() {
+        let message = payload_rejection(|dir| {
+            format!(
+                "payload = {:?}\ninstall = {:?}",
+                dir_payload(dir).display(),
+                dir.join("absent.sh").display(),
+            )
+        });
+        assert!(message.contains("install"), "{message}");
+        assert!(message.contains("absent.sh"), "names the path: {message}");
+    }
+
+    #[test]
+    fn an_install_that_names_a_directory_is_refused() {
+        // It is run as a shell script, so it is one file.
+        let message = payload_rejection(|dir| {
+            format!(
+                "payload = {:?}\ninstall = {:?}",
+                dir_payload(dir).display(),
+                dir_payload(dir).display(),
+            )
+        });
+        assert!(message.contains("install"), "{message}");
+        assert!(message.contains("regular file"), "{message}");
+    }
+
+    #[test]
+    fn a_payload_digest_that_is_not_a_hash_is_refused_naming_the_key() {
+        for digest in ["", "ab", &"zz".repeat(32), &"ab".repeat(33)] {
+            let message = payload_rejection(|_| format!("payload_digest = {digest:?}"));
+            assert!(message.contains("payload_digest"), "{digest:?}: {message}");
+        }
+    }
+
+    #[test]
+    fn the_two_paths_resolve_against_the_config_file_s_directory() -> Result<()> {
+        // A relative path in a config is the file's, never the working
+        // directory's — the rule `binary` and `store` already follow.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let nested = dir.path().join("configs");
+        fs::create_dir(&nested).expect("create nested dir");
+        dir_payload(&nested);
+        install_script(&nested);
+        let text = format!(
+            r#"{BASE}
+            [domain."stub.v1"]
+            binary = "{}"
+            payload = "./tree"
+            install = "./install.sh"
+            "#,
+            crate::fixtures::built_worker().display(),
+        );
+        let loaded = load(&write_config(&nested, "sima.toml", &text))?;
+        let routed = loaded
+            .domains
+            .routed(&FormatId::new("stub.v1").expect("format id"))
+            .expect("the declared format is routed to its program");
+        let payload = routed.payload.expect("the entry states what travels");
+        assert_eq!(payload.payload, nested.join("tree"));
+        assert_eq!(
+            payload.install.as_deref(),
+            Some(nested.join("install.sh").as_path())
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn neither_payload_key_touches_the_run_id() {
+        // Both are operational: they decide how the program reaches another
+        // machine, never what the run computes.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let entry = format!(
+            r#"{BASE}
+            [domain."stub.v1"]
+            binary = "{}"
+            "#,
+            crate::fixtures::built_worker().display(),
+        );
+        let with_payload = format!(
+            "{entry}payload = {:?}\ninstall = {:?}\n",
+            dir_payload(dir.path()).display(),
+            install_script(dir.path()).display(),
+        );
+        let plain = load(&write_config(dir.path(), "plain.toml", &entry))
+            .expect("the config loads")
+            .run
+            .id();
+        let carrying = load(&write_config(dir.path(), "carrying.toml", &with_payload))
+            .expect("the config loads")
+            .run
+            .id();
+        assert_eq!(plain, carrying, "what travels is operational");
+        assert_eq!(plain, id_of(BASE), "and so is the entry itself");
     }
 
     #[test]

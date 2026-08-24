@@ -29,6 +29,7 @@ mod journal;
 mod machines;
 mod migrate;
 mod orchestrate;
+mod payload;
 mod process;
 mod program_binding;
 mod providers;

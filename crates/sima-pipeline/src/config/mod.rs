@@ -93,8 +93,11 @@
 //! workers = 1
 //!
 //! [domain."acme.thing.v1"]                # a format served by its own program
-//! binary = "/opt/acme/worker"             # resolved against this file's directory
-//! # env  = ["ACME_ASSETS"]                # optional; variable names it also receives
+//! binary  = "/opt/acme/worker"            # resolved against this file's directory
+//! # env     = ["ACME_ASSETS"]             # optional; variable names it also receives
+//! # payload = "./program"                 # optional; what travels when the run migrates
+//! # install = "./install.sh"              # optional for a file payload, required for a directory
+//! # payload_digest = "<64 hex>"           # a migration writes this; the manifest to install here
 //! ```
 //!
 //! ## Where a format is answered from
