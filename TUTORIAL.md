@@ -1,46 +1,109 @@
-# Tutorial: a full run with an external program
+# Tutorial: running your own program under sima
 
-This walk-through takes sima from a fresh clone to a finished, inspected, reproduced run, using a program that lives outside the workspace: `examples/stepper-py`, a Python executor. Every command is run from the repository root unless stated otherwise.
+This tutorial takes a program that sima knows nothing about and drives it through a complete run: install, execute, inspect, change the code, and understand what that change does to the results already in the store.
 
-## What sima does
+The worked example is `examples/stepper-py`, a Python program. It stands in for yours. Every command runs from the repository root unless a section says otherwise.
 
-sima drives **searches**: a generator proposes candidates, executors evaluate them, and every result lands in a content-addressed store under a **task key** derived from exactly the inputs that determine the result. The same config on the same store resumes instead of recomputing, and two machines that ran the same work can prove it byte for byte.
+**Scope.** Everything here runs on one machine. Distributing an external program's work across several machines is not available — see [Running on other machines](#running-on-other-machines).
 
-The pieces you will touch:
+## What sima is
 
-- **Run** — one search, declared by a `sima.toml` config. Its identity is the hash of the config's identity-bearing fields.
-- **Format** — an id naming what a task's spec means and who can execute it, e.g. `example.stepper.v1`.
-- **Domain** — the program-side object bound to a format: its devices, its environment, its params translation, and the executor it builds.
+sima drives **searches**. A generator proposes candidates, executors evaluate them, and every result lands in a content-addressed store under a **task key** derived from exactly the inputs that determined it. Rerunning a config resumes instead of recomputing, and two machines that ran the same work can prove they agree byte for byte.
+
+The vocabulary:
+
+- **Run** — one search, declared by a `sima.toml`. Its id is the hash of the config's identity-bearing fields.
+- **Format** — an id naming what a candidate means and who can evaluate it, such as `example.stepper.v1`.
+- **Domain** — the program-side object bound to a format: its devices, its environment, its config translation, and the executor it builds.
 - **Generator** — one way of proposing candidates for a format. A format has one executor and may have many generators.
-- **Task key** — the hash of (spec, params, environment, chain position). It is the address of the result; anything that would change the result changes the key.
-- **Store** — a content-addressed object store plus a per-run journal of events. The store holds results; the journal narrates how they happened.
+- **Task key** — the hash of the spec, the params, the environment, and the position in a chain. It is the address of the result.
+- **Store** — content-addressed objects plus a per-run journal. The store holds results; the journal narrates how they were produced.
 
-A format can be answered in-process (the built-in domains) or by an **external program**: any binary that speaks the domain-service and worker protocols over pipes. The protocol is published in `docs/protocol.md`; `sima-api` is the Rust SDK over it and `python/` the Python one. Speaking the protocol is the whole requirement, so a program in any language qualifies.
+A format is answered either **in-process** by a domain this build carries, or by an **external program**: a binary speaking the domain-service and worker protocols over pipes. `docs/protocol.md` publishes that contract; `sima-api` is the Rust SDK over it and `python/` the Python one. Speaking the protocol is the only requirement, so the program can be written in any language.
 
-## Prerequisites
+## Install
 
-- A Rust toolchain (build the CLI once): `cargo build --release -p sima`. The binary lands at `target/release/sima`; put it on your `PATH` or call it by path.
-- Python 3 for the example program.
-- The Python SDK importable. Either `pip install ./python`, or for one shell: `export PYTHONPATH=$(pwd)/python`.
+Build the CLI and make the SDK importable:
 
-No GPU is needed: the stepper program declares a CPU device.
+```
+cargo build --release -p sima
+export PATH="$PWD/target/release:$PATH"
+export PYTHONPATH="$PWD/python"
+```
 
-## The external program
+Verify both:
 
-`examples/stepper-py/stepper.py` is one file and both halves of the contract. What it computes: a candidate is one byte, the increment; a task adds it to a `u64` accumulator once per step and commits the reached `(step, accumulator)` state as an artifact named `state`.
+```
+sima
+python3 -c "import sima; print(sima.__file__)"
+```
 
-The file has three parts:
+`sima` prints its command list; the Python line prints a path. `pip install ./python` is the permanent form of the second export.
 
-- **`StepperExecutor(sima.Executor)`** — `execute(task, context, checkpoint)` decodes the spec and params, does the steps, offers a checkpoint at every step boundary, and returns `sima.Completed` with artifacts and stats — or `sima.Rejected` / `sima.Failed`.
-- **`StepperDomain(sima.Domain)`** — binds the format id: `environment()` (the components a result's identity depends on), `enumerate_devices()` (one CPU device), `translate_config(toml, segmented)` (turns the `[run.params]` table into canonical bytes), and `executor(device)`.
-- **`StepperCandidates(sima.Generator)`** — its own id, its `[run.generator]` translation, and `generate(root_seed, params)` producing the candidate specs.
+The SDK matters this early because **sima never links your code**. It spawns your program and talks over pipes. The SDK is the library that speaks that wire protocol, which is what keeps your program an ordinary executable.
 
-The entry point is one call, `sima.serve(...)`: it reads the role from the process arguments, so the same binary answers the run driver's questions (`--serve-domain`) and executes tasks inside workers. sima spawns it; you never run it by hand.
+## What your program supplies
 
-Two properties matter more than the plumbing:
+Open `examples/stepper-py/stepper.py`. It is one file holding three objects and one call.
 
-- **Everything identity-bearing goes through the canonical encoding** (`sima.Enc`/`sima.Dec`), so the bytes — and therefore the task keys — are the same from any language.
-- **The executor never touches the store.** It returns values over a pipe; only sima writes. Process isolation enforces the boundary.
+**`StepperExecutor(sima.Executor)`** — `execute(task, context, checkpoint)` receives a candidate, does the work, and returns an outcome. It never writes to the store; it returns values over a pipe, and sima writes.
+
+**`StepperDomain(sima.Domain)`** — binds one format id:
+
+- `format()` — the id this domain answers for.
+- `environment()` — the components every result's identity depends on.
+- `enumerate_devices()` — the devices the work can run on.
+- `translate_config(toml, segmented)` — turns the `[run.params]` table into canonical bytes.
+- `executor(device)` — builds the executor for a chosen device.
+
+**`StepperCandidates(sima.Generator)`** — `id()`, `format()`, its own `translate_config`, and `generate(root_seed, params)`.
+
+**`sima.serve(domain, [generators])`** — the entry point. It reads its role from the process arguments, so one file is both what sima interrogates about the format and what runs inside workers.
+
+### Why the executor is separate from the domain
+
+The two are read in different processes, and often on different machines.
+
+- The **domain** is interrogated where the run is driven: what devices exist, what environment identifies results, how to translate the config. This must be cheap — no device, no loaded assets.
+- The **executor** exists only inside a worker, on a chosen device. The orchestrator cannot build one, because the device is not known until a worker is placed.
+
+So `Domain.executor(device)` is a **constructor**. The domain answers questions anywhere; the executor does work on a device. Task keys include the environment, which is why key derivation must not require a device: a laptop with no GPU can still derive every key in a run.
+
+### How ids bind
+
+An id is a string your program returns from a method. Matching is by string, checked before any work starts.
+
+```python
+FORMAT    = "example.stepper.v1"
+GENERATOR = "example.stepper.candidates"
+
+class StepperDomain(sima.Domain):
+    def format(self):  return FORMAT
+
+class StepperCandidates(sima.Generator):
+    def id(self):      return GENERATOR
+    def format(self):  return FORMAT
+```
+
+The config reaches them by name:
+
+- `[domain."example.stepper.v1"]` names the binary answering for that format. The spawn carries the id as an argument, and a program whose `format()` disagrees is refused.
+- `[run.generator] id = "..."` is matched against each served generator's `id()`. No match is a config error naming the id.
+- The matched generator's `format()` must equal the run's format, or it is refused naming both ids.
+
+Passing several generators to `serve` is how one format gets several search strategies — a sweep, a random sample, a mutation of a previous run's winners. The generator id and its params are identity-bearing, so two strategies keep separate task keys.
+
+### The outcomes an executor can return
+
+| Return | Meaning | What sima does |
+|---|---|---|
+| `Completed` | the candidate evaluated | commits its artifacts under the task key |
+| `Failed` | transient — may not recur | retries, up to `max_attempts` |
+| `Rejected` | definitive — this candidate cannot produce a result | never retries; the task does not commit |
+
+A program that always succeeds returns `Completed` and never touches the other two. The distinction earns its keep when the work is expensive: returning `Failed` for something permanently broken pays `max_attempts` times for the same nothing.
+
+A process that dies or raises is handled out of band — sima meets a broken pipe or a traceback, respawns the worker, and a saved checkpoint resumes the attempt rather than restarting it.
 
 ## The config
 
@@ -61,6 +124,7 @@ steps = 5
 
 [config]
 store = "./store"
+max_attempts = 3
 checkpoint_interval_ms = 0
 
 [[orchestrator.device]]
@@ -69,15 +133,25 @@ workers = 2
 
 [domain."example.stepper.v1"]
 binary = "./stepper.py"
+env = ["PATH", "PYTHONPATH"]
 ```
 
-Reading it top to bottom:
+- **`[run]`** is the identity: seed, format, and `segments = 3`, which cuts each candidate's work into a chain of 3 tasks, each continuing from the previous one's committed state.
+- **`[run.generator]`** names the generator; the keys after `id` belong to your program and cross as TOML text.
+- **`[run.params]`** belongs to your program too.
+- **`[config]`** and **`[[orchestrator.device]]`** are operational — store location, retry ceiling, checkpoint cadence, which device class runs the work and with how many workers. Changing them changes no task key.
+- **`[domain."example.stepper.v1"]`** is the registration: this format is answered by `./stepper.py`, resolved against the config file's directory.
 
-- `[run]` is the identity: seed, format, and `segments = 3` cuts each candidate's trajectory into a chain of 3 tasks, each continuing from the previous segment's committed state.
-- `[run.generator]` names the generator and carries its config — here, 2 candidates. The keys after `id` belong to the program; sima passes the table through as TOML text.
-- `[run.params]` belongs to the program too: `steps = 5` per segment.
-- `[config]` and `[[orchestrator.device]]` are operational — store location, checkpoint cadence, which device class runs the work and with how many workers. Changing them changes no task key.
-- `[domain."example.stepper.v1"]` is the registration: this format is answered by `./stepper.py` (relative to the config file). Without this section the format would have to be one the build carries in-process.
+### The environment a spawned program receives
+
+`env` lists the **names** of variables that reach your program; their values come from the shell that launched sima. Everything else is cleared.
+
+This is deliberate. A configured program is spawned with a cleared environment and a scratch working directory of its own, so:
+
+- a credential the orchestrator holds is never inherited by third-party code,
+- a program cannot quietly depend on where it was launched from.
+
+The consequence for the example: `PATH` is required for the `#!/usr/bin/env python3` shebang to find an interpreter, and `PYTHONPATH` for `import sima` to resolve. Without them the spawn fails.
 
 ## Run it
 
@@ -86,40 +160,140 @@ cd examples/stepper-py
 sima run search.toml
 ```
 
-sima loads the config, spawns `stepper.py --serve-domain example.stepper.v1` to read its environment, devices, and translations, derives the task keys, spawns worker processes (each hosting the program in its executor role), streams tasks to them, and journals every event into `./store`. With 2 candidates × 3 segments the run commits 6 tasks and finalizes. Rerunning the same command is a no-op ending in the same state: every key is already answered.
+```
+run bff61aa384aa94add7c1609ae6634ca0825ac9548b69712563af224e18b800ef
+started: 6 tasks
+committed 1/6  99edb1e25385
+committed 2/6  6863796364eb
+committed 3/6  27f7405a9ff1
+committed 4/6  ee0f5a8cb965
+committed 5/6  c28a080f85c9
+committed 6/6  15fe1ae7fe0e
+finalized: 6 tasks committed
+```
 
-## Inspect it
+Six tasks is `count = 2` candidates × `segments = 3`. The config decided that; the program did not.
 
-- `sima status search.toml` — the run's state: committed, in flight, failed.
-- `sima status search.toml --task <key>` — one task's attempt timeline; `<key>` is any unambiguous prefix.
-- `sima report search.toml` — committed tasks counted per distinct stats value.
-- `sima report search.toml --all` — every committed task's stats (the stepper reports `steps` and `acc`).
-- `sima report search.toml --timeline` — the run's metrics over time.
-- `sima follow search.toml` — stream the run's events live; useful in a second terminal during longer runs.
-- `sima tui search.toml` — the same, as a full-screen terminal UI driving the run.
+The hex strings are **addresses, not sequence numbers** — each is the hash of what determined that task, stable across machines and reruns.
 
-## Prove the determinism
+## Inspect the results
 
-The claims above are checkable from the shell:
+**`sima status`** reports the run's state:
 
-- Run `sima report search.toml --all` and note a task key and its `acc`. Delete the run — `sima rm search.toml` — and run it again: the same keys carry the same stats. The seed, the specs, the params, and the program's environment fully determine them.
-- Change `root_seed` and run again: every task key changes, and both runs coexist in the store, addressed by their own keys.
-- Change `workers = 2` to `1`: nothing changes. Operational settings are outside the identity.
-- Change `steps` in `[run.params]`: every key changes, because params are inside it.
+```
+run                  bff61aa384aa94add7c1609ae6634ca0825ac9548b69712563af224e18b800ef
+state                finalized
+tasks                6
+committed            6
+retried              0
+rejected             0
+faulted              0
+lease expired        0
+checkpoint degraded  0
+devices              python host processor ×6
+```
 
-Segmentation is part of the proof: with `segments = 3`, segment *k*'s state is the input of segment *k+1*, keyed by absolute step — so the trajectory is invariant under where the cuts fall.
+**`sima report`** reports the stats your program returned:
 
-## Watch it fail
+```
+6 committed tasks
+3  steps=5 acc=1346066267577507600
+3  steps=5 acc=16081153144031734000
+```
 
-The stepper arms failure paths through environment variables, each inert when unset, so an armed and an unarmed run share an identity:
+Two distinct values, three tasks each — one group per candidate, one task per segment. `sima report search.toml --all` prints one line per task, and `--timeline` reports the run's metrics over time.
 
-- `STEPPER_EXIT_AT_STEP=N sima run search.toml` — the program dies right after the checkpoint offer at absolute step `N`. sima meets the broken pipe, respawns the worker, and the retried attempt resumes from the checkpoint rather than step zero.
-- `STEPPER_FAIL_ONCE=1` — every task's first attempt returns a transient failure; sima retries and the run converges.
-- `STEPPER_RAISE_ONCE=1` — every task raises once. The traceback crosses as a diagnostic, the attempt reports a panic, and sima treats it as definitive: the run ends failed, and `sima status search.toml --failed` digests why.
+Other queries:
 
-## Where to go from here
+- `sima status search.toml --task <prefix>` — one task's attempt timeline. Any unambiguous key prefix works.
+- `sima status search.toml --failed` — a digest of the tasks that did not commit.
+- `sima follow search.toml` — stream events live, useful in a second terminal.
+- `sima tui search.toml` — drive the run in a full-screen terminal UI.
 
-- `docs/protocol.md` — the wire contract your own program implements: framing, the canonical encoding, both message sets, and the obligations.
-- `docs/architecture.md` — the full design: the store, the scheduler, journals, sync, migration, fleets.
-- `examples/gray-scott-search.toml` — a built-in GPU domain (reaction-diffusion on WGSL/Vulkan), the same commands end to end.
-- `sima migrate`, `--fleet`, `sima reconcile` — moving a run onto rented machines and cleaning up after them, once one machine is not enough.
+### Artifacts and stats are different things
+
+The three segments of one candidate report the **same** `acc`, even though the accumulator really does advance from segment to segment. The reason is worth internalizing:
+
+- **Artifacts** are the result: exact bytes, content-addressed, identity-bearing. Here the `state` artifact is 16 bytes of `(step, acc)`, and it is what the next segment consumed.
+- **Stats** are observational `f64`. `acc` is a `u64` near $10^{18}$, where the gap between adjacent doubles is 256 or larger, so a per-segment difference of a few hundred disappears in the conversion.
+
+Nothing was lost — the display cannot show what the artifact holds exactly. Stats are for grouping and filtering; artifacts are what you keep.
+
+## Rerun it
+
+```
+sima run search.toml
+```
+
+Nothing recomputes. Every key is already answered, so there is no work to do. That is the resume property, and it is the reason keys are hashes rather than counters.
+
+## Change the program
+
+sima cannot see your source. Watch what that means.
+
+Edit the step loop in `stepper.py` so the math differs:
+
+```python
+acc = (acc + increment) % WRAP        →        acc = (acc + 2 * increment) % WRAP
+```
+
+Then:
+
+```
+sima run search.toml
+```
+
+The run is **refused**: sima recorded the binary's digest when the run started, and the file no longer matches. That is a provenance guard — it exists so code cannot be swapped silently under a half-finished run. Override it deliberately:
+
+```
+sima run search.toml --accept-binary
+```
+
+Nothing recomputes. The run is finalized, every task key is already answered, and `sima report search.toml --all` shows the old values. **New code, old results.**
+
+The keys did not change because a task key is derived from the spec, the params, and **the environment you declare** — never from your source file. Doubling the math changed the answer in reality and changed nothing sima was told about.
+
+Now declare it. In `StepperDomain.environment()`:
+
+```python
+sima.EnvironmentComponent("example.stepper.executor", version="v1")   →   version="v2"
+```
+
+```
+sima run search.toml
+sima report search.toml --all
+```
+
+All six keys are different, all six tasks recompute, and the new values appear. The old results remain in the store under their own keys: both versions coexist, each addressed by what produced it.
+
+This is the contract you take on by registering a format:
+
+> **The environment declaration is your promise that results under this key came from this code.**
+
+Everything else in sima follows from that promise being kept.
+
+## Housekeeping
+
+- `sima rm <config>` — delete the run and what only it references.
+- `sima pack <store-dir>` — consolidate loose objects into packs.
+- `sima pack <store-dir> --gc` — additionally delete everything outside the finalized runs' closures, which destroys the work of any run still in progress.
+
+## Running on other machines
+
+**TODO.** sima has two workflows for distributing a run, and neither is available to an external program today.
+
+- **Fleet** (`sima run <config> --fleet`) — the store and orchestrator stay on your machine; declared or rented machines run workers only. Task inputs and results cross the wire inline.
+- **Migrate** (`sima migrate <config>`) — the run's durable state travels to one declared host, a `sima run` process drives it there, and your machine holds the lock and follows.
+
+The boundary: **a registered format runs only on the orchestrator's own machine.** A format bound through `[domain.*]` to your program cannot be routed to fleet machines, and `sima migrate` refuses it outright — naming the format and the program before touching the destination, the store, the lock, or any provider — because the synthesized far-side config carries no `[domain.*]` entry and the destination would have no route to your program.
+
+Both halves need the same missing capability: **the program present on a machine sima did not install it on**, plus a way to assert which build answered. The intended packaging convention is already stated — one self-contained binary holding both roles, shipped in the image the way `sima-worker` is — but nothing routes to it, carries the registration across a migration, or pins its digest.
+
+This section will be written when that lands. Until then, remote execution is available for formats this build carries; see `examples/gray-scott-search.toml`.
+
+## Where to go next
+
+- `docs/protocol.md` — the wire contract your own program implements: framing, canonical encoding, both message sets, and the obligations a program takes on.
+- `docs/architecture.md` — the full design: store, scheduler, journals, sync, placement, migration.
+- `examples/gray-scott-search.toml` — a built-in GPU domain, driven by the same commands.
+- `examples/stepper-py/README.md` — what the example computes and the failure paths its own tests arm.
