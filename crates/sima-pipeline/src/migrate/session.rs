@@ -92,6 +92,10 @@ const BUDGET_INTERVAL: Duration = Duration::from_secs(10);
 /// only once it has loaded its config, opened its store, and taken its lock. The
 /// bound therefore covers a process start rather than a machine coming up, and
 /// a far run that has exited ends the wait at once whatever is left of it.
+///
+/// The suite reads it from a test override instead, so it fixes which failure a
+/// wait that ran out reports without spending the wait.
+#[cfg(not(test))]
 const ATTACH_BOUND: Duration = Duration::from_secs(30);
 
 /// What a migration came home with.
@@ -304,6 +308,11 @@ struct Overrides {
     /// takes the same tolerance production takes — the attempts and what each
     /// records are what its tests fix — at a poll that costs no wall clock.
     stated_nowhere: (Duration, Duration),
+    /// How long the follow waits for the far run's first journal line. The
+    /// production bound covers a process start; what the suite fixes is which
+    /// failure a wait that ran out reports, so it runs the same path in a
+    /// fraction of the time.
+    attach_bound: Duration,
 }
 
 #[cfg(test)]
@@ -311,6 +320,7 @@ impl Default for Overrides {
     fn default() -> Overrides {
         Overrides {
             stated_nowhere: (Duration::from_millis(200), Duration::from_millis(1)),
+            attach_bound: Duration::from_millis(500),
         }
     }
 }
@@ -495,18 +505,46 @@ impl Session<'_> {
     /// run gets. The wait ends the moment the far run is gone: one that has
     /// exited will never journal, and its refusal is then the answer.
     fn attach(&self) -> Result<Box<dyn RunFeed>> {
-        let deadline = Instant::now() + ATTACH_BOUND;
+        let deadline = Instant::now() + self.attach_bound();
         loop {
             match self.far.follow() {
                 Ok(feed) => return Ok(feed),
                 Err(error) => {
-                    if Instant::now() >= deadline || self.far.driving()?.is_none() {
-                        return Err(error);
+                    let gone = self.far.driving()?.is_none();
+                    if gone || Instant::now() >= deadline {
+                        return Err(self.unattachable(error, gone));
                     }
                     sleep(TICK);
                 }
             }
         }
+    }
+
+    /// What a follow that could not attach reports.
+    ///
+    /// A far run that is gone died before it journaled anything, which is what
+    /// every far-side load failure looks like from here — a program that cannot
+    /// answer for its format, an install script that exited non-zero, a store
+    /// that will not open. The follow's own refusal says only that there is no
+    /// run to follow, so the far run's own words are fetched from its log and
+    /// the machine is named.
+    ///
+    /// A far run still alive that simply has not journaled inside the bound is
+    /// a different thing, and the follow's refusal is the whole of it.
+    fn unattachable(&self, refusal: Error, gone: bool) -> Error {
+        if !gone {
+            return refusal;
+        }
+        let tail = match self.far.log_tail() {
+            Ok(tail) if tail.trim().is_empty() => "(its log is empty)".to_string(),
+            Ok(tail) => tail,
+            Err(error) => format!("(its log could not be read: {error})"),
+        };
+        Error::Validation(format!(
+            "the run on {:?} ended before it journaled anything, so there is nothing to \
+             follow: {refusal}. Its last words were:\n{tail}",
+            self.destination.name
+        ))
     }
 
     /// Step 3: the destination answers that it can drive this run, and a rented
@@ -677,6 +715,17 @@ impl Session<'_> {
     fn stated_nowhere_bounds(&self) -> (Duration, Duration) {
         self.overrides.stated_nowhere
     }
+
+    /// How long the follow waits for the far run's first journal line.
+    #[cfg(not(test))]
+    fn attach_bound(&self) -> Duration {
+        ATTACH_BOUND
+    }
+
+    #[cfg(test)]
+    fn attach_bound(&self) -> Duration {
+        self.overrides.attach_bound
+    }
 }
 
 #[cfg(test)]
@@ -716,6 +765,7 @@ mod tests {
         /// the whole of what makes one direction a push and the other a pull.
         Sync(Scope),
         Follow,
+        LogTail,
         Interrupt(u32),
         Terminate(u32),
     }
@@ -781,6 +831,12 @@ mod tests {
         started_with: Mutex<Option<BinaryChange>>,
         /// The objects the push named, which is what a program has to be in.
         pushed: Mutex<Vec<sima_core::Hash>>,
+        /// What the far run's log holds, when it wrote one.
+        log: Option<String>,
+        /// How many times the follow is refused before it opens: a far run is
+        /// up before it journals, and `sima follow-serve` refuses a run that
+        /// journaled nothing.
+        follow_refusals: Mutex<usize>,
     }
 
     impl<'a> Scripted<'a> {
@@ -805,6 +861,8 @@ mod tests {
                 placed: Mutex::new(None),
                 started_with: Mutex::new(None),
                 pushed: Mutex::new(Vec::new()),
+                log: None,
+                follow_refusals: Mutex::new(0),
             }
         }
 
@@ -844,6 +902,20 @@ mod tests {
         /// signallable.
         fn deaf_for(self, signals: usize) -> Scripted<'a> {
             *self.deaf.lock().expect("the deafness lock") = signals;
+            self
+        }
+
+        /// A far run that is up but has not journaled yet, so the follow is
+        /// refused its first `attempts` times before it opens.
+        fn refusing_the_follow(self, attempts: usize) -> Scripted<'a> {
+            *self.follow_refusals.lock().expect("the follow lock") = attempts;
+            self
+        }
+
+        /// A far run that exits before it journals anything, leaving `log`
+        /// behind — what a far-side load failure looks like from here.
+        fn dying_before_journaling(mut self, log: &str) -> Scripted<'a> {
+            self.log = Some(log.to_string());
             self
         }
 
@@ -901,7 +973,11 @@ mod tests {
         fn start(&self, accept: BinaryChange) -> Result<u32> {
             self.record(Step::Start);
             *self.started_with.lock().expect("the acceptance lock") = Some(accept);
-            *self.alive.lock().expect("the pid lock") = Some(PID);
+            // A run that dies while loading its config is gone by the time
+            // anything asks, which is what leaves the pid naming nothing.
+            if self.log.is_none() {
+                *self.alive.lock().expect("the pid lock") = Some(PID);
+            }
             Ok(PID)
         }
 
@@ -954,8 +1030,22 @@ mod tests {
             }
         }
 
+        fn log_tail(&self) -> Result<String> {
+            self.record(Step::LogTail);
+            Ok(self.log.clone().unwrap_or_default())
+        }
+
         fn follow(&self) -> Result<Box<dyn RunFeed>> {
             self.record(Step::Follow);
+            // `sima follow-serve` refuses a run that journaled nothing, which
+            // is the whole of what this side can learn from it.
+            let mut refusals = self.follow_refusals.lock().expect("the follow lock");
+            if self.log.is_some() || *refusals > 0 {
+                *refusals = refusals.saturating_sub(1);
+                return Err(Error::Validation(
+                    "run 00 was never started in this store".to_string(),
+                ));
+            }
             Ok(Box::new(ScriptedFeed {
                 info: FeedInfo {
                     run: RunId::from_hash(sima_core::hash_bytes(b"scripted")),
@@ -1370,6 +1460,104 @@ mod tests {
         assert!(!far.steps().contains(&PUSH), "{:?}", far.steps());
         assert!(!far.steps().contains(&Step::Start), "{:?}", far.steps());
         assert_eq!(*far.started_with.lock().expect("the acceptance lock"), None);
+        Ok(())
+    }
+
+    #[test]
+    fn a_far_run_that_died_before_journaling_reports_its_own_last_words() -> Result<()> {
+        // Every far-side load failure looks the same from here — the follow
+        // finds a run that never started — so the far run's log is what says
+        // which one it was. An install that could not build the program is the
+        // case this exists for.
+        let local = local(RENTED, PROMPT, Some(3));
+        let far = Scripted::new().dying_before_journaling(
+            "sima: validation error: the install script install.sh exited with exit status: 3",
+        );
+
+        let (outcome, _) = session_over(&local, &far, None, &AtomicBool::new(false));
+        let error = outcome.expect_err("a run that never journaled cannot be followed");
+        let text = error.to_string();
+        assert!(text.contains("slingshot"), "names the machine: {text}");
+        assert!(
+            text.contains("install script install.sh exited"),
+            "carries the far run's own words: {text}"
+        );
+        assert!(
+            far.steps().contains(&Step::LogTail),
+            "the log was asked for: {:?}",
+            far.steps()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_far_run_that_died_leaving_no_log_still_names_the_machine() -> Result<()> {
+        // A run that never wrote a line leaves the absence to report, which is
+        // still more than the follow's own refusal states.
+        let local = local(RENTED, PROMPT, Some(3));
+        let far = Scripted::new().dying_before_journaling("");
+
+        let (outcome, _) = session_over(&local, &far, None, &AtomicBool::new(false));
+        let text = outcome
+            .expect_err("a run that never journaled cannot be followed")
+            .to_string();
+        assert!(text.contains("slingshot"), "{text}");
+        assert!(text.contains("log is empty"), "{text}");
+        Ok(())
+    }
+
+    #[test]
+    fn a_far_run_that_never_journals_but_stays_up_reports_the_follow_s_refusal() -> Result<()> {
+        // A run that is up owes no explanation: the follow's own refusal is
+        // the whole of what happened, and no log is fetched to explain a death
+        // that did not occur. The bound the wait runs out on is production's;
+        // the suite overrides only how long it is.
+        let local = local(RENTED, PROMPT, Some(3));
+        let far = Scripted::new()
+            .already_driving()
+            .refusing_the_follow(usize::MAX);
+
+        let (outcome, _) = session_over(&local, &far, None, &AtomicBool::new(false));
+        let text = outcome
+            .expect_err("a follow that never opens fails the migration")
+            .to_string();
+        assert!(text.contains("never started in this store"), "{text}");
+        assert!(
+            !text.contains("ended before it journaled"),
+            "a run that is up did not die: {text}"
+        );
+        assert!(
+            !far.steps().contains(&Step::LogTail),
+            "and no log was asked for: {:?}",
+            far.steps()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_far_run_still_alive_that_has_not_journaled_is_waited_for_and_asked_nothing() -> Result<()>
+    {
+        // The other side of the distinction: a run that is up and simply has
+        // not journaled yet is not a run that died. The follow waits it out,
+        // and no log is fetched to explain a failure that did not happen.
+        let local = local(RENTED, PROMPT, Some(3));
+        let run = local.config.run.id();
+        let far = Scripted::new()
+            .refusing_the_follow(3)
+            .delivering(vec![vec![started(&run), finalized(&run)]]);
+
+        session_over(&local, &far, None, &AtomicBool::new(false)).0?;
+        assert_eq!(
+            far.steps().iter().filter(|s| **s == Step::Follow).count(),
+            4,
+            "every refusal inside the bound was tried again: {:?}",
+            far.steps()
+        );
+        assert!(
+            !far.steps().contains(&Step::LogTail),
+            "a run that is up owes no explanation: {:?}",
+            far.steps()
+        );
         Ok(())
     }
 
@@ -1908,6 +2096,9 @@ mod tests {
                 unreachable!("the migration never got past the reach check")
             }
             fn terminate(&self, _: u32) -> Result<()> {
+                unreachable!("the migration never got past the reach check")
+            }
+            fn log_tail(&self) -> Result<String> {
                 unreachable!("the migration never got past the reach check")
             }
             fn sync(&self, _: &Store, _: &[TaskKey], _: ObjectScope<'_>) -> Result<SyncReport> {

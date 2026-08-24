@@ -88,7 +88,21 @@ pub(crate) trait FarSide {
 
     /// Opens a live follow of the far run.
     fn follow(&self) -> Result<Box<dyn RunFeed>>;
+
+    /// The last lines of the far run's log.
+    ///
+    /// A far `sima run` that fails while loading its config — a program that
+    /// cannot answer, an install that exits non-zero — dies before it journals
+    /// anything, so the follow finds a run that never started and can say only
+    /// that. Its own words are in the log it wrote, and this is how they reach
+    /// the operator who asked for the migration.
+    fn log_tail(&self) -> Result<String>;
 }
+
+/// How much of the far run's log an attach failure carries. Enough for a
+/// config-load failure to state itself in full; the whole log is on the
+/// destination, at the path the layout fixes.
+const LOG_TAIL_LINES: usize = 40;
 
 /// What a first contact with the destination found.
 pub(crate) enum Contact {
@@ -336,6 +350,15 @@ impl FarSide for Remote {
         let argv = self.reach.follow_serve_argv(&self.layout.config());
         Ok(Box::new(RemoteFeed::open_over(&argv, &self.reach.label())?))
     }
+
+    fn log_tail(&self) -> Result<String> {
+        // A run that never started leaves no log, and that absence is itself
+        // the answer to give: the script exits zero with nothing to say.
+        self.shell(&format!(
+            "tail -n {LOG_TAIL_LINES} {log} 2>/dev/null\nexit 0\n",
+            log = self.layout.log(),
+        ))
+    }
 }
 
 /// A process id a far-side script printed, or `None` for the empty output that
@@ -459,6 +482,39 @@ mod tests {
             assert!(Instant::now() < deadline, "the stand-in never recorded");
             std::thread::sleep(Duration::from_millis(10));
         }
+    }
+
+    #[test]
+    fn the_log_tail_is_the_far_run_s_last_lines() -> Result<()> {
+        // What the operator sees when the far run died before it journaled:
+        // its own output, read over the same shell channel every other far-side
+        // operation uses.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let far = here(dir.path(), Path::new("/bin/true"));
+        far.place("[run]\nroot_seed = 1\n")?;
+        let log: String = (0..LOG_TAIL_LINES + 10)
+            .map(|line| format!("line {line}\n"))
+            .collect();
+        std::fs::write(dir.path().join(run().to_string()).join("run.log"), &log)
+            .expect("write the log");
+
+        let tail = far.log_tail()?;
+        let lines: Vec<&str> = tail.lines().collect();
+        assert_eq!(lines.len(), LOG_TAIL_LINES);
+        assert_eq!(lines.last(), Some(&"line 49"));
+        assert_eq!(lines.first(), Some(&"line 10"));
+        Ok(())
+    }
+
+    #[test]
+    fn a_far_run_that_left_no_log_answers_with_nothing() -> Result<()> {
+        // A run that never started wrote no log, and the absence is the
+        // answer: reading it is not itself a failure to report.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let far = here(dir.path(), Path::new("/bin/true"));
+        far.place("[run]\nroot_seed = 1\n")?;
+        assert!(far.log_tail()?.trim().is_empty());
+        Ok(())
     }
 
     #[test]
