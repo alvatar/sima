@@ -18,6 +18,13 @@ accumulator, 16 little-endian bytes — as the artifact named `state`. Under
 the trajectory does not depend on where the cuts fall. A candidate byte of `0`
 adds nothing and is rejected.
 
+## Where it runs
+
+This program answers a registered format, so it runs on the machine the
+orchestrator runs on and nowhere else: its tasks are not routed to fleet
+machines, and `sima migrate` refuses a registered format outright. Distributing
+work across machines is available to the formats sima carries in process.
+
 ## Running it
 
 `import sima` must resolve. Either install the package:

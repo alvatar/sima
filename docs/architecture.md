@@ -964,6 +964,15 @@ flowchart TD
   IS --> DOM["sima-domains"]
 ```
 
+**A registered format runs only on the orchestrator's own machine.** Its tasks
+are not routed to fleet machines, and `sima migrate` refuses it outright —
+naming the format and the program before it reaches the destination, the store,
+the lock, or any provider — because the synthesized far config carries no
+`[domain.*]` entry and the destination would have no route to the program. Both
+halves need the program present on a machine sima did not install it on, which
+is P9. Until then, distributing work across machines is available to the formats
+this build carries.
+
 The unit of registration is a **binary**. A heavy program owns its GPU context,
 its dependency tree, and its startup cost, so it runs as its own process: it
 loads its assets once at the handshake and then streams tasks. Foreign code

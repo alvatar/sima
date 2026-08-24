@@ -985,7 +985,10 @@ without publishing anywhere and without rebuilding an image.
       package, a compiled binary, a virtualenv, a symlink into an existing
       image. Two settled points. **The payload is bytes sima sends, never a
       thing the far side fetches**, so a local edit is a run away from a remote
-      machine and nothing is published to reach it. **An install that fails
+      machine and nothing is published to reach it. What the payload carries is
+      the program alone: a language runtime and sima's own SDK for it ride in
+      the machine's image, beside `sima-worker`, so nothing here waits on
+      package-index publication. **An install that fails
       fails the run, naming the machine**, since proceeding on the machines that
       worked spends a fleet's price for a fraction of its capacity. Landing
       inside a container is the script's job, which is what keeps a per-run
