@@ -19,6 +19,8 @@
 //!   guard stops it until the invocation accepts the change;
 //! - an interrupt winds the far run down and brings home what its program
 //!   computed;
+//! - a program written against the SDK finds it on the destination, vended
+//!   there by that machine's own binary;
 //! - an install that fails states its own last words to the operator who asked
 //!   for the migration.
 
@@ -68,6 +70,56 @@ fn run_section() -> String {
 /// Where the far side's `sima` is, for a config that names it.
 fn far_binary() -> &'static str {
     env!("CARGO_BIN_EXE_sima")
+}
+
+/// Writes a program that imports the vended SDK before it answers, appending to
+/// `resolved` the directory each import resolved from, and answers the
+/// `[domain.*]` entry that declares it.
+///
+/// It is the ordinary wrapper with one line in front: what the entry declares
+/// is what has to be there, so a program that cannot import fails the spawn,
+/// and the report says which copy every spawn that succeeded read — on this
+/// machine and on the destination alike, since both sides spawn it.
+fn importing_program(dir: &Path, resolved: &Path) -> String {
+    executable(
+        &dir.join("program.sh"),
+        &format!(
+            "#!/bin/sh\n\
+             python3 -c 'import sima, os; print(os.path.dirname(sima.__file__))' \
+             >> {resolved:?} || exit 9\n\
+             exec {} \"$@\"\n",
+            worker_binary().display(),
+            resolved = resolved.display(),
+        ),
+    );
+    "[domain.\"stub.v1\"]\nbinary = \"./program.sh\"\npayload = \"./program.sh\"\nsdk = \"python\"\n"
+        .to_string()
+}
+
+/// Every directory the importing program reported resolving `sima` from.
+fn imported_from(resolved: &Path) -> Vec<String> {
+    std::fs::read_to_string(resolved)
+        .expect("the program reported where its import resolved")
+        .lines()
+        .map(str::to_string)
+        .collect()
+}
+
+/// Asserts `python3` runs.
+///
+/// The one test here that imports the vended SDK requires it, and a machine
+/// without it fails naming what is missing rather than reporting a green suite
+/// that tested nothing.
+fn require_python3() {
+    let version = std::process::Command::new("python3")
+        .arg("--version")
+        .output();
+    match version {
+        Ok(output) if output.status.success() => {}
+        other => panic!(
+            "this test drives a Python program, so python3 is required and must run: {other:?}"
+        ),
+    }
 }
 
 /// Writes an executable file at `path`, creating its parents.
@@ -552,6 +604,63 @@ fn a_program_served_migration_winds_down_on_an_interrupt_and_brings_home_what_ra
         }
     }
     assert!(held > 0, "the far side held the chain it was sent");
+    Ok(())
+}
+
+#[test]
+fn a_program_written_against_the_sdk_finds_it_on_the_destination() -> Result<()> {
+    // The SDK travels inside the binary rather than with the payload: the
+    // program's own file is all that crosses, the destination's `sima` vends
+    // the package its protocol matches, and `import sima` resolves there with
+    // no interpreter path declared anywhere. The program reports the directory
+    // its import resolved from, so what is asserted is the vended copy rather
+    // than some package the machine happened to hold.
+    require_python3();
+    let dir = tempfile::tempdir().expect("temp dir");
+    let far_root = dir.path().join("far");
+    let migrated_dir = dir.path().join("migrated");
+    let resolved_at = dir.path().join("resolved");
+    let entry = importing_program(&migrated_dir, &resolved_at);
+    let migrated = migrating(&migrated_dir, &far_root, &entry);
+
+    assert!(matches!(
+        move_run(&migrated, BinaryChange::Refuse)?,
+        MigrateOutcome::Finalized { .. }
+    ));
+
+    // The destination vended the package beside the program it installed, and
+    // that is the copy the program imported.
+    let far = far_dir(&migrated, &far_root);
+    let vended = far.join("sdk/python/installed/sima");
+    assert!(
+        vended.join("__init__.py").is_file(),
+        "the destination's own binary wrote the package"
+    );
+    let imported = imported_from(&resolved_at);
+    assert!(
+        imported.contains(&vended.to_string_lossy().into_owned()),
+        "the program on the destination read the package vended there: {imported:?}"
+    );
+    // Every spawn on either side read a package sima wrote: what a machine
+    // happens to hold under that name is shadowed, here as well as there.
+    for directory in &imported {
+        assert!(
+            directory.ends_with("sdk/python/installed/sima"),
+            "{directory} is a vended package"
+        );
+    }
+
+    // And it asked for it by name alone: nothing about an interpreter path
+    // crossed, because a path is the destination's own business.
+    let far_config = std::fs::read_to_string(far.join("sima.toml")).expect("the far config");
+    assert!(
+        far_config.contains(r#"sdk = "python""#),
+        "the declaration travelled: {far_config}"
+    );
+    assert!(
+        !far_config.contains("PYTHONPATH"),
+        "and no interpreter path did: {far_config}"
+    );
     Ok(())
 }
 
