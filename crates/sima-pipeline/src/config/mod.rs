@@ -95,7 +95,7 @@
 //! [domain."acme.thing.v1"]                # a format served by its own program
 //! binary  = "/opt/acme/worker"            # resolved against this file's directory
 //! # env     = ["ACME_ASSETS"]             # optional; variable names it also receives
-//! # sdk     = "python"                    # optional; the SDK this binary vends it
+//! # sdk     = "python"                    # optional; the SDK this binary vends
 //! # payload = "./program"                 # optional; what travels when the run migrates
 //! # install = "./install.sh"              # optional for a file payload, required for a directory
 //! # payload_digest = "<64 hex>"           # a migration writes this; the manifest to install here
