@@ -1008,6 +1008,10 @@ mod tests {
             ""
         }
 
+        fn program(&self) -> &str {
+            ""
+        }
+
         fn assign(&mut self, _assignment: &Assignment) -> Result<()> {
             Ok(())
         }

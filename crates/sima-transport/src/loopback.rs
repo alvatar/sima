@@ -98,9 +98,11 @@ impl WorkerTransport for LoopbackTransport {
         write_frame(&mut stdin, &ToChild::Hello(hello).encode())?;
         // A handshake that ends with the stream is the host having returned;
         // its own reason, if it gave one, is what the caller is told rather
-        // than the bare fact that the pipe closed.
-        let (device_name, driver) =
-            subprocess::ready_desc("loopback host", link_events.recv().ok()).map_err(|closed| {
+        // than the bare fact that the pipe closed. The host answers for its
+        // format in this very process, so no program travelled to it and none
+        // is expected of it.
+        let answer = subprocess::ready_desc("loopback host", link_events.recv().ok(), None)
+            .map_err(|closed| {
                 failure
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner)
@@ -113,8 +115,9 @@ impl WorkerTransport for LoopbackTransport {
             events: link_events,
             host: Some(host),
             reader: Some(reader),
-            device_name,
-            driver,
+            device_name: answer.device_name,
+            driver: answer.driver,
+            program: answer.program,
         })))
     }
 }
@@ -135,6 +138,9 @@ struct LoopbackLink {
     device_name: String,
     /// The driver version the host reported at the handshake.
     driver: String,
+    /// The program digest the host answered; empty, no program having
+    /// travelled to a host running in this process.
+    program: String,
 }
 
 impl WorkerLink for LoopbackLink {
@@ -144,6 +150,10 @@ impl WorkerLink for LoopbackLink {
 
     fn driver(&self) -> &str {
         &self.driver
+    }
+
+    fn program(&self) -> &str {
+        &self.program
     }
 
     fn assign(&mut self, assignment: &Assignment) -> Result<()> {
@@ -295,6 +305,17 @@ mod tests {
     }
 
     #[test]
+    fn a_loopback_worker_names_no_program() -> Result<()> {
+        // The loopback host runs this process's own build, so it answers for
+        // its format in process and no program travelled to it. The link
+        // carries that answer through, and the journal records no digest.
+        let transport = stub_transport(None);
+        let link = transport.spawn(0, None, discarding_emitter())?.into_link();
+        assert_eq!(link.program(), "");
+        Ok(())
+    }
+
+    #[test]
     fn a_host_speaking_another_version_is_refused_as_a_mismatch() {
         // Every transport refuses a version mismatch the same way, and says
         // which two versions disagree rather than reporting an unexpected
@@ -307,6 +328,7 @@ mod tests {
                 driver: String::new(),
                 program: String::new(),
             })),
+            None,
         )
         .expect_err("a host at another version");
         let Error::Transport(message) = error else {

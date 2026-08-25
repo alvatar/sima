@@ -8,6 +8,7 @@ use sima_contracts::Outcome;
 use sima_core::{hash_bytes, read_frame, write_frame};
 use sima_domains::{StubBehavior, StubProgram};
 use sima_model::{EnvironmentId, FormatId};
+use sima_transport::WorkerLink;
 use sima_transport::protocol::{Assignment, Hello, PROTOCOL_VERSION, ToChild, ToParent};
 
 /// A spawned worker with its pipes taken; stderr is inherited so a failure
@@ -140,6 +141,81 @@ fn the_worker_echoes_the_program_digest_its_environment_holds() {
         other => panic!("expected Ready, got {other:?}"),
     }
     assert_eq!(worker.shutdown(), Some(0), "clean EOF exits 0");
+}
+
+/// Spawns one worker through a wrapper that exports `held` as the program
+/// digest before exec, under a run expecting `sent`, and answers the spawn's
+/// result.
+///
+/// The wrapper is the test's stand-in for a machine whose installed tree
+/// drifted: sima injects the digest it sent, and overriding the variable is
+/// how a machine holding another program is produced without one.
+fn spawn_expecting(sent: Option<&str>, held: &str) -> sima_core::Result<String> {
+    use std::path::PathBuf;
+    use std::time::Duration;
+
+    use sima_transport::{SpawnPolicy, SpawnSettings, SubprocessTransport, WorkerTransport};
+
+    let worker = env!("CARGO_BIN_EXE_sima-worker");
+    let transport = SubprocessTransport::new(
+        PathBuf::from("sh"),
+        vec![
+            "-c".to_string(),
+            format!("SIMA_PROGRAM_DIGEST={held} exec {worker}"),
+        ],
+        SpawnSettings::new(
+            SpawnPolicy::Inherit,
+            Duration::MAX,
+            FormatId::new("stub.v1").expect("format id"),
+            Duration::MAX,
+            None,
+        )
+        .expecting_program(sent.map(str::to_string)),
+    );
+    transport
+        .spawn(
+            0,
+            None,
+            sima_trace::Emitter::from(std::sync::mpsc::channel().0),
+        )
+        .map(|outcome| outcome.into_link().program().to_string())
+}
+
+/// The digest a run in these tests sent, and the one a drifted machine holds.
+const SENT: &str = "1111111111111111111111111111111111111111111111111111111111111111";
+const HELD: &str = "2222222222222222222222222222222222222222222222222222222222222222";
+
+#[test]
+fn a_worker_answering_the_digest_the_run_sent_binds() {
+    let answered = spawn_expecting(Some(SENT), SENT).expect("the agreement holds");
+    assert_eq!(
+        answered, SENT,
+        "the answered digest reaches the link for the journal"
+    );
+}
+
+#[test]
+fn a_worker_holding_another_program_fails_the_spawn_naming_both_digests() {
+    // The drifted machine, through a real child and the real wire: what
+    // answered is a program, and it is not the one this run sent.
+    let error = spawn_expecting(Some(SENT), HELD).expect_err("a program disagreement");
+    let message = format!("{error}");
+    assert!(message.contains("program digest mismatch"), "{message}");
+    assert!(message.contains(SENT), "names what the run sent: {message}");
+    assert!(
+        message.contains(HELD),
+        "names what the worker answered: {message}"
+    );
+}
+
+#[test]
+fn a_worker_naming_a_program_the_run_never_sent_fails_the_spawn() {
+    // The symmetric direction: a run answering for its format in process sent
+    // no program at all, so a worker that names one is not the one it spawned.
+    let error = spawn_expecting(None, HELD).expect_err("a program disagreement");
+    let message = format!("{error}");
+    assert!(message.contains("program digest mismatch"), "{message}");
+    assert!(message.contains(HELD), "{message}");
 }
 
 #[test]

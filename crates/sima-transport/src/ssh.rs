@@ -568,6 +568,10 @@ mod tests {
             ""
         }
 
+        fn program(&self) -> &str {
+            ""
+        }
+
         fn assign(&mut self, _assignment: &crate::protocol::Assignment) -> Result<()> {
             Ok(())
         }
