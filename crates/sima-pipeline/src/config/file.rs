@@ -61,6 +61,10 @@ pub(super) struct DomainSection {
     /// migration when it synthesizes the far config. The destination
     /// materializes and installs it at load.
     pub(super) payload_digest: Option<String>,
+    /// The SDK the program is written against, which this binary vends and
+    /// puts on the program's module path. Absent means a program that needs
+    /// none of it.
+    pub(super) sdk: Option<String>,
 }
 
 /// The `[run]` section: every field enters run identity.

@@ -72,6 +72,7 @@ use crate::migrate::objects::push_objects;
 use crate::payload::{PayloadSpec, closure, ingest};
 use crate::program_binding::BinaryChange;
 use crate::rental::{budget_exhausted, provider_for_rental};
+use crate::sdk::Sdk;
 use crate::status::{RunState, RunStatus};
 use crate::task_keys::task_keys;
 
@@ -156,6 +157,7 @@ pub fn migrate(
             format: loaded.run.format.as_str().to_string(),
             payload_digest: ingest(&store, &carried.payload)?,
             env: carried.env,
+            sdk: carried.sdk,
         }),
     };
     // Registering the run is what gives it a journal to forward into, and it is
@@ -246,6 +248,9 @@ struct Carried {
     /// The variable names the entry declared, which reach the far entry as
     /// names; each value is the destination's own.
     env: Vec<String>,
+    /// The SDK the entry declared, which reaches the far entry as the same
+    /// declaration; the package is the destination binary's to vend.
+    sdk: Option<Sdk>,
 }
 
 /// What `loaded` must carry, and `None` for a run whose format this build
@@ -272,6 +277,7 @@ fn carried(loaded: &LoadedConfig) -> Result<Option<Carried>> {
     Ok(Some(Carried {
         payload: payload.clone(),
         env: routed.env.to_vec(),
+        sdk: routed.sdk,
     }))
 }
 
@@ -1390,6 +1396,7 @@ mod tests {
             format: "stub.v1".to_string(),
             payload_digest: digest,
             env: vec!["PATH".to_string()],
+            sdk: None,
         };
         let far = Scripted::new().delivering(vec![vec![started(&run), finalized(&run)]]);
 

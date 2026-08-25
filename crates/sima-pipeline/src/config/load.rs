@@ -25,6 +25,7 @@ use super::run::resolve_run;
 use super::settings::{optional_bound, resolve_budget, resolve_execution};
 use crate::domain_registry::{DomainEntry, DomainRegistry};
 use crate::payload::{PayloadSpec, ProgramTree, install};
+use crate::sdk::{Sdk, materialize};
 
 /// A `sima.toml`, loaded and translated: the identity-bearing [`RunConfig`], the
 /// operational [`ExecutionConfig`], the machines the run may draw on, and the
@@ -170,12 +171,13 @@ fn resolve_domains(
         path: path.to_path_buf(),
         source,
     })?;
-    let declared = entries
+    let mut declared = entries
         .into_iter()
         .map(|(format, section)| {
             let payload = resolve_payload(path, &base, &format, &section)?;
             let payload_digest = resolve_payload_digest(path, &format, section.payload_digest)?;
             let env = resolve_domain_env(path, &format, section.env)?;
+            let sdk = resolve_sdk(path, &format, section.sdk)?;
             let format = FormatId::new(format).map_err(|e| {
                 Error::Validation(format!("{}: [domain.*] entry: {e}", path.display()))
             })?;
@@ -185,12 +187,41 @@ fn resolve_domains(
                 env,
                 payload,
                 payload_digest,
+                sdk,
+                sdk_path: None,
             })
         })
         .collect::<Result<Vec<_>>>()?;
+    vend_sdks(&base, &mut declared)?;
     install_payloads(path, &base, &declared, store)?;
     DomainRegistry::new(declared, answer_timeout)
         .map_err(|e| Error::Validation(format!("{}: {e}", path.display())))
+}
+
+/// Vends the SDK every entry declaring one needs, and records where, before any
+/// of their programs is spawned — so a program's `import` resolves the first
+/// time it runs.
+///
+/// One tree per SDK, however many entries declare it: what it holds is a
+/// property of this binary, not of any one program. An entry declaring none
+/// leaves the disk alone.
+fn vend_sdks(base: &Path, declared: &mut [DomainEntry]) -> Result<()> {
+    let mut vended: BTreeMap<Sdk, PathBuf> = BTreeMap::new();
+    for entry in declared {
+        let Some(sdk) = entry.sdk else {
+            continue;
+        };
+        let path = match vended.get(&sdk) {
+            Some(path) => path.clone(),
+            None => {
+                let path = materialize(base, sdk)?;
+                vended.insert(sdk, path.clone());
+                path
+            }
+        };
+        entry.sdk_path = Some(path);
+    }
+    Ok(())
 }
 
 /// Installs every payload the entries name, before any of their programs is
@@ -331,6 +362,22 @@ fn resolve_payload_digest(
             })
         })
         .transpose()
+}
+
+/// Validates the SDK an entry declares, which is a language this binary vends a
+/// package for.
+fn resolve_sdk(path: &Path, format: &str, sdk: Option<String>) -> Result<Option<Sdk>> {
+    sdk.map(|sdk| {
+        Sdk::parse(&sdk).ok_or_else(|| {
+            Error::Validation(format!(
+                "{}: [domain.{format:?}] sdk {sdk:?} names no SDK this binary vends; \
+                 the key takes {}",
+                path.display(),
+                Sdk::accepted(),
+            ))
+        })
+    })
+    .transpose()
 }
 
 /// Validates the variable names an entry forwards to its program.
@@ -1651,6 +1698,74 @@ mod tests {
                 passthrough: vec!["ACME_ASSETS".to_string(), "ACME_LICENSE_PATH".to_string()],
                 prepend: Vec::new(),
             }
+        );
+    }
+
+    #[test]
+    fn an_entry_declaring_the_sdk_reads_it_from_the_tree_the_binary_vended() {
+        // The whole plumbing of the key in one assertion: the load materialized
+        // the package under the config's own directory, and the program is
+        // spawned reading it ahead of anything the machine has under that name.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = write_config(
+            dir.path(),
+            "sima.toml",
+            &format!(
+                r#"{BASE}
+                [domain."stub.v1"]
+                binary = "{}"
+                sdk = "python"
+                "#,
+                crate::fixtures::built_worker().display()
+            ),
+        );
+        let config = load(&path).expect("the config loads");
+        let installed = dir.path().join("sdk/python/installed");
+        assert!(
+            installed.join("sima/__init__.py").is_file(),
+            "the package is on this machine"
+        );
+        assert_eq!(
+            config
+                .domains
+                .source(&FormatId::new("stub.v1").expect("format id"))
+                .spawn_policy(),
+            SpawnPolicy::Explicit {
+                passthrough: Vec::new(),
+                prepend: vec![(
+                    "PYTHONPATH".to_string(),
+                    std::ffi::OsString::from(installed),
+                )],
+            }
+        );
+    }
+
+    #[test]
+    fn a_config_declaring_no_sdk_vends_none() {
+        // Nothing is written for a config that asked for nothing: the tree is
+        // a directory an entry declaring the key is what creates.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = write_config(dir.path(), "sima.toml", BASE);
+        load(&path).expect("the config loads");
+        assert!(!dir.path().join("sdk").exists());
+    }
+
+    #[test]
+    fn an_sdk_this_binary_does_not_vend_is_refused_naming_it() {
+        let message = rejection(&format!(
+            r#"{BASE}
+            [domain."stub.v1"]
+            binary = "/opt/acme/worker"
+            sdk = "rust"
+            "#
+        ));
+        assert!(message.contains("sima.toml"), "names the config: {message}");
+        assert!(message.contains("stub.v1"), "names the format: {message}");
+        assert!(message.contains("sdk"), "names the key: {message}");
+        assert!(message.contains("rust"), "names the value: {message}");
+        assert!(
+            message.contains("python"),
+            "names what it does vend: {message}"
         );
     }
 

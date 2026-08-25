@@ -115,6 +115,7 @@ mod tests {
             digest,
             payload: None,
             env: &[],
+            sdk: None,
         }
     }
 

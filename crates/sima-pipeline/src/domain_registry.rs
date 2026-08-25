@@ -26,6 +26,7 @@ use sima_transport::SpawnPolicy;
 use sima_transport::domain_service::DomainService;
 
 use crate::payload::PayloadSpec;
+use crate::sdk::Sdk;
 
 /// One `[domain.*]` entry, resolved: the format it answers for, the program
 /// that answers, and the environment variables that program receives beyond
@@ -45,6 +46,13 @@ pub(crate) struct DomainEntry {
     /// installed where the config resolves, so the binary the entry spawns is
     /// there by the time it is spawned.
     pub(crate) payload_digest: Option<Hash>,
+    /// The SDK the entry declared, which travels to a far entry as the same
+    /// declaration: what the destination vends is its own binary's.
+    pub(crate) sdk: Option<Sdk>,
+    /// Where this machine vended that SDK, read by the program ahead of
+    /// anything the machine holds under the same name. Resolved where the
+    /// config did, so the entry carries a path rather than a rule.
+    pub(crate) sdk_path: Option<PathBuf>,
 }
 
 /// Where a format's domain is answered from.
@@ -139,6 +147,10 @@ pub(crate) struct BinarySource {
     /// in: a migration writes them into the far entry, so the program sees the
     /// same names there — with that machine's own values.
     env: Vec<String>,
+    /// The SDK the entry declared, kept for the same reason `env` is: it
+    /// travels to the far entry as a declaration, and the destination's own
+    /// binary is what vends it there.
+    sdk: Option<Sdk>,
     /// The open session. One conversation serves the whole config, so the
     /// program pays its startup cost once; the lock is what makes that one
     /// conversation reachable from the threads a run drives.
@@ -159,6 +171,8 @@ impl BinarySource {
             // Consumed where the config resolved: the tree it names is already
             // materialized and installed by the time the binary is spawned.
             payload_digest: _,
+            sdk,
+            sdk_path,
         } = entry;
         // The build about to serve this config, digested before it runs. The
         // digest is provenance every session journals, so an unreadable
@@ -177,9 +191,18 @@ impl BinarySource {
                 format.as_str()
             ))
         };
+        // The vended package leads the program's module path, so `import` finds
+        // the copy this binary wrote before anything the machine installed.
+        // Both spawn sites share the policy, so the domain service and every
+        // worker of the run read one path.
+        let prepend = sdk
+            .zip(sdk_path)
+            .map(|(sdk, path)| (sdk.path_variable().to_string(), path.into_os_string()))
+            .into_iter()
+            .collect();
         let policy = SpawnPolicy::Explicit {
             passthrough: env.clone(),
-            prepend: Vec::new(),
+            prepend,
         };
         let mut service =
             DomainService::spawn(&binary, &format, &policy, answer_timeout).map_err(declared)?;
@@ -190,6 +213,7 @@ impl BinarySource {
             policy,
             payload,
             env,
+            sdk,
             session: Mutex::new(service),
         })
     }
@@ -325,6 +349,7 @@ impl DomainRegistry {
                 digest: &source.digest,
                 payload: source.payload.as_ref(),
                 env: &source.env,
+                sdk: source.sdk,
             })
     }
 }
@@ -342,6 +367,9 @@ pub(crate) struct RoutedProgram<'a> {
     /// name alone, as they are written here: each value comes from the machine
     /// the program runs on.
     pub(crate) env: &'a [String],
+    /// The SDK the entry declared, which travels to a far entry as the same
+    /// declaration: the package itself is the destination binary's to vend.
+    pub(crate) sdk: Option<Sdk>,
 }
 
 /// The text of a configuration section, as the source that owns its keys
@@ -383,6 +411,8 @@ mod tests {
             env,
             payload: None,
             payload_digest: None,
+            sdk: None,
+            sdk_path: None,
         }
     }
 

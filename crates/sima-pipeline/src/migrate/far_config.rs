@@ -32,6 +32,7 @@ use sima_model::RunId;
 use crate::config::{HostForm, OwnedHost, Pool};
 use crate::devices::usable;
 use crate::payload::relative_entry_point;
+use crate::sdk::Sdk;
 
 /// The default `sima.toml` name the far side's `sima run` is pointed at.
 const CONFIG_FILE: &str = "sima.toml";
@@ -142,6 +143,10 @@ pub(crate) struct Registration {
     /// The variable names the local entry declared. They travel by name alone:
     /// each value comes from the machine the program ends up running on.
     pub(crate) env: Vec<String>,
+    /// The SDK the local entry declared, which travels as the declaration it
+    /// is: the destination's own binary vends the package, so nothing of it
+    /// crosses the wire.
+    pub(crate) sdk: Option<Sdk>,
 }
 
 /// The config the far side runs, synthesized from the local config's own text.
@@ -191,7 +196,8 @@ pub(crate) fn far_config(
 }
 
 /// The far side's `[domain.<format>]`: the entry point the install leaves, the
-/// manifest to install it from, and the variable names the program receives.
+/// manifest to install it from, the variable names the program receives, and
+/// the SDK it is written against.
 ///
 /// The local entry's own `binary` and `payload` do not travel — both name
 /// paths on this machine — and the destination's `binary` is the convention
@@ -216,6 +222,14 @@ fn far_domain(registration: &Registration) -> toml::Table {
                     .map(|name| toml::Value::String(name.clone()))
                     .collect(),
             ),
+        );
+    }
+    // The declaration travels, not the package: the destination's own binary
+    // vends the copy that matches the protocol it speaks.
+    if let Some(sdk) = registration.sdk {
+        entry.insert(
+            "sdk".to_string(),
+            toml::Value::String(sdk.as_str().to_string()),
         );
     }
     entry
@@ -624,6 +638,7 @@ mod tests {
             format: "acme.thing.v1".to_string(),
             payload_digest: sima_core::hash_bytes(b"a payload manifest"),
             env: env.iter().map(|name| (*name).to_string()).collect(),
+            sdk: None,
         }
     }
 
@@ -671,6 +686,38 @@ mod tests {
             "the names travel; the values are that machine's"
         );
         assert_eq!(entry.len(), 3, "and nothing else: {entry:?}");
+    }
+
+    #[test]
+    fn a_declared_sdk_travels_as_the_declaration_it_is() {
+        // What the destination needs is the statement that the program wants
+        // the SDK; the package itself is its own binary's to vend, so nothing
+        // of it is written into the far config or carried over the wire.
+        let table: toml::Table = far_text(Some(&Registration {
+            sdk: Some(Sdk::Python),
+            ..registration(&["PATH"])
+        }))
+        .parse()
+        .expect("the far config parses");
+        let entry = table["domain"]["acme.thing.v1"]
+            .as_table()
+            .expect("the entry");
+        assert_eq!(entry["sdk"].as_str(), Some("python"));
+        assert_eq!(entry.len(), 4, "beside what an entry already states");
+    }
+
+    #[test]
+    fn an_entry_declaring_no_sdk_writes_no_sdk_key() {
+        // The key is optional, and a program needing none of it declares none.
+        let table: toml::Table = far_text(Some(&registration(&["PATH"])))
+            .parse()
+            .expect("the far config parses");
+        assert!(
+            !table["domain"]["acme.thing.v1"]
+                .as_table()
+                .expect("the entry")
+                .contains_key("sdk")
+        );
     }
 
     #[test]
