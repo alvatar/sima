@@ -52,13 +52,13 @@ use std::process::ExitCode;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
-use sima_core::{Error, Result};
+use sima_core::{Error, Hash, Result};
 use sima_pipeline::{
     BinaryChange, Engagement, FeedInfo, LoadedConfig, LocalFeed, Record, RemoteFeed, RemovalReport,
     ReportRow, RunControl, RunFeed, RunId, RunOutcome, RunState, RunStatus, RunTimeline, Sdk,
     TaskHistory, failures_records, follow_serve, load, local_snapshot, orchestrate,
-    remote_snapshot, report_records, report_task_records, seeded_status, status_records,
-    sync_serve, task_history_records, timeline_records,
+    receive_program, remote_snapshot, report_records, report_task_records, seeded_status,
+    status_records, sync_serve, task_history_records, timeline_records,
 };
 use sima_provider::ReconcileScope;
 
@@ -126,6 +126,15 @@ fn main() -> ExitCode {
         // user-facing verb either.
         ["sync-serve", store, "--run", run] if host.is_none() => {
             sync_serve_command(Path::new(store), run)
+        }
+        // The far half of a program delivery, invoked by a run putting work on
+        // this machine. The same verb, because a delivery is a store sync plus
+        // an install; the arguments are what tell the two forms apart.
+        ["sync-serve", dir, "--payload", payload] if host.is_none() => {
+            receive_program_command(Path::new(dir), payload, None)
+        }
+        ["sync-serve", dir, "--payload", payload, "--sdk", sdk] if host.is_none() => {
+            receive_program_command(Path::new(dir), payload, Some(sdk))
         }
         // The SDK this binary carries, written out for developing a program
         // outside a run. It opens no store and reads no config.
@@ -621,6 +630,32 @@ fn sync_serve_command(store: &Path, run: &str) -> ExitCode {
     let stdout = std::io::stdout();
     let (mut input, mut output) = (stdin.lock(), stdout.lock());
     match sync_serve(store, &run, &mut input, &mut output) {
+        Ok(_) => ExitCode::SUCCESS,
+        Err(e) => report(e),
+    }
+}
+
+/// `sima sync-serve <dir> --payload <digest> [--sdk <digest>]`: receives the
+/// objects those digests name into `<dir>/store` and installs both trees, over
+/// the same stdin and stdout the `--run` form uses. A run putting work on this
+/// machine spawns it before constructing a pool there; it is not a user-facing
+/// verb and stays out of the usage text, as the `--run` form does.
+///
+/// It addresses a directory and two digests rather than a config, for the
+/// reason the `--run` form addresses a store and a run: loading a config
+/// resolves its `[domain.*]` entries, which spawns the very program this
+/// session is delivering.
+fn receive_program_command(dir: &Path, payload: &str, sdk: Option<&str>) -> ExitCode {
+    let digests = Hash::from_hex(payload)
+        .and_then(|payload| Ok((payload, sdk.map(Hash::from_hex).transpose()?)));
+    let (payload, sdk) = match digests {
+        Ok(digests) => digests,
+        Err(e) => return report(e),
+    };
+    let stdin = std::io::stdin();
+    let stdout = std::io::stdout();
+    let (mut input, mut output) = (stdin.lock(), stdout.lock());
+    match receive_program(dir, &payload, sdk.as_ref(), &mut input, &mut output) {
         Ok(_) => ExitCode::SUCCESS,
         Err(e) => report(e),
     }

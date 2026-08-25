@@ -7,31 +7,44 @@
 //! serves, and a dependency the machine the program lands on has no way to
 //! install: a migration carries the program's own files and nothing else.
 //!
-//! So the binary carries it. The package's source is embedded at build time,
-//! the entry that needs it says so with `sdk = "python"`, and every machine
-//! materializes its own copy from its own binary:
+//! So the binary carries it. The package's source is embedded at build time and
+//! the entry that needs it says so with `sdk = "python"`. A machine gets the
+//! package one of two ways, and both leave the same shape of tree:
+//!
+//! - [`materialize`] — the machine writes its own copy out of its own binary,
+//!   under `<config-dir>/sdk/python/`. This is what a load does for the program
+//!   it is about to spawn here.
+//! - [`ingest`](Sdk::ingest) and [`install`] — the package crosses as store
+//!   objects and the receiving machine writes them out, keyed by digest. This
+//!   is what a fleet machine gets, because the program there speaks the wire to
+//!   the orchestrator and must import the orchestrator's build, not its own.
 //!
 //! ```text
-//!   <config-dir>/sdk/python/
+//!   <root>/sdk/<name-or-digest>/
 //!       .lock                    held while writing
-//!       installed/sima/*.py      the package, as this binary holds it
+//!       installed/sima/*.py      the package
 //!       installed.digest         the digest of the package that was written
 //! ```
 //!
 //! `installed/` is what goes on the interpreter's path, ahead of anything the
-//! machine already has: the vended copy is the one that matches this binary's
-//! protocol, which is the point of vending it.
+//! machine already has: the vended copy is the one that matches the protocol
+//! the program is spoken to over, which is the point of vending it.
 //!
 //! The digest is over the embedded files alone, so one binary produces one
-//! digest on any machine and an upgraded binary restamps exactly once. The tree
-//! is shared by every entry declaring the SDK, since what it holds is a
-//! property of the binary rather than of any one program.
+//! digest on any machine and an upgraded binary restamps exactly once. It is
+//! the hash of the manifest [`ingest`](Sdk::ingest) stores, so a delivered
+//! package has one name rather than two. The tree is shared by every entry
+//! declaring the SDK, since what it holds is a property of the binary rather
+//! than of any one program.
 
 use std::path::{Path, PathBuf};
 
-use sima_core::{Enc, Error, Hash, Result, hash_bytes};
+use sima_core::{Dec, Enc, Error, Hash, Result, hash_bytes};
+use sima_store::Store;
 
-use crate::stamped_tree::{REGULAR_MODE, build_once, create_dir, remove_dir, write_file};
+use crate::stamped_tree::{
+    REGULAR_MODE, build_once, create_dir, remove_dir, validate_path, write_file,
+};
 
 /// The directory the vended SDKs hang off, under the directory the config file
 /// itself sits in.
@@ -141,13 +154,25 @@ impl Sdk {
         Ok(())
     }
 
-    /// The digest of the package this binary holds: every file's path and the
-    /// hash of its text, in the order the package declares them.
+    /// The digest of the package this binary holds: the hash of the manifest
+    /// [`manifest`](Sdk::manifest) encodes, which names every file's path and
+    /// the hash of its text.
     ///
     /// It is a property of the binary alone, so two machines running one build
     /// compute one digest and stamp one tree, and an upgraded binary restamps
     /// exactly once.
-    fn digest(self) -> Hash {
+    pub(crate) fn digest(self) -> Hash {
+        hash_bytes(&self.manifest())
+    }
+
+    /// The manifest of the package this binary holds: a `u32` count, then each
+    /// file's path beside the hash of its text, in the order the package
+    /// declares them.
+    ///
+    /// These bytes are what [`Sdk::ingest`] stores, so the manifest object's
+    /// content address is the digest itself and the package has one name
+    /// rather than two.
+    fn manifest(self) -> Vec<u8> {
         let files = self.files();
         let mut enc = Enc::new();
         // A u32 count: the package is a fixed list in this binary, and the
@@ -157,8 +182,98 @@ impl Sdk {
         for (path, text) in files {
             enc.str(path).hash(&hash_bytes(text.as_bytes()));
         }
-        hash_bytes(&enc.finish())
+        enc.finish()
     }
+
+    /// Puts this binary's package into `store` — every file's bytes as an
+    /// object, then the manifest naming them — and answers the manifest's
+    /// digest, which is what a delivery sends and a stamp records.
+    ///
+    /// The package ships from the orchestrator's own build rather than from the
+    /// destination's, because the program that imports it speaks the wire
+    /// directly to the orchestrator: a machine vending its own copy could vend
+    /// one built against another protocol. Ingesting is idempotent by content
+    /// addressing, so a store that already holds the package gains nothing.
+    pub(crate) fn ingest(self, store: &Store) -> Result<Hash> {
+        for (_, text) in self.files() {
+            store.put(text.as_bytes())?;
+        }
+        let digest = store.put(&self.manifest())?;
+        // The manifest object addresses itself by the same value the stamp
+        // carries; nothing downstream keeps a second identity in step.
+        debug_assert_eq!(digest, self.digest());
+        Ok(digest)
+    }
+}
+
+/// The package a `digest` manifest names, decoded: each file's path and the
+/// object holding its text, in the manifest's own order.
+///
+/// The paths come off the wire, so each is held to the rule a materialized path
+/// follows — nothing that would mean a directory other than the tree it is
+/// written into.
+fn entries(store: &Store, digest: &Hash) -> Result<Vec<(String, Hash)>> {
+    let bytes = store.get(digest)?;
+    let mut dec = Dec::new(&bytes);
+    let count = dec.u32()?;
+    let mut entries = Vec::new();
+    for _ in 0..count {
+        let path = dec.str()?.to_string();
+        validate_path(&path)?;
+        let object = dec.hash()?;
+        entries.push((path, object));
+    }
+    dec.finish()?;
+    Ok(entries)
+}
+
+/// Every file object the SDK `digest` names. With the manifest's own hash these
+/// are the package's whole closure — what a delivery has to advertise for the
+/// receiving machine to be able to install it.
+pub(crate) fn objects(store: &Store, digest: &Hash) -> Result<Vec<Hash>> {
+    Ok(entries(store, digest)?
+        .into_iter()
+        .map(|(_, object)| object)
+        .collect())
+}
+
+/// Installs the SDK `digest` names from `store` into the tree at `root`, and
+/// answers the directory an interpreter reads it from.
+///
+/// The counterpart of [`materialize`] for a machine that was sent the package
+/// rather than one running the binary that holds it: the files come out of the
+/// store instead of out of this build, and the stamp choreography is the same,
+/// so a second delivery of one digest writes nothing.
+pub(crate) fn install(store: &Store, digest: &Hash, root: &Path) -> Result<PathBuf> {
+    let installed = root.join(INSTALLED_DIR);
+    // The first listed file is what says the package a stamp claims is really
+    // there; the manifest is read to learn which, so an empty tree under a
+    // stamp is rebuilt rather than imported from.
+    let complete = || match entries(store, digest) {
+        Ok(entries) => Ok(entries
+            .first()
+            .is_some_and(|(path, _)| installed.join(path).is_file())),
+        // A store that no longer holds the manifest cannot say what complete
+        // means, so the tree is rebuilt — where the missing object is named.
+        Err(_) => Ok(false),
+    };
+    build_once(root, digest, &complete, &|| {
+        // A package left by another build may name modules this one does not,
+        // and an import would find them.
+        remove_dir(&installed)?;
+        for (path, object) in entries(store, digest)? {
+            let file = installed.join(&path);
+            create_dir(file.parent().ok_or_else(|| {
+                Error::Validation(format!(
+                    "the SDK cannot be written to {}, which names no directory",
+                    installed.display()
+                ))
+            })?)?;
+            write_file(&file, &store.get(&object)?, REGULAR_MODE)?;
+        }
+        Ok(())
+    })?;
+    Ok(installed)
 }
 
 /// Materializes `sdk` under `config_dir` and answers the directory an
@@ -188,6 +303,91 @@ mod tests {
     use std::collections::BTreeSet;
 
     use super::*;
+
+    /// A store under a fresh temporary directory.
+    fn store() -> (tempfile::TempDir, sima_store::Store) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let store = sima_store::Store::open(dir.path()).expect("open store");
+        (dir, store)
+    }
+
+    #[test]
+    fn the_ingested_manifest_is_the_digest_itself() -> Result<()> {
+        // The one identity: the manifest object's content address is what
+        // `digest` answers, so a delivery names the package by the same value
+        // the stamp carries and there is no second name to keep in step.
+        let (_dir, store) = store();
+        assert_eq!(Sdk::Python.ingest(&store)?, Sdk::Python.digest());
+        for (_, text) in PYTHON_PACKAGE {
+            assert!(
+                store.has(&hash_bytes(text.as_bytes()))?,
+                "each file's bytes are an object of their own"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn ingesting_twice_moves_the_same_objects() -> Result<()> {
+        // Content addressing, so a machine that already holds the package
+        // holds it under the same digest and the sync moves nothing.
+        let (_dir, store) = store();
+        assert_eq!(Sdk::Python.ingest(&store)?, Sdk::Python.ingest(&store)?);
+        Ok(())
+    }
+
+    #[test]
+    fn an_installed_package_holds_what_this_binary_embeds() -> Result<()> {
+        let (_dir, store) = store();
+        let digest = Sdk::Python.ingest(&store)?;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root = dir.path().join("sdk").join(digest.to_string());
+        let installed = install(&store, &digest, &root)?;
+
+        for (path, text) in PYTHON_PACKAGE {
+            assert_eq!(
+                std::fs::read_to_string(installed.join(path)).expect("the installed file"),
+                text,
+                "{path}"
+            );
+        }
+        assert_eq!(
+            std::fs::read_to_string(root.join("installed.digest")).expect("the stamp"),
+            digest.to_string()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_second_install_reads_the_stamp_and_writes_nothing() -> Result<()> {
+        let (_dir, store) = store();
+        let digest = Sdk::Python.ingest(&store)?;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root = dir.path().join("tree");
+        let installed = install(&store, &digest, &root)?;
+
+        let untouched = installed.join("sima/marker");
+        write_file(&untouched, b"left by the first install", REGULAR_MODE)?;
+        assert_eq!(install(&store, &digest, &root)?, installed);
+        assert!(untouched.is_file(), "the second install wrote nothing");
+        Ok(())
+    }
+
+    #[test]
+    fn an_sdk_the_store_never_received_fails_naming_the_digest() {
+        // What a torn delivery leaves: the digest was named but its objects
+        // never arrived, so the install says which package is missing rather
+        // than leaving an empty tree behind.
+        let (_dir, store) = store();
+        let absent = hash_bytes(b"an SDK this store never received");
+        let dir = tempfile::tempdir().expect("temp dir");
+        let error = install(&store, &absent, &dir.path().join("tree"))
+            .expect_err("a package with no objects");
+        assert!(
+            error.to_string().contains(&absent.to_string()),
+            "{error}, which names the package that is missing"
+        );
+    }
 
     /// The `python/sima/` directory this crate's package is embedded from.
     fn package_source() -> PathBuf {
