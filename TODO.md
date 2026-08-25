@@ -1045,6 +1045,16 @@ without publishing anywhere and without rebuilding an image.
         session boundary the follow protocol carries only once following is a
         verb of its own.
 
+**A registered format migrates onto a machine of yours.** A rented destination
+states it is ready by running `sima-worker --enumerate-devices <format>` inside
+its own container, and that worker answers for the formats the build carries in
+process, so a format its registered program alone serves leaves the probe
+without an answer and the destination reads as unreachable for the whole
+readiness window. A machine of yours takes the image-check path, which names no
+format, and carries a registered program today. Lifting the limit means a rented
+machine's probe asking for the device layout alone, leaving the format to the
+far run's own load, which is where the program that answers for it is spawned.
+
 **Fleet under a migrated orchestrator is out of scope.** A migrated run drives
 the destination's own workers and no others, which is why the far config drops
 every section naming a machine. Lifting it is not a matter of carrying those
