@@ -3,8 +3,9 @@
 //!
 //! What is proven here is that `docs/protocol.md` is the whole requirement. The
 //! program under test shares no code with this workspace — it speaks the wire
-//! from `python/`, the SDK written against that document — so every message the
-//! run needs must cross correctly or a run fails here.
+//! from the SDK written against that document, which the configuration declares
+//! and the binary vends — so every message the run needs must cross correctly
+//! or a run fails here.
 //!
 //! One search covers the ordinary path: both roles, every domain-service
 //! question, a chain of segments hopping on committed state, and the artifacts
@@ -26,7 +27,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use common::{journal_events, loaded_text};
 use sima_core::{Result, prng};
 use sima_pipeline::{
-    BinaryChange, Engagement, Event, LoadedConfig, Record, RunControl, RunOutcome, load,
+    BinaryChange, Engagement, Event, LoadedConfig, Record, RunControl, RunOutcome, Sdk, load,
     orchestrate, task_keys,
 };
 use sima_store::Store;
@@ -74,9 +75,11 @@ fn require_python3() {
 /// Writes the executable wrapper the configuration routes the format to, and
 /// returns it.
 ///
-/// The wrapper is what makes the library importable and what arms a failure
-/// path: the variables it exports are the run's arming, so the configuration
-/// carries none of it and an armed run keeps the identity of an unarmed one.
+/// The wrapper exists to arm a failure path: the variables it exports are the
+/// run's arming, so the configuration carries none of it and an armed run keeps
+/// the identity of an unarmed one. `import sima` needs nothing from it — every
+/// configuration here declares `sdk = "python"`, and the package the binary
+/// vends is what the interpreter reads.
 fn wrapper(dir: &Path, arming: &[(&str, &str)]) -> PathBuf {
     require_python3();
     let repo = repo();
@@ -89,10 +92,8 @@ fn wrapper(dir: &Path, arming: &[(&str, &str)]) -> PathBuf {
         &path,
         format!(
             "#!/bin/sh\n\
-             export PYTHONPATH={}\n\
              {exports}\
              exec python3 {} \"$@\"\n",
-            repo.join("python").display(),
             repo.join("examples/stepper-py/stepper.py").display(),
         ),
     )
@@ -103,6 +104,18 @@ fn wrapper(dir: &Path, arming: &[(&str, &str)]) -> PathBuf {
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
             .expect("make the wrapper executable");
     }
+    path
+}
+
+/// Vends the SDK under `dir` and answers the directory an interpreter reads it
+/// from.
+///
+/// The two tests below drive the program's session by hand, outside every spawn
+/// sima performs, so what a spawn policy would put on the module path is theirs
+/// to put there.
+fn vended_sdk(dir: &Path) -> PathBuf {
+    let path = dir.join("sdk");
+    Sdk::Python.vend(&path).expect("vend the SDK");
     path
 }
 
@@ -182,6 +195,7 @@ max_attempts = {}
 {pool}
 [domain."{FORMAT}"]
 binary = "{}"
+sdk = "python"
 "#,
             self.count,
             self.steps,
@@ -594,6 +608,7 @@ fn a_protocol_violation_ends_the_python_session_rather_than_being_answered() {
     let program = wrapper(dir.path(), &[]);
     let mut child = std::process::Command::new(&program)
         .args(["--serve-domain", FORMAT])
+        .env("PYTHONPATH", vended_sdk(dir.path()))
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
@@ -633,6 +648,7 @@ fn a_malformed_format_id_ends_the_python_session_rather_than_being_answered() {
     let program = wrapper(dir.path(), &[]);
     let mut child = std::process::Command::new(&program)
         .args(["--serve-domain", FORMAT])
+        .env("PYTHONPATH", vended_sdk(dir.path()))
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
