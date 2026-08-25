@@ -37,6 +37,7 @@ mod remove;
 mod rental;
 mod report;
 mod run_observer;
+mod sdk;
 mod spend;
 mod stamped_tree;
 mod stats;
@@ -64,6 +65,7 @@ pub use providers::{ProviderSettings, provider_for};
 pub use remove::remove;
 pub use report::{ReportRow, report, report_records, report_task_records};
 pub use run_observer::RunObserver;
+pub use sdk::Sdk;
 pub use spend::spend;
 // The rental-ledger and reputation types a caller renders those reports
 // through.
