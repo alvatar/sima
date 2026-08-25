@@ -285,7 +285,7 @@ Everything else in sima follows from that promise being kept.
 sima has two workflows for putting a run on other hardware.
 
 - **Migrate** (`sima migrate <config>`) — the run's durable state travels to one declared host, a `sima run` process drives it there, and your machine holds the lock and follows. **Your program travels with it**, which is the rest of this section.
-- **Fleet** (`sima run <config> --fleet`) — the store and orchestrator stay on your machine; declared or rented machines run workers only. It routes the formats sima carries in process; see `examples/gray-scott-search.toml`. Routing a `[domain.*]` format this way waits on installing your program where a worker runs, which the migration does for the destination and nothing yet does for a fleet member.
+- **Fleet** (`sima run <config> --fleet`) — the store and orchestrator stay on your machine; declared or rented machines run workers only. See `examples/gray-scott-search.toml`. Your program travels there too: the same `payload` key sends it to every machine the fleet draws in, each installs it under its `root`, and its workers run what it installed.
 
 ### Declaring what travels
 
@@ -306,7 +306,7 @@ payload = "./program"
 install = "./install.sh"
 ```
 
-An entry that states no `payload` describes a program this machine holds and no other, and `sima migrate` refuses it, naming the missing key.
+An entry that states no `payload` describes a program this machine holds and no other, and both `sima migrate` and `sima run --fleet` refuse it, naming the missing key.
 
 The SDK crosses as the declaration it is: `sdk = "python"` travels, and the destination's own `sima` writes the package, so what a program imports there matches the binary driving it there. A third-party dependency is the payload's business — carry it in a directory payload and install it with the script below.
 
@@ -353,7 +353,7 @@ workers = 4
 sima migrate search.toml
 ```
 
-The program's bytes travel through the store as content-addressed objects, so an unchanged program crosses the wire once: a second migration sends nothing and installs nothing. The destination's events stream back as they happen, and the results come home to your store. The run id is unchanged — where a format is answered from is operational — so the manifest is the one this machine would have written.
+The program's bytes travel through the store as content-addressed objects, so an unchanged program crosses the wire once: a second migration sends nothing and installs nothing. A fleet run sends the same objects the same way, to a directory the machine shares across runs, so putting work on a machine twice costs nothing either. Every worker on a machine that received your program answers the digest that machine's own tree was built from, and one that answers anything else fails its spawn — so a machine running something other than what you sent stops the run rather than filling your store with results from it. The destination's events stream back as they happen, and the results come home to your store. The run id is unchanged — where a format is answered from is operational — so the manifest is the one this machine would have written.
 
 Ctrl-C winds the far run down, pulls what it computed, and leaves the run resumable. Re-run `sima migrate` to continue.
 

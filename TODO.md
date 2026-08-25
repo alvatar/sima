@@ -73,9 +73,9 @@ disposable at any instant.
 
 Phases are numbered in the order they run, and the ladder is P1 through P9:
 P1 through P8 are done, and P9 (registered programs beyond the orchestrator's
-machine) is under way — a registered program now travels with a migrated run,
-and what remains is agreeing its build across a fleet and routing tasks to
-those machines. After that the ladder pauses. A phase or milestone
+machine) is under way — a registered program travels to the machines a run
+uses, its build is agreed across them, and its tasks are routed there — leaving
+detach as a verb of its own. After that the ladder pauses. A phase or milestone
 number means work this version of sima will do.
 
 Everything model-specific — the evaluation funnel, continuous-family rigor,
@@ -971,11 +971,9 @@ model or metric. Last active phase before the pause.
 
 A format bound through `[domain.*]` ran only where the orchestrator ran. The
 phase lifts that: the program travels to the machines a run uses and its build
-is agreed across them. M9.1 landed the migration half — a registered format
-moves onto another machine, program and all — and what remains is the fleet
-half, where a worker's program is installed by something other than the run
-that needs it. Fleet under a migrated orchestrator is out of scope and recorded
-at the end of the phase with its reasons.
+is agreed across them, whether the run moves onto one machine or spreads across
+several. Fleet under a migrated orchestrator is out of scope and recorded at the
+end of the phase with its reasons.
 
 The decision the whole phase rests on: **the program travels per run.** sima
 ships the bytes and a script installs them, so a change reaches a machine
@@ -1041,12 +1039,40 @@ without publishing anywhere and without rebuilding an image.
       - This supersedes the `pin` key M7.5 left open: sima sent the bytes, so
         what a config would assert is already known, and the check moved from a
         claim in a file to an agreement on the wire.
-- [ ] M9.3 Fleet routing of registered formats: a registered format's tasks
-      reach fleet machines. Placement admits a machine once its payload landed
-      and its digest agreed, so a machine that answers is one that received the
-      program. Depends on M9.1 and M9.2 and is the phase's payload — it is what
-      makes a program written outside this workspace a first-class citizen of a
-      distributed run.
+- [x] M9.3 Fleet routing of registered formats: a registered format's tasks
+      reach fleet machines, owned and rented alike, and a migration reaches a
+      rented destination. A pool on a machine exists only once the program
+      landed and installed there, and every spawn is agreed by digest, so a
+      machine that answers is one that received the program. Settled points:
+      - **Delivery is the second form of an existing verb.** It is a store
+        sync's far half plus the install a config load already performs, so
+        `sima sync-serve <dir> --payload <D> [--sdk <S>]` joins the `--run`
+        form rather than a verb of its own; both stay out of the usage text as
+        machine-facing halves of a transport.
+      - **The machines share one delivery directory** under the `root` their
+        entry already names — `<root>/programs/`, holding a store, one program
+        tree per payload digest, and one SDK tree per package digest. The store
+        is shared across runs, so an unchanged program crosses the wire once
+        ever, and both trees are built under the stamp, so a repeat delivery
+        runs no install.
+      - **The SDK ships from the orchestrator's build.** The program on the
+        machine speaks the wire directly to the orchestrator, so the package it
+        imports must match that protocol; the manifest's content address is
+        exactly what `Sdk::digest` answers, so it has one name rather than two.
+      - **Declared `env` values are the machine's own**: the names travel, each
+        value is read where the program runs, so a credential never crosses the
+        wire or a remote command line.
+      - **The worker is the installed entry point**, run under a shell that
+        reads the machine's own `installed.digest` and states it before exec.
+        The M9.2 agreement therefore attests far disk state: the value is
+        computed on the machine and compared on the orchestrator.
+      - **Placement asks the program.** A device pool cannot ask the image's
+        worker about a format the image does not carry, so it asks the
+        delivered program over its own domain service; readiness asks about no
+        format at all, which `sima-worker --enumerate-devices` alone answers.
+      - **A machine that cannot receive the program costs what it should**: a
+        machine of yours fails the run, a rented one records `InstallFailed`,
+        is excluded, and is replaced.
 - [ ] M9.4 Detach as a verb: `sima migrate` catches `SIGINT` alone and winds the
       far run down, so the deliberate gesture stops the run while an accidental
       one — a closed terminal, a dropped connection — detaches and leaves it
@@ -1064,15 +1090,15 @@ without publishing anywhere and without rebuilding an image.
         session boundary the follow protocol carries only once following is a
         verb of its own.
 
-**A registered format migrates onto a machine of yours.** A rented destination
-states it is ready by running `sima-worker --enumerate-devices <format>` inside
-its own container, and that worker answers for the formats the build carries in
-process, so a format its registered program alone serves leaves the probe
-without an answer and the destination reads as unreachable for the whole
-readiness window. A machine of yours takes the image-check path, which names no
-format, and carries a registered program today. Lifting the limit means a rented
-machine's probe asking for the device layout alone, leaving the format to the
-far run's own load, which is where the program that answers for it is spawned.
+**A registered format reaches an owned destination declaring a container.** The
+far run's containerized pool would probe and spawn the image's own worker, which
+does not carry the program: the destination installs it beside the config, and
+nothing mounts that tree into the container or points the pool at it. Every
+other combination works — an owned destination without a container, a rented one
+either way. The mount-and-spawn machinery a fleet machine of yours uses is the
+shape of the lift: what is missing is a far config that states it, since the
+synthesized `[orchestrator]` carries the destination's declared container
+verbatim and knows nothing of the tree the far load will fill.
 
 **Fleet under a migrated orchestrator is out of scope.** A migrated run drives
 the destination's own workers and no others, which is why the far config drops

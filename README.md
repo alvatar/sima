@@ -67,11 +67,14 @@ beyond it as an elastic, heterogeneous extension.
   `docs/protocol.md` — any language that can frame bytes qualifies. `sima-api`
   is the Rust SDK over that contract and the `sima` Python package the other,
   vended by the binary itself, so a program declaring `sdk = "python"` imports
-  it here and on any machine the run moves to;
+  it here and on every machine the run reaches;
   `examples/stepper-py/` is a whole program written against the latter. sima
   spawns the binary, asks it what its format binds, and runs the search through
   it. It runs as its own process, so it loads its assets once and then streams
-  tasks, and the store stays on sima's side of the boundary.
+  tasks, and the store stays on sima's side of the boundary. Naming a `payload`
+  beside the binary is what sends it elsewhere: `sima migrate` moves the run onto
+  a machine that installs it, and `sima run --fleet` delivers it to every machine
+  the fleet draws on, each of which then answers the digest of what it installed.
 - **Reproduce any result.** A task is identified by content — spec, run
   parameters, seed, environment, input state — so a recorded result can be
   regenerated from its identity alone, and any backend that returns a result

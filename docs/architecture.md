@@ -964,15 +964,12 @@ flowchart TD
   IS --> DOM["sima-domains"]
 ```
 
-**A registered format migrates by carrying its program, and is not routed to
-fleet machines.** `sima migrate` sends the program's bytes through the store,
-the destination installs them at load, and the run executes there — see
-[Carrying a registered program](#carrying-a-registered-program). Fleet routing
-is the remaining half: a worker on another machine would need the program
-installed there too, and nothing installs it. Until that lands, spreading one
-run's tasks across machines is available to the formats this build carries,
-while moving a whole run is available to a registered format that states what
-travels.
+**A registered format reaches other machines by carrying its program.** Both
+ways of using another machine rest on the same delivery: `sima migrate` moves a
+whole run onto one, and `sima run --fleet` spreads one run's tasks across
+several — see [Carrying a registered program](#carrying-a-registered-program)
+for what travels and [Delivering a program to a
+machine](#delivering-a-program-to-a-machine) for how it lands.
 
 The unit of registration is a **binary**. A heavy program owns its GPU context,
 its dependency tree, and its startup cost, so it runs as its own process: it
@@ -1363,6 +1360,102 @@ pin would assert is already known from the payload, and it is asserted where it
 can be enforced: every worker answers the digest of the program it runs, and a
 disagreement fails the spawn. A key restating that value would let a config
 claim one thing while the machines answer another.
+
+### Delivering a program to a machine
+
+A fleet machine has no program either, so a run that puts work on one delivers
+it there first. The delivery is the far half of a store sync plus the install a
+config load already performs, which is why it needs no verb of its own:
+`sima sync-serve` gains a second form.
+
+```
+sima sync-serve <store> --run <id>                  the migration's form
+sima sync-serve <dir> --payload <D> [--sdk <S>]     the delivery's
+```
+
+Both are machine-facing halves of a transport rather than commands an operator
+types, so neither appears in the usage text. Each addresses a directory and
+content addresses rather than a config, for the same reason: loading a config
+resolves its `[domain.*]` entries, which spawns the very program the session is
+delivering.
+
+```mermaid
+flowchart LR
+  subgraph ORCH["orchestrator"]
+    ING["ingest the payload closure<br/>and the SDK objects"]
+  end
+  subgraph MACH["machine, under &lt;root&gt;/programs"]
+    ST["store/<br/>shared across runs"]
+    TREE["&lt;payload digest&gt;/<br/>payload, installed/program,<br/>installed.digest"]
+    SDK["sdk/&lt;sdk digest&gt;/installed"]
+  end
+  ING -->|"sima sync-serve --payload D --sdk S"| ST
+  ST --> TREE
+  ST --> SDK
+  TREE -->|"worker spawn reads installed.digest"| ORCH
+```
+
+**Where it lands** is under the `root` the machine's `[host.*]` entry already
+names, in a directory shared by every run that delivers there:
+
+```
+<root>/programs/
+├── store/                 the objects, content-addressed
+├── <payload digest>/      one program tree per payload
+└── sdk/<sdk digest>/      one SDK tree per package
+```
+
+A digest directory is 64 hex characters, so neither reserved name can collide
+with one. Two properties make delivering to a machine twice cost nothing: the
+store is shared, so the sync's own want/have negotiation moves an unchanged
+program's bytes once ever; and both trees are built under the stamp, so a
+machine already holding a digest runs no install and several runs delivering at
+once build one tree between them.
+
+**The SDK ships from the orchestrator's build**, not from the machine's own
+binary. The program there speaks the wire directly to the orchestrator — frames
+tunnel through ssh and the container runtime untouched — so the package it
+imports has to match the orchestrator's protocol, and a machine vending its own
+could vend one built against another. It travels as objects like the payload:
+the manifest's content address is exactly what `Sdk::digest` answers, so the
+package has one name rather than two.
+
+**Declared `env` values are the machine's own.** The entry's variable names
+travel; each value is read where the program runs. A credential therefore never
+crosses the wire and never appears on a remote command line.
+
+**Admission is delivery.** A pool on a machine is built only once the program
+reached it and installed, so a pool exists only where a worker can actually be
+served. On a machine of yours the delivery and the install run inside the image
+its workers run in, with the delivery directory bind-mounted at the identical
+path on both sides — an install script has to build in the environment the
+program will run in, and the stamp it writes has to name the same file to the
+spawn that reads it later. A machine that cannot receive the program fails the
+run; a rented one records an incident, is excluded, and is replaced, because a
+rented machine is disposable and one that cannot serve the run should cost a
+machine rather than the run.
+
+**Every spawn is agreed by digest.** The worker there is the installed entry
+point, run under a shell that reads the machine's own `installed.digest` and
+states it as `SIMA_PROGRAM_DIGEST` before exec. The run compares what comes
+back against what it sent, so the agreement attests that machine's disk state:
+the value is computed on the machine and compared on the orchestrator, and a
+tree that drifted fails the spawn naming both digests.
+
+**Placement asks the program.** A pool with device tables cannot ask the image's
+worker about a format the image does not carry, so it asks the delivered program
+over the domain service it already answers — only the program knows which
+devices its own backend opens. The readiness probe for such a run names no
+format at all: `sima-worker --enumerate-devices` with no argument lists every
+device every compiled backend reaches, which states that the machine is up and
+nothing about where the work goes.
+
+That last point is what lifts a migration onto a rented machine. Such a machine
+could say nothing about the run before it had the program, so the config
+synthesized for it states no worker layout, and the far run derives one worker
+per usable device from the program's own enumeration once its load has installed
+it. The deferral is scoped by `payload_digest`, a key only a migration writes,
+so a hand-written config still states its own layout.
 
 ## `sima-domains` (L5)
 
