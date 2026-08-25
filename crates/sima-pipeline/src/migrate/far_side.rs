@@ -59,6 +59,14 @@ pub(crate) trait FarSide {
     /// Creates the run's directory and writes `config` into it.
     fn place(&self, config: &str) -> Result<()>;
 
+    /// Whether the run's directory is there, which is what a migration onto
+    /// this machine leaves behind and nothing else creates.
+    ///
+    /// A recall asks it before anything else: a destination that was never
+    /// migrated to has nothing to end, nothing to pull, and no far config to
+    /// read, and saying so beats every later step's own confusion.
+    fn placed(&self) -> Result<bool>;
+
     /// The far-side `sima run` process id, when `run.pid` names one that is
     /// still alive. A machine that was never started, one whose run has exited,
     /// and one with no directory at all all answer `None`.
@@ -270,6 +278,16 @@ impl FarSide for Remote {
             config_path = self.layout.config(),
         ))?;
         Ok(())
+    }
+
+    fn placed(&self) -> Result<bool> {
+        // The directory's absence is an answer, not a failure, so the script
+        // exits zero either way and its output is the whole of what it said.
+        let stdout = self.shell(&format!(
+            "[ -d {dir} ] && echo yes\nexit 0\n",
+            dir = self.layout.dir(),
+        ))?;
+        Ok(stdout.trim() == "yes")
     }
 
     fn driving(&self) -> Result<Option<u32>> {

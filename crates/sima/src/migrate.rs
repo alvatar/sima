@@ -1,20 +1,22 @@
-//! `sima migrate <config>`: the run's orchestrator moved onto another machine.
+//! `sima migrate <config>` and `sima recall <config>`: the run's orchestrator
+//! moved onto another machine, and taken off it again.
 //!
-//! The destination is `[orchestrator].migrate`, so the command takes no
+//! The destination is `[orchestrator].migrate` for both, so neither takes an
 //! argument beyond the config: where a run executes belongs in the file that
 //! describes it. What happens there is the pipeline's; this module parses,
-//! renders, and maps the outcome to an exit code.
+//! renders, and maps the outcome to an exit code — one table, since both verbs
+//! come home with the same answers.
 //!
-//! The far run is detached, so nothing that happens here ends it: a killed
+//! The far run is detached, so nothing a migration does ends it: a killed
 //! `sima migrate`, a closed terminal, and a Ctrl-C all leave the destination
-//! computing, and re-running attaches to it again. Ending it is `sima recall`,
-//! a verb of its own.
+//! computing, and re-running attaches to it again. `sima recall` is what ends
+//! it, which is why it is a verb rather than a signal.
 
 use std::path::Path;
 use std::process::ExitCode;
 
 use sima_core::Result;
-use sima_pipeline::{BinaryChange, MigrateOutcome, load, migrate};
+use sima_pipeline::{BinaryChange, MigrateOutcome, load, migrate, recall};
 
 use crate::{EXIT_ERROR, EXIT_FAILED, EXIT_INTERRUPTED, render, report};
 
@@ -55,6 +57,27 @@ fn moved(config: &Path, accept: BinaryChange) -> Result<MigrateOutcome> {
         &interrupt,
         accept,
     )
+}
+
+/// `sima recall <config.toml>`: winds the run down on its destination, brings
+/// the results home, and takes the machine away.
+///
+/// No interrupt flag is registered: a recall is short and every step of it is
+/// resumable, so a Ctrl-C during one takes the default death.
+pub(crate) fn recall_command(config: &Path) -> ExitCode {
+    match load(config).and_then(|loaded| {
+        println!("run {}", loaded.run.id());
+        // The far run's records do not reach a recall — it follows nothing —
+        // so the renderer sees only what this side journals while it waits.
+        let progress = render::Progress::new();
+        recall(&loaded, &|record| progress.event(record))
+    }) {
+        Ok(outcome) => {
+            println!("{}", describe(&outcome, config));
+            ExitCode::from(exit_code(&outcome))
+        }
+        Err(e) => report(e),
+    }
 }
 
 /// The command's own closing line: what the local store holds now that the

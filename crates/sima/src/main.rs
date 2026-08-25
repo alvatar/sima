@@ -79,7 +79,7 @@ const LOOSE_OBJECT_WARN_THRESHOLD: u64 = 100_000;
 /// The verbs that open a local store to read or to drive, and so are where
 /// a recommendation to pack it belongs. `tui` is excluded because its
 /// alternate screen swallows stderr, and `pack` because it is the answer.
-const STORE_OPENING_VERBS: [&str; 5] = ["run", "status", "report", "migrate", "rm"];
+const STORE_OPENING_VERBS: [&str; 6] = ["run", "status", "report", "migrate", "recall", "rm"];
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -106,6 +106,11 @@ fn main() -> ExitCode {
         ["migrate", config] if host.is_none() => {
             migrate::migrate_command(&resolve_config(config), accept)
         }
+        // The inverse of `migrate`, and the only thing that ends a far run. It
+        // takes no `--accept-binary`: that answers a comparison only a start
+        // makes, and a recall starts nothing, so the flag stays among the
+        // arguments and falls to the usage error.
+        ["recall", config] if host.is_none() => migrate::recall_command(&resolve_config(config)),
         ["rm", config] if host.is_none() => rm_command(&resolve_config(config)),
         // The only verb whose argument is a store directory rather than a
         // config: packing needs no run knowledge, and a store defines every
@@ -177,6 +182,7 @@ fn main() -> ExitCode {
                  \x20      sima report <config> --machines    report machine reputation and blacklisting\n\
                  \x20      sima migrate <config>              move the run onto the host [orchestrator] names\n\
                  \x20      sima migrate <config> --accept-binary  … through a changed program\n\
+                 \x20      sima recall <config>               wind the migrated run down and bring it home\n\
                  \x20      sima rm <config>                   delete the run and what only it references\n\
                  \x20      sima sdk <language> --out <dir>    write the SDK this binary carries into <dir>\n\
                  \x20      sima pack <store-dir>              consolidate the store's loose objects into packs\n\

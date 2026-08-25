@@ -812,6 +812,45 @@ fn migrate_refuses_a_host_because_it_drives_a_run() {
 }
 
 #[test]
+fn recall_parses_and_reaches_the_pipeline() {
+    // The same evidence a migration's parse leaves: a config naming no
+    // destination is refused by the pipeline, which only a parsed invocation
+    // reaches.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config = write_config(dir.path(), r#""succeed""#);
+    let output = sima(&["recall", config.to_str().expect("utf-8 path")]);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).expect("stderr is UTF-8");
+    assert!(
+        !stderr.contains("usage: sima"),
+        "the arguments parsed: {stderr}"
+    );
+    assert!(
+        stderr.contains("migrate"),
+        "the config names no destination: {stderr}"
+    );
+}
+
+#[test]
+fn recall_refuses_a_host_and_the_binary_flag() {
+    // `--on` observes a run elsewhere; a recall ends one, and where it ends is
+    // the config's to say. `--accept-binary` answers a comparison only a start
+    // makes, and a recall starts nothing.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config = write_config(dir.path(), r#""succeed""#);
+    let path = config.to_str().expect("utf-8 path");
+    for args in [
+        vec!["recall", path, "--on", "gpubox"],
+        vec!["recall", path, "--accept-binary"],
+    ] {
+        let output = sima(&args);
+        assert_eq!(output.status.code(), Some(1), "{args:?}: {output:?}");
+        let stderr = String::from_utf8(output.stderr).expect("stderr is UTF-8");
+        assert!(stderr.contains("usage: sima"), "{args:?}: {stderr}");
+    }
+}
+
+#[test]
 fn run_accepts_the_binary_flag_beside_the_fleet_flag_in_either_order() {
     // The two flags answer different questions — which machines, and what a
     // changed program does — so a run states them in whatever order it likes.
@@ -897,6 +936,7 @@ fn the_usage_text_names_every_command_form() {
         "sima reconcile",
         "--hosted",
         "sima migrate",
+        "sima recall",
         "sima tui",
         "sima follow",
         "--on",
