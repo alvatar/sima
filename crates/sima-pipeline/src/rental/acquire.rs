@@ -247,7 +247,12 @@ fn acquire_one<'a>(
             target,
             // The ssh client is sima's own process: it reads its agent socket
             // and client configuration from the ambient environment, and the
-            // worker on the far side is the sima image's.
+            // worker on the far side is the sima image's. That worker answers
+            // for the formats the image carries, so it names no program and
+            // none is expected of it; a rented machine that runs a registered
+            // program is what fleet routing of registered formats delivers,
+            // and the expected digest comes from that machine's own installed
+            // tree when it does.
             SpawnSettings::new(
                 SpawnPolicy::Inherit,
                 exec.answer_timeout,

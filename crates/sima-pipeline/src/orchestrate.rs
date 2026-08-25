@@ -267,14 +267,15 @@ struct ContainerPool {
     slots: Vec<Option<DeviceBinding>>,
 }
 
-/// What a pool's workers are spawned to answer for: the run's format, and the
-/// digest of the program that answers for it where one travelled to the machine
-/// they run on. The two travel together because one handshake states both.
+/// What every pool's workers are spawned to answer for: the run's format, and
+/// the program the run sent for it. The two travel together because one
+/// handshake states both, and every pool of one run states the same pair.
 struct WorkerProgram {
     format: FormatId,
     /// `Some` exactly when the config entry resolved a `payload_digest` — the
-    /// program this run installed where it runs. Every worker answers it back,
-    /// and a worker that answers anything else fails its spawn.
+    /// program this run installed where it resolved. Every worker answers it
+    /// back; one that answers another digest, or none, fails its spawn, which
+    /// is what a machine holding some other program looks like from here.
     digest: Option<String>,
 }
 

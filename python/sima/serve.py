@@ -40,7 +40,7 @@ from .model import (
     validate_name,
 )
 
-__all__ = ["PROTOCOL_VERSION", "SERVE_DOMAIN", "serve"]
+__all__ = ["PROGRAM_DIGEST_VAR", "PROTOCOL_VERSION", "SERVE_DOMAIN", "serve"]
 
 #: The wire protocol version. The handshake refuses a mismatch on both sides.
 PROTOCOL_VERSION = 1
