@@ -20,6 +20,9 @@
 //!  │  7  FOLLOW: render each record and forward it into the local journal;  │
 //!  │       poll the budget verdict when this is a rental                    │
 //!  │  8  end on: a terminal run event | local interrupt | budget exhaustion │
+//!  │       ├─ interrupt ──▶ DETACH: leave the far run and its machine as    │
+//!  │       │                  they are; the migration is over here          │
+//!  │       └─ otherwise ──▶                                                 │
 //!  │  9  WIND DOWN: signal the far run, wait for it to exit (bounded)       │
 //!  │ 10  PULL: everything the far side's records reference                  │
 //!  │ 11  re-derive the key set; finalize when every key is committed,       │
@@ -29,10 +32,12 @@
 //! ```
 //!
 //! **The far run is detached.** It is started with `setsid` and its pid
-//! recorded, so a laptop that sleeps, a network that drops, or a `sima migrate`
-//! that is killed leaves the destination computing. Re-running reattaches: a
-//! rented machine is found through the instance ledger, a machine of yours
-//! through `run.pid`, and either way the push and the start are skipped.
+//! recorded, so a laptop that sleeps, a network that drops, a `sima migrate`
+//! that is killed, and a Ctrl-C all leave the destination computing. Re-running
+//! reattaches: a rented machine is found through the instance ledger, a machine
+//! of yours through `run.pid`, and either way the push and the start are
+//! skipped. The far run outlives everything except a terminal event and its
+//! own ceiling.
 //!
 //! **Journals do not sync**, so each record the follow delivers is forwarded
 //! into the local journal through the collector every other event crosses —
@@ -109,10 +114,28 @@ pub enum MigrateOutcome {
     Outstanding { run: RunId, remaining: usize },
     /// A task failed definitively on the far side; no manifest was written.
     Failed { task: String, reason: String },
-    /// The migration was wound down — locally interrupted, or out of budget.
-    /// The results were pulled and any rental destroyed, so the run is
+    /// The migration was wound down — out of budget, or asked to end by a
+    /// recall. The results were pulled and any rental destroyed, so the run is
     /// resumable.
     Interrupted { run: RunId, remaining: usize },
+    /// This side let go: the far run keeps computing on `machine`, nothing was
+    /// pulled, and a rental is left standing. The run comes home on the next
+    /// migration that sees it end, or on a recall.
+    Detached { run: RunId, machine: String },
+}
+
+/// What ended the follow, which decides what happens to the far run after it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FollowEnd {
+    /// The far run ended on its own: a terminal event, or a process that is
+    /// gone. Nothing is signalled; the results come home.
+    FarRun,
+    /// This side ended it, because the run's budget ran out. It is signalled,
+    /// waited for, and its results come home.
+    WoundDown,
+    /// This side let go, on the operator's interrupt. The far run is left
+    /// alone.
+    Detached,
 }
 
 /// Moves the run `config` describes onto the machine its `[orchestrator]`
@@ -120,9 +143,10 @@ pub enum MigrateOutcome {
 ///
 /// `observer` receives every record the far run produced, in journal order,
 /// through the same collector that appends them locally. `interrupt` is the
-/// level-triggered wind-down request `SIGINT` sets: once raised, the far run is
-/// signalled, its results are pulled, and a rental is destroyed, leaving the run
-/// resumable.
+/// level-triggered request `SIGINT` sets, and it means two different things by
+/// when it arrives: during the acquisition it abandons the offer walk, since
+/// there is no far run yet to leave behind; during the follow it detaches,
+/// leaving the far run computing and its machine standing.
 ///
 /// The local run lock is held for the whole call, so nothing else drives or
 /// reconciles this run while it is away.
@@ -293,7 +317,8 @@ fn carried(loaded: &LoadedConfig) -> Result<Option<Carried>> {
 /// Adoption comes first because a migration detaches the far side deliberately,
 /// so a machine already working and already being paid for is the common case
 /// on a second invocation. `interrupt` aborts an offer walk in flight, so a
-/// `SIGINT` during acquisition is not waited out.
+/// `SIGINT` during acquisition is not waited out — and that is all it can mean
+/// here: detaching exists only once a far run is driving, and nothing is yet.
 fn hold<'a>(
     provider: &'a (dyn Provider + Sync),
     store: &'a Store,
@@ -384,17 +409,34 @@ struct Session<'a> {
     overrides: Overrides,
 }
 
+/// Step 12: what becomes of the rented machine, decided by what the session
+/// came home with.
+///
+/// A guard left alive is a machine still being paid for, so every path that
+/// ended the far run destroys it. A detached migration is the one path that
+/// does not: the run is still computing there, so the machine is kept and its
+/// ledger record left standing for the next invocation to adopt. Nothing here
+/// applies to a machine of yours, which was never rented.
+fn dispose(
+    rental: Option<InstanceGuard<'_, dyn Provider + Sync + '_>>,
+    outcome: &Result<MigrateOutcome>,
+) -> Result<()> {
+    let Some(guard) = rental else {
+        return Ok(());
+    };
+    if matches!(outcome, Ok(MigrateOutcome::Detached { .. })) {
+        guard.keep();
+        return Ok(());
+    }
+    guard.release()
+}
+
 impl Session<'_> {
     /// The whole migration, with the teardown of step 12 on every path out.
     fn drive(mut self) -> Result<MigrateOutcome> {
         let rental = self.rental.take();
         let outcome = self.run_to_end();
-        // A guard left alive is a machine still being paid for, so the teardown
-        // runs whatever the migration did.
-        let teardown = match rental {
-            Some(guard) => guard.release(),
-            None => Ok(()),
-        };
+        let teardown = dispose(rental, &outcome);
         match (outcome, teardown) {
             (Ok(outcome), Ok(())) => Ok(outcome),
             // The migration's own failure is the cause; the ledger record a
@@ -437,7 +479,16 @@ impl Session<'_> {
             }
         };
 
-        let (state, wound_down) = self.watch(pid, reattached.is_some())?;
+        let (state, end) = self.watch(pid, reattached.is_some())?;
+        // Detaching leaves the far run computing, so there is nothing to pull:
+        // its results come home on the next migration that sees it end, or on
+        // a recall. Skipping the pull is what makes letting go immediate.
+        if end == FollowEnd::Detached {
+            return Ok(MigrateOutcome::Detached {
+                run: self.config.run.id(),
+                machine: self.destination.name.to_string(),
+            });
+        }
 
         // The pull takes everything the far side's records reference, so the
         // store that comes home is complete. The far run has ended by now on
@@ -446,28 +497,34 @@ impl Session<'_> {
         // side's run lock is free for `sima sync-serve` to take.
         let keys = task_keys(self.config, self.store)?;
         self.far.sync(self.store, &keys, ObjectScope::Referenced)?;
-        self.settle(state, wound_down)
+        self.settle(state, end)
     }
 
     /// Steps 7 through 9: follow the far run to its end, then wind it down and
     /// wait for it to exit.
     ///
-    /// Returns the state the far run's journal projects and whether this side
-    /// wound it down. Both happen under the run's collector, so every record the
+    /// Returns the state the far run's journal projects and what ended the
+    /// follow. Both happen under the run's collector, so every record the
     /// follow delivers reaches the local journal and the operator's view through
     /// one boundary, and the budget and timeout reports land in that same journal.
-    fn watch(&self, pid: u32, reattached: bool) -> Result<(RunState, bool)> {
+    fn watch(&self, pid: u32, reattached: bool) -> Result<(RunState, FollowEnd)> {
         let run = self.config.run.id();
         let writer = self.store.journal_writer(&run)?;
-        thread::scope(|scope| -> Result<(RunState, bool)> {
+        thread::scope(|scope| -> Result<(RunState, FollowEnd)> {
             let collector = Collector::spawn(scope, writer, self.observer);
             let events = collector.emitter();
-            let followed =
-                self.follow(&run, reattached, &events)
-                    .and_then(|(state, wound_down)| {
-                        self.wind_down(pid, wound_down, &events)?;
-                        Ok((state, wound_down))
-                    });
+            let followed = self
+                .follow(&run, reattached, &events)
+                .and_then(|(state, end)| {
+                    match end {
+                        // Letting go signals nothing and waits for nothing: the far
+                        // run is left exactly as it was.
+                        FollowEnd::Detached => {}
+                        FollowEnd::FarRun => self.wind_down(pid, false, &events)?,
+                        FollowEnd::WoundDown => self.wind_down(pid, true, &events)?,
+                    }
+                    Ok((state, end))
+                });
             // The collector joins only once every emitter is dropped.
             drop(events);
             let journal = collector.shutdown();
@@ -479,7 +536,12 @@ impl Session<'_> {
 
     /// Follows the far run until it ends, this side is interrupted, or a
     /// rental's budget runs out, forwarding each record into the run's journal.
-    fn follow(&self, run: &RunId, reattached: bool, events: &Emitter) -> Result<(RunState, bool)> {
+    fn follow(
+        &self,
+        run: &RunId,
+        reattached: bool,
+        events: &Emitter,
+    ) -> Result<(RunState, FollowEnd)> {
         let budget = self.budget();
         let mut feed = self.attach()?;
         let mut status = RunStatus::new(*run);
@@ -499,18 +561,23 @@ impl Session<'_> {
             }
             replay = false;
             if !matches!(status.state, RunState::InProgress) {
-                return Ok((status.state, false));
+                return Ok((status.state, FollowEnd::FarRun));
             }
+            // The operator letting go, which is the whole of what a `SIGINT`
+            // asks for: the far run is none of this side's business from here.
             if self.interrupt.load(Ordering::Relaxed) {
-                return Ok((status.state, true));
+                return Ok((status.state, FollowEnd::Detached));
             }
+            // Money is the one thing that cannot wait for an operator to come
+            // back, so an exhausted ceiling ends the far run rather than
+            // letting go of it.
             if let Some(budget) = budget
                 && assessed.is_none_or(|at| at.elapsed() >= BUDGET_INTERVAL)
             {
                 assessed = Some(Instant::now());
                 if let Verdict::Exhausted(exhaustion) = assess(self.store, run, budget, now_ms())? {
                     events.emit(budget_exhausted(exhaustion));
-                    return Ok((status.state, true));
+                    return Ok((status.state, FollowEnd::WoundDown));
                 }
             }
             if records.is_empty() {
@@ -520,7 +587,7 @@ impl Session<'_> {
                 // under answers without a race, so it is what decides — and it
                 // is asked only on the rare tick where the lock reads free.
                 if feed.holder()?.is_none() && self.far.driving()?.is_none() {
-                    return Ok((status.state, false));
+                    return Ok((status.state, FollowEnd::FarRun));
                 }
                 sleep(TICK);
             }
@@ -621,8 +688,7 @@ impl Session<'_> {
     /// holds it while running, so the pull cannot proceed until the far run is
     /// gone. A wait that runs out is recorded and then escalated: the run is
     /// ended outright, and one that survives even that fails the migration by
-    /// name. Either way the far run does not outlive the migration that started
-    /// it.
+    /// name. Either way the far run is gone before the pull in front of it.
     ///
     /// The signal is re-sent on every poll rather than once, because a far run
     /// is not signallable from the instant it starts. A shell starts an
@@ -684,7 +750,7 @@ impl Session<'_> {
     /// the run cannot complete. Otherwise the key set is re-derived and every
     /// key checked: a complete run finalizes, a wound-down one stays resumable,
     /// and one whose far side ended early reports what is left.
-    fn settle(&self, state: RunState, wound_down: bool) -> Result<MigrateOutcome> {
+    fn settle(&self, state: RunState, end: FollowEnd) -> Result<MigrateOutcome> {
         if let RunState::Failed { task, reason } = state {
             return Ok(MigrateOutcome::Failed { task, reason });
         }
@@ -696,7 +762,7 @@ impl Session<'_> {
                 remaining += 1;
             }
         }
-        if wound_down || matches!(state, RunState::Interrupted) {
+        if end == FollowEnd::WoundDown || matches!(state, RunState::Interrupted) {
             return Ok(MigrateOutcome::Interrupted { run, remaining });
         }
         if remaining > 0 {
@@ -1340,6 +1406,23 @@ mod tests {
         }
     }
 
+    /// Spends this run past the ceiling its config declares, by booking a
+    /// closed rental it already paid for.
+    ///
+    /// Budget exhaustion is what winds a migration down from this side, so it
+    /// is what every wind-down test drives: an interrupt lets go instead.
+    fn over_budget(local: &Local) -> Result<()> {
+        local.store.put_spend(&SpendEntry {
+            tag: "sima-prior-0".to_string(),
+            provider: "stub".to_string(),
+            owner: local.config.run.id().to_string(),
+            price_micro_usd_hour: 100_000,
+            started_ms: 1_700_000_000_000,
+            ended_ms: 1_700_000_003_600_000,
+            cost_micro_usd: 2_000_000,
+        })
+    }
+
     /// Rents one machine to host the run, as `hold` does when there is nothing
     /// to adopt.
     fn hosting<'a>(
@@ -1806,7 +1889,10 @@ mod tests {
     }
 
     #[test]
-    fn a_raised_interrupt_signals_the_far_run_pulls_and_tears_the_rental_down() -> Result<()> {
+    fn a_raised_interrupt_detaches_and_leaves_the_far_run_computing() -> Result<()> {
+        // Ctrl-C is the operator letting go, not the operator stopping the
+        // run: the far side is neither signalled nor pulled from, and the
+        // machine it computes on is kept.
         let local = local(RENTED, PROMPT, Some(3));
         let run = local.config.run.id();
         let lock = local.store.acquire_run_lock(&run)?;
@@ -1818,7 +1904,11 @@ mod tests {
         let far = Scripted::new().delivering(vec![vec![started(&run), committed("aa")]]);
 
         let (outcome, _) = session_over(&local, &far, Some(guard), &interrupt);
-        assert!(matches!(outcome?, MigrateOutcome::Interrupted { .. }));
+        let outcome = outcome?;
+        assert!(
+            !matches!(outcome, MigrateOutcome::Interrupted { .. }),
+            "letting go is not winding down: {outcome:?}"
+        );
         assert_eq!(
             far.steps(),
             [
@@ -1828,13 +1918,76 @@ mod tests {
                 PUSH,
                 Step::Start,
                 Step::Follow,
-                Step::Interrupt(PID),
-                Step::Driving,
-                PULL,
             ],
-            "signal, wait, pull — in that order"
+            "nothing was signalled and nothing was pulled"
         );
-        assert_eq!(provider.destroyed().len(), 1, "the rental is torn down");
+        assert_eq!(
+            *far.alive.lock().expect("the pid lock"),
+            Some(PID),
+            "the far run keeps computing"
+        );
+        assert!(
+            provider.destroyed().is_empty(),
+            "the machine it computes on is kept"
+        );
+        assert_eq!(
+            local.store.instance_records()?.len(),
+            1,
+            "its ledger record stands, so the next migration adopts it"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn an_interrupt_during_the_acquisition_abandons_it_and_rents_nothing() -> Result<()> {
+        // Detaching exists only once there is a far run to detach from. Before
+        // one, the interrupt keeps the meaning it has always had: abandon the
+        // offer walk and leave nothing rented.
+        let local = local(RENTED, PROMPT, Some(3));
+        let run = local.config.run.id();
+        let lock = local.store.acquire_run_lock(&run)?;
+        let provider = marketplace();
+        let HostForm::Rented(spec) = &local.config.hosts["slingshot"].form else {
+            panic!("the fixture declares a rented machine");
+        };
+
+        let held = hold(
+            &provider,
+            &local.store,
+            &lock,
+            spec,
+            Instant::now() + spec.ready_timeout,
+            &Budget::default(),
+            &AtomicBool::new(true),
+        );
+        let Err(error) = held else {
+            panic!("an interrupted acquisition rents nothing");
+        };
+        assert!(error.to_string().contains("cancelled"), "{error}");
+        assert!(provider.live().is_empty(), "no machine was left running");
+        assert!(
+            local.store.instance_records()?.is_empty(),
+            "and none is left in the ledger"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_detached_migration_of_a_machine_of_yours_reports_where_the_run_is() -> Result<()> {
+        // The outcome carries what the operator needs to come back: the run,
+        // and the machine it is still computing on.
+        let local = local(OWNED, "", Some(3));
+        let run = local.config.run.id();
+        let far = Scripted::new().delivering(vec![vec![started(&run), committed("aa")]]);
+
+        let (outcome, _) = session_over(&local, &far, None, &AtomicBool::new(true));
+        assert_eq!(
+            outcome?,
+            MigrateOutcome::Detached {
+                run,
+                machine: "slingshot".to_string(),
+            }
+        );
         Ok(())
     }
 
@@ -1847,15 +2000,7 @@ mod tests {
         let guard = hosting(&provider, &local.store, &lock)?;
         // A closed rental this run already paid for, well past the ceiling the
         // config declares.
-        local.store.put_spend(&SpendEntry {
-            tag: "sima-prior-0".to_string(),
-            provider: "stub".to_string(),
-            owner: run.to_string(),
-            price_micro_usd_hour: 100_000,
-            started_ms: 1_700_000_000_000,
-            ended_ms: 1_700_000_003_600_000,
-            cost_micro_usd: 2_000_000,
-        })?;
+        over_budget(&local)?;
         // The far run would go on to finalize; the ceiling is what stops it
         // first, so a migration that never assessed would come home finalized
         // instead of wound down.
@@ -1925,11 +2070,12 @@ mod tests {
     fn a_far_run_that_outlasts_the_wind_down_is_terminated_and_the_pull_follows() -> Result<()> {
         let local = local(RENTED, PROMPT, Some(3));
         let run = local.config.run.id();
+        over_budget(&local)?;
         let far = Scripted::new()
             .outlasting_the_wind_down()
             .delivering(vec![vec![started(&run), committed("aa")]]);
 
-        let (outcome, records) = session_over(&local, &far, None, &AtomicBool::new(true));
+        let (outcome, records) = session_over(&local, &far, None, &AtomicBool::new(false));
         assert!(matches!(outcome?, MigrateOutcome::Interrupted { .. }));
         // The graceful path was tried and reported before anything harder was
         // reached for.
@@ -1962,11 +2108,12 @@ mod tests {
         // would report the lock instead.
         let local = local(RENTED, PROMPT, Some(3));
         let run = local.config.run.id();
+        over_budget(&local)?;
         let far = Scripted::new()
             .stubborn()
             .delivering(vec![vec![started(&run), committed("aa")]]);
 
-        let (outcome, records) = session_over(&local, &far, None, &AtomicBool::new(true));
+        let (outcome, records) = session_over(&local, &far, None, &AtomicBool::new(false));
         let error = outcome.expect_err("a far run that will not end fails the migration");
         let text = error.to_string();
         assert!(text.contains("slingshot"), "names the machine: {text}");
@@ -1988,11 +2135,12 @@ mod tests {
         // every poll is what closes that window.
         let local = local(RENTED, PROMPT, Some(3));
         let run = local.config.run.id();
+        over_budget(&local)?;
         let far = Scripted::new()
             .deaf_for(2)
             .delivering(vec![vec![started(&run), committed("aa")]]);
 
-        let (outcome, records) = session_over(&local, &far, None, &AtomicBool::new(true));
+        let (outcome, records) = session_over(&local, &far, None, &AtomicBool::new(false));
         assert!(matches!(outcome?, MigrateOutcome::Interrupted { .. }));
         assert_eq!(
             far.steps()
@@ -2091,16 +2239,22 @@ mod tests {
 
     #[test]
     fn every_path_out_of_a_migration_tears_the_rental_down() -> Result<()> {
-        // The end state that matters: no path leaves a machine running and
-        // being paid for. The session releases the guard explicitly so a
-        // teardown failure is reported rather than swallowed; the guard's own
-        // drop is the second line of the same guarantee.
-        let run_to = |far: &dyn FarSide, interrupt: bool| -> Result<usize> {
+        // The end state that matters: no path that ends the far run leaves a
+        // machine running and being paid for. The session releases the guard
+        // explicitly so a teardown failure is reported rather than swallowed;
+        // the guard's own drop is the second line of the same guarantee.
+        //
+        // Detaching is the one path that keeps the machine, since the run it
+        // hosts is still computing; it has its own test.
+        let run_to = |far: &dyn FarSide, exhausted: bool| -> Result<usize> {
             let local = local(RENTED, PROMPT, Some(3));
+            if exhausted {
+                over_budget(&local)?;
+            }
             let lock = local.store.acquire_run_lock(&local.config.run.id())?;
             let provider = marketplace();
             let guard = hosting(&provider, &local.store, &lock)?;
-            let _ = session_over(&local, far, Some(guard), &AtomicBool::new(interrupt));
+            let _ = session_over(&local, far, Some(guard), &AtomicBool::new(false));
             Ok(provider.destroyed().len())
         };
 
@@ -2147,12 +2301,13 @@ mod tests {
             "the failure path tears down"
         );
 
-        // The interrupt path.
-        let interrupted = Scripted::new().delivering(vec![vec![started(&run), committed("aa")]]);
+        // The wind-down path: the ceiling ran out and this side ended the far
+        // run.
+        let wound_down = Scripted::new().delivering(vec![vec![started(&run), committed("aa")]]);
         assert_eq!(
-            run_to(&interrupted, true)?,
+            run_to(&wound_down, true)?,
             1,
-            "the interrupt path tears down"
+            "the wind-down path tears down"
         );
 
         // A far run that survived even termination fails the migration, and the

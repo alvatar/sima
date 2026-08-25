@@ -5,10 +5,10 @@
 //! describes it. What happens there is the pipeline's; this module parses,
 //! renders, and maps the outcome to an exit code.
 //!
-//! The far run is detached, so a `sima migrate` killed here leaves the
-//! destination computing and re-running reattaches to it. Ctrl-C is the
-//! deliberate wind-down instead: the far run is signalled, its results are
-//! pulled, and any rental is destroyed.
+//! The far run is detached, so nothing that happens here ends it: a killed
+//! `sima migrate`, a closed terminal, and a Ctrl-C all leave the destination
+//! computing, and re-running attaches to it again. Ending it is `sima recall`,
+//! a verb of its own.
 
 use std::path::Path;
 use std::process::ExitCode;
@@ -26,15 +26,15 @@ use crate::{EXIT_ERROR, EXIT_FAILED, EXIT_INTERRUPTED, render, report};
 pub(crate) fn migrate_command(config: &Path, accept: BinaryChange) -> ExitCode {
     match moved(config, accept) {
         Ok(outcome) => {
-            println!("{}", describe(&outcome));
+            println!("{}", describe(&outcome, config));
             ExitCode::from(exit_code(&outcome))
         }
         Err(e) => report(e),
     }
 }
 
-/// Registers the interrupt flag before any output — so Ctrl-C winds the far run
-/// down from the first line on — and moves the run.
+/// Registers the interrupt flag before any output — so Ctrl-C detaches from the
+/// first line on — and moves the run.
 fn moved(config: &Path, accept: BinaryChange) -> Result<MigrateOutcome> {
     let interrupt = crate::register_interrupt()?;
 
@@ -57,9 +57,13 @@ fn moved(config: &Path, accept: BinaryChange) -> Result<MigrateOutcome> {
     )
 }
 
-/// The migration's own closing line: what the local store holds now that the
+/// The command's own closing line: what the local store holds now that the
 /// results are back, which the far run's journal does not state.
-fn describe(outcome: &MigrateOutcome) -> String {
+///
+/// A detached run is the one outcome that leaves work where it is, so its line
+/// states the machine and both ways back — `config` is named in them, since a
+/// second invocation needs the same file this one was given.
+fn describe(outcome: &MigrateOutcome, config: &Path) -> String {
     match outcome {
         MigrateOutcome::Finalized { run } => format!("migrated: run {run} finalized here"),
         MigrateOutcome::Outstanding { run, remaining } => {
@@ -67,6 +71,14 @@ fn describe(outcome: &MigrateOutcome) -> String {
         }
         MigrateOutcome::Interrupted { run, remaining } => {
             format!("migration wound down: run {run} has {remaining} tasks outstanding")
+        }
+        MigrateOutcome::Detached { run, machine } => {
+            let config = config.display();
+            format!(
+                "detached: run {run} is still computing on {machine:?}\n\
+                 \x20 sima migrate {config}  attach to it again\n\
+                 \x20 sima recall {config}   wind it down and bring the results home"
+            )
         }
         MigrateOutcome::Failed { task, reason } => {
             format!("migration ended on a definitive failure of task {task}: {reason}")
@@ -76,10 +88,11 @@ fn describe(outcome: &MigrateOutcome) -> String {
 
 /// The exit code an outcome carries, on the binary's own mapping: a migration
 /// that came home with tasks outstanding is neither a success nor a candidate
-/// failure, so it takes the general error code.
+/// failure, so it takes the general error code. Detaching did what was asked,
+/// so it is a success.
 fn exit_code(outcome: &MigrateOutcome) -> u8 {
     match outcome {
-        MigrateOutcome::Finalized { .. } => 0,
+        MigrateOutcome::Finalized { .. } | MigrateOutcome::Detached { .. } => 0,
         MigrateOutcome::Failed { .. } => EXIT_FAILED,
         MigrateOutcome::Interrupted { .. } => EXIT_INTERRUPTED,
         MigrateOutcome::Outstanding { .. } => EXIT_ERROR,
@@ -95,6 +108,27 @@ mod tests {
 
     fn run() -> RunId {
         RunId::from_hash(hash_bytes(b"a migrated run"))
+    }
+
+    #[test]
+    fn a_detached_migration_exits_zero_and_names_both_ways_back() {
+        // Detaching did what was asked, so it is a success; the line has to
+        // carry the two commands, since nothing else states them.
+        let outcome = MigrateOutcome::Detached {
+            run: run(),
+            machine: "gpubox".to_string(),
+        };
+        assert_eq!(exit_code(&outcome), 0);
+        let line = describe(&outcome, Path::new("exp.toml"));
+        assert!(line.contains("gpubox"), "names the machine: {line}");
+        assert!(
+            line.contains("sima migrate exp.toml"),
+            "names the way back: {line}"
+        );
+        assert!(
+            line.contains("sima recall exp.toml"),
+            "names the way to end it: {line}"
+        );
     }
 
     #[test]
@@ -127,8 +161,9 @@ mod tests {
     #[test]
     fn every_outcome_states_what_the_local_store_holds() {
         let run = run();
+        let config = Path::new("exp.toml");
         assert!(
-            describe(&MigrateOutcome::Finalized { run }).contains(&run.to_string()),
+            describe(&MigrateOutcome::Finalized { run }, config).contains(&run.to_string()),
             "the finalized line names the run"
         );
         for (outcome, expected) in [
@@ -147,8 +182,15 @@ mod tests {
                 },
                 "diverged",
             ),
+            (
+                MigrateOutcome::Detached {
+                    run,
+                    machine: "gpubox".to_string(),
+                },
+                "still computing",
+            ),
         ] {
-            let line = describe(&outcome);
+            let line = describe(&outcome, config);
             assert!(line.contains(expected), "{line}");
         }
     }

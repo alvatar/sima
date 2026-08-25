@@ -153,19 +153,6 @@ fn far_store(config: &Path, root: &Path) -> Result<Store> {
     Store::open(root.join(run.to_string()).join("store"))
 }
 
-/// Every record the far side's store holds for the run `config` describes,
-/// keyed by task.
-fn far_committed(config: &Path, far: &Store) -> Result<BTreeMap<TaskKey, TaskRecord>> {
-    let loaded = load(config)?;
-    let mut records = BTreeMap::new();
-    for key in task_keys(&loaded, far)? {
-        if let Some(record) = far.record(&key)? {
-            records.insert(key, record);
-        }
-    }
-    Ok(records)
-}
-
 /// The tasks the run `config` describes has journaled as committed.
 fn journaled_commits(config: &Path) -> Vec<String> {
     common::journal_events(config)
@@ -334,25 +321,48 @@ fn a_second_migration_over_a_finished_run_finalizes_to_the_same_manifest() -> Re
     Ok(())
 }
 
+/// The far-side `sima run` process id, read from the run directory the
+/// migration placed, and `None` once nothing answers to it.
+fn far_pid(config: &Path, root: &Path) -> Option<u32> {
+    let run = load(config).expect("the config loads").run.id();
+    let pid: u32 = std::fs::read_to_string(root.join(run.to_string()).join("run.pid"))
+        .ok()?
+        .trim()
+        .parse()
+        .ok()?;
+    Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .status()
+        .expect("run kill -0")
+        .success()
+        .then_some(pid)
+}
+
+/// Ends a far run a test detached from, so no paced chain outlives the suite.
+fn end_far_run(pid: u32) {
+    let _ = Command::new("kill")
+        .args(["-KILL", &pid.to_string()])
+        .status();
+}
+
 #[test]
-fn a_migration_interrupted_during_the_follow_still_pulls_and_tears_down() -> Result<()> {
+fn a_migration_interrupted_during_the_follow_detaches_and_a_second_one_reattaches() -> Result<()> {
     workers_built();
     let dir = tempfile::tempdir().expect("temp dir");
     let far_root = dir.path().join("far");
     // A chain the far side cannot reach the end of while this migration is
     // still reading its first record: every segment sleeps, so a hundred
-    // seconds of far-side work remain when the wind-down lands, and the
-    // outcome is decided by the wind-down rather than by a race with how
+    // seconds of far-side work remain when the interrupt lands, and the
+    // outcome is decided by the interrupt rather than by a race with how
     // fast this machine runs.
     let migrated = migrating(dir.path(), &far_root, UNFINISHABLE, PACED);
     assert!(matches!(
         drive(&migrated, Some(2))?,
         RunOutcome::Interrupted { .. }
     ));
-    let before = committed_records(&migrated)?;
 
-    // Wound down as soon as the far run's first record arrives: the far side is
-    // signalled, whatever it committed is pulled, and the rental is destroyed.
+    // Interrupted as soon as the far run's first record arrives: the operator
+    // let go, and everything on the far side stays as it was.
     let interrupt = AtomicBool::new(false);
     let loaded = sima_pipeline::load(&migrated)?;
     let outcome = migrate(
@@ -362,41 +372,47 @@ fn a_migration_interrupted_during_the_follow_still_pulls_and_tears_down() -> Res
         &interrupt,
         BinaryChange::Refuse,
     )?;
-    assert!(
-        matches!(outcome, MigrateOutcome::Interrupted { .. }),
-        "a wound-down migration is resumable, not finalized: {outcome:?}"
+    assert_eq!(
+        outcome,
+        MigrateOutcome::Detached {
+            run: loaded.run.id(),
+            machine: "far".to_string(),
+        },
+        "an interrupted migration detaches"
     );
     assert!(
         manifest_bytes(&migrated).is_none(),
-        "an interrupted migration seals nothing"
+        "a detached migration seals nothing"
     );
 
-    // The results that existed still do.
-    let after = committed_records(&migrated)?;
-    for (key, record) in &before {
-        assert_eq!(after.get(key), Some(record), "task {key} came home intact");
-    }
-    // And the pull ran to completion: nothing the far side committed was left
-    // behind, however far it got before the signal.
-    let far = far_store(&migrated, &far_root)?;
-    let far_keys = far_committed(&migrated, &far)?;
-    assert!(
-        !far_keys.is_empty(),
-        "the far side held the chain it was sent"
-    );
-    for (key, record) in &far_keys {
-        assert_eq!(
-            Store::open(&load(&migrated)?.store)?.record(key)?.as_ref(),
-            Some(record),
-            "task {key} was left on the far side"
-        );
-    }
-
+    let pid = far_pid(&migrated, &far_root).expect("the far run keeps computing");
     let store = Store::open(&load(&migrated)?.store)?;
     assert!(
-        store.instance_records()?.is_empty(),
-        "the machine was torn down on the interrupt path"
+        !store.instance_records()?.is_empty(),
+        "the machine it computes on was not torn down"
     );
+
+    // The way back: a second migration finds the same far run and attaches to
+    // it rather than starting another.
+    let second = AtomicBool::new(false);
+    let outcome = migrate(
+        &migrated,
+        &loaded,
+        &|_: &Record| second.store(true, Ordering::Relaxed),
+        &second,
+        BinaryChange::Refuse,
+    )?;
+    assert!(
+        matches!(outcome, MigrateOutcome::Detached { .. }),
+        "the second migration detached too: {outcome:?}"
+    );
+    assert_eq!(
+        far_pid(&migrated, &far_root),
+        Some(pid),
+        "it attached to the run already there rather than starting another"
+    );
+
+    end_far_run(pid);
     Ok(())
 }
 
