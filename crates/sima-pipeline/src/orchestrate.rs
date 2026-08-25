@@ -61,7 +61,7 @@ pub fn orchestrate(
     // A run with nowhere to execute is a config error, not a run that starts
     // and stalls. Without the flag the orchestrator is the whole run, so the
     // error names the flag that would engage the rest.
-    if config.orchestrator.pool.is_none() && members.is_empty() {
+    if config.orchestrator.pool.is_none() && members.is_empty() && !derives_workers(config) {
         return Err(match engagement {
             Engagement::Orchestrator => Error::Validation(
                 "the orchestrator declares no workers and no devices, so this run has nothing \
@@ -445,6 +445,26 @@ impl MachineProgram<'_> {
     }
 }
 
+/// Whether this config leaves its worker layout to the program its format is
+/// routed to.
+///
+/// A config states no `[orchestrator]` layout and routes its format through an
+/// entry carrying `payload_digest`. That is what a migration onto a rented
+/// machine writes: nothing on that machine could say where the run's work goes
+/// until the program was installed there, so the answer is deferred to the far
+/// run, which takes it from the program's own enumeration at start.
+///
+/// The digest is what scopes it. It is a key only a migration writes, so a
+/// hand-written config naming a program on this machine still states its own
+/// layout, as every config does, and nothing about it changes meaning.
+fn derives_workers(config: &LoadedConfig) -> bool {
+    config.orchestrator.pool.is_none()
+        && config
+            .domains
+            .routed(&config.run.format)
+            .is_some_and(|routed| routed.payload_digest.is_some())
+}
+
 /// Builds the orchestrator's own pool, or `None` when it declares no worker
 /// layout and the fleet carries the run.
 ///
@@ -461,7 +481,21 @@ fn local_pool(
     program: &WorkerProgram,
 ) -> Result<Option<LocalPool>> {
     let Some(pool) = &config.orchestrator.pool else {
-        return Ok(None);
+        if !derives_workers(config) {
+            return Ok(None);
+        }
+        // The layout the program itself decides: one worker per usable device
+        // of its own enumeration. It is answered here, on the machine the
+        // program is installed on, because that is the only place the answer
+        // exists — the load that just ran is what put the program there.
+        return Ok(Some(LocalPool {
+            transport: Box::new(SubprocessTransport::new(
+                source.worker_binary()?,
+                Vec::new(),
+                spawn_settings(source.spawn_policy(), execution, program),
+            )),
+            slots: devices::derived_slots(&source.enumerate_devices(&config.run.format)?),
+        }));
     };
     match &config.orchestrator.container {
         None => Ok(Some(LocalPool {

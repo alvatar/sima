@@ -26,7 +26,11 @@
 //!   the same digest, over the stub provider's machines — which are this one,
 //!   reached without a hop;
 //! - a rented machine that cannot be given the program is excluded and
-//!   replaced, its incident recorded, rather than failing the run.
+//!   replaced, its incident recorded, rather than failing the run;
+//! - a config that states no worker layout and routes its format through a
+//!   payload digest — the shape a migration onto a rented machine synthesizes —
+//!   derives its workers from the program\'s own enumeration and drives to
+//!   finalization, while one without that digest is still refused.
 
 mod common;
 
@@ -629,5 +633,95 @@ fn a_rented_machine_holding_another_program_fails_its_spawn_naming_both_digests(
     assert!(
         stderr.contains(&delivered(&far.path().join("programs")).to_string()),
         "and what the run sent: {stderr}"
+    );
+}
+
+/// A config under `dir` with no `[orchestrator]` layout and no fleet, its
+/// format routed through `digest` — the shape a migration onto a rented machine
+/// synthesizes, driven here directly.
+fn layoutless_config(dir: &Path, digest: Option<&str>) -> PathBuf {
+    write_config_text(
+        dir,
+        "layoutless.toml",
+        &format!(
+            r#"
+        [run]
+        root_seed = 21
+        segments = 2
+        format = "stub.v1"
+
+        [run.generator]
+        id = "stub.v1"
+        behaviors = ["accumulate:2"]
+
+        [config]
+        store = "./store"
+        max_attempts = 3
+
+        [orchestrator]
+
+        [domain."stub.v1"]
+        binary = "./src/wrapper.sh"
+        {digest}
+    "#,
+            digest = match digest {
+                Some(digest) => format!("payload_digest = {digest:?}"),
+                None => String::new(),
+            }
+        ),
+    )
+}
+
+#[test]
+fn a_layoutless_config_over_a_delivered_program_derives_its_workers() -> Result<()> {
+    // What a migration onto a rented machine leaves behind: no layout, because
+    // nothing there could answer where the work goes until the program was
+    // installed. The run derives one worker per usable device from the
+    // program's own enumeration — the stub opens none, so one deviceless
+    // worker — and drives to finalization.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let far = tempfile::tempdir().expect("temp dir");
+    let log = dir.path().join("installs");
+    let bin = machine_stubs(dir.path(), false);
+    // A delivery is what puts a payload digest in a store, so one is made here
+    // the same way and the digest it lands under is what the config states.
+    let source = config(dir.path(), far.path(), &program(dir.path(), &log), 1);
+    fleet_run(&bin, &source);
+    let digest = delivered(&far.path().join("programs")).to_string();
+
+    let config = layoutless_config(dir.path(), Some(&digest));
+    let output = sima_command()
+        .args(["run", config.to_str().expect("utf-8 path")])
+        .output()
+        .expect("spawn sima run");
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_eq!(output.status.code(), Some(0), "{stderr}");
+    assert!(
+        !bound_programs(&config)?.is_empty(),
+        "the derived pool bound a worker"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_layoutless_config_without_a_payload_digest_is_still_refused() {
+    // The digest is what scopes the derivation to a config a migration wrote.
+    // A hand-written one naming a program on this machine states its own
+    // layout, as every config does, and nothing about it changes meaning.
+    let dir = tempfile::tempdir().expect("temp dir");
+    executable(
+        &dir.path().join("src/wrapper.sh"),
+        &format!("#!/bin/sh\nexec {} \"$@\"\n", worker_binary().display()),
+    );
+    let config = layoutless_config(dir.path(), None);
+    let output = sima_command()
+        .args(["run", config.to_str().expect("utf-8 path")])
+        .output()
+        .expect("spawn sima run");
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_ne!(output.status.code(), Some(0), "{stderr}");
+    assert!(
+        stderr.contains("no workers and no devices"),
+        "the refusal names what is missing: {stderr}"
     );
 }

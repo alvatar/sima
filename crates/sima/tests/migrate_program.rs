@@ -22,7 +22,10 @@
 //! - a program written against the SDK finds it on the destination, vended
 //!   there by that machine's own binary;
 //! - an install that fails states its own last words to the operator who asked
-//!   for the migration.
+//!   for the migration;
+//! - a run whose format this workspace carries no code for migrates onto a
+//!   rented destination and finalizes there, its workers derived from the
+//!   program\'s own enumeration.
 
 mod common;
 
@@ -30,7 +33,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 
-use common::{manifest_bytes, worker_binary};
+use common::{example_binary, manifest_bytes, worker_binary};
 use sima_core::Result;
 use sima_model::{TaskKey, TaskRecord};
 use sima_pipeline::{
@@ -841,5 +844,91 @@ fn an_install_that_fails_on_the_destination_states_its_own_last_words() -> Resul
         "carries the script's own output: {text}"
     );
     assert!(manifest_bytes(&migrated).is_none(), "nothing was finalized");
+    Ok(())
+}
+
+/// A config under `dir` migrating a run of `example.doubler.v1` — a format this
+/// workspace carries no code for — onto a rented stub machine rooted at `root`,
+/// served by the example program itself as a single-file payload.
+fn migrating_unknown_format(dir: &Path, root: &Path) -> PathBuf {
+    let payload = dir.join("program");
+    std::fs::create_dir_all(dir).expect("create the config directory");
+    std::fs::copy(example_binary(), &payload).expect("copy the program into the payload");
+    std::fs::set_permissions(
+        &payload,
+        std::os::unix::fs::PermissionsExt::from_mode(0o755),
+    )
+    .expect("make the payload executable");
+    write(
+        dir,
+        "unknown.toml",
+        &format!(
+            r#"
+        [run]
+        root_seed = 7
+        format = "example.doubler.v1"
+
+        [run.generator]
+        id = "example.doubler.v1"
+        count = 4
+
+        [config]
+        store = "./store"
+        max_attempts = 2
+
+        [orchestrator]
+        workers = 2
+        migrate = "far"
+
+        [host.far]
+        provider = "stub"
+        root = {root:?}
+        binary = {binary:?}
+        ready_timeout_ms = 30000
+        ready_poll_ms = 20
+
+        [domain."example.doubler.v1"]
+        binary = "./program"
+        payload = "./program"
+    "#,
+            root = root.to_string_lossy(),
+            binary = far_binary(),
+        ),
+    )
+}
+
+#[test]
+fn a_format_this_build_carries_no_code_for_migrates_onto_a_rented_machine() -> Result<()> {
+    // The destination could answer nothing about this run before it had the
+    // program: its readiness probe names no format, and the config synthesized
+    // for it states no worker layout. The far run installs the program, asks it
+    // which devices its work can go on, and derives its workers from that.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let root = tempfile::tempdir().expect("temp dir");
+    let config = migrating_unknown_format(&dir.path().join("near"), root.path());
+
+    let outcome = move_run(&config, BinaryChange::Refuse)?;
+    assert!(
+        matches!(outcome, MigrateOutcome::Finalized { .. }),
+        "{outcome:?}"
+    );
+    // The far run's workers ran the program the migration delivered, each
+    // answering the digest the destination's own stamp carries.
+    let programs = far_worker_programs(&config, root.path());
+    assert!(!programs.is_empty(), "the far side bound workers");
+    let digest = far_payload_digest(&config, root.path());
+    for program in &programs {
+        assert_eq!(
+            program.as_deref(),
+            Some(digest.as_str()),
+            "every far worker answers the payload the migration sent: {programs:?}"
+        );
+    }
+    // And the layout it derived is one worker per usable device, which for a
+    // program that opens none is a single deviceless worker.
+    let far = std::fs::read_to_string(far_dir(&config, root.path()).join("sima.toml"))
+        .expect("the far config");
+    assert!(!far.contains("workers ="), "no layout was written: {far}");
+    assert!(!far.contains("[[orchestrator.device]]"), "{far}");
     Ok(())
 }

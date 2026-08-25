@@ -25,7 +25,7 @@ use sima_store::{Rental as RentalRole, RunLock, Store};
 use sima_transport::{SpawnMode, SshDestination, SshTransport};
 
 use crate::config::{FillPolicy, Rented};
-use crate::devices::{parse_enumeration, usable};
+use crate::devices::{derived_slots, parse_enumeration};
 use crate::fleet::Rental;
 use crate::process::{command_stdout, worker_binary};
 use crate::program_delivery::ProgramDelivery;
@@ -247,7 +247,7 @@ fn acquire_one<'a>(
                     .map_err(|error| (error, IncidentKind::ProbeFailed))
             });
         let slots = match outcome {
-            Ok(devices) => rented_slots(&devices),
+            Ok(devices) => derived_slots(&devices),
             Err((error, kind)) => {
                 // The machine reported ready but cannot serve this run: an
                 // incident against it, recorded before the guard drops and
@@ -330,27 +330,6 @@ fn probe_ready(
     }
 }
 
-/// One worker slot per usable device, each bound to it; a probe reporting no
-/// device at all yields a single deviceless worker — the stub testing path, and
-/// any device-free machine.
-///
-/// Which devices are usable is [`devices::usable`]'s rule, shared with the
-/// far-side config a migration synthesizes: both are deriving a worker layout
-/// from one enumeration, and they must agree on what the machine offers.
-fn rented_slots(devices: &[DeviceInfo]) -> Vec<Option<DeviceBinding>> {
-    if devices.is_empty() {
-        return vec![None];
-    }
-    usable(devices)
-        .map(|device| {
-            Some(DeviceBinding {
-                class: device.class.clone(),
-                member: device.member,
-            })
-        })
-        .collect()
-}
-
 /// Releases every rented machine's guard on the way out, returning the first
 /// teardown failure. Every guard is released whatever the others do, so one
 /// failure never strands the rest; a guard whose release is not reached is torn
@@ -428,7 +407,7 @@ mod tests {
 
     #[test]
     fn a_machine_with_no_device_gets_one_deviceless_slot() {
-        assert_eq!(rented_slots(&[]), vec![None]);
+        assert_eq!(derived_slots(&[]), vec![None]);
     }
 
     #[test]
@@ -437,7 +416,7 @@ mod tests {
             device("10de:2684", "NVIDIA GeForce RTX 4090", DeviceType::Discrete),
             device("8086:7d51", "Intel(R) Graphics", DeviceType::Integrated),
         ];
-        let slots = rented_slots(&devices);
+        let slots = derived_slots(&devices);
         assert_eq!(slots.len(), 2);
         assert_eq!(
             slots[0],
@@ -463,7 +442,7 @@ mod tests {
             device("10005:0000", "llvmpipe (LLVM 19)", DeviceType::Cpu),
             device("10de:2684", "NVIDIA GeForce RTX 4090", DeviceType::Discrete),
         ];
-        let slots = rented_slots(&devices);
+        let slots = derived_slots(&devices);
         assert_eq!(slots.len(), 1, "one slot, on the GPU");
         assert_eq!(
             slots[0],
@@ -482,7 +461,7 @@ mod tests {
         // NVIDIA driver: the card is there, and CUDA would enumerate it, but a
         // slot bound to it would hand a worker a device Vulkan cannot open.
         let devices = [device("10005:0000", "llvmpipe (LLVM 19)", DeviceType::Cpu)];
-        let slots = rented_slots(&devices);
+        let slots = derived_slots(&devices);
         assert_eq!(slots.len(), 1);
         assert_eq!(
             slots[0],

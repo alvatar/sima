@@ -180,7 +180,7 @@ pub(crate) fn far_config(
     );
     far.insert(
         "orchestrator".to_string(),
-        toml::Value::Table(far_orchestrator(workers)),
+        toml::Value::Table(far_orchestrator(workers, registration.is_some())),
     );
     if let Some(registration) = registration {
         let mut domains = toml::Table::new();
@@ -266,10 +266,21 @@ fn far_settings(local: &toml::Table) -> Result<toml::Table> {
 }
 
 /// The far side's `[orchestrator]`: the destination's own worker layout, in
-/// whichever of the two shapes its form calls for.
-fn far_orchestrator(workers: FarWorkers<'_>) -> toml::Table {
+/// whichever of the two shapes its form calls for — or none at all.
+///
+/// `registered` says the run's format is served by a program rather than by
+/// the destination's own build. A rented destination then states no layout:
+/// its probe named no format, because nothing there can resolve one that is not
+/// installed yet, so what it answered says the machine is up and nothing about
+/// where this run's work can go. Only the program knows, and only once the far
+/// load has installed it — so the far run derives its workers from the
+/// program's own enumeration at start.
+///
+/// A machine of yours states its layout either way: the operator wrote it down.
+fn far_orchestrator(workers: FarWorkers<'_>, registered: bool) -> toml::Table {
     let mut table = toml::Table::new();
     match workers {
+        FarWorkers::Probed(_) if registered => {}
         FarWorkers::Declared(owned) => {
             table.insert(
                 "image".to_string(),
@@ -649,6 +660,55 @@ mod tests {
             panic!("gpubox is a machine of yours");
         };
         far_config(LOCAL, FarWorkers::Declared(owned), registration).expect("the synthesis")
+    }
+
+    #[test]
+    fn a_rented_destination_serving_a_program_states_no_worker_layout() {
+        // The probe named no format, so what it answered is that the machine is
+        // up and nothing about where this run's work can go: only the program
+        // knows, and it is not installed there until the far run loads. The
+        // layout is left out, and the far run derives it at start.
+        let registration = registration(&[]);
+        let far = far_config(
+            LOCAL,
+            FarWorkers::Probed(&[device(0x10de, 0x2684, 0, DeviceType::Discrete)]),
+            Some(&registration),
+        )
+        .expect("the synthesis");
+        let table: toml::Table = far.parse().expect("the far config parses");
+        let orchestrator = table["orchestrator"].as_table().expect("a table");
+        assert!(!orchestrator.contains_key("workers"), "{orchestrator:?}");
+        assert!(!orchestrator.contains_key("device"), "{orchestrator:?}");
+    }
+
+    #[test]
+    fn a_rented_destination_serving_a_builtin_format_carries_the_probed_tables() {
+        // The image there answers for the format itself, so the probe's answer
+        // is where the work can go and the layout follows from it.
+        let far = far_config(
+            LOCAL,
+            FarWorkers::Probed(&[device(0x10de, 0x2684, 0, DeviceType::Discrete)]),
+            None,
+        )
+        .expect("the synthesis");
+        let table: toml::Table = far.parse().expect("the far config parses");
+        let orchestrator = table["orchestrator"].as_table().expect("a table");
+        assert!(orchestrator.contains_key("device"), "{orchestrator:?}");
+    }
+
+    #[test]
+    fn an_owned_destination_serving_a_program_keeps_its_declared_layout() {
+        // A machine of yours states its layout whatever answers for the format,
+        // because the operator wrote it down.
+        let registration = registration(&[]);
+        let table: toml::Table = far_text(Some(&registration))
+            .parse()
+            .expect("the far config parses");
+        let orchestrator = table["orchestrator"].as_table().expect("a table");
+        assert!(
+            orchestrator.contains_key("workers") || orchestrator.contains_key("device"),
+            "{orchestrator:?}"
+        );
     }
 
     #[test]

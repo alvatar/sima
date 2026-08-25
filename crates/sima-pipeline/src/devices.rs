@@ -6,7 +6,7 @@
 //! selector names real hardware, and reading a config must work on a machine
 //! with no GPU at all — `sima status` and `sima report` never enumerate.
 
-use sima_contracts::DeviceClass;
+use sima_contracts::{DeviceBinding, DeviceClass};
 use sima_core::{Error, Result};
 use sima_domains::devices::{DeviceInfo, DeviceType};
 use sima_scheduler::DeviceEntry;
@@ -155,6 +155,28 @@ fn render_available(enumerated: &[DeviceInfo]) -> String {
         }
     }
     format!("present: {}", listed.join(", "))
+}
+
+/// One worker slot per usable device, each bound to it; an enumeration
+/// reporting no device at all yields a single deviceless worker — the stub
+/// testing path, and any device-free machine.
+///
+/// Three places derive a worker layout from one enumeration and must agree on
+/// what a machine offers: a rented machine's slots, the far-side config a
+/// migration synthesizes for one, and a run whose layout its program's own
+/// enumeration decides. [`usable`] is the rule they share.
+pub(crate) fn derived_slots(devices: &[DeviceInfo]) -> Vec<Option<DeviceBinding>> {
+    if devices.is_empty() {
+        return vec![None];
+    }
+    usable(devices)
+        .map(|device| {
+            Some(DeviceBinding {
+                class: device.class.clone(),
+                member: device.member,
+            })
+        })
+        .collect()
 }
 
 #[cfg(test)]

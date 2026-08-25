@@ -215,12 +215,16 @@ pub fn migrate(
                 &loaded.budget,
                 interrupt,
             )?;
+            // A run whose format is a program asks the machine about no
+            // format: nothing there can resolve one it has not been given, and
+            // the program's own enumeration is what the far run derives its
+            // layout from once the load has installed it.
             let far = Remote::rented(
                 &destination,
                 provider.as_ref(),
                 guard.endpoint(),
                 &run,
-                &loaded.run.format,
+                registration.is_none().then_some(&loaded.run.format),
             )?;
             Session {
                 far: &far,
