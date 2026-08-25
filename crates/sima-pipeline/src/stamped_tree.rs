@@ -43,7 +43,7 @@ use std::path::Path;
 use sima_core::{Error, Hash, Result};
 
 /// The digest the tree was built from, written last.
-const STAMP_FILE: &str = "installed.digest";
+pub(crate) const STAMP_FILE: &str = "installed.digest";
 /// Held while building, so concurrent loaders build one tree between them.
 const LOCK_FILE: &str = ".lock";
 

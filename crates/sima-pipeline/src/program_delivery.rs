@@ -39,11 +39,12 @@ use std::path::{Path, PathBuf};
 use sima_core::{Error, Hash, Result};
 use sima_store::{ObjectScope, Store, SyncReport};
 use sima_transport::container::{ContainerRun, once_argv};
+use sima_transport::protocol::PROGRAM_DIGEST_VAR;
 
 use crate::config::LoadedConfig;
 use crate::fleet::OwnedMachine;
 use crate::payload::{self, ProgramTree};
-use crate::sdk;
+use crate::sdk::{self, Sdk};
 use crate::sync_session::sync_against;
 
 /// The `sima` binary inside a worker image, by its name on the `PATH` there.
@@ -67,13 +68,20 @@ const SDK_DIR: &str = "sdk";
 ///
 /// Both are content addresses of objects in the run's own store, so what
 /// crosses the wire is decided by what the machine already holds.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProgramDelivery {
     /// The payload manifest: the digest every worker of this run answers at its
     /// handshake.
     payload: Hash,
-    /// The SDK manifest, for an entry declaring one.
-    sdk: Option<Hash>,
+    /// The SDK the entry declared and the manifest it ingested to, for an entry
+    /// declaring one. The two travel together because the receiving machine
+    /// needs both: the digest names the tree, and the language names the path
+    /// variable that tree leads.
+    sdk: Option<(Sdk, Hash)>,
+    /// The variable names the entry declared. They cross as names alone — each
+    /// value is read on the machine the program runs on — so a credential never
+    /// reaches a command line or the wire.
+    env: Vec<String>,
 }
 
 impl ProgramDelivery {
@@ -95,8 +103,8 @@ impl ProgramDelivery {
             "--payload".to_string(),
             self.payload.to_string(),
         ];
-        if let Some(sdk) = &self.sdk {
-            args.extend(["--sdk".to_string(), sdk.to_string()]);
+        if let Some((_, digest)) = &self.sdk {
+            args.extend(["--sdk".to_string(), digest.to_string()]);
         }
         args
     }
@@ -112,12 +120,66 @@ impl ProgramDelivery {
         sync_against(store, &[], ObjectScope::Named(&closure), argv)
     }
 
+    /// What a container on a machine rooted at `root` runs to reach this
+    /// program, with `args` handed to it.
+    ///
+    /// Three things make the container's program the same program it would be
+    /// here:
+    ///
+    /// - the delivery directory is mounted at the identical path on both sides,
+    ///   so the stamp the install wrote names the same file the shell reads;
+    /// - the declared variables are forwarded by name, so each value is the
+    ///   machine's own and none appears on a command line;
+    /// - the shell states exactly what the local `Explicit` policy would — the
+    ///   digest assigned, the SDK's directory leading the interpreter's path —
+    ///   before it execs the program.
+    ///
+    /// The digest is read from the machine's own stamp at exec time rather than
+    /// written in, so what the worker answers at its handshake is that disk's
+    /// claim about what is installed there, and the run's comparison is against
+    /// a value it never wrote.
+    ///
+    /// Paths reach the shell unquoted, so a `root` naming `~` expands there —
+    /// the rule every far-side path in a config follows.
+    pub(crate) fn container_run(&self, root: &str, args: &[&str]) -> ContainerRun {
+        let programs = programs_dir(root);
+        let tree = program_tree(Path::new(&programs), &self.payload);
+        let mut script = vec![format!(
+            "{PROGRAM_DIGEST_VAR}=$(cat {})",
+            tree.stamp().display()
+        )];
+        let mut exported = vec![PROGRAM_DIGEST_VAR.to_string()];
+        if let Some((sdk, digest)) = &self.sdk {
+            // Leading, not replacing: the vended package is the one matching
+            // the protocol this run speaks, and whatever the machine already
+            // has still resolves behind it.
+            let variable = sdk.path_variable();
+            let installed = sdk::installed(&sdk_tree(Path::new(&programs), digest));
+            script.push(format!(
+                "{variable}={}${{{variable}:+:${variable}}}",
+                installed.display()
+            ));
+            exported.push(variable.to_string());
+        }
+        script.push(format!("export {}", exported.join(" ")));
+        script.push(format!(
+            "exec {}{}",
+            tree.entry_point().display(),
+            args.iter().map(|arg| format!(" {arg}")).collect::<String>()
+        ));
+        ContainerRun::program(
+            vec![format!("{programs}:{programs}")],
+            self.env.clone(),
+            vec!["sh".to_string(), "-c".to_string(), script.join("\n")],
+        )
+    }
+
     /// Every object a machine needs before it can install what this delivery
     /// names: the payload's whole closure, and the SDK's manifest with the
     /// files it names.
     fn closure(&self, store: &Store) -> Result<Vec<Hash>> {
         let mut closure = payload::closure(store, &self.payload)?;
-        if let Some(digest) = &self.sdk {
+        if let Some((_, digest)) = &self.sdk {
             closure.push(*digest);
             closure.extend(sdk::objects(store, digest)?);
         }
@@ -187,8 +249,15 @@ pub fn ingest_program(config: &LoadedConfig, store: &Store) -> Result<Option<Pro
         // `sendable` above refused this entry.
         (None, None) => unreachable!("an entry with nothing to send is refused"),
     };
-    let sdk = routed.sdk.map(|sdk| sdk.ingest(store)).transpose()?;
-    Ok(Some(ProgramDelivery { payload, sdk }))
+    let sdk = routed
+        .sdk
+        .map(|sdk| sdk.ingest(store).map(|digest| (sdk, digest)))
+        .transpose()?;
+    Ok(Some(ProgramDelivery {
+        payload,
+        sdk,
+        env: routed.env.to_vec(),
+    }))
 }
 
 /// Delivers `delivery` to every machine of yours the fleet drew in, so each
@@ -217,7 +286,10 @@ pub(crate) fn deliver_to_owned(
             &machine.container.runtime,
             &machine.container.image,
             &machine.container.run_args,
-            &ContainerRun::program(vec![format!("{programs}:{programs}")], command),
+            // The delivery itself forwards nothing: it runs sima's own verb,
+            // and what the program needs to see is stated where the program
+            // runs.
+            &ContainerRun::program(vec![format!("{programs}:{programs}")], Vec::new(), command),
         );
         delivery.send(store, &argv).map_err(|e| {
             Error::Transport(format!(
@@ -287,12 +359,20 @@ mod tests {
         sima_core::hash_bytes(text.as_bytes())
     }
 
+    /// A delivery of one program, with an SDK when `sdk` says so and the given
+    /// declared variable names.
+    fn delivery(sdk: bool, env: &[&str]) -> ProgramDelivery {
+        ProgramDelivery {
+            payload: digest("a program"),
+            sdk: sdk.then(|| (Sdk::Python, digest("a package"))),
+            env: env.iter().map(|name| (*name).to_string()).collect(),
+        }
+    }
+
     #[test]
     fn the_arguments_name_the_directory_and_the_digests() {
-        let delivery = ProgramDelivery {
-            payload: digest("a program"),
-            sdk: Some(digest("a package")),
-        };
+        let delivery = delivery(true, &[]);
+        let (_, sdk) = delivery.sdk.expect("an SDK");
         assert_eq!(
             delivery.args("~/sima-runs/programs"),
             [
@@ -301,18 +381,14 @@ mod tests {
                 "--payload",
                 &delivery.payload.to_string(),
                 "--sdk",
-                &delivery.sdk.expect("an SDK").to_string(),
+                &sdk.to_string(),
             ]
         );
     }
 
     #[test]
     fn an_entry_declaring_no_sdk_names_none() {
-        let delivery = ProgramDelivery {
-            payload: digest("a program"),
-            sdk: None,
-        };
-        let args = delivery.args("programs");
+        let args = delivery(false, &[]).args("programs");
         assert!(!args.iter().any(|arg| arg == "--sdk"), "{args:?}");
     }
 
@@ -336,5 +412,81 @@ mod tests {
         for reserved in [STORE_DIR, SDK_DIR] {
             assert_ne!(reserved.len(), 64);
         }
+    }
+
+    #[test]
+    fn the_programs_directory_hangs_off_the_root_however_it_was_written() {
+        assert_eq!(programs_dir("~/sima-runs"), "~/sima-runs/programs");
+        assert_eq!(programs_dir("/srv/sima/"), "/srv/sima/programs");
+    }
+
+    #[test]
+    fn a_worker_reads_the_machine_s_own_stamp_before_it_execs_the_program() {
+        // The digest is read where the program runs, not written in from here,
+        // so what the worker answers is that disk's claim about what is
+        // installed on it.
+        let delivery = delivery(false, &[]);
+        let run = delivery.container_run("~/sima-runs", &[]);
+        let tree = format!("~/sima-runs/programs/{}", delivery.payload);
+        assert_eq!(
+            run,
+            ContainerRun::program(
+                vec!["~/sima-runs/programs:~/sima-runs/programs".to_string()],
+                Vec::new(),
+                vec![
+                    "sh".to_string(),
+                    "-c".to_string(),
+                    format!(
+                        "SIMA_PROGRAM_DIGEST=$(cat {tree}/installed.digest)\n\
+                         export SIMA_PROGRAM_DIGEST\n\
+                         exec {tree}/installed/program"
+                    ),
+                ],
+            )
+        );
+    }
+
+    #[test]
+    fn an_entry_declaring_an_sdk_leads_the_module_path_with_it() {
+        // Leading rather than replacing: the delivered package matches the
+        // protocol this run speaks, and whatever the machine already installed
+        // still resolves behind it.
+        let delivery = delivery(true, &[]);
+        let (_, sdk) = delivery.sdk.expect("an SDK");
+        let run = delivery.container_run("/srv", &[]);
+        let script = format!("{run:?}");
+        assert!(
+            script.contains(&format!(
+                "PYTHONPATH=/srv/programs/sdk/{sdk}/installed${{PYTHONPATH:+:$PYTHONPATH}}"
+            )),
+            "{script}"
+        );
+        assert!(
+            script.contains("export SIMA_PROGRAM_DIGEST PYTHONPATH"),
+            "{script}"
+        );
+    }
+
+    #[test]
+    fn the_declared_variables_are_forwarded_by_name_and_the_arguments_reach_the_program() {
+        let delivery = delivery(false, &["HF_TOKEN", "CACHE_DIR"]);
+        let run = delivery.container_run("/srv", &["--serve-domain", "stub.v1"]);
+        assert_eq!(
+            run,
+            ContainerRun::program(
+                vec!["/srv/programs:/srv/programs".to_string()],
+                vec!["HF_TOKEN".to_string(), "CACHE_DIR".to_string()],
+                vec![
+                    "sh".to_string(),
+                    "-c".to_string(),
+                    format!(
+                        "SIMA_PROGRAM_DIGEST=$(cat /srv/programs/{payload}/installed.digest)\n\
+                         export SIMA_PROGRAM_DIGEST\n\
+                         exec /srv/programs/{payload}/installed/program --serve-domain stub.v1",
+                        payload = delivery.payload
+                    ),
+                ],
+            )
+        );
     }
 }

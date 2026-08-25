@@ -2,7 +2,9 @@
 //! here or across an ssh hop.
 //!
 //! The worker runs inside a container the transport launches with
-//! `<runtime> run --rm -i --name <container> <run_args> <image> sima-worker`.
+//! `<runtime> run --rm -i --name <container> <run_args> <image> <command>`,
+//! where the command is the image's own `sima-worker` or a program delivered
+//! to the machine — see [`ContainerRun`].
 //! When a host is set, the whole invocation is wrapped in
 //! `ssh -o BatchMode=yes <host> --`; the framed stdio protocol flows through
 //! ssh, the runtime, and into the worker unchanged, so the spawn, handshake,
@@ -48,6 +50,10 @@ pub struct ContainerTransport {
     /// The stem every spawn's container name derives from; the pipeline makes
     /// it unique to the run and pool.
     container_prefix: String,
+    /// What each spawn's container runs: the image's own worker, or the program
+    /// delivered to this machine, with whatever that needs mounted and
+    /// forwarded.
+    run: ContainerRun,
     settings: SpawnSettings,
     /// The next container-name suffix. Monotonic per transport, so a name is
     /// unique across every slot's spawns and respawns without a clock.
@@ -55,15 +61,17 @@ pub struct ContainerTransport {
 }
 
 impl ContainerTransport {
-    /// A transport launching `image` under `runtime`, spawning its clients
-    /// under `settings`. `host` is the ssh destination, or `None` for a local
-    /// runtime.
+    /// A transport launching `image` under `runtime` to perform `run`, spawning
+    /// its clients under `settings`. `host` is the ssh destination, or `None`
+    /// for a local runtime.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         host: Option<String>,
         runtime: String,
         image: String,
         run_args: Vec<String>,
         container_prefix: String,
+        run: ContainerRun,
         settings: SpawnSettings,
     ) -> ContainerTransport {
         ContainerTransport {
@@ -72,6 +80,7 @@ impl ContainerTransport {
             image,
             run_args,
             container_prefix,
+            run,
             settings,
             counter: AtomicU64::new(0),
         }
@@ -87,16 +96,17 @@ impl WorkerTransport for ContainerTransport {
     ) -> Result<SpawnOutcome> {
         let n = self.counter.fetch_add(1, Ordering::Relaxed);
         let container = container_name(&self.container_prefix, n);
-        let run = run_argv(
+        let launch = run_argv(
             self.host.as_deref(),
             &self.runtime,
             &self.image,
             &self.run_args,
             &container,
+            &self.run,
         );
         // `run_argv` never yields an empty vector: the runtime or `ssh` is
         // always the first element.
-        let (program, args) = run.split_first().expect("a non-empty command vector");
+        let (program, args) = launch.split_first().expect("a non-empty command vector");
         // The pool's host label: the ssh destination, or empty for a container
         // on this machine — the same value the pool journals in WorkerBound.
         // ssh carries the container's stderr to the client's stderr pipe, so
@@ -215,13 +225,17 @@ pub(crate) fn container_name(prefix: &str, n: u64) -> String {
 
 /// The argv that launches a worker container, ssh-wrapped when `host` is set:
 /// `[ssh -o BatchMode=yes <host> --] <runtime> run --rm -i --name <container>
-/// <run_args...> <image> sima-worker`.
+/// [-v <mount>…] [--env <name>…] <run_args…> <image> <command…>`.
+///
+/// The name is what the kill channel addresses; everything after it is
+/// [`ContainerRun`]'s.
 pub(crate) fn run_argv(
     host: Option<&str>,
     runtime: &str,
     image: &str,
     run_args: &[String],
     container: &str,
+    run: &ContainerRun,
 ) -> Vec<String> {
     let mut argv = ssh_prefix(host);
     argv.extend([
@@ -232,9 +246,10 @@ pub(crate) fn run_argv(
         "--name".to_string(),
         container.to_string(),
     ]);
+    argv.extend(run.flags());
     argv.extend(run_args.iter().cloned());
     argv.push(image.to_string());
-    argv.push(WORKER_ENTRYPOINT.to_string());
+    argv.extend(run.command.iter().cloned());
     argv
 }
 
@@ -262,25 +277,47 @@ pub(crate) fn kill_argv(host: Option<&str>, runtime: &str, container: &str) -> V
 pub struct ContainerRun {
     /// Bind mounts, each already in the runtime's `<host>:<container>` form.
     mounts: Vec<String>,
+    /// Variable names forwarded from the machine's own environment. Only the
+    /// names travel: the runtime reads each value where the container runs, so
+    /// no value ever appears on a command line or crosses the wire.
+    env: Vec<String>,
     /// The command the container runs, from its program onward.
     command: Vec<String>,
 }
 
 impl ContainerRun {
-    /// The image's own worker with `args`, mounting nothing — everything it
-    /// needs is in the image.
+    /// The image's own worker with `args`, mounting nothing and forwarding
+    /// nothing — everything it needs is in the image.
     pub fn worker(args: Vec<String>) -> ContainerRun {
         let mut command = vec![WORKER_ENTRYPOINT.to_string()];
         command.extend(args);
         ContainerRun {
             mounts: Vec::new(),
+            env: Vec::new(),
             command,
         }
     }
 
-    /// A command of the caller's, over the machine paths `mounts` names.
-    pub fn program(mounts: Vec<String>, command: Vec<String>) -> ContainerRun {
-        ContainerRun { mounts, command }
+    /// A command of the caller's, over the machine paths `mounts` names, with
+    /// `env` forwarded by name.
+    pub fn program(mounts: Vec<String>, env: Vec<String>, command: Vec<String>) -> ContainerRun {
+        ContainerRun {
+            mounts,
+            env,
+            command,
+        }
+    }
+
+    /// The runtime flags this run needs before the pool's own arguments.
+    fn flags(&self) -> Vec<String> {
+        let mut flags = Vec::new();
+        for mount in &self.mounts {
+            flags.extend(["-v".to_string(), mount.clone()]);
+        }
+        for name in &self.env {
+            flags.extend(["--env".to_string(), name.clone()]);
+        }
+        flags
     }
 }
 
@@ -305,9 +342,7 @@ pub fn once_argv(
         "--rm".to_string(),
         "-i".to_string(),
     ]);
-    for mount in &run.mounts {
-        argv.extend(["-v".to_string(), mount.clone()]);
-    }
+    argv.extend(run.flags());
     argv.extend(run_args.iter().cloned());
     argv.push(image.to_string());
     argv.extend(run.command.iter().cloned());
@@ -390,6 +425,7 @@ mod tests {
             "localhost/sima:latest",
             &["--device".to_string(), "/dev/dri".to_string()],
             "sima-w-run-0",
+            &ContainerRun::worker(Vec::new()),
         );
         assert_eq!(
             argv,
@@ -416,6 +452,7 @@ mod tests {
             "sima:latest",
             &["--gpus".to_string(), "all".to_string()],
             "sima-w-run-3",
+            &ContainerRun::worker(Vec::new()),
         );
         assert_eq!(
             argv,
@@ -440,8 +477,66 @@ mod tests {
     }
 
     #[test]
+    fn a_worker_run_of_a_delivered_program_mounts_it_and_forwards_its_variables() {
+        // A machine that received a program runs it out of its own filesystem,
+        // so the tree is mounted; the entry's variables are forwarded by name,
+        // so each value is that machine's own and none reaches a command line.
+        let argv = run_argv(
+            Some("gpubox"),
+            "docker",
+            "sima:latest",
+            &["--gpus".to_string(), "all".to_string()],
+            "sima-w-run-1",
+            &ContainerRun::program(
+                vec!["/srv/programs:/srv/programs".to_string()],
+                vec!["HF_TOKEN".to_string(), "CACHE".to_string()],
+                vec![
+                    "sh".to_string(),
+                    "-c".to_string(),
+                    "exec ./program".to_string(),
+                ],
+            ),
+        );
+        assert_eq!(
+            argv,
+            [
+                "ssh",
+                "-o",
+                "BatchMode=yes",
+                "gpubox",
+                "--",
+                "docker",
+                "run",
+                "--rm",
+                "-i",
+                "--name",
+                "sima-w-run-1",
+                "-v",
+                "/srv/programs:/srv/programs",
+                "--env",
+                "HF_TOKEN",
+                "--env",
+                "CACHE",
+                "--gpus",
+                "all",
+                "sima:latest",
+                "sh",
+                "-c",
+                "exec ./program",
+            ]
+        );
+    }
+
+    #[test]
     fn empty_run_args_leave_name_adjacent_to_image() {
-        let argv = run_argv(None, "docker", "img", &[], "c");
+        let argv = run_argv(
+            None,
+            "docker",
+            "img",
+            &[],
+            "c",
+            &ContainerRun::worker(Vec::new()),
+        );
         // With no run flags, the image follows the container name directly.
         let name_at = argv.iter().position(|a| a == "c").expect("the name");
         assert_eq!(argv[name_at + 1], "img");
@@ -543,6 +638,7 @@ mod tests {
             &["--gpus".to_string(), "all".to_string()],
             &ContainerRun::program(
                 vec!["/srv/programs:/srv/programs".to_string()],
+                Vec::new(),
                 vec![
                     "sima".to_string(),
                     "sync-serve".to_string(),

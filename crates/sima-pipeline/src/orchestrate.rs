@@ -1,5 +1,7 @@
 //! [`orchestrate`]: one loaded config driven to its outcome.
 
+use std::time::Duration;
+
 use sima_contracts::DeviceBinding;
 use sima_core::{Error, Hash, Result};
 use sima_domains::devices::DeviceInfo;
@@ -7,7 +9,9 @@ use sima_model::{FormatId, RunId};
 use sima_scheduler::{ExecutionConfig, RunControl, RunOutcome, WorkerPool, worker_slots};
 use sima_store::Store;
 use sima_transport::DeviceProbe;
-use sima_transport::container::probe_argv;
+use sima_transport::container::{ContainerRun, once_argv, probe_argv};
+use sima_transport::domain_service::DomainService;
+use sima_transport::serve::serve_domain_args;
 use sima_transport::{ContainerTransport, SpawnPolicy, SpawnSettings, SubprocessTransport};
 
 use crate::config::{Container, LoadedConfig, Pool};
@@ -16,7 +20,7 @@ use crate::domain_registry::DomainSource;
 use crate::fleet::{Engagement, Members, OwnedMachine, members};
 use crate::process::{ImageCheck, bootstrap_image, command_stdout};
 use crate::program_binding::{BinaryChange, bind};
-use crate::program_delivery::{deliver_to_owned, ingest_program, sendable};
+use crate::program_delivery::{ProgramDelivery, deliver_to_owned, ingest_program, sendable};
 use crate::rental::{
     RentalGroup, StopSignal, Supervisor, acquire_hosts, provider_for_rental, release_all,
     transport_mode,
@@ -117,7 +121,13 @@ pub fn orchestrate(
     // still before the store. A run that delivers a program builds them below
     // instead, because a delivery reads the store the program is ingested into.
     let owned = match delivers {
-        false => Some(owned_pools(&members.owned, &run, &execution, &program)?),
+        false => Some(owned_pools(
+            &members.owned,
+            &run,
+            &execution,
+            &program,
+            None,
+        )?),
         true => None,
     };
     let store = Store::open(&config.store)?;
@@ -140,7 +150,7 @@ pub fn orchestrate(
             let delivery =
                 ingest_program(config, &store)?.expect("a routed format's program is ingested");
             deliver_to_owned(&members.owned, &store, &delivery)?;
-            owned_pools(&members.owned, &run, &execution, &program)?
+            owned_pools(&members.owned, &run, &execution, &program, Some(&delivery))?
         }
     };
     // Rentals are acquired under the held lock — each machine behind a teardown
@@ -310,6 +320,7 @@ struct ContainerPool {
 /// What every pool's workers are spawned to answer for: the run's format, and
 /// the program the run sent for it. The two travel together because one
 /// handshake states both, and every pool of one run states the same pair.
+#[derive(Clone)]
 struct WorkerProgram {
     format: FormatId,
     /// `Some` exactly when the config entry resolved a `payload_digest` — the
@@ -320,8 +331,8 @@ struct WorkerProgram {
 }
 
 impl WorkerProgram {
-    /// What `config`'s run spawns for: its format, and the digest of the
-    /// program routed to that format where the entry stated one.
+    /// What `config`'s run spawns for on this machine: its format, and the
+    /// digest of the program routed to that format where the entry stated one.
     fn of(config: &LoadedConfig) -> WorkerProgram {
         WorkerProgram {
             format: config.run.format.clone(),
@@ -329,6 +340,84 @@ impl WorkerProgram {
                 .domains
                 .routed(&config.run.format)
                 .and_then(|routed| routed.payload_digest.map(Hash::to_string)),
+        }
+    }
+
+    /// The same run on a machine `delivery` reached: what that machine
+    /// installed is what its workers answer, whatever this one holds.
+    fn delivered(&self, delivery: &ProgramDelivery) -> WorkerProgram {
+        WorkerProgram {
+            format: self.format.clone(),
+            digest: Some(delivery.payload().to_string()),
+        }
+    }
+}
+
+/// What a machine's containers run for this run.
+///
+/// A format this build carries is answered by the image's own worker: nothing
+/// was delivered there, so nothing is mounted and no digest is expected back. A
+/// format that is a program is answered by what the delivery installed under
+/// the machine's own `root`, which is what its workers are spawned as and what
+/// they answer at the handshake.
+enum MachineProgram<'a> {
+    /// The image answers for the run's format itself.
+    Image,
+    /// The program a delivery installed under `root` on that machine.
+    Delivered {
+        delivery: &'a ProgramDelivery,
+        root: &'a str,
+    },
+}
+
+impl MachineProgram<'_> {
+    /// What one worker's container runs there.
+    fn worker_run(&self) -> ContainerRun {
+        match self {
+            MachineProgram::Image => ContainerRun::worker(Vec::new()),
+            MachineProgram::Delivered { delivery, root } => delivery.container_run(root, &[]),
+        }
+    }
+
+    /// The devices this run's work can be placed on there, enumerated in a
+    /// throwaway container where the pool's own containers run — so the answer
+    /// covers the same hardware the workers will reach.
+    ///
+    /// The image's worker is asked about the format when the image carries it.
+    /// It cannot resolve a program's format at all, so the delivered program is
+    /// asked instead, over the domain service it already answers on this
+    /// machine: the classes are the program's backend's own.
+    fn devices(
+        &self,
+        host: Option<&str>,
+        container: &Container,
+        format: &FormatId,
+        answer_timeout: Duration,
+    ) -> Result<Vec<DeviceInfo>> {
+        match self {
+            MachineProgram::Image => {
+                let argv = probe_argv(
+                    host,
+                    &container.runtime,
+                    &container.image,
+                    &container.run_args,
+                    DeviceProbe::Format(format),
+                );
+                devices::parse_enumeration(&command_stdout(&argv)?)
+            }
+            MachineProgram::Delivered { delivery, root } => {
+                let role = serve_domain_args(format);
+                let argv = once_argv(
+                    host,
+                    &container.runtime,
+                    &container.image,
+                    &container.run_args,
+                    &delivery.container_run(root, &[&role[0], &role[1]]),
+                );
+                // The session ends with this scope: its drop says goodbye,
+                // closes the pipe, and reaps the container's client.
+                DomainService::spawn_argv(&argv, answer_timeout)?.enumerate_devices(format)
+            }
         }
     }
 }
@@ -371,7 +460,16 @@ fn local_pool(
             if let ImageCheck::Unreachable(error) = bootstrap_image(None, container)? {
                 return Err(error);
             }
-            let built = container_pool(None, container, pool, 0, run, execution, program)?;
+            let built = container_pool(
+                None,
+                container,
+                pool,
+                0,
+                run,
+                execution,
+                program,
+                &MachineProgram::Image,
+            )?;
             Ok(Some(LocalPool {
                 transport: Box::new(built.transport),
                 slots: built.slots,
@@ -380,19 +478,34 @@ fn local_pool(
     }
 }
 
-/// Resolves every machine of yours the fleet drew in: verifies its image is
-/// present, then builds its slots — plain workers, or its device tables resolved
-/// against what the enumeration probe reports over its own hardware.
+/// Builds a pool on every machine of yours the fleet drew in: its slots — plain
+/// workers, or its device tables resolved against what that machine's own
+/// enumeration reports — and the transport its workers are spawned through.
+///
+/// `delivery` is what was put on those machines, and `None` for a run whose
+/// format the image answers for itself. It decides both what a worker there
+/// runs and what it is expected to answer.
 fn owned_pools(
     machines: &[OwnedMachine<'_>],
     run: &RunId,
     execution: &ExecutionConfig,
     program: &WorkerProgram,
+    delivery: Option<&ProgramDelivery>,
 ) -> Result<Vec<ContainerPool>> {
     machines
         .iter()
         .enumerate()
         .map(|(index, machine)| {
+            let (machine_program, program) = match delivery {
+                None => (MachineProgram::Image, program.clone()),
+                Some(delivery) => (
+                    MachineProgram::Delivered {
+                        delivery,
+                        root: machine.root,
+                    },
+                    program.delivered(delivery),
+                ),
+            };
             container_pool(
                 Some(machine.ssh),
                 machine.container,
@@ -403,7 +516,8 @@ fn owned_pools(
                 index + 1,
                 run,
                 execution,
-                program,
+                &program,
+                &machine_program,
             )
         })
         .collect()
@@ -423,11 +537,13 @@ fn container_pool(
     run: &RunId,
     execution: &ExecutionConfig,
     program: &WorkerProgram,
+    machine: &MachineProgram<'_>,
 ) -> Result<ContainerPool> {
     let slots = match pool {
         Pool::Workers(workers) => vec![None; *workers],
         Pool::Devices(selectors) => {
-            let enumerated = probe_container_devices(host, container, &program.format)?;
+            let enumerated =
+                machine.devices(host, container, &program.format, execution.answer_timeout)?;
             let entries = devices::resolve(selectors, &enumerated)?;
             let exec = ExecutionConfig::with_devices(
                 entries,
@@ -452,9 +568,10 @@ fn container_pool(
             container.image.clone(),
             container.run_args.clone(),
             prefix,
+            machine.worker_run(),
             // The runtime client is sima's own process: it reads its
-            // configuration from the ambient environment, and the worker it
-            // nests is the sima image's.
+            // configuration from the ambient environment. What the worker it
+            // nests sees is stated inside the container instead.
             spawn_settings(SpawnPolicy::Inherit, execution, program),
         ),
         // A container on this machine binds as local in the journal — it is the
@@ -462,24 +579,6 @@ fn container_pool(
         host: host.unwrap_or_default().to_string(),
         slots,
     })
-}
-
-/// Runs the enumeration probe in a throwaway container where the pool's own
-/// containers run, and parses the devices it reports for `format`.
-fn probe_container_devices(
-    host: Option<&str>,
-    container: &Container,
-    format: &FormatId,
-) -> Result<Vec<DeviceInfo>> {
-    let argv = probe_argv(
-        host,
-        &container.runtime,
-        &container.image,
-        &container.run_args,
-        DeviceProbe::Format(format),
-    );
-    let stdout = command_stdout(&argv)?;
-    devices::parse_enumeration(&stdout)
 }
 
 /// The run's execution settings with the orchestrator's device selectors

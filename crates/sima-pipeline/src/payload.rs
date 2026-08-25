@@ -39,8 +39,8 @@ use sima_core::{Codec, Dec, Enc, Error, Hash, MAX_PAYLOAD, Result};
 use sima_store::Store;
 
 use crate::stamped_tree::{
-    EXECUTABLE_MODE, REGULAR_MODE, build_once, create_dir, executable, read_file, remove_dir,
-    validate_path, write_file,
+    EXECUTABLE_MODE, REGULAR_MODE, STAMP_FILE, build_once, create_dir, executable, read_file,
+    remove_dir, validate_path, write_file,
 };
 
 /// The directory every installed program hangs off, under the directory the
@@ -407,6 +407,13 @@ impl ProgramTree {
     /// The entry point the config's `binary` names.
     pub(crate) fn entry_point(&self) -> PathBuf {
         self.installed().join(ENTRY_POINT)
+    }
+
+    /// The digest the tree was built from, as the machine holding it recorded
+    /// it. A spawn on that machine reads this file to state which program it is
+    /// running, so what the run is answered is the disk's own claim.
+    pub(crate) fn stamp(&self) -> PathBuf {
+        self.root.join(STAMP_FILE)
     }
 }
 

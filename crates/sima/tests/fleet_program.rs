@@ -16,6 +16,10 @@
 //! - a `--fleet` run of a routed format ingests the program's closure into its
 //!   own store and delivers it to every machine of yours;
 //! - a machine that cannot receive the program fails the run, naming it;
+//! - the run finalizes with the machine's workers running what was installed
+//!   there, each answering the digest that machine's own stamp carries;
+//! - a machine whose installed program answers another digest fails its spawn,
+//!   naming both;
 //! - a run whose format this build carries contacts its machines exactly as
 //!   before, delivering nothing.
 
@@ -25,7 +29,7 @@ use std::path::{Path, PathBuf};
 
 use common::{sima_command, worker_binary, write_config_text};
 use sima_core::Result;
-use sima_pipeline::load;
+use sima_pipeline::{Event, Record, load};
 use sima_store::Store;
 
 /// The image name the stand-in runtime looks for to know where the container's
@@ -89,9 +93,14 @@ fn machine_stubs(dir: &Path, run_fails: bool) -> PathBuf {
             }
         ),
     );
-    // The `sima` an image carries, by the name it answers to on the PATH there.
-    std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_sima"), bin.join("sima"))
-        .expect("link the image's sima");
+    // What an image carries, by the names they answer to on the PATH there: the
+    // worker a builtin format's pool spawns, and the `sima` a delivery runs.
+    for (built, name) in [
+        (PathBuf::from(env!("CARGO_BIN_EXE_sima")), "sima"),
+        (worker_binary(), "sima-worker"),
+    ] {
+        std::os::unix::fs::symlink(&built, bin.join(name)).expect("link the image's binary");
+    }
     bin
 }
 
@@ -128,8 +137,12 @@ fn program(dir: &Path, installs: &Path) -> String {
 }
 
 /// A config under `dir` with one machine of yours rooted at `root`, its format
-/// served by whatever `entry` declares.
-fn config(dir: &Path, root: &Path, entry: &str) -> PathBuf {
+/// served by whatever `entry` declares, and `local` workers of its own.
+///
+/// A run with none is carried entirely by the machine, so every worker it binds
+/// is one spawned there — which is what makes an assertion about them
+/// deterministic, the scheduler spawning a slot only when it has work for it.
+fn config(dir: &Path, root: &Path, entry: &str, local: usize) -> PathBuf {
     write_config_text(
         dir,
         "sima.toml",
@@ -142,14 +155,14 @@ fn config(dir: &Path, root: &Path, entry: &str) -> PathBuf {
 
         [run.generator]
         id = "stub.v1"
-        behaviors = ["accumulate:2"]
+        behaviors = ["accumulate:2", "accumulate:2"]
 
         [config]
         store = "./store"
         max_attempts = 3
 
         [orchestrator]
-        workers = 1
+        {local}
 
         [host.machine]
         ssh = "machine"
@@ -163,6 +176,11 @@ fn config(dir: &Path, root: &Path, entry: &str) -> PathBuf {
 
         {entry}
     "#,
+            local = if local == 0 {
+                String::new()
+            } else {
+                format!("workers = {local}")
+            },
             root = root.to_string_lossy(),
         ),
     )
@@ -196,6 +214,7 @@ fn an_entry_that_names_no_payload_refuses_before_any_machine_is_contacted() {
         dir.path(),
         far.path(),
         "[domain.\"stub.v1\"]\nbinary = \"./src/wrapper.sh\"\n",
+        1,
     );
     let output = sima_command()
         .args(["run", config.to_str().expect("utf-8 path"), "--fleet"])
@@ -220,7 +239,7 @@ fn a_fleet_run_ingests_the_program_and_delivers_it_to_every_machine() -> Result<
     let far = tempfile::tempdir().expect("temp dir");
     let log = dir.path().join("installs");
     let bin = machine_stubs(dir.path(), false);
-    let config = config(dir.path(), far.path(), &program(dir.path(), &log));
+    let config = config(dir.path(), far.path(), &program(dir.path(), &log), 1);
     fleet_run(&bin, &config);
 
     // The closure is in the run's own store, which is what a delivery sends
@@ -270,7 +289,7 @@ fn a_machine_that_cannot_receive_the_program_fails_the_run_naming_it() {
     let far = tempfile::tempdir().expect("temp dir");
     let log = dir.path().join("installs");
     let bin = machine_stubs(dir.path(), true);
-    let config = config(dir.path(), far.path(), &program(dir.path(), &log));
+    let config = config(dir.path(), far.path(), &program(dir.path(), &log), 1);
 
     let (code, stderr) = fleet_run(&bin, &config);
     assert_ne!(code, Some(0), "{stderr}");
@@ -291,12 +310,128 @@ fn a_format_this_build_carries_delivers_nothing() {
     let dir = tempfile::tempdir().expect("temp dir");
     let far = tempfile::tempdir().expect("temp dir");
     let bin = machine_stubs(dir.path(), false);
-    let config = config(dir.path(), far.path(), "");
+    let config = config(dir.path(), far.path(), "", 1);
 
     let (code, stderr) = fleet_run(&bin, &config);
     assert_eq!(code, Some(0), "{stderr}");
     assert!(
         !far.path().join("programs").exists(),
         "a run that sends nothing puts nothing there"
+    );
+}
+
+/// The program each worker of the run answered at its handshake, in the order
+/// the journal bound them.
+fn bound_programs(config: &Path) -> Result<Vec<Option<String>>> {
+    let loaded = load(config)?;
+    let store = Store::open(&loaded.store)?;
+    Ok(store
+        .journal(&loaded.run.id())?
+        .iter()
+        .filter_map(|line| Record::from_line(line).ok())
+        .filter_map(|record| match record.event {
+            Event::WorkerBound { program, .. } => Some(program),
+            _ => None,
+        })
+        .collect())
+}
+
+#[test]
+fn the_machine_s_workers_run_what_was_installed_there_and_answer_its_stamp() -> Result<()> {
+    // The whole path: the program is delivered, installed, and spawned out of
+    // the machine's own tree, and every worker it serves answers the digest
+    // that machine's stamp carries.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let far = tempfile::tempdir().expect("temp dir");
+    let log = dir.path().join("installs");
+    let bin = machine_stubs(dir.path(), false);
+    let config = config(dir.path(), far.path(), &program(dir.path(), &log), 0);
+
+    let (code, stderr) = fleet_run(&bin, &config);
+    assert_eq!(code, Some(0), "{stderr}");
+
+    let digest = delivered(&far.path().join("programs")).to_string();
+    let bound = bound_programs(&config)?;
+    assert!(!bound.is_empty(), "the machine served the run");
+    for program in &bound {
+        assert_eq!(
+            program.as_deref(),
+            Some(digest.as_str()),
+            "every worker answers the digest the machine's stamp carries: {bound:?}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn a_worker_the_run_sent_no_program_to_answers_none() -> Result<()> {
+    // The orchestrator spawns the program where it already sits, so it sent
+    // itself nothing and expects nothing back. Its own pool carries this run.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let far = tempfile::tempdir().expect("temp dir");
+    let log = dir.path().join("installs");
+    let bin = machine_stubs(dir.path(), false);
+    let config = config(dir.path(), far.path(), &program(dir.path(), &log), 2);
+    let text = std::fs::read_to_string(&config).expect("the config");
+    std::fs::write(
+        &config,
+        text.replace("members = [\"machine\"]", "members = []"),
+    )
+    .expect("rewrite the config");
+
+    let (code, stderr) = fleet_run(&bin, &config);
+    assert_eq!(code, Some(0), "{stderr}");
+    for program in bound_programs(&config)? {
+        assert_eq!(program, None, "the orchestrator was sent no program");
+    }
+    Ok(())
+}
+
+#[test]
+fn a_machine_holding_another_program_fails_its_spawn_naming_both_digests() {
+    // The agreement is between the digest the run sent and the one the machine
+    // reads off its own disk, so a tree that drifted is caught at the
+    // handshake. The install script writing an entry point that states another
+    // digest is how a drifted machine is produced without one.
+    const DRIFTED: &str = "3333333333333333333333333333333333333333333333333333333333333333";
+    let dir = tempfile::tempdir().expect("temp dir");
+    let far = tempfile::tempdir().expect("temp dir");
+    let bin = machine_stubs(dir.path(), false);
+    executable(
+        &dir.path().join("src/wrapper.sh"),
+        &format!("#!/bin/sh\nexec {} \"$@\"\n", worker_binary().display()),
+    );
+    // The machine's own install writes an entry point that overrides what the
+    // shell read from the stamp; the orchestrator's install of the same payload
+    // is never spawned through it, since its pool runs the config's `binary`.
+    executable(
+        &dir.path().join("install.sh"),
+        &format!(
+            "#!/bin/sh\n\
+             set -e\n\
+             printf '#!/bin/sh\\nSIMA_PROGRAM_DIGEST={DRIFTED} exec {worker} \"$@\"\\n' \
+             > \"$SIMA_INSTALL_DIR/program\"\n\
+             chmod 755 \"$SIMA_INSTALL_DIR/program\"\n",
+            worker = worker_binary().display(),
+        ),
+    );
+    let config = config(
+        dir.path(),
+        far.path(),
+        "[domain.\"stub.v1\"]\nbinary = \"./src/wrapper.sh\"\n\
+         payload = \"./src\"\ninstall = \"./install.sh\"\n",
+        0,
+    );
+
+    let (code, stderr) = fleet_run(&bin, &config);
+    assert_ne!(code, Some(0), "{stderr}");
+    assert!(
+        stderr.contains("program digest mismatch"),
+        "the spawn is refused: {stderr}"
+    );
+    assert!(stderr.contains(DRIFTED), "names what answered: {stderr}");
+    assert!(
+        stderr.contains(&delivered(&far.path().join("programs")).to_string()),
+        "and what the run sent: {stderr}"
     );
 }

@@ -227,6 +227,13 @@ fn entries(store: &Store, digest: &Hash) -> Result<Vec<(String, Hash)>> {
     Ok(entries)
 }
 
+/// Where an interpreter reads the SDK from, under the tree at `root`. Stated
+/// here so a caller naming the path a spawn puts on the module search path and
+/// the install that fills it agree.
+pub(crate) fn installed(root: &Path) -> PathBuf {
+    root.join(INSTALLED_DIR)
+}
+
 /// Every file object the SDK `digest` names. With the manifest's own hash these
 /// are the package's whole closure — what a delivery has to advertise for the
 /// receiving machine to be able to install it.
@@ -245,7 +252,7 @@ pub(crate) fn objects(store: &Store, digest: &Hash) -> Result<Vec<Hash>> {
 /// store instead of out of this build, and the stamp choreography is the same,
 /// so a second delivery of one digest writes nothing.
 pub(crate) fn install(store: &Store, digest: &Hash, root: &Path) -> Result<PathBuf> {
-    let installed = root.join(INSTALLED_DIR);
+    let installed = installed(root);
     // The first listed file is what says the package a stamp claims is really
     // there; the manifest is read to learn which, so an empty tree under a
     // stamp is rebuilt rather than imported from.

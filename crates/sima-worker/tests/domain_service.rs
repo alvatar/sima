@@ -1,6 +1,10 @@
 //! The domain-service role of the built `sima-worker` binary: what the in-tree
 //! formats bind, asked over a pipe and compared against the same answers
 //! reached by direct calls.
+//!
+//! One test drives the role the way a fleet machine's is driven — through a
+//! command that wraps the program to reach it — since that path states the role
+//! inside the wrapper rather than appending it.
 
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
@@ -344,4 +348,53 @@ mod session {
              this program serves \"stub.v1\""
         );
     }
+}
+
+#[test]
+fn a_wrapped_program_answers_the_role_stated_inside_the_wrapper() {
+    // How a program on a fleet machine is asked which devices it can run on:
+    // something wraps it to get there — an ssh hop, a container runtime, a
+    // shell that states its environment — so the wrapper carries the role and
+    // the session appends nothing.
+    let format = FormatId::new("stub.v1").expect("format id");
+    let argv = vec![
+        "sh".to_string(),
+        "-c".to_string(),
+        format!(
+            "exec {} --serve-domain {}",
+            env!("CARGO_BIN_EXE_sima-worker"),
+            format.as_str()
+        ),
+    ];
+    let mut service = sima_transport::domain_service::DomainService::spawn_argv(
+        &argv,
+        std::time::Duration::from_secs(30),
+    )
+    .expect("the wrapped program answers the handshake");
+    // The stub computes in the worker process, so it opens no device — the
+    // answer is the program's own, whatever the machine holds.
+    assert!(
+        service
+            .enumerate_devices(&format)
+            .expect("the program enumerates")
+            .is_empty()
+    );
+}
+
+#[test]
+fn a_wrapper_that_reaches_no_program_fails_rather_than_hanging() {
+    let argv = vec![
+        "sh".to_string(),
+        "-c".to_string(),
+        "exec /nonexistent/program --serve-domain stub.v1".to_string(),
+    ];
+    let error = sima_transport::domain_service::DomainService::spawn_argv(
+        &argv,
+        std::time::Duration::from_secs(5),
+    )
+    .expect_err("a wrapper reaching nothing");
+    assert!(
+        error.to_string().contains("handshake"),
+        "the failure is the handshake refused: {error}"
+    );
 }
