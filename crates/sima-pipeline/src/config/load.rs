@@ -192,7 +192,7 @@ fn resolve_domains(
             })
         })
         .collect::<Result<Vec<_>>>()?;
-    vend_sdks(&base, &mut declared)?;
+    vend_sdks(path, &base, &mut declared)?;
     install_payloads(path, &base, &declared, store)?;
     DomainRegistry::new(declared, answer_timeout)
         .map_err(|e| Error::Validation(format!("{}: {e}", path.display())))
@@ -205,21 +205,28 @@ fn resolve_domains(
 /// One tree per SDK, however many entries declare it: what it holds is a
 /// property of this binary, not of any one program. An entry declaring none
 /// leaves the disk alone.
-fn vend_sdks(base: &Path, declared: &mut [DomainEntry]) -> Result<()> {
+fn vend_sdks(path: &Path, base: &Path, declared: &mut [DomainEntry]) -> Result<()> {
     let mut vended: BTreeMap<Sdk, PathBuf> = BTreeMap::new();
     for entry in declared {
         let Some(sdk) = entry.sdk else {
             continue;
         };
-        let path = match vended.get(&sdk) {
-            Some(path) => path.clone(),
+        let directory = match vended.get(&sdk) {
+            Some(directory) => directory.clone(),
             None => {
-                let path = materialize(base, sdk)?;
-                vended.insert(sdk, path.clone());
-                path
+                let format = entry.format.as_str();
+                let directory = materialize(base, sdk).map_err(|e| {
+                    Error::Validation(format!(
+                        "{}: [domain.{format:?}] the {} SDK could not be vended: {e}",
+                        path.display(),
+                        sdk.as_str(),
+                    ))
+                })?;
+                vended.insert(sdk, directory.clone());
+                directory
             }
         };
-        entry.sdk_path = Some(path);
+        entry.sdk_path = Some(directory);
     }
     Ok(())
 }
