@@ -20,33 +20,33 @@ adds nothing and is rejected.
 
 ## Where it runs
 
-This program answers a registered format, so it runs on the machine the
-orchestrator runs on and nowhere else: its tasks are not routed to fleet
-machines, and `sima migrate` refuses a registered format outright. Distributing
-work across machines is available to the formats sima carries in process.
+`sima run search.toml` drives it here. `sima migrate search.toml` moves the
+whole run onto another machine: the entry's `payload` key states what travels,
+the destination installs it at load, and the results come home to this store.
+The program travels as the payload and the SDK travels inside the `sima`
+binary, so the destination needs nothing installed beyond sima itself.
+
+Turning that on takes two declarations, both commented out in `search.toml`: an
+`[orchestrator] migrate` key naming the destination, and the `[host.<name>]`
+entry with that machine's connection details.
+
+Spreading one run's tasks across several machines — `sima run --fleet` — is not
+available to a registered format: a worker elsewhere would need this program
+installed there, and nothing installs it. That workflow is available to the
+formats sima carries in process.
 
 ## Running it
 
-`import sima` must resolve. Either install the package:
-
-```
-pip install <repo>/python
-```
-
-or point the interpreter at it for one run:
-
-```
-export PYTHONPATH=<repo>/python
-```
-
-Then, from this directory:
+From this directory:
 
 ```
 sima run search.toml
 ```
 
-`search.toml` routes `example.stepper.v1` to `./stepper.py`, so the file must
-stay executable.
+`import sima` resolves from the SDK the binary vends: the entry declares
+`sdk = "python"`, and sima puts the package it carries on the interpreter's
+path. `search.toml` routes `example.stepper.v1` to `./stepper.py`, so the file
+must stay executable.
 
 ## Arming a failure
 

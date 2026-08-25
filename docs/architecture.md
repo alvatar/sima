@@ -964,14 +964,15 @@ flowchart TD
   IS --> DOM["sima-domains"]
 ```
 
-**A registered format runs only on the orchestrator's own machine.** Its tasks
-are not routed to fleet machines, and `sima migrate` refuses it outright —
-naming the format and the program before it reaches the destination, the store,
-the lock, or any provider — because the synthesized far config carries no
-`[domain.*]` entry and the destination would have no route to the program. Both
-halves need the program present on a machine sima did not install it on, which
-is P9. Until then, distributing work across machines is available to the formats
-this build carries.
+**A registered format migrates by carrying its program, and is not routed to
+fleet machines.** `sima migrate` sends the program's bytes through the store,
+the destination installs them at load, and the run executes there — see
+[Carrying a registered program](#carrying-a-registered-program). Fleet routing
+is the remaining half: a worker on another machine would need the program
+installed there too, and nothing installs it. Until that lands, spreading one
+run's tasks across machines is available to the formats this build carries,
+while moving a whole run is available to a registered format that states what
+travels.
 
 The unit of registration is a **binary**. A heavy program owns its GPU context,
 its dependency tree, and its startup cost, so it runs as its own process: it
@@ -1052,6 +1053,7 @@ A config declares one entry per registered format:
 [domain."acme.thing.v1"]
 binary = "/opt/acme/worker"
 env    = ["ACME_ASSETS"]   # optional; variable names the program also receives
+sdk    = "python"          # optional; the SDK the program is written against
 ```
 
 The registry is built where the config resolves, and the run's own translations
@@ -1097,6 +1099,8 @@ piped stdin and stdout, its stderr the orchestrator's own. Beyond those:
   the locale, the user's caches, and the three GPU stacks;
 - the variables its `[domain.*]` entry names in `env`, by name alone, taken
   from the orchestrator's environment where it holds them;
+- the vended SDK's directory at the head of its module path, when the entry
+  declares one;
 - a fresh scratch working directory, created at spawn and removed when the
   process is reaped.
 
@@ -1192,14 +1196,130 @@ Two limits are documented rather than mechanized:
   interpreter, the binaries it execs, and the assets a program loads at runtime
   sit outside it; they belong in the components the program declares.
 
-**A migration of a config-routed run is refused.** The far config a migration
-synthesizes carries `[run]`, `[config]`, and `[orchestrator]`, so the far side
-holds no `[domain.*]` entry and no route to the program. `sima migrate` says so
-where the migration is asked for — naming the format and the program, ahead of
-the destination, the store, the lock, and any provider — rather than letting
-the run reach the destination and die there on an unknown format id. Carrying
-entries across is paired with routing registered formats to fleet machines:
-both need the program present on a machine sima did not install it on.
+### The vended SDK
+
+A program is self-contained only down to the wire: the framing, the codecs, the
+model types, and the serve loop belong to an SDK, so every program written in
+the language one serves depends on it. That is a dependency the machine a
+program lands on has no way to install — a migration carries the program's own
+files and nothing else — so the binary carries it instead.
+
+**The entry declares it and the binary vends it.** `sdk = "python"` names the
+package this build embeds; any other value is refused at load, naming the
+config, the format, the key, and the value. The key is independent of `payload`
+and enters no hash: where a program reads its library from is operational, so
+run identity is untouched.
+
+**Materialization happens at config load, on every machine alike.**
+
+```
+<config-dir>/sdk/python/
+    .lock                 held while writing
+    installed/sima/*.py   the package, as this binary holds it
+    installed.digest      the digest of the package that was written
+```
+
+The digest covers the embedded files alone — each path and the hash of its text
+— so one build produces one digest on any machine and an upgraded binary
+restamps exactly once. The tree is shared by every entry declaring the same
+SDK, since what it holds is a property of the binary rather than of any one
+program. It is built through the same stamp-and-lock choreography a program
+tree is: the stamp removed first, the build under a blocking lock, the stamp
+written last and atomically.
+
+**The path reaches the program through the spawn policy.** `installed/` leads
+the program's module path — `PYTHONPATH` for Python — ahead of anything the
+machine already holds under that name, and the domain service and every worker
+of the run share one policy, so both halves of a program read one package. A
+copy installed on the machine is shadowed by the vended one, which is the
+point: the vended copy is the one whose protocol matches the binary driving the
+run.
+
+**A migration carries the declaration.** The synthesized far entry states
+`sdk = "python"`, and the destination's own binary vends its own copy at load,
+so the package itself stays off the wire.
+
+`sima sdk <language> --out <dir>` writes the same package by hand, for
+developing a program outside a run.
+
+### Carrying a registered program
+
+A migration moves a run onto a machine that has never seen its program, so the
+program travels with it. Two keys on the entry state what:
+
+```toml
+[domain."acme.thing.v1"]
+binary  = "./stepper.py"          # how the program runs here
+payload = "./stepper.py"          # what travels: one file or one directory
+install = "./install.sh"          # optional shell script; the far side runs it
+```
+
+The payload carries the program's own files. The SDK travels inside the binary
+and is vended on the destination, and a third-party dependency is the payload's
+own business, carried in a directory payload and installed by its script.
+
+**The program travels per run, as objects.** Nothing is published and no image
+is rebuilt. The payload's files become ordinary content-addressed objects, one
+**manifest** object names them — relative path, execute bit, and the object
+holding each file's bytes, plus the install script's text — and the manifest's
+own hash is the **payload digest**. The digest is what the synthesized far
+config states, and the manifest plus its files ride the migration's existing
+push. The sync's want/have negotiation is therefore what skips the bytes the
+destination already holds, so an unchanged program crosses the wire once.
+
+```
+   payload dir              objects in the store
+   ───────────              ────────────────────
+   stepper.py    ──blake3──►  H₁ (file bytes)
+   assets/w.bin  ──blake3──►  H₂ (file bytes)
+                              │
+   manifest ──────────────►   M = hash(manifest bytes)   ◄── payload_digest
+```
+
+The ingest is deterministic — entries sorted by path, one tree to one digest —
+and refuses anything that would not reproduce elsewhere: a link or other
+non-regular entry, a file name that is not UTF-8, a tree holding no file, a file
+above the frame cap a transferred object may reach, and several files with no
+install script to say which of them is the program.
+
+**Installation happens inside the far `sima run`, at config load.** There is no
+installation verb: an entry carrying `payload_digest` has its program built
+where the config resolves, before the binary that entry names is spawned.
+
+```
+<config-dir>/program/<format>/
+    .lock              held while installing
+    payload/           the manifest's files, materialized
+    install.sh         the manifest's script, when it carries one
+    install.log        the last install's combined stdout and stderr
+    installed/         what the script filled
+    installed/program  the entry point the far config's binary names
+    installed.digest   the manifest digest this tree was built from
+```
+
+The script runs as `/bin/sh install.sh` in that directory, under the
+destination's own environment plus `SIMA_PAYLOAD_DIR` and `SIMA_INSTALL_DIR`.
+Nothing is forwarded from the machine that sent the payload: an installed
+program is built out of what the destination has. After exit 0 the script owes
+an executable `$SIMA_INSTALL_DIR/program` — the entry point is found by
+convention, and the script reports no path. A script that exits non-zero or
+leaves no entry point fails the load, naming the script, its status, the log,
+and the log's last lines. A payload of one file needs no script: it is the
+program, and lands at the convention's path.
+
+**The stamp decides.** `installed.digest` is written last, atomically, so a
+load whose stamp already names the digest reads one file and spawns what is
+there. That is what makes a reattach, a `sima status`, and a follow attach cost
+nothing, and what makes a changed payload reinstall exactly once. The decision
+is taken again under the tree's lock, so concurrent loaders build one tree
+between them, and the kernel frees a crashed installer's lock the way it frees
+the store's run lock.
+
+**Accepting a changed program across a migration.** The far run journals what
+it installed and refuses a build different from the one that drove it, exactly
+as a local run does. `sima migrate <config> --accept-binary` travels to the far
+`sima run`'s argv: the comparison is that run's, and the acceptance is the
+operator's, stated where the migration is asked for.
 
 **Packaging is a convention.** The packaging unit is the unit of registration:
 one self-contained binary, holding both roles of the program. Its version is
@@ -1208,11 +1328,11 @@ describes it, and the journaled digest and the resume gate are what an operator
 reads when the two disagree.
 
 A config pin — a `pin` key on the entry, refusing any other digest — is
-deliberately absent. A registered format runs only on the orchestrator's own
-machine, so a pinned config has no second machine to travel to, and the pin
-would restate for one machine what the journal already records. The key arrives
-with fleet routing of registered formats or with entry carriage across a
-migration, whichever lands first.
+deliberately absent. The payload digest is what a second machine receives, and
+the journal is what records the build that drove each session, so a pin would
+restate one of them. The key arrives with fleet routing of registered formats,
+where a worker's program is installed by something other than the run that
+needs it.
 
 ## `sima-domains` (L5)
 
@@ -2392,11 +2512,14 @@ both ends. Starting on WGSL and moving to CUDA changes every task key, and the
 far side restarts from segment 0. That is a configuration error and nothing
 detects it.
 
-Both facts hold only for a format this build carries. A format a `[domain.*]`
-entry routes to a program is refused a migration outright, because the
-synthesized far config carries no entry and the far side has no route to the
-program — see
-[Identity and packaging of a registered program](#identity-and-packaging-of-a-registered-program).
+Both facts hold for a format this build carries and for one a `[domain.*]` entry
+routes to a program of its own, because a program's environment components name
+no machine. A routed format's entry must state what travels: with a `payload`
+the migration carries the program as objects and the destination installs it at
+load; with none, the entry describes a program this machine holds and no other,
+and the migration is refused where it is asked for — naming the format, the
+program, and the missing key, ahead of the destination, the store, the lock, and
+any provider. See [Carrying a registered program](#carrying-a-registered-program).
 
 **The destination is a declared host**, named by `[orchestrator].migrate`. A
 migration adds no section and no key of its own, and the host's own form decides
@@ -2437,6 +2560,22 @@ hardware, and its `migrate` key names a destination the far side must not carry
 onward, since a run that has arrived does not migrate again. Every `[host.*]`,
 `[host_class.*]`, `[fleet]`, and `[budget]` is dropped: they name machines
 reachable from here, which says nothing about what the destination can reach.
+
+A run whose format is routed to a program gains one `[domain.*]` table, written
+rather than copied: the entry point the install leaves, the payload digest to
+install it from, the variable names the local entry declared, and the SDK it
+declared. The names travel alone, since each value is the destination's own, and
+the SDK travels as a declaration, since the destination's own binary vends the
+package. The local `binary` and `payload` do not travel at all — both name paths
+on this machine.
+
+```toml
+[domain."acme.thing.v1"]
+binary = "./program/acme.thing.v1/installed/program"
+payload_digest = "<64 hex>"
+env = ["PATH"]
+sdk = "python"
+```
 
 The far side's own `[orchestrator]` is rebuilt from the destination's form:
 
@@ -2485,13 +2624,30 @@ moved.
 ```
 
 Push and pull are one `Store::sync` at two moments, differing only in the
-[object scope](#workers-on-another-machine) each side advertises. The key set is
-derived independently on each side from (config, store state) — the rule the
-scheduler's frontier already follows — so no key list crosses the wire and the
-protocol is unchanged. It converges because whichever side holds more also
-derives more keys, and advertises the records the other lacks. The far half of
-each session is `sima sync-serve <config>`, spawned over the same hop, which
-takes its own run lock for the session's duration.
+[object scope](#workers-on-another-machine) each side advertises. A push over a
+registered format names the payload's closure — the manifest and every file it
+names — beside the frontier states, so the program crosses with the run it
+serves. No key list crosses the wire and the protocol is unchanged: the
+initiator derives its key set from (config, store state), the rule the
+scheduler's frontier already follows, and the session converges because
+whichever side holds more also derives more keys and advertises the records the
+other lacks.
+
+The far half of each session is **`sima sync-serve <store> --run <id>`**,
+spawned over the same hop, which takes its own run lock for the session's
+duration. It addresses the store and the run rather than a config, because
+loading a config resolves its `[domain.*]` entries — which installs and spawns
+the very program the session may be there to deliver. The initiator knows both
+values: it derives the run id locally, and the far store sits in the run's own
+directory. That side therefore derives its key set from **the run's journal**:
+every key a lifecycle event names, which is exactly the set it has state for,
+since a record or a checkpoint exists only for a task the run queued and
+queueing is journaled. A store that journaled nothing yields the empty set,
+which is what one about to take its first push holds.
+
+`follow-serve` keeps its config-path form: it serves users through `--on` as
+well as the migration, and it runs only after the far run installed its
+program.
 
 **The far run is detached.** It is started with `setsid` and its pid recorded,
 so a laptop that sleeps, a network that drops, or a `sima migrate` that is
@@ -2535,6 +2691,16 @@ migration therefore loses, from the local journal, the far records produced whil
 nothing was attached. Journals are observational and excluded from every identity
 criterion, so the cost is diagnostic detail; the records, the manifest, and the
 run's identity are unaffected.
+
+**A far run that dies before journaling states its own last words.** Every
+far-side load failure looks alike from here — a program that cannot answer for
+its format, an install script that exited non-zero, a store that will not open —
+because the far `sima run` dies before it journals and the follow can then say
+only that there is no run to follow. The attach therefore reads the last lines
+of the far run's log over the shell channel every other far-side operation uses,
+and reports them with the machine's name. A far run that is up and simply has
+not journaled yet is a different thing: the follow waits it out under its own
+bound and, if that runs out, reports the refusal unchanged.
 
 ### Run status
 

@@ -34,6 +34,7 @@ use crate::migrate::destination::Destination;
 use crate::migrate::far_config::FarLayout;
 use crate::migrate::sync::{Reach, sync_over};
 use crate::process::{ImageCheck, bootstrap_image, command_stdout};
+use crate::program_binding::BinaryChange;
 use crate::rental::{endpoint_target, transport_mode};
 
 /// The far side of a migration: the machine the run moves onto, and every
@@ -65,7 +66,12 @@ pub(crate) trait FarSide {
 
     /// Starts the far-side `sima run` detached, records its pid in `run.pid`,
     /// and returns it.
-    fn start(&self) -> Result<u32>;
+    ///
+    /// `accept` is what this invocation stated about a program whose build
+    /// changed under the run. The comparison itself is the far run's — it
+    /// journals what it installed and compares against what it journaled — so
+    /// the acceptance travels to it rather than being decided here.
+    fn start(&self, accept: BinaryChange) -> Result<u32>;
 
     /// Asks the far run to wind down. `sima run` drains its in-flight attempts
     /// on `SIGINT` and leaves the far store resumable.
@@ -82,7 +88,21 @@ pub(crate) trait FarSide {
 
     /// Opens a live follow of the far run.
     fn follow(&self) -> Result<Box<dyn RunFeed>>;
+
+    /// The last lines of the far run's log.
+    ///
+    /// A far `sima run` that fails while loading its config — a program that
+    /// cannot answer, an install that exits non-zero — dies before it journals
+    /// anything, so the follow finds a run that never started and can say only
+    /// that. Its own words are in the log it wrote, and this is how they reach
+    /// the operator who asked for the migration.
+    fn log_tail(&self) -> Result<String>;
 }
+
+/// How much of the far run's log an attach failure carries. Enough for a
+/// config-load failure to state itself in full; the whole log is on the
+/// destination, at the path the layout fixes.
+const LOG_TAIL_LINES: usize = 40;
 
 /// What a first contact with the destination found.
 pub(crate) enum Contact {
@@ -254,7 +274,7 @@ impl FarSide for Remote {
         parse_pid(stdout.trim(), &self.reach.label())
     }
 
-    fn start(&self) -> Result<u32> {
+    fn start(&self, accept: BinaryChange) -> Result<u32> {
         // `setsid` detaches the run from the session that started it, so the
         // far side keeps computing when this migration's connection drops. It
         // does not fork when it is not already a process-group leader, which a
@@ -271,15 +291,23 @@ impl FarSide for Remote {
         // The `cd` is the guard that the placement happened: without it a
         // missing directory would surface only as a redirection failure inside
         // the background job, which the script's own exit status never sees.
+        //
+        // `--accept-binary` when this invocation stated it: the far run
+        // installs the payload and compares its digest against what it
+        // journaled, so the acceptance has to reach it to have any effect.
         let stdout = self.shell(&format!(
             "cd {dir} || exit 1\n\
-             setsid nohup {binary} run {config} > {log} 2>&1 < /dev/null &\n\
+             setsid nohup {binary} run {config}{accept} > {log} 2>&1 < /dev/null &\n\
              pid=$!\n\
              echo $pid > {pid}\n\
              echo $pid\n",
             dir = self.layout.dir(),
             binary = self.reach.binary(),
             config = self.layout.config(),
+            accept = match accept {
+                BinaryChange::Accept => " --accept-binary",
+                BinaryChange::Refuse => "",
+            },
             log = self.layout.log(),
             pid = self.layout.pid(),
         ))?;
@@ -308,12 +336,28 @@ impl FarSide for Remote {
     }
 
     fn sync(&self, store: &Store, keys: &[TaskKey], scope: ObjectScope<'_>) -> Result<SyncReport> {
-        sync_over(store, keys, scope, &self.reach, &self.layout.config())
+        sync_over(
+            store,
+            keys,
+            scope,
+            &self.reach,
+            &self.layout.store(),
+            self.layout.run(),
+        )
     }
 
     fn follow(&self) -> Result<Box<dyn RunFeed>> {
         let argv = self.reach.follow_serve_argv(&self.layout.config());
         Ok(Box::new(RemoteFeed::open_over(&argv, &self.reach.label())?))
+    }
+
+    fn log_tail(&self) -> Result<String> {
+        // A run that never started leaves no log, and that absence is itself
+        // the answer to give: the script exits zero with nothing to say.
+        self.shell(&format!(
+            "tail -n {LOG_TAIL_LINES} {log} 2>/dev/null\nexit 0\n",
+            log = self.layout.log(),
+        ))
     }
 }
 
@@ -408,6 +452,95 @@ mod tests {
         path
     }
 
+    /// A stand-in for the far side's `sima` that records the arguments it was
+    /// started with, at `<dir>/argv`, before it lives for `seconds`.
+    fn recording_binary(dir: &Path, seconds: &str) -> std::path::PathBuf {
+        let path = dir.join("sima");
+        std::fs::write(
+            &path,
+            format!(
+                "#!/bin/sh\necho \"$@\" > {}\nexec sleep {seconds}\n",
+                dir.join("argv").display(),
+            ),
+        )
+        .expect("write the stand-in");
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+            .expect("make it executable");
+        path
+    }
+
+    /// The arguments the recording stand-in was started with, waited for: the
+    /// start returns when the shell that backgrounded it does, which is before
+    /// the job itself has run.
+    fn recorded_argv(dir: &Path) -> String {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Ok(argv) = std::fs::read_to_string(dir.join("argv")) {
+                return argv;
+            }
+            assert!(Instant::now() < deadline, "the stand-in never recorded");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn the_log_tail_is_the_far_run_s_last_lines() -> Result<()> {
+        // What the operator sees when the far run died before it journaled:
+        // its own output, read over the same shell channel every other far-side
+        // operation uses.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let far = here(dir.path(), Path::new("/bin/true"));
+        far.place("[run]\nroot_seed = 1\n")?;
+        let log: String = (0..LOG_TAIL_LINES + 10)
+            .map(|line| format!("line {line}\n"))
+            .collect();
+        std::fs::write(dir.path().join(run().to_string()).join("run.log"), &log)
+            .expect("write the log");
+
+        let tail = far.log_tail()?;
+        let lines: Vec<&str> = tail.lines().collect();
+        assert_eq!(lines.len(), LOG_TAIL_LINES);
+        assert_eq!(lines.last(), Some(&"line 49"));
+        assert_eq!(lines.first(), Some(&"line 10"));
+        Ok(())
+    }
+
+    #[test]
+    fn a_far_run_that_left_no_log_answers_with_nothing() -> Result<()> {
+        // A run that never started wrote no log, and the absence is the
+        // answer: reading it is not itself a failure to report.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let far = here(dir.path(), Path::new("/bin/true"));
+        far.place("[run]\nroot_seed = 1\n")?;
+        assert!(far.log_tail()?.trim().is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn the_acceptance_of_a_changed_program_is_what_the_far_run_is_started_with() -> Result<()> {
+        // The far run installs the payload and compares its digest against
+        // what it journaled, so the flag has to reach its argv to have any
+        // effect there.
+        for (accept, expected) in [(BinaryChange::Accept, true), (BinaryChange::Refuse, false)] {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let binary = recording_binary(dir.path(), "30");
+            let far = here(dir.path(), &binary);
+            far.place("[run]\nroot_seed = 1\n")?;
+            let pid = far.start(accept)?;
+            let argv = recorded_argv(dir.path());
+            assert!(argv.contains("run"), "it is a run: {argv}");
+            assert_eq!(
+                argv.contains("--accept-binary"),
+                expected,
+                "{accept:?} produced {argv}"
+            );
+            kill(pid);
+            until_gone(&far)?;
+        }
+        Ok(())
+    }
+
     /// Polls `far` until nothing is driving it, or the wait runs out.
     fn until_gone(far: &Remote) -> Result<Option<u32>> {
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -487,7 +620,7 @@ mod tests {
         let far = here(dir.path(), &binary);
         far.place("[run]\nroot_seed = 1\n")?;
 
-        let pid = far.start()?;
+        let pid = far.start(BinaryChange::Refuse)?;
         assert_eq!(
             far.driving()?,
             Some(pid),
@@ -518,7 +651,7 @@ mod tests {
         let binary = sleeping_binary(dir.path(), "30");
         let far = here(dir.path(), &binary);
         far.place("[run]\nroot_seed = 1\n")?;
-        let pid = far.start()?;
+        let pid = far.start(BinaryChange::Refuse)?;
         kill(pid);
         assert_eq!(until_gone(&far)?, None);
         far.interrupt(pid)?;
@@ -572,7 +705,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let far = here(dir.path(), Path::new("/bin/true"));
         // Nothing was placed, so the run has nowhere to start.
-        assert!(far.start().is_err());
+        assert!(far.start(BinaryChange::Refuse).is_err());
     }
 
     #[test]

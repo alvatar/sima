@@ -247,7 +247,7 @@ impl TaskHistory {
 /// The task a lifecycle event belongs to. A diagnostic's optional task field
 /// is observational text rather than a lifecycle statement, and the run-level
 /// events frame the run rather than a task, so neither names a history.
-fn lifecycle_task(event: &Event) -> Option<&str> {
+pub(crate) fn lifecycle_task(event: &Event) -> Option<&str> {
     match event {
         Event::Queued { task }
         | Event::Leased { task, .. }

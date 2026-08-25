@@ -49,6 +49,22 @@ pub(super) struct DomainSection {
     /// Environment variable names the program receives beyond the baseline
     /// every spawned program gets. Absent means the baseline alone.
     pub(super) env: Option<Vec<String>>,
+    /// What travels when this run migrates: one file or one directory,
+    /// resolved against the config file's directory. Absent means the program
+    /// is this machine's alone.
+    pub(super) payload: Option<String>,
+    /// The shell script the destination runs to turn the payload into the
+    /// program it spawns; optional for a single-file payload, required for a
+    /// directory.
+    pub(super) install: Option<String>,
+    /// The payload manifest this config's store already holds, written by a
+    /// migration when it synthesizes the far config. The destination
+    /// materializes and installs it at load.
+    pub(super) payload_digest: Option<String>,
+    /// The SDK the program is written against, which this binary vends and
+    /// puts on the program's module path. Absent means a program that needs
+    /// none of it.
+    pub(super) sdk: Option<String>,
 }
 
 /// The `[run]` section: every field enters run identity.

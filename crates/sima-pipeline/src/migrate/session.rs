@@ -66,10 +66,13 @@ use crate::config::{DEFAULT_READY_POLL_MS, DEFAULT_READY_TIMEOUT_MS};
 use crate::feed::RunFeed;
 use crate::fleet::Rental;
 use crate::migrate::destination::{Destination, destination_for};
-use crate::migrate::far_config::{FarWorkers, far_config};
+use crate::migrate::far_config::{FarWorkers, Registration, far_config};
 use crate::migrate::far_side::{Contact, FarSide, Remote};
 use crate::migrate::objects::push_objects;
+use crate::payload::{PayloadSpec, closure, ingest};
+use crate::program_binding::BinaryChange;
 use crate::rental::{budget_exhausted, provider_for_rental};
+use crate::sdk::Sdk;
 use crate::status::{RunState, RunStatus};
 use crate::task_keys::task_keys;
 
@@ -90,6 +93,10 @@ const BUDGET_INTERVAL: Duration = Duration::from_secs(10);
 /// only once it has loaded its config, opened its store, and taken its lock. The
 /// bound therefore covers a process start rather than a machine coming up, and
 /// a far run that has exited ends the wait at once whatever is left of it.
+///
+/// The suite reads it from a test override instead, so it fixes which failure a
+/// wait that ran out reports without spending the wait.
+#[cfg(not(test))]
 const ATTACH_BOUND: Duration = Duration::from_secs(30);
 
 /// What a migration came home with.
@@ -124,6 +131,7 @@ pub fn migrate(
     loaded: &LoadedConfig,
     observer: Observer<'_>,
     interrupt: &AtomicBool,
+    accept: BinaryChange,
 ) -> Result<MigrateOutcome> {
     // The file's own text is what travels: `[run]` is carried across as a
     // parsed value rather than re-derived, so no translation here can perturb
@@ -133,21 +141,25 @@ pub fn migrate(
         path: config.to_path_buf(),
         source,
     })?;
-    // A run whose format a `[domain.*]` entry routes to a program stays on the
-    // machine that program is installed on. The refusal precedes the
-    // destination, the store, the lock, and any provider, so the refusal is
-    // stated before anything is opened, moved, or rented.
-    if let Some(routed) = loaded.domains.routed(&loaded.run.format) {
-        return Err(Error::Validation(format!(
-            "the run's format {:?} is served by the program {}, and a migration carries no route \
-             to it: the far config is synthesized from [run], [config], and [orchestrator] alone. \
-             Drive this run on the machine the program is installed on.",
-            loaded.run.format.as_str(),
-            routed.binary.display()
-        )));
-    }
+    // The refusal a routed format with nothing to carry gets precedes the
+    // destination, the store, the lock, and any provider, so it is stated
+    // before anything is opened, moved, or rented.
+    let carried = carried(loaded)?;
     let destination = destination_for(loaded)?;
     let store = Store::open(&loaded.store)?;
+    // The program's bytes become objects before the lock is taken: the ingest
+    // writes content-addressed objects and nothing else, which is the one store
+    // write that needs no exclusion — two writers of one object write the same
+    // bytes to the same address.
+    let registration = match carried {
+        None => None,
+        Some(carried) => Some(Registration {
+            format: loaded.run.format.as_str().to_string(),
+            payload_digest: ingest(&store, &carried.payload)?,
+            env: carried.env,
+            sdk: carried.sdk,
+        }),
+    };
     // Registering the run is what gives it a journal to forward into, and it is
     // the same idempotent registration a local `sima run` performs.
     let run = store.create_run(&loaded.run)?;
@@ -164,6 +176,8 @@ pub fn migrate(
                 config: loaded,
                 destination: &destination,
                 local_text: &local_text,
+                registration: registration.as_ref(),
+                accept,
                 rental: None,
                 observer,
                 interrupt,
@@ -212,6 +226,8 @@ pub fn migrate(
                 config: loaded,
                 destination: &destination,
                 local_text: &local_text,
+                registration: registration.as_ref(),
+                accept,
                 rental: Some(guard),
                 observer,
                 interrupt,
@@ -222,6 +238,47 @@ pub fn migrate(
             .drive()
         }
     }
+}
+
+/// What a migration of this run has to carry to the destination beyond the
+/// run's own closure: the program its format is served by, as the `[domain.*]`
+/// entry declares it travels.
+struct Carried {
+    payload: PayloadSpec,
+    /// The variable names the entry declared, which reach the far entry as
+    /// names; each value is the destination's own.
+    env: Vec<String>,
+    /// The SDK the entry declared, which reaches the far entry as the same
+    /// declaration; the package is the destination binary's to vend.
+    sdk: Option<Sdk>,
+}
+
+/// What `loaded` must carry, and `None` for a run whose format this build
+/// answers — there is no program, so nothing travels.
+///
+/// A routed format whose entry states no payload is a program this machine
+/// holds and no other, and that is refused here: naming the format, the
+/// program, and the key that would make it travel.
+fn carried(loaded: &LoadedConfig) -> Result<Option<Carried>> {
+    let Some(routed) = loaded.domains.routed(&loaded.run.format) else {
+        return Ok(None);
+    };
+    let Some(payload) = routed.payload else {
+        return Err(Error::Validation(format!(
+            "the run's format {format:?} is served by the program {}, and the \
+             [domain.{format:?}] entry states no payload: a migration carries the program to \
+             the destination as objects, so the entry names what travels. Add a payload key \
+             naming the file or directory that is the program, or drive this run on the \
+             machine the program is installed on.",
+            routed.binary.display(),
+            format = loaded.run.format.as_str(),
+        )));
+    };
+    Ok(Some(Carried {
+        payload: payload.clone(),
+        env: routed.env.to_vec(),
+        sdk: routed.sdk,
+    }))
 }
 
 /// The rented machine hosting this run: the one already hosting it, or a fresh
@@ -275,6 +332,11 @@ struct Overrides {
     /// takes the same tolerance production takes — the attempts and what each
     /// records are what its tests fix — at a poll that costs no wall clock.
     stated_nowhere: (Duration, Duration),
+    /// How long the follow waits for the far run's first journal line. The
+    /// production bound covers a process start; what the suite fixes is which
+    /// failure a wait that ran out reports, so it runs the same path in a
+    /// fraction of the time.
+    attach_bound: Duration,
 }
 
 #[cfg(test)]
@@ -282,6 +344,7 @@ impl Default for Overrides {
     fn default() -> Overrides {
         Overrides {
             stated_nowhere: (Duration::from_millis(200), Duration::from_millis(1)),
+            attach_bound: Duration::from_millis(500),
         }
     }
 }
@@ -293,6 +356,14 @@ struct Session<'a> {
     destination: &'a Destination<'a>,
     /// The local config's own file text, which is what travels.
     local_text: &'a str,
+    /// How the far side answers for this run's format, when a `[domain.*]`
+    /// entry routes it to a program of this machine's. `None` for a format
+    /// this build answers, whose far config declares no `[domain.*]` table.
+    registration: Option<&'a Registration>,
+    /// What the invocation stated about a program whose build changed under
+    /// the run — carried to the far `sima run`, whose own binding guard is
+    /// what compares the two.
+    accept: BinaryChange,
     /// The rented machine hosting the run, released on every path out; `None`
     /// for a machine of yours, which is nothing to tear down.
     rental: Option<InstanceGuard<'a, dyn Provider + Sync + 'a>>,
@@ -334,6 +405,7 @@ impl Session<'_> {
         let far_text = far_config(
             self.local_text,
             FarWorkers::for_form(self.destination.form, &probed),
+            self.registration,
         )?;
         self.far.place(&far_text)?;
 
@@ -346,10 +418,16 @@ impl Session<'_> {
             Some(pid) => pid,
             None => {
                 let keys = task_keys(self.config, self.store)?;
-                let objects = push_objects(self.store, &keys)?;
+                let mut objects = push_objects(self.store, &keys)?;
+                // The program travels with the run it serves: the manifest and
+                // its files ride the same push, and the sync's negotiation is
+                // what skips the bytes the destination already holds.
+                if let Some(registration) = self.registration {
+                    objects.extend(closure(self.store, &registration.payload_digest)?);
+                }
                 self.far
                     .sync(self.store, &keys, ObjectScope::Named(&objects))?;
-                self.far.start()?
+                self.far.start(self.accept)?
             }
         };
 
@@ -451,18 +529,46 @@ impl Session<'_> {
     /// run gets. The wait ends the moment the far run is gone: one that has
     /// exited will never journal, and its refusal is then the answer.
     fn attach(&self) -> Result<Box<dyn RunFeed>> {
-        let deadline = Instant::now() + ATTACH_BOUND;
+        let deadline = Instant::now() + self.attach_bound();
         loop {
             match self.far.follow() {
                 Ok(feed) => return Ok(feed),
                 Err(error) => {
-                    if Instant::now() >= deadline || self.far.driving()?.is_none() {
-                        return Err(error);
+                    let gone = self.far.driving()?.is_none();
+                    if gone || Instant::now() >= deadline {
+                        return Err(self.unattachable(error, gone));
                     }
                     sleep(TICK);
                 }
             }
         }
+    }
+
+    /// What a follow that could not attach reports.
+    ///
+    /// A far run that is gone died before it journaled anything, which is what
+    /// every far-side load failure looks like from here — a program that cannot
+    /// answer for its format, an install script that exited non-zero, a store
+    /// that will not open. The follow's own refusal says only that there is no
+    /// run to follow, so the far run's own words are fetched from its log and
+    /// the machine is named.
+    ///
+    /// A far run still alive that simply has not journaled inside the bound is
+    /// a different thing, and the follow's refusal is the whole of it.
+    fn unattachable(&self, refusal: Error, gone: bool) -> Error {
+        if !gone {
+            return refusal;
+        }
+        let tail = match self.far.log_tail() {
+            Ok(tail) if tail.trim().is_empty() => "(its log is empty)".to_string(),
+            Ok(tail) => tail,
+            Err(error) => format!("(its log could not be read: {error})"),
+        };
+        Error::Validation(format!(
+            "the run on {:?} ended before it journaled anything, so there is nothing to \
+             follow: {refusal}. Its last words were:\n{tail}",
+            self.destination.name
+        ))
     }
 
     /// Step 3: the destination answers that it can drive this run, and a rented
@@ -633,6 +739,17 @@ impl Session<'_> {
     fn stated_nowhere_bounds(&self) -> (Duration, Duration) {
         self.overrides.stated_nowhere
     }
+
+    /// How long the follow waits for the far run's first journal line.
+    #[cfg(not(test))]
+    fn attach_bound(&self) -> Duration {
+        ATTACH_BOUND
+    }
+
+    #[cfg(test)]
+    fn attach_bound(&self) -> Duration {
+        self.overrides.attach_bound
+    }
 }
 
 #[cfg(test)]
@@ -672,6 +789,7 @@ mod tests {
         /// the whole of what makes one direction a push and the other a pull.
         Sync(Scope),
         Follow,
+        LogTail,
         Interrupt(u32),
         Terminate(u32),
     }
@@ -733,6 +851,16 @@ mod tests {
         far: Option<(&'a Store, &'a LoadedConfig)>,
         steps: Mutex<Vec<Step>>,
         placed: Mutex<Option<String>>,
+        /// What the far `sima run` was started with about a changed program.
+        started_with: Mutex<Option<BinaryChange>>,
+        /// The objects the push named, which is what a program has to be in.
+        pushed: Mutex<Vec<sima_core::Hash>>,
+        /// What the far run's log holds, when it wrote one.
+        log: Option<String>,
+        /// How many times the follow is refused before it opens: a far run is
+        /// up before it journals, and `sima follow-serve` refuses a run that
+        /// journaled nothing.
+        follow_refusals: Mutex<usize>,
     }
 
     impl<'a> Scripted<'a> {
@@ -755,6 +883,10 @@ mod tests {
                 far: None,
                 steps: Mutex::new(Vec::new()),
                 placed: Mutex::new(None),
+                started_with: Mutex::new(None),
+                pushed: Mutex::new(Vec::new()),
+                log: None,
+                follow_refusals: Mutex::new(0),
             }
         }
 
@@ -794,6 +926,20 @@ mod tests {
         /// signallable.
         fn deaf_for(self, signals: usize) -> Scripted<'a> {
             *self.deaf.lock().expect("the deafness lock") = signals;
+            self
+        }
+
+        /// A far run that is up but has not journaled yet, so the follow is
+        /// refused its first `attempts` times before it opens.
+        fn refusing_the_follow(self, attempts: usize) -> Scripted<'a> {
+            *self.follow_refusals.lock().expect("the follow lock") = attempts;
+            self
+        }
+
+        /// A far run that exits before it journals anything, leaving `log`
+        /// behind — what a far-side load failure looks like from here.
+        fn dying_before_journaling(mut self, log: &str) -> Scripted<'a> {
+            self.log = Some(log.to_string());
             self
         }
 
@@ -848,9 +994,14 @@ mod tests {
             Ok(*self.alive.lock().expect("the pid lock"))
         }
 
-        fn start(&self) -> Result<u32> {
+        fn start(&self, accept: BinaryChange) -> Result<u32> {
             self.record(Step::Start);
-            *self.alive.lock().expect("the pid lock") = Some(PID);
+            *self.started_with.lock().expect("the acceptance lock") = Some(accept);
+            // A run that dies while loading its config is gone by the time
+            // anything asks, which is what leaves the pid naming nothing.
+            if self.log.is_none() {
+                *self.alive.lock().expect("the pid lock") = Some(PID);
+            }
             Ok(PID)
         }
 
@@ -886,12 +1037,17 @@ mod tests {
             scope: ObjectScope<'_>,
         ) -> Result<SyncReport> {
             self.record(match scope {
-                ObjectScope::Named(_) => PUSH,
+                ObjectScope::Named(named) => {
+                    *self.pushed.lock().expect("the push lock") = named.to_vec();
+                    PUSH
+                }
                 ObjectScope::Referenced => PULL,
             });
             match self.far {
-                // The far side derives its own key set over its own store, as
-                // `sima sync-serve` does; no key list crosses the wire.
+                // The far side derives its own key set where it sits, as
+                // `sima sync-serve` does over the run's journal; no key list
+                // crosses the wire. This double holds the config, so it
+                // derives the same set the far side's journal would name.
                 Some((far, config)) => {
                     let far_keys = task_keys(config, far)?;
                     sync_between(store, keys, scope, far, &far_keys)
@@ -900,8 +1056,22 @@ mod tests {
             }
         }
 
+        fn log_tail(&self) -> Result<String> {
+            self.record(Step::LogTail);
+            Ok(self.log.clone().unwrap_or_default())
+        }
+
         fn follow(&self) -> Result<Box<dyn RunFeed>> {
             self.record(Step::Follow);
+            // `sima follow-serve` refuses a run that journaled nothing, which
+            // is the whole of what this side can learn from it.
+            let mut refusals = self.follow_refusals.lock().expect("the follow lock");
+            if self.log.is_some() || *refusals > 0 {
+                *refusals = refusals.saturating_sub(1);
+                return Err(Error::Validation(
+                    "run 00 was never started in this store".to_string(),
+                ));
+            }
             Ok(Box::new(ScriptedFeed {
                 info: FeedInfo {
                     run: RunId::from_hash(sima_core::hash_bytes(b"scripted")),
@@ -1086,6 +1256,8 @@ mod tests {
             config: &local.config,
             destination: &destination,
             local_text: &local.text,
+            registration: None,
+            accept: BinaryChange::Refuse,
             rental,
             observer: &observer,
             interrupt,
@@ -1180,6 +1352,240 @@ mod tests {
             &Budget::default(),
             &AtomicBool::new(false),
         )
+    }
+
+    // ---- The program the run carries with it ----
+
+    /// Drives one session under `registration` and `accept`, so what the
+    /// far side is handed about the program is what the test fixes.
+    fn session_carrying(
+        local: &Local,
+        far: &dyn FarSide,
+        registration: Option<&Registration>,
+        accept: BinaryChange,
+    ) -> Result<MigrateOutcome> {
+        let observer = |_: &Record| {};
+        let destination = destination_for(&local.config).expect("the host is declared");
+        Session {
+            far,
+            store: &local.store,
+            config: &local.config,
+            destination: &destination,
+            local_text: &local.text,
+            registration,
+            accept,
+            rental: None,
+            observer: &observer,
+            interrupt: &AtomicBool::new(false),
+            usable_by: None,
+            overrides: Overrides::default(),
+        }
+        .drive()
+    }
+
+    #[test]
+    fn a_carried_program_reaches_the_far_config_and_the_push() -> Result<()> {
+        // The two halves of delivering a program: the far config states the
+        // digest to install, and the push carries the objects to install it
+        // from.
+        let local = local(RENTED, PROMPT, Some(3));
+        let run = local.config.run.id();
+        let (_payload, spec) = crate::fixtures::file_payload();
+        let digest = crate::payload::ingest(&local.store, &spec)?;
+        let registration = Registration {
+            format: "stub.v1".to_string(),
+            payload_digest: digest,
+            env: vec!["PATH".to_string()],
+            sdk: None,
+        };
+        let far = Scripted::new().delivering(vec![vec![started(&run), finalized(&run)]]);
+
+        session_carrying(&local, &far, Some(&registration), BinaryChange::Refuse)?;
+
+        // The far config installs it.
+        let placed = far
+            .placed
+            .lock()
+            .expect("the placement lock")
+            .clone()
+            .expect("a config was placed");
+        let table: toml::Table = placed.parse().expect("the far config parses");
+        assert_eq!(
+            table["domain"]["stub.v1"]["payload_digest"].as_str(),
+            Some(digest.to_string().as_str())
+        );
+
+        // The push carries every object it needs to.
+        let pushed = far.pushed.lock().expect("the push lock").clone();
+        for object in crate::payload::closure(&local.store, &digest)? {
+            assert!(
+                pushed.contains(&object),
+                "{object} must travel with the run"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_run_this_build_answers_pushes_no_program_and_declares_none() -> Result<()> {
+        // The counterpart: nothing about a program is written down, and the
+        // push is the identity components and the frontier states alone.
+        let local = local(RENTED, PROMPT, Some(3));
+        let run = local.config.run.id();
+        let far = Scripted::new().delivering(vec![vec![started(&run), finalized(&run)]]);
+
+        session_carrying(&local, &far, None, BinaryChange::Refuse)?;
+        let placed = far
+            .placed
+            .lock()
+            .expect("the placement lock")
+            .clone()
+            .expect("a config was placed");
+        assert!(
+            !placed
+                .parse::<toml::Table>()
+                .expect("the far config parses")
+                .contains_key("domain"),
+            "{placed}"
+        );
+        let keys = task_keys(&local.config, &local.store)?;
+        assert_eq!(
+            far.pushed.lock().expect("the push lock").clone(),
+            push_objects(&local.store, &keys)?
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn the_acceptance_of_a_changed_program_reaches_the_far_start() -> Result<()> {
+        // The comparison is the far run's — it journals what it installed —
+        // so the operator's acceptance has to travel to it.
+        for accept in [BinaryChange::Refuse, BinaryChange::Accept] {
+            let local = local(RENTED, PROMPT, Some(3));
+            let run = local.config.run.id();
+            let far = Scripted::new().delivering(vec![vec![started(&run), finalized(&run)]]);
+            session_carrying(&local, &far, None, accept)?;
+            assert_eq!(
+                *far.started_with.lock().expect("the acceptance lock"),
+                Some(accept),
+                "the far run is started with what the invocation stated"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_reattach_carries_no_program_because_it_starts_nothing() -> Result<()> {
+        // A far run already going installed its program when it loaded; the
+        // push and the start are skipped, so nothing is sent or accepted.
+        let local = local(RENTED, PROMPT, Some(3));
+        let run = local.config.run.id();
+        let far = Scripted::new()
+            .already_driving()
+            .delivering(vec![vec![started(&run), finalized(&run)]]);
+        session_carrying(&local, &far, None, BinaryChange::Accept)?;
+        assert!(!far.steps().contains(&PUSH), "{:?}", far.steps());
+        assert!(!far.steps().contains(&Step::Start), "{:?}", far.steps());
+        assert_eq!(*far.started_with.lock().expect("the acceptance lock"), None);
+        Ok(())
+    }
+
+    #[test]
+    fn a_far_run_that_died_before_journaling_reports_its_own_last_words() -> Result<()> {
+        // Every far-side load failure looks the same from here — the follow
+        // finds a run that never started — so the far run's log is what says
+        // which one it was. An install that could not build the program is the
+        // case this exists for.
+        let local = local(RENTED, PROMPT, Some(3));
+        let far = Scripted::new().dying_before_journaling(
+            "sima: validation error: the install script install.sh exited with exit status: 3",
+        );
+
+        let (outcome, _) = session_over(&local, &far, None, &AtomicBool::new(false));
+        let error = outcome.expect_err("a run that never journaled cannot be followed");
+        let text = error.to_string();
+        assert!(text.contains("slingshot"), "names the machine: {text}");
+        assert!(
+            text.contains("install script install.sh exited"),
+            "carries the far run's own words: {text}"
+        );
+        assert!(
+            far.steps().contains(&Step::LogTail),
+            "the log was asked for: {:?}",
+            far.steps()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_far_run_that_died_leaving_no_log_still_names_the_machine() -> Result<()> {
+        // A run that never wrote a line leaves the absence to report, which is
+        // still more than the follow's own refusal states.
+        let local = local(RENTED, PROMPT, Some(3));
+        let far = Scripted::new().dying_before_journaling("");
+
+        let (outcome, _) = session_over(&local, &far, None, &AtomicBool::new(false));
+        let text = outcome
+            .expect_err("a run that never journaled cannot be followed")
+            .to_string();
+        assert!(text.contains("slingshot"), "{text}");
+        assert!(text.contains("log is empty"), "{text}");
+        Ok(())
+    }
+
+    #[test]
+    fn a_far_run_that_never_journals_but_stays_up_reports_the_follow_s_refusal() -> Result<()> {
+        // A run that is up owes no explanation: the follow's own refusal is
+        // the whole of what happened, and no log is fetched to explain a death
+        // that did not occur. The bound the wait runs out on is production's;
+        // the suite overrides only how long it is.
+        let local = local(RENTED, PROMPT, Some(3));
+        let far = Scripted::new()
+            .already_driving()
+            .refusing_the_follow(usize::MAX);
+
+        let (outcome, _) = session_over(&local, &far, None, &AtomicBool::new(false));
+        let text = outcome
+            .expect_err("a follow that never opens fails the migration")
+            .to_string();
+        assert!(text.contains("never started in this store"), "{text}");
+        assert!(
+            !text.contains("ended before it journaled"),
+            "a run that is up did not die: {text}"
+        );
+        assert!(
+            !far.steps().contains(&Step::LogTail),
+            "and no log was asked for: {:?}",
+            far.steps()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_far_run_still_alive_that_has_not_journaled_is_waited_for_and_asked_nothing() -> Result<()>
+    {
+        // The other side of the distinction: a run that is up and simply has
+        // not journaled yet is not a run that died. The follow waits it out,
+        // and no log is fetched to explain a failure that did not happen.
+        let local = local(RENTED, PROMPT, Some(3));
+        let run = local.config.run.id();
+        let far = Scripted::new()
+            .refusing_the_follow(3)
+            .delivering(vec![vec![started(&run), finalized(&run)]]);
+
+        session_over(&local, &far, None, &AtomicBool::new(false)).0?;
+        assert_eq!(
+            far.steps().iter().filter(|s| **s == Step::Follow).count(),
+            4,
+            "every refusal inside the bound was tried again: {:?}",
+            far.steps()
+        );
+        assert!(
+            !far.steps().contains(&Step::LogTail),
+            "a run that is up owes no explanation: {:?}",
+            far.steps()
+        );
+        Ok(())
     }
 
     // ---- The choreography ----
@@ -1710,13 +2116,16 @@ mod tests {
             fn driving(&self) -> Result<Option<u32>> {
                 unreachable!("the migration never got past the reach check")
             }
-            fn start(&self) -> Result<u32> {
+            fn start(&self, _: BinaryChange) -> Result<u32> {
                 unreachable!("the migration never got past the reach check")
             }
             fn interrupt(&self, _: u32) -> Result<()> {
                 unreachable!("the migration never got past the reach check")
             }
             fn terminate(&self, _: u32) -> Result<()> {
+                unreachable!("the migration never got past the reach check")
+            }
+            fn log_tail(&self) -> Result<String> {
                 unreachable!("the migration never got past the reach check")
             }
             fn sync(&self, _: &Store, _: &[TaskKey], _: ObjectScope<'_>) -> Result<SyncReport> {
@@ -1771,8 +2180,14 @@ mod tests {
         .expect("write the config");
         let observer = |_: &Record| {};
         let loaded = crate::config::load(&path)?;
-        let error = migrate(&path, &loaded, &observer, &AtomicBool::new(false))
-            .expect_err("the machine cannot be reached");
+        let error = migrate(
+            &path,
+            &loaded,
+            &observer,
+            &AtomicBool::new(false),
+            BinaryChange::Refuse,
+        )
+        .expect_err("the machine cannot be reached");
         assert!(
             error.to_string().contains("sima.invalid.test"),
             "the reach check is what failed, naming what it could not reach: {error}"

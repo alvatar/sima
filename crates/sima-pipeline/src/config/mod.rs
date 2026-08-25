@@ -93,8 +93,12 @@
 //! workers = 1
 //!
 //! [domain."acme.thing.v1"]                # a format served by its own program
-//! binary = "/opt/acme/worker"             # resolved against this file's directory
-//! # env  = ["ACME_ASSETS"]                # optional; variable names it also receives
+//! binary  = "/opt/acme/worker"            # resolved against this file's directory
+//! # env     = ["ACME_ASSETS"]             # optional; variable names it also receives
+//! # sdk     = "python"                    # optional; the SDK this binary vends
+//! # payload = "./program"                 # optional; what travels when the run migrates
+//! # install = "./install.sh"              # optional for a file payload, required for a directory
+//! # payload_digest = "<64 hex>"           # a migration writes this; the manifest to install here
 //! ```
 //!
 //! ## Where a format is answered from
@@ -110,6 +114,55 @@
 //! baseline, by name alone: each value comes from the orchestrator's own
 //! environment, and a name the orchestrator does not hold is simply absent in
 //! the program.
+//!
+//! ### The SDK the program is written against
+//!
+//! `sdk` names the language whose package this binary carries, and `"python"`
+//! is the one it vends. Any other value is refused at load, naming the config,
+//! the format, the key, and the value.
+//!
+//! An entry declaring it has the package written under `<config-dir>/sdk/<sdk>/`
+//! where the config resolves, once per binary version, and the installed
+//! directory put at the head of the program's module path — `PYTHONPATH` for
+//! Python — ahead of anything the machine holds under the same name. The
+//! vended copy is the one that matches this binary's protocol, which is why it
+//! leads. Every entry declaring one SDK shares its tree: what it holds is a
+//! property of the binary rather than of any one program.
+//!
+//! The key is independent of `payload`, and a migration carries it as the
+//! declaration it is: the destination's own binary vends the package there.
+//! `sima sdk <language> --out <dir>` writes the same package by hand, for
+//! developing a program outside a run.
+//!
+//! ### What travels when the run moves
+//!
+//! `binary` says how the program runs here; `payload` says what a migration
+//! carries to the destination — one file or one directory, resolved against
+//! this file's directory. An entry that states none describes a program this
+//! machine holds and no other, and `sima migrate` refuses it, naming the key.
+//! A plain local `sima run` validates both keys and otherwise ignores them.
+//!
+//! `install` is the shell script the destination runs over the materialized
+//! payload. It is optional for a single-file payload, which is its own entry
+//! point, and required for a directory, where which file runs is what the
+//! script decides. The contract:
+//!
+//! - it runs as `/bin/sh install.sh`, working directory the program tree, under
+//!   the destination's own environment plus `SIMA_PAYLOAD_DIR` (the
+//!   materialized payload) and `SIMA_INSTALL_DIR` (where to leave what it
+//!   builds). Nothing is forwarded from the machine that sent the payload;
+//! - after exit 0, `$SIMA_INSTALL_DIR/program` must exist and be executable.
+//!   The entry point is found by convention, so the script reports no path;
+//! - a non-zero exit, or an exit leaving no entry point, fails the load naming
+//!   the script, its status, and its log.
+//!
+//! `payload_digest` is the far side of the same thing: the manifest object the
+//! store already holds, which a migration writes into the config it
+//! synthesizes. An entry carrying it has its program materialized and installed
+//! where the config resolves, before the binary it names is spawned, and a
+//! stamp makes a second load install nothing. It admits neither `payload` nor
+//! `install`: the digest names one program, and the manifest carries its own
+//! script.
 //!
 //! ## Addressing
 //!

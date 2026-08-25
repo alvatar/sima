@@ -32,19 +32,29 @@ use std::path::Path;
 use std::process::{Child, Command, Stdio};
 
 use sima_core::{Error, Result};
+use sima_model::RunId;
 use sima_store::{ObjectScope, Store, SyncReport, SyncRole};
 use sima_transport::{SpawnMode, SshDestination};
 
-use crate::config::load;
-use crate::task_keys::task_keys;
+use crate::task_keys::journaled_keys;
 
-/// The far half: serves one sync session over `input` and `output`.
+/// The far half: serves one sync session over `input` and `output`, against
+/// the store at `store` and the run `run`.
 ///
-/// It loads the config on this host, so the run id, the store path, and the
-/// lock are all this host's, then takes the run lock for the session's
-/// duration — a sync writes records and objects, and the store admits one
-/// writer. It derives the key set from (config, store state) the same way the
-/// initiator does over its own store.
+/// **It addresses the store and the run directly, never a config.** A config
+/// load resolves the `[domain.*]` entries, which installs and spawns the
+/// program the run is served by — and on the destination of a migration that
+/// program is what this very session is delivering. So the two values a config
+/// would have given are passed instead: the initiator knows both, deriving the
+/// run id locally and the store path from the run's own directory.
+///
+/// The key set therefore comes from the run's journal rather than from the
+/// scheduler's derivation. It is the same set for this purpose: a record or a
+/// checkpoint exists only for a task the run journaled, so every key with
+/// state here is named there.
+///
+/// The run lock is held for the session's duration — a sync writes records and
+/// objects, and the store admits one writer.
 ///
 /// Nothing but protocol frames may reach `output`: the caller wires it to
 /// stdout, and every diagnostic goes to stderr, which ssh keeps on its own
@@ -53,17 +63,14 @@ use crate::task_keys::task_keys;
 /// The scope is [`ObjectScope::Referenced`] in both directions, because this
 /// side advertises what it holds and holds only what it was sent.
 pub fn sync_serve(
-    config: &Path,
+    store: &Path,
+    run: &RunId,
     input: &mut dyn std::io::Read,
     output: &mut dyn std::io::Write,
 ) -> Result<SyncReport> {
-    let loaded = load(config)?;
-    let store = Store::open(&loaded.store)?;
-    let run = loaded.run.id();
-    // The lock is taken before the keys are derived: deriving them writes the
-    // run's spec objects, which is a store write like any other.
-    let _lock = store.acquire_run_lock(&run)?;
-    let keys = task_keys(&loaded, &store)?;
+    let store = Store::open(store)?;
+    let _lock = store.acquire_run_lock(run)?;
+    let keys = journaled_keys(&store, run)?;
     store.sync(
         &keys,
         ObjectScope::Referenced,
@@ -89,9 +96,10 @@ pub(crate) fn sync_over(
     keys: &[sima_model::TaskKey],
     scope: ObjectScope<'_>,
     reach: &Reach,
-    far_config: &str,
+    far_store: &str,
+    far_run: &RunId,
 ) -> Result<SyncReport> {
-    let argv = reach.sync_serve_argv(far_config);
+    let argv = reach.sync_serve_argv(far_store, far_run);
     let (program, args) = argv.split_first().expect("the argv names a program");
     let mut child = Command::new(program)
         .args(args)
@@ -167,10 +175,13 @@ impl Reach {
         }
     }
 
-    /// The argv that serves one sync session over `far_config`, a path on the
-    /// far side that travels unresolved.
-    pub(crate) fn sync_serve_argv(&self, far_config: &str) -> Vec<String> {
-        self.verb_argv(&["sync-serve", far_config])
+    /// The argv that serves one sync session over the far side's `store` — a
+    /// path there, travelling unresolved — and the run it holds.
+    ///
+    /// The verb addresses the store rather than a config: loading the config
+    /// on the far side would spawn the program the session exists to deliver.
+    pub(crate) fn sync_serve_argv(&self, far_store: &str, far_run: &RunId) -> Vec<String> {
+        self.verb_argv(&["sync-serve", far_store, "--run", &far_run.to_string()])
     }
 
     /// The argv that serves the live follow stream of the run `far_config`
@@ -236,6 +247,11 @@ impl Reach {
 mod tests {
     use super::*;
 
+    /// The run every argv test addresses.
+    fn run() -> RunId {
+        RunId::from_hash(sima_core::hash_bytes(b"a migrated run"))
+    }
+
     #[test]
     fn a_local_reach_runs_the_binary_directly() {
         let reach = Reach::new(
@@ -244,8 +260,14 @@ mod tests {
             "/build/sima",
         );
         assert_eq!(
-            reach.sync_serve_argv("far/sima.toml"),
-            ["/build/sima", "sync-serve", "far/sima.toml"]
+            reach.sync_serve_argv("far/store", &run()),
+            [
+                "/build/sima",
+                "sync-serve",
+                "far/store",
+                "--run",
+                &run().to_string(),
+            ]
         );
     }
 
@@ -257,7 +279,7 @@ mod tests {
             "sima",
         );
         assert_eq!(
-            reach.sync_serve_argv("~/sima-runs/abc/sima.toml"),
+            reach.sync_serve_argv("~/sima-runs/abc/store", &run()),
             [
                 "ssh",
                 "-o",
@@ -276,20 +298,48 @@ mod tests {
                 "--",
                 "sima",
                 "sync-serve",
-                "~/sima-runs/abc/sima.toml",
+                "~/sima-runs/abc/store",
+                "--run",
+                &run().to_string(),
             ]
         );
     }
 
     #[test]
-    fn the_far_config_path_travels_unresolved() {
+    fn the_far_store_path_travels_unresolved() {
         // It names a path on the far side, and the far side is what interprets
         // it: a tilde is the far shell's to expand.
         let reach = Reach::new(&SpawnMode::Ssh, &SshDestination::known("gpubox"), "sima");
-        let argv = reach.sync_serve_argv("~/sima-runs/abc/sima.toml");
+        let argv = reach.sync_serve_argv("~/sima-runs/abc/store", &run());
+        assert!(
+            argv.contains(&"~/sima-runs/abc/store".to_string()),
+            "{argv:?}"
+        );
+    }
+
+    #[test]
+    fn the_sync_verb_addresses_a_store_and_a_run_rather_than_a_config() {
+        // Loading a config on the far side resolves its `[domain.*]` entries,
+        // which spawns the program a session may be there to deliver. The two
+        // values a config would have given travel instead.
+        let reach = Reach::new(&SpawnMode::Ssh, &SshDestination::known("gpubox"), "sima");
+        let argv = reach.sync_serve_argv("~/sima-runs/abc/store", &run());
+        let verb = argv
+            .iter()
+            .position(|arg| arg == "sync-serve")
+            .expect("the verb");
         assert_eq!(
-            argv.last().map(String::as_str),
-            Some("~/sima-runs/abc/sima.toml")
+            &argv[verb..],
+            [
+                "sync-serve",
+                "~/sima-runs/abc/store",
+                "--run",
+                &run().to_string(),
+            ]
+        );
+        assert!(
+            !argv.iter().any(|arg| arg.ends_with(".toml")),
+            "no config travels: {argv:?}"
         );
     }
 
@@ -364,7 +414,14 @@ mod tests {
             // the cause, so that is what the operator is told.
             let (_dir, store) = store();
             let reach = Reach::Here("/bin/false".into());
-            match sync_over(&store, &[], ObjectScope::Referenced, &reach, "far.toml") {
+            match sync_over(
+                &store,
+                &[],
+                ObjectScope::Referenced,
+                &reach,
+                "far/store",
+                &run(),
+            ) {
                 Err(Error::Transport(message)) => {
                     assert!(
                         message.contains("/bin/false"),
@@ -380,7 +437,14 @@ mod tests {
         fn a_command_that_does_not_exist_fails_at_the_spawn() {
             let (_dir, store) = store();
             let reach = Reach::Here("/nonexistent/sima".into());
-            match sync_over(&store, &[], ObjectScope::Referenced, &reach, "far.toml") {
+            match sync_over(
+                &store,
+                &[],
+                ObjectScope::Referenced,
+                &reach,
+                "far/store",
+                &run(),
+            ) {
                 Err(Error::Transport(message)) => {
                     assert!(message.contains("/nonexistent/sima"), "{message}");
                 }

@@ -24,6 +24,28 @@ use sima_transport::loopback::LoopbackTransport;
 
 use crate::config::{Fleet, LoadedConfig, Orchestrator, Pool};
 use crate::domain_registry::DomainRegistry;
+use crate::payload::PayloadSpec;
+
+/// A payload of one executable file, under a fresh temporary directory: the
+/// shape a `[domain.*]` entry declares when its program is one script. The
+/// directory is returned with it, since the paths point into it.
+pub(crate) fn file_payload() -> (tempfile::TempDir, PayloadSpec) {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let payload = dir.path().join("program.sh");
+    std::fs::write(&payload, "#!/bin/sh\nexec true\n").expect("write the payload");
+    std::fs::set_permissions(
+        &payload,
+        std::os::unix::fs::PermissionsExt::from_mode(0o755),
+    )
+    .expect("make it executable");
+    (
+        dir,
+        PayloadSpec {
+            payload,
+            install: None,
+        },
+    )
+}
 
 /// A minimal stub run config; its id addresses the test's run.
 pub(crate) fn stub_config() -> Result<RunConfig> {
@@ -258,9 +280,9 @@ pub(crate) fn drive_run(
 /// initiator under `scope` and `far` as the responder over everything its own
 /// records reference — the shape `sima sync-serve` gives the far half.
 ///
-/// Each side brings its own key set, as each derives it independently from
-/// (config, store state); no key list crosses the wire. Returns the initiator's
-/// report.
+/// Each side brings its own key set, derived where it sits: no key list crosses
+/// the wire, so a caller passes whichever derivation the side it is standing in
+/// for uses. Returns the initiator's report.
 pub(crate) fn sync_between(
     near: &Store,
     near_keys: &[TaskKey],

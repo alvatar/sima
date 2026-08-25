@@ -26,6 +26,9 @@
 //! program's build changed since the run last ran; `--accept-binary` is the
 //! invocation stating that the changed build should drive it anyway.
 //!
+//! `sdk` writes the SDK this binary carries into a directory, which is how a
+//! program is developed against the package the runs that spawn it vend.
+//!
 //! All orchestration lives in `sima-pipeline` — this binary parses arguments,
 //! renders output, registers the interrupt flag, and maps outcomes to exit
 //! codes:
@@ -52,7 +55,7 @@ use std::sync::atomic::AtomicBool;
 use sima_core::{Error, Result};
 use sima_pipeline::{
     BinaryChange, Engagement, FeedInfo, LoadedConfig, LocalFeed, Record, RemoteFeed, RemovalReport,
-    ReportRow, RunControl, RunFeed, RunId, RunOutcome, RunState, RunStatus, RunTimeline,
+    ReportRow, RunControl, RunFeed, RunId, RunOutcome, RunState, RunStatus, RunTimeline, Sdk,
     TaskHistory, failures_records, follow_serve, load, local_snapshot, orchestrate,
     remote_snapshot, report_records, report_task_records, seeded_status, status_records,
     sync_serve, task_history_records, timeline_records,
@@ -100,7 +103,9 @@ fn main() -> ExitCode {
         ["run", config, "--fleet"] if host.is_none() => {
             run_command(&resolve_config(config), Engagement::Fleet, accept)
         }
-        ["migrate", config] if host.is_none() => migrate::migrate_command(&resolve_config(config)),
+        ["migrate", config] if host.is_none() => {
+            migrate::migrate_command(&resolve_config(config), accept)
+        }
         ["rm", config] if host.is_none() => rm_command(&resolve_config(config)),
         // The only verb whose argument is a store directory rather than a
         // config: packing needs no run knowledge, and a store defines every
@@ -119,7 +124,12 @@ fn main() -> ExitCode {
         ["follow-serve", config, "--once"] if host.is_none() => serve_command(config, true),
         // The far half of a store sync, invoked over ssh by a migration. Not a
         // user-facing verb either.
-        ["sync-serve", config] if host.is_none() => sync_serve_command(config),
+        ["sync-serve", store, "--run", run] if host.is_none() => {
+            sync_serve_command(Path::new(store), run)
+        }
+        // The SDK this binary carries, written out for developing a program
+        // outside a run. It opens no store and reads no config.
+        ["sdk", language, "--out", out] if host.is_none() => sdk_command(language, Path::new(out)),
         ["status", config] => status_command(&Target::new(config, host)),
         ["status", config, "--failed"] => status_failed_command(&Target::new(config, host)),
         ["status", config, "--task", key] => status_task_command(&Target::new(config, host), key),
@@ -157,7 +167,9 @@ fn main() -> ExitCode {
                  \x20      sima report <config> --spend       report the run's rental spend\n\
                  \x20      sima report <config> --machines    report machine reputation and blacklisting\n\
                  \x20      sima migrate <config>              move the run onto the host [orchestrator] names\n\
+                 \x20      sima migrate <config> --accept-binary  … through a changed program\n\
                  \x20      sima rm <config>                   delete the run and what only it references\n\
+                 \x20      sima sdk <language> --out <dir>    write the SDK this binary carries into <dir>\n\
                  \x20      sima pack <store-dir>              consolidate the store's loose objects into packs\n\
                  \x20      sima pack <store-dir> --gc         … and delete everything outside the finalized\n\
                  \x20                                         runs' closures, unfinalized runs included, which\n\
@@ -203,15 +215,19 @@ fn split_target(args: &[String]) -> (Vec<&str>, Option<&str>) {
     (rest, host)
 }
 
-/// Splits `--accept-binary` out of a `run` invocation, wherever in it the flag
-/// appears, returning the rest and the answer it states. `run` matches on the
-/// rest, so the flag composes with `--fleet` in either order rather than
-/// multiplying the command forms.
+/// Splits `--accept-binary` out of a `run` or `migrate` invocation, wherever in
+/// it the flag appears, returning the rest and the answer it states. Both
+/// commands match on the rest, so the flag composes with `--fleet` in either
+/// order rather than multiplying the command forms.
+///
+/// `migrate` takes it because the comparison happens in the far `sima run`,
+/// which installed the program the far config names: the acceptance is the
+/// operator's, stated here, and travels to the run that acts on it.
 ///
 /// Every other command keeps the flag among its arguments, where it matches no
-/// form and falls to the usage error: the flag belongs to `run` alone.
+/// form and falls to the usage error.
 fn split_binary_change<'a>(args: &[&'a str]) -> (Vec<&'a str>, BinaryChange) {
-    if args.first() != Some(&"run") {
+    if !matches!(args.first(), Some(&"run") | Some(&"migrate")) {
         return (args.to_vec(), BinaryChange::Refuse);
     }
     let mut accept = BinaryChange::Refuse;
@@ -581,20 +597,53 @@ fn serve_command(config: &str, once: bool) -> ExitCode {
     }
 }
 
-/// `sima sync-serve <config>`: serves one store-sync session over stdin and
-/// stdout, which carry protocol frames and nothing else — every diagnostic goes
-/// to stderr, which ssh keeps on its own channel. A migration spawns this over
-/// ssh; it is not a user-facing verb and stays out of the usage text.
+/// `sima sync-serve <store-dir> --run <run-id>`: serves one store-sync session
+/// over stdin and stdout, which carry protocol frames and nothing else — every
+/// diagnostic goes to stderr, which ssh keeps on its own channel. A migration
+/// spawns this over ssh; it is not a user-facing verb and stays out of the
+/// usage text.
+///
+/// It addresses the store and the run rather than a config, because loading a
+/// config resolves its `[domain.*]` entries — which installs and spawns the
+/// program that the very session being served may be delivering. The initiator
+/// knows both values: it derives the run id locally and the far store sits in
+/// the run's own directory.
 ///
 /// It takes the run lock for the session, so a `sima run` driving this run on
 /// this machine makes the sync fail cleanly on the lock rather than writing
 /// underneath it.
-fn sync_serve_command(config: &str) -> ExitCode {
+fn sync_serve_command(store: &Path, run: &str) -> ExitCode {
+    let run = match RunId::from_hex(run) {
+        Ok(run) => run,
+        Err(e) => return report(e),
+    };
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
     let (mut input, mut output) = (stdin.lock(), stdout.lock());
-    match sync_serve(&resolve_config(config), &mut input, &mut output) {
+    match sync_serve(store, &run, &mut input, &mut output) {
         Ok(_) => ExitCode::SUCCESS,
+        Err(e) => report(e),
+    }
+}
+
+/// `sima sdk <language> --out <dir>`: writes the SDK this binary carries under
+/// `<dir>`, so a program can be developed against the package the runs that
+/// spawn it will vend.
+///
+/// It is the same write a config load performs beneath its stamp, addressed by
+/// hand: what a run puts on the program's module path is what lands here.
+fn sdk_command(language: &str, out: &Path) -> ExitCode {
+    let Some(sdk) = Sdk::parse(language) else {
+        return report(Error::Validation(format!(
+            "{language:?} names no SDK this binary vends; the verb takes {}",
+            Sdk::accepted()
+        )));
+    };
+    match sdk.vend(out) {
+        Ok(()) => {
+            println!("vended the {language} SDK into {}", out.display());
+            ExitCode::SUCCESS
+        }
         Err(e) => report(e),
     }
 }
@@ -849,6 +898,19 @@ mod tests {
         let (rest, accept) = split_change(&["run", "exp.toml", "--accept-binary", "--fleet"]);
         assert_eq!(rest, ["run", "exp.toml", "--fleet"]);
         assert_eq!(accept, BinaryChange::Accept);
+    }
+
+    #[test]
+    fn the_binary_flag_leaves_the_migrate_form_intact() {
+        // A migration takes it because the far `sima run` is where the
+        // comparison happens: the acceptance is stated here and travels there.
+        let (rest, accept) = split_change(&["migrate", "exp.toml", "--accept-binary"]);
+        assert_eq!(rest, ["migrate", "exp.toml"]);
+        assert_eq!(accept, BinaryChange::Accept);
+
+        let (rest, accept) = split_change(&["migrate", "exp.toml"]);
+        assert_eq!(rest, ["migrate", "exp.toml"]);
+        assert_eq!(accept, BinaryChange::Refuse);
     }
 
     #[test]

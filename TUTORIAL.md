@@ -4,7 +4,7 @@ This tutorial takes a program that sima knows nothing about and drives it throug
 
 The worked example is `examples/stepper-py`, a Python program. It stands in for yours. Every command runs from the repository root unless a section says otherwise.
 
-**Scope.** Everything here runs on one machine. Distributing an external program's work across several machines is not available — see [Running on other machines](#running-on-other-machines).
+**Scope.** Everything here runs on one machine until the last section, where a whole run moves onto another one. Spreading a single run's tasks across several machines at once is a workflow for the formats sima carries in process — see [Running on other machines](#running-on-other-machines).
 
 ## What sima is
 
@@ -19,28 +19,27 @@ The vocabulary:
 - **Task key** — the hash of the spec, the params, the environment, and the position in a chain. It is the address of the result.
 - **Store** — content-addressed objects plus a per-run journal. The store holds results; the journal narrates how they were produced.
 
-A format is answered either **in-process** by a domain this build carries, or by an **external program**: a binary speaking the domain-service and worker protocols over pipes. `docs/protocol.md` publishes that contract; `sima-api` is the Rust SDK over it and `python/` the Python one. Speaking the protocol is the only requirement, so the program can be written in any language.
+A format is answered either **in-process** by a domain this build carries, or by an **external program**: a binary speaking the domain-service and worker protocols over pipes. `docs/protocol.md` publishes that contract; `sima-api` is the Rust SDK over it and the `sima` Python package, which the binary vends, the Python one. Speaking the protocol is the only requirement, so the program can be written in any language.
 
 ## Install
 
-Build the CLI and make the SDK importable:
+Build the CLI:
 
 ```
 cargo build --release -p sima
 export PATH="$PWD/target/release:$PATH"
-export PYTHONPATH="$PWD/python"
-```
-
-Verify both:
-
-```
 sima
-python3 -c "import sima; print(sima.__file__)"
 ```
 
-`sima` prints its command list; the Python line prints a path. `pip install ./python` is the permanent form of the second export.
+`sima` prints its command list.
 
-The SDK matters this early because **sima never links your code**. It spawns your program and talks over pipes. The SDK is the library that speaks that wire protocol, which is what keeps your program an ordinary executable.
+The SDK arrives with the binary. **sima never links your code**: it spawns your program and talks over pipes, and the SDK is the library that speaks that wire protocol, which is what keeps your program an ordinary executable. The binary carries the package, so a config entry declaring `sdk = "python"` is what puts it on the interpreter's path — here and on any machine the run moves to.
+
+To read it, or to develop against it in an editor, write it out:
+
+```
+sima sdk python --out ./vendor
+```
 
 ## What your program supplies
 
@@ -133,14 +132,15 @@ workers = 2
 
 [domain."example.stepper.v1"]
 binary = "./stepper.py"
-env = ["PATH", "PYTHONPATH"]
+env = ["PATH"]
+sdk = "python"
 ```
 
 - **`[run]`** is the identity: seed, format, and `segments = 3`, which cuts each candidate's work into a chain of 3 tasks, each continuing from the previous one's committed state.
 - **`[run.generator]`** names the generator; the keys after `id` belong to your program and cross as TOML text.
 - **`[run.params]`** belongs to your program too.
 - **`[config]`** and **`[[orchestrator.device]]`** are operational — store location, retry ceiling, checkpoint cadence, which device class runs the work and with how many workers. Changing them changes no task key.
-- **`[domain."example.stepper.v1"]`** is the registration: this format is answered by `./stepper.py`, resolved against the config file's directory.
+- **`[domain."example.stepper.v1"]`** is the registration: this format is answered by `./stepper.py`, resolved against the config file's directory, and written against the Python SDK.
 
 ### The environment a spawned program receives
 
@@ -151,7 +151,9 @@ This is deliberate. A configured program is spawned with a cleared environment a
 - a credential the orchestrator holds is never inherited by third-party code,
 - a program cannot quietly depend on where it was launched from.
 
-The consequence for the example: `PATH` is required for the `#!/usr/bin/env python3` shebang to find an interpreter, and `PYTHONPATH` for `import sima` to resolve. Without them the spawn fails.
+The consequence for the example: `PATH` is required for the `#!/usr/bin/env python3` shebang to find an interpreter. Without it the spawn fails.
+
+`import sima` needs no name here. `sdk = "python"` is what carries it: sima writes the package it holds under the config's own directory and puts that directory at the head of the interpreter's module path, ahead of anything the machine already has under the same name. The vended copy is the one that matches the binary's protocol, which is why it leads.
 
 ## Run it
 
@@ -280,16 +282,90 @@ Everything else in sima follows from that promise being kept.
 
 ## Running on other machines
 
-**TODO.** sima has two workflows for distributing a run, and neither is available to an external program today.
+sima has two workflows for putting a run on other hardware.
 
-- **Fleet** (`sima run <config> --fleet`) — the store and orchestrator stay on your machine; declared or rented machines run workers only. Task inputs and results cross the wire inline.
-- **Migrate** (`sima migrate <config>`) — the run's durable state travels to one declared host, a `sima run` process drives it there, and your machine holds the lock and follows.
+- **Migrate** (`sima migrate <config>`) — the run's durable state travels to one declared host, a `sima run` process drives it there, and your machine holds the lock and follows. **Your program travels with it**, which is the rest of this section.
+- **Fleet** (`sima run <config> --fleet`) — the store and orchestrator stay on your machine; declared or rented machines run workers only. It routes the formats sima carries in process; see `examples/gray-scott-search.toml`. Routing a `[domain.*]` format this way waits on installing your program where a worker runs, which the migration does for the destination and nothing yet does for a fleet member.
 
-The boundary: **a registered format runs only on the orchestrator's own machine.** A format bound through `[domain.*]` to your program cannot be routed to fleet machines, and `sima migrate` refuses it outright — naming the format and the program before touching the destination, the store, the lock, or any provider — because the synthesized far-side config carries no `[domain.*]` entry and the destination would have no route to your program.
+### Declaring what travels
 
-Both halves need the same missing capability: **the program present on a machine sima did not install it on**, plus a way to assert which build answered. The intended packaging convention is already stated — one self-contained binary holding both roles, shipped in the image the way `sima-worker` is — but nothing routes to it, carries the registration across a migration, or pins its digest.
+A migration moves the run onto a machine that has never seen your program, so the program travels with it. Say what, on the entry:
 
-This section will be written when that lands. Until then, remote execution is available for formats this build carries; see `examples/gray-scott-search.toml`.
+```toml
+[domain."example.stepper.v1"]
+binary  = "./stepper.py"   # how it runs here
+payload = "./stepper.py"   # what travels
+env     = ["PATH"]         # names; the values are that machine's
+sdk     = "python"         # travels as the declaration; the far binary vends it
+```
+
+`payload` is one file or one directory, resolved against the config file. A single file **is** the program: sima installs it as the entry point and nothing else is needed. A directory needs an `install` script, because which of its files runs is your decision:
+
+```toml
+payload = "./program"
+install = "./install.sh"
+```
+
+An entry that states no `payload` describes a program this machine holds and no other, and `sima migrate` refuses it, naming the missing key.
+
+The SDK crosses as the declaration it is: `sdk = "python"` travels, and the destination's own `sima` writes the package, so what a program imports there matches the binary driving it there. A third-party dependency is the payload's business — carry it in a directory payload and install it with the script below.
+
+### The install contract
+
+sima runs your script on the destination as `/bin/sh install.sh`, with two variables set:
+
+- `SIMA_PAYLOAD_DIR` — where your payload's files were materialized. The path is stable, so a wrapper you write may point into it.
+- `SIMA_INSTALL_DIR` — where to leave what you built.
+
+Everything else is the destination's own environment. **Nothing is forwarded from your machine** — no credential, no `PATH` of yours — so build out of what is there. A script that needs to fetch or compile does it here.
+
+When your script exits 0, `$SIMA_INSTALL_DIR/program` must exist and be executable. That is the whole contract: the entry point is found by convention, so the script reports no path. A script installing a Python program typically writes a wrapper:
+
+```sh
+#!/bin/sh
+set -e
+python3 -m venv "$SIMA_INSTALL_DIR/venv"
+"$SIMA_INSTALL_DIR/venv/bin/pip" install -q -r "$SIMA_PAYLOAD_DIR/requirements.txt"
+cat > "$SIMA_INSTALL_DIR/program" <<EOF
+#!/bin/sh
+exec "$SIMA_INSTALL_DIR/venv/bin/python" "$SIMA_PAYLOAD_DIR/stepper.py" "\$@"
+EOF
+chmod 755 "$SIMA_INSTALL_DIR/program"
+```
+
+A wrapper like that composes with the vended SDK: the interpreter it execs inherits the module path sima set, so `import sima` resolves inside the virtualenv too, and the requirements file carries everything else.
+
+A script that exits non-zero, or leaves no entry point, fails the run on the destination — and `sima migrate` reports the machine and your script's own last lines, so you read the failure here.
+
+### Moving the run
+
+Name the destination and go:
+
+```toml
+[orchestrator]
+migrate = "gpubox"
+
+[host.gpubox]
+workers = 4
+```
+
+```
+sima migrate search.toml
+```
+
+The program's bytes travel through the store as content-addressed objects, so an unchanged program crosses the wire once: a second migration sends nothing and installs nothing. The destination's events stream back as they happen, and the results come home to your store. The run id is unchanged — where a format is answered from is operational — so the manifest is the one this machine would have written.
+
+Ctrl-C winds the far run down, pulls what it computed, and leaves the run resumable. Re-run `sima migrate` to continue.
+
+### Changing the program
+
+Edit your payload and re-run `sima migrate`: the new manifest travels and the destination installs it. Then the far run stops, because its stored results and checkpoints came from the previous build and sima cannot tell whether the change was material. That is your call to make:
+
+```
+sima migrate search.toml --accept-binary
+```
+
+The flag travels to the run on the destination, which is where the comparison happens.
 
 ## Where to go next
 

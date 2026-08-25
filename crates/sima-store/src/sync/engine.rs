@@ -26,11 +26,13 @@ pub enum ObjectScope<'a> {
     /// complete store advertises everything, which is what a pull wants: the
     /// store that comes home must be complete.
     Referenced,
-    /// Exactly the listed objects, of those this side holds. A push uses it to
-    /// send the records in full — a chain is traversable forward only, so
-    /// without the prefix records the far side cannot locate the frontier at
-    /// all — while sending only the state bytes the far side will actually
-    /// read.
+    /// Exactly the listed objects, of those this side holds — whether or not a
+    /// record in the key set references them. A push uses it to send the
+    /// records in full — a chain is traversable forward only, so without the
+    /// prefix records the far side cannot locate the frontier at all — while
+    /// sending only the state bytes the far side will actually read, plus
+    /// whatever else the run needs there: the program a config-routed format
+    /// is served by travels this way, and no task record names it.
     Named(&'a [Hash]),
 }
 
@@ -130,31 +132,45 @@ impl Store {
             peer
         };
 
-        // Divergence: a key both sides hold under differing record bytes is a
-        // determinism violation, surfaced before any transfer.
-        for (key, peer_record) in &peer_records {
-            if let Some(mine) = my_records.get(key)
-                && mine != peer_record
-            {
-                return Err(Error::Validation(format!(
-                    "sync record divergence under task {key}: this side holds {mine}, peer holds {peer_record}"
-                )));
-            }
-        }
-
         // want = theirs − mine, in the peer's advertised order. The record
         // wants keep the digest each key was advertised under, which the
         // fulfillment is then checked against; the wire carries the keys alone.
-        let want_records: Vec<(TaskKey, Hash)> = peer_records
-            .iter()
-            .copied()
-            .filter(|(k, _)| !my_records.contains_key(k))
-            .collect();
-        let want_objects: Vec<Hash> = peer_objects
-            .iter()
-            .copied()
-            .filter(|h| !my_objects.contains(h))
-            .collect();
+        //
+        // "Mine" is what this store **holds**, not what it advertised. The two
+        // differ: advertising is bounded by the caller's key set, while a store
+        // may hold a record or an object outside it — one it was sent under a
+        // wider set in an earlier session. Asking for those back would re-run
+        // every earlier transfer at each session. So a peer-advertised item
+        // this side does not advertise is looked up before it is wanted.
+        //
+        // Divergence is checked over the same union: a key both sides hold
+        // under differing record bytes is a determinism violation, surfaced
+        // before any transfer.
+        let mut want_records = Vec::new();
+        for (key, peer_record) in &peer_records {
+            let mine = match my_records.get(key) {
+                Some(mine) => Some(*mine),
+                None => self
+                    .record(key)?
+                    .map(|record| hash_bytes(&record.to_bytes())),
+            };
+            match mine {
+                None => want_records.push((*key, *peer_record)),
+                Some(mine) if mine != *peer_record => {
+                    return Err(Error::Validation(format!(
+                        "sync record divergence under task {key}: this side holds {mine}, \
+                         peer holds {peer_record}"
+                    )));
+                }
+                Some(_) => {}
+            }
+        }
+        let mut want_objects = Vec::new();
+        for hash in &peer_objects {
+            if !my_objects.contains(hash) && !self.has(hash)? {
+                want_objects.push(*hash);
+            }
+        }
         let want_keys: Vec<TaskKey> = want_records.iter().map(|(k, _)| *k).collect();
 
         // Want and fulfillment interlock: the initiator sends its want and
@@ -216,16 +232,13 @@ impl Store {
                 records.insert(key, hash_bytes(&record.to_bytes()));
             }
         }
-        let offered = match scope {
+        let offered: BTreeSet<Hash> = match scope {
             ObjectScope::Referenced => referenced,
-            // A named object outside the key set's references is not this
-            // side's to offer under these keys, so the named set intersects
-            // what the records reference.
-            ObjectScope::Named(named) => named
-                .iter()
-                .copied()
-                .filter(|hash| referenced.contains(hash))
-                .collect(),
+            // Exactly what the caller named. Not every object a side needs to
+            // offer is one a record references: a run whose format is served
+            // by a program of its own carries that program as objects too, and
+            // no task record names them.
+            ObjectScope::Named(named) => named.iter().copied().collect(),
         };
         let mut objects = BTreeSet::new();
         for hash in offered {
@@ -838,6 +851,55 @@ mod tests {
         }
         for hash in [requested, served_hash] {
             assert!(!store.has(&hash).expect("object lookup"));
+        }
+    }
+
+    #[test]
+    fn what_this_side_holds_outside_its_key_set_is_never_asked_for() {
+        // Advertising is bounded by the caller's key set; holding is not. A
+        // store sent a record under a wider set in an earlier session must not
+        // ask for it back, or every session would re-run every earlier one.
+        // The key set here is empty, so this side advertises none of what it
+        // holds, which is exactly the case.
+        let (_dir, store) = temp_store();
+        store_identity_components(&store);
+        let record = record_with_stored_artifact(&store, sample_identity(7));
+        store.commit(&record).expect("commit the record");
+        let key = record.identity.key();
+        let object = *record.artifacts()[0].object();
+
+        let frames = peer_offering(vec![(key, hash_bytes(&record.to_bytes()))], vec![object])
+            .into_iter()
+            .chain([SyncMessage::Done]);
+        assert_eq!(
+            responder_reads(&store, frames).expect("the session completes"),
+            SyncReport::default(),
+            "nothing was asked for and nothing was served"
+        );
+    }
+
+    #[test]
+    fn divergence_is_caught_over_a_record_held_outside_the_key_set_too() {
+        // The comparison follows what this side holds, so a determinism
+        // violation is caught whether or not the key was advertised.
+        let (_dir, store) = temp_store();
+        store_identity_components(&store);
+        let record = record_with_stored_artifact(&store, sample_identity(7));
+        store.commit(&record).expect("commit the record");
+        let key = record.identity.key();
+        let elsewhere = hash_bytes(b"a record the peer holds under this key");
+
+        let frames = peer_offering(vec![(key, elsewhere)], Vec::new())
+            .into_iter()
+            .chain([SyncMessage::Done]);
+        match responder_reads(&store, frames) {
+            Err(Error::Validation(msg)) => {
+                assert!(
+                    msg.contains("divergence") && msg.contains(&key.to_string()),
+                    "{msg}"
+                );
+            }
+            other => panic!("expected a divergence rejection, got {other:?}"),
         }
     }
 

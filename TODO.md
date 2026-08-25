@@ -73,7 +73,9 @@ disposable at any instant.
 
 Phases are numbered in the order they run, and the ladder is P1 through P9:
 P1 through P8 are done, and P9 (registered programs beyond the orchestrator's
-machine) remains, after which it pauses. A phase or milestone
+machine) is under way — a registered program now travels with a migrated run,
+and what remains is agreeing its build across a fleet and routing tasks to
+those machines. After that the ladder pauses. A phase or milestone
 number means work this version of sima will do.
 
 Everything model-specific — the evaluation funnel, continuous-family rigor,
@@ -967,33 +969,51 @@ model or metric. Last active phase before the pause.
 
 ## P9 — Registered programs beyond the orchestrator's machine
 
-A format bound through `[domain.*]` runs only where the orchestrator runs. The
-phase lifts that: the program travels to the machines a run uses, its build is
-agreed across them, and a migration carries the registration it needs. Fleet
-under a migrated orchestrator is out of scope and recorded at the end of the
-phase with its reasons.
+A format bound through `[domain.*]` ran only where the orchestrator ran. The
+phase lifts that: the program travels to the machines a run uses and its build
+is agreed across them. M9.1 landed the migration half — a registered format
+moves onto another machine, program and all — and what remains is the fleet
+half, where a worker's program is installed by something other than the run
+that needs it. Fleet under a migrated orchestrator is out of scope and recorded
+at the end of the phase with its reasons.
 
 The decision the whole phase rests on: **the program travels per run.** sima
 ships the bytes and a script installs them, so a change reaches a machine
 without publishing anywhere and without rebuilding an image.
 
-- [ ] M9.1 Payload and install script: two keys on the `[domain.*]` entry — a
-      `payload` path, one file or one directory, and an `install` script run on
-      the far side once it lands. sima archives the payload, transfers it, runs
-      the script, and the script decides what installation means for that
-      language and environment. The script is the flexibility: an interpreter's
-      package, a compiled binary, a virtualenv, a symlink into an existing
-      image. Two settled points. **The payload is bytes sima sends, never a
-      thing the far side fetches**, so a local edit is a run away from a remote
-      machine and nothing is published to reach it. What the payload carries is
-      the program alone. A compiled program is the whole of it, its SDK linked
-      in; an interpreted one needs its runtime and sima's SDK for that language
-      present, and both ride in the machine's image beside `sima-worker`, so
-      nothing here waits on package-index publication. **An install that fails
-      fails the run, naming the machine**, since proceeding on the machines that
-      worked spends a fleet's price for a fraction of its capacity. Landing
-      inside a container is the script's job, which is what keeps a per-run
-      program change from becoming an image rebuild.
+- [x] M9.1 A registered program travels with its migrated run, absorbing M9.4:
+      two keys on the `[domain.*]` entry — a `payload` path, one file or one
+      directory, and an `install` script the destination runs over it — plus
+      `payload_digest`, which is what the synthesized far config states. The
+      script decides what installation means for that language and environment:
+      an interpreter's package, a compiled binary, a virtualenv, a symlink into
+      an existing image. Settled points:
+      - **The payload is bytes sima sends, never a thing the far side
+        fetches**, so a local edit is a run away from a remote machine and
+        nothing is published to reach it. What the payload carries is the
+        program alone; an interpreted one's runtime and SDK ride in the
+        machine's image beside `sima-worker`.
+      - **Transfer rides the existing store sync.** The payload's files become
+        content-addressed objects and one manifest object names them; the
+        manifest's hash is the digest, and the sync's want/have negotiation is
+        what skips the bytes the destination already holds.
+      - **Installation happens inside the far `sima run` at config load**,
+        stamped by digest, so a reattach installs nothing and a changed payload
+        reinstalls exactly once. No installation verb exists. The entry point
+        is found by convention at `$SIMA_INSTALL_DIR/program`; `install` is
+        optional for a single-file payload and required for a directory.
+      - **An install that fails fails the run, naming the machine** and the
+        script's own last lines, which reach the operator through the far run's
+        log — every far-side load failure dies before journaling, so the attach
+        reads that log.
+      - **`sima sync-serve` addresses the store and the run** rather than a
+        config, since loading a config would spawn the program the session
+        exists to deliver; it derives its key set from the run's journal.
+      - **`sima migrate <config> --accept-binary`** travels to the far start
+        argv: the far run's own binding guard refuses a changed installed
+        program, and the acceptance is the operator's.
+      - `payload` and `install` are operational — a run's id is unchanged by
+        adding or removing them.
 - [ ] M9.2 Build agreement across machines: the payload digest is what a run
       believes answered for the format, and a remote copy that drifted from it
       breaks the one promise the store makes. A worker's handshake carries the
@@ -1008,19 +1028,32 @@ without publishing anywhere and without rebuilding an image.
       program. Depends on M9.1 and M9.2 and is the phase's payload — it is what
       makes a program written outside this workspace a first-class citizen of a
       distributed run.
-- [ ] M9.4 Migration carries its registration: the synthesized far config gains
-      the `[domain.*]` entry, its `binary` rewritten to where the install script
-      put the program on that machine. This is what lifts the outright refusal a
-      migration answers a registered format with today. `[fleet]`, `[host.*]`,
-      `[host_class.*]`, and `[budget]` stay dropped, for the reasons the phase
-      records below.
-- [ ] M9.5 Detach as a verb: `sima migrate` catches `SIGINT` alone and winds the
+- [ ] M9.4 Detach as a verb: `sima migrate` catches `SIGINT` alone and winds the
       far run down, so the deliberate gesture stops the run while an accidental
       one — a closed terminal, a dropped connection — detaches and leaves it
       computing. The two intentions swap places, and the command takes no flag
       to say which was meant. Split them: attaching, detaching, and winding down
       become things an operator asks for by name rather than by which signal
-      reached the process.
+      reached the process. The recorded limit this milestone also closes:
+      - **A far run that dies before journaling is reported as the far
+        journal's last terminal event.** The follow's first poll replays the
+        whole journal, so a second migration onto a finished run whose program
+        fails to install, or whose binding guard refuses the installed program,
+        surfaces as the earlier finalization rather than as the death.
+        Diagnosis is the far `run.log`, which the attach reads and the
+        migration prints. Telling history from this session's records needs a
+        session boundary the follow protocol carries only once following is a
+        verb of its own.
+
+**A registered format migrates onto a machine of yours.** A rented destination
+states it is ready by running `sima-worker --enumerate-devices <format>` inside
+its own container, and that worker answers for the formats the build carries in
+process, so a format its registered program alone serves leaves the probe
+without an answer and the destination reads as unreachable for the whole
+readiness window. A machine of yours takes the image-check path, which names no
+format, and carries a registered program today. Lifting the limit means a rented
+machine's probe asking for the device layout alone, leaving the format to the
+far run's own load, which is where the program that answers for it is spawned.
 
 **Fleet under a migrated orchestrator is out of scope.** A migrated run drives
 the destination's own workers and no others, which is why the far config drops
