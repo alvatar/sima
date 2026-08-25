@@ -1098,6 +1098,7 @@ mod tests {
             settings(SpawnPolicy::Explicit {
                 passthrough: Vec::new(),
                 prepend: Vec::new(),
+                assign: Vec::new(),
             }),
         );
         assert!(
