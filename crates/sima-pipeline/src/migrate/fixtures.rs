@@ -106,6 +106,10 @@ pub(crate) struct Scripted<'a> {
     deaf: Mutex<usize>,
     /// The records the follow feed delivers, one batch per poll.
     pub(crate) polls: Arc<Mutex<VecDeque<Vec<Record>>>>,
+    /// The journal an earlier session left in the far store, which is what a
+    /// follow opened before this run starts replays. Empty for a destination
+    /// no run has ever finished on.
+    existing: Mutex<Vec<Record>>,
     /// The far side's own store and the run it holds, when a sync is to be
     /// performed for real rather than recorded and skipped.
     far: Option<(&'a Store, &'a LoadedConfig)>,
@@ -117,6 +121,13 @@ pub(crate) struct Scripted<'a> {
     pub(crate) pushed: Mutex<Vec<sima_core::Hash>>,
     /// What the far run's log holds, when it wrote one.
     log: Option<String>,
+    /// Whether the far run exits the moment it is started, which is what a
+    /// far-side load failure looks like from here.
+    dies_at_start: bool,
+    /// Whether the far run goes away once its feed has delivered everything
+    /// it was scripted with: a run that died mid-flight, journaling nothing
+    /// terminal.
+    vanishing: bool,
     /// How many times the follow is refused before it opens: a far run is
     /// up before it journals, and `sima follow-serve` refuses a run that
     /// journaled nothing.
@@ -141,12 +152,15 @@ impl<'a> Scripted<'a> {
             unplaced: false,
             deaf: Mutex::new(0),
             polls: Arc::new(Mutex::new(VecDeque::new())),
+            existing: Mutex::new(Vec::new()),
             far: None,
             steps: Mutex::new(Vec::new()),
             placed: Mutex::new(None),
             started_with: Mutex::new(None),
             pushed: Mutex::new(Vec::new()),
             log: None,
+            dies_at_start: false,
+            vanishing: false,
             follow_refusals: Mutex::new(0),
         }
     }
@@ -204,14 +218,41 @@ impl<'a> Scripted<'a> {
         self
     }
 
-    /// A far run that exits before it journals anything, leaving `log`
-    /// behind — what a far-side load failure looks like from here.
+    /// A far run that exits before it journals anything, over a store that
+    /// holds no journal at all, leaving `log` behind — what a first migration
+    /// finds when the far side fails to load.
     pub(crate) fn dying_before_journaling(mut self, log: &str) -> Scripted<'a> {
         self.log = Some(log.to_string());
+        self.dies_at_start = true;
         self
     }
 
-    /// The records the follow delivers, one batch per poll.
+    /// A far run that exits while loading, leaving `log` behind, over a store
+    /// whose journal an earlier session already filled — what a second
+    /// migration onto a run that once finished there finds.
+    pub(crate) fn dying_while_loading(mut self, log: &str) -> Scripted<'a> {
+        self.log = Some(log.to_string());
+        self.dies_at_start = true;
+        self
+    }
+
+    /// A far run that goes away once its feed has delivered everything it was
+    /// scripted with, journaling nothing terminal: a death mid-run.
+    pub(crate) fn vanishing_when_drained(mut self) -> Scripted<'a> {
+        self.vanishing = true;
+        self
+    }
+
+    /// The journal an earlier session left in the far store: what a follow
+    /// opened before this run starts replays, and what a run that once
+    /// finished on this destination leaves behind.
+    pub(crate) fn over_an_existing_journal(self, records: Vec<Record>) -> Scripted<'a> {
+        *self.existing.lock().expect("the journal lock") = records;
+        self
+    }
+
+    /// The records the follow delivers, one batch per poll, from the second
+    /// poll on.
     pub(crate) fn delivering(self, batches: Vec<Vec<Record>>) -> Scripted<'a> {
         *self.polls.lock().expect("the poll lock") = batches.into();
         self
@@ -276,7 +317,7 @@ impl FarSide for Scripted<'_> {
         *self.started_with.lock().expect("the acceptance lock") = Some(accept);
         // A run that dies while loading its config is gone by the time
         // anything asks, which is what leaves the pid naming nothing.
-        if self.log.is_none() {
+        if !self.dies_at_start {
             *self.alive.lock().expect("the pid lock") = Some(PID);
         }
         Ok(PID)
@@ -335,10 +376,14 @@ impl FarSide for Scripted<'_> {
 
     fn follow(&self) -> Result<Box<dyn RunFeed>> {
         self.record(Step::Follow);
-        // `sima follow-serve` refuses a run that journaled nothing, which
-        // is the whole of what this side can learn from it.
+        // `sima follow-serve` refuses a run that journaled nothing, which is
+        // the whole of what this side can learn from it. The far journal holds
+        // something when an earlier session left records or a run is there
+        // writing its own; a run that died while loading left neither.
+        let existing = self.existing.lock().expect("the journal lock");
+        let unjournaled = existing.is_empty() && self.alive.lock().expect("the pid lock").is_none();
         let mut refusals = self.follow_refusals.lock().expect("the follow lock");
-        if self.log.is_some() || *refusals > 0 {
+        if unjournaled || *refusals > 0 {
             *refusals = refusals.saturating_sub(1);
             return Err(Error::Validation(
                 "run 00 was never started in this store".to_string(),
@@ -351,8 +396,10 @@ impl FarSide for Scripted<'_> {
                 workers: 1,
             },
             polls: Arc::clone(&self.polls),
+            history: Some(existing.clone()),
             alive: Arc::clone(&self.alive),
             ending: self.ending,
+            vanishing: self.vanishing,
         }))
     }
 }
@@ -362,8 +409,14 @@ impl FarSide for Scripted<'_> {
 pub(crate) struct ScriptedFeed {
     info: FeedInfo,
     polls: Arc<Mutex<VecDeque<Vec<Record>>>>,
+    /// The journal as it already stood when the feed opened, delivered by its
+    /// first poll — as [`RemoteFeed`](crate::feed::RemoteFeed) drains its own
+    /// history before anything live. `None` once that poll has happened.
+    history: Option<Vec<Record>>,
     alive: Arc<Mutex<Option<u32>>>,
     ending: Ending,
+    /// Whether the far run goes away once every batch has been delivered.
+    vanishing: bool,
 }
 
 impl RunFeed for ScriptedFeed {
@@ -372,12 +425,24 @@ impl RunFeed for ScriptedFeed {
     }
 
     fn poll(&mut self) -> Result<Vec<Record>> {
+        // The journal as it stood when the feed opened. An empty one is still
+        // a poll of its own, as the real feed's first frame is.
+        if let Some(history) = self.history.take()
+            && !history.is_empty()
+        {
+            return Ok(history);
+        }
         let batch = self
             .polls
             .lock()
             .expect("the poll lock")
             .pop_front()
             .unwrap_or_default();
+        if self.vanishing && batch.is_empty() {
+            // Everything it was scripted with has been delivered, and the far
+            // run is gone without journaling anything terminal.
+            *self.alive.lock().expect("the pid lock") = None;
+        }
         let terminal = batch.iter().any(|record| {
             matches!(
                 record.event,

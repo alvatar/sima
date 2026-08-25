@@ -15,7 +15,8 @@
 //!  │  4  create the far-side directory; write the synthesized config        │
 //!  │  5  is the far side already driving this run?                          │
 //!  │       ├─ yes ──▶ skip to 7; this invocation is a reattach              │
-//!  │       └─ no  ──▶ PUSH the run's closure, then                          │
+//!  │       └─ no  ──▶ PUSH the run's closure; open the FOLLOW, whose first  │
+//!  │                    poll is then the journal as it already stood, then  │
 //!  │  6  START: setsid the far `sima run`, capture its pid into run.pid     │
 //!  │  7  FOLLOW: render each record and forward it into the local journal;  │
 //!  │       poll the budget verdict when this is a rental                    │
@@ -42,10 +43,24 @@
 //! **Journals do not sync**, so each record the follow delivers is forwarded
 //! into the local journal through the collector every other event crosses —
 //! without it the local journal would hold a gap for every segment executed
-//! remotely. A reattaching migration discards the history its first poll
-//! replays and forwards only what arrives after it; the records it therefore
-//! loses are diagnostic detail, since journals are observational and excluded
-//! from every identity criterion.
+//! remotely. The records a migration does not forward are diagnostic detail,
+//! since journals are observational and excluded from every identity criterion.
+//!
+//! **The follow's first poll is the journal as it already stood**, and what
+//! that is depends on when the follow opened:
+//!
+//! - A migration that starts the far run opens the follow **before** the start,
+//!   so the first poll is an earlier session's journal — a run that once
+//!   finished on this destination leaves one ending in its finalization. Those
+//!   records are neither forwarded nor allowed to decide this run's outcome,
+//!   and a far process that dies before writing any of its own is reported as
+//!   the death it is rather than as that stale ending.
+//! - A reattach opens the follow on a run already going, so the first poll is
+//!   that run's own history: it decides the state, and is not re-emitted,
+//!   having been produced while nothing was attached to journal it.
+//! - A destination whose journal is empty cannot be followed at all until the
+//!   run writes its first line, so the follow opens after the start and its
+//!   first poll is this run's.
 
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -82,6 +97,10 @@ use crate::status::{RunState, RunStatus};
 use crate::task_keys::task_keys;
 
 /// How long the follow waits before polling again when nothing has arrived.
+///
+/// The suite reads it from a test override instead, so what it fixes is the
+/// order of what a follow asks for rather than the rate it asks at.
+#[cfg(not(test))]
 const TICK: Duration = Duration::from_millis(100);
 
 /// How often a rental's budget is assessed while the follow runs. The ceiling
@@ -367,8 +386,8 @@ impl Session<'_> {
         // what it already has, and starting would run a second orchestrator
         // against a store whose lock the first one holds.
         let reattached = far_run.far.driving()?;
-        let pid = match reattached {
-            Some(pid) => pid,
+        let (pid, opened) = match reattached {
+            Some(pid) => (pid, None),
             None => {
                 let keys = task_keys(far_run.config, far_run.store)?;
                 let mut objects = push_objects(far_run.store, &keys)?;
@@ -381,11 +400,20 @@ impl Session<'_> {
                 far_run
                     .far
                     .sync(far_run.store, &keys, ObjectScope::Named(&objects))?;
-                far_run.far.start(self.accept)?
+                // The follow opens before the far run starts, so its first poll
+                // is the journal as an earlier session left it and everything
+                // after that is this run's. It is what tells a run that once
+                // finished on this destination from the one starting now.
+                //
+                // A journal that is not there yet cannot be followed, and there
+                // is then nothing earlier to tell apart: the follow opens after
+                // the start instead, waiting for the run's first line.
+                let opened = far_run.far.follow().ok();
+                (far_run.far.start(self.accept)?, opened)
             }
         };
 
-        let (state, end) = self.watch(pid, reattached.is_some())?;
+        let (state, end) = self.watch(pid, reattached.is_some(), opened)?;
         // Detaching leaves the far run computing, so there is nothing to pull:
         // its results come home on the next migration that sees it end, or on
         // a recall. Skipping the pull is what makes letting go immediate.
@@ -405,10 +433,15 @@ impl Session<'_> {
     ///
     /// Returns the state the far run's journal projects and what ended the
     /// follow, both under the run's journal boundary.
-    fn watch(&self, pid: u32, reattached: bool) -> Result<(RunState, FollowEnd)> {
+    fn watch(
+        &self,
+        pid: u32,
+        reattached: bool,
+        opened: Option<Box<dyn RunFeed>>,
+    ) -> Result<(RunState, FollowEnd)> {
         let run = self.far_run.config.run.id();
         self.far_run.journaling(|events| {
-            let (state, end) = self.follow(&run, reattached, events)?;
+            let (state, end) = self.follow(&run, reattached, opened, events)?;
             match end {
                 // Letting go signals nothing and waits for nothing: the far run
                 // is left exactly as it was.
@@ -426,26 +459,46 @@ impl Session<'_> {
         &self,
         run: &RunId,
         reattached: bool,
+        opened: Option<Box<dyn RunFeed>>,
         events: &Emitter,
     ) -> Result<(RunState, FollowEnd)> {
         let budget = self.budget();
-        let mut feed = self.attach()?;
+        // A follow opened before the far run started is the one to use; every
+        // other case waits for the run's first journal line and opens then.
+        let stale_first = opened.is_some();
+        let mut feed = match opened {
+            Some(feed) => feed,
+            None => self.attach()?,
+        };
         let mut status = RunStatus::new(*run);
-        let mut replay = reattached;
+        // What the first poll is, and what becomes of it:
+        //
+        // - opened before the start: an earlier session's journal. This
+        //   migration is not watching that run, so its records neither decide
+        //   this outcome nor cross into the local journal a second time.
+        // - a reattach: the far run's own history, produced while nothing was
+        //   attached to journal it. It decides the state, and is not re-emitted.
+        // - neither: the journal was empty, so the first poll is this run's.
+        let mut first = true;
+        let mut journaled = false;
         // Unset, so the first tick assesses: a migration re-run under a ceiling
         // already spent must not first watch for an interval.
         let mut assessed: Option<Instant> = None;
         loop {
             let records = feed.poll()?;
+            let stale = first && stale_first;
+            let replayed = first && reattached;
             for record in &records {
+                if stale {
+                    continue;
+                }
                 status.apply(record);
-                // The first poll of a reattached follow is the far run's whole
-                // history, produced while nothing was attached to journal it.
-                if !replay {
+                if !replayed {
                     events.emit(record.event.clone());
                 }
+                journaled = true;
             }
-            replay = false;
+            first = false;
             if !matches!(status.state, RunState::InProgress) {
                 return Ok((status.state, FollowEnd::FarRun));
             }
@@ -475,9 +528,17 @@ impl Session<'_> {
                 // under answers without a race, so it is what decides — and it
                 // is asked only on the rare tick where the lock reads free.
                 if feed.holder()?.is_none() && self.far_run.far.driving()?.is_none() {
+                    // The far run this migration started is gone and journaled
+                    // nothing of its own, so everything the state rests on was
+                    // written by an earlier session. It died while loading —
+                    // an install that could not build, a binding guard that
+                    // refused — and its own words are in the log it wrote.
+                    if !reattached && !journaled {
+                        return Err(self.far_run.died("ended before it journaled anything"));
+                    }
                     return Ok((status.state, FollowEnd::FarRun));
                 }
-                sleep(TICK);
+                sleep(self.tick());
             }
         }
     }
@@ -499,7 +560,7 @@ impl Session<'_> {
                     if gone || Instant::now() >= deadline {
                         return Err(self.unattachable(error, gone));
                     }
-                    sleep(TICK);
+                    sleep(self.tick());
                 }
             }
         }
@@ -584,6 +645,17 @@ impl Session<'_> {
     #[cfg(test)]
     fn attach_bound(&self) -> Duration {
         self.far_run.overrides.attach_bound
+    }
+
+    /// How long the follow waits before polling again.
+    #[cfg(not(test))]
+    fn tick(&self) -> Duration {
+        TICK
+    }
+
+    #[cfg(test)]
+    fn tick(&self) -> Duration {
+        self.far_run.overrides.tick
     }
 }
 
@@ -825,6 +897,64 @@ mod tests {
     }
 
     #[test]
+    fn a_far_run_that_dies_over_an_earlier_session_s_journal_reports_its_death() -> Result<()> {
+        // A second migration onto a run that once finished on the destination:
+        // the far journal already ends in that finalization, and this
+        // invocation's process dies while loading. The follow attaches to the
+        // journal that is there, so the stale ending is all it can replay —
+        // and it is not this migration's outcome.
+        let local = local(RENTED, PROMPT, Some(3));
+        let run = local.config.run.id();
+        let far = Scripted::new()
+            .dying_while_loading(
+                "sima: validation error: the install script install.sh exited with exit status: 3",
+            )
+            .over_an_existing_journal(vec![started(&run), finalized(&run)]);
+
+        let (outcome, _) = session_over(&local, &far, None, &AtomicBool::new(false));
+        let text = outcome
+            .expect_err("a stale finalization is not this migration's outcome")
+            .to_string();
+        assert!(text.contains("slingshot"), "names the machine: {text}");
+        assert!(
+            text.contains("install script install.sh exited"),
+            "carries the far run's own words: {text}"
+        );
+        assert!(
+            !far.steps().contains(&PULL),
+            "nothing was pulled: {:?}",
+            far.steps()
+        );
+        assert!(
+            local.store.manifest(&run)?.is_none(),
+            "and nothing was sealed"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_far_run_that_dies_after_journaling_still_comes_home_outstanding() -> Result<()> {
+        // The counterpart, and the behavior that must not drift: a far run
+        // that journaled its own records and then vanished mid-run is a run
+        // whose results come home, not a death to report.
+        let local = local(RENTED, PROMPT, Some(3));
+        let run = local.config.run.id();
+        let far = Scripted::new()
+            .vanishing_when_drained()
+            .delivering(vec![vec![started(&run), committed("aa")]]);
+
+        let (outcome, _) = session_over(&local, &far, None, &AtomicBool::new(false));
+        assert!(matches!(outcome?, MigrateOutcome::Outstanding { .. }));
+        assert_eq!(
+            far.steps().last(),
+            Some(&PULL),
+            "its results came home: {:?}",
+            far.steps()
+        );
+        Ok(())
+    }
+
+    #[test]
     fn a_far_run_that_died_leaving_no_log_still_names_the_machine() -> Result<()> {
         // A run that never wrote a line leaves the absence to report, which is
         // still more than the follow's own refusal states.
@@ -914,7 +1044,12 @@ mod tests {
                 Step::Place,
                 Step::Driving,
                 PUSH,
+                // The follow opens before the start, so its first poll is the
+                // journal as it stood before this run wrote to it.
+                Step::Follow,
                 Step::Start,
+                // The far side holds nothing yet, so that follow was refused
+                // and the one that reads this run's records opens after it.
                 Step::Follow,
                 // The wind-down finds the run already gone: it wrote its
                 // terminal event and exited.
@@ -1134,6 +1269,7 @@ mod tests {
                 Step::Place,
                 Step::Driving,
                 PUSH,
+                Step::Follow,
                 Step::Start,
                 Step::Follow,
             ],
@@ -1681,10 +1817,10 @@ mod tests {
         // nothing was attached to journal it.
         let local = local(OWNED, "", Some(3));
         let run = local.config.run.id();
-        let far = Scripted::new().already_driving().delivering(vec![
-            vec![started(&run), committed("aa")],
-            vec![committed("bb"), finalized(&run)],
-        ]);
+        let far = Scripted::new()
+            .already_driving()
+            .over_an_existing_journal(vec![started(&run), committed("aa")])
+            .delivering(vec![vec![committed("bb"), finalized(&run)]]);
 
         let (outcome, records) = session_over(&local, &far, None, &AtomicBool::new(false));
         outcome?;

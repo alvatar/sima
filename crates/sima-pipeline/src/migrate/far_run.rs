@@ -74,6 +74,9 @@ pub(crate) struct Overrides {
     /// failure a wait that ran out reports, so it runs the same path in a
     /// fraction of the time.
     pub(crate) attach_bound: Duration,
+    /// How long the follow waits before polling again. What the suite fixes is
+    /// the order of what it asks for, not the rate.
+    pub(crate) tick: Duration,
 }
 
 #[cfg(test)]
@@ -82,6 +85,7 @@ impl Default for Overrides {
         Overrides {
             stated_nowhere: (Duration::from_millis(200), Duration::from_millis(1)),
             attach_bound: Duration::from_millis(500),
+            tick: Duration::from_millis(1),
         }
     }
 }

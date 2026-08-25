@@ -496,19 +496,28 @@ fn a_changed_payload_reaches_the_destination_and_stops_at_its_binding_guard() ->
     // The program is edited here. Its declarations are unchanged, so the run
     // id and every task key stand; what changed is the build that computes.
     program(&migrated_dir, Shape::Directory, "two", &installs_at);
-    move_run(&migrated, BinaryChange::Refuse)?;
+    let error = move_run(&migrated, BinaryChange::Refuse)
+        .expect_err("the far binding guard refused the changed program");
 
-    // The edit travelled and was installed, and the guard refused it.
+    // The edit travelled and was installed, and the guard refused it — which
+    // this migration reports as its own outcome. The far run died while
+    // loading, so the finalization its journal still ends in is the previous
+    // migration's and decides nothing here.
     assert_eq!(
         installs(&installs_at),
         2,
         "the changed payload was built on the destination"
     );
+    let reported = error.to_string();
+    assert!(
+        reported.contains("--accept-binary"),
+        "the refusal is the migration's outcome: {reported}"
+    );
     let refused = std::fs::read_to_string(far_dir(&migrated, &far_root).join("run.log"))
         .expect("the far run wrote a log");
     assert!(
         refused.contains("--accept-binary"),
-        "the far binding guard refused the changed program: {refused}"
+        "and the far run's own log is where it came from: {refused}"
     );
     assert_eq!(
         far_bindings(&migrated, &far_root),
@@ -533,10 +542,11 @@ fn a_changed_payload_reaches_the_destination_and_stops_at_its_binding_guard() ->
 }
 
 #[test]
-fn a_program_served_migration_winds_down_on_an_interrupt_and_brings_home_what_ran() -> Result<()> {
+fn a_program_served_migration_winds_down_on_its_ceiling_and_brings_home_what_ran() -> Result<()> {
     // The wind-down over a run the destination had to install a program for:
-    // the far run is signalled, whatever its program computed is pulled, and
-    // the run comes home resumable rather than sealed.
+    // the far run reaches the wall-clock ceiling its config carried across,
+    // ends itself, and whatever its program computed is pulled — the run comes
+    // home resumable rather than sealed.
     let dir = tempfile::tempdir().expect("temp dir");
     let far_root = dir.path().join("far");
     let installs_at = dir.path().join("installs");
@@ -567,6 +577,9 @@ fn a_program_served_migration_winds_down_on_an_interrupt_and_brings_home_what_ra
             workers = 2
             migrate = "far"
 
+            [budget]
+            max_wall_clock_ms = 3000
+
             [host.far]
             provider = "stub"
             root = {root:?}
@@ -590,15 +603,8 @@ fn a_program_served_migration_winds_down_on_an_interrupt_and_brings_home_what_ra
     let before = committed_records(&migrated)?;
     assert!(!before.is_empty(), "the local run committed something");
 
-    let interrupt = AtomicBool::new(false);
     let loaded = load(&migrated)?;
-    let outcome = migrate(
-        &migrated,
-        &loaded,
-        &|_: &Record| interrupt.store(true, std::sync::atomic::Ordering::Relaxed),
-        &interrupt,
-        BinaryChange::Refuse,
-    )?;
+    let outcome = move_run(&migrated, BinaryChange::Refuse)?;
     assert!(
         matches!(outcome, MigrateOutcome::Interrupted { .. }),
         "a wound-down migration is resumable, not finalized: {outcome:?}"
