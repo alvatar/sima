@@ -194,24 +194,29 @@ pub fn migrate(
         // provider is constructed and no credential is read.
         HostForm::Owned(owned) => {
             let far = Remote::owned(&destination, owned, &run);
-            Session {
+            FarRun {
                 far: &far,
                 store: &store,
                 config: loaded,
                 destination: &destination,
-                local_text: &local_text,
-                registration: registration.as_ref(),
-                accept,
-                rental: None,
                 observer,
-                interrupt,
-                // Nothing asked for this machine before now, so the contact is
-                // what starts its clock.
-                usable_by: None,
+                rental: None,
                 #[cfg(test)]
                 overrides: Overrides::default(),
             }
-            .drive()
+            .under_teardown(|far_run| {
+                Session {
+                    far_run,
+                    local_text: &local_text,
+                    registration: registration.as_ref(),
+                    accept,
+                    interrupt,
+                    // Nothing asked for this machine before now, so the contact
+                    // is what starts its clock.
+                    usable_by: None,
+                }
+                .run_to_end()
+            })
         }
         HostForm::Rented(spec) => {
             // One machine under strict fill: `migrate` names exactly one, so
@@ -250,22 +255,27 @@ pub fn migrate(
                 &run,
                 registration.is_none().then_some(&loaded.run.format),
             )?;
-            Session {
+            FarRun {
                 far: &far,
                 store: &store,
                 config: loaded,
                 destination: &destination,
-                local_text: &local_text,
-                registration: registration.as_ref(),
-                accept,
-                rental: Some(guard),
                 observer,
-                interrupt,
-                usable_by: Some(usable_by),
+                rental: Some(guard),
                 #[cfg(test)]
                 overrides: Overrides::default(),
             }
-            .drive()
+            .under_teardown(|far_run| {
+                Session {
+                    far_run,
+                    local_text: &local_text,
+                    registration: registration.as_ref(),
+                    accept,
+                    interrupt,
+                    usable_by: Some(usable_by),
+                }
+                .run_to_end()
+            })
         }
     }
 }
@@ -348,14 +358,8 @@ fn hold<'a>(
     )
 }
 
-/// One migration, past the destination's resolution: steps 3 through 12 over a
-/// machine already in hand.
-///
-/// Split from [`migrate`] so the choreography is driven against a recording
-/// [`FarSide`] with no machine at all, and so every path out of it passes back
-/// through the teardown.
-/// The session's test-only overrides, in one struct on the type rather than
-/// scattered across its fields.
+/// The test-only overrides a far run reads instead of the production bounds,
+/// in one struct rather than scattered across its fields.
 #[cfg(test)]
 #[derive(Debug, Clone, Copy)]
 struct Overrides {
@@ -380,11 +384,33 @@ impl Default for Overrides {
     }
 }
 
-struct Session<'a> {
+/// The run on the destination, and everything this side does to end it and
+/// bring it home: steps 9 through 12 over a machine already in hand.
+///
+/// Both verbs work through it. [`migrate`] reaches it after the follow it
+/// drove; [`recall`](crate::migrate::recall::recall) reaches it over a far run
+/// it never followed. The four steps are the same either way, which is why they
+/// live here rather than in either verb.
+struct FarRun<'a> {
     far: &'a dyn FarSide,
     store: &'a Store,
     config: &'a LoadedConfig,
     destination: &'a Destination<'a>,
+    observer: Observer<'a>,
+    /// The rented machine hosting the run, disposed of on every path out;
+    /// `None` for a machine of yours, which is nothing to tear down.
+    rental: Option<InstanceGuard<'a, dyn Provider + Sync + 'a>>,
+    #[cfg(test)]
+    overrides: Overrides,
+}
+
+/// One migration, past the destination's resolution: steps 3 through 8 over the
+/// far run it starts or attaches to.
+///
+/// Split from [`migrate`] so the choreography is driven against a recording
+/// [`FarSide`] with no machine at all.
+struct Session<'a> {
+    far_run: &'a FarRun<'a>,
     /// The local config's own file text, which is what travels.
     local_text: &'a str,
     /// How the far side answers for this run's format, when a `[domain.*]`
@@ -395,87 +421,91 @@ struct Session<'a> {
     /// the run — carried to the far `sima run`, whose own binding guard is
     /// what compares the two.
     accept: BinaryChange,
-    /// The rented machine hosting the run, released on every path out; `None`
-    /// for a machine of yours, which is nothing to tear down.
-    rental: Option<InstanceGuard<'a, dyn Provider + Sync + 'a>>,
-    observer: Observer<'a>,
     interrupt: &'a AtomicBool,
     /// When the destination must be usable by, established when the machine was
     /// first asked for. `None` for a destination with no acquisition phase — a
     /// machine of yours — whose contact is the first thing to ask for it and so
     /// starts the deadline itself.
     usable_by: Option<Instant>,
-    #[cfg(test)]
-    overrides: Overrides,
 }
 
-/// Step 12: what becomes of the rented machine, decided by what the session
-/// came home with.
+/// The one answer a verb comes home with, from what it did and what became of
+/// the machine it did it on.
 ///
-/// A guard left alive is a machine still being paid for, so every path that
-/// ended the far run destroys it. A detached migration is the one path that
-/// does not: the run is still computing there, so the machine is kept and its
-/// ledger record left standing for the next invocation to adopt. Nothing here
-/// applies to a machine of yours, which was never rented.
-fn dispose(
-    rental: Option<InstanceGuard<'_, dyn Provider + Sync + '_>>,
-    outcome: &Result<MigrateOutcome>,
-) -> Result<()> {
-    let Some(guard) = rental else {
-        return Ok(());
-    };
-    if matches!(outcome, Ok(MigrateOutcome::Detached { .. })) {
-        guard.keep();
-        return Ok(());
+/// The verb's own failure is the cause; the ledger record a failed teardown
+/// leaves is what the next reconciliation pass acts on.
+fn merged(outcome: Result<MigrateOutcome>, teardown: Result<()>) -> Result<MigrateOutcome> {
+    match (outcome, teardown) {
+        (Ok(outcome), Ok(())) => Ok(outcome),
+        (Err(error), _) | (Ok(_), Err(error)) => Err(error),
     }
-    guard.release()
+}
+
+impl<'a> FarRun<'a> {
+    /// Runs `body` over this far run and disposes of its machine afterwards, on
+    /// every path out — including the ones no call site can reach.
+    fn under_teardown(
+        mut self,
+        body: impl FnOnce(&FarRun<'a>) -> Result<MigrateOutcome>,
+    ) -> Result<MigrateOutcome> {
+        let outcome = body(&self);
+        let teardown = self.dispose(&outcome);
+        merged(outcome, teardown)
+    }
+
+    /// Step 12: what becomes of the rented machine, decided by what the verb
+    /// came home with.
+    ///
+    /// A guard left alive is a machine still being paid for, so every path that
+    /// ended the far run destroys it. A detached migration is the one path that
+    /// does not: the run is still computing there, so the machine is kept and
+    /// its ledger record left standing for the next invocation to adopt.
+    /// Nothing here applies to a machine of yours, which was never rented.
+    fn dispose(&mut self, outcome: &Result<MigrateOutcome>) -> Result<()> {
+        let Some(guard) = self.rental.take() else {
+            return Ok(());
+        };
+        if matches!(outcome, Ok(MigrateOutcome::Detached { .. })) {
+            guard.keep();
+            return Ok(());
+        }
+        guard.release()
+    }
 }
 
 impl Session<'_> {
-    /// The whole migration, with the teardown of step 12 on every path out.
-    fn drive(mut self) -> Result<MigrateOutcome> {
-        let rental = self.rental.take();
-        let outcome = self.run_to_end();
-        let teardown = dispose(rental, &outcome);
-        match (outcome, teardown) {
-            (Ok(outcome), Ok(())) => Ok(outcome),
-            // The migration's own failure is the cause; the ledger record a
-            // failed teardown leaves is what the next reconciliation pass acts
-            // on.
-            (Err(error), _) | (Ok(_), Err(error)) => Err(error),
-        }
-    }
-
     /// Steps 3 through 11: reach the machine, place the run on it, push, start,
     /// follow, wind down, pull, and settle.
     fn run_to_end(&self) -> Result<MigrateOutcome> {
+        let far_run = self.far_run;
         let probed = self.reach()?;
         let far_text = far_config(
             self.local_text,
-            FarWorkers::for_form(self.destination.form, &probed),
+            FarWorkers::for_form(far_run.destination.form, &probed),
             self.registration,
         )?;
-        self.far.place(&far_text)?;
+        far_run.far.place(&far_text)?;
 
         // A far side already driving this run is a reattach: it holds the
         // closure it was sent and its own progress since, so pushing would send
         // what it already has, and starting would run a second orchestrator
         // against a store whose lock the first one holds.
-        let reattached = self.far.driving()?;
+        let reattached = far_run.far.driving()?;
         let pid = match reattached {
             Some(pid) => pid,
             None => {
-                let keys = task_keys(self.config, self.store)?;
-                let mut objects = push_objects(self.store, &keys)?;
+                let keys = task_keys(far_run.config, far_run.store)?;
+                let mut objects = push_objects(far_run.store, &keys)?;
                 // The program travels with the run it serves: the manifest and
                 // its files ride the same push, and the sync's negotiation is
                 // what skips the bytes the destination already holds.
                 if let Some(registration) = self.registration {
-                    objects.extend(closure(self.store, &registration.payload_digest)?);
+                    objects.extend(closure(far_run.store, &registration.payload_digest)?);
                 }
-                self.far
-                    .sync(self.store, &keys, ObjectScope::Named(&objects))?;
-                self.far.start(self.accept)?
+                far_run
+                    .far
+                    .sync(far_run.store, &keys, ObjectScope::Named(&objects))?;
+                far_run.far.start(self.accept)?
             }
         };
 
@@ -485,52 +515,32 @@ impl Session<'_> {
         // a recall. Skipping the pull is what makes letting go immediate.
         if end == FollowEnd::Detached {
             return Ok(MigrateOutcome::Detached {
-                run: self.config.run.id(),
-                machine: self.destination.name.to_string(),
+                run: far_run.config.run.id(),
+                machine: far_run.destination.name.to_string(),
             });
         }
 
-        // The pull takes everything the far side's records reference, so the
-        // store that comes home is complete. The far run has ended by now on
-        // every path that reaches here — of its own accord, on the wind-down's
-        // signal, or on the termination the wind-down escalates to — so the far
-        // side's run lock is free for `sima sync-serve` to take.
-        let keys = task_keys(self.config, self.store)?;
-        self.far.sync(self.store, &keys, ObjectScope::Referenced)?;
-        self.settle(state, end)
+        far_run.pull()?;
+        far_run.settle(state, end)
     }
 
     /// Steps 7 through 9: follow the far run to its end, then wind it down and
     /// wait for it to exit.
     ///
     /// Returns the state the far run's journal projects and what ended the
-    /// follow. Both happen under the run's collector, so every record the
-    /// follow delivers reaches the local journal and the operator's view through
-    /// one boundary, and the budget and timeout reports land in that same journal.
+    /// follow, both under the run's journal boundary.
     fn watch(&self, pid: u32, reattached: bool) -> Result<(RunState, FollowEnd)> {
-        let run = self.config.run.id();
-        let writer = self.store.journal_writer(&run)?;
-        thread::scope(|scope| -> Result<(RunState, FollowEnd)> {
-            let collector = Collector::spawn(scope, writer, self.observer);
-            let events = collector.emitter();
-            let followed = self
-                .follow(&run, reattached, &events)
-                .and_then(|(state, end)| {
-                    match end {
-                        // Letting go signals nothing and waits for nothing: the far
-                        // run is left exactly as it was.
-                        FollowEnd::Detached => {}
-                        FollowEnd::FarRun => self.wind_down(pid, false, &events)?,
-                        FollowEnd::WoundDown => self.wind_down(pid, true, &events)?,
-                    }
-                    Ok((state, end))
-                });
-            // The collector joins only once every emitter is dropped.
-            drop(events);
-            let journal = collector.shutdown();
-            // A journal that could not be appended is a store fault worth
-            // reporting, but only when the follow itself did not already fail.
-            followed.and_then(|out| journal.map(|()| out))
+        let run = self.far_run.config.run.id();
+        self.far_run.journaling(|events| {
+            let (state, end) = self.follow(&run, reattached, events)?;
+            match end {
+                // Letting go signals nothing and waits for nothing: the far run
+                // is left exactly as it was.
+                FollowEnd::Detached => {}
+                FollowEnd::FarRun => self.far_run.wind_down(pid, false, events)?,
+                FollowEnd::WoundDown => self.far_run.wind_down(pid, true, events)?,
+            }
+            Ok((state, end))
         })
     }
 
@@ -575,7 +585,9 @@ impl Session<'_> {
                 && assessed.is_none_or(|at| at.elapsed() >= BUDGET_INTERVAL)
             {
                 assessed = Some(Instant::now());
-                if let Verdict::Exhausted(exhaustion) = assess(self.store, run, budget, now_ms())? {
+                if let Verdict::Exhausted(exhaustion) =
+                    assess(self.far_run.store, run, budget, now_ms())?
+                {
                     events.emit(budget_exhausted(exhaustion));
                     return Ok((status.state, FollowEnd::WoundDown));
                 }
@@ -586,7 +598,7 @@ impl Session<'_> {
                 // and the follow can connect before that. The pid it was started
                 // under answers without a race, so it is what decides — and it
                 // is asked only on the rare tick where the lock reads free.
-                if feed.holder()?.is_none() && self.far.driving()?.is_none() {
+                if feed.holder()?.is_none() && self.far_run.far.driving()?.is_none() {
                     return Ok((status.state, FollowEnd::FarRun));
                 }
                 sleep(TICK);
@@ -604,10 +616,10 @@ impl Session<'_> {
     fn attach(&self) -> Result<Box<dyn RunFeed>> {
         let deadline = Instant::now() + self.attach_bound();
         loop {
-            match self.far.follow() {
+            match self.far_run.far.follow() {
                 Ok(feed) => return Ok(feed),
                 Err(error) => {
-                    let gone = self.far.driving()?.is_none();
+                    let gone = self.far_run.far.driving()?.is_none();
                     if gone || Instant::now() >= deadline {
                         return Err(self.unattachable(error, gone));
                     }
@@ -632,15 +644,8 @@ impl Session<'_> {
         if !gone {
             return refusal;
         }
-        let tail = match self.far.log_tail() {
-            Ok(tail) if tail.trim().is_empty() => "(its log is empty)".to_string(),
-            Ok(tail) => tail,
-            Err(error) => format!("(its log could not be read: {error})"),
-        };
-        Error::Validation(format!(
-            "the run on {:?} ended before it journaled anything, so there is nothing to \
-             follow: {refusal}. Its last words were:\n{tail}",
-            self.destination.name
+        self.far_run.died(&format!(
+            "ended before it journaled anything, so there is nothing to follow: {refusal}"
         ))
     }
 
@@ -669,7 +674,7 @@ impl Session<'_> {
             // A machine that answered has answered: what it said is the result,
             // whether that is its devices or a reason the run cannot proceed.
             // Only a machine that could not be reached is worth asking again.
-            match self.far.devices()? {
+            match self.far_run.far.devices()? {
                 Contact::Answered(devices) => return Ok(devices),
                 Contact::Unreachable(error) => {
                     if Instant::now() >= deadline {
@@ -679,6 +684,85 @@ impl Session<'_> {
             }
             sleep(poll);
         }
+    }
+
+    /// The ceiling this migration runs under, or `None` when nothing is being
+    /// paid for. `[budget]` is the run's own, the same ceiling a fleet spends
+    /// under; a machine of yours has no rate and so no ceiling to keep.
+    fn budget(&self) -> Option<&Budget> {
+        matches!(self.far_run.destination.form, HostForm::Rented(_))
+            .then_some(&self.far_run.config.budget)
+    }
+
+    /// The readiness bounds this session waits under, which are the far run's.
+    fn ready_bounds(&self) -> (Duration, Duration) {
+        self.far_run.ready_bounds()
+    }
+
+    /// How long the follow waits for the far run's first journal line.
+    #[cfg(not(test))]
+    fn attach_bound(&self) -> Duration {
+        ATTACH_BOUND
+    }
+
+    #[cfg(test)]
+    fn attach_bound(&self) -> Duration {
+        self.far_run.overrides.attach_bound
+    }
+}
+
+impl FarRun<'_> {
+    /// Runs `body` under the run's collector, so everything it emits reaches
+    /// the local journal and the operator's view through one boundary.
+    ///
+    /// Journals do not sync, so this is the only way a far run's records land
+    /// here at all; the wind-down's own diagnostic crosses it too.
+    fn journaling<T>(&self, body: impl FnOnce(&Emitter) -> Result<T>) -> Result<T> {
+        let run = self.config.run.id();
+        let writer = self.store.journal_writer(&run)?;
+        thread::scope(|scope| -> Result<T> {
+            let collector = Collector::spawn(scope, writer, self.observer);
+            let events = collector.emitter();
+            let out = body(&events);
+            // The collector joins only once every emitter is dropped.
+            drop(events);
+            let journal = collector.shutdown();
+            // A journal that could not be appended is a store fault worth
+            // reporting, but only when the body itself did not already fail.
+            out.and_then(|value| journal.map(|()| value))
+        })
+    }
+
+    /// Step 10: everything the far side's records reference, which is what
+    /// makes the store that comes home complete.
+    ///
+    /// The far run has ended by now on every path that reaches here — of its
+    /// own accord, on the wind-down's signal, or on the termination the
+    /// wind-down escalates to — so the far side's run lock is free for `sima
+    /// sync-serve` to take.
+    fn pull(&self) -> Result<()> {
+        let keys = task_keys(self.config, self.store)?;
+        self.far.sync(self.store, &keys, ObjectScope::Referenced)?;
+        Ok(())
+    }
+
+    /// What a far run that is gone reports: the machine it was on, and the last
+    /// words its log holds.
+    ///
+    /// Every far-side load failure looks the same from here — a program that
+    /// cannot answer for its format, an install script that exited non-zero, a
+    /// store that will not open — so the far run's own words are what tell them
+    /// apart. `what` states what this side observed of the death.
+    fn died(&self, what: &str) -> Error {
+        let tail = match self.far.log_tail() {
+            Ok(tail) if tail.trim().is_empty() => "(its log is empty)".to_string(),
+            Ok(tail) => tail,
+            Err(error) => format!("(its log could not be read: {error})"),
+        };
+        Error::Validation(format!(
+            "the run on {:?} {what}. Its last words were:\n{tail}",
+            self.destination.name
+        ))
     }
 
     /// Step 9: asks the far run to wind down when this side ended the follow,
@@ -772,13 +856,6 @@ impl Session<'_> {
         Ok(MigrateOutcome::Finalized { run })
     }
 
-    /// The ceiling this migration runs under, or `None` when nothing is being
-    /// paid for. `[budget]` is the run's own, the same ceiling a fleet spends
-    /// under; a machine of yours has no rate and so no ceiling to keep.
-    fn budget(&self) -> Option<&Budget> {
-        matches!(self.destination.form, HostForm::Rented(_)).then_some(&self.config.budget)
-    }
-
     /// The destination's readiness bounds: how long to wait, and how often to
     /// look. A rented machine states its own; a machine of yours states none,
     /// so it takes the same defaults a rental would. The wind-down waits for
@@ -810,17 +887,6 @@ impl Session<'_> {
     #[cfg(test)]
     fn stated_nowhere_bounds(&self) -> (Duration, Duration) {
         self.overrides.stated_nowhere
-    }
-
-    /// How long the follow waits for the far run's first journal line.
-    #[cfg(not(test))]
-    fn attach_bound(&self) -> Duration {
-        ATTACH_BOUND
-    }
-
-    #[cfg(test)]
-    fn attach_bound(&self) -> Duration {
-        self.overrides.attach_bound
     }
 }
 
@@ -1322,21 +1388,26 @@ mod tests {
                 .push(record.clone());
         };
         let destination = destination_for(&local.config).expect("the host is declared");
-        let outcome = Session {
+        let outcome = FarRun {
             far,
             store: &local.store,
             config: &local.config,
             destination: &destination,
-            local_text: &local.text,
-            registration: None,
-            accept: BinaryChange::Refuse,
-            rental,
             observer: &observer,
-            interrupt,
-            usable_by,
+            rental,
             overrides: Overrides::default(),
         }
-        .drive();
+        .under_teardown(|far_run| {
+            Session {
+                far_run,
+                local_text: &local.text,
+                registration: None,
+                accept: BinaryChange::Refuse,
+                interrupt,
+                usable_by,
+            }
+            .run_to_end()
+        });
         let records = std::mem::take(&mut *captured.lock().expect("the capture lock"));
         (outcome, records)
     }
@@ -1455,21 +1526,26 @@ mod tests {
     ) -> Result<MigrateOutcome> {
         let observer = |_: &Record| {};
         let destination = destination_for(&local.config).expect("the host is declared");
-        Session {
+        FarRun {
             far,
             store: &local.store,
             config: &local.config,
             destination: &destination,
-            local_text: &local.text,
-            registration,
-            accept,
-            rental: None,
             observer: &observer,
-            interrupt: &AtomicBool::new(false),
-            usable_by: None,
+            rental: None,
             overrides: Overrides::default(),
         }
-        .drive()
+        .under_teardown(|far_run| {
+            Session {
+                far_run,
+                local_text: &local.text,
+                registration,
+                accept,
+                interrupt: &AtomicBool::new(false),
+                usable_by: None,
+            }
+            .run_to_end()
+        })
     }
 
     #[test]
