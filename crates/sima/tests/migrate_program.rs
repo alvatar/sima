@@ -297,6 +297,34 @@ fn far_bindings(config: &Path, root: &Path) -> Vec<String> {
         .collect()
 }
 
+/// The program digest each of the far side's workers answered at its
+/// handshake, one per spawn and respawn.
+fn far_worker_programs(config: &Path, root: &Path) -> Vec<Option<String>> {
+    let loaded = load(config).expect("the config loads");
+    let store = Store::open(far_dir(config, root).join("store")).expect("open the far store");
+    store
+        .journal(&loaded.run.id())
+        .expect("read the far journal")
+        .iter()
+        .filter_map(|line| Record::from_line(line).ok())
+        .filter_map(|record| match record.event {
+            sima_pipeline::Event::WorkerBound { program, .. } => Some(program),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The payload digest the far config states, which is the manifest object the
+/// local side ingested into the store that travelled.
+fn far_payload_digest(config: &Path, root: &Path) -> String {
+    let text = std::fs::read_to_string(far_dir(config, root).join("sima.toml"))
+        .expect("the far config");
+    text.lines()
+        .find_map(|line| line.strip_prefix("payload_digest = "))
+        .map(|value| value.trim_matches('"').to_string())
+        .unwrap_or_else(|| panic!("the far config states a payload digest: {text}"))
+}
+
 /// How many times the directory form's install script ran.
 fn installs(path: &Path) -> usize {
     std::fs::read_to_string(path)
@@ -660,6 +688,126 @@ fn a_program_written_against_the_sdk_finds_it_on_the_destination() -> Result<()>
     assert!(
         !far_config.contains("PYTHONPATH"),
         "and no interpreter path did: {far_config}"
+    );
+    Ok(())
+}
+
+#[test]
+fn every_far_worker_answers_the_program_the_migration_sent() -> Result<()> {
+    // The agreement observed as a recorded fact where it matters: the far side
+    // installed the tree the digest names, spawned its workers from it, and
+    // each one answered that same digest back — journaled beside the device it
+    // ran on. The spawn is what enforces it, so a run that finalized is a run
+    // whose every worker agreed.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let far_root = dir.path().join("far");
+    let installs_at = dir.path().join("installs");
+    let migrated_dir = dir.path().join("migrated");
+    let entry = program(&migrated_dir, Shape::Directory, "one", &installs_at);
+    let migrated = migrating(&migrated_dir, &far_root, &entry);
+
+    assert!(matches!(
+        move_run(&migrated, BinaryChange::Refuse)?,
+        MigrateOutcome::Finalized { .. }
+    ));
+
+    let sent = far_payload_digest(&migrated, &far_root);
+    let answered = far_worker_programs(&migrated, &far_root);
+    assert!(!answered.is_empty(), "the far side bound workers");
+    for program in &answered {
+        assert_eq!(
+            program.as_deref(),
+            Some(sent.as_str()),
+            "every far worker ran the program the migration sent"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn a_local_run_of_a_program_this_machine_holds_binds_no_program_digest() -> Result<()> {
+    // The other presence direction, end to end: nothing travelled, so nothing
+    // is stated to the workers, the wire field crosses empty, and the journal
+    // records no digest.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let installs_at = dir.path().join("installs");
+    let local_dir = dir.path().join("local");
+    let entry = program(&local_dir, Shape::Directory, "one", &installs_at);
+    let config = local(&local_dir, &entry);
+    assert!(matches!(drive(&config)?, RunOutcome::Finalized { .. }));
+
+    let loaded = load(&config)?;
+    let store = Store::open(local_dir.join("store"))?;
+    let bound: Vec<Option<String>> = store
+        .journal(&loaded.run.id())?
+        .iter()
+        .filter_map(|line| Record::from_line(line).ok())
+        .filter_map(|record| match record.event {
+            sima_pipeline::Event::WorkerBound { program, .. } => Some(program),
+            _ => None,
+        })
+        .collect();
+    assert!(!bound.is_empty(), "the run bound workers");
+    assert!(
+        bound.iter().all(Option::is_none),
+        "a program that travelled nowhere names no digest: {bound:?}"
+    );
+    Ok(())
+}
+
+/// A digest naming a program no run of these tests ever sent, for the drift
+/// case below.
+const DRIFTED: &str = "3333333333333333333333333333333333333333333333333333333333333333";
+
+#[test]
+fn a_destination_running_another_program_fails_the_spawn_naming_both_digests() -> Result<()> {
+    // A machine whose installed tree drifted from what the run sent. Overriding
+    // the variable inside the program is this test's stand-in for that: sima
+    // states the digest it installed and the child answers another, which is
+    // exactly what a machine holding a different program produces. The run must
+    // stop at the first worker spawn, naming the two programs.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let far_root = dir.path().join("far");
+    let migrated_dir = dir.path().join("migrated");
+    executable(
+        &migrated_dir.join("program.sh"),
+        &format!(
+            "#!/bin/sh\nSIMA_PROGRAM_DIGEST={DRIFTED} exec {} \"$@\"\n",
+            worker_binary().display()
+        ),
+    );
+    let migrated = migrating(
+        &migrated_dir,
+        &far_root,
+        "[domain.\"stub.v1\"]\nbinary = \"./program.sh\"\npayload = \"./program.sh\"\n",
+    );
+
+    let outcome = move_run(&migrated, BinaryChange::Refuse)?;
+    assert!(
+        matches!(outcome, MigrateOutcome::Outstanding { .. }),
+        "no worker took a task, so the run came home with all of them: {outcome:?}"
+    );
+    assert!(manifest_bytes(&migrated).is_none(), "nothing was finalized");
+    assert!(
+        far_worker_programs(&migrated, &far_root).is_empty(),
+        "a refused spawn binds no worker, so the journal records none"
+    );
+
+    // The config the migration synthesized is a config in its own right, and
+    // the tree it names is installed and drifted: driving it here is the same
+    // machine state met a second time, with the refusal in hand rather than on
+    // the destination's own stderr.
+    let far_config = far_dir(&migrated, &far_root).join("sima.toml");
+    let error = drive(&far_config).expect_err("a program disagreement fails the run");
+    let text = error.to_string();
+    assert!(text.contains("program digest mismatch"), "{text}");
+    assert!(
+        text.contains(DRIFTED),
+        "names what the machine answered: {text}"
+    );
+    assert!(
+        text.contains(&far_payload_digest(&migrated, &far_root)),
+        "and what the run sent: {text}"
     );
     Ok(())
 }
