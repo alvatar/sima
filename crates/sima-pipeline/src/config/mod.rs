@@ -164,6 +164,11 @@
 //! `install`: the digest names one program, and the manifest carries its own
 //! script.
 //!
+//! The digest has a second consumer past the install: it is what every worker
+//! of the run answers at its handshake. Each process spawned from the program
+//! is told it, echoes it back, and a worker answering anything else fails its
+//! spawn — so the machines a run uses agree with it on which program they run.
+//!
 //! ## Addressing
 //!
 //! The entry's name is its ssh destination unless `ssh` says otherwise, so a

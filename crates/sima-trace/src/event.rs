@@ -380,7 +380,8 @@ mod tests {
     #[test]
     fn a_worker_bound_line_without_the_program_key_parses() {
         // A journal line a build without the field wrote, read by this one.
-        let line = r#"{"event":"worker_bound","worker":3,"device":"a device","driver":"1.0","host":""}"#;
+        let line =
+            r#"{"event":"worker_bound","worker":3,"device":"a device","driver":"1.0","host":""}"#;
         let back: Event = serde_json::from_str(line).expect("parse an older worker bound");
         assert_eq!(
             back,

@@ -317,8 +317,8 @@ fn far_worker_programs(config: &Path, root: &Path) -> Vec<Option<String>> {
 /// The payload digest the far config states, which is the manifest object the
 /// local side ingested into the store that travelled.
 fn far_payload_digest(config: &Path, root: &Path) -> String {
-    let text = std::fs::read_to_string(far_dir(config, root).join("sima.toml"))
-        .expect("the far config");
+    let text =
+        std::fs::read_to_string(far_dir(config, root).join("sima.toml")).expect("the far config");
     text.lines()
         .find_map(|line| line.strip_prefix("payload_digest = "))
         .map(|value| value.trim_matches('"').to_string())

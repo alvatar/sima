@@ -275,7 +275,7 @@ journal's own event kinds — and a program is expected to emit one of them:
 Events are observational and one-way. A frame that does not parse is journaled
 as a warning and dropped; it never decides the conversation's fate.
 
-## The handshake and the version rule
+## The handshake and what it refuses
 
 Each side states its version in the opening frame, and the program answers
 `Ready` with its own. A mismatch is refused immediately on whichever side sees
@@ -287,6 +287,13 @@ parent's spawn-failure signal. The parent refuses on reading a `Ready` that
 carries another number.
 
 Both roles carry one version, because one binary answers both.
+
+The parent refuses a `Ready` whose program digest is not the one it sent, in
+either direction: a digest other than the one stated, no digest where one was
+stated, and a digest where none was. Each says the machine runs a program other
+than the one this run put there, and the refusal names both values. A program's
+whole part is the echo — answering the variable it was given makes it right by
+construction, and answering a computed value of its own makes it wrong.
 
 ## Obligations
 

@@ -25,9 +25,7 @@ use sima_model::{FormatId, Params, Spec, TaskIdentity};
 use sima_trace::{Event, Level};
 
 use crate::checkpoint_cadence::CheckpointCadence;
-use crate::protocol::{
-    Assignment, Hello, PROGRAM_DIGEST_VAR, PROTOCOL_VERSION, ToChild, ToParent,
-};
+use crate::protocol::{Assignment, Hello, PROGRAM_DIGEST_VAR, PROTOCOL_VERSION, ToChild, ToParent};
 
 /// The most recent panic's message and backtrace, latched by the hook
 /// [`capture_panics`] installs, under the thread that panicked. The executor
