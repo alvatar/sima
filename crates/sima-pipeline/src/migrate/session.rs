@@ -197,6 +197,8 @@ pub fn migrate(
                 spec,
                 count: 1,
                 fill: FillPolicy::Strict,
+                root: destination.root,
+                binary: destination.binary,
             };
             let provider = provider_for_rental(&rental)?;
             // The clock on this machine starts here, where it is first asked
@@ -213,12 +215,16 @@ pub fn migrate(
                 &loaded.budget,
                 interrupt,
             )?;
+            // A run whose format is a program asks the machine about no
+            // format: nothing there can resolve one it has not been given, and
+            // the program's own enumeration is what the far run derives its
+            // layout from once the load has installed it.
             let far = Remote::rented(
                 &destination,
                 provider.as_ref(),
                 guard.endpoint(),
                 &run,
-                &loaded.run.format,
+                registration.is_none().then_some(&loaded.run.format),
             )?;
             Session {
                 far: &far,

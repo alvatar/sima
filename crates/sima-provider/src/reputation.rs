@@ -96,6 +96,8 @@ pub struct MachineSummary {
     pub never_ready: usize,
     /// Incidents where a ready machine failed the worker probe.
     pub probe_failed: usize,
+    /// Incidents where a ready machine could not be given the run's program.
+    pub install_failed: usize,
     /// The earliest incident's stamp, in epoch milliseconds.
     pub first_occurred_ms: u64,
     /// The latest incident's stamp, in epoch milliseconds.
@@ -121,6 +123,7 @@ pub fn machine_report(store: &Store) -> Result<MachineReport> {
                 lost: 0,
                 never_ready: 0,
                 probe_failed: 0,
+                install_failed: 0,
                 first_occurred_ms: incident.occurred_ms,
                 last_occurred_ms: incident.occurred_ms,
                 blacklisted: false,
@@ -130,6 +133,7 @@ pub fn machine_report(store: &Store) -> Result<MachineReport> {
             IncidentKind::Lost => summary.lost += 1,
             IncidentKind::NeverReady => summary.never_ready += 1,
             IncidentKind::ProbeFailed => summary.probe_failed += 1,
+            IncidentKind::InstallFailed => summary.install_failed += 1,
         }
         summary.first_occurred_ms = summary.first_occurred_ms.min(incident.occurred_ms);
         summary.last_occurred_ms = summary.last_occurred_ms.max(incident.occurred_ms);

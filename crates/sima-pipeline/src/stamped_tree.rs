@@ -43,7 +43,7 @@ use std::path::Path;
 use sima_core::{Error, Hash, Result};
 
 /// The digest the tree was built from, written last.
-const STAMP_FILE: &str = "installed.digest";
+pub(crate) const STAMP_FILE: &str = "installed.digest";
 /// Held while building, so concurrent loaders build one tree between them.
 const LOCK_FILE: &str = ".lock";
 
@@ -134,6 +134,38 @@ fn built(root: &Path, digest: &Hash, complete: &dyn Fn() -> Result<bool>) -> Res
         }
     };
     Ok(recorded.trim() == digest.to_string() && complete()?)
+}
+
+/// Refuses a path that would not mean the same thing on the machine the tree
+/// is built on.
+///
+/// Both manifests a tree is built from — a payload's and the SDK's — name
+/// their files this way, and both are read off a wire, so the rule lives here
+/// with the writing it guards rather than in either one.
+pub(crate) fn validate_path(path: &str) -> Result<()> {
+    let refuse = |why: &str| {
+        Err(Error::Validation(format!(
+            "payload path {path:?} {why}; a manifest names relative, \
+             `/`-separated paths inside the payload"
+        )))
+    };
+    if path.is_empty() {
+        return refuse("is empty");
+    }
+    if path.starts_with('/') {
+        return refuse("is absolute");
+    }
+    if path.contains('\\') {
+        return refuse("holds a backslash");
+    }
+    for component in path.split('/') {
+        match component {
+            "" => return refuse("holds an empty component"),
+            "." | ".." => return refuse("holds a `.` or `..` component"),
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 /// Whether `path` is a file this machine can run.

@@ -39,8 +39,8 @@ use sima_core::{Codec, Dec, Enc, Error, Hash, MAX_PAYLOAD, Result};
 use sima_store::Store;
 
 use crate::stamped_tree::{
-    EXECUTABLE_MODE, REGULAR_MODE, build_once, create_dir, executable, read_file, remove_dir,
-    write_file,
+    EXECUTABLE_MODE, REGULAR_MODE, STAMP_FILE, build_once, create_dir, executable, read_file,
+    remove_dir, validate_path, write_file,
 };
 
 /// The directory every installed program hangs off, under the directory the
@@ -204,34 +204,6 @@ impl Codec for Manifest {
             .transpose()?;
         Manifest::new(entries, install)
     }
-}
-
-/// Refuses a manifest path that would not mean the same thing on the machine
-/// it is materialized on.
-fn validate_path(path: &str) -> Result<()> {
-    let refuse = |why: &str| {
-        Err(Error::Validation(format!(
-            "payload path {path:?} {why}; a manifest names relative, \
-             `/`-separated paths inside the payload"
-        )))
-    };
-    if path.is_empty() {
-        return refuse("is empty");
-    }
-    if path.starts_with('/') {
-        return refuse("is absolute");
-    }
-    if path.contains('\\') {
-        return refuse("holds a backslash");
-    }
-    for component in path.split('/') {
-        match component {
-            "" => return refuse("holds an empty component"),
-            "." | ".." => return refuse("holds a `.` or `..` component"),
-            _ => {}
-        }
-    }
-    Ok(())
 }
 
 /// Ingests what `spec` declares into `store` and answers the manifest's hash,
@@ -410,9 +382,16 @@ impl ProgramTree {
     /// would mean a directory other than this one is refused.
     pub(crate) fn new(config_dir: &Path, format: &str) -> Result<ProgramTree> {
         validate_path(format)?;
-        Ok(ProgramTree {
-            root: config_dir.join(PROGRAM_DIR).join(format),
-        })
+        Ok(ProgramTree::at(config_dir.join(PROGRAM_DIR).join(format)))
+    }
+
+    /// The tree rooted at `root`, whatever named it.
+    ///
+    /// A fleet machine keys its trees by payload digest rather than by format,
+    /// because what lands there is one program per digest shared across every
+    /// run that sends it, so the root is handed in whole.
+    pub(crate) fn at(root: PathBuf) -> ProgramTree {
+        ProgramTree { root }
     }
 
     /// Where the manifest's files are materialized.
@@ -426,8 +405,15 @@ impl ProgramTree {
     }
 
     /// The entry point the config's `binary` names.
-    fn entry_point(&self) -> PathBuf {
+    pub(crate) fn entry_point(&self) -> PathBuf {
         self.installed().join(ENTRY_POINT)
+    }
+
+    /// The digest the tree was built from, as the machine holding it recorded
+    /// it. A spawn on that machine reads this file to state which program it is
+    /// running, so what the run is answered is the disk's own claim.
+    pub(crate) fn stamp(&self) -> PathBuf {
+        self.root.join(STAMP_FILE)
     }
 }
 

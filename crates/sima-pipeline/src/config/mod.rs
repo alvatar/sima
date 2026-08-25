@@ -35,7 +35,7 @@
 //! # runtime  = "podman"                   # docker | podman; default docker
 //! # run_args = ["--gpus", "all"]          # verbatim container-run flags
 //! # workers  = 4                          # exclusive with the device tables below
-//! # root     = "~/sima-runs"              # where a migrated run lives here; default as shown
+//! # root     = "~/sima-runs"              # a migrated run's directory and the programs delivered here; default as shown
 //! # binary   = "sima"                     # the sima binary here; default as shown
 //! [[host.gpubox.device]]
 //! select  = "nvidia"
@@ -134,12 +134,15 @@
 //! `sima sdk <language> --out <dir>` writes the same package by hand, for
 //! developing a program outside a run.
 //!
-//! ### What travels when the run moves
+//! ### What travels when the run reaches another machine
 //!
-//! `binary` says how the program runs here; `payload` says what a migration
-//! carries to the destination — one file or one directory, resolved against
-//! this file's directory. An entry that states none describes a program this
-//! machine holds and no other, and `sima migrate` refuses it, naming the key.
+//! `binary` says how the program runs here; `payload` says what travels — one
+//! file or one directory, resolved against this file's directory. It travels
+//! the same way for both ways of using another machine: `sima migrate` sends it
+//! to the destination, and `sima run --fleet` sends it to every machine the
+//! fleet draws in, where it is installed under `<root>/programs/` and the
+//! machine's workers are spawned from it. An entry that states none describes a
+//! program this machine holds and no other, and both refuse it, naming the key.
 //! A plain local `sima run` validates both keys and otherwise ignores them.
 //!
 //! `install` is the shell script the destination runs over the materialized
@@ -168,6 +171,15 @@
 //! of the run answers at its handshake. Each process spawned from the program
 //! is told it, echoes it back, and a worker answering anything else fails its
 //! spawn — so the machines a run uses agree with it on which program they run.
+//! On a machine the run delivered to, the value is read from that machine's own
+//! stamp at exec time, so what it answers is that disk's claim.
+//!
+//! A config carrying `payload_digest` and no `[orchestrator]` worker layout is
+//! what a migration onto a rented machine synthesizes: nothing there could say
+//! where the run's work goes until the program was installed. Such a run
+//! derives one worker per usable device from the program's own enumeration at
+//! start. Every other config states its layout, as the refusal for one that
+//! states neither says.
 //!
 //! ## Addressing
 //!
@@ -202,7 +214,7 @@
 //! | `disk_gb` | no | yes | provisioned disk |
 //! | `ready_timeout_ms`, `ready_poll_ms` | no | yes | readiness bounds |
 //! | `[….constraints]` | no | yes | offer constraints |
-//! | `root` | yes | yes | where a migrated run lives on that machine |
+//! | `root` | yes | yes | where a migrated run lives on that machine, and where its `programs/` directory holds what runs deliver there |
 //! | `binary` | yes | yes | the `sima` binary on that machine |
 //!
 //! A rented machine states no worker layout: it did not exist when the config

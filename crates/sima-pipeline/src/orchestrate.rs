@@ -1,12 +1,17 @@
 //! [`orchestrate`]: one loaded config driven to its outcome.
 
+use std::time::Duration;
+
 use sima_contracts::DeviceBinding;
 use sima_core::{Error, Hash, Result};
 use sima_domains::devices::DeviceInfo;
 use sima_model::{FormatId, RunId};
 use sima_scheduler::{ExecutionConfig, RunControl, RunOutcome, WorkerPool, worker_slots};
 use sima_store::Store;
-use sima_transport::container::probe_argv;
+use sima_transport::DeviceProbe;
+use sima_transport::container::{ContainerRun, once_argv, probe_argv};
+use sima_transport::domain_service::DomainService;
+use sima_transport::serve::serve_domain_args;
 use sima_transport::{ContainerTransport, SpawnPolicy, SpawnSettings, SubprocessTransport};
 
 use crate::config::{Container, LoadedConfig, Pool};
@@ -15,9 +20,10 @@ use crate::domain_registry::DomainSource;
 use crate::fleet::{Engagement, Members, OwnedMachine, members};
 use crate::process::{ImageCheck, bootstrap_image, command_stdout};
 use crate::program_binding::{BinaryChange, bind};
+use crate::program_delivery::{ProgramDelivery, deliver_to_owned, ingest_program, sendable};
 use crate::rental::{
-    RentalGroup, StopSignal, Supervisor, acquire_hosts, provider_for_rental, release_all,
-    transport_mode,
+    RentalGroup, StopOnSpawnFailure, StopSignal, Supervisor, acquire_hosts, provider_for_rental,
+    release_all, transport_mode,
 };
 
 /// Drives the run a loaded config describes: opens the store (creating it
@@ -55,7 +61,7 @@ pub fn orchestrate(
     // A run with nowhere to execute is a config error, not a run that starts
     // and stalls. Without the flag the orchestrator is the whole run, so the
     // error names the flag that would engage the rest.
-    if config.orchestrator.pool.is_none() && members.is_empty() {
+    if config.orchestrator.pool.is_none() && members.is_empty() && !derives_workers(config) {
         return Err(match engagement {
             Engagement::Orchestrator => Error::Validation(
                 "the orchestrator declares no workers and no devices, so this run has nothing \
@@ -69,6 +75,15 @@ pub fn orchestrate(
                     .to_string(),
             ),
         });
+    }
+    // Whether this run has to put its program on its machines before they can
+    // serve it: the fleet drew in machines, and the format is a program rather
+    // than one this build carries. An entry that declares nothing to send is
+    // refused here, before any machine is contacted — no machine's answer could
+    // change it.
+    let delivers = !members.is_empty() && config.domains.routed(&config.run.format).is_some();
+    if delivers {
+        sendable(config)?;
     }
     let run = config.run.id();
     // A device selector names hardware, so it resolves here — where the run
@@ -89,11 +104,33 @@ pub fn orchestrate(
         .iter()
         .map(|provider| transport_mode(provider.as_ref()))
         .collect::<Result<Vec<_>>>()?;
-    // Machines of yours resolve at run start too, over each machine's own
-    // hardware: the image is verified present, then the enumeration probe
-    // drives its device-table resolution. Both precede the store so a
-    // misconfigured machine leaves nothing behind.
-    let owned = owned_pools(&members.owned, &run, &execution, &program)?;
+    // Machines of yours are verified at run start too, over each machine's own
+    // hardware: the image is confirmed present here, before the store, so a
+    // machine that is unreachable or missing its image leaves no store, no run
+    // directory, and no lock behind.
+    for machine in &members.owned {
+        if let ImageCheck::Unreachable(error) =
+            bootstrap_image(Some(machine.ssh), machine.container)?
+        {
+            return Err(error);
+        }
+    }
+    // A run whose format this build carries puts nothing on its machines that
+    // the image does not already hold, so its pools — the enumeration probe
+    // that drives their device tables, and their transports — are built here,
+    // still before the store. A run that delivers a program builds them below
+    // instead, because a delivery reads the store the program is ingested into.
+    let owned = if delivers {
+        None
+    } else {
+        Some(owned_pools(
+            &members.owned,
+            &run,
+            &execution,
+            &program,
+            None,
+        )?)
+    };
     let store = Store::open(&config.store)?;
     let lock = store.acquire_run_lock(&run)?;
     // The build serving a config-routed format is compared against the one the
@@ -103,6 +140,31 @@ pub fn orchestrate(
     if let Some(routed) = config.domains.routed(&config.run.format) {
         bind(&store, &config.run, &routed, accept)?;
     }
+    // What this run puts on the machines it uses, ingested under the held lock:
+    // what a delivery sends is in the store that sends it. `None` for a run
+    // whose format every machine's image answers for itself.
+    //
+    // The one thing this ordering softens: a machine that fails its install
+    // leaves an ingested payload in the local store — local, content-addressed,
+    // and what the next attempt reuses.
+    let delivery = if delivers {
+        ingest_program(config, &store)?
+    } else {
+        None
+    };
+    // The program reaches every machine of yours before any pool of one exists,
+    // so a pool is only ever built where a worker can actually be served.
+    deliver_to_owned(&members.owned, &store, delivery.as_ref())?;
+    let owned = match owned {
+        Some(pools) => pools,
+        None => owned_pools(
+            &members.owned,
+            &run,
+            &execution,
+            &program,
+            delivery.as_ref(),
+        )?,
+    };
     // Rentals are acquired under the held lock — each machine behind a teardown
     // guard held for the run's life. A strict-fill shortfall tears down whatever
     // was acquired and fails here, before any task runs.
@@ -117,6 +179,7 @@ pub fn orchestrate(
             mode,
             &config.run.format,
             &execution,
+            delivery.as_ref(),
         )?;
         groups.push(RentalGroup {
             provider: provider.as_ref(),
@@ -144,9 +207,27 @@ pub fn orchestrate(
             slots: machine.slots.clone(),
         });
     }
-    for host in groups.iter().flat_map(|group| &group.hosts) {
+    // Every rented pool spawns through the stop signal: a worker that cannot
+    // spawn faults the run with nothing journaled to observe, and the
+    // supervisor beside it has to wind down all the same.
+    let stop = StopSignal::new();
+    // Aborts a replacement acquisition in flight, so teardown never waits out
+    // an offer walk. Set on a terminal event, on a spawn failure, and again
+    // after the driver returns; distinct from the caller's interrupt, which the
+    // run owns.
+    let cancel = std::sync::atomic::AtomicBool::new(false);
+    let stopping: Vec<StopOnSpawnFailure<'_>> = groups
+        .iter()
+        .flat_map(|group| &group.hosts)
+        .map(|host| StopOnSpawnFailure {
+            inner: &host.transport,
+            stop: &stop,
+            cancel: &cancel,
+        })
+        .collect();
+    for (host, transport) in groups.iter().flat_map(|group| &group.hosts).zip(&stopping) {
         pools.push(WorkerPool {
-            transport: &host.transport,
+            transport,
             host: host.host.clone(),
             slots: host.slots.clone(),
         });
@@ -167,7 +248,6 @@ pub fn orchestrate(
             control,
         )
     } else {
-        let stop = StopSignal::new();
         // The run's emitter reaches the supervisor through the start hook,
         // filled once the collector spawns; the supervisor emits rental events
         // through it, so they cross the same journal boundary as the rest. No
@@ -179,11 +259,6 @@ pub fn orchestrate(
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(e);
         };
-        // Aborts a replacement acquisition in flight, so teardown never waits
-        // out an offer walk. Set on the terminal event and again after the
-        // driver returns; distinct from the caller's interrupt, which the run
-        // owns.
-        let cancel = std::sync::atomic::AtomicBool::new(false);
         // Wrap the caller's observer to stop the supervisor the moment the run
         // reaches a terminal event: the supervisor then drops its emitter
         // clone, so the run's collector — which joins only once every emitter
@@ -270,6 +345,7 @@ struct ContainerPool {
 /// What every pool's workers are spawned to answer for: the run's format, and
 /// the program the run sent for it. The two travel together because one
 /// handshake states both, and every pool of one run states the same pair.
+#[derive(Clone)]
 struct WorkerProgram {
     format: FormatId,
     /// `Some` exactly when the config entry resolved a `payload_digest` — the
@@ -280,8 +356,8 @@ struct WorkerProgram {
 }
 
 impl WorkerProgram {
-    /// What `config`'s run spawns for: its format, and the digest of the
-    /// program routed to that format where the entry stated one.
+    /// What `config`'s run spawns for on this machine: its format, and the
+    /// digest of the program routed to that format where the entry stated one.
     fn of(config: &LoadedConfig) -> WorkerProgram {
         WorkerProgram {
             format: config.run.format.clone(),
@@ -291,6 +367,104 @@ impl WorkerProgram {
                 .and_then(|routed| routed.payload_digest.map(Hash::to_string)),
         }
     }
+
+    /// The same run on a machine `delivery` reached: what that machine
+    /// installed is what its workers answer, whatever this one holds.
+    fn delivered(&self, delivery: &ProgramDelivery) -> WorkerProgram {
+        WorkerProgram {
+            format: self.format.clone(),
+            digest: Some(delivery.payload().to_string()),
+        }
+    }
+}
+
+/// What a machine's containers run for this run.
+///
+/// A format this build carries is answered by the image's own worker: nothing
+/// was delivered there, so nothing is mounted and no digest is expected back. A
+/// format that is a program is answered by what the delivery installed under
+/// the machine's own `root`, which is what its workers are spawned as and what
+/// they answer at the handshake.
+enum MachineProgram<'a> {
+    /// The image answers for the run's format itself.
+    Image,
+    /// The program a delivery installed under `root` on that machine.
+    Delivered {
+        delivery: &'a ProgramDelivery,
+        root: &'a str,
+    },
+}
+
+impl MachineProgram<'_> {
+    /// What one worker's container runs there.
+    fn worker_run(&self) -> ContainerRun {
+        match self {
+            MachineProgram::Image => ContainerRun::worker(Vec::new()),
+            MachineProgram::Delivered { delivery, root } => delivery.container_run(root, &[]),
+        }
+    }
+
+    /// The devices this run's work can be placed on there, enumerated in a
+    /// throwaway container where the pool's own containers run — so the answer
+    /// covers the same hardware the workers will reach.
+    ///
+    /// The image's worker is asked about the format when the image carries it.
+    /// It cannot resolve a program's format at all, so the delivered program is
+    /// asked instead, over the domain service it already answers on this
+    /// machine: the classes are the program's backend's own.
+    fn devices(
+        &self,
+        host: Option<&str>,
+        container: &Container,
+        format: &FormatId,
+        answer_timeout: Duration,
+    ) -> Result<Vec<DeviceInfo>> {
+        match self {
+            MachineProgram::Image => {
+                let argv = probe_argv(
+                    host,
+                    &container.runtime,
+                    &container.image,
+                    &container.run_args,
+                    DeviceProbe::Format(format),
+                );
+                devices::parse_enumeration(&command_stdout(&argv)?)
+            }
+            MachineProgram::Delivered { delivery, root } => {
+                let role = serve_domain_args(format);
+                let argv = once_argv(
+                    host,
+                    &container.runtime,
+                    &container.image,
+                    &container.run_args,
+                    &delivery.container_run(root, &[&role[0], &role[1]]),
+                );
+                // The session ends with this scope: its drop says goodbye,
+                // closes the pipe, and reaps the container's client.
+                DomainService::spawn_argv(&argv, answer_timeout)?.enumerate_devices(format)
+            }
+        }
+    }
+}
+
+/// Whether this config leaves its worker layout to the program its format is
+/// routed to.
+///
+/// A config states no `[orchestrator]` layout and routes its format through an
+/// entry carrying `payload_digest`. That is what a migration onto a rented
+/// machine writes: nothing on that machine could say where the run's work goes
+/// until the program was installed there, so the answer is deferred to the far
+/// run, which takes it from the program's own enumeration at start.
+///
+/// The digest is what scopes it. It is a key only a migration writes, so a
+/// hand-written config naming a program on this machine still states its own
+/// layout, as every config does, and nothing about it changes meaning.
+fn derives_workers(config: &LoadedConfig) -> bool {
+    config.orchestrator.pool.is_none()
+        && config
+            .domains
+            .routed(&config.run.format)
+            .is_some_and(|routed| routed.payload_digest.is_some())
 }
 
 /// Builds the orchestrator's own pool, or `None` when it declares no worker
@@ -309,7 +483,21 @@ fn local_pool(
     program: &WorkerProgram,
 ) -> Result<Option<LocalPool>> {
     let Some(pool) = &config.orchestrator.pool else {
-        return Ok(None);
+        if !derives_workers(config) {
+            return Ok(None);
+        }
+        // The layout the program itself decides: one worker per usable device
+        // of its own enumeration. It is answered here, on the machine the
+        // program is installed on, because that is the only place the answer
+        // exists — the load that just ran is what put the program there.
+        return Ok(Some(LocalPool {
+            transport: Box::new(SubprocessTransport::new(
+                source.worker_binary()?,
+                Vec::new(),
+                spawn_settings(source.spawn_policy(), execution, program),
+            )),
+            slots: devices::derived_slots(&source.enumerate_devices(&config.run.format)?),
+        }));
     };
     match &config.orchestrator.container {
         None => Ok(Some(LocalPool {
@@ -326,7 +514,21 @@ fn local_pool(
             slots: worker_slots(execution),
         })),
         Some(container) => {
-            let built = container_pool(None, container, pool, 0, run, execution, program)?;
+            // A pool fails on either answer; only the migration's first contact
+            // waits for a machine that is still coming up.
+            if let ImageCheck::Unreachable(error) = bootstrap_image(None, container)? {
+                return Err(error);
+            }
+            let built = container_pool(
+                None,
+                container,
+                pool,
+                0,
+                run,
+                execution,
+                program,
+                &MachineProgram::Image,
+            )?;
             Ok(Some(LocalPool {
                 transport: Box::new(built.transport),
                 slots: built.slots,
@@ -335,19 +537,34 @@ fn local_pool(
     }
 }
 
-/// Resolves every machine of yours the fleet drew in: verifies its image is
-/// present, then builds its slots — plain workers, or its device tables resolved
-/// against what the enumeration probe reports over its own hardware.
+/// Builds a pool on every machine of yours the fleet drew in: its slots — plain
+/// workers, or its device tables resolved against what that machine's own
+/// enumeration reports — and the transport its workers are spawned through.
+///
+/// `delivery` is what was put on those machines, and `None` for a run whose
+/// format the image answers for itself. It decides both what a worker there
+/// runs and what it is expected to answer.
 fn owned_pools(
     machines: &[OwnedMachine<'_>],
     run: &RunId,
     execution: &ExecutionConfig,
     program: &WorkerProgram,
+    delivery: Option<&ProgramDelivery>,
 ) -> Result<Vec<ContainerPool>> {
     machines
         .iter()
         .enumerate()
         .map(|(index, machine)| {
+            let (machine_program, program) = match delivery {
+                None => (MachineProgram::Image, program.clone()),
+                Some(delivery) => (
+                    MachineProgram::Delivered {
+                        delivery,
+                        root: machine.root,
+                    },
+                    program.delivered(delivery),
+                ),
+            };
             container_pool(
                 Some(machine.ssh),
                 machine.container,
@@ -358,15 +575,18 @@ fn owned_pools(
                 index + 1,
                 run,
                 execution,
-                program,
+                &program,
+                &machine_program,
             )
         })
         .collect()
 }
 
-/// Builds one container pool: verifies the image is present where the container
-/// will run, derives the pool's slots, and constructs the transport under a
-/// container-name stem unique to this run and pool.
+/// Builds one container pool: derives the pool's slots, and constructs the
+/// transport under a container-name stem unique to this run and pool.
+///
+/// The image is confirmed present by the caller, which is where the ordering
+/// against the store is decided.
 #[allow(clippy::too_many_arguments)]
 fn container_pool(
     host: Option<&str>,
@@ -376,16 +596,13 @@ fn container_pool(
     run: &RunId,
     execution: &ExecutionConfig,
     program: &WorkerProgram,
+    machine: &MachineProgram<'_>,
 ) -> Result<ContainerPool> {
-    // A pool fails on either answer; only the migration's first contact waits
-    // for a machine that is still coming up.
-    if let ImageCheck::Unreachable(error) = bootstrap_image(host, container)? {
-        return Err(error);
-    }
     let slots = match pool {
         Pool::Workers(workers) => vec![None; *workers],
         Pool::Devices(selectors) => {
-            let enumerated = probe_container_devices(host, container, &program.format)?;
+            let enumerated =
+                machine.devices(host, container, &program.format, execution.answer_timeout)?;
             let entries = devices::resolve(selectors, &enumerated)?;
             let exec = ExecutionConfig::with_devices(
                 entries,
@@ -410,9 +627,10 @@ fn container_pool(
             container.image.clone(),
             container.run_args.clone(),
             prefix,
+            machine.worker_run(),
             // The runtime client is sima's own process: it reads its
-            // configuration from the ambient environment, and the worker it
-            // nests is the sima image's.
+            // configuration from the ambient environment. What the worker it
+            // nests sees is stated inside the container instead.
             spawn_settings(SpawnPolicy::Inherit, execution, program),
         ),
         // A container on this machine binds as local in the journal — it is the
@@ -420,24 +638,6 @@ fn container_pool(
         host: host.unwrap_or_default().to_string(),
         slots,
     })
-}
-
-/// Runs the enumeration probe in a throwaway container where the pool's own
-/// containers run, and parses the devices it reports for `format`.
-fn probe_container_devices(
-    host: Option<&str>,
-    container: &Container,
-    format: &FormatId,
-) -> Result<Vec<DeviceInfo>> {
-    let argv = probe_argv(
-        host,
-        &container.runtime,
-        &container.image,
-        &container.run_args,
-        format,
-    );
-    let stdout = command_stdout(&argv)?;
-    devices::parse_enumeration(&stdout)
 }
 
 /// The run's execution settings with the orchestrator's device selectors

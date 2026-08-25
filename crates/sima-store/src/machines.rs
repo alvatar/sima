@@ -57,6 +57,10 @@ pub enum IncidentKind {
     /// A machine that reported ready but failed the ssh worker probe, so it
     /// cannot run work.
     ProbeFailed,
+    /// A machine that answered but could not be given the program the run's
+    /// format is routed to — the delivery or the install it runs failed — so it
+    /// can serve no worker for this run.
+    InstallFailed,
 }
 
 impl Store {

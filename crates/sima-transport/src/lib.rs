@@ -15,6 +15,8 @@
 //!   both roles behind one call, chosen by the arguments it was spawned with.
 //! - [`link`] — the parent-side boundary: the [`WorkerTransport`] and
 //!   [`WorkerLink`] traits the scheduler is written against.
+//! - [`device_probe`] — what a machine's enumeration probe is asked: one
+//!   format's backend, or every backend the worker there compiles in.
 //! - [`spawn_policy`] — what environment and working directory a spawned
 //!   child receives: an inherited surface for a sima-owned process, an
 //!   explicit one for a configured program.
@@ -35,6 +37,7 @@
 //! runs, the other hands the worker to ssh as the command to execute.
 
 pub mod container;
+pub mod device_probe;
 pub mod domain_service;
 pub mod host;
 pub mod link;
@@ -50,8 +53,9 @@ mod answer_deadline;
 mod checkpoint_cadence;
 
 pub use container::ContainerTransport;
+pub use device_probe::DeviceProbe;
 pub use link::{LinkEvent, SpawnOutcome, WorkerLink, WorkerTransport};
 pub use spawn_policy::SpawnPolicy;
 pub use spawn_settings::SpawnSettings;
-pub use ssh::{SpawnMode, SshDestination, SshTransport};
+pub use ssh::{RemoteCommand, SpawnMode, SshDestination, SshTransport};
 pub use subprocess::SubprocessTransport;

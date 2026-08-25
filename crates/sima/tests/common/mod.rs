@@ -82,6 +82,25 @@ pub fn worker_binary() -> PathBuf {
     target_dir().join("debug").join("sima-worker")
 }
 
+/// Builds the `sima-example-executor` binary once per test process and returns
+/// its path.
+///
+/// It answers for `example.doubler.v1`, a format this workspace carries no code
+/// for, which is what a suite needs to exercise a run no build here could serve
+/// itself.
+pub fn example_binary() -> PathBuf {
+    static BUILD: Once = Once::new();
+    BUILD.call_once(|| {
+        let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
+        let status = Command::new(cargo)
+            .args(["build", "-p", "sima-example-executor"])
+            .status()
+            .expect("run cargo build for sima-example-executor");
+        assert!(status.success(), "building sima-example-executor failed");
+    });
+    target_dir().join("debug").join("sima-example-executor")
+}
+
 /// The workspace target directory: `CARGO_TARGET_DIR` when set, else
 /// `target/` at the workspace root derived from this crate's manifest dir.
 fn target_dir() -> PathBuf {

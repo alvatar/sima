@@ -9,8 +9,10 @@
 //! - under `--serve-domain <format>`, it answers what that format binds over
 //!   the domain service, through the same contracts a program outside the
 //!   workspace is written against.
-//! - under `--enumerate-devices <format>`, it prints the devices that format's work can
-//!   run on and exits.
+//! - under `--enumerate-devices <format>`, it prints the devices that format's
+//!   work can run on and exits; under `--enumerate-devices` alone, every device
+//!   every compiled backend reaches, which states that the machine is up and
+//!   what hardware it has.
 //!
 //! The process is pure compute by construction — it is never given a store
 //! path, so the "executors are pure compute" invariant is OS-enforced. All
@@ -38,19 +40,28 @@ fn resolver(
     Ok((executor, device_name, driver))
 }
 
-/// Enumerates the compute devices the program bound to `format` can run on and
-/// prints one JSON object per device to stdout, one per line, then exits. The
-/// remote-resolution probe: the orchestrator runs this over ssh at run start to
-/// resolve a remote's device selectors against its actual hardware. The output
-/// is the serde form of [`sima_domains::devices::DeviceInfo`] — human-readable,
-/// never identity-bearing.
+/// Enumerates compute devices and prints one JSON object per device to stdout,
+/// one per line, then exits. The output is the serde form of
+/// [`sima_domains::devices::DeviceInfo`] — human-readable, never
+/// identity-bearing.
 ///
-/// The format is what selects the backend to ask, so the answer is the devices
-/// this run's work can be placed on rather than every device present. A machine
-/// commonly has devices only one backend reaches.
-fn enumerate_devices(format: &str) -> Result<()> {
-    let format = FormatId::new(format)?;
-    for device in sima_domains::devices::enumerate_devices(&format)? {
+/// The two forms answer two questions:
+///
+/// - `Some(format)` — the devices the program bound to that format can run on.
+///   The format selects the backend to ask, so the answer is where this run's
+///   work can be placed rather than every device present; a machine commonly
+///   has devices only one backend reaches. The orchestrator runs this over ssh
+///   at run start to resolve a remote's device selectors.
+/// - `None` — every device every compiled backend reaches. The readiness probe
+///   for a run whose format is a program outside this build: nothing here can
+///   resolve that format, so the answer states that the machine is up and what
+///   hardware it has, and the program's own enumeration decides placement.
+fn enumerate_devices(format: Option<&str>) -> Result<()> {
+    let devices = match format {
+        Some(format) => sima_domains::devices::enumerate_devices(&FormatId::new(format)?)?,
+        None => sima_domains::devices::enumerate_all_devices()?,
+    };
+    for device in devices {
         let line = serde_json::to_string(&device)
             .map_err(|e| sima_core::Error::Encoding(format!("device to JSON: {e}")))?;
         println!("{line}");
@@ -79,15 +90,11 @@ fn serve_domain(format: &FormatId) -> Result<()> {
 fn main() {
     // The one-shot enumeration probe: no protocol, no store, no orphan
     // protection — enumerate, print, exit. It runs before anything else so a
-    // probe never spawns the handshake machinery. The format id follows the
-    // flag and decides which backend is asked.
+    // probe never spawns the handshake machinery. A format id following the
+    // flag decides which backend is asked; without one, every backend is.
     let mut args = std::env::args().skip_while(|arg| arg != "--enumerate-devices");
     if args.next().is_some() {
-        let Some(format) = args.next() else {
-            eprintln!("sima-worker: --enumerate-devices takes the run's format id");
-            std::process::exit(1);
-        };
-        if let Err(e) = enumerate_devices(&format) {
+        if let Err(e) = enumerate_devices(args.next().as_deref()) {
             eprintln!("sima-worker: {e}");
             std::process::exit(1);
         }

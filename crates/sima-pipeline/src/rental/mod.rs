@@ -8,6 +8,7 @@
 //! `VAST_API_KEY`.
 
 mod acquire;
+mod rented_program;
 mod supervisor;
 
 #[cfg(test)]
@@ -17,4 +18,4 @@ pub(crate) use acquire::{
     RentalGroup, acquire_hosts, budget_exhausted, endpoint_target, provider_for_rental,
     release_all, transport_mode,
 };
-pub(crate) use supervisor::{StopSignal, Supervisor};
+pub(crate) use supervisor::{StopOnSpawnFailure, StopSignal, Supervisor};

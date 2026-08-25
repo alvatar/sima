@@ -20,11 +20,51 @@ use sima_provider::{
 use sima_scheduler::Event;
 use sima_store::{Rental as RentalRole, RunLock, Store};
 use sima_trace::Emitter;
+use sima_transport::{SpawnOutcome, WorkerTransport};
+
+use sima_contracts::DeviceBinding;
 
 use crate::config::FillPolicy;
 use crate::rental::acquire::{
     RentalGroup, RentedHost, budget_exhausted, endpoint_target, never_cancelled,
 };
+
+/// A rented pool's transport, wired to stop the run's supervisor when a spawn
+/// fails.
+///
+/// A worker that cannot spawn its child holds no task, so it faults the run
+/// without journaling anything: there is no task event, and no run-level one
+/// either. The supervisor holds a clone of the run's emitter and drops it when
+/// it stops, and the run's collector joins only once every clone is gone —
+/// so without a signal here the supervisor would hold its clone until the
+/// scheduler returned, and the scheduler would not return until the collector
+/// joined. The failing spawn therefore raises the stop on its way out.
+///
+/// Only a rented pool needs it: it is the only kind with a supervisor beside
+/// it.
+pub(crate) struct StopOnSpawnFailure<'a> {
+    /// The transport this stands in front of.
+    pub(crate) inner: &'a dyn WorkerTransport,
+    /// Raised on a spawn failure, so the supervisor winds down.
+    pub(crate) stop: &'a StopSignal,
+    /// Set with it, so a replacement acquisition already in flight is abandoned
+    /// rather than finishing for a run that is over.
+    pub(crate) cancel: &'a AtomicBool,
+}
+
+impl WorkerTransport for StopOnSpawnFailure<'_> {
+    fn spawn(
+        &self,
+        worker: u64,
+        device: Option<&DeviceBinding>,
+        events: Emitter,
+    ) -> Result<SpawnOutcome> {
+        self.inner.spawn(worker, device, events).inspect_err(|_| {
+            self.cancel.store(true, Ordering::Relaxed);
+            self.stop.raise();
+        })
+    }
+}
 
 /// The supervisor's heartbeat period. Rental health is a low-frequency concern
 /// and the poll is cheap, so a fixed period suffices; no config knob.
@@ -497,6 +537,7 @@ mod tests {
             &deviceless_probe(),
             &format,
             &exec(),
+            None,
         )?;
         let groups = one_group(&provider, &spec, FillPolicy::Strict, hosts);
         let interrupt = AtomicBool::new(false);
@@ -532,6 +573,7 @@ mod tests {
             &deviceless_probe(),
             &format,
             &exec(),
+            None,
         )?;
         let groups = one_group(&provider, &spec, FillPolicy::Strict, hosts);
         let interrupt = AtomicBool::new(false);
@@ -565,6 +607,7 @@ mod tests {
             &deviceless_probe(),
             &format,
             &exec(),
+            None,
         )?;
         let groups = one_group(&provider, &spec, FillPolicy::Strict, hosts);
         let live_before = provider.live();
@@ -602,6 +645,7 @@ mod tests {
             &deviceless_probe(),
             &format,
             &exec(),
+            None,
         )?;
         let groups = one_group(&provider, &spec, FillPolicy::Strict, hosts);
         let host = &groups[0].hosts[0];
@@ -685,6 +729,7 @@ mod tests {
             &deviceless_probe(),
             &format,
             &exec(),
+            None,
         )?;
         let groups = one_group(&provider, &spec, FillPolicy::Strict, hosts);
         let dead_id = groups[0].hosts[0]
@@ -744,6 +789,7 @@ mod tests {
             &deviceless_probe(),
             &format,
             &exec(),
+            None,
         )?;
         let groups = one_group(&provider, &spec, FillPolicy::Strict, hosts);
         let original_host = groups[0].hosts[0]
@@ -799,6 +845,7 @@ mod tests {
             &deviceless_probe(),
             &format,
             &exec(),
+            None,
         )?;
         let groups = one_group(&provider, &spec, FillPolicy::Strict, hosts);
         // A prior closed rental already past the cap, so any replacement
@@ -864,6 +911,7 @@ mod tests {
                 &deviceless_probe(),
                 &format,
                 &exec(),
+                None,
             )?;
             groups.push(RentalGroup {
                 provider,
@@ -915,6 +963,7 @@ mod tests {
             &deviceless_probe(),
             &format,
             &exec(),
+            None,
         )?;
         let groups = one_group(&provider, &spec, FillPolicy::Strict, hosts);
         let interrupt = AtomicBool::new(false);
@@ -975,6 +1024,7 @@ mod tests {
             &deviceless_probe(),
             &format,
             &exec(),
+            None,
         )?;
         let groups = one_group(&provider, &spec, FillPolicy::Strict, hosts);
         let interrupt = AtomicBool::new(false);
@@ -1011,6 +1061,7 @@ mod tests {
             &deviceless_probe(),
             &format,
             &exec(),
+            None,
         )?;
         let groups = one_group(&provider, &spec, FillPolicy::Strict, hosts);
         assert!(groups[0].hosts[0].transport.live_host().is_some());
@@ -1058,6 +1109,7 @@ mod tests {
             &deviceless_probe(),
             &format,
             &exec(),
+            None,
         )?;
         let groups = one_group(&provider, &spec, FillPolicy::Strict, hosts);
         assert!(groups[0].hosts[0].transport.live_host().is_some());

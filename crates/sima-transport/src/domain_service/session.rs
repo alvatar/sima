@@ -70,12 +70,39 @@ impl DomainService {
         answer_timeout: Duration,
     ) -> Result<DomainService> {
         let mut command = Command::new(binary);
-        command
-            .arg(SERVE_DOMAIN)
-            .arg(format.as_str())
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped());
+        command.arg(SERVE_DOMAIN).arg(format.as_str());
         let scratch = policy.apply(&mut command, std::env::vars_os)?;
+        DomainService::converse(command, scratch, binary.to_path_buf(), answer_timeout)
+    }
+
+    /// Spawns the domain service `argv` runs and completes the same handshake.
+    ///
+    /// The argv already carries the role and the format, because the program it
+    /// reaches is on another machine and something wraps it to get there — an
+    /// ssh hop, a container runtime, a shell that states the program's
+    /// environment before exec. That wrapper is what states the arguments, so
+    /// nothing is appended here.
+    ///
+    /// The environment is the caller's own, for the same reason: what the
+    /// program sees is decided where it actually runs, not in this process.
+    pub fn spawn_argv(argv: &[String], answer_timeout: Duration) -> Result<DomainService> {
+        let (program, args) = argv.split_first().ok_or_else(|| {
+            Error::Transport("a domain-service argv names no program".to_string())
+        })?;
+        let mut command = Command::new(program);
+        command.args(args);
+        DomainService::converse(command, None, PathBuf::from(program), answer_timeout)
+    }
+
+    /// Starts `command` with piped stdio, wires the reader thread, and completes
+    /// the handshake. `binary` names the program in every diagnostic.
+    fn converse(
+        mut command: Command,
+        scratch: Option<TempDir>,
+        binary: PathBuf,
+        answer_timeout: Duration,
+    ) -> Result<DomainService> {
+        command.stdin(Stdio::piped()).stdout(Stdio::piped());
         let mut child = command.spawn().map_err(|e| {
             Error::Transport(format!(
                 "spawning the domain service {} failed: {e}",
@@ -98,7 +125,7 @@ impl DomainService {
             stdin: Some(stdin),
             answers,
             reader: Some(reader),
-            binary: binary.to_path_buf(),
+            binary,
             answer_timeout,
         };
         // The handshake: Hello out, Ready back. Any other answer is a spawn
@@ -111,9 +138,9 @@ impl DomainService {
             Ok(()) => Ok(service),
             Err(e) => {
                 service.kill();
+                let binary = service.binary.display().to_string();
                 Err(Error::Transport(format!(
-                    "the domain service {} refused the handshake: {e}",
-                    binary.display()
+                    "the domain service {binary} refused the handshake: {e}"
                 )))
             }
         }

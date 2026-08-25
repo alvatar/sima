@@ -496,17 +496,61 @@ fn the_enumerate_probe_refuses_a_format_it_cannot_resolve() {
     );
 }
 
-#[test]
-fn the_enumerate_probe_needs_the_format_to_answer_for() {
+/// Runs the format-free enumeration probe and returns the devices it printed,
+/// asserting it exited zero and that every line is a well-formed device.
+fn probe_every_backend() -> Vec<serde_json::Value> {
     let output = Command::new(env!("CARGO_BIN_EXE_sima-worker"))
         .arg("--enumerate-devices")
         .output()
         .expect("run the probe");
-    assert!(!output.status.success(), "the probe exits nonzero");
     assert!(
-        String::from_utf8_lossy(&output.stderr).contains("format id"),
-        "the diagnostic says what is missing"
+        output.status.success(),
+        "the probe exits zero: {}",
+        String::from_utf8_lossy(&output.stderr)
     );
+    let text = String::from_utf8(output.stdout).expect("probe output is UTF-8");
+    text.lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| serde_json::from_str(line).expect("each line is a JSON device"))
+        .collect()
+}
+
+#[test]
+fn the_enumerate_probe_without_a_format_answers_for_every_backend() {
+    // The readiness probe for a run whose format this build does not carry:
+    // the machine is up and this is its layout. It names no format, so it
+    // resolves none — and it answers with every backend's devices rather than
+    // one backend's.
+    let all = probe_every_backend();
+    for format in [
+        "ca_evolution.gray_scott.v1",
+        "ca_evolution.gray_scott_cuda.v1",
+    ] {
+        for device in probe(format) {
+            assert!(
+                all.iter()
+                    .any(|listed| listed.get("class") == device.get("class")
+                        && listed.get("member") == device.get("member")),
+                "{device} is reached by {format}'s backend and listed"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_format_free_probe_lists_each_device_once() {
+    // Both backends mint one card's class the same way, so a machine with
+    // Vulkan and CUDA over the same GPU reaches it twice. Two lines would read
+    // as two places to put a worker where there is one.
+    let all = probe_every_backend();
+    let mut keys: Vec<String> = all
+        .iter()
+        .map(|device| format!("{}/{}", device["class"], device["member"]))
+        .collect();
+    let listed = keys.len();
+    keys.sort();
+    keys.dedup();
+    assert_eq!(listed, keys.len(), "each class and member appears once");
 }
 
 #[test]

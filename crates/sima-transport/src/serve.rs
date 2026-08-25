@@ -19,6 +19,16 @@ use crate::{domain_service, host};
 /// invocation cannot spell it differently.
 pub(crate) const SERVE_DOMAIN: &str = "--serve-domain";
 
+/// The arguments that ask a program for its domain-service role over `format`.
+///
+/// A program on another machine is reached through a command that wraps it, and
+/// the caller building that command has to state the role inside the wrapper.
+/// It asks for the arguments here rather than spelling the flag, so one
+/// definition still serves both halves of an invocation.
+pub fn serve_domain_args(format: &FormatId) -> [String; 2] {
+    [SERVE_DOMAIN.to_string(), format.as_str().to_string()]
+}
+
 /// What a program was spawned to be.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Role {

@@ -124,12 +124,16 @@ enum Readiness {
         host: String,
         container: Container,
     },
-    /// A rented machine: `sima-worker --enumerate-devices` inside the instance's own
-    /// container, which is also the machine's device layout.
+    /// A rented machine: `sima-worker --enumerate-devices` inside the
+    /// instance's own container.
     EnumerateDevices {
         mode: SpawnMode,
         target: SshDestination,
-        format: FormatId,
+        /// The format the probe asks about, whose answer is also the machine's
+        /// device layout. `None` for a run whose format is a program the
+        /// machine has not been given yet, and the answer then states only that
+        /// the machine is up.
+        format: Option<FormatId>,
     },
 }
 
@@ -160,12 +164,16 @@ impl Remote {
     /// reported and the way that provider says its machines are reached — over
     /// ssh, or on this machine for an in-process backend — so both the probe
     /// and the far-side commands land where the machine actually is.
+    /// `format` is what the readiness probe asks about, and `None` for a run
+    /// whose format is a program: nothing on that machine can resolve a format
+    /// it has not been given yet, so the probe asks about none and its answer
+    /// states only that the machine is up.
     pub(crate) fn rented(
         destination: &Destination<'_>,
         provider: &(dyn Provider + Sync),
         endpoint: &SshEndpoint,
         run: &RunId,
-        format: &FormatId,
+        format: Option<&FormatId>,
     ) -> Result<Remote> {
         let mode = transport_mode(provider)?;
         let target = endpoint_target(endpoint.clone());
@@ -175,7 +183,7 @@ impl Remote {
             readiness: Readiness::EnumerateDevices {
                 mode,
                 target,
-                format: format.clone(),
+                format: format.cloned(),
             },
         })
     }
@@ -230,7 +238,11 @@ impl FarSide for Remote {
                 target,
                 format,
             } => {
-                let argv = sima_transport::ssh::probe_argv(mode, target, format);
+                let probe = format.as_ref().map_or(
+                    sima_transport::DeviceProbe::EveryBackend,
+                    sima_transport::DeviceProbe::Format,
+                );
+                let argv = sima_transport::ssh::probe_argv(mode, target, probe);
                 // The probe's stdout is what carries its answer, so a failure
                 // here states only that no answer came back — a connection that
                 // was refused and a probe that ran and said nothing usable read
@@ -432,7 +444,7 @@ mod tests {
                 user: "root".to_string(),
             },
             &run(),
-            &FormatId::new("stub.v1").expect("format id"),
+            Some(&FormatId::new("stub.v1").expect("format id")),
         )
         .expect("the stub reaches its machine without a hop")
     }

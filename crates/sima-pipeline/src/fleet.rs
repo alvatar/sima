@@ -33,6 +33,9 @@ pub(crate) struct OwnedMachine<'a> {
     pub(crate) container: &'a Container,
     /// Its worker layout.
     pub(crate) pool: &'a Pool,
+    /// Where this machine keeps what a run puts there — a migrated run's
+    /// directory, and the programs a fleet run delivers.
+    pub(crate) root: &'a str,
 }
 
 /// One rental request: what to acquire, how many, and what a shortfall does.
@@ -45,6 +48,11 @@ pub(crate) struct Rental<'a> {
     pub(crate) count: usize,
     /// What to do when the market cannot fill the count.
     pub(crate) fill: FillPolicy,
+    /// Where each machine keeps what a run puts there.
+    pub(crate) root: &'a str,
+    /// The `sima` binary on each machine, which runs the far half of whatever
+    /// this run delivers to it.
+    pub(crate) binary: &'a str,
 }
 
 /// The machines `[fleet] members` names, split by form.
@@ -86,6 +94,7 @@ fn push_host<'a>(resolved: &mut Members<'a>, name: &'a str, host: &'a Host) {
             ssh: &owned.ssh,
             container: &owned.container,
             pool: &owned.pool,
+            root: &host.root,
         }),
         // One machine is a rental of exactly one, which cannot fall short of a
         // count without failing outright.
@@ -94,6 +103,8 @@ fn push_host<'a>(resolved: &mut Members<'a>, name: &'a str, host: &'a Host) {
             spec,
             count: 1,
             fill: FillPolicy::Strict,
+            root: &host.root,
+            binary: &host.binary,
         }),
     }
 }
@@ -108,6 +119,7 @@ fn push_class<'a>(resolved: &mut Members<'a>, name: &'a str, class: &'a HostClas
                     ssh,
                     container: &owned.container,
                     pool: &owned.pool,
+                    root: &class.root,
                 }));
         }
         HostClassForm::Rented(rented) => resolved.rentals.push(Rental {
@@ -115,6 +127,8 @@ fn push_class<'a>(resolved: &mut Members<'a>, name: &'a str, class: &'a HostClas
             spec: &rented.spec,
             count: rented.count,
             fill: rented.fill,
+            root: &class.root,
+            binary: &class.binary,
         }),
     }
 }
