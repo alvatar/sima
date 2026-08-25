@@ -26,6 +26,9 @@
 //! program's build changed since the run last ran; `--accept-binary` is the
 //! invocation stating that the changed build should drive it anyway.
 //!
+//! `sdk` writes the SDK this binary carries into a directory, which is how a
+//! program is developed against the package the runs that spawn it vend.
+//!
 //! All orchestration lives in `sima-pipeline` — this binary parses arguments,
 //! renders output, registers the interrupt flag, and maps outcomes to exit
 //! codes:
@@ -52,7 +55,7 @@ use std::sync::atomic::AtomicBool;
 use sima_core::{Error, Result};
 use sima_pipeline::{
     BinaryChange, Engagement, FeedInfo, LoadedConfig, LocalFeed, Record, RemoteFeed, RemovalReport,
-    ReportRow, RunControl, RunFeed, RunId, RunOutcome, RunState, RunStatus, RunTimeline,
+    ReportRow, RunControl, RunFeed, RunId, RunOutcome, RunState, RunStatus, RunTimeline, Sdk,
     TaskHistory, failures_records, follow_serve, load, local_snapshot, orchestrate,
     remote_snapshot, report_records, report_task_records, seeded_status, status_records,
     sync_serve, task_history_records, timeline_records,
@@ -124,6 +127,9 @@ fn main() -> ExitCode {
         ["sync-serve", store, "--run", run] if host.is_none() => {
             sync_serve_command(Path::new(store), run)
         }
+        // The SDK this binary carries, written out for developing a program
+        // outside a run. It opens no store and reads no config.
+        ["sdk", language, "--out", out] if host.is_none() => sdk_command(language, Path::new(out)),
         ["status", config] => status_command(&Target::new(config, host)),
         ["status", config, "--failed"] => status_failed_command(&Target::new(config, host)),
         ["status", config, "--task", key] => status_task_command(&Target::new(config, host), key),
@@ -163,6 +169,7 @@ fn main() -> ExitCode {
                  \x20      sima migrate <config>              move the run onto the host [orchestrator] names\n\
                  \x20      sima migrate <config> --accept-binary  … through a changed program\n\
                  \x20      sima rm <config>                   delete the run and what only it references\n\
+                 \x20      sima sdk <language> --out <dir>    write the SDK this binary carries into <dir>\n\
                  \x20      sima pack <store-dir>              consolidate the store's loose objects into packs\n\
                  \x20      sima pack <store-dir> --gc         … and delete everything outside the finalized\n\
                  \x20                                         runs' closures, unfinalized runs included, which\n\
@@ -615,6 +622,28 @@ fn sync_serve_command(store: &Path, run: &str) -> ExitCode {
     let (mut input, mut output) = (stdin.lock(), stdout.lock());
     match sync_serve(store, &run, &mut input, &mut output) {
         Ok(_) => ExitCode::SUCCESS,
+        Err(e) => report(e),
+    }
+}
+
+/// `sima sdk <language> --out <dir>`: writes the SDK this binary carries under
+/// `<dir>`, so a program can be developed against the package the runs that
+/// spawn it will vend.
+///
+/// It is the same write a config load performs beneath its stamp, addressed by
+/// hand: what a run puts on the program's module path is what lands here.
+fn sdk_command(language: &str, out: &Path) -> ExitCode {
+    let Some(sdk) = Sdk::parse(language) else {
+        return report(Error::Validation(format!(
+            "{language:?} names no SDK this binary vends; the verb takes {}",
+            Sdk::accepted()
+        )));
+    };
+    match sdk.vend(out) {
+        Ok(()) => {
+            println!("vended the {language} SDK into {}", out.display());
+            ExitCode::SUCCESS
+        }
         Err(e) => report(e),
     }
 }
