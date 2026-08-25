@@ -14,9 +14,13 @@
 //! `[config]` travels with its store path rewritten to a relative one, which
 //! the load resolves against the config file's own directory. Everything
 //! naming a machine is dropped: this machine's own worker layout names hardware
-//! the destination does not have, and the declared hosts, classes, fleet, and
-//! budget name machines reachable from here, which says nothing about what the
+//! the destination does not have, and the declared hosts, classes, and fleet
+//! name machines reachable from here, which says nothing about what the
 //! destination can reach.
+//!
+//! `[budget]` travels in one key: `max_wall_clock_ms` bounds the run's own
+//! computing wherever it executes, and `max_spend_usd` needs the provider key
+//! that never travels.
 //!
 //! The far side therefore declares no machine beyond itself. It rents nothing,
 //! whatever the local config declares — renting needs the provider key, and the
@@ -182,6 +186,9 @@ pub(crate) fn far_config(
         "orchestrator".to_string(),
         toml::Value::Table(far_orchestrator(workers, registration.is_some())),
     );
+    if let Some(budget) = far_budget(&local) {
+        far.insert("budget".to_string(), toml::Value::Table(budget));
+    }
     if let Some(registration) = registration {
         let mut domains = toml::Table::new();
         domains.insert(
@@ -233,6 +240,24 @@ fn far_domain(registration: &Registration) -> toml::Table {
         );
     }
     entry
+}
+
+/// The far side's `[budget]`: the wall-clock ceiling alone, and nothing at all
+/// when the local config states none.
+///
+/// A ceiling on time is the run's own and is kept wherever the run executes, so
+/// it travels: it is what bounds a far run nobody is attached to. A ceiling on
+/// spend does not, because keeping it means destroying the machine the run is
+/// on, and that needs the provider key — which never leaves this machine. The
+/// spend ceiling stays here, assessed by an attached migration.
+fn far_budget(local: &toml::Table) -> Option<toml::Table> {
+    let limit = local
+        .get("budget")
+        .and_then(toml::Value::as_table)?
+        .get("max_wall_clock_ms")?;
+    let mut far = toml::Table::new();
+    far.insert("max_wall_clock_ms".to_string(), limit.clone());
+    Some(far)
 }
 
 /// The far side's `[config]`: the store beside its own file, and every setting
@@ -613,12 +638,35 @@ mod tests {
         assert_eq!(
             far.budget,
             sima_provider::Budget::default(),
-            "no ceiling travels: the far side rents nothing"
+            "the spend ceiling does not travel: enforcing it needs the key that stays here"
         );
         assert_eq!(
             far.orchestrator.migrate, None,
             "a run that has arrived does not migrate onward"
         );
+    }
+
+    #[test]
+    fn the_wall_clock_ceiling_travels_and_the_spend_ceiling_does_not() {
+        // A ceiling on time bounds the run's own computing wherever it runs,
+        // so a far run keeps it and a detached one is bounded by it. A ceiling
+        // on spend is enforced by destroying a machine, which needs the
+        // provider key — and the key never leaves this machine.
+        let local = LOCAL.replace(
+            "max_spend_usd = 5.0",
+            "max_spend_usd = 5.0\n        max_wall_clock_ms = 3600000",
+        );
+        let text = far_config(&local, FarWorkers::Probed(&[]), None).expect("the synthesis");
+        assert!(
+            !text.contains("max_spend_usd"),
+            "the spend ceiling is not written down: {text}"
+        );
+        let far = load_str(&text);
+        assert_eq!(
+            far.budget.max_wall_clock,
+            Some(std::time::Duration::from_millis(3_600_000))
+        );
+        assert_eq!(far.budget.max_spend, None);
     }
 
     #[test]

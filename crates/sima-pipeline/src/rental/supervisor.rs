@@ -95,7 +95,7 @@ impl StopSignal {
     }
 
     /// Waits up to `timeout` for the signal, returning whether it is raised.
-    fn wait(&self, timeout: Duration) -> bool {
+    pub(crate) fn wait(&self, timeout: Duration) -> bool {
         let stopped = self
             .stopped
             .lock()

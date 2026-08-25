@@ -344,10 +344,13 @@ fn far_pid(config: &Path, root: &Path) -> Option<u32> {
         .trim()
         .parse()
         .ok()?;
+    // The signal's own complaint over a pid nothing answers to is the answer,
+    // not something to print.
     Command::new("kill")
         .args(["-0", &pid.to_string()])
-        .status()
+        .output()
         .expect("run kill -0")
+        .status
         .success()
         .then_some(pid)
 }
@@ -557,6 +560,90 @@ fn an_exhausted_budget_winds_the_far_run_down_pulls_and_takes_the_machine_away()
         store.instance_records()?.is_empty(),
         "the machine was torn down on the wind-down path"
     );
+    Ok(())
+}
+
+/// A migrating config whose run may compute for `ms` milliseconds per launch.
+fn migrating_under_ceiling(dir: &Path, root: &Path, ms: u64) -> PathBuf {
+    let text = format!(
+        "{}\n[budget]\nmax_wall_clock_ms = {ms}\n",
+        std::fs::read_to_string(migrating(dir, root, UNFINISHABLE, PACED))
+            .expect("read the migrating config")
+    );
+    common::write_config_text(dir, "migrating.toml", &text)
+}
+
+#[test]
+fn a_migrated_run_under_a_wall_clock_ceiling_winds_itself_down_on_the_far_side() -> Result<()> {
+    // The ceiling travels, so the far run keeps it: the chain has a hundred
+    // seconds of work left and the run ends anyway, on its own.
+    workers_built();
+    let dir = tempfile::tempdir().expect("temp dir");
+    let far_root = dir.path().join("far");
+    let migrated = migrating_under_ceiling(dir.path(), &far_root, 1_500);
+
+    let outcome = move_run(&migrated)?;
+    assert!(
+        matches!(outcome, MigrateOutcome::Interrupted { .. }),
+        "the far run interrupted itself: {outcome:?}"
+    );
+    assert_eq!(
+        far_pid(&migrated, &far_root),
+        None,
+        "and nothing is left computing there"
+    );
+    assert!(
+        manifest_bytes(&migrated).is_none(),
+        "an interrupted run seals nothing"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_detached_run_ends_on_its_own_ceiling_and_the_next_attach_brings_it_home() -> Result<()> {
+    // What bounds a run nobody is watching: this side lets go, and the far
+    // run's own ceiling is what ends it.
+    workers_built();
+    let dir = tempfile::tempdir().expect("temp dir");
+    let far_root = dir.path().join("far");
+    let migrated = migrating_under_ceiling(dir.path(), &far_root, 1_500);
+
+    let interrupt = AtomicBool::new(false);
+    let loaded = sima_pipeline::load(&migrated)?;
+    let outcome = migrate(
+        &migrated,
+        &loaded,
+        &|_: &Record| interrupt.store(true, Ordering::Relaxed),
+        &interrupt,
+        BinaryChange::Refuse,
+    )?;
+    assert!(
+        matches!(outcome, MigrateOutcome::Detached { .. }),
+        "{outcome:?}"
+    );
+
+    // Nothing is attached to it now, and it ends all the same.
+    assert!(
+        poll_for(Duration::from_secs(60), || far_pid(&migrated, &far_root)
+            .is_none()
+            .then_some(()))
+        .is_some(),
+        "the far run wound itself down unattended"
+    );
+
+    // What it committed before the ceiling comes home on the next attach.
+    let far = far_store(&migrated, &far_root)?;
+    let far_keys = far_committed(&migrated, &far)?;
+    assert!(!far_keys.is_empty(), "the far run committed something");
+    move_run(&migrated)?;
+    let store = Store::open(&load(&migrated)?.store)?;
+    for (key, record) in &far_keys {
+        assert_eq!(
+            store.record(key)?.as_ref(),
+            Some(record),
+            "task {key} was left on the far side"
+        );
+    }
     Ok(())
 }
 

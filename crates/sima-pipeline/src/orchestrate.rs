@@ -14,6 +14,7 @@ use sima_transport::domain_service::DomainService;
 use sima_transport::serve::serve_domain_args;
 use sima_transport::{ContainerTransport, SpawnPolicy, SpawnSettings, SubprocessTransport};
 
+use crate::ceiling::{report_ceiling, under_ceiling};
 use crate::config::{Container, LoadedConfig, Pool};
 use crate::devices;
 use crate::domain_registry::DomainSource;
@@ -237,85 +238,98 @@ pub fn orchestrate(
     // run proceeds. Both live in one scope so the supervisor borrows the store,
     // lock, and groups; the scheduler runs on this thread, and the stop signal
     // winds the supervisor down when it returns.
-    let outcome = if groups.is_empty() {
-        sima_scheduler::run(
-            &store,
-            &config.run,
-            &environment,
-            generator.as_ref(),
-            &pools,
-            &execution,
-            control,
-        )
-    } else {
-        // The run's emitter reaches the supervisor through the start hook,
-        // filled once the collector spawns; the supervisor emits rental events
-        // through it, so they cross the same journal boundary as the rest. No
-        // scheduler edge to the provider appears — the hook is an opaque
-        // closure.
-        let emitter: std::sync::Mutex<Option<sima_trace::Emitter>> = std::sync::Mutex::new(None);
-        let on_start = |e: sima_trace::Emitter| {
-            *emitter
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(e);
-        };
-        // Wrap the caller's observer to stop the supervisor the moment the run
-        // reaches a terminal event: the supervisor then drops its emitter
-        // clone, so the run's collector — which joins only once every emitter
-        // is dropped — can shut down. A fault emits no run-level event, so
-        // `Faulted` is a stop trigger too. The same event cancels a replacement
-        // still acquiring.
-        let caller_observer = control.observer;
-        let stopper = |record: &sima_scheduler::Record| {
-            (caller_observer)(record);
-            if matches!(
-                record.event,
-                sima_scheduler::Event::RunFinalized { .. }
-                    | sima_scheduler::Event::RunFailed { .. }
-                    | sima_scheduler::Event::RunInterrupted { .. }
-                    | sima_scheduler::Event::Faulted { .. }
-            ) {
-                cancel.store(true, std::sync::atomic::Ordering::Relaxed);
-                stop.raise();
+    //
+    // The whole of it runs under the run's own wall-clock ceiling, so a run
+    // nobody is watching still ends: the flag the ceiling raises is the one
+    // `SIGINT` raises, and every pool winds down on it.
+    let (outcome, ceiling_fired) =
+        under_ceiling(config.budget.max_wall_clock, control.interrupt, || {
+            if groups.is_empty() {
+                sima_scheduler::run(
+                    &store,
+                    &config.run,
+                    &environment,
+                    generator.as_ref(),
+                    &pools,
+                    &execution,
+                    control,
+                )
+            } else {
+                // The run's emitter reaches the supervisor through the start hook,
+                // filled once the collector spawns; the supervisor emits rental events
+                // through it, so they cross the same journal boundary as the rest. No
+                // scheduler edge to the provider appears — the hook is an opaque
+                // closure.
+                let emitter: std::sync::Mutex<Option<sima_trace::Emitter>> =
+                    std::sync::Mutex::new(None);
+                let on_start = |e: sima_trace::Emitter| {
+                    *emitter
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(e);
+                };
+                // Wrap the caller's observer to stop the supervisor the moment the run
+                // reaches a terminal event: the supervisor then drops its emitter
+                // clone, so the run's collector — which joins only once every emitter
+                // is dropped — can shut down. A fault emits no run-level event, so
+                // `Faulted` is a stop trigger too. The same event cancels a replacement
+                // still acquiring.
+                let caller_observer = control.observer;
+                let stopper = |record: &sima_scheduler::Record| {
+                    (caller_observer)(record);
+                    if matches!(
+                        record.event,
+                        sima_scheduler::Event::RunFinalized { .. }
+                            | sima_scheduler::Event::RunFailed { .. }
+                            | sima_scheduler::Event::RunInterrupted { .. }
+                            | sima_scheduler::Event::Faulted { .. }
+                    ) {
+                        cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+                        stop.raise();
+                    }
+                };
+                let control = RunControl {
+                    observer: &stopper,
+                    interrupt: control.interrupt,
+                    on_start: Some(&on_start),
+                };
+                let supervisor = Supervisor::new(
+                    &store,
+                    &lock,
+                    &config.budget,
+                    &groups,
+                    control.interrupt,
+                    &emitter,
+                )
+                .on_cancel(&cancel);
+                std::thread::scope(|scope| {
+                    let handle = scope.spawn(|| supervisor.run(&stop));
+                    let outcome = sima_scheduler::run(
+                        &store,
+                        &config.run,
+                        &environment,
+                        generator.as_ref(),
+                        &pools,
+                        &execution,
+                        &control,
+                    );
+                    // Cancel any replacement the supervisor is still acquiring before
+                    // joining it: teardown must not wait out an offer walk for a
+                    // machine the finished run no longer needs.
+                    cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+                    stop.raise();
+                    handle.join().expect("the supervisor thread joins");
+                    outcome
+                })
             }
-        };
-        let control = RunControl {
-            observer: &stopper,
-            interrupt: control.interrupt,
-            on_start: Some(&on_start),
-        };
-        let supervisor = Supervisor::new(
-            &store,
-            &lock,
-            &config.budget,
-            &groups,
-            control.interrupt,
-            &emitter,
-        )
-        .on_cancel(&cancel);
-        std::thread::scope(|scope| {
-            let handle = scope.spawn(|| supervisor.run(&stop));
-            let outcome = sima_scheduler::run(
-                &store,
-                &config.run,
-                &environment,
-                generator.as_ref(),
-                &pools,
-                &execution,
-                &control,
-            );
-            // Cancel any replacement the supervisor is still acquiring before
-            // joining it: teardown must not wait out an offer walk for a
-            // machine the finished run no longer needs.
-            cancel.store(true, std::sync::atomic::Ordering::Relaxed);
-            stop.raise();
-            handle.join().expect("the supervisor thread joins");
-            outcome
-        })
-    };
+        });
     // The pools' borrow of the rented transports and guards ends here, before
     // teardown.
     drop(pools);
+    // A ceiling that fired says so in the run's journal, so the operator reads
+    // why the run interrupted rather than inferring it from the outcome.
+    if let (true, Some(limit)) = (ceiling_fired, config.budget.max_wall_clock) {
+        report_ceiling(&store, &run, control.observer, limit)?;
+    }
     // Guards release explicitly on the success path, surfacing a teardown
     // failure — a machine still running is worth an operator's attention. A run
     // that already faulted keeps its fault; teardown is best-effort, and the

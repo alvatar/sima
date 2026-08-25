@@ -18,6 +18,7 @@
 //! produced, while [`timeline`] measures how efficiently the run executed.
 //! The queries return data; rendering it is the caller's.
 
+mod ceiling;
 mod config;
 mod devices;
 mod domain_registry;

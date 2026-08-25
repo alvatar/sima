@@ -78,9 +78,14 @@
 //! [fleet]
 //! members = ["gpubox", "lab", "rtx4090"]
 //!
-//! [budget]                                # ceilings over every rental in the run
-//! max_spend_usd     = 20.0
-//! max_wall_clock_ms = 21600000
+//! [budget]
+//! max_spend_usd     = 20.0                # ceiling on the run's total rental
+//!                                         # spend, assessed only while a
+//!                                         # migration or a fleet run is attached
+//! max_wall_clock_ms = 21600000            # ceiling on how long the run may
+//!                                         # compute, measured from the start of
+//!                                         # each execution and kept wherever it
+//!                                         # runs — a migrated run carries it
 //!
 //! [orchestrator]                          # this machine
 //! migrate = "slingshot"                   # the host `sima migrate` moves the run onto
@@ -229,7 +234,20 @@
 //! rejected without one.
 //!
 //! `[budget]` is run-global: a run may draw on several rented classes under one
-//! ceiling, so the ceiling is a property of the run.
+//! ceiling, so the ceiling is a property of the run. Its two keys differ in
+//! where they are kept:
+//!
+//! - `max_spend_usd` bounds what the run's rentals cost, and enforcing it means
+//!   destroying a machine — a provider-API call, which needs the credential
+//!   that never leaves this machine. It is therefore assessed only while
+//!   something here is attached, and a section stating it alone is inert to a
+//!   run that rents nothing.
+//! - `max_wall_clock_ms` bounds how long the run may compute, measured from the
+//!   start of each execution, and is kept wherever the run executes: a plain
+//!   `sima run` interrupts itself on it, and a migrated run carries the key to
+//!   its destination and interrupts itself there. It bounds compute, not
+//!   billing — a rented machine whose run stopped is still rented until `sima
+//!   recall` or `sima reconcile` takes it down.
 //!
 //! ## What a run uses
 //!
