@@ -6,7 +6,9 @@
 //! both start from an explicit surface rather than from whatever the
 //! orchestrator happens to hold: the baseline environment the platform needs
 //! plus the variables the program's config entry names, and an empty working
-//! directory of its own.
+//! directory of its own. On top of that, a path list may be prepended to, which
+//! is how a directory sima put on the machine is read ahead of anything else
+//! under that name.
 //!
 //! Every sima-owned process — a builtin worker, a container runtime client,
 //! an ssh client — keeps the orchestrator's environment and working
@@ -45,7 +47,14 @@ pub enum SpawnPolicy {
     /// The child receives the baseline allowlist plus the named variables,
     /// and starts in a fresh scratch directory removed at reap.
     /// The policy of every config-routed binary.
-    Explicit { passthrough: Vec<String> },
+    Explicit {
+        passthrough: Vec<String>,
+        /// Path lists the child reads a directory of sima's from first: each
+        /// name's value leads whatever `passthrough` forwarded under it,
+        /// joined with `:`. What a directory holds is the caller's business —
+        /// this side knows only that a path list is a path list.
+        prepend: Vec<(String, OsString)>,
+    },
 }
 
 impl SpawnPolicy {
@@ -66,12 +75,19 @@ impl SpawnPolicy {
     where
         I: IntoIterator<Item = (OsString, OsString)>,
     {
-        let SpawnPolicy::Explicit { passthrough } = self else {
+        let SpawnPolicy::Explicit {
+            passthrough,
+            prepend,
+        } = self
+        else {
             return Ok(None);
         };
         // Clear first: what the child sees is what this loop puts back, so a
         // credential the orchestrator holds is dropped by never being copied.
         command.env_clear();
+        // What each prepended name carried over, so the loop below can put the
+        // directory ahead of it rather than replacing it.
+        let mut led: Vec<Option<OsString>> = vec![None; prepend.len()];
         for (name, value) in vars() {
             // The names this policy forwards are text, so a name that is not
             // text matches none of them and is dropped like any other name the
@@ -80,9 +96,23 @@ impl SpawnPolicy {
             let Some(name) = name.to_str() else {
                 continue;
             };
-            if forwarded(name, passthrough) {
-                command.env(name, value);
+            if !forwarded(name, passthrough) {
+                continue;
             }
+            if let Some(index) = prepend.iter().position(|(prepended, _)| prepended == name) {
+                led[index] = Some(value.clone());
+            }
+            command.env(name, value);
+        }
+        // After the loop, so the prepended directory leads whatever the loop
+        // put there — and is the whole value where it put nothing.
+        for ((name, directory), led) in prepend.iter().zip(led) {
+            let mut value = directory.clone();
+            if let Some(led) = led {
+                value.push(":");
+                value.push(led);
+            }
+            command.env(name, value);
         }
         let scratch = TempDir::with_prefix("sima-scratch-").map_err(|e| {
             Error::Transport(format!(
@@ -233,7 +263,49 @@ mod tests {
     fn explicit(passthrough: &[&str]) -> SpawnPolicy {
         SpawnPolicy::Explicit {
             passthrough: passthrough.iter().map(|name| name.to_string()).collect(),
+            prepend: Vec::new(),
         }
+    }
+
+    /// An explicit-surface policy declaring `passthrough` and prepending
+    /// `prepend` to the path lists it names.
+    fn prepending(passthrough: &[&str], prepend: &[(&str, &str)]) -> SpawnPolicy {
+        SpawnPolicy::Explicit {
+            passthrough: passthrough.iter().map(|name| name.to_string()).collect(),
+            prepend: prepend
+                .iter()
+                .map(|(name, value)| ((*name).to_string(), OsString::from(value)))
+                .collect(),
+        }
+    }
+
+    /// The environment `policy` leaves on a fresh command over `vars`.
+    fn applied_over(
+        policy: &SpawnPolicy,
+        vars: Vec<(OsString, OsString)>,
+    ) -> BTreeMap<String, Option<String>> {
+        let mut command = Command::new("/bin/true");
+        policy
+            .apply(&mut command, || vars)
+            .expect("apply the policy");
+        command
+            .get_envs()
+            .map(|(name, value)| {
+                (
+                    name.to_string_lossy().into_owned(),
+                    value.map(|value| value.to_string_lossy().into_owned()),
+                )
+            })
+            .collect()
+    }
+
+    /// A parent environment holding `PYTHONPATH`, the path list a vended SDK is
+    /// prepended to.
+    fn parent_with_python_path() -> Vec<(OsString, OsString)> {
+        vec![
+            (OsString::from("PYTHONPATH"), OsString::from("/site")),
+            (OsString::from("PATH"), OsString::from("/usr/bin")),
+        ]
     }
 
     /// The working directory `policy` sets, with the scratch directory kept
@@ -342,6 +414,94 @@ mod tests {
         // The second declared name, which the parent does hold, crossed: what
         // the entry declares is honoured, and only the absent one is absent.
         assert!(env.contains_key("ACME_ASSETS"), "{env:?}");
+    }
+
+    #[test]
+    fn a_prepended_path_leads_the_value_the_policy_forwards() {
+        // The contract a vended package rests on: the child reads the
+        // prepended directory first, and what the machine already had is still
+        // behind it. `:` is the separator every path list on this platform
+        // uses.
+        let env = applied_over(
+            &prepending(&["PYTHONPATH"], &[("PYTHONPATH", "/vended")]),
+            parent_with_python_path(),
+        );
+        assert_eq!(
+            env.get("PYTHONPATH"),
+            Some(&Some("/vended:/site".to_string())),
+            "{env:?}"
+        );
+    }
+
+    #[test]
+    fn a_prepended_path_with_nothing_to_lead_is_the_whole_value() {
+        // Nothing forwarded the name — the entry does not declare it, or the
+        // parent does not hold it — so the child's path list is the prepended
+        // directory alone, with no separator and no empty component.
+        let undeclared = applied_over(
+            &prepending(&[], &[("PYTHONPATH", "/vended")]),
+            parent_with_python_path(),
+        );
+        assert_eq!(
+            undeclared.get("PYTHONPATH"),
+            Some(&Some("/vended".to_string())),
+            "a name the entry does not declare carries nothing over: {undeclared:?}"
+        );
+
+        let unheld = applied_over(
+            &prepending(&["PYTHONPATH"], &[("PYTHONPATH", "/vended")]),
+            vec![(OsString::from("PATH"), OsString::from("/usr/bin"))],
+        );
+        assert_eq!(
+            unheld.get("PYTHONPATH"),
+            Some(&Some("/vended".to_string())),
+            "and neither does a name the parent does not hold: {unheld:?}"
+        );
+    }
+
+    #[test]
+    fn prepending_leaves_every_other_variable_as_it_was() {
+        // The prepend is one name's business: the baseline crosses beside it,
+        // and a credential the policy drops stays dropped.
+        let env = applied_over(
+            &prepending(&["ACME_ASSETS"], &[("PYTHONPATH", "/vended")]),
+            parent_env(),
+        );
+        assert_eq!(
+            env.get("PATH"),
+            Some(&Some("/usr/bin".to_string())),
+            "{env:?}"
+        );
+        assert_eq!(
+            env.get("ACME_ASSETS"),
+            Some(&Some("/opt/acme/assets".to_string())),
+            "{env:?}"
+        );
+        assert!(!env.contains_key("VAST_API_KEY"), "{env:?}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_forwarded_value_that_is_not_text_is_prepended_to_as_the_bytes_it_is() {
+        // A path list is bytes, like every other value: what the machine holds
+        // is carried across untouched behind the prepended directory.
+        use std::os::unix::ffi::{OsStrExt, OsStringExt};
+
+        let opaque = OsString::from_vec(vec![b'/', 0xff]);
+        let mut command = Command::new("/bin/true");
+        prepending(&["PYTHONPATH"], &[("PYTHONPATH", "/vended")])
+            .apply(&mut command, || {
+                vec![(OsString::from("PYTHONPATH"), opaque.clone())]
+            })
+            .expect("apply the policy");
+        let value = command
+            .get_envs()
+            .find(|(name, _)| *name == OsStr::new("PYTHONPATH"))
+            .and_then(|(_, value)| value)
+            .expect("the prepended name is set");
+        let mut expected = b"/vended:".to_vec();
+        expected.extend(opaque.as_bytes());
+        assert_eq!(value.as_bytes(), expected);
     }
 
     #[test]

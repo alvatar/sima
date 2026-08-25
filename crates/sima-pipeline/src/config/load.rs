@@ -1637,7 +1637,8 @@ mod tests {
         assert_eq!(
             stub_entry_policy(""),
             SpawnPolicy::Explicit {
-                passthrough: Vec::new()
+                passthrough: Vec::new(),
+                prepend: Vec::new(),
             }
         );
     }
@@ -1648,6 +1649,7 @@ mod tests {
             stub_entry_policy(r#"env = ["ACME_ASSETS", "ACME_LICENSE_PATH"]"#),
             SpawnPolicy::Explicit {
                 passthrough: vec!["ACME_ASSETS".to_string(), "ACME_LICENSE_PATH".to_string()],
+                prepend: Vec::new(),
             }
         );
     }

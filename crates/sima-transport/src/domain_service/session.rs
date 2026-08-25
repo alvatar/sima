@@ -680,6 +680,7 @@ mod tests {
             &FormatId::new("stub.v1").expect("format id"),
             &SpawnPolicy::Explicit {
                 passthrough: Vec::new(),
+                prepend: Vec::new(),
             },
             Duration::MAX,
         )
