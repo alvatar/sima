@@ -29,7 +29,7 @@
 //!   replaced, its incident recorded, rather than failing the run;
 //! - a config that states no worker layout and routes its format through a
 //!   payload digest — the shape a migration onto a rented machine synthesizes —
-//!   derives its workers from the program\'s own enumeration and drives to
+//!   derives its workers from the program's own enumeration and drives to
 //!   finalization, while one without that digest is still refused.
 
 mod common;

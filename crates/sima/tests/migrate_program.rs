@@ -25,7 +25,7 @@
 //!   for the migration;
 //! - a run whose format this workspace carries no code for migrates onto a
 //!   rented destination and finalizes there, its workers derived from the
-//!   program\'s own enumeration.
+//!   program's own enumeration.
 
 mod common;
 
