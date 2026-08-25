@@ -33,7 +33,7 @@ sima
 
 `sima` prints its command list.
 
-The SDK needs no install of its own. **sima never links your code**: it spawns your program and talks over pipes, and the SDK is the library that speaks that wire protocol, which is what keeps your program an ordinary executable. The binary carries the package, so a config entry declaring `sdk = "python"` is what puts it on the interpreter's path — here and on any machine the run moves to.
+The SDK arrives with the binary. **sima never links your code**: it spawns your program and talks over pipes, and the SDK is the library that speaks that wire protocol, which is what keeps your program an ordinary executable. The binary carries the package, so a config entry declaring `sdk = "python"` is what puts it on the interpreter's path — here and on any machine the run moves to.
 
 To read it, or to develop against it in an editor, write it out:
 
@@ -308,7 +308,7 @@ install = "./install.sh"
 
 An entry that states no `payload` describes a program this machine holds and no other, and `sima migrate` refuses it, naming the missing key.
 
-The SDK is not part of the payload. `sdk = "python"` crosses as the declaration it is, and the destination's own `sima` writes the package: what a program imports there matches the binary driving it there. A third-party dependency is the payload's business — carry it in a directory payload and install it with the script below.
+The SDK crosses as the declaration it is: `sdk = "python"` travels, and the destination's own `sima` writes the package, so what a program imports there matches the binary driving it there. A third-party dependency is the payload's business — carry it in a directory payload and install it with the script below.
 
 ### The install contract
 

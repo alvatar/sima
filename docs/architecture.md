@@ -1235,9 +1235,9 @@ copy installed on the machine is shadowed by the vended one, which is the
 point: the vended copy is the one whose protocol matches the binary driving the
 run.
 
-**A migration carries the declaration, not the files.** The synthesized far
-entry states `sdk = "python"`, and the destination's own binary vends its own
-copy at load. Nothing of the SDK crosses the wire.
+**A migration carries the declaration.** The synthesized far entry states
+`sdk = "python"`, and the destination's own binary vends its own copy at load,
+so the package itself stays off the wire.
 
 `sima sdk <language> --out <dir>` writes the same package by hand, for
 developing a program outside a run.
@@ -1254,9 +1254,9 @@ payload = "./stepper.py"          # what travels: one file or one directory
 install = "./install.sh"          # optional shell script; the far side runs it
 ```
 
-What the payload does not carry is the SDK, which travels inside the binary and
-is vended on the destination; a third-party dependency is the payload's own
-business, carried in a directory payload and installed by its script.
+The payload carries the program's own files. The SDK travels inside the binary
+and is vended on the destination, and a third-party dependency is the payload's
+own business, carried in a directory payload and installed by its script.
 
 **The program travels per run, as objects.** Nothing is published and no image
 is rebuilt. The payload's files become ordinary content-addressed objects, one
