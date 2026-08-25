@@ -6,6 +6,7 @@ use sima_domains::devices::DeviceInfo;
 use sima_model::{FormatId, RunId};
 use sima_scheduler::{ExecutionConfig, RunControl, RunOutcome, WorkerPool, worker_slots};
 use sima_store::Store;
+use sima_transport::DeviceProbe;
 use sima_transport::container::probe_argv;
 use sima_transport::{ContainerTransport, SpawnPolicy, SpawnSettings, SubprocessTransport};
 
@@ -434,7 +435,7 @@ fn probe_container_devices(
         &container.runtime,
         &container.image,
         &container.run_args,
-        format,
+        DeviceProbe::Format(format),
     );
     let stdout = command_stdout(&argv)?;
     devices::parse_enumeration(&stdout)

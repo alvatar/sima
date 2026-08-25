@@ -49,9 +49,9 @@ use std::time::{Duration, Instant};
 
 use sima_contracts::DeviceBinding;
 use sima_core::Result;
-use sima_model::FormatId;
 use sima_trace::Emitter;
 
+use crate::device_probe::DeviceProbe;
 use crate::link::{SpawnOutcome, WORKER_ENTRYPOINT, WorkerLink, WorkerTransport};
 use crate::spawn_settings::SpawnSettings;
 use crate::subprocess::{EventContext, spawn_worker};
@@ -475,33 +475,31 @@ const SSH_CONNECT_TIMEOUT_SECS: u64 = 10;
 
 /// The argv that runs `sima-worker` at `destination` over ssh: the
 /// destination's own [`prefix`](SshDestination::prefix), then the worker, with
-/// `--enumerate-devices <format>` appended when `probe` names the run's format.
-pub(crate) fn ssh_argv(destination: &SshDestination, probe: Option<&FormatId>) -> Vec<String> {
+/// the enumeration arguments appended when `probe` asks a question.
+pub(crate) fn ssh_argv(destination: &SshDestination, probe: Option<DeviceProbe>) -> Vec<String> {
     let mut argv = destination.prefix();
     argv.push(WORKER_ENTRYPOINT.to_string());
-    if let Some(format) = probe {
-        argv.push("--enumerate-devices".to_string());
-        argv.push(format.as_str().to_string());
+    if let Some(probe) = probe {
+        argv.extend(probe.args());
     }
     argv
 }
 
-/// The argv that enumerates a machine's devices for `format`, so the
-/// orchestrator derives one worker slot per usable GPU: the ssh spawn argv with
-/// `--enumerate-devices <format>`, or the local binary with the same in
-/// [`SpawnMode::Local`].
+/// The argv that enumerates a machine's devices, so the orchestrator derives one
+/// worker slot per usable GPU: the ssh spawn argv with the probe's arguments, or
+/// the local binary with the same in [`SpawnMode::Local`].
 ///
-/// The format travels with the probe because the answer depends on it: the
-/// machine enumerates the backend the run's program executes through, and a
-/// device another backend reaches is not a place this run can put a worker.
-pub fn probe_argv(mode: &SpawnMode, target: &SshDestination, format: &FormatId) -> Vec<String> {
+/// What the probe asks travels with it because the answer depends on it — a
+/// device one backend reaches is not a place another backend's work can go — and
+/// [`DeviceProbe`] is where the two questions are stated.
+pub fn probe_argv(mode: &SpawnMode, target: &SshDestination, probe: DeviceProbe) -> Vec<String> {
     match mode {
-        SpawnMode::Ssh => ssh_argv(target, Some(format)),
-        SpawnMode::Local(program) => vec![
-            program.to_string_lossy().into_owned(),
-            "--enumerate-devices".to_string(),
-            format.as_str().to_string(),
-        ],
+        SpawnMode::Ssh => ssh_argv(target, Some(probe)),
+        SpawnMode::Local(program) => {
+            let mut argv = vec![program.to_string_lossy().into_owned()];
+            argv.extend(probe.args());
+            argv
+        }
     }
 }
 
@@ -513,6 +511,7 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use sima_core::Error;
+    use sima_model::FormatId;
 
     use super::*;
     use crate::link::LinkEvent;
@@ -682,13 +681,14 @@ mod tests {
         // the connect timeout.
         assert!(ssh_argv(&a_target(), None).contains(&"ConnectTimeout=10".to_string()));
         assert!(
-            ssh_argv(&a_target(), Some(&a_format())).contains(&"ConnectTimeout=10".to_string())
+            ssh_argv(&a_target(), Some(DeviceProbe::Format(&a_format())))
+                .contains(&"ConnectTimeout=10".to_string())
         );
     }
 
     #[test]
     fn the_ssh_probe_argv_appends_enumerate_and_the_format() {
-        let argv = ssh_argv(&a_target(), Some(&a_format()));
+        let argv = ssh_argv(&a_target(), Some(DeviceProbe::Format(&a_format())));
         assert_eq!(&argv[argv.len() - 2..], ["--enumerate-devices", "stub.v1"]);
         // Otherwise identical to the spawn argv.
         assert_eq!(&argv[..argv.len() - 2], ssh_argv(&a_target(), None));
@@ -704,9 +704,25 @@ mod tests {
     fn a_local_mode_probe_argv_appends_enumerate_to_the_bare_binary() {
         let mode = SpawnMode::Local(PathBuf::from("/opt/sima/sima-worker"));
         assert_eq!(
-            probe_argv(&mode, &a_target(), &a_format()),
+            probe_argv(&mode, &a_target(), DeviceProbe::Format(&a_format())),
             ["/opt/sima/sima-worker", "--enumerate-devices", "stub.v1"]
         );
+    }
+
+    #[test]
+    fn a_format_free_probe_argv_asks_about_no_format() {
+        // The readiness probe for a registered format: the image's worker does
+        // not carry that format, so the probe names none and the answer is that
+        // the machine is up.
+        for mode in [
+            SpawnMode::Ssh,
+            SpawnMode::Local(PathBuf::from("/opt/sima/sima-worker")),
+        ] {
+            let argv = probe_argv(&mode, &a_target(), DeviceProbe::EveryBackend);
+            assert_eq!(argv[argv.len() - 1], "--enumerate-devices");
+            // Otherwise identical to the spawn argv: one argument longer.
+            assert_eq!(&argv[..argv.len() - 1], mode.spawn_argv(&a_target()));
+        }
     }
 
     #[test]
@@ -719,7 +735,7 @@ mod tests {
             SpawnMode::Ssh,
             SpawnMode::Local(PathBuf::from("/opt/sima/sima-worker")),
         ] {
-            let argv = probe_argv(&mode, &a_target(), &format);
+            let argv = probe_argv(&mode, &a_target(), DeviceProbe::Format(&format));
             assert_eq!(
                 &argv[argv.len() - 2..],
                 ["--enumerate-devices", "ca_evolution.gray_scott.v1"]

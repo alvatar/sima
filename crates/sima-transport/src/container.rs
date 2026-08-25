@@ -22,9 +22,9 @@ use std::time::{Duration, Instant};
 
 use sima_contracts::DeviceBinding;
 use sima_core::Result;
-use sima_model::FormatId;
 use sima_trace::Emitter;
 
+use crate::device_probe::DeviceProbe;
 use crate::link::{LinkEvent, SpawnOutcome, WORKER_ENTRYPOINT, WorkerLink, WorkerTransport};
 use crate::protocol::Assignment;
 use crate::spawn_settings::SpawnSettings;
@@ -252,16 +252,16 @@ pub(crate) fn kill_argv(host: Option<&str>, runtime: &str, container: &str) -> V
 
 /// The argv that runs the one-shot enumeration probe in a throwaway container,
 /// ssh-wrapped when `host` is set: `[ssh …] <runtime> run --rm -i <run_args>
-/// <image> sima-worker --enumerate-devices <format>`. It carries the pool's `run_args`
-/// so the probe sees the same devices the workers will, and the run's format so
-/// it reports the backend those workers execute through. The orchestrator runs
-/// it at run start to resolve a remote's device selectors.
+/// <image> sima-worker --enumerate-devices [<format>]`. It carries the pool's
+/// `run_args` so the probe sees the same devices the workers will, and whatever
+/// [`DeviceProbe`] asks. The orchestrator runs it at run start to resolve a
+/// remote's device selectors.
 pub fn probe_argv(
     host: Option<&str>,
     runtime: &str,
     image: &str,
     run_args: &[String],
-    format: &FormatId,
+    probe: DeviceProbe,
 ) -> Vec<String> {
     let mut argv = ssh_prefix(host);
     argv.extend([
@@ -273,8 +273,7 @@ pub fn probe_argv(
     argv.extend(run_args.iter().cloned());
     argv.push(image.to_string());
     argv.push(WORKER_ENTRYPOINT.to_string());
-    argv.push("--enumerate-devices".to_string());
-    argv.push(format.as_str().to_string());
+    argv.extend(probe.args());
     argv
 }
 
@@ -322,6 +321,8 @@ fn spawn_detached(argv: &[String]) -> Option<Child> {
 
 #[cfg(test)]
 mod tests {
+    use sima_model::FormatId;
+
     use super::*;
 
     #[test]
@@ -424,7 +425,7 @@ mod tests {
             "docker",
             "sima:latest",
             &["--gpus".to_string(), "all".to_string()],
-            &FormatId::new("ca_evolution.gray_scott.v1").expect("format id"),
+            DeviceProbe::Format(&FormatId::new("ca_evolution.gray_scott.v1").expect("format id")),
         );
         assert_eq!(
             argv,
@@ -455,7 +456,7 @@ mod tests {
             "podman",
             "img",
             &[],
-            &FormatId::new("stub.v1").expect("format id"),
+            DeviceProbe::Format(&FormatId::new("stub.v1").expect("format id")),
         );
         assert_eq!(
             argv,
@@ -468,6 +469,37 @@ mod tests {
                 "sima-worker",
                 "--enumerate-devices",
                 "stub.v1"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_format_free_probe_command_ends_at_the_flag() {
+        // A registered format's readiness probe: the image's worker cannot
+        // resolve that format, so the probe names none.
+        let argv = probe_argv(
+            Some("gpubox"),
+            "docker",
+            "sima:latest",
+            &["--gpus".to_string()],
+            DeviceProbe::EveryBackend,
+        );
+        assert_eq!(
+            argv,
+            [
+                "ssh",
+                "-o",
+                "BatchMode=yes",
+                "gpubox",
+                "--",
+                "docker",
+                "run",
+                "--rm",
+                "-i",
+                "--gpus",
+                "sima:latest",
+                "sima-worker",
+                "--enumerate-devices",
             ]
         );
     }

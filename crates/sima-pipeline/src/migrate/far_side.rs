@@ -230,7 +230,11 @@ impl FarSide for Remote {
                 target,
                 format,
             } => {
-                let argv = sima_transport::ssh::probe_argv(mode, target, format);
+                let argv = sima_transport::ssh::probe_argv(
+                    mode,
+                    target,
+                    sima_transport::DeviceProbe::Format(format),
+                );
                 // The probe's stdout is what carries its answer, so a failure
                 // here states only that no answer came back — a connection that
                 // was refused and a probe that ran and said nothing usable read

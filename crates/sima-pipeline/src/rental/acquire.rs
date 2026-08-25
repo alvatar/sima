@@ -294,7 +294,8 @@ fn probe_slots(
     poll: Duration,
     format: &FormatId,
 ) -> Result<Vec<Option<DeviceBinding>>> {
-    let argv = sima_transport::ssh::probe_argv(mode, target, format);
+    let argv =
+        sima_transport::ssh::probe_argv(mode, target, sima_transport::DeviceProbe::Format(format));
     let deadline = usable_by;
     loop {
         match command_stdout(&argv).and_then(|stdout| parse_enumeration(&stdout)) {
