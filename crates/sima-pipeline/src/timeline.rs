@@ -328,6 +328,7 @@ mod tests {
                 device: device.to_string(),
                 driver: String::new(),
                 host: host.to_string(),
+                program: None,
             },
         )
     }

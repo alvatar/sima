@@ -146,6 +146,7 @@ mod tests {
             device: "NVIDIA RTX PRO 2000".to_string(),
             driver: "580.65.6".to_string(),
             host: "gpubox".to_string(),
+            program: None,
         });
         assert_eq!(Record::from_line(&record.to_line()?)?, record);
         Ok(())
@@ -251,6 +252,7 @@ mod tests {
                 device: "NVIDIA RTX PRO 2000".to_string(),
                 driver: "580.65.6".to_string(),
                 host: "gpubox".to_string(),
+                program: Some("cd".repeat(32)),
             },
             Event::ChainRebound {
                 chain: 1,
