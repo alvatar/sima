@@ -28,6 +28,15 @@ use sima_model::{EnvironmentId, FormatId};
 /// published contract (`docs/protocol.md`) numbers from 1.
 pub const PROTOCOL_VERSION: u32 = 1;
 
+/// The environment variable a spawn states the digest of the program it sent
+/// in, which the child echoes back in [`ToParent::Ready`].
+///
+/// A program cannot hash itself — a script's executable is its interpreter,
+/// and a built entry point is not the payload that travelled — so the value
+/// crosses in one direction only: the spawner sets it, the child answers it
+/// verbatim, and the spawner compares the answer against what it sent.
+pub const PROGRAM_DIGEST_VAR: &str = "SIMA_PROGRAM_DIGEST";
+
 // Parent → child message tags.
 const TAG_HELLO: u8 = 0;
 const TAG_ASSIGN: u8 = 1;
@@ -153,6 +162,11 @@ pub enum ToParent {
         /// hash cannot see across machines of one class, carried so the journal
         /// makes a cross-machine divergence diagnosable.
         driver: String,
+        /// The digest of the program this child runs, lowercase hex, verbatim
+        /// from [`PROGRAM_DIGEST_VAR`]; empty when the spawn stated none. The
+        /// child reports it and never computes it, so what this carries is the
+        /// spawner's own claim coming back for comparison.
+        program: String,
     },
     /// A due checkpoint save: the continuation-state payload to persist.
     Save(Vec<u8>),
@@ -278,11 +292,13 @@ impl ToParent {
                 protocol,
                 device_name,
                 driver,
+                program,
             } => {
                 enc.u8(TAG_READY)
                     .u32(*protocol)
                     .str(device_name)
-                    .str(driver);
+                    .str(driver)
+                    .str(program);
             }
             ToParent::Save(payload) => {
                 enc.u8(TAG_SAVE).bytes(payload);
@@ -330,6 +346,7 @@ impl ToParent {
                 protocol: dec.u32()?,
                 device_name: dec.str()?.to_string(),
                 driver: dec.str()?.to_string(),
+                program: dec.str()?.to_string(),
             },
             TAG_SAVE => ToParent::Save(dec.bytes()?.to_vec()),
             TAG_DONE => {
@@ -509,12 +526,15 @@ mod tests {
                 protocol: PROTOCOL_VERSION,
                 device_name: "NVIDIA RTX PRO 2000 Blackwell Generation Laptop GPU".to_string(),
                 driver: "580.65.6".to_string(),
+                program: "a".repeat(64),
             },
-            // A domain that uses no device reports neither name nor driver.
+            // A domain that uses no device reports neither name nor driver, and
+            // a child spawned without a program digest answers none.
             ToParent::Ready {
                 protocol: PROTOCOL_VERSION,
                 device_name: String::new(),
                 driver: String::new(),
+                program: String::new(),
             },
             ToParent::Save(vec![9, 8, 7]),
             ToParent::Save(Vec::new()),
@@ -609,6 +629,54 @@ mod tests {
         assert!(
             document.contains(&sentence),
             "docs/protocol.md does not state {sentence:?}"
+        );
+    }
+
+    #[test]
+    fn the_published_document_states_the_ready_layout() {
+        // The document's `Ready` row is the field-by-field contract a program
+        // written against it encodes to, so the row and this encoder cannot
+        // move apart: the row is read here and matched against the fields the
+        // encoder writes, in wire order.
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/protocol.md");
+        let document = std::fs::read_to_string(path).unwrap_or_else(|e| {
+            panic!("the published protocol document at {path} is unreadable: {e}")
+        });
+        let row = "| 0 | `Ready` | `u32` protocol version, `str` device name, \
+                   `str` driver version, `str` program digest |";
+        assert!(
+            document.contains(row),
+            "docs/protocol.md does not state the Ready row {row:?}"
+        );
+    }
+
+    #[test]
+    fn a_ready_carries_the_program_digest_last() {
+        // The field is trailing, so a reader that stops after the driver reads
+        // every earlier field unchanged: the digest extends the frame rather
+        // than reshaping it.
+        let digest = "b".repeat(64);
+        let ready = ToParent::Ready {
+            protocol: PROTOCOL_VERSION,
+            device_name: "dev".to_string(),
+            driver: "1.0".to_string(),
+            program: digest.clone(),
+        };
+        let without = ToParent::Ready {
+            protocol: PROTOCOL_VERSION,
+            device_name: "dev".to_string(),
+            driver: "1.0".to_string(),
+            program: String::new(),
+        };
+        let encoded = ready.encode();
+        let prefix = &without.encode()[..without.encode().len() - 8];
+        assert!(
+            encoded.starts_with(prefix),
+            "the digest follows the driver rather than displacing a field"
+        );
+        assert!(
+            encoded.ends_with(digest.as_bytes()),
+            "the digest's bytes end the frame"
         );
     }
 

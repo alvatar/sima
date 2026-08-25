@@ -20,11 +20,22 @@ struct Worker {
 
 impl Worker {
     fn spawn() -> Worker {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_sima-worker"))
+        Worker::spawn_with(&[])
+    }
+
+    /// A worker spawned with `env` set on top of the inherited environment,
+    /// and with the program digest variable cleared first so what the child
+    /// answers is exactly what `env` states.
+    fn spawn_with(env: &[(&str, &str)]) -> Worker {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_sima-worker"));
+        command
+            .env_remove("SIMA_PROGRAM_DIGEST")
             .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .spawn()
-            .expect("spawn sima-worker");
+            .stdout(Stdio::piped());
+        for (name, value) in env {
+            command.env(name, value);
+        }
+        let mut child = command.spawn().expect("spawn sima-worker");
         let stdin = child.stdin.take().expect("piped stdin");
         let stdout = child.stdout.take().expect("piped stdout");
         Worker {
@@ -97,6 +108,8 @@ fn the_worker_serves_a_stub_task_and_exits_cleanly_on_eof() {
             // driver.
             device_name: String::new(),
             driver: String::new(),
+            // Spawned without a program digest, so the child answers none.
+            program: String::new(),
         }
     );
     worker.send(&assignment());
@@ -109,6 +122,22 @@ fn the_worker_serves_a_stub_task_and_exits_cleanly_on_eof() {
             assert_eq!(artifacts[0].bytes.len(), 32);
         }
         other => panic!("expected Done(Completed), got {other:?}"),
+    }
+    assert_eq!(worker.shutdown(), Some(0), "clean EOF exits 0");
+}
+
+#[test]
+fn the_worker_echoes_the_program_digest_its_environment_holds() {
+    // A program cannot hash itself — a script's executable is its interpreter,
+    // and a built entry point is not the payload that travelled — so the
+    // spawner states which program it sent and the child answers that value
+    // back verbatim, unread.
+    let digest = "c".repeat(64);
+    let mut worker = Worker::spawn_with(&[("SIMA_PROGRAM_DIGEST", digest.as_str())]);
+    worker.send(&hello(PROTOCOL_VERSION));
+    match worker.receive() {
+        ToParent::Ready { program, .. } => assert_eq!(program, digest),
+        other => panic!("expected Ready, got {other:?}"),
     }
     assert_eq!(worker.shutdown(), Some(0), "clean EOF exits 0");
 }

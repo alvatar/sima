@@ -25,7 +25,9 @@ use sima_model::{FormatId, Params, Spec, TaskIdentity};
 use sima_trace::{Event, Level};
 
 use crate::checkpoint_cadence::CheckpointCadence;
-use crate::protocol::{Assignment, Hello, PROTOCOL_VERSION, ToChild, ToParent};
+use crate::protocol::{
+    Assignment, Hello, PROGRAM_DIGEST_VAR, PROTOCOL_VERSION, ToChild, ToParent,
+};
 
 /// The most recent panic's message and backtrace, latched by the hook
 /// [`capture_panics`] installs, under the thread that panicked. The executor
@@ -133,6 +135,10 @@ pub fn serve<R: Read, W: Write>(mut reader: R, writer: W, resolve: &Resolver<'_>
             protocol: PROTOCOL_VERSION,
             device_name,
             driver,
+            // The spawn's own claim about which program this is, answered
+            // unread: the value is the environment's, not the format's, so the
+            // resolver never sees it.
+            program: std::env::var(PROGRAM_DIGEST_VAR).unwrap_or_default(),
         }
         .encode(),
     )?;
@@ -546,6 +552,11 @@ mod tests {
                 protocol: PROTOCOL_VERSION,
                 device_name: String::new(),
                 driver: String::new(),
+                // This process was not spawned with a program digest, so the
+                // serve answers none. The echo itself is proven over a real
+                // child in `sima-worker`'s smoke tests, where the variable can
+                // be set on the spawn rather than on this process.
+                program: String::new(),
             }]
         );
     }

@@ -593,6 +593,92 @@ fn read_frame(stream: &mut impl Read) -> Option<Vec<u8>> {
     Some(payload)
 }
 
+/// The length-prefixed strings of a payload, from `offset` onward.
+fn strings(payload: &[u8], mut offset: usize) -> Vec<String> {
+    let mut fields = Vec::new();
+    while offset < payload.len() {
+        let length = u64::from_le_bytes(
+            payload[offset..offset + 8]
+                .try_into()
+                .expect("a u64 length prefix"),
+        ) as usize;
+        offset += 8;
+        fields.push(
+            String::from_utf8(payload[offset..offset + length].to_vec()).expect("a UTF-8 field"),
+        );
+        offset += length;
+    }
+    fields
+}
+
+/// A worker-role `Hello` payload for the example format at protocol version 1,
+/// leaving the device to the program.
+fn worker_hello() -> Vec<u8> {
+    let mut hello = vec![0u8];
+    hello.extend(1u32.to_le_bytes());
+    hello.extend(0u64.to_le_bytes());
+    hello.extend((FORMAT.len() as u64).to_le_bytes());
+    hello.extend(FORMAT.as_bytes());
+    hello.extend(u64::MAX.to_le_bytes());
+    hello.extend(0u64.to_le_bytes());
+    hello.push(0);
+    hello
+}
+
+/// Drives one worker-role handshake against the example program spawned with
+/// `env` on top of the module path, and answers the `Ready` payload's strings.
+fn worker_ready(env: &[(&str, &str)]) -> Vec<String> {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let program = wrapper(dir.path(), &[]);
+    let mut command = std::process::Command::new(&program);
+    command
+        .env("PYTHONPATH", vended_sdk(dir.path()))
+        .env_remove("SIMA_PROGRAM_DIGEST")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null());
+    for (name, value) in env {
+        command.env(name, value);
+    }
+    let mut child = command.spawn().expect("spawn the program's worker role");
+    let mut stdin = child.stdin.take().expect("the piped stdin");
+    let mut stdout = child.stdout.take().expect("the piped stdout");
+    write_frame(&mut stdin, &worker_hello());
+    let ready = read_frame(&mut stdout).expect("the handshake answer");
+    assert_eq!(ready.first(), Some(&0), "the answer is Ready");
+    // Closing stdin is the shutdown signal; the session ends there.
+    drop(stdin);
+    child.wait().expect("reap the program");
+    // Past the tag byte and the protocol version: device name, driver, digest.
+    strings(&ready, 5)
+}
+
+#[test]
+fn the_python_worker_echoes_the_program_digest_its_environment_holds() {
+    // The SDK's half of the echo contract: the value the spawner stated, back
+    // verbatim, with the program never asked to hash anything. Both SDKs answer
+    // the same field the same way, so a program written in either language
+    // takes part in the same agreement.
+    let digest = "d".repeat(64);
+    let answered = worker_ready(&[("SIMA_PROGRAM_DIGEST", digest.as_str())]);
+    assert_eq!(
+        answered.last().map(String::as_str),
+        Some(digest.as_str()),
+        "the trailing Ready field is the digest the spawn stated"
+    );
+}
+
+#[test]
+fn a_python_worker_spawned_without_a_digest_answers_none() {
+    let answered = worker_ready(&[]);
+    assert_eq!(
+        answered.last().map(String::as_str),
+        Some(""),
+        "an unset variable answers an empty digest"
+    );
+    assert_eq!(answered.len(), 3, "device name, driver, and the digest");
+}
+
 #[test]
 fn a_protocol_violation_ends_the_python_session_rather_than_being_answered() {
     // The two failures a program can meet are different things, and the SDK

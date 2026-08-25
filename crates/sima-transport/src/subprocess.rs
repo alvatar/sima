@@ -207,6 +207,7 @@ pub(crate) fn ready_desc(peer: &str, answer: Option<Result<ToParent>>) -> Result
             protocol,
             device_name,
             driver,
+            ..
         })) if protocol == PROTOCOL_VERSION => Ok((device_name, driver)),
         // A Ready at another version is a version mismatch, not an unexpected
         // message: say which two versions disagree.
@@ -645,6 +646,7 @@ mod tests {
                 protocol,
                 device_name: "a device".to_string(),
                 driver: "a driver".to_string(),
+                program: String::new(),
             })),
         )
     }

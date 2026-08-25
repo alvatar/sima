@@ -13,6 +13,7 @@ the parent closes the pipe.
 from __future__ import annotations
 
 import json
+import os
 import sys
 import time
 import traceback
@@ -47,6 +48,12 @@ PROTOCOL_VERSION = 1
 #: The flag that asks a program for the domain-service role, followed by the
 #: format id it is asked about.
 SERVE_DOMAIN = "--serve-domain"
+
+#: The environment variable sima states the digest of the program it sent in.
+#: A program cannot hash itself, so the worker role answers this value back in
+#: ``Ready`` verbatim and sima compares it against what it sent; unset, the
+#: answer is empty.
+PROGRAM_DIGEST_VAR = "SIMA_PROGRAM_DIGEST"
 
 # Parent to domain-service message tags.
 _ASK_HELLO = 0
@@ -289,7 +296,14 @@ def _serve_worker(domain: Domain, reader: BinaryIO, writer: BinaryIO) -> None:
     _served(domain, format)
     executor = domain.executor(device)
     name, driver = domain.device_desc(device)
-    write_frame(writer, Enc().u8(_FROM_READY).u32(PROTOCOL_VERSION).str(name).str(driver).finish())
+    # The trailing field is sima's own claim about which program this is,
+    # answered unread: what the digest identifies is the payload that
+    # travelled, which this process has no way to hash.
+    digest = os.environ.get(PROGRAM_DIGEST_VAR, "")
+    write_frame(
+        writer,
+        Enc().u8(_FROM_READY).u32(PROTOCOL_VERSION).str(name).str(driver).str(digest).finish(),
+    )
 
     while True:
         payload = read_frame(reader)

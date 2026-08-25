@@ -164,7 +164,7 @@ other.
 
 | Tag | Program to parent | Payload after the tag |
 |---|---|---|
-| 0 | `Ready` | `u32` protocol version, `str` device name, `str` driver version |
+| 0 | `Ready` | `u32` protocol version, `str` device name, `str` driver version, `str` program digest |
 | 1 | `Save` | `bytes` continuation state; one-way, the parent persists it |
 | 2 | `Done` | the outcome, laid out below |
 | 3 | `Panicked` | `str` rendered panic |
@@ -190,6 +190,15 @@ The `Hello` fields:
 The `Ready` device name and driver version are the program's own account of
 where it computes, journaled verbatim by the parent. A program that opens no
 device answers both empty.
+
+The `Ready` **program digest** is the value of the environment variable
+`SIMA_PROGRAM_DIGEST`, answered verbatim and empty when the variable is unset.
+The direction is one way: sima sets the variable at spawn to state which
+program it sent, the program echoes it back, and sima compares the answer
+against what it sent. A program computes nothing here and reads nothing into
+the value — a script's executable is its interpreter, and a built entry point
+is not the payload that travelled, so the digest of the sources is knowable
+only to the side that shipped them.
 
 The `Assign` fields split in two. The spec, params, seed, environment id, and
 input state are **identity-bearing**: they determine the task key and every

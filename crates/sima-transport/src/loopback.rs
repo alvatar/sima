@@ -305,6 +305,7 @@ mod tests {
                 protocol: crate::protocol::PROTOCOL_VERSION - 1,
                 device_name: String::new(),
                 driver: String::new(),
+                program: String::new(),
             })),
         )
         .expect_err("a host at another version");
