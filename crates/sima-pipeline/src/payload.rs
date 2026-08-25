@@ -30,7 +30,7 @@
 //! The module sits in the pipeline because a payload is a config-driven
 //! concept; the store below it stays generic bytes.
 
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -38,11 +38,10 @@ use std::process::Command;
 use sima_core::{Codec, Dec, Enc, Error, Hash, MAX_PAYLOAD, Result};
 use sima_store::Store;
 
-/// The mode a materialized executable file is given, and the mode a single-file
-/// payload's entry point is installed under.
-const EXECUTABLE_MODE: u32 = 0o755;
-/// The mode every other materialized file is given.
-const REGULAR_MODE: u32 = 0o644;
+use crate::stamped_tree::{
+    EXECUTABLE_MODE, REGULAR_MODE, build_once, create_dir, executable, read_file, remove_dir,
+    write_file,
+};
 
 /// The directory every installed program hangs off, under the directory the
 /// config file itself sits in.
@@ -59,10 +58,6 @@ const ENTRY_POINT: &str = "program";
 const SCRIPT_FILE: &str = "install.sh";
 /// The last install's combined stdout and stderr.
 const LOG_FILE: &str = "install.log";
-/// The manifest digest the installed tree was built from, written last.
-const STAMP_FILE: &str = "installed.digest";
-/// Held while installing, so concurrent loaders build one tree between them.
-const LOCK_FILE: &str = ".lock";
 /// How much of the install log a failure carries inline. The script's own last
 /// words are what say why it failed; the whole log is at the path the error
 /// also names.
@@ -449,72 +444,27 @@ pub(crate) fn relative_entry_point(format: &str) -> String {
 /// Installs the payload `digest` names into `tree`, so the entry point is on
 /// this machine by the time the config's `binary` is spawned.
 ///
-/// ```text
-///        install of digest M
-///                 │
-///                 ▼
-///     installed.digest == M and ──yes──► nothing to do
-///     installed/program exists?
-///                 │ no
-///                 ▼
-///        take the tree's lock  ◄── concurrent loaders wait here; the kernel
-///                 │                frees a crashed installer's lock
-///                 ▼
-///        re-check the stamp ──hit──► release, nothing to do
-///                 │ miss
-///                 ▼
-///        build payload/ and installed/ fresh, run the install, write
-///        installed.digest last
-/// ```
-///
-/// The stamp is what makes a reattach, a status query, and a follow attach cost
-/// one file read, and what makes a changed payload reinstall exactly once.
+/// The tree is stamped with the digest it was built from, so a load whose stamp
+/// already names it reads one file — what makes a reattach, a status query, and
+/// a follow attach cost nothing, and what makes a changed payload reinstall
+/// exactly once. [`crate::stamped_tree`] carries that choreography; what is
+/// this module's is what a program tree holds and when it is complete, which is
+/// when its entry point is executable.
 pub(crate) fn install(store: &Store, digest: &Hash, tree: &ProgramTree) -> Result<()> {
-    // The cost the stamp exists to save, and nothing more: [`build`] checks it
-    // again under the lock, which is where the decision is actually made. What
-    // this buys is that a loader with nothing to do — a status query, a follow
-    // attach, a reattaching migration — reads one file instead of queueing
-    // behind an install running for someone else.
-    if installed(tree, digest)? {
-        return Ok(());
-    }
-    create_dir(&tree.root)?;
-    // Blocking, so a loader arriving mid-install waits for the tree rather
-    // than reading a half-built one. The lock lives on the open file
-    // description, so a crashed installer's is released by the kernel and no
-    // staleness protocol exists — the rule the store's run lock follows.
-    let lock = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(tree.root.join(LOCK_FILE))
-        .map_err(|source| Error::Io {
-            path: tree.root.join(LOCK_FILE),
-            source,
-        })?;
-    lock.lock().map_err(|source| Error::Io {
-        path: tree.root.join(LOCK_FILE),
-        source,
-    })?;
-    let outcome = build(store, digest, tree);
-    // Named rather than left to scope end: the release is what the next loader
-    // is waiting on, and it happens whether the build succeeded or not.
-    let _ = lock.unlock();
-    outcome
+    build_once(
+        &tree.root,
+        digest,
+        &|| executable(&tree.entry_point()),
+        &|| build(store, digest, tree),
+    )
 }
 
-/// Builds the tree fresh under the lock: the stamp is re-checked, the previous
-/// trees are removed, the payload is materialized, the install runs, and the
-/// stamp is written last.
+/// Fills the tree: the previous trees are removed, the payload is materialized,
+/// and the install runs, leaving the entry point the config's `binary` names.
+///
+/// Called with the tree's lock held and its stamp already removed, so what a
+/// failure here leaves behind is a tree nothing claims.
 fn build(store: &Store, digest: &Hash, tree: &ProgramTree) -> Result<()> {
-    // Another loader may have built it while this one waited for the lock.
-    if installed(tree, digest)? {
-        return Ok(());
-    }
-    // The stamp goes first, so a build that dies part-way leaves a tree
-    // nothing claims and the next loader rebuilds it.
-    remove_file(&tree.root.join(STAMP_FILE))?;
     remove_dir(&tree.payload())?;
     remove_dir(&tree.installed())?;
 
@@ -543,44 +493,7 @@ fn build(store: &Store, digest: &Hash, tree: &ProgramTree) -> Result<()> {
             tree.entry_point().display()
         )));
     }
-    // Last, and atomically, so a stamp is only ever read beside the tree it
-    // names: a reader sees the whole file or none.
-    let stamp = tree.root.join(STAMP_FILE);
-    let pending = tree.root.join(format!("{STAMP_FILE}.pending"));
-    write_file(&pending, digest.to_string().as_bytes(), REGULAR_MODE)?;
-    std::fs::rename(&pending, &stamp).map_err(|source| Error::Io {
-        path: stamp,
-        source,
-    })
-}
-
-/// Whether `tree` already holds the program `digest` names: the stamp says so
-/// and the entry point is there.
-fn installed(tree: &ProgramTree, digest: &Hash) -> Result<bool> {
-    let stamp = tree.root.join(STAMP_FILE);
-    let recorded = match std::fs::read_to_string(&stamp) {
-        Ok(recorded) => recorded,
-        Err(source) if source.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-        Err(source) => {
-            return Err(Error::Io {
-                path: stamp,
-                source,
-            });
-        }
-    };
-    Ok(recorded.trim() == digest.to_string() && executable(&tree.entry_point())?)
-}
-
-/// Whether `path` is a file this machine can run.
-fn executable(path: &Path) -> Result<bool> {
-    match std::fs::metadata(path) {
-        Ok(metadata) => Ok(metadata.is_file() && metadata.permissions().mode() & 0o111 != 0),
-        Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(false),
-        Err(source) => Err(Error::Io {
-            path: path.to_path_buf(),
-            source,
-        }),
-    }
+    Ok(())
 }
 
 /// Writes the manifest's script out and runs it over the materialized payload.
@@ -650,31 +563,6 @@ fn absolute(path: &Path) -> Result<PathBuf> {
     })
 }
 
-/// Removes a directory and everything under it; one that is not there is
-/// already removed.
-fn remove_dir(path: &Path) -> Result<()> {
-    match std::fs::remove_dir_all(path) {
-        Ok(()) => Ok(()),
-        Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(source) => Err(Error::Io {
-            path: path.to_path_buf(),
-            source,
-        }),
-    }
-}
-
-/// Removes a file; one that is not there is already removed.
-fn remove_file(path: &Path) -> Result<()> {
-    match std::fs::remove_file(path) {
-        Ok(()) => Ok(()),
-        Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(source) => Err(Error::Io {
-            path: path.to_path_buf(),
-            source,
-        }),
-    }
-}
-
 /// The mode a materialized file is given: what it carried where it was
 /// ingested, reduced to the one bit that matters.
 fn mode_of(executable: bool) -> u32 {
@@ -696,32 +584,6 @@ fn file_name(path: &Path) -> Result<&str> {
                 path.display()
             ))
         })
-}
-
-/// Reads a file, naming it on failure.
-fn read_file(path: &Path) -> Result<Vec<u8>> {
-    std::fs::read(path).map_err(|source| Error::Io {
-        path: path.to_path_buf(),
-        source,
-    })
-}
-
-/// Writes `bytes` at `path` under `mode`, naming the path on failure.
-fn write_file(path: &Path, bytes: &[u8], mode: u32) -> Result<()> {
-    let io = |source| Error::Io {
-        path: path.to_path_buf(),
-        source,
-    };
-    std::fs::write(path, bytes).map_err(io)?;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).map_err(io)
-}
-
-/// Creates a directory and its parents, naming it on failure.
-fn create_dir(path: &Path) -> Result<()> {
-    std::fs::create_dir_all(path).map_err(|source| Error::Io {
-        path: path.to_path_buf(),
-        source,
-    })
 }
 
 #[cfg(test)]

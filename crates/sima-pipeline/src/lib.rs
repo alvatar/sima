@@ -38,6 +38,7 @@ mod rental;
 mod report;
 mod run_observer;
 mod spend;
+mod stamped_tree;
 mod stats;
 mod status;
 mod task_history;
