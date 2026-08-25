@@ -164,7 +164,7 @@ other.
 
 | Tag | Program to parent | Payload after the tag |
 |---|---|---|
-| 0 | `Ready` | `u32` protocol version, `str` device name, `str` driver version |
+| 0 | `Ready` | `u32` protocol version, `str` device name, `str` driver version, `str` program digest |
 | 1 | `Save` | `bytes` continuation state; one-way, the parent persists it |
 | 2 | `Done` | the outcome, laid out below |
 | 3 | `Panicked` | `str` rendered panic |
@@ -190,6 +190,15 @@ The `Hello` fields:
 The `Ready` device name and driver version are the program's own account of
 where it computes, journaled verbatim by the parent. A program that opens no
 device answers both empty.
+
+The `Ready` **program digest** is the value of the environment variable
+`SIMA_PROGRAM_DIGEST`, answered verbatim and empty when the variable is unset.
+The direction is one way: sima sets the variable at spawn to state which
+program it sent, the program echoes it back, and sima compares the answer
+against what it sent. A program computes nothing here and reads nothing into
+the value — a script's executable is its interpreter, and a built entry point
+is not the payload that travelled, so the digest of the sources is knowable
+only to the side that shipped them.
 
 The `Assign` fields split in two. The spec, params, seed, environment id, and
 input state are **identity-bearing**: they determine the task key and every
@@ -266,7 +275,7 @@ journal's own event kinds — and a program is expected to emit one of them:
 Events are observational and one-way. A frame that does not parse is journaled
 as a warning and dropped; it never decides the conversation's fate.
 
-## The handshake and the version rule
+## The handshake and what it refuses
 
 Each side states its version in the opening frame, and the program answers
 `Ready` with its own. A mismatch is refused immediately on whichever side sees
@@ -278,6 +287,13 @@ parent's spawn-failure signal. The parent refuses on reading a `Ready` that
 carries another number.
 
 Both roles carry one version, because one binary answers both.
+
+The parent refuses a `Ready` whose program digest is not the one it sent, in
+either direction: a digest other than the one stated, no digest where one was
+stated, and a digest where none was. Each says the machine runs a program other
+than the one this run put there, and the refusal names both values. A program's
+whole part is the echo — answering the variable it was given makes it right by
+construction, and answering a computed value of its own makes it wrong.
 
 ## Obligations
 

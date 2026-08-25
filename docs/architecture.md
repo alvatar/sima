@@ -1196,6 +1196,36 @@ Two limits are documented rather than mechanized:
   interpreter, the binaries it execs, and the assets a program loads at runtime
   sit outside it; they belong in the components the program declares.
 
+**The agreement on the wire.** The resume gate binds results to a build within
+one machine. What binds machines to each other is the payload digest — the
+manifest of the sources that travelled — agreed at every worker handshake:
+
+- **What crosses.** `Ready` carries a trailing program digest, lowercase hex,
+  empty when the spawn stated none.
+- **Who states it.** The spawn policy sets `SIMA_PROGRAM_DIGEST` to the digest
+  the entry resolved, so every process spawned from the program reads it. The
+  load has just installed the tree whose stamp is that digest, so the value is
+  the disk's state.
+- **Who answers it.** The program echoes the variable verbatim and computes
+  nothing: a script's executable is its interpreter and a built entry point is
+  not the payload that travelled, so only the side that shipped the sources
+  knows their digest.
+- **Who compares it.** The parent's half of the handshake, one site shared by
+  every transport, beside the protocol-version check. The rule is symmetric —
+  a worker answering another digest, a worker answering none where a program
+  was sent, and a worker naming a program where none was are all refused,
+  naming both sides — because each means the machine runs something other than
+  what this run put there. A refusal fails the spawn, so no work follows.
+- **What is recorded.** `WorkerBound` carries the answered digest, absent for a
+  format this build answers, so the journal states which program each machine
+  ran beside where it ran.
+
+The two digests compose and neither substitutes for the other. The payload
+digest is identical on every machine by construction, which is what makes it
+the cross-machine unit; the binary digest is the entry point's own bytes, which
+for a directory payload an install legitimately builds differently per machine,
+and it binds results within one machine.
+
 ### The vended SDK
 
 A program is self-contained only down to the wire: the framing, the codecs, the
@@ -1328,11 +1358,11 @@ describes it, and the journaled digest and the resume gate are what an operator
 reads when the two disagree.
 
 A config pin — a `pin` key on the entry, refusing any other digest — is
-deliberately absent. The payload digest is what a second machine receives, and
-the journal is what records the build that drove each session, so a pin would
-restate one of them. The key arrives with fleet routing of registered formats,
-where a worker's program is installed by something other than the run that
-needs it.
+absent, and the wire agreement is why. sima ships the sources, so the digest a
+pin would assert is already known from the payload, and it is asserted where it
+can be enforced: every worker answers the digest of the program it runs, and a
+disagreement fails the spawn. A key restating that value would let a config
+claim one thing while the machines answer another.
 
 ## `sima-domains` (L5)
 

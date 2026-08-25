@@ -8,7 +8,8 @@
 //! plus the variables the program's config entry names, and an empty working
 //! directory of its own. On top of that, a path list may be prepended to, which
 //! is how a directory sima put on the machine is read ahead of anything else
-//! under that name.
+//! under that name; and a variable may be assigned outright, which is how sima
+//! states a fact to the child rather than forwarding one.
 //!
 //! Every sima-owned process — a builtin worker, a container runtime client,
 //! an ssh client — keeps the orchestrator's environment and working
@@ -54,6 +55,11 @@ pub enum SpawnPolicy {
         /// joined with `:`. What a directory holds is the caller's business —
         /// this side knows only that a path list is a path list.
         prepend: Vec<(String, OsString)>,
+        /// Variables sima states to the child, applied last, so each name's
+        /// value is exactly this and neither what `passthrough` forwarded nor
+        /// what `prepend` led. What a value means is the caller's business —
+        /// this side guarantees only that the child sees these bytes.
+        assign: Vec<(String, OsString)>,
     },
 }
 
@@ -78,6 +84,7 @@ impl SpawnPolicy {
         let SpawnPolicy::Explicit {
             passthrough,
             prepend,
+            assign,
         } = self
         else {
             return Ok(None);
@@ -112,6 +119,11 @@ impl SpawnPolicy {
                 value.push(":");
                 value.push(led);
             }
+            command.env(name, value);
+        }
+        // Last, so what sima states is what the child reads under that name,
+        // whatever the loop forwarded or the prepend led.
+        for (name, value) in assign {
             command.env(name, value);
         }
         let scratch = TempDir::with_prefix("sima-scratch-").map_err(|e| {
@@ -264,6 +276,7 @@ mod tests {
         SpawnPolicy::Explicit {
             passthrough: passthrough.iter().map(|name| name.to_string()).collect(),
             prepend: Vec::new(),
+            assign: Vec::new(),
         }
     }
 
@@ -276,6 +289,7 @@ mod tests {
                 .iter()
                 .map(|(name, value)| ((*name).to_string(), OsString::from(value)))
                 .collect(),
+            assign: Vec::new(),
         }
     }
 
@@ -502,6 +516,104 @@ mod tests {
         let mut expected = b"/vended:".to_vec();
         expected.extend(opaque.as_bytes());
         assert_eq!(value.as_bytes(), expected);
+    }
+
+    /// An explicit-surface policy declaring `passthrough`, prepending
+    /// `prepend`, and assigning `assign`.
+    fn assigning(
+        passthrough: &[&str],
+        prepend: &[(&str, &str)],
+        assign: &[(&str, &str)],
+    ) -> SpawnPolicy {
+        let SpawnPolicy::Explicit {
+            passthrough,
+            prepend,
+            ..
+        } = prepending(passthrough, prepend)
+        else {
+            unreachable!("prepending builds an explicit surface");
+        };
+        SpawnPolicy::Explicit {
+            passthrough,
+            prepend,
+            assign: assign
+                .iter()
+                .map(|(name, value)| ((*name).to_string(), OsString::from(value)))
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn an_assigned_variable_reaches_a_child_whose_parent_never_held_it() {
+        // What sima itself states to the child, rather than what it forwards:
+        // the value is the policy's, so nothing in the parent's environment
+        // has to hold the name for the child to see it.
+        let env = applied_env(&assigning(&[], &[], &[("SIMA_PROGRAM_DIGEST", "abc")]));
+        assert_eq!(
+            env.get("SIMA_PROGRAM_DIGEST"),
+            Some(&Some("abc".to_string())),
+            "{env:?}"
+        );
+    }
+
+    #[test]
+    fn an_assigned_variable_overrides_what_the_passthrough_forwarded() {
+        // A name the entry also declares does not make the child see two
+        // values: what sima states wins, so the child's view is exactly what
+        // this side put there.
+        let env = applied_env(&assigning(
+            &["ACME_ASSETS"],
+            &[],
+            &[("ACME_ASSETS", "/stated")],
+        ));
+        assert_eq!(
+            env.get("ACME_ASSETS"),
+            Some(&Some("/stated".to_string())),
+            "{env:?}"
+        );
+    }
+
+    #[test]
+    fn an_assigned_variable_overrides_a_prepended_path_list() {
+        // The last word on a name, prepending included: an assignment states a
+        // whole value rather than leading one.
+        let env = applied_over(
+            &assigning(
+                &["PYTHONPATH"],
+                &[("PYTHONPATH", "/vended")],
+                &[("PYTHONPATH", "/stated")],
+            ),
+            parent_with_python_path(),
+        );
+        assert_eq!(
+            env.get("PYTHONPATH"),
+            Some(&Some("/stated".to_string())),
+            "{env:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_assigned_value_reaches_the_child_as_the_bytes_it_is() {
+        // An assigned value is bytes like every other: what it means is the
+        // caller's business, and this side neither reads nor rewrites it.
+        use std::os::unix::ffi::{OsStrExt, OsStringExt};
+
+        let opaque = OsString::from_vec(vec![b'/', 0xff]);
+        let mut command = Command::new("/bin/true");
+        SpawnPolicy::Explicit {
+            passthrough: Vec::new(),
+            prepend: Vec::new(),
+            assign: vec![("ACME_TOKEN".to_string(), opaque.clone())],
+        }
+        .apply(&mut command, Vec::new)
+        .expect("apply the policy");
+        let value = command
+            .get_envs()
+            .find(|(name, _)| *name == OsStr::new("ACME_TOKEN"))
+            .and_then(|(_, value)| value)
+            .expect("the assigned name is set");
+        assert_eq!(value.as_bytes(), opaque.as_bytes());
     }
 
     #[test]

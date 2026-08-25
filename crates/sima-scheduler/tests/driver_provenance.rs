@@ -45,6 +45,7 @@ fn seed_bound(
             device: device.to_string(),
             driver: driver.to_string(),
             host: host.to_string(),
+            program: None,
         })
         .to_line()?,
     )

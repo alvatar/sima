@@ -116,6 +116,7 @@ mod tests {
             payload: None,
             env: &[],
             sdk: None,
+            payload_digest: None,
         }
     }
 

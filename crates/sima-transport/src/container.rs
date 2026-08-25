@@ -146,6 +146,10 @@ impl WorkerLink for ContainerLink {
         self.inner.driver()
     }
 
+    fn program(&self) -> &str {
+        self.inner.program()
+    }
+
     fn assign(&mut self, assignment: &Assignment) -> Result<()> {
         self.inner.assign(assignment)
     }

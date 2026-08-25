@@ -146,20 +146,23 @@ pub(crate) fn spawn_worker(
         stderr_reader: Some(stderr_reader),
         device_name: String::new(),
         driver: String::new(),
+        program: String::new(),
     };
     // The handshake: Hello out, Ready back. Any other answer — silence ended
-    // by death, silence outlasting the answer deadline, a wrong version, an
-    // undecodable echo — is a spawn failure, and the misbehaving child is
-    // killed and reaped before the error returns.
+    // by death, silence outlasting the answer deadline, a wrong version, a
+    // program other than the one the run sent, an undecodable echo — is a
+    // spawn failure, and the misbehaving child is killed and reaped before the
+    // error returns.
     let hello = Hello {
         worker,
         device: device.cloned(),
         ..settings.hello.clone()
     };
-    match handshake(&mut link, &hello, settings.answer_timeout, program) {
-        Ok((device_name, driver)) => {
-            link.device_name = device_name;
-            link.driver = driver;
+    match handshake(&mut link, &hello, settings, program) {
+        Ok(answer) => {
+            link.device_name = answer.device_name;
+            link.driver = answer.driver;
+            link.program = answer.program;
         }
         Err(e) => {
             link.kill();
@@ -170,44 +173,71 @@ pub(crate) fn spawn_worker(
 }
 
 /// Performs the parent's half of the handshake over a fresh link, returning
-/// the device name and driver version the worker reported.
+/// what the worker reported.
 ///
-/// The wait is startup plus one answer, so `answer_timeout` bounds it: a
-/// child wedged before `Ready` — a broken driver hanging device
+/// The wait is startup plus one answer, so the settings' answer timeout bounds
+/// it: a child wedged before `Ready` — a broken driver hanging device
 /// initialization, a wrapper that never execs — is a spawn failure naming the
 /// program rather than a worker thread stopped forever.
 fn handshake(
     link: &mut SubprocessLink,
     hello: &Hello,
-    answer_timeout: Duration,
+    settings: &SpawnSettings,
     program: &Path,
-) -> Result<(String, String)> {
+) -> Result<Answer> {
+    let expected = settings.program_digest.as_deref();
+    let answer_timeout = settings.answer_timeout;
     link.write(&ToChild::Hello(hello.clone()))?;
     match receive_within(&link.events, answer_timeout) {
-        Ok(answer) => ready_desc("worker", Some(answer)),
+        Ok(answer) => ready_desc("worker", Some(answer), expected),
         Err(RecvTimeoutError::Timeout) => Err(Error::Transport(format!(
             "the worker {} exceeded the {}ms answer deadline awaiting Ready",
             program.display(),
             answer_timeout.as_millis()
         ))),
-        Err(RecvTimeoutError::Disconnected) => ready_desc("worker", None),
+        Err(RecvTimeoutError::Disconnected) => ready_desc("worker", None, expected),
     }
 }
 
-/// Classifies a peer's answer to `Hello`: the device name and driver version
-/// it reported, or why the handshake failed. `answer` is `None` when the event
-/// stream ended first.
+/// What a peer answered at the handshake: where it computes, and which program
+/// it runs.
+#[derive(Debug)]
+pub(crate) struct Answer {
+    /// The device the peer opened, empty for a domain that uses no device.
+    pub(crate) device_name: String,
+    /// The driver version of that device, empty alongside an empty name.
+    pub(crate) driver: String,
+    /// The digest of the program the peer runs, empty when none travelled to
+    /// it. Agreed with the run's own before this value is handed back.
+    pub(crate) program: String,
+}
+
+/// Classifies a peer's answer to `Hello`: what it reported, or why the
+/// handshake failed. `answer` is `None` when the event stream ended first, and
+/// `expected` is the program digest the run sent to this peer's machine.
 ///
 /// The parent's half of the handshake, shared by every transport and pure over
 /// the answer, so each refusal is verifiable without a peer to produce it.
 /// `peer` names the far side in the diagnostics.
-pub(crate) fn ready_desc(peer: &str, answer: Option<Result<ToParent>>) -> Result<(String, String)> {
+pub(crate) fn ready_desc(
+    peer: &str,
+    answer: Option<Result<ToParent>>,
+    expected: Option<&str>,
+) -> Result<Answer> {
     match answer {
         Some(Ok(ToParent::Ready {
             protocol,
             device_name,
             driver,
-        })) if protocol == PROTOCOL_VERSION => Ok((device_name, driver)),
+            program,
+        })) if protocol == PROTOCOL_VERSION => {
+            agreed(peer, expected, &program)?;
+            Ok(Answer {
+                device_name,
+                driver,
+                program,
+            })
+        }
         // A Ready at another version is a version mismatch, not an unexpected
         // message: say which two versions disagree.
         Some(Ok(ToParent::Ready { protocol, .. })) => Err(Error::Transport(format!(
@@ -220,6 +250,38 @@ pub(crate) fn ready_desc(peer: &str, answer: Option<Result<ToParent>>) -> Result
         Some(Err(e)) => Err(e),
         None => Err(Error::Transport(format!(
             "the {peer} exited before completing the handshake"
+        ))),
+    }
+}
+
+/// Agrees the program digest the run sent with the one the peer answered, in
+/// both directions:
+///
+/// ```text
+/// expected    answered      outcome
+/// ────────    ────────      ───────
+/// Some(M)     M             proceed
+/// Some(M)     S ≠ M         refuse, naming both
+/// Some(M)     empty         refuse: the program never reached the machine
+/// None        non-empty     refuse: a program answered where none was sent
+/// None        empty         proceed
+/// ```
+///
+/// The rule is symmetric because either direction means the same thing: the
+/// peer is running something other than what this run put there.
+fn agreed(peer: &str, expected: Option<&str>, answered: &str) -> Result<()> {
+    match (expected, answered) {
+        (Some(sent), answered) if sent == answered => Ok(()),
+        (Some(sent), "") => Err(Error::Transport(format!(
+            "{peer} program digest mismatch: the run sent {sent}, {peer} answered none — \
+             the machine never received the program"
+        ))),
+        (Some(sent), answered) => Err(Error::Transport(format!(
+            "{peer} program digest mismatch: the run sent {sent}, {peer} answered {answered}"
+        ))),
+        (None, "") => Ok(()),
+        (None, answered) => Err(Error::Transport(format!(
+            "{peer} program digest mismatch: the run sent none, {peer} answered {answered}"
         ))),
     }
 }
@@ -244,6 +306,9 @@ struct SubprocessLink {
     device_name: String,
     /// The driver version the child reported, set once the handshake answers.
     driver: String,
+    /// The program digest the child answered, set once the handshake answers
+    /// and agreed; empty when no program travelled to this machine.
+    program: String,
 }
 
 impl SubprocessLink {
@@ -269,6 +334,10 @@ impl WorkerLink for SubprocessLink {
 
     fn driver(&self) -> &str {
         &self.driver
+    }
+
+    fn program(&self) -> &str {
+        &self.program
     }
 
     fn assign(&mut self, assignment: &Assignment) -> Result<()> {
@@ -636,26 +705,112 @@ mod tests {
         Emitter::from(channel().0)
     }
 
-    /// The device name and driver a `Ready` at `protocol` resolves to, or the
-    /// refusal.
-    fn answer_ready(protocol: u32) -> Result<(String, String)> {
+    /// What a `Ready` at `protocol` resolves to, or the refusal. The run
+    /// expects no program digest and the answer carries none, the shape of
+    /// every format this build answers in process.
+    fn answer_ready(protocol: u32) -> Result<Answer> {
         ready_desc(
             "worker",
             Some(Ok(ToParent::Ready {
                 protocol,
                 device_name: "a device".to_string(),
                 driver: "a driver".to_string(),
+                program: String::new(),
             })),
+            None,
         )
     }
 
     #[test]
     fn a_ready_at_this_version_carries_the_device_through() -> Result<()> {
-        assert_eq!(
-            answer_ready(PROTOCOL_VERSION)?,
-            ("a device".to_string(), "a driver".to_string())
-        );
+        let answer = answer_ready(PROTOCOL_VERSION)?;
+        assert_eq!(answer.device_name, "a device");
+        assert_eq!(answer.driver, "a driver");
         Ok(())
+    }
+
+    /// Two digests that stand for two programs, distinct in every character
+    /// so a message naming one cannot be read as naming the other.
+    const SENT: &str = "1111111111111111111111111111111111111111111111111111111111111111";
+    const ANSWERED: &str = "2222222222222222222222222222222222222222222222222222222222222222";
+
+    /// The agreement between the digest `expected` of the run and the digest
+    /// `answered` by the worker, over an otherwise ordinary `Ready`.
+    fn agreement(expected: Option<&str>, answered: &str) -> Result<Answer> {
+        ready_desc(
+            "worker",
+            Some(Ok(ToParent::Ready {
+                protocol: PROTOCOL_VERSION,
+                device_name: "a device".to_string(),
+                driver: "a driver".to_string(),
+                program: answered.to_string(),
+            })),
+            expected,
+        )
+    }
+
+    /// The refusal `agreement` produced, as its message.
+    fn refusal(expected: Option<&str>, answered: &str) -> String {
+        let error = agreement(expected, answered).expect_err("a digest disagreement");
+        let Error::Transport(message) = error else {
+            panic!("expected a transport error");
+        };
+        message
+    }
+
+    #[test]
+    fn the_digest_the_run_sent_answered_back_proceeds() {
+        let answer = agreement(Some(SENT), SENT).expect("the agreement holds");
+        assert_eq!(
+            answer.program, SENT,
+            "the answered digest is carried through for the journal"
+        );
+    }
+
+    #[test]
+    fn another_digest_than_the_run_sent_is_refused_naming_both() {
+        // The drifted machine: it holds a program, and it is not the one this
+        // run sent. Naming both sides is what makes the difference actionable.
+        let message = refusal(Some(SENT), ANSWERED);
+        assert!(message.contains("program digest mismatch"), "{message}");
+        assert!(message.contains(SENT), "names what the run sent: {message}");
+        assert!(
+            message.contains(ANSWERED),
+            "names what the worker answered: {message}"
+        );
+    }
+
+    #[test]
+    fn no_digest_where_the_run_sent_one_is_refused_as_a_program_that_never_arrived() {
+        // A worker answering none under a run that sent a program is not a
+        // drifted install: nothing was installed there at all.
+        let message = refusal(Some(SENT), "");
+        assert!(message.contains("program digest mismatch"), "{message}");
+        assert!(message.contains(SENT), "names what the run sent: {message}");
+        assert!(
+            message.contains("never received the program"),
+            "states which way the disagreement runs: {message}"
+        );
+    }
+
+    #[test]
+    fn a_digest_where_the_run_sent_none_is_refused() {
+        // The symmetric direction: a run answering for its format in process
+        // sent no program, so a worker that names one is not the worker this
+        // run spawned.
+        let message = refusal(None, ANSWERED);
+        assert!(message.contains("program digest mismatch"), "{message}");
+        assert!(message.contains("sent none"), "{message}");
+        assert!(
+            message.contains(ANSWERED),
+            "names what the worker answered: {message}"
+        );
+    }
+
+    #[test]
+    fn neither_side_naming_a_program_proceeds() {
+        let answer = agreement(None, "").expect("nothing to disagree about");
+        assert_eq!(answer.program, "", "no digest reaches the journal");
     }
 
     #[test]
@@ -679,7 +834,7 @@ mod tests {
 
     #[test]
     fn an_answer_that_is_not_ready_is_refused() {
-        let error = ready_desc("worker", Some(Ok(ToParent::Save(vec![1]))))
+        let error = ready_desc("worker", Some(Ok(ToParent::Save(vec![1]))), None)
             .expect_err("the handshake takes Ready alone");
         assert!(matches!(error, Error::Transport(_)));
     }
@@ -687,7 +842,7 @@ mod tests {
     #[test]
     fn a_stream_that_ends_before_the_answer_is_refused() {
         // The child died during its own startup: no answer is coming.
-        let error = ready_desc("worker", None).expect_err("nothing answered");
+        let error = ready_desc("worker", None, None).expect_err("nothing answered");
         let Error::Transport(message) = error else {
             panic!("expected a transport error");
         };
@@ -699,6 +854,7 @@ mod tests {
         let error = ready_desc(
             "worker",
             Some(Err(Error::Encoding("unknown tag 9".to_string()))),
+            None,
         )
         .expect_err("the frame never decoded");
         assert!(matches!(error, Error::Encoding(_)), "{error:?}");
@@ -942,6 +1098,7 @@ mod tests {
             settings(SpawnPolicy::Explicit {
                 passthrough: Vec::new(),
                 prepend: Vec::new(),
+                assign: Vec::new(),
             }),
         );
         assert!(

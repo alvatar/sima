@@ -1014,14 +1014,33 @@ without publishing anywhere and without rebuilding an image.
         program, and the acceptance is the operator's.
       - `payload` and `install` are operational — a run's id is unchanged by
         adding or removing them.
-- [ ] M9.2 Build agreement across machines: the payload digest is what a run
+- [x] M9.2 Build agreement across machines: the payload digest is what a run
       believes answered for the format, and a remote copy that drifted from it
-      breaks the one promise the store makes. A worker's handshake carries the
-      digest of the program that answered, the orchestrator compares it against
-      the payload it sent, and a mismatch refuses the machine naming both
-      digests. This supersedes the `pin` key M7.5 left open: sima sent the
-      bytes, so what a config would assert is already known, and the check moves
-      from a claim in a file to an agreement on the wire.
+      breaks the one promise the store makes. The belief is now on the wire.
+      What was settled:
+      - **The unit of agreement is the payload digest** — the manifest of the
+        sources that travelled, identical on every machine by construction. The
+        binary digest stays the per-machine binding authority; a directory
+        payload's install legitimately builds differently per machine, so it
+        can never be the cross-machine unit.
+      - **The child echoes and never computes.** The spawn states
+        `SIMA_PROGRAM_DIGEST`, the program answers it back verbatim in `Ready`,
+        and both SDKs do so alike. A program cannot hash itself — a script's
+        executable is its interpreter, a built entry point is not the payload —
+        so the value is knowable only to the side that shipped the sources.
+      - **The presence rule is symmetric**, enforced in one place beside the
+        version check: another digest, none where a program was sent, and one
+        where none was are all refused naming both sides, each meaning the
+        machine runs something other than what the run put there.
+      - **`PROTOCOL_VERSION` stays 1** while `Ready` gains the trailing field:
+        old and new frames never meet, so the published document carries the
+        new shape under the same number.
+      - **`WorkerBound` records the answered digest**, absent for a format this
+        build answers, so the journal states which program each machine ran
+        beside where it ran and journals written before the field still parse.
+      - This supersedes the `pin` key M7.5 left open: sima sent the bytes, so
+        what a config would assert is already known, and the check moved from a
+        claim in a file to an agreement on the wire.
 - [ ] M9.3 Fleet routing of registered formats: a registered format's tasks
       reach fleet machines. Placement admits a machine once its payload landed
       and its digest agreed, so a machine that answers is one that received the

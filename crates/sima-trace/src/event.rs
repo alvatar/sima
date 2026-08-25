@@ -128,12 +128,17 @@ pub enum Event {
     /// respawn. The device name and driver version are the child's own,
     /// verbatim; a domain that uses no device reports both empty. The host is
     /// the parent's account of where the worker's pool runs — empty for a local
-    /// slot, the configured destination for a remote one.
+    /// slot, the configured destination for a remote one. The program is the
+    /// digest the child answered for the program it runs, verbatim like the
+    /// device and driver beside it; absent for a format this build answers, to
+    /// which no program travelled.
     WorkerBound {
         worker: u64,
         device: String,
         driver: String,
         host: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        program: Option<String>,
     },
     /// The program that served a config-routed format for one session: the
     /// format it answered for, the file the config named, and the blake3
@@ -337,6 +342,57 @@ mod tests {
         assert!(json.contains("\"event\":\"program_bound\""), "{json}");
         let back: Event = serde_json::from_str(&json).expect("parse program bound");
         assert_eq!(back, event);
+    }
+
+    #[test]
+    fn a_worker_bound_event_carries_the_program_the_worker_answered() {
+        let event = Event::WorkerBound {
+            worker: 3,
+            device: "NVIDIA RTX PRO 2000".to_string(),
+            driver: "580.65.6".to_string(),
+            host: "gpubox".to_string(),
+            program: Some("cd".repeat(32)),
+        };
+        let json = serde_json::to_string(&event).expect("serialize worker bound");
+        assert!(json.contains("\"program\":"), "{json}");
+        let back: Event = serde_json::from_str(&json).expect("parse worker bound");
+        assert_eq!(back, event);
+    }
+
+    #[test]
+    fn a_worker_bound_event_naming_no_program_writes_no_key() {
+        // The shape every run of a format this build answers writes, and the
+        // shape a journal written before the field existed already holds: the
+        // key is absent both ways, so one reader serves both.
+        let event = Event::WorkerBound {
+            worker: 3,
+            device: String::new(),
+            driver: String::new(),
+            host: String::new(),
+            program: None,
+        };
+        let json = serde_json::to_string(&event).expect("serialize worker bound");
+        assert!(!json.contains("program"), "{json}");
+        let back: Event = serde_json::from_str(&json).expect("parse worker bound");
+        assert_eq!(back, event);
+    }
+
+    #[test]
+    fn a_worker_bound_line_without_the_program_key_parses() {
+        // A journal line a build without the field wrote, read by this one.
+        let line =
+            r#"{"event":"worker_bound","worker":3,"device":"a device","driver":"1.0","host":""}"#;
+        let back: Event = serde_json::from_str(line).expect("parse an older worker bound");
+        assert_eq!(
+            back,
+            Event::WorkerBound {
+                worker: 3,
+                device: "a device".to_string(),
+                driver: "1.0".to_string(),
+                host: String::new(),
+                program: None,
+            }
+        );
     }
 
     #[test]

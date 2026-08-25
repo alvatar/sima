@@ -145,6 +145,10 @@ fn spawn_bound(ctx: &WorkerContext<'_>, worker: WorkerId) -> Result<SpawnOutcome
             // The child's device and driver are its own; the host is the
             // parent's account of the pool — empty for a local slot.
             host: ctx.host.clone(),
+            // The program the child named, already agreed with what the run
+            // sent: an empty answer is a format this build carries, which the
+            // journal states by carrying no digest at all.
+            program: Some(link.program().to_string()).filter(|p| !p.is_empty()),
         });
         // The comparison against the journal's last driver for this (host,
         // device), and its advance, under one lock section: the first spawn
@@ -1008,6 +1012,10 @@ mod tests {
             ""
         }
 
+        fn program(&self) -> &str {
+            ""
+        }
+
         fn assign(&mut self, _assignment: &Assignment) -> Result<()> {
             Ok(())
         }
@@ -1019,6 +1027,118 @@ mod tests {
         }
 
         fn kill(&mut self) {}
+    }
+
+    /// A worker link answering `program` at its handshake. Every other method
+    /// is inert: what the test observes is the binding the spawn journals.
+    struct ProgramLink(String);
+
+    impl WorkerLink for ProgramLink {
+        fn device_name(&self) -> &str {
+            "a device"
+        }
+
+        fn driver(&self) -> &str {
+            "1.0"
+        }
+
+        fn program(&self) -> &str {
+            &self.0
+        }
+
+        fn assign(&mut self, _assignment: &Assignment) -> Result<()> {
+            Ok(())
+        }
+
+        fn next(&mut self, _deadline: Option<Instant>) -> Result<LinkEvent> {
+            Ok(LinkEvent::DeadlineExpired)
+        }
+
+        fn kill(&mut self) {}
+    }
+
+    /// A transport spawning one [`ProgramLink`].
+    struct ProgramTransport(String);
+
+    impl WorkerTransport for ProgramTransport {
+        fn spawn(
+            &self,
+            _worker: u64,
+            _device: Option<&DeviceBinding>,
+            _events: Emitter,
+        ) -> Result<SpawnOutcome> {
+            Ok(SpawnOutcome::Link(Box::new(ProgramLink(self.0.clone()))))
+        }
+    }
+
+    /// The `WorkerBound` a spawn journals when the worker answers `program`.
+    fn bound_program(program: &str) -> Result<Option<String>> {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let store = Store::open(dir.path()).expect("open store");
+        let params = Params { bytes: vec![9] };
+        store.put(&params.to_bytes())?;
+        let config = RunConfig {
+            root_seed: 0,
+            segments: None,
+            format: FormatId::new("stub.v1")?,
+            generator: GeneratorConfig {
+                id: GeneratorId::new("stub.v1")?,
+                params: Vec::new(),
+            },
+            params,
+        };
+        let run = store.create_run(&config)?;
+        let exec = ExecutionConfig::new(
+            1,
+            1,
+            Duration::from_secs(5),
+            Duration::MAX,
+            Duration::MAX,
+            None,
+        )?;
+        let coordinator = Coordinator::new();
+        let (tx, rx) = mpsc::channel();
+        {
+            let transport = ProgramTransport(program.to_string());
+            let drivers = Mutex::new(HashMap::new());
+            let ctx = WorkerContext {
+                coordinator: &coordinator,
+                store: &store,
+                run,
+                config: &config,
+                transport: &transport,
+                host: String::new(),
+                exec: &exec,
+                device: None,
+                events: Emitter::from(tx),
+                drivers: &drivers,
+            };
+            spawn_bound(&ctx, WorkerId(0))?;
+        }
+        Ok(rx
+            .into_iter()
+            .find_map(|event| match event {
+                Event::WorkerBound { program, .. } => Some(program),
+                _ => None,
+            })
+            .expect("a WorkerBound event"))
+    }
+
+    #[test]
+    fn a_spawn_journals_the_program_the_worker_answered() -> Result<()> {
+        // What the machine ran, recorded beside where it ran: the agreement
+        // already held, so the journal states the fact rather than checking it.
+        let digest = "ab".repeat(32);
+        assert_eq!(bound_program(&digest)?, Some(digest));
+        Ok(())
+    }
+
+    #[test]
+    fn a_spawn_of_a_worker_naming_no_program_journals_none() -> Result<()> {
+        // A format this build answers: no program travelled, so the binding
+        // names none and the journal line carries no key.
+        assert_eq!(bound_program("")?, None);
+        Ok(())
     }
 
     #[test]

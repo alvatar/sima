@@ -98,6 +98,12 @@ pub trait WorkerLink: Send {
     /// cross-machine divergence within one class is diagnosable.
     fn driver(&self) -> &str;
 
+    /// The digest of the program the worker reported running at the handshake;
+    /// empty when no program travelled to its machine. Agreed with what the run
+    /// sent before the spawn returned, so what this carries is a fact about the
+    /// machine the journal can record.
+    fn program(&self) -> &str;
+
     /// Hands the worker one task. An `Err` is a broken pipe — the child is
     /// dead or dying; the caller classifies and replaces it.
     fn assign(&mut self, assignment: &Assignment) -> Result<()>;
