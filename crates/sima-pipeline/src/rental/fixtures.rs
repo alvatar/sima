@@ -40,6 +40,10 @@ pub(super) fn rental(spec: &Rented, count: usize, fill: FillPolicy) -> Rental<'_
         spec,
         count,
         fill,
+        // The machines these fixtures rent are given no program, so neither
+        // path a delivery would take is exercised through them.
+        root: "~/sima-runs",
+        binary: "sima",
     }
 }
 

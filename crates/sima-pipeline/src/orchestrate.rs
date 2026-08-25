@@ -22,8 +22,8 @@ use crate::process::{ImageCheck, bootstrap_image, command_stdout};
 use crate::program_binding::{BinaryChange, bind};
 use crate::program_delivery::{ProgramDelivery, deliver_to_owned, ingest_program, sendable};
 use crate::rental::{
-    RentalGroup, StopSignal, Supervisor, acquire_hosts, provider_for_rental, release_all,
-    transport_mode,
+    RentalGroup, StopOnSpawnFailure, StopSignal, Supervisor, acquire_hosts, provider_for_rental,
+    release_all, transport_mode,
 };
 
 /// Drives the run a loaded config describes: opens the store (creating it
@@ -139,19 +139,29 @@ pub fn orchestrate(
     if let Some(routed) = config.domains.routed(&config.run.format) {
         bind(&store, &config.run, &routed, accept)?;
     }
+    // What this run puts on the machines it uses, ingested under the held lock:
+    // what a delivery sends is in the store that sends it. `None` for a run
+    // whose format every machine's image answers for itself.
+    //
+    // The one thing this ordering softens: a machine that fails its install
+    // leaves an ingested payload in the local store — local, content-addressed,
+    // and what the next attempt reuses.
+    let delivery = match delivers {
+        false => None,
+        true => ingest_program(config, &store)?,
+    };
+    // The program reaches every machine of yours before any pool of one exists,
+    // so a pool is only ever built where a worker can actually be served.
+    deliver_to_owned(&members.owned, &store, delivery.as_ref())?;
     let owned = match owned {
         Some(pools) => pools,
-        // The program reaches every machine before any pool of one exists, so
-        // a pool is only ever built where a worker can actually be served. The
-        // one thing this ordering softens: a machine that fails its install
-        // leaves an ingested payload in the local store — local,
-        // content-addressed, and what the next attempt reuses.
-        None => {
-            let delivery =
-                ingest_program(config, &store)?.expect("a routed format's program is ingested");
-            deliver_to_owned(&members.owned, &store, &delivery)?;
-            owned_pools(&members.owned, &run, &execution, &program, Some(&delivery))?
-        }
+        None => owned_pools(
+            &members.owned,
+            &run,
+            &execution,
+            &program,
+            delivery.as_ref(),
+        )?,
     };
     // Rentals are acquired under the held lock — each machine behind a teardown
     // guard held for the run's life. A strict-fill shortfall tears down whatever
@@ -167,6 +177,7 @@ pub fn orchestrate(
             mode,
             &config.run.format,
             &execution,
+            delivery.as_ref(),
         )?;
         groups.push(RentalGroup {
             provider: provider.as_ref(),
@@ -194,9 +205,27 @@ pub fn orchestrate(
             slots: machine.slots.clone(),
         });
     }
-    for host in groups.iter().flat_map(|group| &group.hosts) {
+    // Every rented pool spawns through the stop signal: a worker that cannot
+    // spawn faults the run with nothing journaled to observe, and the
+    // supervisor beside it has to wind down all the same.
+    let stop = StopSignal::new();
+    // Aborts a replacement acquisition in flight, so teardown never waits out
+    // an offer walk. Set on a terminal event, on a spawn failure, and again
+    // after the driver returns; distinct from the caller's interrupt, which the
+    // run owns.
+    let cancel = std::sync::atomic::AtomicBool::new(false);
+    let stopping: Vec<StopOnSpawnFailure<'_>> = groups
+        .iter()
+        .flat_map(|group| &group.hosts)
+        .map(|host| StopOnSpawnFailure {
+            inner: &host.transport,
+            stop: &stop,
+            cancel: &cancel,
+        })
+        .collect();
+    for (host, transport) in groups.iter().flat_map(|group| &group.hosts).zip(&stopping) {
         pools.push(WorkerPool {
-            transport: &host.transport,
+            transport,
             host: host.host.clone(),
             slots: host.slots.clone(),
         });
@@ -217,7 +246,6 @@ pub fn orchestrate(
             control,
         )
     } else {
-        let stop = StopSignal::new();
         // The run's emitter reaches the supervisor through the start hook,
         // filled once the collector spawns; the supervisor emits rental events
         // through it, so they cross the same journal boundary as the rest. No
@@ -229,11 +257,6 @@ pub fn orchestrate(
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(e);
         };
-        // Aborts a replacement acquisition in flight, so teardown never waits
-        // out an offer walk. Set on the terminal event and again after the
-        // driver returns; distinct from the caller's interrupt, which the run
-        // owns.
-        let cancel = std::sync::atomic::AtomicBool::new(false);
         // Wrap the caller's observer to stop the supervisor the moment the run
         // reaches a terminal event: the supervisor then drops its emitter
         // clone, so the run's collector — which joins only once every emitter

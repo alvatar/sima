@@ -521,13 +521,15 @@ pub fn machines_block(report: &MachineReport) -> String {
             "incidents"
         };
         block.push_str(&format!(
-            "\n  {}-{}  {} {noun} (lost {}, never-ready {}, probe-failed {}){}",
+            "\n  {}-{}  {} {noun} (lost {}, never-ready {}, probe-failed {}, \
+             install-failed {}){}",
             machine.provider,
             machine.machine,
             machine.incidents,
             machine.lost,
             machine.never_ready,
             machine.probe_failed,
+            machine.install_failed,
             if machine.blacklisted {
                 "  blacklisted"
             } else {
@@ -1505,6 +1507,7 @@ mod tests {
                     lost: 2,
                     never_ready: 1,
                     probe_failed: 0,
+                    install_failed: 0,
                     first_occurred_ms: 10,
                     last_occurred_ms: 30,
                     blacklisted: true,
@@ -1516,6 +1519,7 @@ mod tests {
                     lost: 0,
                     never_ready: 0,
                     probe_failed: 1,
+                    install_failed: 0,
                     first_occurred_ms: 5,
                     last_occurred_ms: 5,
                     blacklisted: false,
@@ -1530,14 +1534,18 @@ mod tests {
         // The blacklisted machine names its counts by kind and its status.
         assert!(
             block.contains(
-                "vastai-81234  3 incidents (lost 2, never-ready 1, probe-failed 0)  blacklisted"
+                "vastai-81234  3 incidents (lost 2, never-ready 1, probe-failed 0, \
+                 install-failed 0)  blacklisted"
             ),
             "{block}"
         );
         // A machine below the threshold names no status, and its single
         // incident reads in the singular.
         assert!(
-            block.contains("vastai-90000  1 incident (lost 0, never-ready 0, probe-failed 1)"),
+            block.contains(
+                "vastai-90000  1 incident (lost 0, never-ready 0, probe-failed 1, \
+                 install-failed 0)"
+            ),
             "{block}"
         );
         assert!(

@@ -57,5 +57,5 @@ pub use device_probe::DeviceProbe;
 pub use link::{LinkEvent, SpawnOutcome, WorkerLink, WorkerTransport};
 pub use spawn_policy::SpawnPolicy;
 pub use spawn_settings::SpawnSettings;
-pub use ssh::{SpawnMode, SshDestination, SshTransport};
+pub use ssh::{RemoteCommand, SpawnMode, SshDestination, SshTransport};
 pub use subprocess::SubprocessTransport;

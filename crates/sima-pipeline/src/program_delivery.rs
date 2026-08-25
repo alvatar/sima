@@ -34,18 +34,32 @@
 //! — so the package it imports must match the orchestrator's protocol, and a
 //! machine vending its own could vend one built against another.
 
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use sima_core::{Error, Hash, Result};
 use sima_store::{ObjectScope, Store, SyncReport};
 use sima_transport::container::{ContainerRun, once_argv};
 use sima_transport::protocol::PROGRAM_DIGEST_VAR;
+use sima_transport::{RemoteCommand, SpawnPolicy};
 
 use crate::config::LoadedConfig;
 use crate::fleet::OwnedMachine;
 use crate::payload::{self, ProgramTree};
 use crate::sdk::{self, Sdk};
 use crate::sync_session::sync_against;
+
+/// Whether a spawn starts in a working directory of its own.
+///
+/// A container gets a fresh filesystem, so its working directory is already
+/// nobody else's. A shell reached over ssh lands in a home directory the
+/// machine shares across everything run there, so it makes one — which is what
+/// the local policy gives a configured program.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Scratch {
+    Keep,
+    Fresh,
+}
 
 /// The `sima` binary inside a worker image, by its name on the `PATH` there.
 /// A delivery's far half runs there rather than on the machine itself, so the
@@ -130,29 +144,98 @@ impl ProgramDelivery {
     ///   so the stamp the install wrote names the same file the shell reads;
     /// - the declared variables are forwarded by name, so each value is the
     ///   machine's own and none appears on a command line;
-    /// - the shell states exactly what the local `Explicit` policy would — the
-    ///   digest assigned, the SDK's directory leading the interpreter's path —
-    ///   before it execs the program.
+    /// - the shell states exactly what the local `Explicit` policy would.
+    pub(crate) fn container_run(&self, root: &str, args: &[&str]) -> ContainerRun {
+        let programs = programs_dir(root);
+        ContainerRun::program(
+            vec![format!("{programs}:{programs}")],
+            self.env.clone(),
+            self.shell(root, args, Scratch::Keep),
+        )
+    }
+
+    /// What an ssh command runs to reach this program on a machine rooted at
+    /// `root`, with `args` handed to it.
     ///
-    /// The digest is read from the machine's own stamp at exec time rather than
-    /// written in, so what the worker answers at its handshake is that disk's
-    /// claim about what is installed there, and the run's comparison is against
-    /// a value it never wrote.
+    /// No mount and no forwarding: ssh lands inside the machine's own
+    /// container, where the program's files already are and the declared
+    /// variables already hold that machine's values. What is added is a scratch
+    /// working directory, which the local policy also gives a configured
+    /// program.
+    pub(crate) fn ssh_command(&self, root: &str, args: &[&str]) -> RemoteCommand {
+        RemoteCommand::program(self.shell(root, args, Scratch::Fresh))
+    }
+
+    /// How this program is spawned on a machine reached without a hop: the
+    /// entry point directly, under the explicit policy every configured program
+    /// gets here.
+    ///
+    /// The machine is this one, so there is no shell to state anything in and
+    /// no far environment to read the digest from — the stamp is read here
+    /// instead, which is still that tree's own claim about what is installed in
+    /// it.
+    pub(crate) fn local_spawn(&self, root: &str) -> Result<(PathBuf, SpawnPolicy)> {
+        let programs = programs_dir(root);
+        let tree = program_tree(Path::new(&programs), &self.payload);
+        let stamped = std::fs::read_to_string(tree.stamp()).map_err(|source| Error::Io {
+            path: tree.stamp(),
+            source,
+        })?;
+        let prepend = self
+            .sdk
+            .map(|(sdk, digest)| {
+                (
+                    sdk.path_variable().to_string(),
+                    sdk::installed(&sdk_tree(Path::new(&programs), &digest)).into_os_string(),
+                )
+            })
+            .into_iter()
+            .collect();
+        Ok((
+            tree.entry_point(),
+            SpawnPolicy::Explicit {
+                passthrough: self.env.clone(),
+                prepend,
+                assign: vec![(
+                    PROGRAM_DIGEST_VAR.to_string(),
+                    OsString::from(stamped.trim()),
+                )],
+            },
+        ))
+    }
+
+    /// The shell that states this program's environment on the machine it was
+    /// delivered to and execs it with `args`.
+    ///
+    /// The digest is read from that machine's own stamp at exec time rather
+    /// than written in, so what a worker answers at its handshake is that
+    /// disk's claim about what is installed there — and the run's comparison is
+    /// against a value it never wrote.
+    ///
+    /// What the shell sets is what the local `Explicit` policy would: the
+    /// digest assigned, and the SDK's directory leading the interpreter's path
+    /// rather than replacing it, so the vended package matching the protocol
+    /// this run speaks resolves first and whatever the machine already has
+    /// resolves behind it. What it does not do is scrub: ssh carries none of
+    /// this process's environment, and a container's is its image's, so the
+    /// environment there is already the machine's own — which is where the
+    /// declared variables' values are meant to come from.
     ///
     /// Paths reach the shell unquoted, so a `root` naming `~` expands there —
     /// the rule every far-side path in a config follows.
-    pub(crate) fn container_run(&self, root: &str, args: &[&str]) -> ContainerRun {
+    fn shell(&self, root: &str, args: &[&str], scratch: Scratch) -> Vec<String> {
         let programs = programs_dir(root);
         let tree = program_tree(Path::new(&programs), &self.payload);
-        let mut script = vec![format!(
+        let mut script = Vec::new();
+        if scratch == Scratch::Fresh {
+            script.push("cd \"$(mktemp -d)\" || exit 1".to_string());
+        }
+        script.push(format!(
             "{PROGRAM_DIGEST_VAR}=$(cat {})",
             tree.stamp().display()
-        )];
+        ));
         let mut exported = vec![PROGRAM_DIGEST_VAR.to_string()];
         if let Some((sdk, digest)) = &self.sdk {
-            // Leading, not replacing: the vended package is the one matching
-            // the protocol this run speaks, and whatever the machine already
-            // has still resolves behind it.
             let variable = sdk.path_variable();
             let installed = sdk::installed(&sdk_tree(Path::new(&programs), digest));
             script.push(format!(
@@ -167,11 +250,7 @@ impl ProgramDelivery {
             tree.entry_point().display(),
             args.iter().map(|arg| format!(" {arg}")).collect::<String>()
         ));
-        ContainerRun::program(
-            vec![format!("{programs}:{programs}")],
-            self.env.clone(),
-            vec!["sh".to_string(), "-c".to_string(), script.join("\n")],
-        )
+        vec!["sh".to_string(), "-c".to_string(), script.join("\n")]
     }
 
     /// Every object a machine needs before it can install what this delivery
@@ -275,8 +354,13 @@ pub fn ingest_program(config: &LoadedConfig, store: &Store) -> Result<Option<Pro
 pub(crate) fn deliver_to_owned(
     machines: &[OwnedMachine<'_>],
     store: &Store,
-    delivery: &ProgramDelivery,
+    delivery: Option<&ProgramDelivery>,
 ) -> Result<()> {
+    // A run whose format every machine's image answers for itself sends
+    // nothing, so no machine is contacted here at all.
+    let Some(delivery) = delivery else {
+        return Ok(());
+    };
     for machine in machines {
         let programs = programs_dir(machine.root);
         let mut command = vec![IMAGE_BINARY.to_string()];

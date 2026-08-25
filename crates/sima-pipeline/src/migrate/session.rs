@@ -197,6 +197,8 @@ pub fn migrate(
                 spec,
                 count: 1,
                 fill: FillPolicy::Strict,
+                root: destination.root,
+                binary: destination.binary,
             };
             let provider = provider_for_rental(&rental)?;
             // The clock on this machine starts here, where it is first asked

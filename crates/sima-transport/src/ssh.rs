@@ -39,9 +39,12 @@
 //! instance at teardown. So the subprocess link's own `kill` — which kills the
 //! local ssh client — is the whole kill, and no wrapper is needed.
 //!
+//! What a spawn actually runs at the far end is [`RemoteCommand`]: the image's
+//! own worker, or a program delivered to that machine.
+//!
 //! The stub-provider testing path is the same transport in [`SpawnMode::Local`]:
-//! it spawns a `sima-worker` binary directly with no ssh hop, so every layer
-//! above the transport exercises identically without a network.
+//! it spawns a binary directly with no ssh hop, so every layer above the
+//! transport exercises identically without a network.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Condvar, Mutex, PoisonError};
@@ -179,9 +182,45 @@ impl SshDestination {
 pub enum SpawnMode {
     /// ssh to the destination; the worker runs as the ssh command.
     Ssh,
-    /// Spawn the `sima-worker` binary at this path directly, no ssh hop — the
-    /// stub-provider testing path.
+    /// Spawn the binary at this path directly, no ssh hop — the stub-provider
+    /// testing path, and the machine reached without one.
     Local(PathBuf),
+}
+
+/// What an ssh spawn runs at the far end.
+///
+/// A run whose format the far machine's image carries runs that image's own
+/// worker. A run whose format is a program delivered there runs whatever the
+/// caller states — in practice a shell that sets the program's environment on
+/// that machine and execs it, since sima's process here is only the ssh client
+/// and its own environment never crosses.
+///
+/// It is the ssh form alone that this decides. A machine reached without a hop
+/// is this one, so its program is spawned directly under the policy its
+/// settings carry, and there is no far end to state anything at.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteCommand(Vec<String>);
+
+impl RemoteCommand {
+    /// The image's own worker, by its name on the `PATH` there.
+    pub fn worker() -> RemoteCommand {
+        RemoteCommand(vec![WORKER_ENTRYPOINT.to_string()])
+    }
+
+    /// A command of the caller's.
+    pub fn program(command: Vec<String>) -> RemoteCommand {
+        RemoteCommand(command)
+    }
+
+    /// The argv that runs this command at `destination` over ssh: the
+    /// destination's own invocation, then the command. Every ssh spawn in the
+    /// workspace is composed here, so a caller building one for a purpose of
+    /// its own cannot spell the hop differently.
+    pub fn argv(&self, destination: &SshDestination) -> Vec<String> {
+        let mut argv = destination.prefix();
+        argv.extend(self.0.iter().cloned());
+        argv
+    }
 }
 
 /// Where the transport currently sends its workers, and the lifecycle of that
@@ -224,6 +263,8 @@ enum Spawnable {
 /// running pool. One transport serves one machine's pool.
 pub struct SshTransport {
     mode: SpawnMode,
+    /// What an ssh spawn runs at the far end.
+    command: RemoteCommand,
     /// The current target and its lifecycle, guarded so the supervisor's swaps
     /// and the worker threads' spawns serialize.
     state: Mutex<TargetSlot>,
@@ -250,12 +291,14 @@ impl SshTransport {
     pub fn new(
         mode: SpawnMode,
         initial: SshDestination,
+        command: RemoteCommand,
         settings: SpawnSettings,
         ready_timeout: Duration,
         ready_poll: Duration,
     ) -> SshTransport {
         SshTransport {
             mode,
+            command,
             state: Mutex::new(TargetSlot {
                 state: TargetState::Live(initial),
                 generation: 0,
@@ -425,7 +468,7 @@ impl SshTransport {
         device: Option<&DeviceBinding>,
         events: Emitter,
     ) -> Result<Box<dyn WorkerLink>> {
-        let argv = self.mode.spawn_argv(target);
+        let argv = self.mode.spawn_argv(target, &self.command);
         // `spawn_argv` never yields an empty vector: `ssh` or the binary path is
         // always the first element.
         let (program, args) = argv.split_first().expect("a non-empty command vector");
@@ -448,11 +491,12 @@ impl SshTransport {
 }
 
 impl SpawnMode {
-    /// The argv that spawns a worker on `target`: the ssh invocation, or the
-    /// local binary directly.
-    fn spawn_argv(&self, target: &SshDestination) -> Vec<String> {
+    /// The argv that spawns a worker on `target`: the ssh invocation running
+    /// `command`, or the local binary directly — which is its own command, so
+    /// nothing is stated for it.
+    fn spawn_argv(&self, target: &SshDestination, command: &RemoteCommand) -> Vec<String> {
         match self {
-            SpawnMode::Ssh => ssh_argv(target, None),
+            SpawnMode::Ssh => command.argv(target),
             SpawnMode::Local(program) => vec![program.to_string_lossy().into_owned()],
         }
     }
@@ -542,6 +586,7 @@ mod tests {
         SshTransport::new(
             mode,
             a_target(),
+            RemoteCommand::worker(),
             SpawnSettings::new(
                 SpawnPolicy::Inherit,
                 Duration::MAX,
@@ -697,7 +742,46 @@ mod tests {
     #[test]
     fn a_local_mode_spawn_argv_is_the_bare_binary() {
         let mode = SpawnMode::Local(PathBuf::from("/opt/sima/sima-worker"));
-        assert_eq!(mode.spawn_argv(&a_target()), ["/opt/sima/sima-worker"]);
+        assert_eq!(
+            mode.spawn_argv(&a_target(), &RemoteCommand::worker()),
+            ["/opt/sima/sima-worker"]
+        );
+    }
+
+    #[test]
+    fn an_ssh_spawn_runs_the_command_the_caller_states() {
+        // A machine that received a program runs that program rather than the
+        // image's worker, under a shell that states its environment there.
+        let command = RemoteCommand::program(vec![
+            "sh".to_string(),
+            "-c".to_string(),
+            "exec /srv/programs/d/installed/program".to_string(),
+        ]);
+        let argv = SpawnMode::Ssh.spawn_argv(&a_target(), &command);
+        assert_eq!(
+            &argv[argv.len() - 3..],
+            ["sh", "-c", "exec /srv/programs/d/installed/program"]
+        );
+        // Otherwise the destination's own invocation, unchanged.
+        assert_eq!(
+            &argv[..argv.len() - 3],
+            &SpawnMode::Ssh.spawn_argv(&a_target(), &RemoteCommand::worker())[..argv.len() - 3]
+        );
+    }
+
+    #[test]
+    fn a_local_spawn_ignores_the_command_and_runs_its_own_binary() {
+        // Reached without a hop, the machine is this one: the program is
+        // spawned directly, under the policy its settings carry, so there is no
+        // shell to state anything in.
+        let mode = SpawnMode::Local(PathBuf::from("/srv/programs/d/installed/program"));
+        assert_eq!(
+            mode.spawn_argv(
+                &a_target(),
+                &RemoteCommand::program(vec!["sh".to_string(), "-c".to_string(), "x".to_string()])
+            ),
+            ["/srv/programs/d/installed/program"]
+        );
     }
 
     #[test]
@@ -721,7 +805,10 @@ mod tests {
             let argv = probe_argv(&mode, &a_target(), DeviceProbe::EveryBackend);
             assert_eq!(argv[argv.len() - 1], "--enumerate-devices");
             // Otherwise identical to the spawn argv: one argument longer.
-            assert_eq!(&argv[..argv.len() - 1], mode.spawn_argv(&a_target()));
+            assert_eq!(
+                &argv[..argv.len() - 1],
+                mode.spawn_argv(&a_target(), &RemoteCommand::worker())
+            );
         }
     }
 

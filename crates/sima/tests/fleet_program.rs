@@ -21,7 +21,12 @@
 //! - a machine whose installed program answers another digest fails its spawn,
 //!   naming both;
 //! - a run whose format this build carries contacts its machines exactly as
-//!   before, delivering nothing.
+//!   before, delivering nothing;
+//! - a rented machine receives the program the same way and its workers answer
+//!   the same digest, over the stub provider's machines — which are this one,
+//!   reached without a hop;
+//! - a rented machine that cannot be given the program is excluded and
+//!   replaced, its incident recorded, rather than failing the run.
 
 mod common;
 
@@ -425,6 +430,197 @@ fn a_machine_holding_another_program_fails_its_spawn_naming_both_digests() {
 
     let (code, stderr) = fleet_run(&bin, &config);
     assert_ne!(code, Some(0), "{stderr}");
+    assert!(
+        stderr.contains("program digest mismatch"),
+        "the spawn is refused: {stderr}"
+    );
+    assert!(stderr.contains(DRIFTED), "names what answered: {stderr}");
+    assert!(
+        stderr.contains(&delivered(&far.path().join("programs")).to_string()),
+        "and what the run sent: {stderr}"
+    );
+}
+
+/// A config under `dir` renting `count` machines from the stub provider, each
+/// rooted at `root`, its format served by whatever `entry` declares.
+///
+/// The orchestrator declares no workers, so the rentals carry the whole run and
+/// every worker it binds is one of theirs.
+fn rented_config(dir: &Path, root: &Path, entry: &str, count: usize, fill: &str) -> PathBuf {
+    write_config_text(
+        dir,
+        "rented.toml",
+        &format!(
+            r#"
+        [run]
+        root_seed = 21
+        segments = 2
+        format = "stub.v1"
+
+        [run.generator]
+        id = "stub.v1"
+        behaviors = ["accumulate:2", "accumulate:2"]
+
+        [config]
+        store = "./store"
+        max_attempts = 3
+
+        [orchestrator]
+
+        [host_class.rented]
+        provider = "stub"
+        count = {count}
+        fill = "{fill}"
+        root = {root:?}
+        binary = {binary:?}
+        ready_timeout_ms = 30000
+        ready_poll_ms = 20
+
+        [fleet]
+        members = ["rented"]
+
+        {entry}
+    "#,
+            root = root.to_string_lossy(),
+            binary = env!("CARGO_BIN_EXE_sima"),
+        ),
+    )
+}
+
+#[test]
+fn a_rented_machine_receives_the_program_and_its_workers_answer_its_stamp() -> Result<()> {
+    // The rented path, end to end: the machine answers a probe that names no
+    // format, receives the program, says where its work can go through the
+    // program's own session, and serves workers spawned out of the tree it
+    // installed.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let far = tempfile::tempdir().expect("temp dir");
+    let log = dir.path().join("installs");
+    let config = rented_config(
+        dir.path(),
+        far.path(),
+        &program(dir.path(), &log),
+        1,
+        "strict",
+    );
+
+    let output = sima_command()
+        .args(["run", config.to_str().expect("utf-8 path"), "--fleet"])
+        .output()
+        .expect("spawn sima run");
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_eq!(output.status.code(), Some(0), "{stderr}");
+
+    let digest = delivered(&far.path().join("programs")).to_string();
+    let bound = bound_programs(&config)?;
+    assert!(!bound.is_empty(), "the rented machine served the run");
+    for program in &bound {
+        assert_eq!(
+            program.as_deref(),
+            Some(digest.as_str()),
+            "every worker answers the digest the machine's stamp carries: {bound:?}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn a_rented_machine_that_cannot_be_given_the_program_is_replaced() -> Result<()> {
+    // A rented machine is disposable, so one that cannot serve the run costs a
+    // machine rather than the run: the incident is recorded against it, it is
+    // excluded from the attempts that follow, and the next offer fills its
+    // place. The install script fails on its first run and succeeds after, so
+    // the first machine is refused and the second is not.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let far = tempfile::tempdir().expect("temp dir");
+    let once = dir.path().join("refused-once");
+    executable(
+        &dir.path().join("src/wrapper.sh"),
+        &format!("#!/bin/sh\nexec {} \"$@\"\n", worker_binary().display()),
+    );
+    executable(
+        &dir.path().join("install.sh"),
+        &format!(
+            "#!/bin/sh\n\
+             set -e\n\
+             if [ ! -f {once:?} ]; then : > {once:?}; echo 'the install refused' >&2; exit 7; fi\n\
+             cp \"$SIMA_PAYLOAD_DIR/wrapper.sh\" \"$SIMA_INSTALL_DIR/program\"\n\
+             chmod 755 \"$SIMA_INSTALL_DIR/program\"\n",
+            once = once.display(),
+        ),
+    );
+    let config = rented_config(
+        dir.path(),
+        far.path(),
+        "[domain.\"stub.v1\"]\nbinary = \"./src/wrapper.sh\"\n\
+         payload = \"./src\"\ninstall = \"./install.sh\"\n",
+        // Two offers, so the refused machine has a successor to be replaced
+        // by; best-effort, so the run proceeds on the one machine the
+        // marketplace could still fill.
+        2,
+        "best-effort",
+    );
+
+    let output = sima_command()
+        .args(["run", config.to_str().expect("utf-8 path"), "--fleet"])
+        .output()
+        .expect("spawn sima run");
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_eq!(output.status.code(), Some(0), "{stderr}");
+    assert!(once.is_file(), "the first machine's install ran and failed");
+
+    // The refusal is recorded against the machine it was refused by, under its
+    // own kind: a machine that answers but cannot be given the program is not
+    // one that failed a probe.
+    let report = sima_command()
+        .args(["report", config.to_str().expect("utf-8 path"), "--machines"])
+        .output()
+        .expect("spawn sima report");
+    let text = String::from_utf8_lossy(&report.stdout).into_owned();
+    assert!(
+        text.contains("install-failed 1"),
+        "the incident names what could not be done: {text}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_rented_machine_holding_another_program_fails_its_spawn_naming_both_digests() {
+    // The agreement holds on a rented machine too: what the run sent against
+    // what that machine's tree answers, whichever way the machine is reached.
+    const DRIFTED: &str = "4444444444444444444444444444444444444444444444444444444444444444";
+    let dir = tempfile::tempdir().expect("temp dir");
+    let far = tempfile::tempdir().expect("temp dir");
+    executable(
+        &dir.path().join("src/wrapper.sh"),
+        &format!("#!/bin/sh\nexec {} \"$@\"\n", worker_binary().display()),
+    );
+    executable(
+        &dir.path().join("install.sh"),
+        &format!(
+            "#!/bin/sh\n\
+             set -e\n\
+             printf '#!/bin/sh\\nSIMA_PROGRAM_DIGEST={DRIFTED} exec {worker} \"$@\"\\n' \
+             > \"$SIMA_INSTALL_DIR/program\"\n\
+             chmod 755 \"$SIMA_INSTALL_DIR/program\"\n",
+            worker = worker_binary().display(),
+        ),
+    );
+    let config = rented_config(
+        dir.path(),
+        far.path(),
+        "[domain.\"stub.v1\"]\nbinary = \"./src/wrapper.sh\"\n\
+         payload = \"./src\"\ninstall = \"./install.sh\"\n",
+        1,
+        "strict",
+    );
+
+    let output = sima_command()
+        .args(["run", config.to_str().expect("utf-8 path"), "--fleet"])
+        .output()
+        .expect("spawn sima run");
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_ne!(output.status.code(), Some(0), "{stderr}");
     assert!(
         stderr.contains("program digest mismatch"),
         "the spawn is refused: {stderr}"

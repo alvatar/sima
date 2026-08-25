@@ -22,13 +22,15 @@ use sima_provider::{
 use sima_scheduler::Event;
 use sima_scheduler::ExecutionConfig;
 use sima_store::{Rental as RentalRole, RunLock, Store};
-use sima_transport::{SpawnMode, SpawnPolicy, SpawnSettings, SshDestination, SshTransport};
+use sima_transport::{SpawnMode, SshDestination, SshTransport};
 
 use crate::config::{FillPolicy, Rented};
 use crate::devices::{parse_enumeration, usable};
 use crate::fleet::Rental;
 use crate::process::{command_stdout, worker_binary};
+use crate::program_delivery::ProgramDelivery;
 use crate::providers::{ProviderSettings, provider_for};
+use crate::rental::rented_program::RentedProgram;
 
 /// The control-plane backend a rental acquires its machines through.
 ///
@@ -131,11 +133,20 @@ pub(crate) fn acquire_hosts<'a>(
     mode: &SpawnMode,
     format: &FormatId,
     exec: &ExecutionConfig,
+    delivery: Option<&ProgramDelivery>,
 ) -> Result<Vec<RentedHost<'a>>> {
+    let program = match delivery {
+        None => RentedProgram::Image,
+        Some(delivery) => RentedProgram::Delivered {
+            delivery,
+            binary: rental.binary,
+            root: rental.root,
+        },
+    };
     let mut hosts: Vec<RentedHost<'a>> = Vec::with_capacity(rental.count);
     for _ in 0..rental.count {
-        // A machine that fails to acquire or probe is torn down inside
-        // `acquire_one` before its error returns here.
+        // A machine that fails to acquire, probe, or receive the program is
+        // torn down inside `acquire_one` before its error returns here.
         match acquire_one(
             provider,
             store,
@@ -145,6 +156,7 @@ pub(crate) fn acquire_hosts<'a>(
             mode,
             format,
             exec,
+            &program,
         ) {
             Ok(host) => hosts.push(host),
             Err(error) => match rental.fill {
@@ -181,6 +193,7 @@ fn acquire_one<'a>(
     mode: &SpawnMode,
     format: &FormatId,
     exec: &ExecutionConfig,
+    program: &RentedProgram<'_>,
 ) -> Result<RentedHost<'a>> {
     // A machine that fails its probe is excluded from the attempts that
     // follow, so the retry reaches a different machine instead of renting
@@ -216,21 +229,36 @@ fn acquire_one<'a>(
         )?;
         let target = endpoint_target(guard.endpoint().clone());
         let host = target.host().to_string();
-        // The probe drives the machine's device enumeration; a failure drops
-        // the guard, tearing the machine down.
-        let slots = match probe_slots(mode, &target, usable_by, spec.ready_poll, format) {
-            Ok(slots) => slots,
-            Err(error) => {
-                // The machine reported ready but cannot run work: an incident
-                // against it, recorded before the guard drops and tears it
-                // down. A store failure recording the incident supersedes the
-                // probe error.
+        // Three stages, each of which can cost the machine rather than the
+        // run: it answers, it receives what the run needs, and it says where
+        // that work can go. A failure in any of them records an incident, drops
+        // the guard — tearing the machine down — and moves to another machine.
+        let outcome = probe_ready(mode, &target, usable_by, spec.ready_poll, program, format)
+            .map(|answered| (answered, IncidentKind::ProbeFailed))
+            .and_then(|(answered, _)| {
+                program
+                    .install(store, mode, &target)
+                    .map(|()| answered)
+                    .map_err(|error| (error, IncidentKind::InstallFailed))
+            })
+            .and_then(|answered| {
+                program
+                    .devices(answered, mode, &target, format, exec.answer_timeout)
+                    .map_err(|error| (error, IncidentKind::ProbeFailed))
+            });
+        let slots = match outcome {
+            Ok(devices) => rented_slots(&devices),
+            Err((error, kind)) => {
+                // The machine reported ready but cannot serve this run: an
+                // incident against it, recorded before the guard drops and
+                // tears it down. A store failure recording the incident
+                // supersedes the original error.
                 record_incident(
                     store,
                     provider.id(),
                     guard.machine(),
                     guard.tag(),
-                    IncidentKind::ProbeFailed,
+                    kind,
                     now_ms(),
                 )?;
                 if !guard.machine().is_empty() {
@@ -242,24 +270,16 @@ fn acquire_one<'a>(
                 continue;
             }
         };
+        // What the machine's workers run there, and what they answer for. The
+        // ssh client is sima's own process, so it keeps the ambient
+        // environment: it reads its agent socket and client configuration from
+        // it, and what the far side sees is stated on the far side.
+        let (mode, command, settings) = program.spawn(mode, format, exec)?;
         let transport = SshTransport::new(
-            mode.clone(),
+            mode,
             target,
-            // The ssh client is sima's own process: it reads its agent socket
-            // and client configuration from the ambient environment, and the
-            // worker on the far side is the sima image's. That worker answers
-            // for the formats the image carries, so it names no program and
-            // none is expected of it; a rented machine that runs a registered
-            // program is what fleet routing of registered formats delivers,
-            // and the expected digest comes from that machine's own installed
-            // tree when it does.
-            SpawnSettings::new(
-                SpawnPolicy::Inherit,
-                exec.answer_timeout,
-                format.clone(),
-                exec.checkpoint_interval,
-                exec.checkpoint_interval_steps,
-            ),
+            command,
+            settings,
             // The transport waits out a respawn against a dead host on the
             // same readiness bounds the machine was acquired under, bridging
             // the window until the supervisor swaps a replacement in.
@@ -276,8 +296,8 @@ fn acquire_one<'a>(
     Err(refused.unwrap_or_else(|| Error::Provider("the acquisition never ran".to_string())))
 }
 
-/// Probes a machine for the devices `format`'s program can run on and derives
-/// its worker slots, retrying under the machine's own readiness bounds.
+/// Waits for a machine to answer its readiness probe, and returns what it
+/// answered, retrying under the machine's own readiness bounds.
 ///
 /// A provider reports an instance ready when its container is running, which is
 /// before the route to it carries an ssh, so the first probes against a fresh
@@ -287,22 +307,22 @@ fn acquire_one<'a>(
 /// this is the second stage of that one wait. A machine that answers at once
 /// costs nothing. Giving up destroys this rental and takes the next offer, so
 /// the bound is what separates a machine that is slow from one that is broken.
-fn probe_slots(
+fn probe_ready(
     mode: &SpawnMode,
     target: &SshDestination,
     usable_by: Instant,
     poll: Duration,
+    program: &RentedProgram<'_>,
     format: &FormatId,
-) -> Result<Vec<Option<DeviceBinding>>> {
-    let argv =
-        sima_transport::ssh::probe_argv(mode, target, sima_transport::DeviceProbe::Format(format));
+) -> std::result::Result<Vec<DeviceInfo>, (Error, IncidentKind)> {
+    let argv = sima_transport::ssh::probe_argv(mode, target, program.readiness(format));
     let deadline = usable_by;
     loop {
         match command_stdout(&argv).and_then(|stdout| parse_enumeration(&stdout)) {
-            Ok(devices) => return Ok(rented_slots(&devices)),
+            Ok(devices) => return Ok(devices),
             Err(error) => {
                 if Instant::now() >= deadline {
-                    return Err(error);
+                    return Err((error, IncidentKind::ProbeFailed));
                 }
             }
         }
@@ -491,6 +511,7 @@ mod tests {
             &deviceless_probe(),
             &format,
             &exec(),
+            None,
         );
         assert!(matches!(result, Err(Error::Provider(_))));
         assert_eq!(
@@ -520,6 +541,7 @@ mod tests {
             &deviceless_probe(),
             &format,
             &exec(),
+            None,
         )?;
         assert_eq!(hosts.len(), 1, "best-effort runs on what came up");
         assert!(
@@ -554,6 +576,7 @@ mod tests {
             &deviceless_probe(),
             &format,
             &exec(),
+            None,
         )?;
         assert_eq!(hosts.len(), 2);
         for host in &hosts {
@@ -587,6 +610,7 @@ mod tests {
             &SpawnMode::Local(PathBuf::from("/nonexistent/sima-worker")),
             &format,
             &exec(),
+            None,
         );
         assert!(result.is_err(), "a probe failure fails the acquisition");
         assert_eq!(provider.destroyed().len(), 1, "the machine is torn down");
@@ -621,6 +645,7 @@ mod tests {
             &SpawnMode::Local(PathBuf::from("/nonexistent/sima-worker")),
             &format,
             &exec(),
+            None,
         );
         assert!(result.is_err(), "no machine in the market could be probed");
         assert_eq!(provider.destroyed().len(), 2, "each attempt is torn down");
