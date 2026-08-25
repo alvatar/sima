@@ -1053,6 +1053,7 @@ A config declares one entry per registered format:
 [domain."acme.thing.v1"]
 binary = "/opt/acme/worker"
 env    = ["ACME_ASSETS"]   # optional; variable names the program also receives
+sdk    = "python"          # optional; the SDK the program is written against
 ```
 
 The registry is built where the config resolves, and the run's own translations
@@ -1098,6 +1099,8 @@ piped stdin and stdout, its stderr the orchestrator's own. Beyond those:
   the locale, the user's caches, and the three GPU stacks;
 - the variables its `[domain.*]` entry names in `env`, by name alone, taken
   from the orchestrator's environment where it holds them;
+- the vended SDK's directory at the head of its module path, when the entry
+  declares one;
 - a fresh scratch working directory, created at spawn and removed when the
   process is reaped.
 
@@ -1193,6 +1196,52 @@ Two limits are documented rather than mechanized:
   interpreter, the binaries it execs, and the assets a program loads at runtime
   sit outside it; they belong in the components the program declares.
 
+### The vended SDK
+
+A program is self-contained only down to the wire: the framing, the codecs, the
+model types, and the serve loop belong to an SDK, so every program written in
+the language one serves depends on it. That is a dependency the machine a
+program lands on has no way to install — a migration carries the program's own
+files and nothing else — so the binary carries it instead.
+
+**The entry declares it and the binary vends it.** `sdk = "python"` names the
+package this build embeds; any other value is refused at load, naming the
+config, the format, the key, and the value. The key is independent of `payload`
+and enters no hash: where a program reads its library from is operational, so
+run identity is untouched.
+
+**Materialization happens at config load, on every machine alike.**
+
+```
+<config-dir>/sdk/python/
+    .lock                 held while writing
+    installed/sima/*.py   the package, as this binary holds it
+    installed.digest      the digest of the package that was written
+```
+
+The digest covers the embedded files alone — each path and the hash of its text
+— so one build produces one digest on any machine and an upgraded binary
+restamps exactly once. The tree is shared by every entry declaring the same
+SDK, since what it holds is a property of the binary rather than of any one
+program. It is built through the same stamp-and-lock choreography a program
+tree is: the stamp removed first, the build under a blocking lock, the stamp
+written last and atomically.
+
+**The path reaches the program through the spawn policy.** `installed/` leads
+the program's module path — `PYTHONPATH` for Python — ahead of anything the
+machine already holds under that name, and the domain service and every worker
+of the run share one policy, so both halves of a program read one package. A
+copy installed on the machine is shadowed by the vended one, which is the
+point: the vended copy is the one whose protocol matches the binary driving the
+run.
+
+**A migration carries the declaration, not the files.** The synthesized far
+entry states `sdk = "python"`, and the destination's own binary vends its own
+copy at load. Nothing of the SDK crosses the wire.
+
+`sima sdk <language> --out <dir>` writes the same package by hand, for
+developing a program outside a run.
+
 ### Carrying a registered program
 
 A migration moves a run onto a machine that has never seen its program, so the
@@ -1204,6 +1253,10 @@ binary  = "./stepper.py"          # how the program runs here
 payload = "./stepper.py"          # what travels: one file or one directory
 install = "./install.sh"          # optional shell script; the far side runs it
 ```
+
+What the payload does not carry is the SDK, which travels inside the binary and
+is vended on the destination; a third-party dependency is the payload's own
+business, carried in a directory payload and installed by its script.
 
 **The program travels per run, as objects.** Nothing is published and no image
 is rebuilt. The payload's files become ordinary content-addressed objects, one
@@ -2510,15 +2563,18 @@ reachable from here, which says nothing about what the destination can reach.
 
 A run whose format is routed to a program gains one `[domain.*]` table, written
 rather than copied: the entry point the install leaves, the payload digest to
-install it from, and the variable names the local entry declared. The names
-travel alone, since each value is the destination's own. The local `binary` and
-`payload` do not travel at all — both name paths on this machine.
+install it from, the variable names the local entry declared, and the SDK it
+declared. The names travel alone, since each value is the destination's own, and
+the SDK travels as a declaration, since the destination's own binary vends the
+package. The local `binary` and `payload` do not travel at all — both name paths
+on this machine.
 
 ```toml
 [domain."acme.thing.v1"]
 binary = "./program/acme.thing.v1/installed/program"
 payload_digest = "<64 hex>"
-env = ["PATH", "PYTHONPATH"]
+env = ["PATH"]
+sdk = "python"
 ```
 
 The far side's own `[orchestrator]` is rebuilt from the destination's form:

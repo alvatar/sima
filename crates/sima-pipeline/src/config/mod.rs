@@ -95,6 +95,7 @@
 //! [domain."acme.thing.v1"]                # a format served by its own program
 //! binary  = "/opt/acme/worker"            # resolved against this file's directory
 //! # env     = ["ACME_ASSETS"]             # optional; variable names it also receives
+//! # sdk     = "python"                    # optional; the SDK this binary vends it
 //! # payload = "./program"                 # optional; what travels when the run migrates
 //! # install = "./install.sh"              # optional for a file payload, required for a directory
 //! # payload_digest = "<64 hex>"           # a migration writes this; the manifest to install here
@@ -113,6 +114,25 @@
 //! baseline, by name alone: each value comes from the orchestrator's own
 //! environment, and a name the orchestrator does not hold is simply absent in
 //! the program.
+//!
+//! ### The SDK the program is written against
+//!
+//! `sdk` names the language whose package this binary carries, and `"python"`
+//! is the one it vends. Any other value is refused at load, naming the config,
+//! the format, the key, and the value.
+//!
+//! An entry declaring it has the package written under `<config-dir>/sdk/<sdk>/`
+//! where the config resolves, once per binary version, and the installed
+//! directory put at the head of the program's module path — `PYTHONPATH` for
+//! Python — ahead of anything the machine holds under the same name. The
+//! vended copy is the one that matches this binary's protocol, which is why it
+//! leads. Every entry declaring one SDK shares its tree: what it holds is a
+//! property of the binary rather than of any one program.
+//!
+//! The key is independent of `payload`, and a migration carries it as the
+//! declaration it is: the destination's own binary vends the package there.
+//! `sima sdk <language> --out <dir>` writes the same package by hand, for
+//! developing a program outside a run.
 //!
 //! ### What travels when the run moves
 //!

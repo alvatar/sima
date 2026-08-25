@@ -21,19 +21,20 @@ workers = 2
 
 [domain."example.stepper.v1"]
 binary = "./stepper.py"
-# A configured program is spawned with a cleared environment, so the names
-# it needs are listed here and their values come from this shell: PATH for
-# the shebang's interpreter lookup, PYTHONPATH for `import sima`.
-env = ["PATH", "PYTHONPATH"]
+# A configured program is spawned with a cleared environment, so the names it
+# needs are listed here and their values come from this shell: PATH for the
+# shebang's interpreter lookup.
+env = ["PATH"]
+# The SDK this program is written against. The sima binary carries the package
+# and puts it on the interpreter's path, so `import sima` resolves here and on
+# any machine this run moves to, with nothing installed there.
+sdk = "python"
 # What travels when `sima migrate` moves this run onto another machine. One
 # file is the program itself: the destination installs it as the entry point
 # and needs no script. A directory would need one, naming it here as
 # `install`, and that script leaves an executable $SIMA_INSTALL_DIR/program.
-#
-# This example's payload runs on the destination only where `import sima`
-# resolves there, which the names above do not carry — a value belongs to the
-# machine it is read on. A directory payload plus an install script that
-# builds a virtualenv is the general answer; see TUTORIAL.md.
+# That is also the answer for a program with third-party dependencies, which
+# the payload carries and the script installs; see TUTORIAL.md.
 payload = "./stepper.py"
 
 # Move the whole run onto another machine: its store and its orchestrator go

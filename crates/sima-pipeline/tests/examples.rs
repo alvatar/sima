@@ -81,9 +81,6 @@ fn the_stepper_example_s_commented_migration_block_loads_when_uncommented() -> R
     // to be one the loader takes. Nothing else here checks it: the example as
     // shipped declares no machine, which is what keeps `sima run` working out
     // of the box.
-    unsafe {
-        std::env::set_var("PYTHONPATH", examples().join("../python"));
-    }
     let shipped = std::fs::read_to_string(examples().join("stepper-py/search.toml"))
         .expect("the example is there");
     let uncommented: String = shipped
@@ -117,16 +114,14 @@ fn the_stepper_example_s_commented_migration_block_loads_when_uncommented() -> R
 #[test]
 fn the_stepper_example_loads_with_its_run_id() -> Result<()> {
     // The Python example routes its format to a program, so loading it spawns
-    // that program to translate the two sections it owns. `PYTHONPATH` reaches
-    // the child because the example declares the name in its `[domain.*] env`.
+    // that program to translate the two sections it owns. `import sima`
+    // resolves in the child because the example declares `sdk = "python"`, and
+    // the load vends the package the entry names before it spawns anything.
     //
     // The spawn is what makes this a load test and a path test at once: a
     // program runs in a scratch working directory of its own, so a binary named
     // relative to this process would resolve against that directory and fail to
     // spawn at all.
-    unsafe {
-        std::env::set_var("PYTHONPATH", examples().join("../python"));
-    }
     assert_eq!(
         run_id("stepper-py/search.toml")?,
         "bff61aa384aa94add7c1609ae6634ca0825ac9548b69712563af224e18b800ef"

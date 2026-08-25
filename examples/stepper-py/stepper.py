@@ -8,9 +8,9 @@ segmentation cuts it. The state a segment commits is what the next segment
 continues from, and the checkpoint the program offers at every step boundary is
 what a restarted attempt resumes from.
 
-Run it with the ``sima`` package importable — ``pip install <repo>/python``, or
-``PYTHONPATH=<repo>/python`` — and a configuration routing the format to this
-file. ``search.toml`` beside it is a runnable one.
+Run it under a configuration that routes the format to this file and declares
+``sdk = "python"``, which is what puts the ``sima`` package on the interpreter's
+path. ``search.toml`` beside it is a runnable one.
 
 Three environment variables arm failure paths, so the infrastructure's recovery
 can be exercised without a second program. Each is inert when unset:

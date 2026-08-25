@@ -19,28 +19,27 @@ The vocabulary:
 - **Task key** — the hash of the spec, the params, the environment, and the position in a chain. It is the address of the result.
 - **Store** — content-addressed objects plus a per-run journal. The store holds results; the journal narrates how they were produced.
 
-A format is answered either **in-process** by a domain this build carries, or by an **external program**: a binary speaking the domain-service and worker protocols over pipes. `docs/protocol.md` publishes that contract; `sima-api` is the Rust SDK over it and `python/` the Python one. Speaking the protocol is the only requirement, so the program can be written in any language.
+A format is answered either **in-process** by a domain this build carries, or by an **external program**: a binary speaking the domain-service and worker protocols over pipes. `docs/protocol.md` publishes that contract; `sima-api` is the Rust SDK over it and the `sima` Python package, which the binary vends, the Python one. Speaking the protocol is the only requirement, so the program can be written in any language.
 
 ## Install
 
-Build the CLI and make the SDK importable:
+Build the CLI:
 
 ```
 cargo build --release -p sima
 export PATH="$PWD/target/release:$PATH"
-export PYTHONPATH="$PWD/python"
-```
-
-Verify both:
-
-```
 sima
-python3 -c "import sima; print(sima.__file__)"
 ```
 
-`sima` prints its command list; the Python line prints a path. `pip install ./python` is the permanent form of the second export.
+`sima` prints its command list.
 
-The SDK matters this early because **sima never links your code**. It spawns your program and talks over pipes. The SDK is the library that speaks that wire protocol, which is what keeps your program an ordinary executable.
+The SDK needs no install of its own. **sima never links your code**: it spawns your program and talks over pipes, and the SDK is the library that speaks that wire protocol, which is what keeps your program an ordinary executable. The binary carries the package, so a config entry declaring `sdk = "python"` is what puts it on the interpreter's path — here and on any machine the run moves to.
+
+To read it, or to develop against it in an editor, write it out:
+
+```
+sima sdk python --out ./vendor
+```
 
 ## What your program supplies
 
@@ -133,14 +132,15 @@ workers = 2
 
 [domain."example.stepper.v1"]
 binary = "./stepper.py"
-env = ["PATH", "PYTHONPATH"]
+env = ["PATH"]
+sdk = "python"
 ```
 
 - **`[run]`** is the identity: seed, format, and `segments = 3`, which cuts each candidate's work into a chain of 3 tasks, each continuing from the previous one's committed state.
 - **`[run.generator]`** names the generator; the keys after `id` belong to your program and cross as TOML text.
 - **`[run.params]`** belongs to your program too.
 - **`[config]`** and **`[[orchestrator.device]]`** are operational — store location, retry ceiling, checkpoint cadence, which device class runs the work and with how many workers. Changing them changes no task key.
-- **`[domain."example.stepper.v1"]`** is the registration: this format is answered by `./stepper.py`, resolved against the config file's directory.
+- **`[domain."example.stepper.v1"]`** is the registration: this format is answered by `./stepper.py`, resolved against the config file's directory, and written against the Python SDK.
 
 ### The environment a spawned program receives
 
@@ -151,7 +151,9 @@ This is deliberate. A configured program is spawned with a cleared environment a
 - a credential the orchestrator holds is never inherited by third-party code,
 - a program cannot quietly depend on where it was launched from.
 
-The consequence for the example: `PATH` is required for the `#!/usr/bin/env python3` shebang to find an interpreter, and `PYTHONPATH` for `import sima` to resolve. Without them the spawn fails.
+The consequence for the example: `PATH` is required for the `#!/usr/bin/env python3` shebang to find an interpreter. Without it the spawn fails.
+
+`import sima` needs no name here. `sdk = "python"` is what carries it: sima writes the package it holds under the config's own directory and puts that directory at the head of the interpreter's module path, ahead of anything the machine already has under the same name. The vended copy is the one that matches the binary's protocol, which is why it leads.
 
 ## Run it
 
@@ -291,9 +293,10 @@ A migration moves the run onto a machine that has never seen your program, so th
 
 ```toml
 [domain."example.stepper.v1"]
-binary  = "./stepper.py"          # how it runs here
-payload = "./stepper.py"          # what travels
-env     = ["PATH", "PYTHONPATH"]  # names; the values are that machine's
+binary  = "./stepper.py"   # how it runs here
+payload = "./stepper.py"   # what travels
+env     = ["PATH"]         # names; the values are that machine's
+sdk     = "python"         # travels as the declaration; the far binary vends it
 ```
 
 `payload` is one file or one directory, resolved against the config file. A single file **is** the program: sima installs it as the entry point and nothing else is needed. A directory needs an `install` script, because which of its files runs is your decision:
@@ -304,6 +307,8 @@ install = "./install.sh"
 ```
 
 An entry that states no `payload` describes a program this machine holds and no other, and `sima migrate` refuses it, naming the missing key.
+
+The SDK is not part of the payload. `sdk = "python"` crosses as the declaration it is, and the destination's own `sima` writes the package: what a program imports there matches the binary driving it there. A third-party dependency is the payload's business — carry it in a directory payload and install it with the script below.
 
 ### The install contract
 
@@ -327,6 +332,8 @@ exec "$SIMA_INSTALL_DIR/venv/bin/python" "$SIMA_PAYLOAD_DIR/stepper.py" "\$@"
 EOF
 chmod 755 "$SIMA_INSTALL_DIR/program"
 ```
+
+A wrapper like that composes with the vended SDK: the interpreter it execs inherits the module path sima set, so `import sima` resolves inside the virtualenv too, and the requirements file carries everything else.
 
 A script that exits non-zero, or leaves no entry point, fails the run on the destination — and `sima migrate` reports the machine and your script's own last lines, so you read the failure here.
 

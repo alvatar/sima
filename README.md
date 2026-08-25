@@ -65,7 +65,9 @@ beyond it as an elastic, heterogeneous extension.
   `[domain."acme.thing.v1"] binary = "/opt/acme/worker"`. What it must do is
   speak two small protocols over its own stdin and stdout, written down in
   `docs/protocol.md` — any language that can frame bytes qualifies. `sima-api`
-  is the Rust SDK over that contract and `python/` the Python one;
+  is the Rust SDK over that contract and the `sima` Python package the other,
+  vended by the binary itself, so a program declaring `sdk = "python"` imports
+  it here and on any machine the run moves to;
   `examples/stepper-py/` is a whole program written against the latter. sima
   spawns the binary, asks it what its format binds, and runs the search through
   it. It runs as its own process, so it loads its assets once and then streams
