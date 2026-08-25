@@ -1,9 +1,12 @@
-//! Getting a registered program onto the machines a run puts work on.
+//! Getting a registered program onto the machines a run puts work on, and
+//! spawning it there.
 //!
 //! A `[domain.*]` entry routes the run's format to a program on the
 //! orchestrator. A fleet machine has no such program, so before it can serve a
 //! worker the program has to be there — the payload's objects delivered, the
-//! install run, the tree stamped.
+//! install run, the tree stamped — and every process the run spawns on that
+//! machine is that installed tree's entry point rather than the image's own
+//! worker.
 //!
 //! The delivery is the far half of a store sync plus an install, which is why
 //! it needs no verb of its own: `sima sync-serve` gains a second form.
@@ -33,6 +36,20 @@
 //! orchestrator — frames tunnel through ssh and the container runtime untouched
 //! — so the package it imports must match the orchestrator's protocol, and a
 //! machine vending its own could vend one built against another.
+//!
+//! How the installed program is reached follows how the machine is:
+//!
+//! - a machine of yours runs it in the image its workers run in, with the
+//!   delivery directory bind-mounted at the identical path on both sides;
+//! - a rented machine runs it over ssh, which already lands inside that
+//!   machine's own container;
+//! - a machine reached without a hop is this one, so the program is spawned
+//!   directly under the explicit policy every configured program gets here.
+//!
+//! The first two state the program's environment in a shell on the machine, the
+//! third in the spawn itself. All three read the digest from that machine's own
+//! stamp, so what a worker answers at its handshake is the disk's claim about
+//! what is installed on it.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};

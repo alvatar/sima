@@ -120,15 +120,16 @@ pub fn orchestrate(
     // that drives their device tables, and their transports — are built here,
     // still before the store. A run that delivers a program builds them below
     // instead, because a delivery reads the store the program is ingested into.
-    let owned = match delivers {
-        false => Some(owned_pools(
+    let owned = if delivers {
+        None
+    } else {
+        Some(owned_pools(
             &members.owned,
             &run,
             &execution,
             &program,
             None,
-        )?),
-        true => None,
+        )?)
     };
     let store = Store::open(&config.store)?;
     let lock = store.acquire_run_lock(&run)?;
@@ -146,9 +147,10 @@ pub fn orchestrate(
     // The one thing this ordering softens: a machine that fails its install
     // leaves an ingested payload in the local store — local, content-addressed,
     // and what the next attempt reuses.
-    let delivery = match delivers {
-        false => None,
-        true => ingest_program(config, &store)?,
+    let delivery = if delivers {
+        ingest_program(config, &store)?
+    } else {
+        None
     };
     // The program reaches every machine of yours before any pool of one exists,
     // so a pool is only ever built where a worker can actually be served.
