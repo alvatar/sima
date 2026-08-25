@@ -155,9 +155,7 @@ impl<'a> FarRun<'a> {
         }
         guard.release()
     }
-}
 
-impl FarRun<'_> {
     /// Runs `body` under the run's collector, so everything it emits reaches
     /// the local journal and the operator's view through one boundary.
     ///

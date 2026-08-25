@@ -355,7 +355,16 @@ sima migrate search.toml
 
 The program's bytes travel through the store as content-addressed objects, so an unchanged program crosses the wire once: a second migration sends nothing and installs nothing. A fleet run sends the same objects the same way, to a directory the machine shares across runs, so putting work on a machine twice costs nothing either. Every worker on a machine that received your program answers the digest that machine's own tree was built from, and one that answers anything else fails its spawn — so a machine running something other than what you sent stops the run rather than filling your store with results from it. The destination's events stream back as they happen, and the results come home to your store. The run id is unchanged — where a format is answered from is operational — so the manifest is the one this machine would have written.
 
-Ctrl-C winds the far run down, pulls what it computed, and leaves the run resumable. Re-run `sima migrate` to continue.
+Ctrl-C detaches. The far run keeps computing on the destination and the command prints the two ways back: `sima migrate search.toml` attaches to it again, `sima recall search.toml` winds it down, pulls what it computed, and leaves the run resumable. Nothing that happens on your machine ends the far run — a closed terminal and a dropped connection do what Ctrl-C does — so ending it is something you ask for by name.
+
+A run you leave computing is bounded by its own config rather than by your attention:
+
+```toml
+[budget]
+max_wall_clock_ms = 21600000
+```
+
+The far run interrupts itself after six hours, whether or not anything is watching. On a rented destination that bounds the compute and not the bill: tearing the machine down needs the provider credential, which never leaves your machine, so the instance sits idle until `sima recall` or `sima reconcile` takes it away.
 
 ### Changing the program
 

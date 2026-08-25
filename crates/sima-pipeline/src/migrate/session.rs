@@ -465,38 +465,38 @@ impl Session<'_> {
         let budget = self.budget();
         // A follow opened before the far run started is the one to use; every
         // other case waits for the run's first journal line and opens then.
-        let stale_first = opened.is_some();
-        let mut feed = match opened {
-            Some(feed) => feed,
-            None => self.attach()?,
-        };
-        let mut status = RunStatus::new(*run);
-        // What the first poll is, and what becomes of it:
+        // What the first poll holds follows from which it was:
         //
         // - opened before the start: an earlier session's journal. This
         //   migration is not watching that run, so its records neither decide
         //   this outcome nor cross into the local journal a second time.
         // - a reattach: the far run's own history, produced while nothing was
         //   attached to journal it. It decides the state, and is not re-emitted.
-        // - neither: the journal was empty, so the first poll is this run's.
+        // - opened after the start: the journal was empty before it, so the
+        //   first poll is this run's like any other.
+        let earlier_session = opened.is_some();
+        let mut feed = match opened {
+            Some(feed) => feed,
+            None => self.attach()?,
+        };
+        let mut status = RunStatus::new(*run);
         let mut first = true;
+        // Whether this run has journaled a line of its own.
         let mut journaled = false;
         // Unset, so the first tick assesses: a migration re-run under a ceiling
         // already spent must not first watch for an interval.
         let mut assessed: Option<Instant> = None;
         loop {
             let records = feed.poll()?;
-            let stale = first && stale_first;
-            let replayed = first && reattached;
-            for record in &records {
-                if stale {
-                    continue;
+            if !(first && earlier_session) {
+                let replayed = first && reattached;
+                for record in &records {
+                    status.apply(record);
+                    if !replayed {
+                        events.emit(record.event.clone());
+                    }
                 }
-                status.apply(record);
-                if !replayed {
-                    events.emit(record.event.clone());
-                }
-                journaled = true;
+                journaled |= !records.is_empty();
             }
             first = false;
             if !matches!(status.state, RunState::InProgress) {

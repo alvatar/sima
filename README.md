@@ -49,9 +49,11 @@ beyond it as an elastic, heterogeneous extension.
   machine `[orchestrator].migrate` names, resumes it there, streams its events
   back, and brings the results home. A have/want store sync transfers exactly
   the missing records and objects, so what crosses is the difference and nothing
-  else. The far run is detached, so a dropped connection leaves the destination
-  computing and re-running reattaches to it; the manifest a migrated run writes
-  is byte-identical to one that never left.
+  else. The far run is detached, so nothing on your machine ends it — a dropped
+  connection, a closed terminal, and a Ctrl-C all leave the destination
+  computing, and re-running attaches to it again. `sima recall` is what winds it
+  down and brings the results home; the manifest a migrated run writes is
+  byte-identical to one that never left.
 - **Watch it run, from anywhere.** `sima tui` drives a run in a full-screen
   live view and `sima follow` streams its events to a pipe; `sima status` and
   `sima report` print run state and per-candidate stats. Every one of them
