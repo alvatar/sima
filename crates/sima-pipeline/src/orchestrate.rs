@@ -1,7 +1,7 @@
 //! [`orchestrate`]: one loaded config driven to its outcome.
 
 use sima_contracts::DeviceBinding;
-use sima_core::{Error, Result};
+use sima_core::{Error, Hash, Result};
 use sima_domains::devices::DeviceInfo;
 use sima_model::{FormatId, RunId};
 use sima_scheduler::{ExecutionConfig, RunControl, RunOutcome, WorkerPool, worker_slots};
@@ -75,7 +75,8 @@ pub fn orchestrate(
     // starts and the hardware is at hand — and not at load, which must work on
     // a machine with no device.
     let execution = resolve_devices(config, source)?;
-    let local = local_pool(config, &run, &execution, source)?;
+    let program = WorkerProgram::of(config);
+    let local = local_pool(config, &run, &execution, source, &program)?;
     // The fleet's control planes and the modes their machines are reached
     // through are built before the store: a vast rental without its key fails
     // here, before any store mutation.
@@ -92,7 +93,7 @@ pub fn orchestrate(
     // hardware: the image is verified present, then the enumeration probe
     // drives its device-table resolution. Both precede the store so a
     // misconfigured machine leaves nothing behind.
-    let owned = owned_pools(&members.owned, &run, &execution, &config.run.format)?;
+    let owned = owned_pools(&members.owned, &run, &execution, &program)?;
     let store = Store::open(&config.store)?;
     let lock = store.acquire_run_lock(&run)?;
     // The build serving a config-routed format is compared against the one the
@@ -266,6 +267,31 @@ struct ContainerPool {
     slots: Vec<Option<DeviceBinding>>,
 }
 
+/// What a pool's workers are spawned to answer for: the run's format, and the
+/// digest of the program that answers for it where one travelled to the machine
+/// they run on. The two travel together because one handshake states both.
+struct WorkerProgram {
+    format: FormatId,
+    /// `Some` exactly when the config entry resolved a `payload_digest` — the
+    /// program this run installed where it runs. Every worker answers it back,
+    /// and a worker that answers anything else fails its spawn.
+    digest: Option<String>,
+}
+
+impl WorkerProgram {
+    /// What `config`'s run spawns for: its format, and the digest of the
+    /// program routed to that format where the entry stated one.
+    fn of(config: &LoadedConfig) -> WorkerProgram {
+        WorkerProgram {
+            format: config.run.format.clone(),
+            digest: config
+                .domains
+                .routed(&config.run.format)
+                .and_then(|routed| routed.payload_digest.map(Hash::to_string)),
+        }
+    }
+}
+
 /// Builds the orchestrator's own pool, or `None` when it declares no worker
 /// layout and the fleet carries the run.
 ///
@@ -279,6 +305,7 @@ fn local_pool(
     run: &RunId,
     execution: &ExecutionConfig,
     source: &dyn DomainSource,
+    program: &WorkerProgram,
 ) -> Result<Option<LocalPool>> {
     let Some(pool) = &config.orchestrator.pool else {
         return Ok(None);
@@ -293,13 +320,12 @@ fn local_pool(
                 Vec::new(),
                 // Inherited for sima's own worker, explicit for a program a
                 // config routed this format to.
-                spawn_settings(source.spawn_policy(), execution, &config.run.format),
+                spawn_settings(source.spawn_policy(), execution, program),
             )),
             slots: worker_slots(execution),
         })),
         Some(container) => {
-            let built =
-                container_pool(None, container, pool, 0, run, execution, &config.run.format)?;
+            let built = container_pool(None, container, pool, 0, run, execution, program)?;
             Ok(Some(LocalPool {
                 transport: Box::new(built.transport),
                 slots: built.slots,
@@ -315,7 +341,7 @@ fn owned_pools(
     machines: &[OwnedMachine<'_>],
     run: &RunId,
     execution: &ExecutionConfig,
-    format: &FormatId,
+    program: &WorkerProgram,
 ) -> Result<Vec<ContainerPool>> {
     machines
         .iter()
@@ -331,7 +357,7 @@ fn owned_pools(
                 index + 1,
                 run,
                 execution,
-                format,
+                program,
             )
         })
         .collect()
@@ -348,7 +374,7 @@ fn container_pool(
     index: usize,
     run: &RunId,
     execution: &ExecutionConfig,
-    format: &FormatId,
+    program: &WorkerProgram,
 ) -> Result<ContainerPool> {
     // A pool fails on either answer; only the migration's first contact waits
     // for a machine that is still coming up.
@@ -358,7 +384,7 @@ fn container_pool(
     let slots = match pool {
         Pool::Workers(workers) => vec![None; *workers],
         Pool::Devices(selectors) => {
-            let enumerated = probe_container_devices(host, container, format)?;
+            let enumerated = probe_container_devices(host, container, &program.format)?;
             let entries = devices::resolve(selectors, &enumerated)?;
             let exec = ExecutionConfig::with_devices(
                 entries,
@@ -386,7 +412,7 @@ fn container_pool(
             // The runtime client is sima's own process: it reads its
             // configuration from the ambient environment, and the worker it
             // nests is the sima image's.
-            spawn_settings(SpawnPolicy::Inherit, execution, format),
+            spawn_settings(SpawnPolicy::Inherit, execution, program),
         ),
         // A container on this machine binds as local in the journal — it is the
         // local machine.
@@ -443,13 +469,14 @@ fn resolve_devices(config: &LoadedConfig, source: &dyn DomainSource) -> Result<E
 fn spawn_settings(
     policy: SpawnPolicy,
     execution: &ExecutionConfig,
-    format: &FormatId,
+    program: &WorkerProgram,
 ) -> SpawnSettings {
     SpawnSettings::new(
         policy,
         execution.answer_timeout,
-        format.clone(),
+        program.format.clone(),
         execution.checkpoint_interval,
         execution.checkpoint_interval_steps,
     )
+    .expecting_program(program.digest.clone())
 }

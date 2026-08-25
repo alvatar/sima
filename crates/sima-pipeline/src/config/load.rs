@@ -1693,6 +1693,7 @@ mod tests {
             SpawnPolicy::Explicit {
                 passthrough: Vec::new(),
                 prepend: Vec::new(),
+                assign: Vec::new(),
             }
         );
     }
@@ -1704,6 +1705,7 @@ mod tests {
             SpawnPolicy::Explicit {
                 passthrough: vec!["ACME_ASSETS".to_string(), "ACME_LICENSE_PATH".to_string()],
                 prepend: Vec::new(),
+                assign: Vec::new(),
             }
         );
     }
@@ -1743,6 +1745,7 @@ mod tests {
                     "PYTHONPATH".to_string(),
                     std::ffi::OsString::from(installed),
                 )],
+                assign: Vec::new(),
             }
         );
     }
@@ -2277,6 +2280,31 @@ mod tests {
                 .binary,
             entry,
             "the entry the config names is the one that answered"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_payload_digest_reaches_every_spawn_the_loaded_config_makes() -> Result<()> {
+        // The whole path from the key: the load installs the tree the digest
+        // names, then states that digest to every process it spawns from the
+        // entry point, so each worker answers it back at its handshake.
+        let far = FarSide::new(|dir| PayloadSpec {
+            payload: wrapper(&dir.join("src/wrapper.sh")),
+            install: None,
+        });
+        let loaded = far.load()?;
+        let format = FormatId::new("stub.v1").expect("format id");
+        let SpawnPolicy::Explicit { assign, .. } = loaded.domains.source(&format).spawn_policy()
+        else {
+            panic!("a routed format spawns on an explicit surface");
+        };
+        assert_eq!(
+            assign,
+            vec![(
+                "SIMA_PROGRAM_DIGEST".to_string(),
+                std::ffi::OsString::from(far.digest.to_string()),
+            )]
         );
         Ok(())
     }

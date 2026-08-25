@@ -15,6 +15,7 @@
 //! store.
 
 use std::collections::BTreeMap;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
@@ -24,6 +25,7 @@ use sima_core::{Error, Hash, Result, hash_bytes};
 use sima_model::{Environment, FormatId, GeneratorId, Params, Spec};
 use sima_transport::SpawnPolicy;
 use sima_transport::domain_service::DomainService;
+use sima_transport::protocol::PROGRAM_DIGEST_VAR;
 
 use crate::payload::PayloadSpec;
 use crate::sdk::Sdk;
@@ -151,6 +153,10 @@ pub(crate) struct BinarySource {
     /// travels to the far entry as a declaration, and the destination's own
     /// binary is what vends it there.
     sdk: Option<Sdk>,
+    /// The payload manifest this machine's program was installed from. It has
+    /// two consumers: the policy above states it to every process spawned from
+    /// the program, and the run expects it back from each worker's handshake.
+    payload_digest: Option<Hash>,
     /// The open session. One conversation serves the whole config, so the
     /// program pays its startup cost once; the lock is what makes that one
     /// conversation reachable from the threads a run drives.
@@ -168,9 +174,7 @@ impl BinarySource {
             binary,
             env,
             payload,
-            // Consumed where the config resolved: the tree it names is already
-            // materialized and installed by the time the binary is spawned.
-            payload_digest: _,
+            payload_digest,
             sdk,
             sdk_path,
         } = entry;
@@ -200,9 +204,23 @@ impl BinarySource {
             .map(|(sdk, path)| (sdk.path_variable().to_string(), path.into_os_string()))
             .into_iter()
             .collect();
+        // The program this machine was sent, stated to everything spawned from
+        // it: the load has just installed the tree whose stamp is this digest,
+        // so what the variable carries is the disk's state. Each worker echoes
+        // it at its handshake, where it is agreed against the same value.
+        let assign = payload_digest
+            .map(|digest| {
+                (
+                    PROGRAM_DIGEST_VAR.to_string(),
+                    OsString::from(digest.to_string()),
+                )
+            })
+            .into_iter()
+            .collect();
         let policy = SpawnPolicy::Explicit {
             passthrough: env.clone(),
             prepend,
+            assign,
         };
         let mut service =
             DomainService::spawn(&binary, &format, &policy, answer_timeout).map_err(declared)?;
@@ -214,6 +232,7 @@ impl BinarySource {
             payload,
             env,
             sdk,
+            payload_digest,
             session: Mutex::new(service),
         })
     }
@@ -350,6 +369,7 @@ impl DomainRegistry {
                 payload: source.payload.as_ref(),
                 env: &source.env,
                 sdk: source.sdk,
+                payload_digest: source.payload_digest.as_ref(),
             })
     }
 }
@@ -370,6 +390,10 @@ pub(crate) struct RoutedProgram<'a> {
     /// The SDK the entry declared, which travels to a far entry as the same
     /// declaration: the package itself is the destination binary's to vend.
     pub(crate) sdk: Option<Sdk>,
+    /// The payload manifest this machine's program was installed from, which is
+    /// what every worker of the run must answer at its handshake. `None` for a
+    /// program that travelled nowhere.
+    pub(crate) payload_digest: Option<&'a Hash>,
 }
 
 /// The text of a configuration section, as the source that owns its keys
@@ -643,7 +667,72 @@ mod tests {
             SpawnPolicy::Explicit {
                 passthrough: vec!["ACME_ASSETS".to_string()],
                 prepend: Vec::new(),
+                assign: Vec::new(),
             }
+        );
+        Ok(())
+    }
+
+    /// The digest a migrated entry states, standing for the manifest object the
+    /// store holds.
+    fn a_payload_digest() -> Hash {
+        sima_core::hash_bytes(b"a payload manifest")
+    }
+
+    #[test]
+    fn an_entry_stating_a_payload_digest_injects_it_into_every_spawn() -> Result<()> {
+        // The digest the load verified is what the machine's workers must
+        // answer, so the policy that spawns them states it: sima sets the
+        // variable, and the program echoes it back unread.
+        let digest = a_payload_digest();
+        let registry = DomainRegistry::new(
+            vec![DomainEntry {
+                payload_digest: Some(digest),
+                ..entry("stub.v1", built_worker(), Vec::new())
+            }],
+            Duration::MAX,
+        )?;
+        assert_eq!(
+            registry.source(&format("stub.v1")).spawn_policy(),
+            SpawnPolicy::Explicit {
+                passthrough: Vec::new(),
+                prepend: Vec::new(),
+                assign: vec![(
+                    "SIMA_PROGRAM_DIGEST".to_string(),
+                    OsString::from(digest.to_string()),
+                )],
+            }
+        );
+        let routed = registry
+            .routed(&format("stub.v1"))
+            .expect("the declared format is routed to its program");
+        assert_eq!(
+            routed.payload_digest,
+            Some(&digest),
+            "the same value reaches the expected side of the handshake"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn an_entry_stating_no_payload_digest_injects_nothing() -> Result<()> {
+        // A program this machine holds and no other: nothing was sent anywhere,
+        // so nothing is stated and nothing is expected back.
+        let registry = served_by_binary()?;
+        assert_eq!(
+            registry.source(&format("stub.v1")).spawn_policy(),
+            SpawnPolicy::Explicit {
+                passthrough: Vec::new(),
+                prepend: Vec::new(),
+                assign: Vec::new(),
+            }
+        );
+        assert_eq!(
+            registry
+                .routed(&format("stub.v1"))
+                .expect("the declared format is routed")
+                .payload_digest,
+            None
         );
         Ok(())
     }
