@@ -33,6 +33,9 @@ pub(crate) struct OwnedMachine<'a> {
     pub(crate) container: &'a Container,
     /// Its worker layout.
     pub(crate) pool: &'a Pool,
+    /// Where this machine keeps what a run puts there — a migrated run's
+    /// directory, and the programs a fleet run delivers.
+    pub(crate) root: &'a str,
 }
 
 /// One rental request: what to acquire, how many, and what a shortfall does.
@@ -86,6 +89,7 @@ fn push_host<'a>(resolved: &mut Members<'a>, name: &'a str, host: &'a Host) {
             ssh: &owned.ssh,
             container: &owned.container,
             pool: &owned.pool,
+            root: &host.root,
         }),
         // One machine is a rental of exactly one, which cannot fall short of a
         // count without failing outright.
@@ -108,6 +112,7 @@ fn push_class<'a>(resolved: &mut Members<'a>, name: &'a str, class: &'a HostClas
                     ssh,
                     container: &owned.container,
                     pool: &owned.pool,
+                    root: &class.root,
                 }));
         }
         HostClassForm::Rented(rented) => resolved.rentals.push(Rental {

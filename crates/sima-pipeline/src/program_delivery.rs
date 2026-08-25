@@ -38,12 +38,22 @@ use std::path::{Path, PathBuf};
 
 use sima_core::{Error, Hash, Result};
 use sima_store::{ObjectScope, Store, SyncReport};
+use sima_transport::container::{ContainerRun, once_argv};
 
 use crate::config::LoadedConfig;
+use crate::fleet::OwnedMachine;
 use crate::payload::{self, ProgramTree};
 use crate::sdk;
 use crate::sync_session::sync_against;
 
+/// The `sima` binary inside a worker image, by its name on the `PATH` there.
+/// A delivery's far half runs there rather than on the machine itself, so the
+/// install builds in the environment the program will run in.
+const IMAGE_BINARY: &str = "sima";
+/// The directory a machine's delivered programs hang off, under the `root` its
+/// entry names. Every run delivering to that machine shares it, which is what
+/// makes an unchanged program cross the wire once.
+const PROGRAMS_DIR: &str = "programs";
 /// The store the delivered objects land in, under the delivery directory.
 /// Shared across every run that delivers to this machine.
 const STORE_DIR: &str = "store";
@@ -115,6 +125,39 @@ impl ProgramDelivery {
     }
 }
 
+/// Where a machine whose entry names `root` keeps the programs runs deliver to
+/// it.
+///
+/// The path travels unresolved — a tilde is the receiving machine's shell's to
+/// expand — so it is composed as text rather than as a [`Path`], which would
+/// resolve it against this machine.
+pub(crate) fn programs_dir(root: &str) -> String {
+    format!("{}/{PROGRAMS_DIR}", root.trim_end_matches('/'))
+}
+
+/// Refuses a run whose format is a program that cannot travel.
+///
+/// Such an entry declares neither `payload` nor `payload_digest`, which is what
+/// says the program stays on the machine it is installed on. A fleet machine
+/// would never receive it and could serve no worker for the run, and no
+/// machine's answer could change that — so a run that engages one is refused
+/// before any machine is contacted.
+pub(crate) fn sendable(config: &LoadedConfig) -> Result<()> {
+    let format = &config.run.format;
+    let Some(routed) = config.domains.routed(format) else {
+        return Ok(());
+    };
+    if routed.payload.is_none() && routed.payload_digest.is_none() {
+        return Err(Error::Validation(format!(
+            "the program declared for format {:?} cannot reach another machine: its \
+             [domain] entry names no `payload`, so a machine of the fleet never \
+             receives it and can serve no worker for this run",
+            format.as_str()
+        )));
+    }
+    Ok(())
+}
+
 /// Ingests what `config`'s run sends its machines into `store`, and answers it.
 ///
 /// `None` for a run whose format this build carries: every machine's own worker
@@ -131,8 +174,8 @@ impl ProgramDelivery {
 /// these objects, so the ingest re-derives the same digest over objects the
 /// store holds.
 pub fn ingest_program(config: &LoadedConfig, store: &Store) -> Result<Option<ProgramDelivery>> {
-    let format = &config.run.format;
-    let Some(routed) = config.domains.routed(format) else {
+    sendable(config)?;
+    let Some(routed) = config.domains.routed(&config.run.format) else {
         return Ok(None);
     };
     let payload = match (routed.payload, routed.payload_digest) {
@@ -141,16 +184,49 @@ pub fn ingest_program(config: &LoadedConfig, store: &Store) -> Result<Option<Pro
         // this machine was installed from objects the migration delivered, and
         // those objects are what this store holds.
         (None, Some(digest)) => *digest,
-        (None, None) => {
-            return Err(Error::Validation(format!(
-                "the program declared for format {:?} cannot reach another machine: \
-                 its entry names no `payload`, so there is nothing to send",
-                format.as_str()
-            )));
-        }
+        // `sendable` above refused this entry.
+        (None, None) => unreachable!("an entry with nothing to send is refused"),
     };
     let sdk = routed.sdk.map(|sdk| sdk.ingest(store)).transpose()?;
     Ok(Some(ProgramDelivery { payload, sdk }))
+}
+
+/// Delivers `delivery` to every machine of yours the fleet drew in, so each
+/// holds the program before its pool is constructed.
+///
+/// The far half runs in the image the machine's workers run in, with the
+/// delivery directory bind-mounted at the identical path on both sides. Both
+/// follow from what an install is: a script that builds the program has to
+/// build it in the environment the program will run in, and the stamp it writes
+/// has to name the same file to the spawn that reads it later.
+///
+/// A machine that cannot be delivered to fails the run, naming it. It was
+/// declared as a place this run executes, and without the program it can serve
+/// no worker.
+pub(crate) fn deliver_to_owned(
+    machines: &[OwnedMachine<'_>],
+    store: &Store,
+    delivery: &ProgramDelivery,
+) -> Result<()> {
+    for machine in machines {
+        let programs = programs_dir(machine.root);
+        let mut command = vec![IMAGE_BINARY.to_string()];
+        command.extend(delivery.args(&programs));
+        let argv = once_argv(
+            Some(machine.ssh),
+            &machine.container.runtime,
+            &machine.container.image,
+            &machine.container.run_args,
+            &ContainerRun::program(vec![format!("{programs}:{programs}")], command),
+        );
+        delivery.send(store, &argv).map_err(|e| {
+            Error::Transport(format!(
+                "cannot deliver the program to {:?}: {e}",
+                machine.ssh
+            ))
+        })?;
+    }
+    Ok(())
 }
 
 /// Receives one delivery into `dir` and installs what it names: the program

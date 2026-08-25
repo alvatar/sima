@@ -16,6 +16,7 @@ use crate::domain_registry::DomainSource;
 use crate::fleet::{Engagement, Members, OwnedMachine, members};
 use crate::process::{ImageCheck, bootstrap_image, command_stdout};
 use crate::program_binding::{BinaryChange, bind};
+use crate::program_delivery::{deliver_to_owned, ingest_program, sendable};
 use crate::rental::{
     RentalGroup, StopSignal, Supervisor, acquire_hosts, provider_for_rental, release_all,
     transport_mode,
@@ -71,6 +72,15 @@ pub fn orchestrate(
             ),
         });
     }
+    // Whether this run has to put its program on its machines before they can
+    // serve it: the fleet drew in machines, and the format is a program rather
+    // than one this build carries. An entry that declares nothing to send is
+    // refused here, before any machine is contacted — no machine's answer could
+    // change it.
+    let delivers = !members.is_empty() && config.domains.routed(&config.run.format).is_some();
+    if delivers {
+        sendable(config)?;
+    }
     let run = config.run.id();
     // A device selector names hardware, so it resolves here — where the run
     // starts and the hardware is at hand — and not at load, which must work on
@@ -90,11 +100,26 @@ pub fn orchestrate(
         .iter()
         .map(|provider| transport_mode(provider.as_ref()))
         .collect::<Result<Vec<_>>>()?;
-    // Machines of yours resolve at run start too, over each machine's own
-    // hardware: the image is verified present, then the enumeration probe
-    // drives its device-table resolution. Both precede the store so a
-    // misconfigured machine leaves nothing behind.
-    let owned = owned_pools(&members.owned, &run, &execution, &program)?;
+    // Machines of yours are verified at run start too, over each machine's own
+    // hardware: the image is confirmed present here, before the store, so a
+    // machine that is unreachable or missing its image leaves no store, no run
+    // directory, and no lock behind.
+    for machine in &members.owned {
+        if let ImageCheck::Unreachable(error) =
+            bootstrap_image(Some(machine.ssh), machine.container)?
+        {
+            return Err(error);
+        }
+    }
+    // A run whose format this build carries puts nothing on its machines that
+    // the image does not already hold, so its pools — the enumeration probe
+    // that drives their device tables, and their transports — are built here,
+    // still before the store. A run that delivers a program builds them below
+    // instead, because a delivery reads the store the program is ingested into.
+    let owned = match delivers {
+        false => Some(owned_pools(&members.owned, &run, &execution, &program)?),
+        true => None,
+    };
     let store = Store::open(&config.store)?;
     let lock = store.acquire_run_lock(&run)?;
     // The build serving a config-routed format is compared against the one the
@@ -104,6 +129,20 @@ pub fn orchestrate(
     if let Some(routed) = config.domains.routed(&config.run.format) {
         bind(&store, &config.run, &routed, accept)?;
     }
+    let owned = match owned {
+        Some(pools) => pools,
+        // The program reaches every machine before any pool of one exists, so
+        // a pool is only ever built where a worker can actually be served. The
+        // one thing this ordering softens: a machine that fails its install
+        // leaves an ingested payload in the local store — local,
+        // content-addressed, and what the next attempt reuses.
+        None => {
+            let delivery =
+                ingest_program(config, &store)?.expect("a routed format's program is ingested");
+            deliver_to_owned(&members.owned, &store, &delivery)?;
+            owned_pools(&members.owned, &run, &execution, &program)?
+        }
+    };
     // Rentals are acquired under the held lock — each machine behind a teardown
     // guard held for the run's life. A strict-fill shortfall tears down whatever
     // was acquired and fails here, before any task runs.
@@ -327,6 +366,11 @@ fn local_pool(
             slots: worker_slots(execution),
         })),
         Some(container) => {
+            // A pool fails on either answer; only the migration's first contact
+            // waits for a machine that is still coming up.
+            if let ImageCheck::Unreachable(error) = bootstrap_image(None, container)? {
+                return Err(error);
+            }
             let built = container_pool(None, container, pool, 0, run, execution, program)?;
             Ok(Some(LocalPool {
                 transport: Box::new(built.transport),
@@ -365,9 +409,11 @@ fn owned_pools(
         .collect()
 }
 
-/// Builds one container pool: verifies the image is present where the container
-/// will run, derives the pool's slots, and constructs the transport under a
-/// container-name stem unique to this run and pool.
+/// Builds one container pool: derives the pool's slots, and constructs the
+/// transport under a container-name stem unique to this run and pool.
+///
+/// The image is confirmed present by the caller, which is where the ordering
+/// against the store is decided.
 #[allow(clippy::too_many_arguments)]
 fn container_pool(
     host: Option<&str>,
@@ -378,11 +424,6 @@ fn container_pool(
     execution: &ExecutionConfig,
     program: &WorkerProgram,
 ) -> Result<ContainerPool> {
-    // A pool fails on either answer; only the migration's first contact waits
-    // for a machine that is still coming up.
-    if let ImageCheck::Unreachable(error) = bootstrap_image(host, container)? {
-        return Err(error);
-    }
     let slots = match pool {
         Pool::Workers(workers) => vec![None; *workers],
         Pool::Devices(selectors) => {

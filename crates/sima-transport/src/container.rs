@@ -250,18 +250,53 @@ pub(crate) fn kill_argv(host: Option<&str>, runtime: &str, container: &str) -> V
     argv
 }
 
-/// The argv that runs the one-shot enumeration probe in a throwaway container,
-/// ssh-wrapped when `host` is set: `[ssh …] <runtime> run --rm -i <run_args>
-/// <image> sima-worker --enumerate-devices [<format>]`. It carries the pool's
-/// `run_args` so the probe sees the same devices the workers will, and whatever
-/// [`DeviceProbe`] asks. The orchestrator runs it at run start to resolve a
-/// remote's device selectors.
-pub fn probe_argv(
+/// What a container runs, and what it must see to run it.
+///
+/// A run whose format this build carries runs the image's own worker and needs
+/// nothing mounted. A run whose format is a program outside this build runs
+/// that program out of the machine's own filesystem, which the container has to
+/// be given: the mount is stated as `<path>:<path>`, the identical path on both
+/// sides, so a path naming a file outside names the same file inside — which is
+/// what lets a stamp written by one container be read by the next.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContainerRun {
+    /// Bind mounts, each already in the runtime's `<host>:<container>` form.
+    mounts: Vec<String>,
+    /// The command the container runs, from its program onward.
+    command: Vec<String>,
+}
+
+impl ContainerRun {
+    /// The image's own worker with `args`, mounting nothing — everything it
+    /// needs is in the image.
+    pub fn worker(args: Vec<String>) -> ContainerRun {
+        let mut command = vec![WORKER_ENTRYPOINT.to_string()];
+        command.extend(args);
+        ContainerRun {
+            mounts: Vec::new(),
+            command,
+        }
+    }
+
+    /// A command of the caller's, over the machine paths `mounts` names.
+    pub fn program(mounts: Vec<String>, command: Vec<String>) -> ContainerRun {
+        ContainerRun { mounts, command }
+    }
+}
+
+/// The argv that runs one command in a throwaway container, ssh-wrapped when
+/// `host` is set: `[ssh …] <runtime> run --rm -i [-v <mount>…] <run_args>
+/// <image> <command…>`.
+///
+/// The pool's `run_args` come last before the image, so a machine's own
+/// configuration is what the runtime reads last, and the container sees the
+/// same devices the pool's workers will.
+pub fn once_argv(
     host: Option<&str>,
     runtime: &str,
     image: &str,
     run_args: &[String],
-    probe: DeviceProbe,
+    run: &ContainerRun,
 ) -> Vec<String> {
     let mut argv = ssh_prefix(host);
     argv.extend([
@@ -270,11 +305,33 @@ pub fn probe_argv(
         "--rm".to_string(),
         "-i".to_string(),
     ]);
+    for mount in &run.mounts {
+        argv.extend(["-v".to_string(), mount.clone()]);
+    }
     argv.extend(run_args.iter().cloned());
     argv.push(image.to_string());
-    argv.push(WORKER_ENTRYPOINT.to_string());
-    argv.extend(probe.args());
+    argv.extend(run.command.iter().cloned());
     argv
+}
+
+/// The argv that runs the one-shot enumeration probe in a throwaway container:
+/// [`once_argv`] over the image's own worker and whatever [`DeviceProbe`] asks.
+/// The orchestrator runs it at run start to resolve a remote's device
+/// selectors.
+pub fn probe_argv(
+    host: Option<&str>,
+    runtime: &str,
+    image: &str,
+    run_args: &[String],
+    probe: DeviceProbe,
+) -> Vec<String> {
+    once_argv(
+        host,
+        runtime,
+        image,
+        run_args,
+        &ContainerRun::worker(probe.args()),
+    )
 }
 
 /// The argv that checks a worker image is present, ssh-wrapped when `host` is
@@ -470,6 +527,66 @@ mod tests {
                 "--enumerate-devices",
                 "stub.v1"
             ]
+        );
+    }
+
+    #[test]
+    fn a_command_run_carries_its_mounts_before_the_pool_s_own_arguments() {
+        // The delivery and the registered-format probe both run a command of
+        // sima's own in a throwaway container. The mount is the transport's,
+        // the run args are the pool's, and the pool's come last so a machine's
+        // configuration is what the runtime sees last.
+        let argv = once_argv(
+            Some("gpubox"),
+            "docker",
+            "sima:latest",
+            &["--gpus".to_string(), "all".to_string()],
+            &ContainerRun::program(
+                vec!["/srv/programs:/srv/programs".to_string()],
+                vec![
+                    "sima".to_string(),
+                    "sync-serve".to_string(),
+                    "/srv/programs".to_string(),
+                ],
+            ),
+        );
+        assert_eq!(
+            argv,
+            [
+                "ssh",
+                "-o",
+                "BatchMode=yes",
+                "gpubox",
+                "--",
+                "docker",
+                "run",
+                "--rm",
+                "-i",
+                "-v",
+                "/srv/programs:/srv/programs",
+                "--gpus",
+                "all",
+                "sima:latest",
+                "sima",
+                "sync-serve",
+                "/srv/programs",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_worker_run_names_the_image_s_own_worker_and_mounts_nothing() {
+        // The builtin path, byte-identical: no mount, and the command is the
+        // entry point the image carries.
+        assert_eq!(
+            once_argv(
+                None,
+                "podman",
+                "img",
+                &[],
+                &ContainerRun::worker(Vec::new())
+            ),
+            ["podman", "run", "--rm", "-i", "img", "sima-worker"]
         );
     }
 
