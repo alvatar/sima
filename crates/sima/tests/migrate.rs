@@ -736,6 +736,57 @@ fn a_recall_of_a_machine_never_migrated_to_names_what_is_missing() -> Result<()>
     Ok(())
 }
 
+/// The candidate behaviors of a run that cannot complete: one accumulating
+/// chain, and one candidate the domain rejects outright — a definitive failure
+/// no retry revisits, which is what a far run ending in `RunFailed` is.
+const REJECTED: &str = r#""accumulate:2", "reject""#;
+
+#[test]
+fn a_recall_of_a_far_run_that_failed_brings_the_failure_home() -> Result<()> {
+    // A definitive failure is written in the far run's journal, which does not
+    // travel: a recall follows nothing, so reading that journal is the only way
+    // the failure reaches this side. Without it the run would come home
+    // resumable, counting the tasks the failure made unreachable as work left.
+    workers_built();
+    let dir = tempfile::tempdir().expect("temp dir");
+    let far_root = dir.path().join("far");
+
+    // The far run really fails: it is the migration that puts it there and the
+    // far `sima run` that writes the failure into its own journal.
+    let migrated = migrating(dir.path(), &far_root, SEGMENTS, REJECTED);
+    let outcome = move_run(&migrated)?;
+    assert!(
+        matches!(outcome, MigrateOutcome::Failed { .. }),
+        "the far run failed definitively: {outcome:?}"
+    );
+    assert!(
+        far_pid(&migrated, &far_root).is_none(),
+        "a run that failed exited"
+    );
+
+    // The recall reaches that same far directory as a machine of yours, over a
+    // far side that ended before it ever arrived.
+    let bin = ssh_stand_in(dir.path());
+    let recalling = recalling(dir.path(), &far_root, "farbox", SEGMENTS, REJECTED);
+    let output = sima_with(&bin, &["recall", recalling.to_str().expect("utf-8 path")]);
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "a run that failed comes home failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).expect("stdout is UTF-8");
+    assert!(
+        stdout.contains("definitive failure"),
+        "the failure is what it reports: {stdout}"
+    );
+    assert!(
+        manifest_bytes(&recalling).is_none(),
+        "a failed run seals nothing"
+    );
+    Ok(())
+}
+
 // ---- The same acceptance, over a real ssh hop ----
 
 /// A throwaway sshd for the duration of a test: its own host key, its own

@@ -24,12 +24,13 @@ use sima_core::{Error, Result};
 use sima_domains::devices::DeviceInfo;
 use sima_model::{FormatId, RunId, TaskKey};
 use sima_provider::{Provider, SshEndpoint};
+use sima_scheduler::Record;
 use sima_store::{ObjectScope, Store, SyncReport};
 use sima_transport::{SpawnMode, SshDestination};
 
 use crate::config::{Container, OwnedHost};
 use crate::devices::parse_enumeration;
-use crate::feed::{RemoteFeed, RunFeed};
+use crate::feed::{RemoteFeed, RunFeed, snapshot_over_argv};
 use crate::migrate::destination::Destination;
 use crate::migrate::far_config::FarLayout;
 use crate::migrate::sync::{Reach, sync_over};
@@ -96,6 +97,17 @@ pub(crate) trait FarSide {
 
     /// Opens a live follow of the far run.
     fn follow(&self) -> Result<Box<dyn RunFeed>>;
+
+    /// The far run's journal, read once and in full.
+    ///
+    /// A recall follows nothing, so this is the only way what the far run ended
+    /// as reaches this side: a definitive failure is written there and travels
+    /// no other way, since journals do not sync.
+    ///
+    /// A far side with no journal to serve — a run that died before writing a
+    /// line, a directory holding no store yet — answers with no records, which
+    /// is an absence rather than a fault.
+    fn snapshot(&self) -> Result<Vec<Record>>;
 
     /// The last lines of the far run's log.
     ///
@@ -379,6 +391,20 @@ impl FarSide for Remote {
     fn follow(&self) -> Result<Box<dyn RunFeed>> {
         let argv = self.reach.follow_serve_argv(&self.layout.config());
         Ok(Box::new(RemoteFeed::open_over(&argv, &self.reach.label())?))
+    }
+
+    fn snapshot(&self) -> Result<Vec<Record>> {
+        let argv = self.reach.follow_serve_once_argv(&self.layout.config());
+        match snapshot_over_argv(&argv, &self.reach.label()) {
+            Ok((_, records)) => Ok(records),
+            // A far side that answered for itself has no journal to serve: a
+            // run never started in the store there, a config that does not
+            // load. There is no state to read, which is what no records says;
+            // a destination that could not be reached at all fails instead,
+            // and the pull behind this would fail on it too.
+            Err(Error::Reported(_)) => Ok(Vec::new()),
+            Err(error) => Err(error),
+        }
     }
 
     fn log_tail(&self) -> Result<String> {

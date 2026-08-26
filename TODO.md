@@ -1083,10 +1083,12 @@ without publishing anywhere and without rebuilding an image.
         interrupt during the acquisition keeps its own meaning: there is no far
         run yet to leave behind, so it abandons the offer walk.
       - **`sima recall <config>` is the inverse verb.** It winds a driving far
-        run down, pulls, settles, and destroys the rental; over one that has
-        ended it collects without restarting anything, which is what re-running
-        `sima migrate` used to be the only way to do. It never places, pushes,
-        starts, or rents.
+        run down, reads what it ended as, pulls, settles, and destroys the
+        rental; over one that has ended it collects without restarting
+        anything, which is what re-running `sima migrate` used to be the only
+        way to do. It never places, pushes, starts, or rents — the journal read
+        is one `sima follow-serve --once`, which is what brings a definitive
+        far-side failure home as a failure.
       - **Budget exhaustion still winds down** while attached: money is the one
         thing that cannot wait for an operator to come back.
       - **`[budget] max_wall_clock_ms` is the run's own deadline**, measured

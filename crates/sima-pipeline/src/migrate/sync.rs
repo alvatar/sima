@@ -150,6 +150,13 @@ impl Reach {
         self.verb_argv(&["follow-serve", far_config])
     }
 
+    /// The argv that reads the journal of the run `far_config` names once and
+    /// exits, for a caller that wants what the far run ended as rather than a
+    /// stream of what it is doing.
+    pub(crate) fn follow_serve_once_argv(&self, far_config: &str) -> Vec<String> {
+        self.verb_argv(&["follow-serve", far_config, "--once"])
+    }
+
     /// The argv that runs a shell on the far side, reading its script from
     /// stdin.
     ///
@@ -345,6 +352,24 @@ mod tests {
         assert_eq!(
             &argv[binary..],
             ["sima", "follow-serve", "~/sima-runs/abc/sima.toml"]
+        );
+    }
+
+    #[test]
+    fn a_one_shot_follow_argv_asks_the_far_side_for_the_journal_and_an_exit() {
+        // What a recall reads the far run's final state over: the same verb the
+        // live follow uses, told to write the journal once and stop.
+        let reach = Reach::new(&SpawnMode::Ssh, &SshDestination::known("gpubox"), "sima");
+        let argv = reach.follow_serve_once_argv("~/sima-runs/abc/sima.toml");
+        let binary = argv.iter().position(|a| a == "sima").expect("the binary");
+        assert_eq!(
+            &argv[binary..],
+            [
+                "sima",
+                "follow-serve",
+                "~/sima-runs/abc/sima.toml",
+                "--once"
+            ]
         );
     }
 

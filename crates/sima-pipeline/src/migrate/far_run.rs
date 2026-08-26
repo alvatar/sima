@@ -23,7 +23,7 @@ use crate::config::{DEFAULT_READY_POLL_MS, DEFAULT_READY_TIMEOUT_MS};
 use crate::config::{HostForm, LoadedConfig};
 use crate::migrate::destination::Destination;
 use crate::migrate::far_side::FarSide;
-use crate::status::RunState;
+use crate::status::{RunState, status_records};
 use crate::task_keys::task_keys;
 
 /// What a migration came home with.
@@ -177,13 +177,13 @@ impl<'a> FarRun<'a> {
         })
     }
 
-    /// Steps 9 through 11 over a far run this side never followed: end it if
-    /// it is still going, bring its results home, and settle the run over the
-    /// store they extended.
+    /// Steps 9 through 11 over a far run this side never followed: end it if it
+    /// is still going, read what it ended as, bring its results home, and
+    /// settle the run over the store they extended.
     ///
-    /// Nothing here starts anything. A destination that was never migrated to
-    /// is refused before any of it, since there is no run there to end and no
-    /// store to pull from.
+    /// Nothing here starts anything, and the journal read is a read. A
+    /// destination that was never migrated to is refused before any of it,
+    /// since there is no run there to end and no store to pull from.
     pub(crate) fn wind_back(&self) -> Result<MigrateOutcome> {
         if !self.far.placed()? {
             return Err(Error::Validation(format!(
@@ -205,11 +205,24 @@ impl<'a> FarRun<'a> {
             // One that already ended is only collected from.
             None => FollowEnd::FarRun,
         };
+        // What the far run ended as, read once the far side is quiet, so what
+        // it holds is final. Nothing was followed, so this read is the only
+        // way a definitive failure — written in the far journal, which does
+        // not sync — reaches this side at all.
+        let state = self.far_state()?;
         self.pull()?;
-        // Nothing was followed, so the far run's own journal said nothing to
-        // this side: what the store holds after the pull is the whole of what
-        // decides the outcome.
-        self.settle(RunState::InProgress, end)
+        self.settle(state, end)
+    }
+
+    /// The state the far run's own journal projects, over the records the far
+    /// side serves in one read.
+    ///
+    /// A far side with no journal to serve reports nothing, which projects a
+    /// run still in progress: what the store holds after the pull is then the
+    /// whole of what decides the outcome.
+    fn far_state(&self) -> Result<RunState> {
+        let records = self.far.snapshot()?;
+        Ok(status_records(self.config.run.id(), &records).state)
     }
 
     /// Step 10: everything the far side's records reference, which is what

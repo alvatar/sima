@@ -103,8 +103,10 @@ fn describe(outcome: &MigrateOutcome, config: &Path) -> String {
                  \x20 sima recall {config}   wind it down and bring the results home"
             )
         }
+        // Either verb reaches it: a migration watched the failure arrive, a
+        // recall read it in the journal the far run left.
         MigrateOutcome::Failed { task, reason } => {
-            format!("migration ended on a definitive failure of task {task}: {reason}")
+            format!("the run ended on a definitive failure of task {task}: {reason}")
         }
     }
 }

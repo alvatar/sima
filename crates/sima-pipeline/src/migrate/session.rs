@@ -1651,6 +1651,9 @@ mod tests {
             fn follow(&self) -> Result<Box<dyn RunFeed>> {
                 unreachable!("the migration never got past the reach check")
             }
+            fn snapshot(&self) -> Result<Vec<Record>> {
+                unreachable!("the migration never got past the reach check")
+            }
         }
         assert_eq!(
             run_to(&Unreachable, false)?,

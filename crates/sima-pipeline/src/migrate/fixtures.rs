@@ -46,6 +46,9 @@ pub(crate) enum Step {
     /// the whole of what makes one direction a push and the other a pull.
     Sync(Scope),
     Follow,
+    /// A one-shot read of the far run's journal, which is how a recall learns
+    /// what it ended as.
+    Snapshot,
     LogTail,
     Interrupt(u32),
     Terminate(u32),
@@ -106,9 +109,9 @@ pub(crate) struct Scripted<'a> {
     deaf: Mutex<usize>,
     /// The records the follow feed delivers, one batch per poll.
     pub(crate) polls: Arc<Mutex<VecDeque<Vec<Record>>>>,
-    /// The journal an earlier session left in the far store, which is what a
-    /// follow opened before this run starts replays. Empty for a destination
-    /// no run has ever finished on.
+    /// The journal the far store already holds: what a follow opened before
+    /// this run starts replays, and what a one-shot read of the far side
+    /// answers with. Empty for a destination no run has ever journaled on.
     existing: Mutex<Vec<Record>>,
     /// The far side's own store and the run it holds, when a sync is to be
     /// performed for real rather than recorded and skipped.
@@ -243,9 +246,9 @@ impl<'a> Scripted<'a> {
         self
     }
 
-    /// The journal an earlier session left in the far store: what a follow
-    /// opened before this run starts replays, and what a run that once
-    /// finished on this destination leaves behind.
+    /// The journal already in the far store: what a follow opened before this
+    /// run starts replays, what a run that ended on this destination left
+    /// behind, and what a recall reads to learn how it ended.
     pub(crate) fn over_an_existing_journal(self, records: Vec<Record>) -> Scripted<'a> {
         *self.existing.lock().expect("the journal lock") = records;
         self
@@ -367,6 +370,14 @@ impl FarSide for Scripted<'_> {
             }
             None => Ok(SyncReport::default()),
         }
+    }
+
+    fn snapshot(&self) -> Result<Vec<Record>> {
+        self.record(Step::Snapshot);
+        // The far store's journal as it stands, which is what `follow-serve
+        // --once` writes out. A far side that journaled nothing answers with
+        // nothing, as its refusal reads from here.
+        Ok(self.existing.lock().expect("the journal lock").clone())
     }
 
     fn log_tail(&self) -> Result<String> {

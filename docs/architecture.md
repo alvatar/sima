@@ -2812,12 +2812,21 @@ interrupted this way exits 0, because detaching is what was asked for.
 
 **The destructive act has its own verb.** `sima recall <config>` is the inverse
 of `sima migrate`: it contacts the destination, winds a far run down if one is
-driving, pulls what it produced, settles the run over the store that came home,
-and destroys the rental. It places nothing, pushes nothing, and starts nothing,
-so a destination that was never migrated to is refused by name rather than
-created. Adoption is its only way onto a rented machine — a recall never rents —
-and a rental already gone leaves nothing to contact, which settles the run over
-what the local store holds.
+driving, reads what that run ended as, pulls what it produced, settles the run
+over the store that came home, and destroys the rental. It places nothing,
+pushes nothing, and starts nothing, so a destination that was never migrated to
+is refused by name rather than created. Adoption is its only way onto a rented
+machine — a recall never rents — and a rental already gone leaves nothing to
+contact, which settles the run over what the local store holds.
+
+**A recall reads the far journal, and a definitive failure comes home as one.**
+Journals do not sync and a recall follows nothing, so a far run that failed
+definitively would otherwise come home as a run with tasks still to do. The read
+is one `sima follow-serve --once` against the destination, taken once the far
+run is quiet so what it holds is final; a far side with no journal to serve
+answers with nothing, and the store that came home is then the whole of what
+decides the outcome. So the outcomes of a recall are the outcomes of a
+migration: finalized, outstanding, wound down, or failed by task and reason.
 
 **The invariant that is repealed.** A far run no longer ends with the migration
 that started it. What replaces it: **the far run outlives everything except a
@@ -2943,8 +2952,10 @@ command form keeps its shape whether or not a host is named:
   executes belongs in the file that describes it, and no `--on`, since it drives
   a run rather than observing one. SIGINT detaches: the far run keeps computing,
   the line it prints names the machine and both ways back, and it exits 0.
-- **`sima recall <config.toml>`** — the inverse: winds the far run down, pulls
-  what it committed, settles the run, and destroys any rental. It starts
+- **`sima recall <config.toml>`** — the inverse: winds the far run down, reads
+  what it ended as, pulls what it committed, settles the run, and destroys any
+  rental. A far run that failed definitively is reported by task and reason and
+  exits 2, as an attached migration reports one. It starts
   nothing, so a destination that was never migrated to is refused by name. No
   interrupt is registered — a recall is short and every step of it is resumable
   — so Ctrl-C during one takes the default death and a second recall carries on.

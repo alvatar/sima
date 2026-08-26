@@ -15,11 +15,18 @@
 //!  │                      ledger — never a fresh one                        │
 //!  │  3  is the run's directory there? no ──▶ refuse, naming what is missing│
 //!  │  4  is the far side driving? yes ──▶ WIND DOWN, bounded and escalating │
-//!  │  5  PULL: everything the far side's records reference                  │
-//!  │  6  settle over the store that came home                               │
-//!  │  7  TEARDOWN: destroy the rental                                       │
+//!  │  5  READ the far run's journal once: what it ended as                  │
+//!  │  6  PULL: everything the far side's records reference                  │
+//!  │  7  settle over the store that came home, as what it ended as          │
+//!  │  8  TEARDOWN: destroy the rental                                       │
 //!  └────────────────────────────────────────────────────────────────────────┘
 //! ```
+//!
+//! **The far journal is read, never followed.** A definitive failure is written
+//! there and travels no other way, since journals do not sync, so a recall that
+//! did not read it would bring a run that cannot complete home as one with
+//! tasks still to run. The read is one `sima follow-serve --once` against the
+//! far side and changes nothing there.
 //!
 //! **A rented machine that is already gone leaves nothing to contact.** Its
 //! ledger record was cleared when it was destroyed, so there is no endpoint to
@@ -133,8 +140,8 @@ mod tests {
     use crate::migrate::destination::destination_for;
     use crate::migrate::far_side::FarSide;
     use crate::migrate::fixtures::{
-        Local, OWNED, PID, PROMPT, PULL, PUSH, RENTED, Scripted, Step, committed, far_store,
-        finalized, hosting, local, marketplace, started,
+        Local, OWNED, PID, PROMPT, PULL, PUSH, RENTED, Scripted, Step, committed, failed,
+        far_store, finalized, hosting, local, marketplace, started,
     };
 
     /// Winds one far run back, capturing what this side journaled while it did.
@@ -185,9 +192,10 @@ mod tests {
                 Step::Driving,
                 Step::Interrupt(PID),
                 Step::Driving,
+                Step::Snapshot,
                 PULL,
             ],
-            "signal, wait, pull — and nothing before them"
+            "signal, wait, read what it ended as, pull — and nothing before them"
         );
         assert!(
             !far.steps().contains(&Step::Place) && !far.steps().contains(&Step::Start),
@@ -216,8 +224,8 @@ mod tests {
         );
         assert_eq!(
             far.steps(),
-            [Step::Placed, Step::Driving, PULL],
-            "the pull and the settlement alone"
+            [Step::Placed, Step::Driving, Step::Snapshot, PULL],
+            "the read, the pull and the settlement alone"
         );
         assert!(
             local.store.manifest(&local.config.run.id())?.is_some(),
@@ -240,6 +248,56 @@ mod tests {
                 remaining: 1,
             }
         );
+        Ok(())
+    }
+
+    #[test]
+    fn a_recall_of_a_far_run_that_failed_brings_the_failure_home() -> Result<()> {
+        // A definitive failure is written in the far run's journal and nowhere
+        // else, and a recall follows nothing: without reading that journal the
+        // run would come home resumable, counting the tasks the failure made
+        // unreachable as work still to do.
+        let local = local(RENTED, PROMPT, Some(3));
+        let run = local.config.run.id();
+        let far = Scripted::new().over_an_existing_journal(vec![
+            started(&run),
+            failed(&run, "aa", "the kernel would not build"),
+        ]);
+
+        let (outcome, _) = recall_over(&local, &far, None);
+        assert_eq!(
+            outcome?,
+            MigrateOutcome::Failed {
+                task: "aa".to_string(),
+                reason: "the kernel would not build".to_string(),
+            }
+        );
+        assert_eq!(
+            far.steps(),
+            [Step::Placed, Step::Driving, Step::Snapshot, PULL],
+            "the failure is read from the far journal, and nothing is started"
+        );
+        assert!(
+            local.store.manifest(&local.config.run.id())?.is_none(),
+            "a run that failed seals nothing"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_recall_of_a_far_run_that_ended_well_settles_over_what_came_home() -> Result<()> {
+        // The counterpart, and what the journal read must not disturb: a far
+        // run whose journal ends in its finalization comes home on the strength
+        // of the records the pull brought, not on the strength of that line.
+        let local = local(RENTED, PROMPT, Some(3));
+        let run = local.config.run.id();
+        let (_far_dir, far_store) = far_store(&local.config, None);
+        let far = Scripted::new()
+            .syncing_with(&far_store, &local.config)
+            .over_an_existing_journal(vec![started(&run), finalized(&run)]);
+
+        let (outcome, _) = recall_over(&local, &far, None);
+        assert_eq!(outcome?, MigrateOutcome::Finalized { run });
         Ok(())
     }
 
