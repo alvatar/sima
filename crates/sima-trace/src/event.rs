@@ -219,6 +219,10 @@ pub enum Event {
     /// The far `sima run` is being started on the destination, which is what
     /// the migration waits on until its first journal line arrives.
     StartingRun,
+    /// The run was interrupted while its machines were still being acquired,
+    /// so no further member was rented and every machine the acquisition
+    /// already held was released. `released` is how many that was.
+    AcquisitionAbandoned { released: usize },
     /// A rented machine came online: reported at supervisor start for
     /// each instance, and again for each replacement. `tag` is the rental's
     /// ledger key, `instance` the provider's id, `rate_microusd_hour` its
@@ -360,6 +364,7 @@ mod tests {
             Event::BudgetWallClockExhausted {
                 deadline_ms: 1_700_000_000_000,
             },
+            Event::AcquisitionAbandoned { released: 2 },
         ];
         for event in events {
             let json = serde_json::to_string(&event).expect("serialize a rental event");

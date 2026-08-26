@@ -228,7 +228,8 @@ impl TaskHistory {
             | Event::AwaitingMachine { .. }
             | Event::SendingRun { .. }
             | Event::InstallingProgram { .. }
-            | Event::StartingRun => {}
+            | Event::StartingRun
+            | Event::AcquisitionAbandoned { .. } => {}
         }
     }
 
@@ -284,7 +285,8 @@ pub(crate) fn lifecycle_task(event: &Event) -> Option<&str> {
         | Event::AwaitingMachine { .. }
         | Event::SendingRun { .. }
         | Event::InstallingProgram { .. }
-        | Event::StartingRun => None,
+        | Event::StartingRun
+        | Event::AcquisitionAbandoned { .. } => None,
     }
 }
 

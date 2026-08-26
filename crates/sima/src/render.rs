@@ -127,6 +127,11 @@ pub fn describe(event: &Event, committed: usize, tasks: usize) -> Option<String>
             format!("installing the program{}", named(member))
         }
         Event::StartingRun => "starting the run".to_string(),
+        // Not narration: it says machines the run was paying for are gone,
+        // which an operator reads whatever they asked to be told.
+        Event::AcquisitionAbandoned { released } => format!(
+            "acquisition abandoned: {released} machine(s) released, none of them left running"
+        ),
         // A rented machine came online: reported at supervisor start and for
         // each replacement, naming where the work will run.
         Event::InstanceOnline {
@@ -1025,6 +1030,10 @@ mod tests {
                 from: "ab".repeat(32),
                 to: "cd".repeat(32),
             },
+            // An acquisition abandoned states the same kind of fact: machines
+            // the run was paying for are gone, and the run is not going to
+            // start.
+            Event::AcquisitionAbandoned { released: 2 },
             Event::Diagnostic {
                 level: sima_pipeline::Level::Warn,
                 source: "rental".to_string(),
@@ -1182,6 +1191,15 @@ mod tests {
             describe(&wall, 0, 0)
                 .expect("a wall-clock line")
                 .contains("rental deadline")
+        );
+
+        // The one line an interrupt during acquisition leaves: what happened,
+        // and what became of the machines that were already paid for. Pinned
+        // whole, because it is the whole of what the operator is told.
+        let abandoned = Event::AcquisitionAbandoned { released: 2 };
+        assert_eq!(
+            describe(&abandoned, 0, 0).expect("an abandoned line"),
+            "acquisition abandoned: 2 machine(s) released, none of them left running"
         );
     }
 
