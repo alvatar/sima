@@ -122,7 +122,6 @@ count = 2
 steps = 300000000
 
 [config]
-store = "./store"
 max_attempts = 3
 checkpoint_interval_ms = 2000
 
@@ -139,7 +138,7 @@ sdk = "python"
 - **`[run]`** is the identity: seed, format, and `segments = 3`, which divides each candidate's work into a chain of 3 tasks, each continuing from the committed state of the last.
 - **`[run.generator]`** names the generator; the keys following `id` belong to your program and cross as TOML text.
 - **`[run.params]`** belongs to your program likewise.
-- **`[config]`** and **`[[orchestrator.device]]`** are operational — the store's location, the ceiling upon retries, the cadence of checkpoints, which class of device performs the work and with how many workers. To change them changes no task key.
+- **`[config]`** and **`[[orchestrator.device]]`** are operational — the ceiling upon retries, the cadence of checkpoints, which class of device performs the work and with how many workers. To change them changes no task key. The store's location is among them and is stated by no key here: everything a driven config generates — its store, the SDK vended for your program, the tree a payload installs into — goes under `.sima/` beside the config file, and a `store` key is what puts the store somewhere else.
 - **`[domain."example.stepper.v1"]`** is the registration: this format is answered by `./stepper.py`, resolved against the config file's own directory, and written against the Python SDK.
 
 ### The environment a spawned program receives
@@ -479,7 +478,7 @@ sima rm search.toml
 Mark that "presently names": the target is resolved through the config. A store accumulates the runs of every identity ever driven against it — an edited seed, a changed parameter — and what it holds is asked of the store rather than of a config:
 
 ```
-sima runs ./store
+sima runs .sima/store
 ```
 
 ```

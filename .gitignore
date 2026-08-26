@@ -1,8 +1,7 @@
 target/
 work/
 out/
-examples/**/store/
-examples/**/sdk/
+.sima/
 __pycache__/
 python/build/
 python/*.egg-info/

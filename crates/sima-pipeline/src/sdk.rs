@@ -12,8 +12,8 @@
 //! package one of two ways, and both leave the same shape of tree:
 //!
 //! - [`materialize`] — the machine writes its own copy out of its own binary,
-//!   under `<config-dir>/sdk/python/`. This is what a load does for the program
-//!   it is about to spawn here.
+//!   under `<config-dir>/.sima/sdk/python/`. This is what a load does for the
+//!   program it is about to spawn here.
 //! - [`ingest`](Sdk::ingest) and [`install`] — the package crosses as store
 //!   objects and the receiving machine writes them out, keyed by digest. This
 //!   is what a fleet machine gets, because the program there speaks the wire to
@@ -42,6 +42,7 @@ use std::path::{Path, PathBuf};
 use sima_core::{Dec, Enc, Error, Hash, Result, hash_bytes};
 use sima_store::Store;
 
+use crate::config::GENERATED_DIR;
 use crate::stamped_tree::{
     REGULAR_MODE, build_once, create_dir, remove_dir, validate_path, write_file,
 };
@@ -289,7 +290,10 @@ pub(crate) fn install(store: &Store, digest: &Hash, root: &Path) -> Result<PathB
 /// Every entry declaring the same SDK shares the tree, and the stamp is what
 /// makes a load that has nothing to write read one file.
 pub(crate) fn materialize(config_dir: &Path, sdk: Sdk) -> Result<PathBuf> {
-    let root = config_dir.join(SDK_DIR).join(sdk.as_str());
+    let root = config_dir
+        .join(GENERATED_DIR)
+        .join(SDK_DIR)
+        .join(sdk.as_str());
     let installed = root.join(INSTALLED_DIR);
     build_once(
         &root,
@@ -499,10 +503,10 @@ mod tests {
         // which a file left inside the tree is what proves.
         let dir = tempfile::tempdir().expect("temp dir");
         let installed = materialize(dir.path(), Sdk::Python)?;
-        assert_eq!(installed, dir.path().join("sdk/python/installed"));
+        assert_eq!(installed, dir.path().join(".sima/sdk/python/installed"));
         assert!(installed.join("sima/__init__.py").is_file());
         assert_eq!(
-            std::fs::read_to_string(dir.path().join("sdk/python/installed.digest"))
+            std::fs::read_to_string(dir.path().join(".sima/sdk/python/installed.digest"))
                 .expect("the stamp"),
             Sdk::Python.digest().to_string()
         );
@@ -528,7 +532,7 @@ mod tests {
         // The stamp is what a differing build differs by, so writing another
         // one is what an upgrade looks like from this tree's side.
         write_file(
-            &dir.path().join("sdk/python/installed.digest"),
+            &dir.path().join(".sima/sdk/python/installed.digest"),
             hash_bytes(b"another build").to_string().as_bytes(),
             REGULAR_MODE,
         )?;

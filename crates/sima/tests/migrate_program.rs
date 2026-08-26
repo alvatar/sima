@@ -374,7 +374,8 @@ fn a_program_served_run_executes_on_its_destination_and_comes_home_complete() ->
         "the destination drove the run in its own store"
     );
     assert!(
-        far.join("program/stub.v1/installed/program").is_file(),
+        far.join(".sima/program/stub.v1/installed/program")
+            .is_file(),
         "and installed the program to do it with"
     );
 
@@ -408,9 +409,12 @@ fn a_single_file_payload_needs_no_install_script_to_travel() -> Result<()> {
         MigrateOutcome::Finalized { .. }
     ));
     let far = far_dir(&migrated, &far_root);
-    assert!(far.join("program/stub.v1/installed/program").is_file());
     assert!(
-        !far.join("program/stub.v1/install.sh").exists(),
+        far.join(".sima/program/stub.v1/installed/program")
+            .is_file()
+    );
+    assert!(
+        !far.join(".sima/program/stub.v1/install.sh").exists(),
         "no script travelled, because none was declared"
     );
     Ok(())
@@ -668,7 +672,7 @@ fn a_program_written_against_the_sdk_finds_it_on_the_destination() -> Result<()>
     // The destination vended the package beside the program it installed, and
     // that is the copy the program imported.
     let far = far_dir(&migrated, &far_root);
-    let vended = far.join("sdk/python/installed/sima");
+    let vended = far.join(".sima/sdk/python/installed/sima");
     assert!(
         vended.join("__init__.py").is_file(),
         "the destination's own binary wrote the package"
@@ -682,7 +686,7 @@ fn a_program_written_against_the_sdk_finds_it_on_the_destination() -> Result<()>
     // happens to hold under that name is shadowed, here as well as there.
     for directory in &imported {
         assert!(
-            directory.ends_with("sdk/python/installed/sima"),
+            directory.ends_with(".sima/sdk/python/installed/sima"),
             "{directory} is a vended package"
         );
     }

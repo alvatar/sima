@@ -11,7 +11,6 @@ count = 2
 steps = 300000000     # minutes of compute: a run worth moving between machines
 
 [config]
-store = "./store"
 max_attempts = 3
 checkpoint_interval_ms = 2000   # save resumable state every 2s
 

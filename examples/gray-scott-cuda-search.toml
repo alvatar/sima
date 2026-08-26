@@ -42,7 +42,6 @@ noise_width = 0.02
 # so the far side restarts from segment 0 rather than continuing the chain.
 
 [config]
-store = "./store"
 max_attempts = 3
 # The two deadlines bound waiting: one an attempt's lease, one a protocol
 # answer. Each is enforced while its key is present and off while it is absent.

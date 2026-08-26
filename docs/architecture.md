@@ -1249,7 +1249,7 @@ run identity is untouched.
 **Materialization happens at config load, on every machine alike.**
 
 ```
-<config-dir>/sdk/python/
+<config-dir>/.sima/sdk/python/
     .lock                 held while writing
     installed/sima/*.py   the package, as this binary holds it
     installed.digest      the digest of the package that was written
@@ -2382,12 +2382,20 @@ The config file carries the same split the model enforces:
   its fields define the `RunId`: the root seed, the format, the optional
   segment count (at least 1; absent means a static batch), the generator
   (its id plus the generator-owned keys), and the domain-owned run params.
-- **`[config]`** — the global operational settings: the store path (resolved
-  relative to the config file's directory), the attempt cap, an optional
+- **`[config]`** — the global operational settings: the store path (optional,
+  resolved relative to the config file's directory, and `.sima/store` when the
+  key is absent), the attempt cap, an optional
   attempt timeout whose absence disables the enforced attempt deadline, an
   optional answer timeout bounding every protocol answer a program owes (see
   [Isolation and trust at the program boundary](#isolation-and-trust-at-the-program-boundary)),
   and two optional checkpoint cadences whose absence disables checkpointing.
+
+**Everything a driven config generates goes under `.sima/` beside it**: its
+store unless the config names another path, the SDK package this binary vends
+for the programs it spawns here, and the tree each declared payload installs
+into. One directory to ignore in a repository, and one to delete to reclaim
+what a config generated — and none of it enters a hash, so deleting it costs
+recomputation and never identity.
 
 Every section below `[run]` is operational and never hashed — a run resumed
 with different parallelism, a different store path, or a different set of
@@ -2739,7 +2747,9 @@ would only force the transfer again.
 **The far-side config** is the local one with everything about here removed.
 `[run]` travels verbatim as a parsed value, so the run id is preserved by
 construction. `[config]` travels with its store path rewritten to `./store`,
-which the load resolves against the config file's own directory. The local
+which the load resolves against the config file's own directory — stated
+rather than left to the default, since the far side's run directory is where
+that store belongs. The local
 `[orchestrator]` is dropped whole — its worker layout names this machine's
 hardware, and its `migrate` key names a destination the far side must not carry
 onward, since a run that has arrived does not migrate again. Every `[host.*]`,

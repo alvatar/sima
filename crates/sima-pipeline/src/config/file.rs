@@ -98,7 +98,10 @@ pub(super) struct GeneratorSection {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct ConfigSection {
-    pub(super) store: String,
+    /// Where the run's store lives, relative to this file's directory unless
+    /// absolute. Optional: a config that states none keeps its store under the
+    /// generated directory beside it.
+    pub(super) store: Option<String>,
     pub(super) max_attempts: u32,
     pub(super) attempt_timeout_ms: Option<u64>,
     pub(super) answer_timeout_ms: Option<u64>,

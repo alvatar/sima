@@ -32,7 +32,6 @@ noise_width = 0.02
 # snapshot_when = { scalar = "activity", min = 1e-4 }
 
 [config]
-store = "./store"
 max_attempts = 3
 # The two deadlines bound waiting: one an attempt's lease, one a protocol
 # answer. Each is enforced while its key is present and off while it is absent.
