@@ -2918,6 +2918,11 @@ outcome the interrupt already decided: the far run is left computing, the two
 ways back are printed, and the exit is 0. Before the interrupt, the same
 ending is a fault and is reported as one, naming the destination.
 
+A fault frame is the exception, and the one error on that stream the far side
+raised rather than this side observing. The far side is reporting trouble of
+its own, which an interrupt here neither caused nor answers, so it fails the
+migration in its own words whether or not the flag is raised.
+
 **The destructive act has its own verb.** `sima recall <config>` is the inverse
 of `sima migrate`: it contacts the destination, winds a far run down if one is
 driving, reads what that run ended as, pulls what it produced, settles the run

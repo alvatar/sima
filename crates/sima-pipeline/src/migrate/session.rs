@@ -560,7 +560,13 @@ impl Session<'_> {
                 // before this side reads its own flag. The detach is what was
                 // asked for, and its own consequence does not turn it into a
                 // fault to report.
-                Err(_) if self.interrupt.load(Ordering::Relaxed) => {
+                //
+                // A fault frame is the exception, and the only error the far
+                // side raised rather than this side observing: the far side is
+                // reporting trouble of its own, which the interrupt neither
+                // caused nor answers, so it decides the migration as it would
+                // have without one.
+                Err(error) if self.let_go() && !matches!(error, Error::Reported(_)) => {
                     return Ok((status.state, FollowEnd::Detached));
                 }
                 Err(e) => return Err(e),
@@ -581,7 +587,7 @@ impl Session<'_> {
             }
             // The operator letting go, which is the whole of what a `SIGINT`
             // asks for: the far run is none of this side's business from here.
-            if self.interrupt.load(Ordering::Relaxed) {
+            if self.let_go() {
                 return Ok((status.state, FollowEnd::Detached));
             }
             // Money is the one thing that cannot wait for an operator to come
@@ -1517,6 +1523,32 @@ mod tests {
             *far.alive.lock().expect("the pid lock"),
             Some(PID),
             "the far run keeps computing"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_far_side_fault_fails_the_migration_even_after_the_operator_let_go() -> Result<()> {
+        // The two endings a raised flag has to keep apart. A transport that
+        // went away with the operator is the detach they asked for; a far side
+        // that wrote a fault frame is reporting trouble of its own, and its
+        // words are the migration's outcome whatever this side's flag says.
+        let local = local(RENTED, PROMPT, Some(3));
+        let interrupt = Arc::new(AtomicBool::new(false));
+        let far = Scripted::new()
+            .letting_go_at(Step::Start, &interrupt)
+            .faulting_the_stream("the run's journal on cloudbox could not be read");
+
+        let (outcome, _) = session_over(&local, &far, None, &interrupt);
+        let error = outcome.expect_err("a far side reporting trouble is not a detach");
+        assert!(
+            error.to_string().contains("journal on cloudbox could not"),
+            "the far side's own words reach the caller: {error}"
+        );
+        assert!(
+            !far.steps().contains(&PULL),
+            "nothing was pulled: {:?}",
+            far.steps()
         );
         Ok(())
     }
