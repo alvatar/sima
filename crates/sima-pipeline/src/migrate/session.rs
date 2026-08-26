@@ -74,6 +74,7 @@ use sima_provider::{
     AcquireLimits, Budget, InstanceGuard, Objective, Provider, Verdict, acquire, adopt, assess,
     now_ms,
 };
+use sima_scheduler::Event;
 use sima_store::{ObjectScope, Rental as RentalRole, RunLock, Store};
 use sima_trace::{Emitter, Observer};
 
@@ -86,12 +87,12 @@ use crate::migrate::destination::destination_for;
 use crate::migrate::far_config::{Registration, far_config};
 #[cfg(test)]
 use crate::migrate::far_run::Overrides;
-use crate::migrate::far_run::{FarRun, FollowEnd, MigrateOutcome};
+use crate::migrate::far_run::{FarRun, FollowEnd, MigrateOutcome, journaling};
 use crate::migrate::far_side::{Contact, Remote};
 use crate::migrate::objects::push_objects;
 use crate::payload::{PayloadSpec, closure, ingest};
 use crate::program_binding::BinaryChange;
-use crate::rental::{budget_exhausted, provider_for_rental};
+use crate::rental::{budget_exhausted, provider_for_rental, renting};
 use crate::sdk::Sdk;
 use crate::status::{RunState, RunStatus};
 use crate::task_keys::task_keys;
@@ -174,7 +175,10 @@ pub fn migrate(
     let run = store.create_run(&loaded.run)?;
     let lock = store.acquire_run_lock(&run)?;
 
-    match destination.form {
+    // One journal boundary around the whole migration: the phases of placing
+    // the run cross it before there is a far run, and the far run's own records
+    // cross it after.
+    journaling(&store, &run, observer, |events| match destination.form {
         // A machine of yours is reached as it stands: nothing is rented, so no
         // provider is constructed and no credential is read.
         HostForm::Owned(owned) => {
@@ -184,7 +188,7 @@ pub fn migrate(
                 store: &store,
                 config: loaded,
                 destination: &destination,
-                observer,
+                events,
                 rental: None,
                 #[cfg(test)]
                 overrides: Overrides::default(),
@@ -228,6 +232,7 @@ pub fn migrate(
                 usable_by,
                 &loaded.budget,
                 interrupt,
+                events,
             )?;
             // A run whose format is a program asks the machine about no
             // format: nothing there can resolve one it has not been given, and
@@ -245,7 +250,7 @@ pub fn migrate(
                 store: &store,
                 config: loaded,
                 destination: &destination,
-                observer,
+                events,
                 rental: Some(guard),
                 #[cfg(test)]
                 overrides: Overrides::default(),
@@ -262,7 +267,7 @@ pub fn migrate(
                 .run_to_end()
             })
         }
-    }
+    })
 }
 
 /// What a migration of this run has to carry to the destination beyond the
@@ -314,6 +319,12 @@ fn carried(loaded: &LoadedConfig) -> Result<Option<Carried>> {
 /// on a second invocation. `interrupt` aborts an offer walk in flight, so a
 /// `SIGINT` during acquisition is not waited out — and that is all it can mean
 /// here: detaching exists only once a far run is driving, and nothing is yet.
+///
+/// `events` carries what the acquisition is doing: an offer taken says what is
+/// now being paid for, before the wait for that machine to come up. An adopted
+/// machine says nothing — it was already rented, and by an earlier invocation
+/// that announced it.
+#[allow(clippy::too_many_arguments)]
 fn hold<'a>(
     provider: &'a (dyn Provider + Sync),
     store: &'a Store,
@@ -322,6 +333,7 @@ fn hold<'a>(
     usable_by: Instant,
     budget: &Budget,
     interrupt: &AtomicBool,
+    events: &Emitter,
 ) -> Result<InstanceGuard<'a, dyn Provider + Sync + 'a>> {
     let limits = AcquireLimits {
         usable_by,
@@ -340,6 +352,17 @@ fn hold<'a>(
         &limits,
         budget,
         interrupt,
+        &|offer| {
+            events.emit(renting("", offer));
+            // The wait for that machine begins here and is stated once,
+            // whatever it costs in polls: it spans the provider reporting the
+            // instance ready and the route to it carrying an ssh, which is a
+            // boot and an image pull, and the operator is owed the reason for
+            // the silence rather than one line per attempt.
+            events.emit(Event::AwaitingMachine {
+                timeout_ms: spec.ready_timeout.as_millis() as u64,
+            });
+        },
     )
 }
 
@@ -398,9 +421,21 @@ impl Session<'_> {
                 if let Some(registration) = self.registration {
                     objects.extend(closure(far_run.store, &registration.payload_digest)?);
                 }
+                far_run.events.emit(Event::SendingRun {
+                    member: String::new(),
+                    objects: objects.len(),
+                });
                 far_run
                     .far
                     .sync(far_run.store, &keys, ObjectScope::Named(&objects))?;
+                // The program the run carries is installed by the far `sima
+                // run` as it loads, which is the longest part of the start it
+                // is about to wait on.
+                if self.registration.is_some() {
+                    far_run.events.emit(Event::InstallingProgram {
+                        member: String::new(),
+                    });
+                }
                 // The follow opens before the far run starts, so its first poll
                 // is the journal as an earlier session left it and everything
                 // after that is this run's. It is what tells a run that once
@@ -410,6 +445,7 @@ impl Session<'_> {
                 // is then nothing earlier to tell apart: the follow opens after
                 // the start instead, waiting for the run's first line.
                 let opened = far_run.far.follow().ok();
+                far_run.events.emit(Event::StartingRun);
                 (far_run.far.start(self.accept)?, opened)
             }
         };
@@ -441,17 +477,16 @@ impl Session<'_> {
         opened: Option<Box<dyn RunFeed>>,
     ) -> Result<(RunState, FollowEnd)> {
         let run = self.far_run.config.run.id();
-        self.far_run.journaling(|events| {
-            let (state, end) = self.follow(&run, reattached, opened, events)?;
-            match end {
-                // Letting go signals nothing and waits for nothing: the far run
-                // is left exactly as it was.
-                FollowEnd::Detached => {}
-                FollowEnd::FarRun => self.far_run.wind_down(pid, false, events)?,
-                FollowEnd::WoundDown => self.far_run.wind_down(pid, true, events)?,
-            }
-            Ok((state, end))
-        })
+        let events = self.far_run.events;
+        let (state, end) = self.follow(&run, reattached, opened, events)?;
+        match end {
+            // Letting go signals nothing and waits for nothing: the far run
+            // is left exactly as it was.
+            FollowEnd::Detached => {}
+            FollowEnd::FarRun => self.far_run.wind_down(pid, false, events)?,
+            FollowEnd::WoundDown => self.far_run.wind_down(pid, true, events)?,
+        }
+        Ok((state, end))
     }
 
     /// Follows the far run until it ends, this side is interrupted, or a
@@ -686,7 +721,7 @@ mod tests {
     use crate::migrate::far_side::FarSide;
     use crate::migrate::fixtures::{
         Local, OWNED, PID, PROMPT, PULL, PUSH, RENTED, Scripted, Step, committed, config_text,
-        failed, far_store, finalized, hosting, local, marketplace, over_budget, started,
+        failed, far_store, finalized, hosting, local, marketplace, over_budget, started, unheard,
     };
 
     /// Drives one session over `far`, capturing every record the follow
@@ -717,25 +752,27 @@ mod tests {
                 .push(record.clone());
         };
         let destination = destination_for(&local.config).expect("the host is declared");
-        let outcome = FarRun {
-            far,
-            store: &local.store,
-            config: &local.config,
-            destination: &destination,
-            observer: &observer,
-            rental,
-            overrides: Overrides::default(),
-        }
-        .under_teardown(|far_run| {
-            Session {
-                far_run,
-                local_text: &local.text,
-                registration: None,
-                accept: BinaryChange::Refuse,
-                interrupt,
-                usable_by,
+        let outcome = journaling(&local.store, &local.config.run.id(), &observer, |events| {
+            FarRun {
+                far,
+                store: &local.store,
+                config: &local.config,
+                destination: &destination,
+                events,
+                rental,
+                overrides: Overrides::default(),
             }
-            .run_to_end()
+            .under_teardown(|far_run| {
+                Session {
+                    far_run,
+                    local_text: &local.text,
+                    registration: None,
+                    accept: BinaryChange::Refuse,
+                    interrupt,
+                    usable_by,
+                }
+                .run_to_end()
+            })
         });
         let records = std::mem::take(&mut *captured.lock().expect("the capture lock"));
         (outcome, records)
@@ -753,25 +790,27 @@ mod tests {
     ) -> Result<MigrateOutcome> {
         let observer = |_: &Record| {};
         let destination = destination_for(&local.config).expect("the host is declared");
-        FarRun {
-            far,
-            store: &local.store,
-            config: &local.config,
-            destination: &destination,
-            observer: &observer,
-            rental: None,
-            overrides: Overrides::default(),
-        }
-        .under_teardown(|far_run| {
-            Session {
-                far_run,
-                local_text: &local.text,
-                registration,
-                accept,
-                interrupt: &AtomicBool::new(false),
-                usable_by: None,
+        journaling(&local.store, &local.config.run.id(), &observer, |events| {
+            FarRun {
+                far,
+                store: &local.store,
+                config: &local.config,
+                destination: &destination,
+                events,
+                rental: None,
+                overrides: Overrides::default(),
             }
-            .run_to_end()
+            .under_teardown(|far_run| {
+                Session {
+                    far_run,
+                    local_text: &local.text,
+                    registration,
+                    accept,
+                    interrupt: &AtomicBool::new(false),
+                    usable_by: None,
+                }
+                .run_to_end()
+            })
         })
     }
 
@@ -1382,6 +1421,7 @@ mod tests {
             Instant::now() + spec.ready_timeout,
             &Budget::default(),
             &AtomicBool::new(true),
+            &unheard(),
         );
         let Err(error) = held else {
             panic!("an interrupted acquisition rents nothing");
@@ -1832,6 +1872,7 @@ mod tests {
             Instant::now() + spec.ready_timeout,
             &Budget::default(),
             &AtomicBool::new(false),
+            &unheard(),
         )?;
         assert_eq!(
             guard.id(),

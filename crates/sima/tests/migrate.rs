@@ -308,6 +308,93 @@ fn a_migrated_run_finalizes_to_the_manifest_an_uninterrupted_run_writes() -> Res
     Ok(())
 }
 
+/// Asserts `lines` appear in `text` in the order given, naming the first one
+/// that does not.
+fn in_order(text: &str, lines: &[&str]) {
+    let mut rest = text;
+    for line in lines {
+        let at = rest
+            .find(line)
+            .unwrap_or_else(|| panic!("{line:?} follows what precedes it, in:\n{text}"));
+        rest = &rest[at + line.len()..];
+    }
+}
+
+#[test]
+fn a_migration_narrates_the_phases_of_placing_the_run() -> Result<()> {
+    // Between the run id and the far run's first record a migration rents a
+    // machine, waits for it to come up, and puts the run on it — minutes on a
+    // real destination. Each phase says so as it begins, so an operator can
+    // tell a placement in progress from a hang.
+    workers_built();
+    let dir = tempfile::tempdir().expect("temp dir");
+    let far_root = dir.path().join("far");
+    let migrated = migrating(dir.path(), &far_root, SEGMENTS, CHAINS);
+
+    let output = sima_command()
+        .args(["migrate", migrated.to_str().expect("utf-8 path")])
+        .output()
+        .expect("spawn sima migrate");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "the migration finalized: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).expect("stdout is UTF-8");
+    in_order(
+        &stdout,
+        &[
+            "run ",
+            "renting",
+            "waiting for the machine to come up",
+            "sending the run",
+            "starting the run",
+            "started:",
+            "committed",
+            "migrated:",
+        ],
+    );
+    // The wait is one phase however many times it polls, so a machine slow to
+    // answer says so once rather than once a second.
+    assert_eq!(
+        stdout.matches("waiting for the machine to come up").count(),
+        1,
+        "{stdout}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_migration_onto_a_machine_of_yours_narrates_the_phases_it_has() -> Result<()> {
+    // A machine of yours is standing and is not paid for, so the phases that
+    // acquire one do not exist; the ones that place the run on it do.
+    workers_built();
+    let dir = tempfile::tempdir().expect("temp dir");
+    let far_root = dir.path().join("far");
+    let bin = common::machine_stubs(dir.path(), false);
+    let migrated = owned(dir.path(), &far_root, SEGMENTS, CHAINS);
+
+    let output = sima_with(&bin, &["migrate", migrated.to_str().expect("utf-8 path")]);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "the migration finalized: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).expect("stdout is UTF-8");
+    in_order(
+        &stdout,
+        &["run ", "sending the run", "starting the run", "migrated:"],
+    );
+    assert!(!stdout.contains("renting"), "nothing was rented: {stdout}");
+    assert!(
+        !stdout.contains("waiting for the machine"),
+        "nothing was waited for: {stdout}"
+    );
+    Ok(())
+}
+
 #[test]
 fn a_second_migration_over_a_finished_run_finalizes_to_the_same_manifest() -> Result<()> {
     workers_built();
@@ -337,6 +424,23 @@ fn a_second_migration_over_a_finished_run_finalizes_to_the_same_manifest() -> Re
         "nothing was left rented"
     );
     Ok(())
+}
+
+/// An observer that lets go the moment the far run produces a record of its
+/// own, which is what an operator does once they can see the run is going.
+///
+/// The phases of placing the run are records too, and reaching for the
+/// interrupt during those means something else entirely: an offer walk is
+/// abandoned rather than a far run left computing.
+fn letting_go(interrupt: &AtomicBool) -> impl Fn(&Record) + '_ {
+    move |record: &Record| {
+        if matches!(
+            record.event,
+            Event::RunStarted { .. } | Event::Committed { .. }
+        ) {
+            interrupt.store(true, Ordering::Relaxed);
+        }
+    }
 }
 
 /// The far-side `sima run` process id, read from the run directory the
@@ -391,7 +495,7 @@ fn a_migration_interrupted_during_the_follow_detaches_and_a_second_one_reattache
     let outcome = migrate(
         &migrated,
         &loaded,
-        &|_: &Record| interrupt.store(true, Ordering::Relaxed),
+        &letting_go(&interrupt),
         &interrupt,
         BinaryChange::Refuse,
     )?;
@@ -421,7 +525,7 @@ fn a_migration_interrupted_during_the_follow_detaches_and_a_second_one_reattache
     let outcome = migrate(
         &migrated,
         &loaded,
-        &|_: &Record| second.store(true, Ordering::Relaxed),
+        &letting_go(&second),
         &second,
         BinaryChange::Refuse,
     )?;
@@ -552,21 +656,19 @@ fn migrating_under_ceiling(dir: &Path, root: &Path, ms: u64) -> PathBuf {
 }
 
 /// A config in `dir` whose orchestrator migrates onto a machine of yours,
-/// rooted at `root`, whose run may compute for `ms` milliseconds per launch.
+/// rooted at `root`.
 ///
 /// The machine is reached through the stand-ins [`common::machine_stubs`]
 /// writes, so its workers run in a container the same way a real one's do and
 /// the far side is still this machine.
-fn owned_under_ceiling(dir: &Path, root: &Path, ms: u64) -> PathBuf {
-    let text = format!(
-        "{}\n[budget]\nmax_wall_clock_ms = {ms}\n",
-        std::fs::read_to_string(config(
-            dir,
-            "owned.toml",
-            UNFINISHABLE,
-            PACED,
-            &format!(
-                r#"
+fn owned(dir: &Path, root: &Path, segments: u64, behaviors: &str) -> PathBuf {
+    config(
+        dir,
+        "owned.toml",
+        segments,
+        behaviors,
+        &format!(
+            r#"
             migrate = "far"
 
             [host.far]
@@ -577,12 +679,20 @@ fn owned_under_ceiling(dir: &Path, root: &Path, ms: u64) -> PathBuf {
             root = {root:?}
             binary = {binary:?}
             "#,
-                image = common::IMAGE,
-                root = root.to_string_lossy(),
-                binary = far_binary(),
-            ),
-        ))
-        .expect("read the owned config")
+            image = common::IMAGE,
+            root = root.to_string_lossy(),
+            binary = far_binary(),
+        ),
+    )
+}
+
+/// The same machine of yours, whose run may compute for `ms` milliseconds per
+/// launch.
+fn owned_under_ceiling(dir: &Path, root: &Path, ms: u64) -> PathBuf {
+    let text = format!(
+        "{}\n[budget]\nmax_wall_clock_ms = {ms}\n",
+        std::fs::read_to_string(owned(dir, root, UNFINISHABLE, PACED))
+            .expect("read the owned config")
     );
     common::write_config_text(dir, "owned.toml", &text)
 }
@@ -681,7 +791,7 @@ fn a_detached_run_on_a_rented_machine_carries_no_ceiling_and_keeps_computing() -
     let outcome = migrate(
         &migrated,
         &loaded,
-        &|_: &Record| interrupt.store(true, Ordering::Relaxed),
+        &letting_go(&interrupt),
         &interrupt,
         BinaryChange::Refuse,
     )?;
@@ -815,7 +925,7 @@ fn a_recall_ends_a_detached_run_and_brings_its_results_home() -> Result<()> {
     let outcome = migrate(
         &migrated,
         &loaded,
-        &|_: &Record| interrupt.store(true, Ordering::Relaxed),
+        &letting_go(&interrupt),
         &interrupt,
         BinaryChange::Refuse,
     )?;

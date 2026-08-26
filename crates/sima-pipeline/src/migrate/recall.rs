@@ -50,7 +50,7 @@ use crate::fleet::Rental;
 use crate::migrate::destination::destination_for;
 #[cfg(test)]
 use crate::migrate::far_run::Overrides;
-use crate::migrate::far_run::{FarRun, FollowEnd, MigrateOutcome, settle};
+use crate::migrate::far_run::{FarRun, FollowEnd, MigrateOutcome, journaling, settle};
 use crate::migrate::far_side::Remote;
 use crate::rental::provider_for_rental;
 use crate::status::RunState;
@@ -72,7 +72,9 @@ pub fn recall(loaded: &LoadedConfig, observer: Observer<'_>) -> Result<MigrateOu
     let run = store.create_run(&loaded.run)?;
     let lock = store.acquire_run_lock(&run)?;
 
-    match destination.form {
+    // One journal boundary around the whole recall, as a migration opens: the
+    // wind-down's own report is what crosses it.
+    journaling(&store, &run, observer, |events| match destination.form {
         HostForm::Owned(owned) => {
             let far = Remote::owned(&destination, owned, &run);
             FarRun {
@@ -80,7 +82,7 @@ pub fn recall(loaded: &LoadedConfig, observer: Observer<'_>) -> Result<MigrateOu
                 store: &store,
                 config: loaded,
                 destination: &destination,
-                observer,
+                events,
                 rental: None,
                 #[cfg(test)]
                 overrides: Overrides::default(),
@@ -119,14 +121,14 @@ pub fn recall(loaded: &LoadedConfig, observer: Observer<'_>) -> Result<MigrateOu
                 store: &store,
                 config: loaded,
                 destination: &destination,
-                observer,
+                events,
                 rental: Some(guard),
                 #[cfg(test)]
                 overrides: Overrides::default(),
             }
             .under_teardown(FarRun::wind_back)
         }
-    }
+    })
 }
 
 #[cfg(test)]
@@ -158,16 +160,18 @@ mod tests {
                 .push(record.clone());
         };
         let destination = destination_for(&local.config).expect("the host is declared");
-        let outcome = FarRun {
-            far,
-            store: &local.store,
-            config: &local.config,
-            destination: &destination,
-            observer: &observer,
-            rental,
-            overrides: Overrides::default(),
-        }
-        .under_teardown(FarRun::wind_back);
+        let outcome = journaling(&local.store, &local.config.run.id(), &observer, |events| {
+            FarRun {
+                far,
+                store: &local.store,
+                config: &local.config,
+                destination: &destination,
+                events,
+                rental,
+                overrides: Overrides::default(),
+            }
+            .under_teardown(FarRun::wind_back)
+        });
         let records = std::mem::take(&mut *captured.lock().expect("the capture lock"));
         (outcome, records)
     }

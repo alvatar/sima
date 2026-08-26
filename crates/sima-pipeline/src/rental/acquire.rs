@@ -16,8 +16,8 @@ use sima_core::{Error, Result};
 use sima_domains::devices::DeviceInfo;
 use sima_model::FormatId;
 use sima_provider::{
-    AcquireLimits, Budget, Exhaustion, IncidentKind, InstanceGuard, Objective, Provider,
-    Reachability, SshEndpoint, acquire, now_ms, record_incident,
+    AcquireLimits, Budget, Exhaustion, IncidentKind, InstanceGuard, Objective, Offer, Provider,
+    Reachability, SshEndpoint, UNREPORTED, acquire, now_ms, record_incident,
 };
 use sima_scheduler::Event;
 use sima_scheduler::ExecutionConfig;
@@ -226,6 +226,7 @@ fn acquire_one<'a>(
             // Run-start acquisition has nothing to cancel: the run is not yet
             // driving, so no wind-down is in flight.
             never_cancelled(),
+            UNREPORTED,
         )?;
         let target = endpoint_target(guard.endpoint().clone());
         let host = target.host().to_string();
@@ -370,6 +371,20 @@ pub(crate) fn budget_exhausted(exhaustion: Exhaustion) -> Event {
             cap_microusd: cap.0,
         },
         Exhaustion::WallClock { deadline_ms } => Event::BudgetWallClockExhausted { deadline_ms },
+    }
+}
+
+/// The `Renting` event for an offer a machine has just been provisioned
+/// against: what is now being paid for, stated before the wait for it to come
+/// up. `member` names the fleet member it was taken for, and is empty for a
+/// migration, which rents the one machine its destination names.
+pub(crate) fn renting(member: &str, offer: &Offer) -> Event {
+    Event::Renting {
+        member: member.to_string(),
+        machine: offer.machine.clone(),
+        gpu_model: offer.gpu_model.clone(),
+        gpu_count: offer.gpu_count,
+        rate_microusd_hour: offer.price.0,
     }
 }
 

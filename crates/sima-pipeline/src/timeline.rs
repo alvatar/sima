@@ -186,7 +186,14 @@ pub fn timeline_records(run: RunId, records: &[Record]) -> RunTimeline {
             | Event::InstanceLost { .. }
             | Event::InstanceReplaced { .. }
             | Event::BudgetSpendExhausted { .. }
-            | Event::BudgetWallClockExhausted { .. } => {}
+            | Event::BudgetWallClockExhausted { .. }
+            // The phases of placing a run on a machine time nothing a worker
+            // did.
+            | Event::Renting { .. }
+            | Event::AwaitingMachine { .. }
+            | Event::SendingRun { .. }
+            | Event::InstallingProgram { .. }
+            | Event::StartingRun => {}
         }
     }
     retries.retried_tasks = retried.len();

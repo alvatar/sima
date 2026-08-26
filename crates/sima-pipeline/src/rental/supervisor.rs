@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use sima_core::Result;
 use sima_provider::{
     AcquireLimits, Budget, Exhaustion, IncidentKind, InstanceGuard, InstanceStatus, Objective,
-    Provider, Verdict, acquire, assess, now_ms, record_incident,
+    Provider, UNREPORTED, Verdict, acquire, assess, now_ms, record_incident,
 };
 use sima_scheduler::Event;
 use sima_store::{Rental as RentalRole, RunLock, Store};
@@ -370,6 +370,7 @@ impl<'a, 'b> Supervisor<'a, 'b> {
             // slow offer walk never delays the run's exit; a caller with no
             // cancellation (the unit tests) walks to completion.
             self.cancel.unwrap_or(never_cancelled()),
+            UNREPORTED,
         ) {
             Ok(new_guard) => {
                 self.emit(Event::InstanceReplaced {

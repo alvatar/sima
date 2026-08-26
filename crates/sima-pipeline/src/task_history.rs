@@ -221,7 +221,12 @@ impl TaskHistory {
             | Event::InstanceLost { .. }
             | Event::InstanceReplaced { .. }
             | Event::BudgetSpendExhausted { .. }
-            | Event::BudgetWallClockExhausted { .. } => {}
+            | Event::BudgetWallClockExhausted { .. }
+            | Event::Renting { .. }
+            | Event::AwaitingMachine { .. }
+            | Event::SendingRun { .. }
+            | Event::InstallingProgram { .. }
+            | Event::StartingRun => {}
         }
     }
 
@@ -271,7 +276,12 @@ pub(crate) fn lifecycle_task(event: &Event) -> Option<&str> {
         | Event::InstanceLost { .. }
         | Event::InstanceReplaced { .. }
         | Event::BudgetSpendExhausted { .. }
-        | Event::BudgetWallClockExhausted { .. } => None,
+        | Event::BudgetWallClockExhausted { .. }
+        | Event::Renting { .. }
+        | Event::AwaitingMachine { .. }
+        | Event::SendingRun { .. }
+        | Event::InstallingProgram { .. }
+        | Event::StartingRun => None,
     }
 }
 

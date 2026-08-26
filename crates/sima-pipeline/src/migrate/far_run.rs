@@ -102,12 +102,43 @@ pub(crate) struct FarRun<'a> {
     pub(crate) store: &'a Store,
     pub(crate) config: &'a LoadedConfig,
     pub(crate) destination: &'a Destination<'a>,
-    pub(crate) observer: Observer<'a>,
+    /// The run's journal boundary, opened by the verb around everything it
+    /// does, so a phase this side narrates and a record the far side produced
+    /// cross the same one.
+    pub(crate) events: &'a Emitter,
     /// The rented machine hosting the run, disposed of on every path out;
     /// `None` for a machine of yours, which is nothing to tear down.
     pub(crate) rental: Option<InstanceGuard<'a, dyn Provider + Sync + 'a>>,
     #[cfg(test)]
     pub(crate) overrides: Overrides,
+}
+
+/// Runs `body` under the run's collector, so everything a verb emits reaches
+/// the local journal and the operator's view through one boundary.
+///
+/// It spans the whole verb rather than the part that follows a far run: the
+/// phases of placing a run on a machine are what the operator watches while
+/// there is no far run yet, and they cross the same boundary the far run's own
+/// records cross later. Journals do not sync, so this is the only way a far
+/// run's records land here at all.
+pub(crate) fn journaling<T>(
+    store: &Store,
+    run: &RunId,
+    observer: Observer<'_>,
+    body: impl FnOnce(&Emitter) -> Result<T>,
+) -> Result<T> {
+    let writer = store.journal_writer(run)?;
+    thread::scope(|scope| -> Result<T> {
+        let collector = Collector::spawn(scope, writer, observer);
+        let events = collector.emitter();
+        let out = body(&events);
+        // The collector joins only once every emitter is dropped.
+        drop(events);
+        let journal = collector.shutdown();
+        // A journal that could not be appended is a store fault worth
+        // reporting, but only when the body itself did not already fail.
+        out.and_then(|value| journal.map(|()| value))
+    })
 }
 
 /// The one answer a verb comes home with, from what it did and what became of
@@ -156,27 +187,6 @@ impl<'a> FarRun<'a> {
         guard.release()
     }
 
-    /// Runs `body` under the run's collector, so everything it emits reaches
-    /// the local journal and the operator's view through one boundary.
-    ///
-    /// Journals do not sync, so this is the only way a far run's records land
-    /// here at all; the wind-down's own diagnostic crosses it too.
-    pub(crate) fn journaling<T>(&self, body: impl FnOnce(&Emitter) -> Result<T>) -> Result<T> {
-        let run = self.config.run.id();
-        let writer = self.store.journal_writer(&run)?;
-        thread::scope(|scope| -> Result<T> {
-            let collector = Collector::spawn(scope, writer, self.observer);
-            let events = collector.emitter();
-            let out = body(&events);
-            // The collector joins only once every emitter is dropped.
-            drop(events);
-            let journal = collector.shutdown();
-            // A journal that could not be appended is a store fault worth
-            // reporting, but only when the body itself did not already fail.
-            out.and_then(|value| journal.map(|()| value))
-        })
-    }
-
     /// Steps 9 through 11 over a far run this side never followed: end it if it
     /// is still going, read what it ended as, bring its results home, and
     /// settle the run over the store they extended.
@@ -196,10 +206,9 @@ impl<'a> FarRun<'a> {
         let end = match self.far.driving()? {
             // A run still going is ended the way an attached migration ends
             // one: signalled on every poll, waited for, terminated past the
-            // bound. The journal boundary is opened for the diagnostic that
-            // wait can produce.
+            // bound.
             Some(pid) => {
-                self.journaling(|events| self.wind_down(pid, true, events))?;
+                self.wind_down(pid, true, self.events)?;
                 FollowEnd::WoundDown
             }
             // One that already ended is only collected from.

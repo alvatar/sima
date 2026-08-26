@@ -9,7 +9,7 @@ use sima_model::{FormatId, GeneratorConfig, GeneratorId, Params, RunConfig, RunI
 use sima_provider::stub::StubProvider;
 use sima_provider::{
     AcquireLimits, Budget, Constraints, Cost, InstanceId, Objective, Offer, OfferId, Price,
-    Provider, ReconcileScope, Verdict, acquire, assess, reconcile, spend_report,
+    Provider, ReconcileScope, UNREPORTED, Verdict, acquire, assess, reconcile, spend_report,
 };
 use sima_store::{Rental, RunLock, Store};
 
@@ -94,6 +94,7 @@ fn rent_within<'a, P: Provider>(
         // This lifecycle exercise runs an acquisition to completion; nothing
         // cancels it.
         &std::sync::atomic::AtomicBool::new(false),
+        UNREPORTED,
     )?;
     Ok((guard, lock))
 }

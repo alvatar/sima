@@ -221,6 +221,13 @@ impl RunStatus {
             | Event::InstanceReplaced { .. }
             | Event::BudgetSpendExhausted { .. }
             | Event::BudgetWallClockExhausted { .. } => {}
+            // The phases of placing a run on a machine: where the run is in
+            // being put somewhere, which is not where its work is.
+            Event::Renting { .. }
+            | Event::AwaitingMachine { .. }
+            | Event::SendingRun { .. }
+            | Event::InstallingProgram { .. }
+            | Event::StartingRun => {}
         }
     }
 

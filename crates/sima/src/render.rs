@@ -87,6 +87,32 @@ pub fn describe(event: &Event, committed: usize, tasks: usize) -> Option<String>
                 None => format!("{level} {source}: {message}"),
             }
         }
+        // The phases of putting a run on a machine, each stated as it begins:
+        // between them lie the minutes a placement takes, and an operator
+        // reading a silent terminal cannot otherwise tell them from a hang.
+        Event::Renting {
+            member,
+            machine,
+            gpu_model,
+            gpu_count,
+            rate_microusd_hour,
+        } => format!(
+            "renting{}: {} on {machine} at {}/hr",
+            named(member),
+            hardware(gpu_model, *gpu_count),
+            dollars(*rate_microusd_hour)
+        ),
+        Event::AwaitingMachine { timeout_ms } => format!(
+            "waiting for the machine to come up (pulls the image; up to {}s)",
+            timeout_ms / 1_000
+        ),
+        Event::SendingRun { member, objects } => {
+            format!("sending the run{}: {objects} objects", named(member))
+        }
+        Event::InstallingProgram { member } => {
+            format!("installing the program{}", named(member))
+        }
+        Event::StartingRun => "starting the run".to_string(),
         // A rented machine came online: reported at supervisor start and for
         // each replacement, naming where the work will run.
         Event::InstanceOnline {
@@ -96,18 +122,12 @@ pub fn describe(event: &Event, committed: usize, tasks: usize) -> Option<String>
             rate_microusd_hour,
             host,
             ..
-        } => {
-            let hardware = if *gpu_count == 0 || gpu_model.is_empty() {
-                "no GPU".to_string()
-            } else {
-                format!("{gpu_count}× {gpu_model}")
-            };
-            format!(
-                "instance online {} on {host}: {hardware} at {}/hr",
-                short(instance),
-                dollars(*rate_microusd_hour)
-            )
-        }
+        } => format!(
+            "instance online {} on {host}: {} at {}/hr",
+            short(instance),
+            hardware(gpu_model, *gpu_count),
+            dollars(*rate_microusd_hour)
+        ),
         Event::InstanceLost { instance, .. } => {
             format!("instance lost {}", short(instance))
         }
@@ -151,6 +171,27 @@ pub fn describe(event: &Event, committed: usize, tasks: usize) -> Option<String>
 /// stay legible: `$0.412`, `$5.000`.
 pub fn dollars(micro_usd: u64) -> String {
     format!("${:.3}", micro_usd as f64 / 1_000_000.0)
+}
+
+/// What a machine offers, as a rental line names it: `2× RTX 4090`, or
+/// `no GPU` for an offer that states none.
+fn hardware(gpu_model: &str, gpu_count: u32) -> String {
+    if gpu_count == 0 || gpu_model.is_empty() {
+        "no GPU".to_string()
+    } else {
+        format!("{gpu_count}× {gpu_model}")
+    }
+}
+
+/// The member a phase line names, as the ` <member>` that follows the verb —
+/// empty for a migration, which places its run on the one machine its
+/// destination names.
+fn named(member: &str) -> String {
+    if member.is_empty() {
+        String::new()
+    } else {
+        format!(" {member}")
+    }
 }
 
 /// Progress rendering over a run's event stream: prints one line per

@@ -17,10 +17,11 @@ use sima_domains::devices::{DeviceInfo, DeviceType};
 use sima_model::{RunId, TaskKey};
 use sima_provider::stub::StubProvider;
 use sima_provider::{
-    AcquireLimits, Budget, Constraints, InstanceGuard, Objective, Provider, acquire,
+    AcquireLimits, Budget, Constraints, InstanceGuard, Objective, Provider, UNREPORTED, acquire,
 };
 use sima_scheduler::{Event, Record, RunOutcome};
 use sima_store::{ObjectScope, Rental as RentalRole, RunLock, SpendEntry, Store, SyncReport};
+use sima_trace::Emitter;
 use tempfile::TempDir;
 
 use crate::config::LoadedConfig;
@@ -31,6 +32,14 @@ use crate::program_binding::BinaryChange;
 use crate::task_keys::task_keys;
 
 pub(crate) const PID: u32 = 4242;
+
+/// An emitter nothing reads, for a step driven on its own whose narration is
+/// not what the test is about.
+pub(crate) fn unheard() -> Emitter {
+    // The receiver is dropped at the end of this expression, so every send
+    // through the emitter is a no-op.
+    Emitter::from(std::sync::mpsc::channel().0)
+}
 
 // ---- The recording far side ----
 
@@ -720,5 +729,6 @@ pub(crate) fn hosting<'a>(
         &limits(),
         &Budget::default(),
         &AtomicBool::new(false),
+        UNREPORTED,
     )
 }

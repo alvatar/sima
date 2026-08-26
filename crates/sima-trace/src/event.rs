@@ -180,6 +180,35 @@ pub enum Event {
     /// The caller interrupted the run: in-flight attempts drained and
     /// committed, and no manifest was written, so the store is resumable.
     RunInterrupted { run: String },
+    /// An offer was taken and a machine is being paid for, before it is up.
+    /// `member` names the fleet member it was rented for, and is empty for a
+    /// migration, which rents the one machine its destination names. A walk
+    /// that takes an offer whose machine never comes up reports each one it
+    /// takes.
+    Renting {
+        member: String,
+        machine: String,
+        gpu_model: String,
+        gpu_count: u32,
+        rate_microusd_hour: u64,
+    },
+    /// The wait for a rented destination to become reachable began: the
+    /// machine is paid for and is coming up, which on a fresh one includes
+    /// pulling the worker image. Reported once per migration, however many
+    /// times the destination is polled.
+    AwaitingMachine { timeout_ms: u64 },
+    /// The run's objects are being sent to the machine that will drive it:
+    /// the identity components, the frontier states, and the program when one
+    /// travels. `member` names the fleet member receiving them, and is empty
+    /// for a migration.
+    SendingRun { member: String, objects: usize },
+    /// The program the run's format is served by is being installed on the
+    /// machine. `member` names the fleet member installing it, and is empty
+    /// for a migration, whose destination installs it as its run loads.
+    InstallingProgram { member: String },
+    /// The far `sima run` is being started on the destination, which is what
+    /// the migration waits on until its first journal line arrives.
+    StartingRun,
     /// A rented machine came online: reported at supervisor start for
     /// each instance, and again for each replacement. `tag` is the rental's
     /// ledger key, `instance` the provider's id, `rate_microusd_hour` its

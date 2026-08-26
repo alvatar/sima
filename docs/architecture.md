@@ -2299,6 +2299,15 @@ The vocabulary:
   known. Status ignores it entirely; the CLI renders warn and error lines
   and keeps info journaled, never echoed.
 
+The verb that puts a run on a machine emits five more, one as each phase of
+the placement begins — **renting**, **awaiting machine**, **sending run**,
+**installing program**, **starting run**. They state where a placement is
+while there is no far run to journal anything, which is the stretch an
+operator would otherwise read as a hang; `renting` carries what is now being
+paid for. Being events, they are journaled like any other, so what an
+operator watched is also what the run's journal holds. They move no counter
+and free no worker: status, timeline, and task history each pass over them.
+
 The driver spawns the trace collector over the run's journal writer, with
 the caller's observer as its record consumer; the driver, the workers, and
 the transports' reader threads emit through cloned emitters, and the one
@@ -2766,6 +2775,24 @@ moved.
  │ 12  TEARDOWN: release the guard (rental only)                          │
  └────────────────────────────────────────────────────────────────────────┘
 ```
+
+**Each phase says so as it begins.** Steps 2 through 6 are where a migration
+spends its minutes — an offer walk, a machine booting and pulling an image, a
+closure crossing the wire, a far run loading and installing a program — and
+until step 7 there is no far run producing records, so a terminal that printed
+only the run id would be indistinguishable from a hang. One line opens each:
+what was rented and at what rate, that the machine is being waited for and for
+how long, how many objects are being sent, that the program is being installed,
+and that the far run is being started. A machine of yours is standing and is
+not paid for, so it has neither of the first two. The lines are journal events
+like any other, so the operator's view and the run's journal state the same
+placement.
+
+The readiness probes behind step 3 capture their own stderr rather than
+inheriting it: a probe is polled until the machine answers, and ssh writes
+`Connection refused` on every attempt until it does. What the probe said
+reaches the one error that reports a machine which never came up, and reaches
+the terminal nowhere else.
 
 Push and pull are one `Store::sync` at two moments, differing only in the
 [object scope](#workers-on-another-machine) each side advertises. A push over a
