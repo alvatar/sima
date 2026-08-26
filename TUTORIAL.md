@@ -396,6 +396,8 @@ A rental bills by the hour and not by what it computes, so to stop the run early
 
 **Finish at home.** `sima run search.toml` one last time. The store knows what remains outstanding; the remaining tasks compute upon your laptop, and the run reports `finalized`. It began here, computed upon a machine that no longer exists, and ended here — and the manifest is the very one any single machine would have written.
 
+**Settle the account.** `sima report search.toml --spend` states what the rental cost, and `sima report search.toml --machines` the reputation of the machines that served — a machine that misbehaved is blacklisted and not rented again. While a run lives elsewhere, `sima status`, `sima report`, `sima tui`, and `sima follow` all accept `--on <host>` to observe it upon its own machine; and where a migrated run's machine is to be destroyed without the ceremony of a recall — nothing upon it worth bringing home, the rental merely billing — `sima reconcile search.toml --hosted` takes that one down as well; plain `reconcile` spares it.
+
 ### Starting over
 
 `root_seed` in `[run]` is the anchor of the identity, and your generator receives it as the first argument of `generate` — one seed always yields the same candidates. To rerun a finalized run is to find its commits and do nothing; to run the same search afresh, advance the seed — a new identity, every task under new addresses. To recompute under the *same* seed, clean up first (below).
