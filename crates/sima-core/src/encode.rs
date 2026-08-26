@@ -231,10 +231,10 @@ impl<'a> Dec<'a> {
             .ok_or_else(|| Error::Encoding(format!("f32 count {count} overflows a byte length")))?;
         let raw = self.take(byte_len)?;
         let mut out = Vec::with_capacity(count);
-        for chunk in raw.chunks_exact(4) {
-            out.push(f32::from_bits(u32::from_le_bytes([
-                chunk[0], chunk[1], chunk[2], chunk[3],
-            ])));
+        // The span was taken at exactly `count` four-byte elements, so the
+        // remainder is empty and the chunks are the whole of it.
+        for chunk in raw.as_chunks::<4>().0 {
+            out.push(f32::from_bits(u32::from_le_bytes(*chunk)));
         }
         Ok(out)
     }

@@ -41,7 +41,9 @@ impl Hash {
             )));
         }
         let mut out = [0u8; Hash::LEN];
-        for (byte, pair) in out.iter_mut().zip(hex.chunks_exact(2)) {
+        // The length was checked at exactly two digits per byte, so the
+        // remainder is empty and the pairs are the whole of the input.
+        for (byte, pair) in out.iter_mut().zip(hex.as_chunks::<2>().0) {
             *byte = (hex_val(pair[0])? << 4) | hex_val(pair[1])?;
         }
         Ok(Hash(out))
@@ -89,7 +91,11 @@ pub fn from_hex(s: &str) -> Result<Vec<u8>> {
             hex.len()
         )));
     }
-    hex.chunks_exact(2)
+    // The even length was checked above, so the remainder is empty and the
+    // pairs are the whole of the input.
+    hex.as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| Ok((hex_val(pair[0])? << 4) | hex_val(pair[1])?))
         .collect()
 }
