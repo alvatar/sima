@@ -448,7 +448,19 @@ What has just happened deserves understanding in three particulars:
 
 ### Cleaning up
 
-`sima rm search.toml` deletes the run and everything only it references; `rm -rf store/` removes every run at once. After the cleaning, the same seed computes afresh from nothing — without it, a rerun finds its commits and does nothing.
+`sima rm` deletes one run — the run the config presently names — together with everything only it references:
+
+```
+sima rm search.toml
+```
+
+Mark that "presently names": the target is resolved through the config, so a store holding runs of past seeds is cleaned by restoring each seed in turn and repeating the command. Ask for a run the store never held, and it refuses by name:
+
+```
+sima: validation error: cannot remove run 7c19fe97…: run not found
+```
+
+`rm -rf store/` removes every run at once, the store being disposable in its entirety. After the cleaning, by either instrument, the same seed computes afresh from nothing — whereas without it, a rerun finds its commits and does nothing.
 
 ### A deadline where time is free
 
