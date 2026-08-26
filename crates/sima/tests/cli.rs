@@ -9,7 +9,7 @@ use std::process::{Command, Output};
 use std::time::{Duration, Instant};
 
 use common::{manifest_of, sima_command, worker_processes};
-use sima_pipeline::{Event, RunObserver, load};
+use sima_pipeline::{Event, LIVENESS_INTERVAL, RunObserver, load};
 use sima_store::{
     IncidentKind, InstanceRecord, InstanceRecordState, MachineIncident, Rental, Store,
 };
@@ -1264,9 +1264,15 @@ fn checkpointing_config(dir: &Path) -> PathBuf {
     common::write_config_text(dir, "sima.toml", text)
 }
 
-/// How long an attempt goes between saying it is alive, as
-/// `sima-scheduler`'s `LIVENESS_INTERVAL` states it.
-const LIVENESS_SECS: u64 = 10;
+/// How many liveness lines one attempt is allowed over `took`: one per
+/// [`LIVENESS_INTERVAL`], plus the attempt's first, which is always said.
+///
+/// The interval is taken from the scheduler that enforces it rather than
+/// restated here, so shortening it loosens this bound instead of silently
+/// tightening it.
+fn liveness_lines_allowed(took: Duration) -> u64 {
+    1 + took.as_millis() as u64 / LIVENESS_INTERVAL.as_millis() as u64
+}
 
 #[test]
 fn the_stream_shows_each_attempt_starting_and_the_task_staying_alive() {
@@ -1302,7 +1308,7 @@ fn the_stream_shows_each_attempt_starting_and_the_task_staying_alive() {
     // machine takes longer and is allowed more, without the count ever
     // depending on how fast this one is.
     assert!(
-        alive <= 4 * (1 + took.as_secs() / LIVENESS_SECS),
+        alive <= 4 * liveness_lines_allowed(took),
         "a task saving faster than the interval says so once per interval, \
          and this run took {took:?}: {text}"
     );

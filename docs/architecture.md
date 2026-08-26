@@ -2870,12 +2870,14 @@ well as the migration, and it runs only after the far run installed its
 program.
 
 **The far run is detached.** It is started with `setsid` and its pid recorded,
-so a laptop that sleeps, a network that drops, a `sima migrate` that is killed,
-and a Ctrl-C all leave the destination computing. Re-running reattaches, and the
-two destination kinds reattach by different evidence: a rented machine is found
-in the instance ledger and adopted, which is what stops a second invocation
-renting a second machine; a machine of yours has no ledger record, so `run.pid`
-naming a live process is the whole of it. The `run.pid` check applies to a
+so once it is started, a laptop that sleeps, a network that drops, a
+`sima migrate` that is killed, and a Ctrl-C all leave the destination computing.
+An interrupt arriving before that point abandons the placement instead: nothing
+was started, so there is nothing to leave computing. Re-running reattaches, and
+the two destination kinds reattach by different evidence: a rented machine is
+found in the instance ledger and adopted, which is what stops a second
+invocation renting a second machine; a machine of yours has no ledger record, so
+`run.pid` naming a live process is the whole of it. The `run.pid` check applies to a
 rental too — adopting the machine says nothing about whether the run on it is
 still going. Either way the push and the start are skipped.
 

@@ -691,6 +691,10 @@ mod tests {
         // examples made when the default arrived: a run identity cannot turn
         // on where its results are kept.
         let unstated = BASE.replace("        store = \"./store\"\n", "");
+        assert_ne!(
+            unstated, BASE,
+            "the store key was not removed, so this pins nothing"
+        );
         assert_eq!(
             base,
             id_of(&unstated),

@@ -321,7 +321,7 @@ const WINDDOWN_POLL: Duration = Duration::from_millis(50);
 /// while what the terminal needs is a sign of life on the scale a person reads
 /// at. The first save of an attempt is always reported: a task that saves once
 /// and computes for an hour has said the one thing there was to say.
-const LIVENESS_INTERVAL: Duration = Duration::from_secs(10);
+pub const LIVENESS_INTERVAL: Duration = Duration::from_secs(10);
 
 /// The rate limit on one attempt's liveness lines: at most one per
 /// [`LIVENESS_INTERVAL`], and the attempt's first always.
