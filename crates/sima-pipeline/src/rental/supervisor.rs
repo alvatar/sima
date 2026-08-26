@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use sima_core::Result;
 use sima_provider::{
     AcquireLimits, Budget, Exhaustion, IncidentKind, InstanceGuard, InstanceStatus, Objective,
-    Provider, UNREPORTED, Verdict, acquire, assess, now_ms, record_incident,
+    Provider, UNREPORTED, Verdict, acquire, assess, never_cancelled, now_ms, record_incident,
 };
 use sima_scheduler::Event;
 use sima_store::{Rental as RentalRole, RunLock, Store};
@@ -25,9 +25,7 @@ use sima_transport::{SpawnOutcome, WorkerTransport};
 use sima_contracts::DeviceBinding;
 
 use crate::config::FillPolicy;
-use crate::rental::acquire::{
-    RentalGroup, RentedHost, budget_exhausted, endpoint_target, never_cancelled,
-};
+use crate::rental::acquire::{RentalGroup, RentedHost, budget_exhausted, endpoint_target};
 
 /// A rented pool's transport, wired to stop the run's supervisor when a spawn
 /// fails.
@@ -539,6 +537,7 @@ mod tests {
             &format,
             &exec(),
             None,
+            never_cancelled(),
             &unheard(),
         )?;
         let groups = one_group(&provider, &spec, FillPolicy::Strict, hosts);
@@ -576,6 +575,7 @@ mod tests {
             &format,
             &exec(),
             None,
+            never_cancelled(),
             &unheard(),
         )?;
         let groups = one_group(&provider, &spec, FillPolicy::Strict, hosts);
@@ -611,6 +611,7 @@ mod tests {
             &format,
             &exec(),
             None,
+            never_cancelled(),
             &unheard(),
         )?;
         let groups = one_group(&provider, &spec, FillPolicy::Strict, hosts);
@@ -650,6 +651,7 @@ mod tests {
             &format,
             &exec(),
             None,
+            never_cancelled(),
             &unheard(),
         )?;
         let groups = one_group(&provider, &spec, FillPolicy::Strict, hosts);
@@ -735,6 +737,7 @@ mod tests {
             &format,
             &exec(),
             None,
+            never_cancelled(),
             &unheard(),
         )?;
         let groups = one_group(&provider, &spec, FillPolicy::Strict, hosts);
@@ -796,6 +799,7 @@ mod tests {
             &format,
             &exec(),
             None,
+            never_cancelled(),
             &unheard(),
         )?;
         let groups = one_group(&provider, &spec, FillPolicy::Strict, hosts);
@@ -853,6 +857,7 @@ mod tests {
             &format,
             &exec(),
             None,
+            never_cancelled(),
             &unheard(),
         )?;
         let groups = one_group(&provider, &spec, FillPolicy::Strict, hosts);
@@ -920,6 +925,7 @@ mod tests {
                 &format,
                 &exec(),
                 None,
+                never_cancelled(),
                 &unheard(),
             )?;
             groups.push(RentalGroup {
@@ -973,6 +979,7 @@ mod tests {
             &format,
             &exec(),
             None,
+            never_cancelled(),
             &unheard(),
         )?;
         let groups = one_group(&provider, &spec, FillPolicy::Strict, hosts);
@@ -1035,6 +1042,7 @@ mod tests {
             &format,
             &exec(),
             None,
+            never_cancelled(),
             &unheard(),
         )?;
         let groups = one_group(&provider, &spec, FillPolicy::Strict, hosts);
@@ -1073,6 +1081,7 @@ mod tests {
             &format,
             &exec(),
             None,
+            never_cancelled(),
             &unheard(),
         )?;
         let groups = one_group(&provider, &spec, FillPolicy::Strict, hosts);
@@ -1122,6 +1131,7 @@ mod tests {
             &format,
             &exec(),
             None,
+            never_cancelled(),
             &unheard(),
         )?;
         let groups = one_group(&provider, &spec, FillPolicy::Strict, hosts);

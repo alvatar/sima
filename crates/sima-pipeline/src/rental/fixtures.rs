@@ -49,6 +49,18 @@ pub(super) fn spec() -> Rented {
     }
 }
 
+/// A rented specification whose readiness wait is long enough that sitting it
+/// out shows plainly in a test's wall clock, and polled often enough that
+/// nothing waits on the poll itself. The tests about ending a wait early
+/// measure against it.
+pub(super) fn waiting_spec() -> Rented {
+    Rented {
+        ready_timeout: Duration::from_secs(3),
+        ready_poll: Duration::from_millis(5),
+        ..spec()
+    }
+}
+
 /// A rental of `count` machines under `fill`, over `spec`.
 pub(super) fn rental(spec: &Rented, count: usize, fill: FillPolicy) -> Rental<'_> {
     Rental {

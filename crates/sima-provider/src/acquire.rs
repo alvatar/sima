@@ -25,6 +25,15 @@ use crate::reputation::{IncidentKind, excluded_machines, record_incident};
 /// about the offer it took passes as `taken`.
 pub static UNREPORTED: &(dyn Fn(&Offer) + Sync) = &|_: &Offer| ();
 
+/// An acquisition nobody can call off: what a caller with no wind-down to
+/// observe passes as `cancel`. The flag is never set, so the walk runs to its
+/// own conclusion, and it is behind a call because nothing outside may reach
+/// the flag to set it.
+pub fn never_cancelled() -> &'static AtomicBool {
+    static NEVER: AtomicBool = AtomicBool::new(false);
+    &NEVER
+}
+
 /// Bounds on waiting for a provisioned instance to become ready.
 #[derive(Debug, Clone, Copy)]
 pub struct AcquireLimits {
@@ -352,7 +361,7 @@ mod tests {
         Store,
     };
 
-    use super::{AcquireLimits, Ordering, UNREPORTED, acquire, attempt_tag};
+    use super::{AcquireLimits, Ordering, UNREPORTED, acquire, attempt_tag, never_cancelled};
     use crate::budget::{Budget, Cost};
     use crate::guard::InstanceGuard;
     use crate::offer::{Constraints, Objective, Offer, OfferId, Price};
@@ -360,8 +369,8 @@ mod tests {
     use crate::reconcile::{ReconcileScope, reconcile};
     use crate::stub::StubProvider;
     use crate::testutil::{
-        acquire_any, instance_record, live_state, never_cancelled, prompt_limits, sample_run,
-        spend_entries, stub_offer, temp_store,
+        acquire_any, instance_record, live_state, prompt_limits, sample_run, spend_entries,
+        stub_offer, temp_store,
     };
 
     /// A provider that watches what the acquisition loop does before and

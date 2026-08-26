@@ -124,6 +124,11 @@ pub(crate) struct RentalGroup<'a> {
 /// probe is torn down individually. On a shortfall the fill policy decides:
 /// strict tears down everything acquired so far and fails the run; best-effort
 /// proceeds with what came up, so long as one machine did.
+///
+/// `interrupt` is the run's own wind-down flag, read inside every wait an
+/// acquisition spends: the machines are minutes of paid-for waiting before the
+/// run drives, and an operator who lets go there must not have to wait them out
+/// or kill the process over them.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn acquire_hosts<'a>(
     rental: &Rental<'_>,
@@ -135,6 +140,7 @@ pub(crate) fn acquire_hosts<'a>(
     format: &FormatId,
     exec: &ExecutionConfig,
     delivery: Option<&ProgramDelivery>,
+    interrupt: &AtomicBool,
     events: &Emitter,
 ) -> Result<Vec<RentedHost<'a>>> {
     let program = match delivery {
@@ -160,6 +166,7 @@ pub(crate) fn acquire_hosts<'a>(
             format,
             exec,
             &program,
+            interrupt,
             events,
             &member,
         ) {
@@ -206,6 +213,7 @@ fn acquire_one<'a>(
     format: &FormatId,
     exec: &ExecutionConfig,
     program: &RentedProgram<'_>,
+    interrupt: &AtomicBool,
     events: &Emitter,
     member: &str,
 ) -> Result<RentedHost<'a>> {
@@ -237,9 +245,11 @@ fn acquire_one<'a>(
             Objective::CheapestPerHour,
             &limits,
             budget,
-            // Run-start acquisition has nothing to cancel: the run is not yet
-            // driving, so no wind-down is in flight.
-            never_cancelled(),
+            // The wait for a machine to come up is the longest thing an
+            // acquisition does, so the run's interrupt reaches inside it: an
+            // operator letting go here is answered without waiting the machine
+            // out.
+            interrupt,
             &|offer| taken(events, member, spec.ready_timeout, offer),
         )?;
         let target = endpoint_target(guard.endpoint().clone());
@@ -453,27 +463,22 @@ fn shortfall(member: &str, rental: &Rental<'_>, error: &Error, acquired: usize) 
     }
 }
 
-/// A cancellation flag that is never set, for an acquisition with no wind-down
-/// to observe — the run-start acquisition, before the run drives.
-pub(super) fn never_cancelled() -> &'static AtomicBool {
-    static NEVER: AtomicBool = AtomicBool::new(false);
-    &NEVER
-}
-
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
+    use std::sync::atomic::Ordering;
     use std::sync::mpsc::Receiver;
 
     use sima_contracts::DeviceClass;
     use sima_domains::devices::DeviceType;
     use sima_provider::stub::StubProvider;
-    use sima_provider::{InstanceStatus, Provision};
+    use sima_provider::{InstanceStatus, OfferId, Provision, never_cancelled};
 
     use super::*;
     use crate::config::FillPolicy;
     use crate::rental::fixtures::{
         acquisition_env, deviceless_probe, exec, heard, offer, one_group, rental, spec, unheard,
+        waiting_spec,
     };
 
     /// One enumerated device of the given category.
@@ -572,6 +577,7 @@ mod tests {
             &format,
             &exec(),
             None,
+            never_cancelled(),
             &unheard(),
         );
         assert!(matches!(result, Err(Error::Provider(_))));
@@ -603,6 +609,7 @@ mod tests {
             &format,
             &exec(),
             None,
+            never_cancelled(),
             &unheard(),
         )?;
         assert_eq!(hosts.len(), 1, "best-effort runs on what came up");
@@ -658,6 +665,7 @@ mod tests {
             &format,
             &exec(),
             None,
+            never_cancelled(),
             &events,
         );
         assert!(matches!(result, Err(Error::Provider(_))));
@@ -692,6 +700,7 @@ mod tests {
             &format,
             &exec(),
             None,
+            never_cancelled(),
             &events,
         )?;
         drop(events);
@@ -734,6 +743,7 @@ mod tests {
             &format,
             &exec(),
             None,
+            never_cancelled(),
             &events,
         )?;
         drop(events);
@@ -783,6 +793,7 @@ mod tests {
             &format,
             &exec(),
             None,
+            never_cancelled(),
             &unheard(),
         )?;
         assert_eq!(hosts.len(), 2);
@@ -818,6 +829,7 @@ mod tests {
             &format,
             &exec(),
             None,
+            never_cancelled(),
             &unheard(),
         );
         assert!(result.is_err(), "a probe failure fails the acquisition");
@@ -854,6 +866,7 @@ mod tests {
             &format,
             &exec(),
             None,
+            never_cancelled(),
             &unheard(),
         );
         assert!(result.is_err(), "no machine in the market could be probed");
@@ -866,6 +879,92 @@ mod tests {
             .collect();
         machines.sort();
         assert_eq!(machines, vec!["machine-a", "machine-b"]);
+        Ok(())
+    }
+
+    /// Runs `acquisition` with a thread standing by to set `interrupt` the
+    /// moment an event matching `at` is emitted, and returns what the
+    /// acquisition answered.
+    ///
+    /// The flag has to land inside a wait the acquisition is already in, which
+    /// is a window no test can hit by sleeping: the journal is what says the
+    /// acquisition got there, so the journal is what the flag is driven from.
+    fn interrupted_at<T>(
+        interrupt: &AtomicBool,
+        heard: Receiver<Event>,
+        at: fn(&Event) -> bool,
+        acquisition: impl FnOnce() -> T + Send,
+    ) -> T
+    where
+        T: Send,
+    {
+        thread::scope(|scope| {
+            scope.spawn(|| {
+                // The receiver drains until the emitter is dropped, so a run
+                // that never reaches `at` ends this thread rather than
+                // stranding it.
+                for event in heard {
+                    if at(&event) {
+                        interrupt.store(true, Ordering::Relaxed);
+                        return;
+                    }
+                }
+            });
+            acquisition()
+        })
+    }
+
+    #[test]
+    fn an_interrupt_in_the_boot_wait_ends_the_acquisition_rather_than_waiting_it_out() -> Result<()>
+    {
+        // Waiting for a rented machine to come up is the longest thing an
+        // acquisition does, and the run is paying through all of it. An
+        // operator who lets go there is answered while the wait is still
+        // running: the machine is torn down and nothing is held against it,
+        // since it was never given its time to answer.
+        let (_dir, store, run) = acquisition_env();
+        let lock = store.acquire_run_lock(&run)?;
+        let provider =
+            StubProvider::new(vec![offer("a", 100_000)]).never_ready(OfferId("a".to_string()));
+        let format = FormatId::new("stub.v1")?;
+        let spec = waiting_spec();
+        let interrupt = AtomicBool::new(false);
+        let (events, said) = heard();
+        let started = Instant::now();
+        let result = interrupted_at(
+            &interrupt,
+            said,
+            |event| matches!(event, Event::AwaitingMachine { .. }),
+            || {
+                acquire_hosts(
+                    &rental(&spec, 1, FillPolicy::Strict),
+                    &Budget::default(),
+                    &provider,
+                    &store,
+                    &lock,
+                    &deviceless_probe(),
+                    &format,
+                    &exec(),
+                    None,
+                    &interrupt,
+                    &events,
+                )
+            },
+        );
+        assert!(result.is_err(), "the acquisition ends with no machine");
+        assert!(
+            started.elapsed() < spec.ready_timeout,
+            "the wait ended on the flag, not on its deadline: {:?}",
+            started.elapsed()
+        );
+        assert!(
+            provider.live().is_empty(),
+            "the machine that was coming up is torn down"
+        );
+        assert!(
+            store.machine_incidents()?.is_empty(),
+            "a machine an operator interrupted answered for nothing"
+        );
         Ok(())
     }
 

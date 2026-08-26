@@ -194,6 +194,7 @@ pub fn orchestrate(
                 &config.run.format,
                 &execution,
                 delivery.as_ref(),
+                control.interrupt,
                 events,
             )?;
             groups.push(RentalGroup {
