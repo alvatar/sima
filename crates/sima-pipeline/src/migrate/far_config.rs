@@ -22,6 +22,10 @@
 //! computing wherever it executes, and `max_spend_usd` needs the provider key
 //! that never travels.
 //!
+//! **The destination's form is what the synthesis takes**, so every decision
+//! the form settles is made here rather than by the caller handing in a shape
+//! already derived from it.
+//!
 //! The far side therefore declares no machine beyond itself. It rents nothing,
 //! whatever the local config declares — renting needs the provider key, and the
 //! key never leaves this machine — so a run drawing on four rented machines
@@ -123,7 +127,7 @@ impl FarLayout {
 
 /// What the far side's `[orchestrator]` is built from, decided by the
 /// destination's form.
-pub(crate) enum FarWorkers<'a> {
+enum FarWorkers<'a> {
     /// A machine of yours: its own container and worker layout, moved onto the
     /// far side's `[orchestrator]`, which makes them a container pool on the
     /// machine the config now sits on. Nothing is probed — the operator wrote
@@ -138,7 +142,7 @@ pub(crate) enum FarWorkers<'a> {
 impl<'a> FarWorkers<'a> {
     /// The layout a destination's form calls for. A machine of yours states
     /// one; a rented one has the probe answer for it.
-    pub(crate) fn for_form(form: &'a HostForm, probed: &'a [DeviceInfo]) -> FarWorkers<'a> {
+    fn for_form(form: &'a HostForm, probed: &'a [DeviceInfo]) -> FarWorkers<'a> {
         match form {
             HostForm::Owned(owned) => FarWorkers::Declared(owned),
             HostForm::Rented(_) => FarWorkers::Probed(probed),
@@ -172,12 +176,17 @@ pub(crate) struct Registration {
 /// `[run]` exactly: the section is carried across as a parsed value and never
 /// re-derived, so no translation this crate performs can perturb the run id.
 ///
+/// `form` is the destination's, and decides what the far `[orchestrator]`
+/// states; `probed` is what the enumeration reported there, which only a
+/// rented destination's layout is built from.
+///
 /// `registration` is present exactly when the run's format is served by a
 /// program this machine routes it to; a format this build answers carries
 /// none, and the far config then declares no `[domain.*]` table at all.
 pub(crate) fn far_config(
     local_text: &str,
-    workers: FarWorkers<'_>,
+    form: &HostForm,
+    probed: &[DeviceInfo],
     registration: Option<&Registration>,
 ) -> Result<String> {
     let local: toml::Table = toml::from_str(local_text)
@@ -197,7 +206,10 @@ pub(crate) fn far_config(
     );
     far.insert(
         "orchestrator".to_string(),
-        toml::Value::Table(far_orchestrator(workers, registration.is_some())),
+        toml::Value::Table(far_orchestrator(
+            FarWorkers::for_form(form, probed),
+            registration.is_some(),
+        )),
     );
     if let Some(budget) = far_budget(&local) {
         far.insert("budget".to_string(), toml::Value::Table(budget));
@@ -466,9 +478,30 @@ mod tests {
         max_spend_usd = 5.0
     "#;
 
+    /// The entry `LOCAL` declares for a machine of yours.
+    const OWNED: &str = "gpubox";
+    /// The entry `LOCAL` declares for a machine to rent.
+    const RENTED: &str = "rented";
+
+    /// The config `LOCAL` synthesizes into for the destination `host`, whose
+    /// enumeration reported `probed`, as text.
+    fn far_text(host: &str, probed: &[DeviceInfo], registration: Option<&Registration>) -> String {
+        let local = declared();
+        far_config(LOCAL, &local.hosts[host].form, probed, registration).expect("the synthesis")
+    }
+
     /// The synthesized config, loaded back.
-    fn synthesized(workers: FarWorkers<'_>) -> LoadedConfig {
-        load_str(&far_config(LOCAL, workers, None).expect("the synthesis succeeds"))
+    fn synthesized(host: &str, probed: &[DeviceInfo]) -> LoadedConfig {
+        load_str(&far_text(host, probed, None))
+    }
+
+    /// `LOCAL` with a wall-clock ceiling of `ms` beside the spend ceiling it
+    /// already states, so the budget tests vary one key and nothing else.
+    fn stating_a_ceiling(ms: u64) -> String {
+        LOCAL.replace(
+            "max_spend_usd = 5.0",
+            &format!("max_spend_usd = 5.0\n        max_wall_clock_ms = {ms}"),
+        )
     }
 
     /// A local config whose `[config]` section sets every key the section
@@ -617,15 +650,15 @@ mod tests {
     #[test]
     fn the_synthesized_config_is_the_same_run() {
         let local = declared();
-        let HostForm::Owned(owned) = &local.hosts["gpubox"].form else {
-            panic!("gpubox is a machine of yours");
-        };
-        for workers in [
-            FarWorkers::Declared(owned),
-            FarWorkers::Probed(&[device(0x10de, 0x2684, 0, DeviceType::Discrete)]),
+        for (host, probed) in [
+            (OWNED, &[][..]),
+            (
+                RENTED,
+                &[device(0x10de, 0x2684, 0, DeviceType::Discrete)][..],
+            ),
         ] {
             assert_eq!(
-                synthesized(workers).run.id(),
+                synthesized(host, probed).run.id(),
                 local.run.id(),
                 "the far side drives this run, not another"
             );
@@ -639,15 +672,7 @@ mod tests {
         // store path — which names a directory on this machine — never travels.
         let dir = tempfile::tempdir().expect("temp dir");
         let path = dir.path().join("sima.toml");
-        let local = declared();
-        let HostForm::Owned(owned) = &local.hosts["gpubox"].form else {
-            panic!("gpubox is a machine of yours");
-        };
-        std::fs::write(
-            &path,
-            far_config(LOCAL, FarWorkers::Declared(owned), None).expect("synthesis"),
-        )
-        .expect("write");
+        std::fs::write(&path, far_text(OWNED, &[], None)).expect("write");
         assert_eq!(
             crate::config::load(&path).expect("loads").store,
             dir.path().join("./store")
@@ -658,11 +683,7 @@ mod tests {
 
     #[test]
     fn nothing_naming_another_machine_survives() {
-        let local = declared();
-        let HostForm::Owned(owned) = &local.hosts["gpubox"].form else {
-            panic!("gpubox is a machine of yours");
-        };
-        let far = synthesized(FarWorkers::Declared(owned));
+        let far = synthesized(OWNED, &[]);
         assert!(far.hosts.is_empty(), "no host travels");
         assert!(far.host_classes.is_empty(), "no class travels");
         assert!(far.fleet.members.is_empty(), "no fleet travels");
@@ -683,11 +704,14 @@ mod tests {
         // so a far run keeps it and a detached one is bounded by it. A ceiling
         // on spend is enforced by destroying a machine, which needs the
         // provider key — and the key never leaves this machine.
-        let local = LOCAL.replace(
-            "max_spend_usd = 5.0",
-            "max_spend_usd = 5.0\n        max_wall_clock_ms = 3600000",
-        );
-        let text = far_config(&local, FarWorkers::Probed(&[]), None).expect("the synthesis");
+        let local = declared();
+        let text = far_config(
+            &stating_a_ceiling(3_600_000),
+            &local.hosts[RENTED].form,
+            &[],
+            None,
+        )
+        .expect("the synthesis");
         assert!(
             !text.contains("max_spend_usd"),
             "the spend ceiling is not written down: {text}"
@@ -703,10 +727,7 @@ mod tests {
     #[test]
     fn the_run_settings_travel_and_the_local_ones_do_not() {
         let local = declared();
-        let HostForm::Owned(owned) = &local.hosts["gpubox"].form else {
-            panic!("gpubox is a machine of yours");
-        };
-        let far = synthesized(FarWorkers::Declared(owned));
+        let far = synthesized(OWNED, &[]);
         assert_eq!(far.execution.max_attempts, 3);
         assert_eq!(
             far.execution.attempt_timeout,
@@ -732,15 +753,6 @@ mod tests {
         }
     }
 
-    /// The far config `LOCAL` synthesizes into under `registration`, as text.
-    fn far_text(registration: Option<&Registration>) -> String {
-        let local = declared();
-        let HostForm::Owned(owned) = &local.hosts["gpubox"].form else {
-            panic!("gpubox is a machine of yours");
-        };
-        far_config(LOCAL, FarWorkers::Declared(owned), registration).expect("the synthesis")
-    }
-
     #[test]
     fn a_rented_destination_serving_a_program_states_no_worker_layout() {
         // The probe named no format, so what it answered is that the machine is
@@ -748,12 +760,11 @@ mod tests {
         // knows, and it is not installed there until the far run loads. The
         // layout is left out, and the far run derives it at start.
         let registration = registration(&[]);
-        let far = far_config(
-            LOCAL,
-            FarWorkers::Probed(&[device(0x10de, 0x2684, 0, DeviceType::Discrete)]),
+        let far = far_text(
+            RENTED,
+            &[device(0x10de, 0x2684, 0, DeviceType::Discrete)],
             Some(&registration),
-        )
-        .expect("the synthesis");
+        );
         let table: toml::Table = far.parse().expect("the far config parses");
         let orchestrator = table["orchestrator"].as_table().expect("a table");
         assert!(!orchestrator.contains_key("workers"), "{orchestrator:?}");
@@ -764,12 +775,11 @@ mod tests {
     fn a_rented_destination_serving_a_builtin_format_carries_the_probed_tables() {
         // The image there answers for the format itself, so the probe's answer
         // is where the work can go and the layout follows from it.
-        let far = far_config(
-            LOCAL,
-            FarWorkers::Probed(&[device(0x10de, 0x2684, 0, DeviceType::Discrete)]),
+        let far = far_text(
+            RENTED,
+            &[device(0x10de, 0x2684, 0, DeviceType::Discrete)],
             None,
-        )
-        .expect("the synthesis");
+        );
         let table: toml::Table = far.parse().expect("the far config parses");
         let orchestrator = table["orchestrator"].as_table().expect("a table");
         assert!(orchestrator.contains_key("device"), "{orchestrator:?}");
@@ -780,7 +790,7 @@ mod tests {
         // A machine of yours states its layout whatever answers for the format,
         // because the operator wrote it down.
         let registration = registration(&[]);
-        let table: toml::Table = far_text(Some(&registration))
+        let table: toml::Table = far_text(OWNED, &[], Some(&registration))
             .parse()
             .expect("the far config parses");
         let orchestrator = table["orchestrator"].as_table().expect("a table");
@@ -794,14 +804,16 @@ mod tests {
     fn a_builtin_format_synthesizes_no_domain_table() {
         // Every format this build answers is answered the same way there, so
         // nothing about a program is written down.
-        let table: toml::Table = far_text(None).parse().expect("the far config parses");
+        let table: toml::Table = far_text(OWNED, &[], None)
+            .parse()
+            .expect("the far config parses");
         assert!(!table.contains_key("domain"), "{table:?}");
     }
 
     #[test]
     fn a_registered_format_synthesizes_the_entry_that_installs_its_program() {
         let registration = registration(&["PATH", "PYTHONPATH"]);
-        let table: toml::Table = far_text(Some(&registration))
+        let table: toml::Table = far_text(OWNED, &[], Some(&registration))
             .parse()
             .expect("the far config parses");
         let entry = table["domain"]["acme.thing.v1"]
@@ -832,10 +844,14 @@ mod tests {
         // What the destination needs is the statement that the program wants
         // the SDK; the package itself is its own binary's to vend, so nothing
         // of it is written into the far config or carried over the wire.
-        let table: toml::Table = far_text(Some(&Registration {
-            sdk: Some(Sdk::Python),
-            ..registration(&["PATH"])
-        }))
+        let table: toml::Table = far_text(
+            OWNED,
+            &[],
+            Some(&Registration {
+                sdk: Some(Sdk::Python),
+                ..registration(&["PATH"])
+            }),
+        )
         .parse()
         .expect("the far config parses");
         let entry = table["domain"]["acme.thing.v1"]
@@ -848,7 +864,7 @@ mod tests {
     #[test]
     fn an_entry_declaring_no_sdk_writes_no_sdk_key() {
         // The key is optional, and a program needing none of it declares none.
-        let table: toml::Table = far_text(Some(&registration(&["PATH"])))
+        let table: toml::Table = far_text(OWNED, &[], Some(&registration(&["PATH"])))
             .parse()
             .expect("the far config parses");
         assert!(
@@ -863,7 +879,7 @@ mod tests {
     fn an_entry_declaring_no_names_writes_no_env_key() {
         // The key is optional, and an entry that omits it declares nothing
         // beyond the baseline every spawned program receives.
-        let table: toml::Table = far_text(Some(&registration(&[])))
+        let table: toml::Table = far_text(OWNED, &[], Some(&registration(&[])))
             .parse()
             .expect("the far config parses");
         let entry = table["domain"]["acme.thing.v1"]
@@ -877,11 +893,14 @@ mod tests {
     fn the_registration_leaves_the_run_section_byte_for_byte() {
         // The one hashed section: a run that carries its program is the same
         // run as one that does not.
-        let with = far_text(Some(&registration(&["PATH"])))
+        let with = far_text(OWNED, &[], Some(&registration(&["PATH"])))
             .parse::<toml::Table>()
             .expect("parses")["run"]
             .clone();
-        let without = far_text(None).parse::<toml::Table>().expect("parses")["run"].clone();
+        let without = far_text(OWNED, &[], None)
+            .parse::<toml::Table>()
+            .expect("parses")["run"]
+            .clone();
         assert_eq!(with, without);
     }
 
@@ -889,11 +908,7 @@ mod tests {
 
     #[test]
     fn a_machine_of_yours_carries_its_container_and_layout_onto_the_orchestrator() {
-        let local = declared();
-        let HostForm::Owned(owned) = &local.hosts["gpubox"].form else {
-            panic!("gpubox is a machine of yours");
-        };
-        let far = synthesized(FarWorkers::Declared(owned));
+        let far = synthesized(OWNED, &[]);
         let container = far.orchestrator.container.expect("a container pool");
         assert_eq!(container.image, "localhost/sima:pinned");
         assert_eq!(container.runtime, "podman");
@@ -904,9 +919,8 @@ mod tests {
     #[test]
     fn a_machine_of_yours_carries_its_device_tables() {
         let mut local = declared();
-        let HostForm::Owned(owned) = &mut local.hosts.get_mut("gpubox").expect("declared").form
-        else {
-            panic!("gpubox is a machine of yours");
+        let HostForm::Owned(owned) = &mut local.hosts.get_mut(OWNED).expect("declared").form else {
+            panic!("{OWNED} is a machine of yours");
         };
         owned.pool = Pool::Devices(vec![
             DeviceSelector {
@@ -918,7 +932,9 @@ mod tests {
                 workers: 1,
             },
         ]);
-        let far = synthesized(FarWorkers::Declared(owned));
+        let far = load_str(
+            &far_config(LOCAL, &local.hosts[OWNED].form, &[], None).expect("the synthesis"),
+        );
         assert_eq!(
             far.orchestrator.pool,
             Some(Pool::Devices(vec![
@@ -938,12 +954,7 @@ mod tests {
 
     #[test]
     fn a_rented_machine_runs_plain_workers_with_no_container() {
-        let far = synthesized(FarWorkers::Probed(&[device(
-            0x10de,
-            0x2684,
-            0,
-            DeviceType::Discrete,
-        )]));
+        let far = synthesized(RENTED, &[device(0x10de, 0x2684, 0, DeviceType::Discrete)]);
         assert_eq!(
             far.orchestrator.container, None,
             "ssh already lands inside the instance's own container"
@@ -952,10 +963,13 @@ mod tests {
 
     #[test]
     fn two_identical_cards_are_one_class_carrying_two_workers() {
-        let far = synthesized(FarWorkers::Probed(&[
-            device(0x10de, 0x2684, 0, DeviceType::Discrete),
-            device(0x10de, 0x2684, 1, DeviceType::Discrete),
-        ]));
+        let far = synthesized(
+            RENTED,
+            &[
+                device(0x10de, 0x2684, 0, DeviceType::Discrete),
+                device(0x10de, 0x2684, 1, DeviceType::Discrete),
+            ],
+        );
         assert_eq!(
             far.orchestrator.pool,
             Some(Pool::Devices(vec![DeviceSelector {
@@ -967,10 +981,13 @@ mod tests {
 
     #[test]
     fn two_different_cards_are_two_classes_carrying_one_worker_each() {
-        let far = synthesized(FarWorkers::Probed(&[
-            device(0x10de, 0x2684, 0, DeviceType::Discrete),
-            device(0x8086, 0x7d67, 0, DeviceType::Integrated),
-        ]));
+        let far = synthesized(
+            RENTED,
+            &[
+                device(0x10de, 0x2684, 0, DeviceType::Discrete),
+                device(0x8086, 0x7d67, 0, DeviceType::Integrated),
+            ],
+        );
         assert_eq!(
             far.orchestrator.pool,
             Some(Pool::Devices(vec![
@@ -991,10 +1008,13 @@ mod tests {
     fn a_rasterizer_beside_a_card_gets_no_entry() {
         // The machine was rented for the card; a worker on the rasterizer would
         // spend the rental running the slowest device on it.
-        let far = synthesized(FarWorkers::Probed(&[
-            device(0x10005, 0x0000, 0, DeviceType::Cpu),
-            device(0x10de, 0x2684, 0, DeviceType::Discrete),
-        ]));
+        let far = synthesized(
+            RENTED,
+            &[
+                device(0x10005, 0x0000, 0, DeviceType::Cpu),
+                device(0x10de, 0x2684, 0, DeviceType::Discrete),
+            ],
+        );
         assert_eq!(
             far.orchestrator.pool,
             Some(Pool::Devices(vec![DeviceSelector {
@@ -1006,7 +1026,7 @@ mod tests {
 
     #[test]
     fn a_probe_reporting_nothing_still_gets_a_worker() {
-        let far = synthesized(FarWorkers::Probed(&[]));
+        let far = synthesized(RENTED, &[]);
         assert_eq!(far.orchestrator.pool, Some(Pool::Workers(1)));
         assert!(far.orchestrator.container.is_none());
     }
@@ -1015,12 +1035,7 @@ mod tests {
     fn a_machine_offering_only_a_rasterizer_still_gets_it() {
         // With no card to prefer, the rasterizer is the only device this run's
         // program can open and takes the entry.
-        let far = synthesized(FarWorkers::Probed(&[device(
-            0x10005,
-            0x0000,
-            0,
-            DeviceType::Cpu,
-        )]));
+        let far = synthesized(RENTED, &[device(0x10005, 0x0000, 0, DeviceType::Cpu)]);
         assert_eq!(
             far.orchestrator.pool,
             Some(Pool::Devices(vec![DeviceSelector {

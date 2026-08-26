@@ -83,7 +83,7 @@ use crate::config::{FillPolicy, HostForm, LoadedConfig, Rented};
 use crate::feed::RunFeed;
 use crate::fleet::Rental;
 use crate::migrate::destination::destination_for;
-use crate::migrate::far_config::{FarWorkers, Registration, far_config};
+use crate::migrate::far_config::{Registration, far_config};
 #[cfg(test)]
 use crate::migrate::far_run::Overrides;
 use crate::migrate::far_run::{FarRun, FollowEnd, MigrateOutcome};
@@ -376,7 +376,8 @@ impl Session<'_> {
         let probed = self.reach()?;
         let far_text = far_config(
             self.local_text,
-            FarWorkers::for_form(far_run.destination.form, &probed),
+            far_run.destination.form,
+            &probed,
             self.registration,
         )?;
         far_run.far.place(&far_text)?;
