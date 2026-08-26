@@ -2370,9 +2370,9 @@ everywhere else.
   asserting it. Besides its own worker layout it names `migrate`, the
   `[host.*]` entry a migration moves the run onto — never a class, and the named
   entry's own form decides whether anything is rented.
-- **`[budget]`** — the spend and wall-clock ceilings over every rental in the
-  run. Run-global, because a run may draw on several rented entries under one
-  ceiling.
+- **`[budget]`** — the run's spend ceiling over every rental it draws on, and
+  its wall-clock ceiling over its own computing. Run-global, because a run may
+  draw on several rented entries under one ceiling.
 
 **Addressing.** An entry's name is its ssh destination unless `ssh` says
 otherwise, so a class scales by changing one number and nothing has to be kept
@@ -2839,25 +2839,33 @@ bring a run that cannot complete home as resumable.
 
 **The invariant that is repealed.** A far run no longer ends with the migration
 that started it. What replaces it: **the far run outlives everything except a
-terminal event, its own wall-clock ceiling, and `sima recall`.**
+terminal event, its own wall-clock ceiling where it has one, and `sima
+recall`.**
 
-**Detaching is not free on a rented machine.** The ceiling below bounds compute,
-not billing: destroying an instance is a provider-API call and the provider key
-never travels, so a far run cannot take down the machine it computes on. After a
-detach — or after the ceiling fires — the instance sits idle and billing until
-the key acts, through `sima recall` in the normal course or `sima reconcile`
-as the safety net for orphans. A machine of yours has no billing tail.
+**Stopping a rented run early saves nothing.** A rental bills by the hour rather
+than by use, so the bill is identical whether the machine computes or idles. And
+a far run cannot end the bill: destroying an instance is a provider-API call and
+the provider key never travels, so after a detach the instance bills until the
+key acts, through `sima recall` in the normal course or `sima reconcile` as the
+safety net for orphans. That billing tail is inherent to the key staying home
+and applies even to a far run that finished well. What follows from it is that
+a stopped-but-billing machine is strictly the worst of the states available: it
+costs what a computing one costs and returns nothing.
 
-**A run keeps its wall-clock ceiling wherever it executes.** `[budget]
+**A wall-clock ceiling is kept where no bill runs against the time.** `[budget]
 max_wall_clock_ms` is the run's own deadline, measured from the start of each
 execution, and it raises the same flag `SIGINT` raises — so what follows is the
 wind-down that already exists, and the journal carries a `Diagnostic` naming the
-ceiling. It travels in the far config, which is what bounds a detached run in
-time. `max_spend_usd` does not travel, for the same reason the ceiling cannot
-tear a machine down, and stays assessed by whatever is attached. Each far
-session measures from its own start, so a restarted far run gets a fresh
-ceiling: the ceiling bounds unattended computing per launch, and `recall` and
-`reconcile` cover the idle tail.
+ceiling. A value of `0` states no ceiling, exactly as omitting the key does.
+
+The ceiling is worth something on a plain local run and on a machine of yours,
+so it is kept on both, and the far config a migration onto a machine of yours
+synthesizes carries the key. It is worth nothing on a rented destination, by the
+paragraph above, so the key stays home and a detached rented run computes until
+a recall ends it. `max_spend_usd` travels nowhere at all, for the same reason
+the ceiling cannot tear a machine down, and stays assessed by whatever is
+attached. Each far session measures from its own start, so a restarted far run
+gets a fresh ceiling: the ceiling bounds unattended computing per launch.
 
 **Signalling a detached run.** A shell starts an asynchronous command with
 `SIGINT` set to ignored, and the disposition survives the exec, so the far run

@@ -357,14 +357,16 @@ The program's bytes travel through the store as content-addressed objects, so an
 
 Ctrl-C detaches. The far run keeps computing on the destination and the command prints the two ways back: `sima migrate search.toml` attaches to it again, `sima recall search.toml` winds it down, pulls what it computed, and leaves the run resumable. Nothing that happens on your machine ends the far run — a closed terminal and a dropped connection do what Ctrl-C does — so ending it is something you ask for by name.
 
-A run you leave computing is bounded by its own config rather than by your attention:
+On a rented destination, `sima recall` is what ends the run. A rental bills by the hour rather than by what it computes, so stopping the run early saves you nothing — the same bill arrives whether the machine computes or idles, and tearing the machine down needs the provider credential, which never leaves your machine. A recall does both at once: it winds the far run down, pulls what it computed, and takes the rental away.
+
+A local run and a machine of yours cost nothing per hour, so there a deadline is worth stating:
 
 ```toml
 [budget]
-max_wall_clock_ms = 21600000
+max_wall_clock_ms = 21600000   # six hours; 0 states no ceiling
 ```
 
-The far run interrupts itself after six hours, whether or not anything is watching. On a rented destination that bounds the compute and not the bill: tearing the machine down needs the provider credential, which never leaves your machine, so the instance sits idle until `sima recall` or `sima reconcile` takes it away.
+The run interrupts itself after six hours, whether or not anything is watching, and leaves the store resumable. The key does not travel to a rented destination.
 
 ### Changing the program
 

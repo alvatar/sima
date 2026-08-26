@@ -82,10 +82,11 @@
 //! max_spend_usd     = 20.0                # ceiling on the run's total rental
 //!                                         # spend, assessed only while a
 //!                                         # migration or a fleet run is attached
-//! max_wall_clock_ms = 21600000            # ceiling on how long the run may
+//! max_wall_clock_ms = 0                   # ceiling on how long the run may
 //!                                         # compute, measured from the start of
-//!                                         # each execution and kept wherever it
-//!                                         # runs — a migrated run carries it
+//!                                         # each execution; 0 is no ceiling.
+//!                                         # Kept on a local run and on a machine
+//!                                         # of yours, never sent to a rental
 //!
 //! [orchestrator]                          # this machine
 //! migrate = "slingshot"                   # the host `sima migrate` moves the run onto
@@ -243,11 +244,13 @@
 //!   something here is attached, and a section stating it alone is inert to a
 //!   run that rents nothing.
 //! - `max_wall_clock_ms` bounds how long the run may compute, measured from the
-//!   start of each execution, and is kept wherever the run executes: a plain
-//!   `sima run` interrupts itself on it, and a migrated run carries the key to
-//!   its destination and interrupts itself there. It bounds compute, not
-//!   billing — a rented machine whose run stopped is still rented until `sima
-//!   recall` or `sima reconcile` takes it down.
+//!   start of each execution, and `0` states no ceiling at all — the same as
+//!   omitting the key. It is kept where no bill runs against the time it
+//!   bounds: a plain `sima run` interrupts itself on it, and so does a run
+//!   migrated onto a machine of yours, which carries the key. The key does not
+//!   travel to a rented destination, because a rental bills by the hour rather
+//!   than by use — a run stopped early there saves nothing, and the machine
+//!   bills on until `sima recall` or `sima reconcile` takes it down.
 //!
 //! ## What a run uses
 //!

@@ -1092,11 +1092,15 @@ without publishing anywhere and without rebuilding an image.
       - **Budget exhaustion still winds down** while attached: money is the one
         thing that cannot wait for an operator to come back.
       - **`[budget] max_wall_clock_ms` is the run's own deadline**, measured
-        from the start of each execution and kept wherever the run executes. It
-        travels in the far config, so a detached run is bounded in time.
-        `max_spend_usd` does not travel, because enforcing it means destroying a
-        machine and the provider key never leaves this machine — which is also
-        why the ceiling bounds compute and not billing.
+        from the start of each execution, with `0` stating no ceiling. It is
+        kept where no bill runs against the time: a local run and a machine of
+        yours, whose far config carries the key. It does not travel to a rented
+        destination, since a rental bills by the hour rather than by use and a
+        run stopped early there saves nothing while leaving a machine that
+        bills and computes nothing. `max_spend_usd` travels nowhere, because
+        enforcing it means destroying a machine and the provider key never
+        leaves this machine — which is also why a far run cannot end its own
+        billing.
       - **A far run that dies before journaling is reported as its death.** The
         follow opens before the far run starts, which makes its first poll
         exactly the journal an earlier session left; nothing arriving after it,

@@ -146,10 +146,11 @@ workers = 2
 # [fleet]
 # members = ["gpubox", "lab", "rtx4090"]
 
-# The ceilings over every rental in the run; either arm is optional.
+# The ceilings over the run; either arm is optional.
 # [budget]
 # max_spend_usd     = 5.0
-# max_wall_clock_ms = 3600000
+# max_wall_clock_ms = 0        # 0 = no limit; the deadline for a local run or a
+#                              # machine of yours, and never sent to a rental
 
 # A format answered by a program of its own rather than by this build. sima
 # spawns the binary when the config loads and asks it what the format binds,
