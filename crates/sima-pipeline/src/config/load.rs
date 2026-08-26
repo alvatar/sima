@@ -1498,6 +1498,21 @@ mod tests {
     }
 
     #[test]
+    fn a_zero_wall_clock_ceiling_is_no_ceiling_at_all() -> Result<()> {
+        // Zero states the absence rather than a deadline that has already
+        // passed: a run wound down before it computed anything is nothing to
+        // ask for, so the value that would express it says "no limit" instead.
+        let loaded = load_text(&format!("{BASE}\n[budget]\nmax_wall_clock_ms = 0\n"))?;
+        assert_eq!(loaded.budget.max_wall_clock, None);
+        assert_eq!(
+            loaded.budget,
+            load_text(BASE)?.budget,
+            "stating zero and stating nothing are the same run"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn a_cost_cap_rounds_up() -> Result<()> {
         // A fractional-micro dollar cap rounds up so the cap is never rendered
         // stricter than written.

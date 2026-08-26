@@ -862,6 +862,28 @@ fn a_run_declaring_no_ceiling_is_never_wound_down_by_one() {
 }
 
 #[test]
+fn a_run_declaring_a_zero_ceiling_is_never_wound_down_by_one() {
+    // Zero is the written form of stating none, so the run finishes exactly as
+    // one that omitted the key does — rather than ending before it computes.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let text = format!(
+        "{}\n[budget]\nmax_wall_clock_ms = 0\n",
+        std::fs::read_to_string(common::write_config(
+            dir.path(),
+            "unbounded.toml",
+            r#""sleep:200", "sleep:200""#,
+            "./store",
+        ))
+        .expect("read the config")
+    );
+    let config = common::write_config_text(dir.path(), "unbounded.toml", &text);
+
+    let output = sima(&["run", config.to_str().expect("utf-8 path")]);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert!(manifest_of(&config).is_some(), "the run finished");
+}
+
+#[test]
 fn recall_parses_and_reaches_the_pipeline() {
     // The same evidence a migration's parse leaves: a config naming no
     // destination is refused by the pipeline, which only a parsed invocation
