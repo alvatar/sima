@@ -2823,10 +2823,19 @@ contact, which settles the run over what the local store holds.
 Journals do not sync and a recall follows nothing, so a far run that failed
 definitively would otherwise come home as a run with tasks still to do. The read
 is one `sima follow-serve --once` against the destination, taken once the far
-run is quiet so what it holds is final; a far side with no journal to serve
-answers with nothing, and the store that came home is then the whole of what
-decides the outcome. So the outcomes of a recall are the outcomes of a
-migration: finalized, outstanding, wound down, or failed by task and reason.
+run is quiet so what it holds is final. So the outcomes of a recall are the
+outcomes of a migration: finalized, outstanding, wound down, or failed by task
+and reason.
+
+**Absence is a filesystem fact, never an inference from a fault.** The journal
+file is probed for — over the same shell channel the directory check uses, at
+the path the store layout fixes under the far store root — before it is read.
+That probe alone answers that there is nothing to read, and the recall then
+settles over the store the pull brought home. Every fault of the read itself
+fails the recall, naming the machine and the journal read and carrying the far
+side's own words: a far side that holds a journal and could not serve it said
+nothing about how its run ended, and reading that as an empty journal would
+bring a run that cannot complete home as resumable.
 
 **The invariant that is repealed.** A far run no longer ends with the migration
 that started it. What replaces it: **the far run outlives everything except a
@@ -2955,7 +2964,9 @@ command form keeps its shape whether or not a host is named:
 - **`sima recall <config.toml>`** — the inverse: winds the far run down, reads
   what it ended as, pulls what it committed, settles the run, and destroys any
   rental. A far run that failed definitively is reported by task and reason and
-  exits 2, as an attached migration reports one. It starts
+  exits 2, as an attached migration reports one; a far journal that is there and
+  cannot be read fails the recall by name rather than passing for an empty one.
+  It starts
   nothing, so a destination that was never migrated to is refused by name. No
   interrupt is registered — a recall is short and every step of it is resumable
   — so Ctrl-C during one takes the default death and a second recall carries on.
