@@ -1323,7 +1323,7 @@ installation verb: an entry carrying `payload_digest` has its program built
 where the config resolves, before the binary that entry names is spawned.
 
 ```
-<config-dir>/program/<format>/
+<config-dir>/.sima/program/<format>/
     .lock              held while installing
     payload/           the manifest's files, materialized
     install.sh         the manifest's script, when it carries one
@@ -2769,7 +2769,7 @@ on this machine.
 
 ```toml
 [domain."acme.thing.v1"]
-binary = "./program/acme.thing.v1/installed/program"
+binary = "./.sima/program/acme.thing.v1/installed/program"
 payload_digest = "<64 hex>"
 env = ["PATH"]
 sdk = "python"

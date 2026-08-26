@@ -486,7 +486,7 @@ sima runs .sima/store
 ```
 run                                                               state         committed
 b80a8ca384aa94add7c1609ae6634ca0825ac9548b69712563af224e18b800ef  finalized     6/6
-4728422a1c0e4f8d90a1b3c5d7e9f0a2b4c6d8e0f2a4b6c8d0e2f4a6b8c0d2e4  interrupted   2/6
+4728422a1c0e4f8d90a1b3c5d7e9f0a2b4c6d8e0f2a4b6c8d0e2f4a6b8c0d2e4  finalized     6/6
 ```
 
 Any run of the listing is removed by its own id, whether or not the config still names it — any unambiguous prefix will serve:
@@ -501,7 +501,7 @@ Ask for a run the store never held, and it refuses by name:
 sima: validation error: cannot remove run 7c19fe97…: run not found
 ```
 
-`rm -rf store/` removes every run at once, the store being disposable in its entirety. After the cleaning, by either instrument, the same seed computes afresh from nothing — whereas without it, a rerun finds its commits and does nothing.
+`rm -rf .sima/` removes every run at once, together with the rest of what the config generated, all of it being disposable in its entirety. After the cleaning, by either instrument, the same seed computes afresh from nothing — whereas without it, a rerun finds its commits and does nothing.
 
 ### A deadline where time is free
 
