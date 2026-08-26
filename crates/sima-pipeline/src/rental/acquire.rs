@@ -1053,7 +1053,19 @@ mod tests {
         // during the second. Machines already rented are the whole cost of
         // stopping here, so they are released, and the line that says so is
         // the run's last word — no shortfall is reported, because nothing fell
-        // short.
+        // short. Both fill policies answer alike: best-effort runs on what came
+        // up when the market fell short, and this is not the market.
+        for fill in [FillPolicy::Strict, FillPolicy::BestEffort] {
+            abandons_under(fill)?;
+        }
+        Ok(())
+    }
+
+    /// Interrupts a two-member acquisition during its second member, under
+    /// `fill`, and holds it to abandoning: one machine released and counted,
+    /// no shortfall reported, nothing left running, and the interrupt reaching
+    /// the caller.
+    fn abandons_under(fill: FillPolicy) -> Result<()> {
         let (_dir, store, run) = acquisition_env();
         let lock = store.acquire_run_lock(&run)?;
         let provider = StubProvider::new(vec![offer("a", 100_000), offer("b", 200_000)])
@@ -1074,7 +1086,7 @@ mod tests {
             ),
             |events| {
                 acquire_hosts(
-                    &rental(&spec, 2, FillPolicy::Strict),
+                    &rental(&spec, 2, fill),
                     &Budget::default(),
                     &provider,
                     &store,
@@ -1088,7 +1100,10 @@ mod tests {
                 )
             },
         );
-        assert!(result.is_err(), "the acquisition surfaces the interrupt");
+        assert!(
+            result.is_err(),
+            "under {fill:?} the acquisition surfaces the interrupt"
+        );
         assert!(
             said.contains(&Event::AcquisitionAbandoned { released: 1 }),
             "the member that was up is released, and counted: {said:?}"
