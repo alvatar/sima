@@ -39,6 +39,7 @@ mod remove;
 mod rental;
 mod report;
 mod run_observer;
+mod runs;
 mod sdk;
 mod spend;
 mod stamped_tree;
@@ -66,7 +67,7 @@ pub use orchestrate::orchestrate;
 pub use program_binding::BinaryChange;
 pub use program_delivery::{ProgramDelivery, ingest_program, receive_program};
 pub use providers::{ProviderSettings, provider_for};
-pub use remove::remove;
+pub use remove::{remove, remove_matching};
 pub use report::{ReportRow, report, report_records, report_task_records};
 pub use run_observer::RunObserver;
 pub use sdk::Sdk;
@@ -77,6 +78,7 @@ pub use sima_provider::{Cost, MachineReport, MachineSummary, OpenSpend, Price, S
 pub use sima_store::SpendEntry;
 // The run identity a query names, re-exported with the rest of the surface a
 // caller reads a run through.
+pub use runs::{RunSummary, runs};
 pub use sima_model::RunId;
 pub use sima_store::RemovalReport;
 // The scheduler types a caller drives and observes runs through, re-exported

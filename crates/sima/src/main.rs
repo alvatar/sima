@@ -129,6 +129,15 @@ fn main() -> ExitCode {
             migrate::recall_command(&resolve_config(config), narration)
         }
         ["rm", config] if host.is_none() => rm_command(&resolve_config(config)),
+        // A store outlives the identity that filled it, so a run the config no
+        // longer names is addressed by its own id instead.
+        ["rm", config, "--run", prefix] if host.is_none() => {
+            rm_matching_command(&resolve_config(config), prefix)
+        }
+        // The one read command whose argument is a store directory: what a
+        // store holds is every run ever driven against it, and a config names
+        // one of them.
+        ["runs", store] if host.is_none() => runs_command(Path::new(store)),
         // The only verb whose argument is a store directory rather than a
         // config: packing needs no run knowledge, and a store defines every
         // run it holds.
@@ -202,6 +211,8 @@ fn main() -> ExitCode {
                  \x20      sima migrate <config> --accept-binary  … through a changed program\n\
                  \x20      sima recall <config>               wind the migrated run down and bring it home\n\
                  \x20      sima rm <config>                   delete the run and what only it references\n\
+                 \x20      sima rm <config> --run <id>        … delete that run of the same store instead\n\
+                 \x20      sima runs <store-dir>              list the runs the store holds\n\
                  \x20      sima sdk <language> --out <dir>    write the SDK this binary carries into <dir>\n\
                  \x20      sima pack <store-dir>              consolidate the store's loose objects into packs\n\
                  \x20      sima pack <store-dir> --gc         … and delete everything outside the finalized\n\
@@ -767,6 +778,34 @@ fn rm_command(config: &Path) -> ExitCode {
 fn remove_run(config: &Path) -> Result<RemovalReport> {
     let loaded = load(config)?;
     sima_pipeline::remove(&loaded)
+}
+
+/// `sima rm <config.toml> --run <id-prefix>`: removes the run of that config's
+/// store whose id begins with the prefix, whether or not the config still
+/// names it.
+fn rm_matching_command(config: &Path, prefix: &str) -> ExitCode {
+    match load(config).and_then(|loaded| sima_pipeline::remove_matching(&loaded, prefix)) {
+        Ok(report) => {
+            println!(
+                "removed run: {} objects, {} index entries",
+                report.objects_removed, report.index_entries_removed
+            );
+            ExitCode::SUCCESS
+        }
+        Err(e) => report(e),
+    }
+}
+
+/// `sima runs <store-dir>`: one line per run the store holds, with its state
+/// and its task ledger.
+fn runs_command(store: &Path) -> ExitCode {
+    match sima_pipeline::runs(store) {
+        Ok(summaries) => {
+            println!("{}", render::runs_block(&summaries));
+            ExitCode::SUCCESS
+        }
+        Err(e) => report(e),
+    }
 }
 
 /// Prints one stderr line when the config's store has accumulated enough

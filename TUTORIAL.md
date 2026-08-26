@@ -476,7 +476,25 @@ What has just happened deserves understanding in three particulars:
 sima rm search.toml
 ```
 
-Mark that "presently names": the target is resolved through the config, so a store holding runs of past seeds is cleaned by restoring each seed in turn and repeating the command. Ask for a run the store never held, and it refuses by name:
+Mark that "presently names": the target is resolved through the config. A store accumulates the runs of every identity ever driven against it — an edited seed, a changed parameter — and what it holds is asked of the store rather than of a config:
+
+```
+sima runs ./store
+```
+
+```
+run                                                               state         committed
+b80a8ca384aa94add7c1609ae6634ca0825ac9548b69712563af224e18b800ef  finalized     6/6
+4728422a1c0e4f8d90a1b3c5d7e9f0a2b4c6d8e0f2a4b6c8d0e2f4a6b8c0d2e4  interrupted   2/6
+```
+
+Any run of the listing is removed by its own id, whether or not the config still names it — any unambiguous prefix will serve:
+
+```
+sima rm search.toml --run 4728422a
+```
+
+Ask for a run the store never held, and it refuses by name:
 
 ```
 sima: validation error: cannot remove run 7c19fe97…: run not found

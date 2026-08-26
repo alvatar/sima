@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use sima_pipeline::{
     Attempt, AttemptResult, Event, MachineReport, Record, RetryStats, RunId, RunState, RunStatus,
-    RunTimeline, SpendReport, TaskHistory, TaskOutcome, WorkerMetrics,
+    RunSummary, RunTimeline, SpendReport, TaskHistory, TaskOutcome, WorkerMetrics,
 };
 
 /// How many hex characters of an id a progress line shows.
@@ -300,6 +300,26 @@ impl Progress {
     }
 }
 
+/// The runs a store holds, one line each: id, state, and task ledger. A store
+/// holding none is a line saying so, since an empty answer to a question about
+/// a store is still an answer.
+pub fn runs_block(summaries: &[RunSummary]) -> String {
+    if summaries.is_empty() {
+        return "this store holds no run".to_string();
+    }
+    let mut block = format!("{:<64}  {:<12}  {}", "run", "state", "committed");
+    for summary in summaries {
+        block.push_str(&format!(
+            "\n{:<64}  {:<12}  {}/{}",
+            summary.run,
+            run_state(&summary.state),
+            summary.committed,
+            summary.tasks
+        ));
+    }
+    block
+}
+
 /// The attempt table's column headers, in render order.
 const ATTEMPT_COLUMNS: [&str; 6] = ["attempt", "worker", "host", "device", "outcome", "elapsed"];
 
@@ -505,16 +525,22 @@ fn attempt_note(attempt: &Attempt) -> String {
     note
 }
 
-/// Renders the status block, one aligned `name  value` line per field.
-pub fn status_block(status: &RunStatus) -> String {
-    let state = match &status.state {
+/// A run's state as a line names it. The one wording, shared by the status
+/// block and the store's listing.
+fn run_state(state: &RunState) -> String {
+    match state {
         RunState::InProgress => "in progress".to_string(),
         RunState::Finalized => "finalized".to_string(),
         RunState::Failed { task, reason } => {
             format!("failed on {}: {reason}", short(task))
         }
         RunState::Interrupted => "interrupted".to_string(),
-    };
+    }
+}
+
+/// Renders the status block, one aligned `name  value` line per field.
+pub fn status_block(status: &RunStatus) -> String {
+    let state = run_state(&status.state);
     let block = format!(
         "run                  {}\n\
          state                {state}\n\

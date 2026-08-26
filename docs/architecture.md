@@ -406,7 +406,16 @@ predicate of `sima-domains`; retention holds what the run committed.
 **For how long.** Until the operator asks for a deletion. The two operations are
 the *removal* and the *sweep* above: `sima rm` deletes one run and everything no
 surviving closure references, `sima pack --gc` deletes everything outside the
-union of the finalized runs' closures. Both are run-grained and
+union of the finalized runs' closures. Which run `rm` deletes is the config's
+by default — the run its identity section hashes to — and `--run <id-prefix>`
+names one of that store's runs directly, for the ones a config no longer names:
+a store accumulates the runs of every identity ever driven against it, and an
+edited seed leaves the previous run reachable by nothing else. Any unambiguous
+prefix addresses a run, as one does a task; an ambiguous one is refused naming
+every run it matched. `sima runs <store-dir>` is what lists them — one line per
+run, with its id, the state its journal projects, and its task ledger — and is
+the one read command that takes a store directory rather than a config, because
+what a store holds is precisely the question a config cannot ask. Both are run-grained and
 reference-guarded, so the smallest thing either erases is a whole run's private
 objects. Expiry is the operator's act alone, as consolidation is: the store
 reads no clock.

@@ -1370,6 +1370,124 @@ fn a_quiet_run_still_prints_the_run_its_start_its_commits_and_its_outcome() {
     assert!(text.contains("finalized: 2 tasks committed"), "{text}");
 }
 
+/// Writes a config under `dir` named `name` whose run is seeded with `seed`,
+/// over the store beside it — two of them are two runs of one store.
+fn seeded_config(dir: &Path, name: &str, seed: u64) -> PathBuf {
+    let text = format!(
+        r#"
+        [run]
+        root_seed = {seed}
+        format = "stub.v1"
+
+        [run.generator]
+        id = "stub.v1"
+        behaviors = ["succeed", "succeed"]
+
+        [config]
+        store = "./store"
+        max_attempts = 3
+
+        [orchestrator]
+        workers = 2
+    "#
+    );
+    common::write_config_text(dir, name, &text)
+}
+
+#[test]
+fn runs_lists_every_run_the_store_holds_with_its_state_and_ledger() {
+    // A store accumulates the runs of every identity driven against it, and a
+    // config names one of them; this is what says what else is in there.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let first = seeded_config(dir.path(), "first.toml", 1);
+    let second = seeded_config(dir.path(), "second.toml", 2);
+    let store = dir.path().join("store");
+
+    let empty = sima(&["runs", store.to_str().expect("utf-8 path")]);
+    assert_eq!(empty.status.code(), Some(1), "{empty:?}");
+    assert!(
+        String::from_utf8(empty.stderr)
+            .expect("stderr is UTF-8")
+            .contains("does not exist"),
+        "a store nothing was driven in is refused by name"
+    );
+    assert!(!store.exists(), "the query created no store");
+
+    for config in [&first, &second] {
+        assert_eq!(
+            sima(&["run", config.to_str().expect("utf-8 path")])
+                .status
+                .code(),
+            Some(0)
+        );
+    }
+    let output = sima(&["runs", store.to_str().expect("utf-8 path")]);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let text = stdout(&output);
+    for config in [&first, &second] {
+        let run = load(config).expect("load config").run.id().to_string();
+        let line = text
+            .lines()
+            .find(|line| line.starts_with(&run))
+            .unwrap_or_else(|| panic!("the listing names run {run}: {text}"));
+        assert!(line.contains("finalized"), "{line}");
+        assert!(line.contains("2/2"), "the ledger is on the line: {line}");
+    }
+}
+
+#[test]
+fn rm_by_run_prefix_deletes_that_run_and_refuses_an_ambiguous_one() {
+    // The run a config no longer names is reachable by its own id, and a
+    // prefix that names more than one is refused with the candidates, since
+    // typing more of one of them is the answer.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let first = seeded_config(dir.path(), "first.toml", 1);
+    let second = seeded_config(dir.path(), "second.toml", 2);
+    for config in [&first, &second] {
+        assert_eq!(
+            sima(&["run", config.to_str().expect("utf-8 path")])
+                .status
+                .code(),
+            Some(0)
+        );
+    }
+    let doomed = load(&first).expect("load config").run.id().to_string();
+    let kept = load(&second).expect("load config").run.id().to_string();
+    let path = second.to_str().expect("utf-8 path");
+
+    // Ambiguous: the empty prefix matches both, and nothing is deleted.
+    let ambiguous = sima(&["rm", path, "--run", ""]);
+    assert_eq!(ambiguous.status.code(), Some(1), "{ambiguous:?}");
+    let stderr = String::from_utf8(ambiguous.stderr).expect("stderr is UTF-8");
+    assert!(stderr.contains("ambiguous"), "{stderr}");
+    assert!(
+        stderr.contains(&doomed) && stderr.contains(&kept),
+        "{stderr}"
+    );
+
+    // Unknown: refused by name.
+    let unknown = sima(&["rm", path, "--run", "ffffffffffff"]);
+    assert_eq!(unknown.status.code(), Some(1), "{unknown:?}");
+    assert!(
+        String::from_utf8(unknown.stderr)
+            .expect("stderr is UTF-8")
+            .contains("no run"),
+    );
+
+    // The other run of this store, deleted through the config that does not
+    // name it.
+    let removed = sima(&["rm", path, "--run", &doomed[..12]]);
+    assert_eq!(removed.status.code(), Some(0), "{removed:?}");
+    let listed = stdout(&sima(&[
+        "runs",
+        dir.path().join("store").to_str().expect("utf-8"),
+    ]));
+    assert!(!listed.contains(&doomed), "the run is gone: {listed}");
+    assert!(listed.contains(&kept), "and the other one is not: {listed}");
+    // The surviving run's own results survive with it.
+    assert!(manifest_of(&second).is_some(), "{listed}");
+}
+
 #[test]
 fn the_write_commands_refuse_a_remote_host() {
     let dir = tempfile::tempdir().expect("temp dir");
