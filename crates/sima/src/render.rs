@@ -21,15 +21,19 @@ pub fn short(id: &str) -> &str {
 /// `WorkerBound`, and `ProgramBound` bookkeeping events.
 /// `committed`/`tasks` supply
 /// the running `committed k/n` count a commit line shows; on `RunStarted`, a
-/// nonzero `committed` is the run's prior progress and the line names it, so a
-/// resumed session does not read as a restart. The single source of the
+/// nonzero `committed` is the run's prior progress and the line states the
+/// ledger it resumes, so a resumed session does not read as a restart. The single source of the
 /// event wording: `sima run` prints these lines to stdout and the tui folds
 /// them into its event log.
 pub fn describe(event: &Event, committed: usize, tasks: usize) -> Option<String> {
     Some(match event {
-        Event::RunStarted { tasks, .. } if committed > 0 => {
-            format!("started: {tasks} tasks, {committed} already committed")
-        }
+        // A run over a store that already holds progress states its ledger
+        // rather than a task count: continuing and restarting otherwise read
+        // the same, and only one of them is what happened.
+        Event::RunStarted { tasks, .. } if committed > 0 => format!(
+            "resuming: {committed}/{tasks} committed, {} outstanding",
+            tasks.saturating_sub(committed)
+        ),
         Event::RunStarted { tasks, .. } => format!("started: {tasks} tasks"),
         Event::Committed { task, .. } => {
             format!("committed {committed}/{tasks}  {}", short(task))
@@ -901,8 +905,9 @@ mod tests {
 
     #[test]
     fn a_run_started_line_reports_prior_commits_when_resuming() {
-        // The started line names the prior commits so a resumed session does
-        // not read as a restart. A fresh run keeps the bare form.
+        // A resumed run states its ledger rather than a task count: what is
+        // committed, out of how many, and how much is left. A fresh run keeps
+        // the bare form, since there is no ledger to state.
         let event = Event::RunStarted {
             run: "ab".repeat(32),
             tasks: 200,
@@ -910,7 +915,7 @@ mod tests {
         };
         assert_eq!(
             describe(&event, 26, 200).expect("a started line"),
-            "started: 200 tasks, 26 already committed"
+            "resuming: 26/200 committed, 174 outstanding"
         );
         assert_eq!(
             describe(&event, 0, 200).expect("a started line"),

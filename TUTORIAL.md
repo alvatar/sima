@@ -384,10 +384,11 @@ waiting for the machine to come up (pulls the image; up to 600s)
 sending the run: 214 objects
 installing the program
 starting the run
-started: 6 tasks
+resuming: 2/6 committed, 4 outstanding
+task 27f7405a9ff1 started (worker 0)
 ```
 
-Then the stream resumes exactly where your laptop left off: the tasks committed locally are not computed again, for the far machine's store already holds them.
+The far run states the ledger it inherits rather than a task count, which is how you see at a glance that it continued your work instead of beginning it again. The stream then resumes exactly where your laptop left off: the tasks committed locally are not computed again, for the far machine's store already holds them, and the commit counter carries on from what is already in it.
 
 The program's bytes travel as content-addressed objects, so an unchanged program crosses the wire once: a second migration sends nothing and installs nothing. Every worker upon a machine that received your program answers with the digest from which that machine's own tree was built, and one answering anything else fails its spawn — so a machine running something other than what you sent stops the run, rather than filling your store with results from it.
 

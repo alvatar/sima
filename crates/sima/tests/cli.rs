@@ -605,8 +605,8 @@ fn a_rerun_of_a_finalized_run_reports_prior_commits() {
     assert_eq!(rerun.status.code(), Some(0), "{rerun:?}");
     let text = stdout(&rerun);
     assert!(
-        text.contains("started: 2 tasks, 2 already committed"),
-        "the started line names the prior commits: {text}"
+        text.contains("resuming: 2/2 committed, 0 outstanding"),
+        "the start line states the ledger it resumes: {text}"
     );
     assert!(
         !text.contains("committed 1/2"),
@@ -1308,6 +1308,50 @@ fn the_stream_shows_each_attempt_starting_and_the_task_staying_alive() {
             "the same address commits: {text}"
         );
     }
+}
+
+#[test]
+fn a_resumed_run_states_its_ledger_and_counts_on_from_it() {
+    // A run over a store holding progress must read as continuing, not as
+    // starting again: the start line states what is committed and what is
+    // left, and the commit counter carries on from there rather than from 1.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config = write_config(dir.path(), r#""sleep:1500", "sleep:1500", "sleep:1500""#);
+    let path = config.to_str().expect("utf-8 path");
+
+    let mut child = sima_command()
+        .args(["run", path])
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn sima run");
+    assert!(
+        common::wait_for_first_lease(&config, Duration::from_secs(30)),
+        "the run leased a task before the interrupt"
+    );
+    // Long enough for the two workers to commit what they leased, and short
+    // enough that the third task is still outstanding.
+    std::thread::sleep(Duration::from_millis(2_000));
+    assert_eq!(
+        unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGINT) },
+        0
+    );
+    assert_eq!(child.wait().expect("wait for sima").code(), Some(130));
+
+    let resumed = sima(&["run", path]);
+    assert_eq!(resumed.status.code(), Some(0), "{resumed:?}");
+    let text = stdout(&resumed);
+    assert!(
+        text.contains("resuming: 2/3 committed, 1 outstanding"),
+        "the start line states the ledger it resumes: {text}"
+    );
+    assert!(
+        text.contains("committed 3/3"),
+        "the counter continues the run's ledger: {text}"
+    );
+    assert!(
+        !text.contains("committed 1/3"),
+        "and never recounts from the start: {text}"
+    );
 }
 
 #[test]

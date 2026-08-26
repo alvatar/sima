@@ -3041,7 +3041,12 @@ command form keeps its shape whether or not a host is named:
   plain line per meaningful event from the observer boundary. SIGINT sets the
   interrupt flag for a graceful wind-down; a second SIGINT falls through
   to default death, which is exactly the crash the recovery guarantees
-  cover.
+  cover. A run over a store that already holds progress opens with the ledger
+  it resumes — `resuming: 4/6 committed, 2 outstanding` — rather than a task
+  count, and its commit counter continues that ledger, so continuing and
+  restarting never read alike. The figures are the run's own `RunStarted`,
+  counted from the store's records, so a migration's follow states the same
+  ledger the far run does.
 - **`--quiet`** — taken by the three verbs that render a run's stream (`run`,
   `migrate`, `recall`) and split out of the arguments before the command
   match, as `--accept-binary` is, so it composes with the other flags in
