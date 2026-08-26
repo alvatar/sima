@@ -702,6 +702,28 @@ fn worker_hello() -> Vec<u8> {
     hello
 }
 
+/// Spawns `command`, waiting out a wrapper that is momentarily unexecutable.
+///
+/// A file open for writing anywhere in the system cannot be executed. Every
+/// test here writes its own wrapper and then runs it, and a spawn elsewhere in
+/// this process that forks while one of those writes is open holds that write
+/// end until its own exec — so an exec landing inside that window is refused
+/// with `ETXTBSY`. The window closes on its own, so the spawn is retried
+/// through it and fails loudly past a bound no such window reaches.
+fn spawned(command: &mut std::process::Command) -> std::process::Child {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        match command.spawn() {
+            Ok(child) => return child,
+            Err(error)
+                if error.raw_os_error() == Some(libc::ETXTBSY)
+                    && std::time::Instant::now() < deadline => {}
+            Err(error) => panic!("spawn the program: {error}"),
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
 /// Drives one worker-role handshake against the example program spawned with
 /// `env` on top of the module path, and answers the `Ready` payload's strings.
 fn worker_ready(env: &[(&str, &str)]) -> Vec<String> {
@@ -717,7 +739,7 @@ fn worker_ready(env: &[(&str, &str)]) -> Vec<String> {
     for (name, value) in env {
         command.env(name, value);
     }
-    let mut child = command.spawn().expect("spawn the program's worker role");
+    let mut child = spawned(&mut command);
     let mut stdin = child.stdin.take().expect("the piped stdin");
     let mut stdout = child.stdout.take().expect("the piped stdout");
     write_frame(&mut stdin, &worker_hello());
@@ -769,14 +791,14 @@ fn a_protocol_violation_ends_the_python_session_rather_than_being_answered() {
     // the program could not parse and reading on for the next one.
     let dir = tempfile::tempdir().expect("temp dir");
     let program = wrapper(dir.path(), &[]);
-    let mut child = std::process::Command::new(&program)
+    let mut command = std::process::Command::new(&program);
+    command
         .args(["--serve-domain", FORMAT])
         .env("PYTHONPATH", vended_sdk(dir.path()))
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .expect("spawn the program's domain service");
+        .stderr(std::process::Stdio::null());
+    let mut child = spawned(&mut command);
     let mut stdin = child.stdin.take().expect("the piped stdin");
     let mut stdout = child.stdout.take().expect("the piped stdout");
 
@@ -809,14 +831,14 @@ fn a_malformed_format_id_ends_the_python_session_rather_than_being_answered() {
     // session running on. The two sides answer a malformed frame the same way.
     let dir = tempfile::tempdir().expect("temp dir");
     let program = wrapper(dir.path(), &[]);
-    let mut child = std::process::Command::new(&program)
+    let mut command = std::process::Command::new(&program);
+    command
         .args(["--serve-domain", FORMAT])
         .env("PYTHONPATH", vended_sdk(dir.path()))
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .expect("spawn the program's domain service");
+        .stderr(std::process::Stdio::null());
+    let mut child = spawned(&mut command);
     let mut stdin = child.stdin.take().expect("the piped stdin");
     let mut stdout = child.stdout.take().expect("the piped stdout");
 
