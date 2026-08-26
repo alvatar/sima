@@ -172,6 +172,19 @@ pub(crate) fn acquire_hosts<'a>(
         ) {
             Ok(host) => hosts.push(host),
             Err(error) => {
+                // An operator who let go stops the acquisition where it is,
+                // whatever the fill policy would make of a member that could
+                // not be brought up: nothing fell short, the run is ending.
+                // Dropping `hosts` on the way out tears down every machine
+                // this rental had, which is the whole of what is said here —
+                // a fleet released before it ran leaves nothing else to read
+                // it from.
+                if interrupt.load(Ordering::Relaxed) {
+                    events.emit(Event::AcquisitionAbandoned {
+                        released: hosts.len(),
+                    });
+                    return Err(error);
+                }
                 // What the shortfall costs is the entry's own declaration, and
                 // the operator is told which member fell short and what
                 // follows from it — one machine short of a fleet is otherwise
@@ -921,48 +934,61 @@ mod tests {
         Ok(())
     }
 
-    /// Runs `acquisition` with a thread standing by to set `interrupt` as soon
-    /// as `reached` returns, and answers what the acquisition did.
+    /// Runs `acquisition` over `events` with `watching` beside it on another
+    /// thread, and answers what each of them returned.
     ///
-    /// The flag has to land inside a wait the acquisition is already in, and
-    /// that window is one no test hits by sleeping. So each caller passes the
-    /// evidence its own wait leaves — a journal line, or a file the probe it
-    /// runs touches — and `reached` blocks until that evidence is there.
-    fn interrupted_when<T: Send>(
-        interrupt: &AtomicBool,
-        reached: impl FnOnce() + Send,
-        acquisition: impl FnOnce() -> T + Send,
-    ) -> T {
+    /// An interrupt has to land inside a wait the acquisition is already in,
+    /// and that window is one no test hits by sleeping. So the watcher reads
+    /// the evidence the wait itself leaves — a journal line, a file the probe
+    /// touches — and sets the flag off that.
+    ///
+    /// The emitter is owned here and dropped the moment the acquisition
+    /// returns, which is what lets a watcher reading the journal drain and
+    /// join rather than waiting on an emitter the test still holds.
+    fn while_watched<T: Send, W: Send>(
+        events: Emitter,
+        watching: impl FnOnce() -> W + Send,
+        acquisition: impl FnOnce(&Emitter) -> T + Send,
+    ) -> (T, W) {
         thread::scope(|scope| {
-            scope.spawn(|| {
-                reached();
-                interrupt.store(true, Ordering::Relaxed);
-            });
-            acquisition()
+            let watcher = scope.spawn(watching);
+            let done = acquisition(&events);
+            drop(events);
+            (done, watcher.join().expect("the watching thread joins"))
         })
     }
 
-    /// Blocks until the acquisition emits an event matching `at`, or until it
-    /// stops emitting: `heard` drains when the acquisition drops its emitter,
-    /// so a run that never gets there ends this wait rather than stranding it.
-    fn after_saying(heard: Receiver<Event>, at: fn(&Event) -> bool) -> impl FnOnce() + Send {
+    /// Sets `interrupt` when the acquisition emits an event matching `at`, and
+    /// answers everything it emitted.
+    ///
+    /// The receiver drains when the acquisition drops its emitter, so a run
+    /// that never emits a match ends this rather than stranding it.
+    fn interrupt_on<'a>(
+        interrupt: &'a AtomicBool,
+        heard: Receiver<Event>,
+        at: fn(&Event) -> bool,
+    ) -> impl FnOnce() -> Vec<Event> + Send + 'a {
         move || {
+            let mut said = Vec::new();
             for event in heard {
                 if at(&event) {
-                    return;
+                    interrupt.store(true, Ordering::Relaxed);
                 }
+                said.push(event);
             }
+            said
         }
     }
 
-    /// Blocks until `marker` exists, which is how a probe run as a local
-    /// command says it is being retried — the one point in an acquisition
+    /// Sets `interrupt` once `marker` exists, which is how a probe run as a
+    /// local command says it is being retried — the one wait in an acquisition
     /// nothing is emitted from.
-    fn after_touching(marker: PathBuf) -> impl FnOnce() + Send {
+    fn interrupt_on_touch(interrupt: &AtomicBool, marker: PathBuf) -> impl FnOnce() + Send {
         move || {
             while !marker.exists() {
                 thread::sleep(Duration::from_millis(1));
             }
+            interrupt.store(true, Ordering::Relaxed);
         }
     }
 
@@ -983,10 +1009,12 @@ mod tests {
         let interrupt = AtomicBool::new(false);
         let (events, said) = heard();
         let started = Instant::now();
-        let result = interrupted_when(
-            &interrupt,
-            after_saying(said, |event| matches!(event, Event::AwaitingMachine { .. })),
-            || {
+        let (result, _) = while_watched(
+            events,
+            interrupt_on(&interrupt, said, |event| {
+                matches!(event, Event::AwaitingMachine { .. })
+            }),
+            |events| {
                 acquire_hosts(
                     &rental(&spec, 1, FillPolicy::Strict),
                     &Budget::default(),
@@ -998,7 +1026,7 @@ mod tests {
                     &exec(),
                     None,
                     &interrupt,
-                    &events,
+                    events,
                 )
             },
         );
@@ -1016,6 +1044,70 @@ mod tests {
             store.machine_incidents()?.is_empty(),
             "a machine an operator interrupted answered for nothing"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn an_interrupt_releases_the_machines_the_acquisition_had_and_says_so() -> Result<()> {
+        // Two members: the first is up and paid for when the operator lets go
+        // during the second. Machines already rented are the whole cost of
+        // stopping here, so they are released, and the line that says so is
+        // the run's last word — no shortfall is reported, because nothing fell
+        // short.
+        let (_dir, store, run) = acquisition_env();
+        let lock = store.acquire_run_lock(&run)?;
+        let provider = StubProvider::new(vec![offer("a", 100_000), offer("b", 200_000)])
+            .never_ready(OfferId("b".to_string()));
+        let format = FormatId::new("stub.v1")?;
+        let spec = waiting_spec();
+        let interrupt = AtomicBool::new(false);
+        let (events, heard) = heard();
+        let (result, said) = while_watched(
+            events,
+            // The second member's offer is taken and its machine is coming up:
+            // one member is held, and this one is in the wait the flag lands
+            // in.
+            interrupt_on(
+                &interrupt,
+                heard,
+                |event| matches!(event, Event::Renting { member, .. } if member == "rented[1]"),
+            ),
+            |events| {
+                acquire_hosts(
+                    &rental(&spec, 2, FillPolicy::Strict),
+                    &Budget::default(),
+                    &provider,
+                    &store,
+                    &lock,
+                    &deviceless_probe(),
+                    &format,
+                    &exec(),
+                    None,
+                    &interrupt,
+                    events,
+                )
+            },
+        );
+        assert!(result.is_err(), "the acquisition surfaces the interrupt");
+        assert!(
+            said.contains(&Event::AcquisitionAbandoned { released: 1 }),
+            "the member that was up is released, and counted: {said:?}"
+        );
+        assert!(
+            !said.iter().any(|event| matches!(
+                event,
+                Event::Diagnostic {
+                    level: Level::Warn,
+                    ..
+                }
+            )),
+            "nothing fell short, so no shortfall is reported: {said:?}"
+        );
+        assert!(
+            provider.live().is_empty(),
+            "neither the machine that was up nor the one coming up is left running"
+        );
+        assert_eq!(provider.destroyed().len(), 2);
         Ok(())
     }
 
@@ -1060,21 +1152,25 @@ mod tests {
         let probe = refusing_probe(dir.path(), &marker)?;
         let interrupt = AtomicBool::new(false);
         let started = Instant::now();
-        let result = interrupted_when(&interrupt, after_touching(marker), || {
-            acquire_hosts(
-                &rental(&spec, 1, FillPolicy::Strict),
-                &Budget::default(),
-                &provider,
-                &store,
-                &lock,
-                &probe,
-                &format,
-                &exec(),
-                None,
-                &interrupt,
-                &unheard(),
-            )
-        });
+        let (result, ()) = while_watched(
+            unheard(),
+            interrupt_on_touch(&interrupt, marker),
+            |events| {
+                acquire_hosts(
+                    &rental(&spec, 1, FillPolicy::Strict),
+                    &Budget::default(),
+                    &provider,
+                    &store,
+                    &lock,
+                    &probe,
+                    &format,
+                    &exec(),
+                    None,
+                    &interrupt,
+                    events,
+                )
+            },
+        );
         assert!(result.is_err(), "the acquisition ends with no machine");
         assert!(
             started.elapsed() < spec.ready_timeout,
