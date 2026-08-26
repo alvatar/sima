@@ -1,25 +1,25 @@
 # Tutorial: running your own program under sima
 
-This tutorial takes a program that sima knows nothing about and drives it through a complete run: install, execute, inspect, change the code, and understand what that change does to the results already in the store.
+This tutorial takes a program of which sima knows nothing and conducts it through a complete run: we shall install the instrument, execute the work, inspect what it produced, alter the code, and come to understand precisely what such an alteration does to the results already resting in the store.
 
-The worked example is `examples/stepper-py`, a Python program. It stands in for yours. Every command runs from the repository root unless a section says otherwise.
+The worked example is `examples/stepper-py`, a Python program. It stands in for your own. Every command is issued from the repository root, unless a section declares otherwise.
 
-**Scope.** Everything here runs on one machine until the last section, where a whole run moves onto another one. Spreading a single run's tasks across several machines at once is a workflow for the formats sima carries in process — see [Running on other machines](#running-on-other-machines).
+**Scope.** Everything here proceeds upon one machine until the later sections, in which a whole run removes to another, and a company of machines is engaged to serve one. See [Running on other machines](#running-on-other-machines).
 
 ## What sima is
 
-sima drives **searches**. A generator proposes candidates, executors evaluate them, and every result lands in a content-addressed store under a **task key** derived from exactly the inputs that determined it. Rerunning a config resumes instead of recomputing, and two machines that ran the same work can prove they agree byte for byte.
+sima conducts **searches**. A generator proposes candidates, executors evaluate them, and every result is deposited in a content-addressed store under a **task key** derived from exactly those inputs which determined it. To run a config a second time is to resume it rather than to repeat it; and two machines which have performed the same work may prove their agreement to the byte.
 
 The vocabulary:
 
 - **Run** — one search, declared by a `sima.toml`. Its id is the hash of the config's identity-bearing fields.
-- **Format** — an id naming what a candidate means and who can evaluate it, such as `example.stepper.v1`.
+- **Format** — an id naming what a candidate means and who may evaluate it, such as `example.stepper.v1`.
 - **Domain** — the program-side object bound to a format: its devices, its environment, its config translation, and the executor it builds.
-- **Generator** — one way of proposing candidates for a format. A format has one executor and may have many generators.
+- **Generator** — one manner of proposing candidates for a format. A format has one executor and may have many generators.
 - **Task key** — the hash of the spec, the params, the environment, and the position in a chain. It is the address of the result.
-- **Store** — content-addressed objects plus a per-run journal. The store holds results; the journal narrates how they were produced.
+- **Store** — content-addressed objects together with a journal kept for each run. The store holds the results; the journal narrates how they were produced.
 
-A format is answered either **in-process** by a domain this build carries, or by an **external program**: a binary speaking the domain-service and worker protocols over pipes. `docs/protocol.md` publishes that contract; `sima-api` is the Rust SDK over it and the `sima` Python package, which the binary vends, the Python one. Speaking the protocol is the only requirement, so the program can be written in any language.
+A format is answered either **in-process**, by a domain this build carries, or by an **external program**: a binary speaking the domain-service and worker protocols over pipes. `docs/protocol.md` publishes that contract; `sima-api` is the Rust SDK upon it, and the `sima` Python package — which the binary itself dispenses — the Python one. To speak the protocol is the sole requirement, and the program may therefore be written in any language whatever.
 
 ## Install
 
@@ -31,11 +31,11 @@ export PATH="$PWD/target/release:$PATH"
 sima
 ```
 
-`sima` prints its command list.
+`sima` prints its list of commands.
 
-The SDK arrives with the binary. **sima never links your code**: it spawns your program and talks over pipes, and the SDK is the library that speaks that wire protocol, which is what keeps your program an ordinary executable. The binary carries the package, so a config entry declaring `sdk = "python"` is what puts it on the interpreter's path — here and on any machine the run moves to.
+The SDK arrives in the binary's own company. **sima never links your code**: it spawns your program and converses with it over pipes, and the SDK is the library which speaks that wire protocol — which is what preserves your program as an ordinary executable. The binary carries the package, so a config entry declaring `sdk = "python"` is what places it upon the interpreter's path — here, and upon any machine to which the run may remove.
 
-To read it, or to develop against it in an editor, write it out:
+Should you wish to read it, or to develop against it in an editor, write it out:
 
 ```
 sima sdk python --out ./vendor
@@ -45,32 +45,32 @@ sima sdk python --out ./vendor
 
 Open `examples/stepper-py/stepper.py`. It is one file holding three objects and one call.
 
-**`StepperExecutor(sima.Executor)`** — `execute(task, context, checkpoint)` receives a candidate, does the work, and returns an outcome. It never writes to the store; it returns values over a pipe, and sima writes.
+**`StepperExecutor(sima.Executor)`** — `execute(task, context, checkpoint)` receives a candidate, performs the work, and returns an outcome. It never writes to the store; it returns values over a pipe, and sima does the writing.
 
 **`StepperDomain(sima.Domain)`** — binds one format id:
 
-- `format()` — the id this domain answers for.
-- `environment()` — the components every result's identity depends on.
-- `enumerate_devices()` — the devices the work can run on.
-- `translate_config(toml, segmented)` — turns the `[run.params]` table into canonical bytes.
+- `format()` — the id for which this domain answers.
+- `environment()` — the components upon which every result's identity depends.
+- `enumerate_devices()` — the devices on which the work may run.
+- `translate_config(toml, segmented)` — renders the `[run.params]` table into canonical bytes.
 - `executor(device)` — builds the executor for a chosen device.
 
 **`StepperCandidates(sima.Generator)`** — `id()`, `format()`, its own `translate_config`, and `generate(root_seed, params)`.
 
-**`sima.serve(domain, [generators])`** — the entry point. It reads its role from the process arguments, so one file is both what sima interrogates about the format and what runs inside workers.
+**`sima.serve(domain, [generators])`** — the point of entry. It reads its office from the process arguments, so that one file serves both as what sima interrogates concerning the format and as what runs within the workers.
 
 ### Why the executor is separate from the domain
 
-The two are read in different processes, and often on different machines.
+The two are read in different processes, and frequently upon different machines.
 
-- The **domain** is interrogated where the run is driven: what devices exist, what environment identifies results, how to translate the config. This must be cheap — no device, no loaded assets.
-- The **executor** exists only inside a worker, on a chosen device. The orchestrator cannot build one, because the device is not known until a worker is placed.
+- The **domain** is interrogated where the run is conducted: what devices exist, what environment identifies the results, how the config is to be translated. This must be had cheaply — no device, no loaded assets.
+- The **executor** exists only within a worker, upon a chosen device. The orchestrator cannot build one, for the device is not known until a worker has been placed.
 
-So `Domain.executor(device)` is a **constructor**. The domain answers questions anywhere; the executor does work on a device. Task keys include the environment, which is why key derivation must not require a device: a laptop with no GPU can still derive every key in a run.
+`Domain.executor(device)` is therefore a **constructor**. The domain answers questions anywhere; the executor performs work upon a device. Task keys include the environment, and this is why their derivation must demand no device: a laptop possessing no GPU may nonetheless derive every key in a run.
 
 ### How ids bind
 
-An id is a string your program returns from a method. Matching is by string, checked before any work starts.
+An id is a string your program returns from a method. The matching is done by string, and examined before any work begins.
 
 ```python
 FORMAT    = "example.stepper.v1"
@@ -87,10 +87,10 @@ class StepperCandidates(sima.Generator):
 The config reaches them by name:
 
 - `[domain."example.stepper.v1"]` names the binary answering for that format. The spawn carries the id as an argument, and a program whose `format()` disagrees is refused.
-- `[run.generator] id = "..."` is matched against each served generator's `id()`. No match is a config error naming the id.
-- The matched generator's `format()` must equal the run's format, or it is refused naming both ids.
+- `[run.generator] id = "..."` is matched against the `id()` of each generator served. Where no match is found, the config is in error, and the id is named in the complaint.
+- The matched generator's `format()` must equal the run's format, or it is refused with both ids named.
 
-Passing several generators to `serve` is how one format gets several search strategies — a sweep, a random sample, a mutation of a previous run's winners. The generator id and its params are identity-bearing, so two strategies keep separate task keys.
+To pass several generators to `serve` is the means by which one format acquires several strategies of search — a sweep, a random sample, a mutation of a former run's winners. The generator's id and its params bear identity, so two strategies keep their task keys apart.
 
 ### The outcomes an executor can return
 
@@ -100,9 +100,9 @@ Passing several generators to `serve` is how one format gets several search stra
 | `Failed` | transient — may not recur | retries, up to `max_attempts` |
 | `Rejected` | definitive — this candidate cannot produce a result | never retries; the task does not commit |
 
-A program that always succeeds returns `Completed` and never touches the other two. The distinction earns its keep when the work is expensive: returning `Failed` for something permanently broken pays `max_attempts` times for the same nothing.
+A program that always succeeds returns `Completed` and never troubles the other two. The distinction earns its keep where the work is dear: to return `Failed` for a thing permanently broken is to pay `max_attempts` times for the same nothing.
 
-A process that dies or raises is handled out of band — sima meets a broken pipe or a traceback, respawns the worker, and a saved checkpoint resumes the attempt rather than restarting it.
+A process that dies or raises is dealt with out of band — sima meets a broken pipe or a traceback, spawns the worker anew, and a saved checkpoint resumes the attempt rather than beginning it afresh.
 
 ## The config
 
@@ -136,24 +136,24 @@ env = ["PATH"]
 sdk = "python"
 ```
 
-- **`[run]`** is the identity: seed, format, and `segments = 3`, which cuts each candidate's work into a chain of 3 tasks, each continuing from the previous one's committed state.
-- **`[run.generator]`** names the generator; the keys after `id` belong to your program and cross as TOML text.
-- **`[run.params]`** belongs to your program too.
-- **`[config]`** and **`[[orchestrator.device]]`** are operational — store location, retry ceiling, checkpoint cadence, which device class runs the work and with how many workers. Changing them changes no task key.
-- **`[domain."example.stepper.v1"]`** is the registration: this format is answered by `./stepper.py`, resolved against the config file's directory, and written against the Python SDK.
+- **`[run]`** is the identity: seed, format, and `segments = 3`, which divides each candidate's work into a chain of 3 tasks, each continuing from the committed state of the last.
+- **`[run.generator]`** names the generator; the keys following `id` belong to your program and cross as TOML text.
+- **`[run.params]`** belongs to your program likewise.
+- **`[config]`** and **`[[orchestrator.device]]`** are operational — the store's location, the ceiling upon retries, the cadence of checkpoints, which class of device performs the work and with how many workers. To change them changes no task key.
+- **`[domain."example.stepper.v1"]`** is the registration: this format is answered by `./stepper.py`, resolved against the config file's own directory, and written against the Python SDK.
 
 ### The environment a spawned program receives
 
-`env` lists the **names** of variables that reach your program; their values come from the shell that launched sima. Everything else is cleared.
+`env` lists the **names** of the variables that reach your program; their values come from the shell that launched sima. All else is cleared.
 
-This is deliberate. A configured program is spawned with a cleared environment and a scratch working directory of its own, so:
+This is by design. A configured program is spawned with a cleared environment and a scratch working directory of its own, so that:
 
-- a credential the orchestrator holds is never inherited by third-party code,
-- a program cannot quietly depend on where it was launched from.
+- a credential held by the orchestrator is never inherited by third-party code,
+- a program cannot come quietly to depend upon the place from which it was launched.
 
-The consequence for the example: `PATH` is required for the `#!/usr/bin/env python3` shebang to find an interpreter. Without it the spawn fails.
+The consequence for the example: `PATH` is required, that the `#!/usr/bin/env python3` shebang may find an interpreter. Without it the spawn fails.
 
-`import sima` needs no name here. `sdk = "python"` is what carries it: sima writes the package it holds under the config's own directory and puts that directory at the head of the interpreter's module path, ahead of anything the machine already has under the same name. The vended copy is the one that matches the binary's protocol, which is why it leads.
+`import sima` wants no name here. `sdk = "python"` is what carries it: sima writes the package it holds beneath the config's own directory and sets that directory at the head of the interpreter's module path, before anything the machine may already keep under the same name. The dispensed copy is the one that matches the binary's protocol, and for that reason it leads.
 
 ## Run it
 
@@ -174,13 +174,13 @@ committed 6/6  15fe1ae7fe0e
 finalized: 6 tasks committed
 ```
 
-Six tasks is `count = 2` candidates × `segments = 3`. The config decided that; the program did not. As shipped the run computes for a couple of minutes; drop `steps` a few orders of magnitude if you only want to see the shape of the output.
+Six tasks is `count = 2` candidates × `segments = 3`. The config decided that; the program did not. As shipped, the run computes for some couple of minutes; reduce `steps` by a few orders of magnitude if you wish merely to see the shape of the output.
 
-The hex strings are **addresses, not sequence numbers** — each is the hash of what determined that task, stable across machines and reruns.
+The hexadecimal strings are **addresses, not numbers in a sequence** — each is the hash of what determined that task, constant across machines and repetitions.
 
 ## Inspect the results
 
-**`sima status`** reports the run's state:
+**`sima status`** reports the state of the run:
 
 ```
 run                  bff61aa384aa94add7c1609ae6634ca0825ac9548b69712563af224e18b800ef
@@ -203,23 +203,23 @@ devices              python host processor ×6
 3  steps=5 acc=16081153144031734000
 ```
 
-Two distinct values, three tasks each — one group per candidate, one task per segment. `sima report search.toml --all` prints one line per task, and `--timeline` reports the run's metrics over time.
+Two distinct values, three tasks apiece — one group to each candidate, one task to each segment. `sima report search.toml --all` prints a line for every task, and `--timeline` reports the run's metrics as they unfolded in time.
 
-Other queries:
+Further inquiries:
 
-- `sima status search.toml --task <prefix>` — one task's attempt timeline. Any unambiguous key prefix works.
+- `sima status search.toml --task <prefix>` — the timeline of one task's attempts. Any unambiguous prefix of the key will serve.
 - `sima status search.toml --failed` — a digest of the tasks that did not commit.
-- `sima follow search.toml` — stream events live, useful in a second terminal.
-- `sima tui search.toml` — drive the run in a full-screen terminal UI.
+- `sima follow search.toml` — the events as a live stream, of use in a second terminal.
+- `sima tui search.toml` — the run conducted in a full-screen terminal UI.
 
 ### Artifacts and stats are different things
 
-The three segments of one candidate report the **same** `acc`, even though the accumulator really does advance from segment to segment. The reason is worth internalizing:
+The three segments of one candidate report the **same** `acc`, though the accumulator does in truth advance from segment to segment. The reason repays attention:
 
 - **Artifacts** are the result: exact bytes, content-addressed, identity-bearing. Here the `state` artifact is 16 bytes of `(step, acc)`, and it is what the next segment consumed.
-- **Stats** are observational `f64`. `acc` is a `u64` near $10^{18}$, where the gap between adjacent doubles is 256 or larger, so a per-segment difference of a few hundred disappears in the conversion.
+- **Stats** are observational `f64`. `acc` is a `u64` in the neighbourhood of $10^{18}$, where the interval between adjacent doubles is 256 or greater, so a difference of a few hundred between segments vanishes in the conversion.
 
-Nothing was lost — the display cannot show what the artifact holds exactly. Stats are for grouping and filtering; artifacts are what you keep.
+Nothing has been lost — it is only that the display cannot show what the artifact holds exactly. Stats serve for grouping and filtering; artifacts are what you keep.
 
 ## Rerun it
 
@@ -227,13 +227,13 @@ Nothing was lost — the display cannot show what the artifact holds exactly. St
 sima run search.toml
 ```
 
-Nothing recomputes. Every key is already answered, so there is no work to do. That is the resume property, and it is the reason keys are hashes rather than counters.
+Nothing recomputes. Every key is already answered, and there is accordingly no work to do. This is the resume property, and it is the reason the keys are hashes rather than counters.
 
 ## Change the program
 
-sima cannot see your source. Watch what that means.
+sima cannot see your source. Observe what follows from that.
 
-Edit the step loop in `stepper.py` so the math differs:
+Edit the step loop in `stepper.py` so the arithmetic differs:
 
 ```python
 acc = (acc + increment) % WRAP        →        acc = (acc + 2 * increment) % WRAP
@@ -245,7 +245,7 @@ Then:
 sima run search.toml
 ```
 
-The run is **refused**: sima recorded the binary's digest when the run started, and the file no longer matches. That is a provenance guard — it exists so code cannot be swapped silently under a half-finished run. Override it deliberately:
+The run is **refused**: sima recorded the binary's digest when the run began, and the file no longer answers to it. This is a guard upon provenance — it exists so that code cannot be exchanged silently beneath a half-finished run. Override it deliberately:
 
 ```
 sima run search.toml --accept-binary
@@ -253,7 +253,7 @@ sima run search.toml --accept-binary
 
 Nothing recomputes. The run is finalized, every task key is already answered, and `sima report search.toml --all` shows the old values. **New code, old results.**
 
-The keys did not change because a task key is derived from the spec, the params, and **the environment you declare** — never from your source file. Doubling the math changed the answer in reality and changed nothing sima was told about.
+The keys did not change, because a task key is derived from the spec, the params, and **the environment you declare** — never from your source file. Doubling the arithmetic changed the answer in fact, and changed nothing that sima had been told of.
 
 Now declare it. In `StepperDomain.environment()`:
 
@@ -266,30 +266,30 @@ sima run search.toml
 sima report search.toml --all
 ```
 
-All six keys are different, all six tasks recompute, and the new values appear. The old results remain in the store under their own keys: both versions coexist, each addressed by what produced it.
+All six keys are now different, all six tasks recompute, and the new values appear. The old results remain in the store under keys of their own: the two versions stand side by side, each addressed by what produced it.
 
-This is the contract you take on by registering a format:
+This is the contract you take upon yourself in registering a format:
 
-> **The environment declaration is your promise that results under this key came from this code.**
+> **The environment declaration is your promise that the results under this key came from this code.**
 
 Everything else in sima follows from that promise being kept.
 
 ## Housekeeping
 
-- `sima rm <config>` — delete the run and what only it references.
+- `sima rm <config>` — delete the run and whatever only it references.
 - `sima pack <store-dir>` — consolidate loose objects into packs.
-- `sima pack <store-dir> --gc` — additionally delete everything outside the finalized runs' closures, which destroys the work of any run still in progress.
+- `sima pack <store-dir> --gc` — delete, besides, everything outside the closures of the finalized runs; this destroys the work of any run still in progress.
 
 ## Running on other machines
 
-sima has two workflows for putting a run on other hardware.
+sima has two workflows for placing a run upon other hardware.
 
-- **Migrate** (`sima migrate <config>`) — the run's durable state travels to one declared host, a `sima run` process drives it there, and your machine holds the lock and follows. **Your program travels with it**, which is the rest of this section.
-- **Fleet** (`sima run <config> --fleet`) — the store and orchestrator stay on your machine; declared or rented machines run workers only. Your program travels there too: the same `payload` key sends it to every machine the fleet draws in, each installs it under its `root`, and its workers run what it installed. Both are driven below.
+- **Migrate** (`sima migrate <config>`) — the run's durable state travels to one declared host, a `sima run` process conducts it there, and your machine holds the lock and follows. **Your program travels with it**, which is the matter of the remainder of this section.
+- **Fleet** (`sima run <config> --fleet`) — the store and the orchestrator remain upon your machine; declared or rented machines run workers only. Your program travels there as well: the same `payload` key sends it to every machine the fleet draws in, each installs it beneath its `root`, and its workers run what was installed. Both are driven below.
 
 ### Declaring what travels
 
-A migration moves the run onto a machine that has never seen your program, so the program travels with it. Say what, on the entry:
+A migration moves the run onto a machine that has never seen your program, and the program must therefore travel with it. Say what, upon the entry:
 
 ```toml
 [domain."example.stepper.v1"]
@@ -299,27 +299,27 @@ env     = ["PATH"]         # names; the values are that machine's
 sdk     = "python"         # travels as the declaration; the far binary vends it
 ```
 
-`payload` is one file or one directory, resolved against the config file. A single file **is** the program: sima installs it as the entry point and nothing else is needed. A directory needs an `install` script, because which of its files runs is your decision:
+`payload` is one file or one directory, resolved against the config file. A single file **is** the program: sima installs it as the point of entry and nothing further is wanted. A directory requires an `install` script, for the question of which of its files runs is yours to decide:
 
 ```toml
 payload = "./program"
 install = "./install.sh"
 ```
 
-An entry that states no `payload` describes a program this machine holds and no other, and both `sima migrate` and `sima run --fleet` refuse it, naming the missing key.
+An entry stating no `payload` describes a program which this machine holds and no other; both `sima migrate` and `sima run --fleet` refuse it, naming the missing key.
 
-The SDK crosses as the declaration it is: `sdk = "python"` travels, and the destination's own `sima` writes the package, so what a program imports there matches the binary driving it there. A third-party dependency is the payload's business — carry it in a directory payload and install it with the script below.
+The SDK crosses as the declaration it is: `sdk = "python"` travels, and the destination's own `sima` writes the package, so that what a program imports there matches the binary conducting it there. A third-party dependency is the payload's affair — carry it in a directory payload and install it by the script below.
 
 ### The install contract
 
-sima runs your script on the destination as `/bin/sh install.sh`, with two variables set:
+sima runs your script upon the destination as `/bin/sh install.sh`, with two variables set:
 
-- `SIMA_PAYLOAD_DIR` — where your payload's files were materialized. The path is stable, so a wrapper you write may point into it.
-- `SIMA_INSTALL_DIR` — where to leave what you built.
+- `SIMA_PAYLOAD_DIR` — where your payload's files were laid out. The path is stable, so a wrapper of your writing may point into it.
+- `SIMA_INSTALL_DIR` — where to leave what you have built.
 
-Everything else is the destination's own environment. **Nothing is forwarded from your machine** — no credential, no `PATH` of yours — so build out of what is there. A script that needs to fetch or compile does it here.
+All else is the destination's own environment. **Nothing is forwarded from your machine** — no credential, no `PATH` of yours — so build from what is found there. A script that must fetch or compile does so here.
 
-When your script exits 0, `$SIMA_INSTALL_DIR/program` must exist and be executable. That is the whole contract: the entry point is found by convention, so the script reports no path. A script installing a Python program typically writes a wrapper:
+When your script exits 0, `$SIMA_INSTALL_DIR/program` must exist and be executable. That is the whole of the contract: the entry point is found by convention, and the script reports no path. A script installing a Python program will commonly write a wrapper:
 
 ```sh
 #!/bin/sh
@@ -333,19 +333,19 @@ EOF
 chmod 755 "$SIMA_INSTALL_DIR/program"
 ```
 
-A wrapper like that composes with the vended SDK: the interpreter it execs inherits the module path sima set, so `import sima` resolves inside the virtualenv too, and the requirements file carries everything else.
+A wrapper of that kind composes with the dispensed SDK: the interpreter it execs inherits the module path sima set, so `import sima` resolves within the virtualenv also, and the requirements file carries all the rest.
 
-A script that exits non-zero, or leaves no entry point, fails the run on the destination — and `sima migrate` reports the machine and your script's own last lines, so you read the failure here.
+A script that exits with any figure but zero, or leaves no entry point, fails the run upon the destination — and `sima migrate` reports the machine and the last lines of your script's own complaint, so that you read the failure here.
 
 ### The journey: one run, three machines
 
-Everything so far ran on your machine. A real search outgrows one — so this section takes the run on the journey a real one makes: it starts on your laptop, moves to a rented machine, computes there while you are away, and comes home to finish. One run id the whole way, and no committed task is ever computed twice.
+Everything to this point has run upon your machine. A real search outgrows one — and this section therefore takes the run upon the journey a real one makes: it begins upon your laptop, removes to a rented machine, computes there while you are absent, and comes home to finish. One run id the whole way, and no committed task is ever computed twice.
 
-The example is already sized for the trip: `steps` gives each task minutes of compute rather than instants, and `checkpoint_interval_ms = 2000` means every couple of seconds each task saves state it can resume from — which is what lets this run change machines mid-task.
+The example is already provisioned for the trip: `steps` gives each task minutes of computation rather than instants, and `checkpoint_interval_ms = 2000` means that every couple of seconds each task lays by state from which it may resume — which is what permits this run to change machines in the middle of a task.
 
-**Start local.** `sima run search.toml`, let a couple of tasks commit, then Ctrl-C. The run winds down — in-flight work drains and commits what it can — and exits `130`: interrupted, resumable. Your store now holds a run that is partly done.
+**Start local.** `sima run search.toml`; suffer a couple of tasks to commit, then Ctrl-C. The run winds down — work in flight drains and commits what it may — and exits `130`: interrupted, resumable. Your store now holds a run that is partly done.
 
-**Send it away.** The example's config already declares where to:
+**Send it away.** The example's config already declares whither:
 
 ```toml
 [orchestrator]
@@ -372,13 +372,13 @@ Then, with your provider key in the environment:
 sima migrate search.toml
 ```
 
-sima rents the cheapest machine that satisfies the constraints, boots its image on it, and ships the run — the store objects, your program, the lot. Expect a quiet few minutes while the machine comes up (stray `ssh: connect … Connection refused` lines during the boot are the readiness probe knocking, not a failure). Then the stream resumes exactly where your laptop stopped: the tasks you committed locally are not recomputed, because the far machine's store already holds them.
+sima rents the cheapest machine that satisfies the constraints, boots its image upon it, and ships the run — the store's objects, your program, the whole of it. Expect some quiet minutes while the machine comes up (stray lines of `ssh: connect … Connection refused` during the boot are the readiness probe knocking, and no failure). Then the stream resumes exactly where your laptop left off: the tasks committed locally are not computed again, for the far machine's store already holds them.
 
-The program's bytes travel as content-addressed objects, so an unchanged program crosses the wire once: a second migration sends nothing and installs nothing. Every worker on a machine that received your program answers the digest that machine's own tree was built from, and one that answers anything else fails its spawn — so a machine running something other than what you sent stops the run rather than filling your store with results from it.
+The program's bytes travel as content-addressed objects, so an unchanged program crosses the wire once: a second migration sends nothing and installs nothing. Every worker upon a machine that received your program answers with the digest from which that machine's own tree was built, and one answering anything else fails its spawn — so a machine running something other than what you sent stops the run, rather than filling your store with results from it.
 
-**Walk away.** Ctrl-C. This no longer ends anything: the far run keeps computing, and the command exits telling you the two ways back. A closed laptop or a dropped connection does the same — nothing that happens on your machine ends the far run. Ending it is something you ask for by name.
+**Walk away.** Ctrl-C. This no longer ends anything: the far run computes on, and the command exits telling you the two ways back. A closed laptop or a dropped connection does the same — nothing that befalls your machine ends the far run. To end it is a thing you must ask for by name.
 
-**Come back.** `sima migrate search.toml` again. On a run already living at the destination the same command reattaches: what committed while you were gone replays, then the live stream continues.
+**Come back.** `sima migrate search.toml` once more. Upon a run already living at the destination, the same command reattaches: what committed in your absence is replayed, and the live stream then continues.
 
 **Bring it home.** Detach again, and this time:
 
@@ -386,23 +386,23 @@ The program's bytes travel as content-addressed objects, so an unchanged program
 sima recall search.toml
 ```
 
-This is the destructive verb, and the only one. It winds the far run down, reads how it ended, pulls everything it computed into your store, and takes the rented machine away:
+This is the destructive verb, and the only one. It winds the far run down, reads how it ended, draws everything it computed into your store, and takes the rented machine away:
 
 ```
 migrated: run 4728422a… came home with 2 tasks outstanding
 ```
 
-A rental bills by the hour rather than by what it computes, so stopping the run early saves you nothing — the same bill arrives whether the machine computes or idles — and tearing the machine down needs the provider credential, which never leaves your machine. That is why recall does both at once, and why nothing remote can do it for you. `sima reconcile search.toml` is the safety net: it asks the provider what is still renting under your key and answers `nothing to reconcile` when the ledger is clean.
+A rental bills by the hour and not by what it computes, so to stop the run early saves you nothing — the same bill arrives whether the machine computes or sits idle — and to tear the machine down requires the provider credential, which never leaves your machine. That is why recall does both at one stroke, and why nothing remote can do it in your stead. `sima reconcile search.toml` is the net beneath it all: it asks the provider what still stands rented under your key, and answers `nothing to reconcile` when the ledger is clean.
 
-**Finish at home.** `sima run search.toml` one last time. The store knows what is outstanding; the remaining tasks compute on your laptop, and the run reports `finalized`. It started here, computed on a machine that no longer exists, and ended here — and the manifest is the one any single machine would have written.
+**Finish at home.** `sima run search.toml` one last time. The store knows what remains outstanding; the remaining tasks compute upon your laptop, and the run reports `finalized`. It began here, computed upon a machine that no longer exists, and ended here — and the manifest is the very one any single machine would have written.
 
 ### Starting over
 
-`root_seed` in `[run]` is the identity's anchor, and your generator receives it as the first argument of `generate` — one seed always yields the same candidates. Rerunning a finalized run finds its commits and does nothing; to run the same search fresh, bump the seed — a new identity, every task under new addresses. To recompute under the *same* seed, clean up first (below).
+`root_seed` in `[run]` is the anchor of the identity, and your generator receives it as the first argument of `generate` — one seed always yields the same candidates. To rerun a finalized run is to find its commits and do nothing; to run the same search afresh, advance the seed — a new identity, every task under new addresses. To recompute under the *same* seed, clean up first (below).
 
 ### The fleet: machines that only lend workers
 
-Migration moved everything to one machine. The fleet is the inverse: the store and the orchestrator stay in front of you, and other machines only lend workers. That is the shape for many machines at once — and for results landing directly in your local store as they commit.
+Migration moved everything to one machine. The fleet is the inverse: the store and the orchestrator remain before you, and other machines only lend workers. That is the shape for many machines at once — and for results landing in your local store the moment they commit.
 
 The example already declares a fleet:
 
@@ -420,7 +420,7 @@ verified_only      = true
 members = ["cheap"]
 ```
 
-`[fleet]` lists what a run *may* draw on; nothing is rented until you ask:
+`[fleet]` lists what a run *may* draw upon; nothing is rented until you ask:
 
 ```
 sima run search.toml --fleet
@@ -436,38 +436,38 @@ committed 1/6  ef16c6b54f49
 finalized: 6 tasks committed
 ```
 
-Your program went to both machines the same way it traveled in the migration; each installed it, and its workers ran what it installed. When the run ends, the rentals are torn down on their own — `sima reconcile search.toml` confirms the ledger is clean.
+Your program went to both machines just as it traveled in the migration; each installed it, and its workers ran what was installed. When the run ends, the rentals are torn down of their own accord — `sima reconcile search.toml` confirms the ledger clean.
 
-Worth understanding about what just happened:
+What has just happened deserves understanding in three particulars:
 
-- **Parallelism is bought with `count` in the generator, not with machines.** Segments of one candidate are sequential by construction — each starts from the previous one's committed state — so at most one task per candidate is ever ready. Two candidates means two machines is already more than this run can feed; twenty candidates would keep every worker on all of them busy.
-- **No task is bound to a machine.** One ready queue lives at home, and a ready task goes to whichever free worker matches its device class. A chain's next segment may compute on a different machine than its last.
-- **State travels with the task, and machines share nothing.** A dispatched task carries its input bytes from your store; its result comes home with the commit. Fleet machines hold no store and never talk to each other — which is why a chain hopping machines costs nothing extra: every task's input crosses the wire the same way wherever it runs.
+- **Parallelism is purchased with `count` in the generator, not with machines.** The segments of one candidate are sequential by construction — each begins from the committed state of the last — so at most one task per candidate is ever ready. With two candidates, two machines is already more than the run can feed; twenty candidates would keep every worker on all of them occupied.
+- **No task is bound to any machine.** One ready queue lives at home, and a ready task goes to whichever free worker answers its device class. A chain's next segment may compute upon a different machine than its last.
+- **State travels with the task, and the machines share nothing.** A dispatched task carries its input bytes from your store; its result comes home with the commit. Fleet machines hold no store and never address one another — which is why a chain that hops machines costs nothing extra: every task's input crosses the wire in the same manner, wherever it runs.
 
 ### Cleaning up
 
-`sima rm search.toml` deletes the run and everything only it references; `rm -rf store/` removes every run at once. After cleaning, the same seed recomputes from zero — without it, a rerun finds its commits and does nothing.
+`sima rm search.toml` deletes the run and everything only it references; `rm -rf store/` removes every run at once. After the cleaning, the same seed computes afresh from nothing — without it, a rerun finds its commits and does nothing.
 
 ### A deadline where time is free
 
-A local run and a machine of yours cost nothing per hour, so there a deadline is worth stating:
+A local run and a machine of your own cost nothing by the hour, so there a deadline is worth stating:
 
 ```toml
 [budget]
 max_wall_clock_ms = 21600000   # six hours; 0 states no ceiling
 ```
 
-The run interrupts itself after six hours, whether or not anything is watching, and leaves the store resumable. The key does not travel to a rented destination.
+The run interrupts itself after six hours, whether or not anything watches, and leaves the store resumable. The key does not travel to a rented destination.
 
 ### Changing the program
 
-Edit your payload and re-run `sima migrate`: the new manifest travels and the destination installs it. Then the far run stops, because its stored results and checkpoints came from the previous build and sima cannot tell whether the change was material. That is your call to make:
+Edit your payload and run `sima migrate` again: the new manifest travels and the destination installs it. The far run then stops, for its stored results and checkpoints came of the previous build, and sima cannot judge whether the change was material. That judgment is yours to make:
 
 ```
 sima migrate search.toml --accept-binary
 ```
 
-The flag travels to the run on the destination, which is where the comparison happens.
+The flag travels to the run upon the destination, which is where the comparison is made.
 
 ## Where to go next
 
