@@ -20,6 +20,10 @@ COPY . .
 RUN cargo build --release -p sima-worker -p sima
 
 FROM debian:bookworm-slim AS runtime
+# ghcr links an image carrying this label to the repository on push, whoever
+# pushes it — so the package never exists unlinked, and repository workflows
+# hold write access without any per-package grant.
+LABEL org.opencontainers.image.source="https://github.com/alvatar/sima"
 # libxext6 and libglvnd0 are runtime dependencies of the NVIDIA Vulkan ICD
 # (libGLX_nvidia.so.0): the host's container toolkit injects the driver
 # libraries but not these X11/GL dispatch libraries, and without them the
