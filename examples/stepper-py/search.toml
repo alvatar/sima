@@ -8,17 +8,15 @@ id = "example.stepper.candidates"
 count = 2
 
 [run.params]
-steps = 5             # raise to ~300000000 for the tutorial's machine chapter
+steps = 300000000     # minutes of compute: a run worth moving between machines
 
 [config]
 store = "./store"
 max_attempts = 3
 checkpoint_interval_ms = 2000   # save resumable state every 2s
 
-# Uncomment to give the run a destination: `sima migrate` moves it onto the
-# [host.*] entry this names. `sima run` ignores it and stays local.
-# [orchestrator]
-# migrate = "cloudbox"
+[orchestrator]
+migrate = "cloudbox"  # the [host.*] entry `sima migrate` moves the run onto
 
 [[orchestrator.device]]
 select = "example:cpu"

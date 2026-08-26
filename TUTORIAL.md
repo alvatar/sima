@@ -119,7 +119,7 @@ id = "example.stepper.candidates"
 count = 2
 
 [run.params]
-steps = 5
+steps = 300000000
 
 [config]
 store = "./store"
@@ -174,7 +174,7 @@ committed 6/6  15fe1ae7fe0e
 finalized: 6 tasks committed
 ```
 
-Six tasks is `count = 2` candidates × `segments = 3`. The config decided that; the program did not.
+Six tasks is `count = 2` candidates × `segments = 3`. The config decided that; the program did not. As shipped the run computes for a couple of minutes; drop `steps` a few orders of magnitude if you only want to see the shape of the output.
 
 The hex strings are **addresses, not sequence numbers** — each is the hash of what determined that task, stable across machines and reruns.
 
@@ -339,20 +339,13 @@ A script that exits non-zero, or leaves no entry point, fails the run on the des
 
 ### The journey: one run, three machines
 
-Everything so far ran on your machine, and the stepper finishes in seconds. A real search does not — so this section takes one run on the journey a real one makes: it starts on your laptop, moves to a rented machine, computes there while you are away, and comes home to finish. One run id the whole way, and no committed task is ever computed twice.
+Everything so far ran on your machine. A real search outgrows one — so this section takes the run on the journey a real one makes: it starts on your laptop, moves to a rented machine, computes there while you are away, and comes home to finish. One run id the whole way, and no committed task is ever computed twice.
 
-First, make the work worth moving. In `search.toml`:
-
-```toml
-[run.params]
-steps = 300000000   # minutes of compute instead of instants
-```
-
-`steps` belongs to `[run]`, so this names a **new run** — the math is part of the identity. The `checkpoint_interval_ms = 2000` already in `[config]` matters now too: every couple of seconds each task saves state it can resume from, which is what lets this run change machines mid-task.
+The example is already sized for the trip: `steps` gives each task minutes of compute rather than instants, and `checkpoint_interval_ms = 2000` means every couple of seconds each task saves state it can resume from — which is what lets this run change machines mid-task.
 
 **Start local.** `sima run search.toml`, let a couple of tasks commit, then Ctrl-C. The run winds down — in-flight work drains and commits what it can — and exits `130`: interrupted, resumable. Your store now holds a run that is partly done.
 
-**Send it away.** Uncomment the destination in the example's config:
+**Send it away.** The example's config already declares where to:
 
 ```toml
 [orchestrator]
