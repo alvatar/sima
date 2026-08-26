@@ -63,6 +63,7 @@ mod testutil;
 
 pub use instances::{InstanceRecord, InstanceRecordState, Rental};
 pub use journal::JournalWriter;
+pub use layout::journal_path;
 pub use lock::RunLock;
 pub use machines::{IncidentKind, MachineIncident};
 pub use manifest::{Manifest, ManifestEntry};
