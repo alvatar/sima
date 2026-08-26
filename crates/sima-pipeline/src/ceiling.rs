@@ -8,13 +8,14 @@
 //! **The clock starts with this execution, not with the run.** A resumed run
 //! gets a fresh ceiling, and so does each session of a migrated one. The
 //! ceiling therefore bounds unattended computing per launch, which is what a
-//! detached far run needs: nothing is watching it, and it ends on its own.
+//! run nobody is watching needs: it ends on its own.
 //!
-//! **It bounds compute, not billing.** Destroying a rented machine is a
-//! provider-API call and the provider key never travels, so a far run cannot
-//! take down the machine it computes on. After the ceiling fires the instance
-//! sits idle until the key acts — `sima recall` in the normal course, `sima
-//! reconcile` as the safety net for orphans.
+//! **A run has a ceiling only where no bill runs against its time.** A local
+//! run and a machine of yours keep one; a rented destination is never sent the
+//! key, because a rental bills by the hour rather than by use and a run stopped
+//! early there saves nothing while leaving a machine that bills and computes
+//! nothing. Which forms carry the key is decided where the far config is
+//! synthesized; what this module does is keep the ceiling a config states.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;

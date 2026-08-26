@@ -235,10 +235,8 @@ fn the_shipped_search_config_loads_with_its_whole_fleet() -> Result<()> {
     assert_eq!(loaded.orchestrator.migrate.as_deref(), Some("slingshot"));
     assert_eq!(loaded.fleet.members, ["gpubox", "lab", "rtx4090"]);
     assert_eq!(loaded.budget.max_spend, Some(Cost(20_000_000)));
-    assert_eq!(
-        loaded.budget.max_wall_clock,
-        Some(Duration::from_millis(21_600_000))
-    );
+    // The example ships the ceiling at 0, which states none at all.
+    assert_eq!(loaded.budget.max_wall_clock, None);
     // Every declared machine parsed, in both forms: two hosts and three
     // classes, owned and rented among them.
     assert_eq!(

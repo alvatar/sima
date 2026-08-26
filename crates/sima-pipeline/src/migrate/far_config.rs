@@ -18,13 +18,15 @@
 //! name machines reachable from here, which says nothing about what the
 //! destination can reach.
 //!
-//! `[budget]` travels in one key: `max_wall_clock_ms` bounds the run's own
-//! computing wherever it executes, and `max_spend_usd` needs the provider key
-//! that never travels.
+//! `[budget]` travels in one key and only to a machine of yours:
+//! `max_wall_clock_ms` bounds the run's own computing, and is worth keeping
+//! only where no bill runs against the time it bounds. `max_spend_usd` needs
+//! the provider key that never travels.
 //!
 //! **The destination's form is what the synthesis takes**, so every decision
 //! the form settles is made here rather than by the caller handing in a shape
-//! already derived from it.
+//! already derived from it: the form answers both what the far
+//! `[orchestrator]` states and whether the wall-clock ceiling is carried.
 //!
 //! The far side therefore declares no machine beyond itself. It rents nothing,
 //! whatever the local config declares — renting needs the provider key, and the
@@ -176,8 +178,9 @@ pub(crate) struct Registration {
 /// `[run]` exactly: the section is carried across as a parsed value and never
 /// re-derived, so no translation this crate performs can perturb the run id.
 ///
-/// `form` is the destination's, and decides what the far `[orchestrator]`
-/// states; `probed` is what the enumeration reported there, which only a
+/// `form` is the destination's, and decides both what the far
+/// `[orchestrator]` states and whether `[budget]` carries the wall-clock
+/// ceiling; `probed` is what the enumeration reported there, which only a
 /// rented destination's layout is built from.
 ///
 /// `registration` is present exactly when the run's format is served by a
@@ -211,7 +214,7 @@ pub(crate) fn far_config(
             registration.is_some(),
         )),
     );
-    if let Some(budget) = far_budget(&local) {
+    if let Some(budget) = far_budget(&local, form) {
         far.insert("budget".to_string(), toml::Value::Table(budget));
     }
     if let Some(registration) = registration {
@@ -268,14 +271,26 @@ fn far_domain(registration: &Registration) -> toml::Table {
 }
 
 /// The far side's `[budget]`: the wall-clock ceiling alone, and nothing at all
-/// when the local config states none.
+/// for a rented destination or a local config that states no ceiling.
 ///
-/// A ceiling on time is the run's own and is kept wherever the run executes, so
-/// it travels: it is what bounds a far run nobody is attached to. A ceiling on
-/// spend does not, because keeping it means destroying the machine the run is
-/// on, and that needs the provider key — which never leaves this machine. The
-/// spend ceiling stays here, assessed by an attached migration.
-fn far_budget(local: &toml::Table) -> Option<toml::Table> {
+/// A ceiling on spend never travels, because keeping it means destroying the
+/// machine the run is on, and that needs the provider key — which never leaves
+/// this machine. The spend ceiling stays here, assessed by an attached
+/// migration.
+///
+/// A ceiling on time travels to a machine of yours and stops at a rented one.
+/// **A rental bills by the hour rather than by use**, so a run that ends early
+/// on rented hardware saves nothing: the bill is identical whether the machine
+/// computes or idles, so a machine stopped and still billing costs what a
+/// computing one costs and returns nothing. The ceiling is worth keeping only
+/// where no bill runs against the time — a plain local run, and a machine of
+/// yours. A
+/// detached run on rented hardware therefore computes until `sima recall` ends
+/// it, which is also what takes the rental down.
+fn far_budget(local: &toml::Table, form: &HostForm) -> Option<toml::Table> {
+    if matches!(form, HostForm::Rented(_)) {
+        return None;
+    }
     let limit = local
         .get("budget")
         .and_then(toml::Value::as_table)?
@@ -698,30 +713,47 @@ mod tests {
         );
     }
 
-    #[test]
-    fn the_wall_clock_ceiling_travels_and_the_spend_ceiling_does_not() {
-        // A ceiling on time bounds the run's own computing wherever it runs,
-        // so a far run keeps it and a detached one is bounded by it. A ceiling
-        // on spend is enforced by destroying a machine, which needs the
-        // provider key — and the key never leaves this machine.
+    /// The far config a local one stating a ceiling of `ms` synthesizes into
+    /// for the destination `host`, as text and loaded back.
+    fn under_a_ceiling(host: &str, ms: u64) -> (String, LoadedConfig) {
         let local = declared();
-        let text = far_config(
-            &stating_a_ceiling(3_600_000),
-            &local.hosts[RENTED].form,
-            &[],
-            None,
-        )
-        .expect("the synthesis");
+        let text = far_config(&stating_a_ceiling(ms), &local.hosts[host].form, &[], None)
+            .expect("the synthesis");
+        let far = load_str(&text);
+        (text, far)
+    }
+
+    #[test]
+    fn the_wall_clock_ceiling_travels_to_a_machine_of_yours() {
+        // Nothing is billed for the time a machine of yours spends computing,
+        // so ending its run early is worth something and the ceiling is worth
+        // carrying. The spend ceiling still does not travel: keeping it means
+        // destroying a machine, which needs the key that stays here.
+        let (text, far) = under_a_ceiling(OWNED, 3_600_000);
         assert!(
             !text.contains("max_spend_usd"),
             "the spend ceiling is not written down: {text}"
         );
-        let far = load_str(&text);
         assert_eq!(
             far.budget.max_wall_clock,
             Some(std::time::Duration::from_millis(3_600_000))
         );
         assert_eq!(far.budget.max_spend, None);
+    }
+
+    #[test]
+    fn neither_ceiling_travels_to_a_rented_destination() {
+        // A rental bills by the hour rather than by use, so a run that stops
+        // early there saves nothing and leaves the worst state of all: a
+        // machine still billing and no longer computing. What ends a rented
+        // run is `sima recall`, which takes the machine down with it.
+        let (text, far) = under_a_ceiling(RENTED, 3_600_000);
+        assert!(
+            !text.contains("max_wall_clock_ms"),
+            "no ceiling on time is written down: {text}"
+        );
+        assert!(!text.contains("max_spend_usd"), "and none on spend: {text}");
+        assert_eq!(far.budget, sima_provider::Budget::default());
     }
 
     #[test]
