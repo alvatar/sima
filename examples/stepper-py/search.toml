@@ -8,12 +8,17 @@ id = "example.stepper.candidates"
 count = 2
 
 [run.params]
-steps = 5
+steps = 5             # raise to ~300000000 for the tutorial's machine chapter
 
 [config]
 store = "./store"
 max_attempts = 3
-checkpoint_interval_ms = 0
+checkpoint_interval_ms = 2000   # save resumable state every 2s
+
+# Uncomment to give the run a destination: `sima migrate` moves it onto the
+# [host.*] entry this names. `sima run` ignores it and stays local.
+# [orchestrator]
+# migrate = "cloudbox"
 
 [[orchestrator.device]]
 select = "example:cpu"
@@ -37,15 +42,23 @@ sdk = "python"
 # the payload carries and the script installs; see TUTORIAL.md.
 payload = "./stepper.py"
 
-# Move the whole run onto another machine: its store and its orchestrator go
-# there, this machine holds the lock and follows, and the results come home.
-# The program travels with it as content-addressed objects, so an unchanged
-# one crosses the wire once. `--accept-binary` is how an edited payload is
-# accepted by the run that already ran under the previous build.
-# [orchestrator]
-# migrate = "gpubox"
+# The rented destination `migrate` names: sima finds a vast offer under the
+# constraints, boots its image on it, and the run lives there until recalled.
+[host.cloudbox]
+provider = "vast"     # rent from vast.ai; key comes from $VAST_API_KEY
+disk_gb  = 32         # disk the instance is created with
+root     = "~/sima-runs"   # where the migrated run lives on the machine
+binary   = "sima"     # the sima binary there (on the image's PATH)
 
-# A machine you have, reached over ssh at the entry's own name.
+[host.cloudbox.constraints]
+max_price_usd_hour = 0.20   # take no offer above this
+verified_only      = true   # verified datacenters only
+
+[budget]
+max_spend_usd     = 2.0     # wind the run down if rental spend reaches this
+max_wall_clock_ms = 0       # no ceiling; a rented destination is never sent one
+
+# A machine you have instead, reached over ssh at the entry's own name.
 # [host.gpubox]
 # workers = 4                             # exclusive with a device table
 # ssh     = "user@10.0.0.5"               # override the address

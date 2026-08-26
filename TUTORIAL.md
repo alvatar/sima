@@ -124,7 +124,7 @@ steps = 5
 [config]
 store = "./store"
 max_attempts = 3
-checkpoint_interval_ms = 0
+checkpoint_interval_ms = 2000
 
 [[orchestrator.device]]
 select = "example:cpu"
@@ -337,27 +337,77 @@ A wrapper like that composes with the vended SDK: the interpreter it execs inher
 
 A script that exits non-zero, or leaves no entry point, fails the run on the destination — and `sima migrate` reports the machine and your script's own last lines, so you read the failure here.
 
-### Moving the run
+### The journey: one run, three machines
 
-Name the destination and go:
+Everything so far ran on your machine, and the stepper finishes in seconds. A real search does not — so this section takes one run on the journey a real one makes: it starts on your laptop, moves to a rented machine, computes there while you are away, and comes home to finish. One run id the whole way, and no committed task is ever computed twice.
+
+First, make the work worth moving. In `search.toml`:
+
+```toml
+[run.params]
+steps = 300000000   # minutes of compute instead of instants
+```
+
+`steps` belongs to `[run]`, so this names a **new run** — the math is part of the identity. The `checkpoint_interval_ms = 2000` already in `[config]` matters now too: every couple of seconds each task saves state it can resume from, which is what lets this run change machines mid-task.
+
+**Start local.** `sima run search.toml`, let a couple of tasks commit, then Ctrl-C. The run winds down — in-flight work drains and commits what it can — and exits `130`: interrupted, resumable. Your store now holds a run that is partly done.
+
+**Send it away.** Uncomment the destination in the example's config:
 
 ```toml
 [orchestrator]
-migrate = "gpubox"
+migrate = "cloudbox"   # the [host.*] entry the run moves onto
 
-[host.gpubox]
-workers = 4
+[host.cloudbox]
+provider = "vast"      # rent from vast.ai; key comes from $VAST_API_KEY
+disk_gb  = 32
+root     = "~/sima-runs"
+binary   = "sima"
+
+[host.cloudbox.constraints]
+max_price_usd_hour = 0.20   # take no offer above this
+verified_only      = true
+
+[budget]
+max_spend_usd     = 2.0     # wind the run down if rental spend reaches this
+max_wall_clock_ms = 0       # no ceiling; a rented destination is never sent one
 ```
+
+Then, with your provider key in the environment:
 
 ```
 sima migrate search.toml
 ```
 
-The program's bytes travel through the store as content-addressed objects, so an unchanged program crosses the wire once: a second migration sends nothing and installs nothing. A fleet run sends the same objects the same way, to a directory the machine shares across runs, so putting work on a machine twice costs nothing either. Every worker on a machine that received your program answers the digest that machine's own tree was built from, and one that answers anything else fails its spawn — so a machine running something other than what you sent stops the run rather than filling your store with results from it. The destination's events stream back as they happen, and the results come home to your store. The run id is unchanged — where a format is answered from is operational — so the manifest is the one this machine would have written.
+sima rents the cheapest machine that satisfies the constraints, boots its image on it, and ships the run — the store objects, your program, the lot. Expect a quiet few minutes while the machine comes up (stray `ssh: connect … Connection refused` lines during the boot are the readiness probe knocking, not a failure). Then the stream resumes exactly where your laptop stopped: the tasks you committed locally are not recomputed, because the far machine's store already holds them.
 
-Ctrl-C detaches. The far run keeps computing on the destination and the command prints the two ways back: `sima migrate search.toml` attaches to it again, `sima recall search.toml` winds it down, pulls what it computed, and leaves the run resumable. Nothing that happens on your machine ends the far run — a closed terminal and a dropped connection do what Ctrl-C does — so ending it is something you ask for by name.
+The program's bytes travel as content-addressed objects, so an unchanged program crosses the wire once: a second migration sends nothing and installs nothing. Every worker on a machine that received your program answers the digest that machine's own tree was built from, and one that answers anything else fails its spawn — so a machine running something other than what you sent stops the run rather than filling your store with results from it.
 
-On a rented destination, `sima recall` is what ends the run. A rental bills by the hour rather than by what it computes, so stopping the run early saves you nothing — the same bill arrives whether the machine computes or idles, and tearing the machine down needs the provider credential, which never leaves your machine. A recall does both at once: it winds the far run down, pulls what it computed, and takes the rental away.
+**Walk away.** Ctrl-C. This no longer ends anything: the far run keeps computing, and the command exits telling you the two ways back. A closed laptop or a dropped connection does the same — nothing that happens on your machine ends the far run. Ending it is something you ask for by name.
+
+**Come back.** `sima migrate search.toml` again. On a run already living at the destination the same command reattaches: what committed while you were gone replays, then the live stream continues.
+
+**Bring it home.** Detach again, and this time:
+
+```
+sima recall search.toml
+```
+
+This is the destructive verb, and the only one. It winds the far run down, reads how it ended, pulls everything it computed into your store, and takes the rented machine away:
+
+```
+migrated: run 4728422a… came home with 2 tasks outstanding
+```
+
+A rental bills by the hour rather than by what it computes, so stopping the run early saves you nothing — the same bill arrives whether the machine computes or idles — and tearing the machine down needs the provider credential, which never leaves your machine. That is why recall does both at once, and why nothing remote can do it for you. `sima reconcile search.toml` is the safety net: it asks the provider what is still renting under your key and answers `nothing to reconcile` when the ledger is clean.
+
+**Finish at home.** `sima run search.toml` one last time. The store knows what is outstanding; the remaining tasks compute on your laptop, and the run reports `finalized`. It started here, computed on a machine that no longer exists, and ended here — and the manifest is the one any single machine would have written.
+
+### Starting over
+
+`root_seed` in `[run]` is the identity's anchor. Rerunning a finalized run finds its commits and does nothing; to run the same search fresh, bump the seed — a new identity, every task under new addresses.
+
+### A deadline where time is free
 
 A local run and a machine of yours cost nothing per hour, so there a deadline is worth stating:
 
