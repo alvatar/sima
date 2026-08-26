@@ -13,7 +13,7 @@
 use std::io::{BufReader, BufWriter};
 use std::process::{Child, Command, Stdio};
 
-use sima_core::{Error, Result};
+use sima_core::{Error, Result, own_process_group};
 use sima_model::TaskKey;
 use sima_store::{ObjectScope, Store, SyncReport, SyncRole};
 
@@ -30,7 +30,7 @@ pub(crate) fn sync_against(
     argv: &[String],
 ) -> Result<SyncReport> {
     let (program, args) = argv.split_first().expect("the argv names a program");
-    let mut child = Command::new(program)
+    let mut child = own_process_group(&mut Command::new(program))
         .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

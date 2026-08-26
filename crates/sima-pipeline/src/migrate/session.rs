@@ -488,7 +488,19 @@ impl Session<'_> {
         // already spent must not first watch for an interval.
         let mut assessed: Option<Instant> = None;
         loop {
-            let records = feed.poll()?;
+            let records = match feed.poll() {
+                Ok(records) => records,
+                // The operator has let go, and the stream went with them: a
+                // terminal delivers its interrupt to the whole foreground
+                // group, so the transport carrying this follow can be gone
+                // before this side reads its own flag. The detach is what was
+                // asked for, and its own consequence does not turn it into a
+                // fault to report.
+                Err(_) if self.interrupt.load(Ordering::Relaxed) => {
+                    return Ok((status.state, FollowEnd::Detached));
+                }
+                Err(e) => return Err(e),
+            };
             if !(first && earlier_session) {
                 let replayed = first && reattached;
                 for record in &records {
@@ -1292,6 +1304,59 @@ mod tests {
             local.store.instance_records()?.len(),
             1,
             "its ledger record stands, so the next migration adopts it"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_stream_that_dies_with_nothing_raised_fails_the_migration() -> Result<()> {
+        // What the detach must not swallow: a transport that ends while the
+        // operator is still watching is a fault, and it is reported as one
+        // rather than read as letting go.
+        let local = local(RENTED, PROMPT, Some(3));
+        let far = Scripted::new().losing_the_stream("the remote follow stream ended");
+
+        let (outcome, _) = session_over(&local, &far, None, &AtomicBool::new(false));
+        let error = outcome.expect_err("a stream that died mid-follow is a fault");
+        assert!(
+            error.to_string().contains("the remote follow stream ended"),
+            "the fault reaches the caller unchanged: {error}"
+        );
+        assert!(
+            !far.steps().contains(&PULL),
+            "nothing was pulled: {:?}",
+            far.steps()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_stream_that_dies_once_the_operator_has_let_go_is_the_detach_it_asked_for() -> Result<()> {
+        // A terminal delivers its interrupt to the whole foreground process
+        // group, so the transport carrying the follow can be gone by the time
+        // this side reads its own flag. The interrupt is what was asked for and
+        // the dead stream is a consequence of it: letting go stays letting go.
+        let local = local(RENTED, PROMPT, Some(3));
+        let run = local.config.run.id();
+        let far = Scripted::new().losing_the_stream("the remote follow stream ended");
+
+        let (outcome, _) = session_over(&local, &far, None, &AtomicBool::new(true));
+        assert_eq!(
+            outcome?,
+            MigrateOutcome::Detached {
+                run,
+                machine: "cloudbox".to_string(),
+            }
+        );
+        assert!(
+            !far.steps().contains(&PULL),
+            "nothing was pulled: {:?}",
+            far.steps()
+        );
+        assert_eq!(
+            *far.alive.lock().expect("the pid lock"),
+            Some(PID),
+            "the far run keeps computing"
         );
         Ok(())
     }

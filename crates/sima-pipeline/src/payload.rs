@@ -35,7 +35,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use sima_core::{Codec, Dec, Enc, Error, Hash, MAX_PAYLOAD, Result};
+use sima_core::{Codec, Dec, Enc, Error, Hash, MAX_PAYLOAD, Result, own_process_group};
 use sima_store::Store;
 
 use crate::stamped_tree::{
@@ -505,7 +505,7 @@ fn run_install(tree: &ProgramTree, script: &str) -> Result<()> {
     // Absolute, because the script may `cd` anywhere it likes.
     let payload = absolute(&tree.payload())?;
     let installed = absolute(&tree.installed())?;
-    let status = Command::new("/bin/sh")
+    let status = own_process_group(&mut Command::new("/bin/sh"))
         .arg(&script_path)
         .current_dir(&tree.root)
         .env("SIMA_PAYLOAD_DIR", &payload)

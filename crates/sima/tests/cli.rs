@@ -3,6 +3,7 @@
 
 mod common;
 
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::{Duration, Instant};
@@ -1185,6 +1186,57 @@ fn sigint_interrupts_gracefully_and_a_rerun_matches_an_uninterrupted_store() {
     assert_eq!(
         manifest_of(&config).expect("resumed manifest"),
         manifest_of(&reference).expect("reference manifest"),
+    );
+}
+
+#[test]
+fn a_terminal_interrupt_winds_the_run_down_without_killing_its_workers() {
+    // A terminal delivers Ctrl-C to every process in the foreground group, so
+    // a worker left in the orchestrator's group is signalled directly and dies
+    // mid-attempt — a death the run reads as a transient failure and retries
+    // against. sima is the one interrupt handler: its workers are ended by the
+    // wind-down, which abandons the attempt rather than failing it.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let behaviors = r#""sleep:1500", "sleep:1500", "sleep:1500", "sleep:1500""#;
+    let config = write_config(dir.path(), behaviors);
+
+    // A process group of its own, so the signal below reaches the run and its
+    // children the way a terminal's does, and nothing of the suite's.
+    let mut child = sima_command()
+        .args(["run", config.to_str().expect("utf-8 path")])
+        .stdout(std::process::Stdio::null())
+        .process_group(0)
+        .spawn()
+        .expect("spawn sima run");
+    assert!(
+        common::wait_for_first_lease(&config, Duration::from_secs(30)),
+        "the run leased a task before the interrupt"
+    );
+    // A negative pid names the group, which is what a terminal signals.
+    assert_eq!(
+        unsafe { libc::kill(-(child.id() as libc::pid_t), libc::SIGINT) },
+        0,
+        "the run's process group was signalled"
+    );
+    assert_eq!(
+        child.wait().expect("wait for sima").code(),
+        Some(130),
+        "the run wound itself down"
+    );
+
+    // Nothing failed: a worker killed by the terminal dies without an outcome,
+    // which the run records as a transient failure of the task it was running
+    // and retries against. A wind-down that owns its children records neither.
+    let events = common::journal_events(&config);
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, Event::Failed { .. } | Event::Retried { .. })),
+        "no worker was killed by the terminal's signal: {events:?}"
+    );
+    assert!(
+        manifest_of(&config).is_none(),
+        "an interrupted run seals nothing"
     );
 }
 

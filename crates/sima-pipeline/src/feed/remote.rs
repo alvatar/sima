@@ -19,7 +19,7 @@ use std::process::{Child, ChildStderr, Command, Stdio};
 use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
 use std::thread::JoinHandle;
 
-use sima_core::{Error, Result, read_frame};
+use sima_core::{Error, Result, own_process_group, read_frame};
 use sima_scheduler::Record;
 use sima_transport::SshDestination;
 
@@ -235,7 +235,7 @@ impl Stream {
     /// stdout as frames. `label` is what the errors name the far side by.
     fn spawn(argv: &[String], label: &str) -> Result<Stream> {
         let (program, args) = argv.split_first().expect("the argv names a program");
-        let mut child = Command::new(program)
+        let mut child = own_process_group(&mut Command::new(program))
             .args(args)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())

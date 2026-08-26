@@ -23,7 +23,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use sima_contracts::DeviceBinding;
-use sima_core::Result;
+use sima_core::{Result, own_process_group};
 use sima_trace::Emitter;
 
 use crate::device_probe::DeviceProbe;
@@ -402,7 +402,7 @@ fn ssh_prefix(host: Option<&str>) -> Vec<String> {
 /// the container's `--rm` are the fallback if the second channel cannot run.
 fn spawn_detached(argv: &[String]) -> Option<Child> {
     let (program, args) = argv.split_first()?;
-    Command::new(program)
+    own_process_group(&mut Command::new(program))
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::null())

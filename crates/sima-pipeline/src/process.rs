@@ -11,7 +11,7 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 
-use sima_core::{Error, Result};
+use sima_core::{Error, Result, own_process_group};
 use sima_transport::container::image_inspect_argv;
 
 use crate::config::Container;
@@ -82,7 +82,7 @@ pub(crate) fn bootstrap_image(host: Option<&str>, container: &Container) -> Resu
 /// Runs `argv`, discarding its streams, and reports whether it exited zero.
 fn command_status(argv: &[String]) -> Result<ExitStatus> {
     let (program, args) = argv.split_first().expect("a non-empty command vector");
-    Command::new(program)
+    own_process_group(&mut Command::new(program))
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -95,7 +95,7 @@ fn command_status(argv: &[String]) -> Result<ExitStatus> {
 /// is not UTF-8. Stderr is inherited for diagnostics.
 pub(crate) fn command_stdout(argv: &[String]) -> Result<String> {
     let (program, args) = argv.split_first().expect("a non-empty command vector");
-    let output = Command::new(program)
+    let output = own_process_group(&mut Command::new(program))
         .args(args)
         .stdin(Stdio::null())
         .stderr(Stdio::inherit())

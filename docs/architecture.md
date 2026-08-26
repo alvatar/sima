@@ -55,7 +55,7 @@ Strictly downward dependencies, enforced by workspace crate edges.
 
 | Layer | Crate            | Responsibility                                                        |
 |-------|------------------|-----------------------------------------------------------------------|
-| L0    | `sima-core`      | error type, canonical encoding, content hash, PRNG                    |
+| L0    | `sima-core`      | error type, canonical encoding, content hash, PRNG, child spawn disposition |
 | L0.5  | `sima-trace`     | structured events: the typed vocabulary, journal records, emitters, the collector |
 | L1    | `sima-model`     | identity vocabulary: spec, params, environment, task key, record, run config |
 | L2    | `sima-store`     | durable state: CAS, task index, run manifests, journals               |
@@ -2230,6 +2230,16 @@ The wind-down states form a precedence order — running < interrupted <
 failed < fault — and each setter only upgrades: a definitive failure or an
 infrastructure fault landing during an interrupt wind-down still decides
 the run, and among faults the first wins.
+
+**Every child sima spawns leads a process group of its own.** A terminal
+delivers Ctrl-C to every process in its foreground group, so a worker, a
+program serving a domain, an ssh, a container runtime client, or an install
+script left in sima's group would be signalled directly and die where it
+stands — a worker killed mid-attempt reads as a transient failure and is
+retried against, and an ssh killed mid-frame reads as a transport fault.
+sima is the one interrupt handler and the wind-down it runs is what ends its
+children, so each is spawned into a group the terminal does not reach
+(`sima_core::own_process_group`, applied at every spawn site).
 
 ### Leases and preemption
 

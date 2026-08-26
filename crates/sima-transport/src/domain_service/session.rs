@@ -24,7 +24,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use sima_contracts::DeviceInfo;
-use sima_core::{Error, Result, read_frame, write_frame};
+use sima_core::{Error, Result, own_process_group, read_frame, write_frame};
 use sima_model::{Environment, FormatId, GeneratorId, Params, Spec};
 use tempfile::TempDir;
 
@@ -102,7 +102,9 @@ impl DomainService {
         binary: PathBuf,
         answer_timeout: Duration,
     ) -> Result<DomainService> {
-        command.stdin(Stdio::piped()).stdout(Stdio::piped());
+        own_process_group(&mut command)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped());
         let mut child = command.spawn().map_err(|e| {
             Error::Transport(format!(
                 "spawning the domain service {} failed: {e}",

@@ -22,6 +22,7 @@
 mod common;
 
 use std::collections::BTreeMap;
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -629,7 +630,7 @@ fn a_detached_run_ends_on_its_own_ceiling_and_the_next_attach_brings_it_home() -
     // detach.
     let migrated = owned_under_ceiling(dir.path(), &far_root, 8_000);
 
-    let output = detached_from(&bin, &migrated, &far_root);
+    let output = detached_from(&bin, &migrated, &far_root, Signalled::Migration);
     assert_eq!(
         output.status.code(),
         Some(0),
@@ -709,15 +710,29 @@ fn a_detached_run_on_a_rented_machine_carries_no_ceiling_and_keeps_computing() -
     Ok(())
 }
 
+/// Who the interrupt that ends a migration is delivered to.
+#[derive(Clone, Copy)]
+enum Signalled {
+    /// The `sima` process alone, as a `kill` naming it does.
+    Migration,
+    /// Every process in the migration's group, as a terminal's Ctrl-C does:
+    /// the children it spawned are signalled directly, before sima handles
+    /// anything.
+    Terminal,
+}
+
 /// Runs `sima migrate <config>` with `bin` ahead of the PATH and interrupts it
 /// once the far run is computing, which is what letting go of one looks like.
-fn detached_from(bin: &Path, config: &Path, root: &Path) -> Output {
+fn detached_from(bin: &Path, config: &Path, root: &Path, signalled: Signalled) -> Output {
     let path = std::env::var("PATH").expect("a PATH");
     let child = sima_command()
         .args(["migrate", config.to_str().expect("utf-8 path")])
         .env("PATH", format!("{}:{path}", bin.display()))
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
+        // A group of its own, so signalling the whole of it reaches the
+        // migration and its children and nothing of the suite's.
+        .process_group(0)
         .spawn()
         .expect("spawn sima");
     // The far run writes its pid when it starts, so that file appearing is what
@@ -726,10 +741,59 @@ fn detached_from(bin: &Path, config: &Path, root: &Path) -> Output {
         poll_for(Duration::from_secs(60), || far_pid(config, root)).is_some(),
         "the far run started"
     );
-    let _ = Command::new("kill")
-        .args(["-INT", &child.id().to_string()])
-        .output();
+    let target = match signalled {
+        Signalled::Migration => child.id() as libc::pid_t,
+        // A negative pid names the group.
+        Signalled::Terminal => -(child.id() as libc::pid_t),
+    };
+    assert_eq!(
+        unsafe { libc::kill(target, libc::SIGINT) },
+        0,
+        "the migration was signalled"
+    );
     child.wait_with_output().expect("the migration ends")
+}
+
+#[test]
+fn a_terminal_interrupt_detaches_the_migration_it_is_meant_to() -> Result<()> {
+    // The bug a real terminal shows and a raised flag cannot: Ctrl-C reaches
+    // every process in the foreground group, so the transport carrying the
+    // follow dies before sima handles its own signal. Letting go is what was
+    // asked for, and a stream that ended with the operator does not turn it
+    // into a fault.
+    workers_built();
+    let dir = tempfile::tempdir().expect("temp dir");
+    let far_root = dir.path().join("far");
+    let bin = common::machine_stubs(dir.path(), false);
+    let migrated = migrating(dir.path(), &far_root, UNFINISHABLE, PACED);
+
+    let output = detached_from(&bin, &migrated, &far_root, Signalled::Terminal);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "letting go is its own outcome: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).expect("stdout is UTF-8");
+    assert!(stdout.contains("detached"), "{stdout}");
+    assert!(
+        stdout.contains("sima migrate") && stdout.contains("sima recall"),
+        "both ways back are printed: {stdout}"
+    );
+    assert!(
+        manifest_bytes(&migrated).is_none(),
+        "a detached migration seals nothing"
+    );
+
+    // And the far run is where it was left: still computing, still rented.
+    let pid = far_pid(&migrated, &far_root).expect("the far run keeps computing");
+    let store = Store::open(&load(&migrated)?.store)?;
+    assert!(
+        !store.instance_records()?.is_empty(),
+        "the machine it computes on was not torn down"
+    );
+    end_far_run(pid);
+    Ok(())
 }
 
 #[test]

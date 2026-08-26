@@ -149,6 +149,10 @@ pub(crate) struct Scripted<'a> {
     /// up before it journals, and `sima follow-serve` refuses a run that
     /// journaled nothing.
     follow_refusals: Mutex<usize>,
+    /// What the follow's stream fails with once it has delivered everything
+    /// it was scripted with, for a transport that went away rather than a far
+    /// side that stopped having anything to say.
+    stream_dies: Option<String>,
 }
 
 impl<'a> Scripted<'a> {
@@ -179,6 +183,7 @@ impl<'a> Scripted<'a> {
             dies_at_start: false,
             vanishing: false,
             follow_refusals: Mutex::new(0),
+            stream_dies: None,
         }
     }
 
@@ -244,6 +249,15 @@ impl<'a> Scripted<'a> {
     pub(crate) fn dying_while_loading(mut self, log: &str) -> Scripted<'a> {
         self.log = Some(log.to_string());
         self.dies_at_start = true;
+        self
+    }
+
+    /// A follow whose stream dies with `words` once it has delivered
+    /// everything it was scripted with: the transport carrying it went away,
+    /// which is what a terminal's own signal does to an ssh in sima's process
+    /// group.
+    pub(crate) fn losing_the_stream(mut self, words: &str) -> Scripted<'a> {
+        self.stream_dies = Some(words.to_string());
         self
     }
 
@@ -439,6 +453,7 @@ impl FarSide for Scripted<'_> {
             alive: Arc::clone(&self.alive),
             ending: self.ending,
             vanishing: self.vanishing,
+            stream_dies: self.stream_dies.clone(),
         }))
     }
 }
@@ -456,6 +471,9 @@ pub(crate) struct ScriptedFeed {
     ending: Ending,
     /// Whether the far run goes away once every batch has been delivered.
     vanishing: bool,
+    /// What the stream fails with once every batch has been delivered, for a
+    /// transport that went away mid-follow.
+    stream_dies: Option<String>,
 }
 
 impl RunFeed for ScriptedFeed {
@@ -477,6 +495,13 @@ impl RunFeed for ScriptedFeed {
             .expect("the poll lock")
             .pop_front()
             .unwrap_or_default();
+        // A transport that went away answers no further poll, whatever the far
+        // run itself is doing: the stream ends where the transport did.
+        if batch.is_empty()
+            && let Some(words) = &self.stream_dies
+        {
+            return Err(Error::Validation(words.clone()));
+        }
         if self.vanishing && batch.is_empty() {
             // Everything it was scripted with has been delivered, and the far
             // run is gone without journaling anything terminal.
