@@ -202,11 +202,11 @@ mod tests {
     #[test]
     fn a_rented_host_is_a_rental_of_one() {
         let config =
-            config("[host.slingshot]\nprovider = \"stub\"\n[fleet]\nmembers = [\"slingshot\"]\n");
+            config("[host.cloudbox]\nprovider = \"stub\"\n[fleet]\nmembers = [\"cloudbox\"]\n");
         let members = members(&config);
         assert!(members.owned.is_empty());
         assert_eq!(members.rentals.len(), 1);
-        assert_eq!(members.rentals[0].name, "slingshot");
+        assert_eq!(members.rentals[0].name, "cloudbox");
         assert_eq!(members.rentals[0].count, 1);
         assert_eq!(members.rentals[0].fill, FillPolicy::Strict);
     }

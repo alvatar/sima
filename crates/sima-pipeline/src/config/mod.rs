@@ -45,10 +45,10 @@
 //! ssh     = "bigbox.dept.internal"
 //! workers = 8
 //!
-//! [host.slingshot]                        # one rented machine: a host, not a class
+//! [host.cloudbox]                        # one rented machine: a host, not a class
 //! provider = "vast"
 //! disk_gb  = 64
-//! [host.slingshot.constraints]
+//! [host.cloudbox.constraints]
 //! gpu_models  = ["RTX 4090"]
 //! min_vram_mb = 16000
 //!
@@ -89,7 +89,7 @@
 //!                                         # of yours, never sent to a rental
 //!
 //! [orchestrator]                          # this machine
-//! migrate = "slingshot"                   # the host `sima migrate` moves the run onto
+//! migrate = "cloudbox"                   # the host `sima migrate` moves the run onto
 //! # image    = "localhost/sima:latest"    # run this machine's workers in a container
 //! # runtime  = "podman"                   # docker | podman; default docker
 //! # run_args = ["--gpus", "all"]          # verbatim container-run flags

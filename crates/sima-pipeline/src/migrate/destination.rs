@@ -128,9 +128,9 @@ mod tests {
     #[test]
     fn a_rented_machine_resolves_to_its_specification_and_states_no_layout() {
         let loaded = load_str(&config(
-            Some("slingshot"),
-            "[host.slingshot]\nprovider = \"stub\"\ndisk_gb = 64\nroot = \"/scratch\"\n\
-             binary = \"/opt/sima\"\n[host.slingshot.constraints]\nmin_vram_mb = 16000\n",
+            Some("cloudbox"),
+            "[host.cloudbox]\nprovider = \"stub\"\ndisk_gb = 64\nroot = \"/scratch\"\n\
+             binary = \"/opt/sima\"\n[host.cloudbox.constraints]\nmin_vram_mb = 16000\n",
         ));
         let destination = destination_for(&loaded).expect("the host is declared");
         assert_eq!(destination.root, "/scratch");

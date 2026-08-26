@@ -76,11 +76,24 @@ fn every_example_carries_a_worker_layout_and_declares_no_machine_it_does_not_use
 }
 
 #[test]
-fn the_stepper_example_s_commented_migration_block_loads_when_uncommented() -> Result<()> {
+fn the_stepper_example_declares_the_machines_the_tutorial_drives() -> Result<()> {
+    // The stepper example ships with its machines active: the tutorial's
+    // machine chapter migrates onto `cloudbox` and draws a fleet from `cheap`,
+    // both rented, neither engaged by a plain `sima run` — which is what keeps
+    // the example working out of the box with no key in the environment.
+    let loaded = load(&examples().join("stepper-py/search.toml"))?;
+    assert_eq!(loaded.orchestrator.migrate.as_deref(), Some("cloudbox"));
+    assert!(loaded.hosts.contains_key("cloudbox"));
+    assert!(loaded.host_classes.contains_key("cheap"));
+    assert_eq!(loaded.fleet.members, ["cheap"]);
+    Ok(())
+}
+
+#[test]
+fn the_stepper_example_s_commented_machine_block_loads_when_uncommented() -> Result<()> {
     // A commented declaration is a declaration a reader uncomments, so it has
-    // to be one the loader takes. Nothing else here checks it: the example as
-    // shipped declares no machine, which is what keeps `sima run` working out
-    // of the box.
+    // to be one the loader takes: the owned-machine block (`gpubox`) ships
+    // commented because it names hardware only its author has.
     let shipped = std::fs::read_to_string(examples().join("stepper-py/search.toml"))
         .expect("the example is there");
     let uncommented: String = shipped
@@ -101,7 +114,6 @@ fn the_stepper_example_s_commented_migration_block_loads_when_uncommented() -> R
     std::fs::remove_file(&path).expect("remove the uncommented example");
     let loaded = loaded?;
 
-    assert_eq!(loaded.orchestrator.migrate.as_deref(), Some("gpubox"));
     assert!(loaded.hosts.contains_key("gpubox"));
     assert_eq!(
         loaded.run.id().to_string(),
@@ -124,7 +136,7 @@ fn the_stepper_example_loads_with_its_run_id() -> Result<()> {
     // spawn at all.
     assert_eq!(
         run_id("stepper-py/search.toml")?,
-        "bff61aa384aa94add7c1609ae6634ca0825ac9548b69712563af224e18b800ef"
+        "7c19fe97eaf2a8870f110f3df80840b3785bf2bd57f6633006baac3e73b48b13"
     );
     Ok(())
 }

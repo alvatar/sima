@@ -110,7 +110,7 @@ A process that dies or raises is handled out of band — sima meets a broken pip
 
 ```toml
 [run]
-root_seed = 7
+root_seed = 1
 format = "example.stepper.v1"
 segments = 3
 
@@ -285,7 +285,7 @@ Everything else in sima follows from that promise being kept.
 sima has two workflows for putting a run on other hardware.
 
 - **Migrate** (`sima migrate <config>`) — the run's durable state travels to one declared host, a `sima run` process drives it there, and your machine holds the lock and follows. **Your program travels with it**, which is the rest of this section.
-- **Fleet** (`sima run <config> --fleet`) — the store and orchestrator stay on your machine; declared or rented machines run workers only. See `examples/gray-scott-search.toml`. Your program travels there too: the same `payload` key sends it to every machine the fleet draws in, each installs it under its `root`, and its workers run what it installed.
+- **Fleet** (`sima run <config> --fleet`) — the store and orchestrator stay on your machine; declared or rented machines run workers only. Your program travels there too: the same `payload` key sends it to every machine the fleet draws in, each installs it under its `root`, and its workers run what it installed. Both are driven below.
 
 ### Declaring what travels
 
@@ -398,7 +398,55 @@ A rental bills by the hour rather than by what it computes, so stopping the run 
 
 ### Starting over
 
-`root_seed` in `[run]` is the identity's anchor. Rerunning a finalized run finds its commits and does nothing; to run the same search fresh, bump the seed — a new identity, every task under new addresses.
+`root_seed` in `[run]` is the identity's anchor, and your generator receives it as the first argument of `generate` — one seed always yields the same candidates. Rerunning a finalized run finds its commits and does nothing; to run the same search fresh, bump the seed — a new identity, every task under new addresses. To recompute under the *same* seed, clean up first (below).
+
+### The fleet: machines that only lend workers
+
+Migration moved everything to one machine. The fleet is the inverse: the store and the orchestrator stay in front of you, and other machines only lend workers. That is the shape for many machines at once — and for results landing directly in your local store as they commit.
+
+The example already declares a fleet:
+
+```toml
+[host_class.cheap]
+provider = "vast"      # two machines rented to one specification
+count    = 2
+disk_gb  = 32
+
+[host_class.cheap.constraints]
+max_price_usd_hour = 0.10   # cheapest end of the market
+verified_only      = true
+
+[fleet]
+members = ["cheap"]
+```
+
+`[fleet]` lists what a run *may* draw on; nothing is rented until you ask:
+
+```
+sima run search.toml --fleet
+```
+
+```
+run b80a8ca…
+started: 6 tasks
+instance online 48763646 on ssh8.vast.ai: 1× GTX 1660 at $0.056/hr
+instance online 48763734 on ssh8.vast.ai: 1× RTX 3060 Ti at $0.048/hr
+committed 1/6  ef16c6b54f49
+…
+finalized: 6 tasks committed
+```
+
+Your program went to both machines the same way it traveled in the migration; each installed it, and its workers ran what it installed. When the run ends, the rentals are torn down on their own — `sima reconcile search.toml` confirms the ledger is clean.
+
+Worth understanding about what just happened:
+
+- **Parallelism is bought with `count` in the generator, not with machines.** Segments of one candidate are sequential by construction — each starts from the previous one's committed state — so at most one task per candidate is ever ready. Two candidates means two machines is already more than this run can feed; twenty candidates would keep every worker on all of them busy.
+- **No task is bound to a machine.** One ready queue lives at home, and a ready task goes to whichever free worker matches its device class. A chain's next segment may compute on a different machine than its last.
+- **State travels with the task, and machines share nothing.** A dispatched task carries its input bytes from your store; its result comes home with the commit. Fleet machines hold no store and never talk to each other — which is why a chain hopping machines costs nothing extra: every task's input crosses the wire the same way wherever it runs.
+
+### Cleaning up
+
+`sima rm search.toml` deletes the run and everything only it references; `rm -rf store/` removes every run at once. After cleaning, the same seed recomputes from zero — without it, a rerun finds its commits and does nothing.
 
 ### A deadline where time is free
 

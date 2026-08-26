@@ -38,11 +38,11 @@ fn a_vast_rental_reads_the_key_only_when_the_fleet_is_engaged() -> Result<()> {
         store = "./store"
         max_attempts = 3
 
-        [host.slingshot]
+        [host.cloudbox]
         provider = "vast"
 
         [fleet]
-        members = ["slingshot"]
+        members = ["cloudbox"]
     "#;
     std::fs::write(&config_path, text).expect("write config");
     let config = load(&config_path)?;

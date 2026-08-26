@@ -485,9 +485,9 @@ mod tests {
 
             [orchestrator]
             workers = 1
-            migrate = "slingshot"
+            migrate = "cloudbox"
 
-            [host.slingshot]
+            [host.cloudbox]
             provider = "stub"
             root = {root:?}
             binary = {binary:?}

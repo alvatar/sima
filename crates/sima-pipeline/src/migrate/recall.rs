@@ -298,7 +298,7 @@ mod tests {
         let text = outcome
             .expect_err("the far journal could not be read")
             .to_string();
-        assert!(text.contains("slingshot"), "names the machine: {text}");
+        assert!(text.contains("cloudbox"), "names the machine: {text}");
         assert!(text.contains("journal"), "names the read: {text}");
         assert!(
             text.contains("the store there will not open"),
@@ -339,7 +339,7 @@ mod tests {
         let text = outcome
             .expect_err("there is nothing there to recall")
             .to_string();
-        assert!(text.contains("slingshot"), "names the machine: {text}");
+        assert!(text.contains("cloudbox"), "names the machine: {text}");
         assert!(
             text.contains(&local.config.run.id().to_string()),
             "names the run: {text}"

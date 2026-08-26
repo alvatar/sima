@@ -29,7 +29,7 @@ const FLEET_BLOCKS: [&str; 7] = [
     "[host.gpubox]",
     "[host_class.lab]",
     "[host_class.oldlab]",
-    "[host.slingshot]",
+    "[host.cloudbox]",
     "[host_class.rtx4090]",
     "[fleet]",
     "[budget]",
@@ -232,7 +232,7 @@ fn the_shipped_search_config_loads_with_its_whole_fleet() -> Result<()> {
         .iter()
         .fold(text, |text, header| uncomment_block(&text, header));
     let loaded = load_example_variant(EXAMPLE, &text)?;
-    assert_eq!(loaded.orchestrator.migrate.as_deref(), Some("slingshot"));
+    assert_eq!(loaded.orchestrator.migrate.as_deref(), Some("cloudbox"));
     assert_eq!(loaded.fleet.members, ["gpubox", "lab", "rtx4090"]);
     assert_eq!(loaded.budget.max_spend, Some(Cost(20_000_000)));
     // The example ships the ceiling at 0, which states none at all.
@@ -241,7 +241,7 @@ fn the_shipped_search_config_loads_with_its_whole_fleet() -> Result<()> {
     // classes, owned and rented among them.
     assert_eq!(
         loaded.hosts.keys().collect::<Vec<_>>(),
-        ["gpubox", "slingshot"]
+        ["cloudbox", "gpubox"]
     );
     assert_eq!(
         loaded.host_classes.keys().collect::<Vec<_>>(),

@@ -539,9 +539,9 @@ pub(crate) fn config_text(machine: &str, root: &str, bounds: &str) -> String {
 
         [orchestrator]
         workers = 1
-        migrate = "slingshot"
+        migrate = "cloudbox"
 
-        [host.slingshot]
+        [host.cloudbox]
         root = {root:?}
         binary = "/bin/true"
         {machine}

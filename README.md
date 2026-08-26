@@ -44,7 +44,7 @@ beyond it as an elastic, heterogeneous extension.
   uses the orchestrator alone and `sima run --fleet` adds every member, so
   declaring a machine says a run *may* use it and the invocation says it does.
   Worker faults converge through idempotent retry.
-- **Slingshot a run.** Start a search on the laptop, interrupt it, and
+- **Migrate a run.** Start a search on the laptop, interrupt it, and
   `sima migrate` moves the whole run — its store and its orchestrator — onto the
   machine `[orchestrator].migrate` names, resumes it there, streams its events
   back, and brings the results home. A have/want store sync transfers exactly

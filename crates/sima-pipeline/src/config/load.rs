@@ -1147,8 +1147,8 @@ mod tests {
 
     #[test]
     fn a_rented_host_resolves_its_specification_with_defaults() -> Result<()> {
-        let text = format!("{BASE}\n[host.slingshot]\nprovider = \"vast\"\n");
-        let host = host_of(&text, "slingshot");
+        let text = format!("{BASE}\n[host.cloudbox]\nprovider = \"vast\"\n");
+        let host = host_of(&text, "cloudbox");
         let HostForm::Rented(rented) = &host.form else {
             panic!("expected a rented machine");
         };
@@ -1167,14 +1167,14 @@ mod tests {
     fn a_rented_host_resolves_every_constraint_it_names() -> Result<()> {
         let loaded = load_text(&format!(
             r#"{BASE}
-            [host.slingshot]
+            [host.cloudbox]
             provider = "vast"
             disk_gb = 64
             image = "ghcr.io/example/worker:pinned"
             ready_timeout_ms = 120000
             ready_poll_ms = 2000
 
-            [host.slingshot.constraints]
+            [host.cloudbox.constraints]
             gpu_models = ["RTX 4090"]
             min_gpu_count = 1
             min_vram_mb = 16000
@@ -1185,7 +1185,7 @@ mod tests {
             min_bandwidth_mbps = 100
             "#
         ))?;
-        let HostForm::Rented(rented) = &loaded.hosts["slingshot"].form else {
+        let HostForm::Rented(rented) = &loaded.hosts["cloudbox"].form else {
             panic!("expected a rented machine");
         };
         assert_eq!(rented.image, "ghcr.io/example/worker:pinned");
@@ -1232,7 +1232,7 @@ mod tests {
 
     #[test]
     fn an_unknown_provider_is_rejected_naming_it() {
-        let text = format!("{BASE}\n[host.slingshot]\nprovider = \"aws\"\n");
+        let text = format!("{BASE}\n[host.cloudbox]\nprovider = \"aws\"\n");
         assert!(rejection(&text).contains("aws"));
     }
 
@@ -1251,7 +1251,7 @@ mod tests {
             "run_args = [\"--gpus\", \"all\"]",
             "workers = 4",
         ] {
-            let text = format!("{BASE}\n[host.slingshot]\nprovider = \"stub\"\n{key}\n");
+            let text = format!("{BASE}\n[host.cloudbox]\nprovider = \"stub\"\n{key}\n");
             let message = rejection(&text);
             let name = key.split(' ').next().expect("the key name");
             assert!(message.contains(name), "names the key: {message}");
@@ -1259,8 +1259,8 @@ mod tests {
         }
         // A device table is the same rejection, written as its own table.
         let text = format!(
-            "{BASE}\n[host.slingshot]\nprovider = \"stub\"\n\
-             [[host.slingshot.device]]\nselect = \"nvidia\"\nworkers = 1\n"
+            "{BASE}\n[host.cloudbox]\nprovider = \"stub\"\n\
+             [[host.cloudbox.device]]\nselect = \"nvidia\"\nworkers = 1\n"
         );
         let message = rejection(&text);
         assert!(message.contains("device"), "names the key: {message}");
@@ -1299,7 +1299,7 @@ mod tests {
 
     #[test]
     fn fill_on_a_rented_host_is_rejected_as_a_class_key() {
-        let text = format!("{BASE}\n[host.slingshot]\nprovider = \"stub\"\nfill = \"strict\"\n");
+        let text = format!("{BASE}\n[host.cloudbox]\nprovider = \"stub\"\nfill = \"strict\"\n");
         let message = rejection(&text);
         assert!(message.contains("fill"), "{message}");
         assert!(message.contains("class"), "{message}");
@@ -1319,8 +1319,8 @@ mod tests {
     fn non_finite_or_negative_money_is_rejected_naming_the_key() {
         for value in ["-0.5", "nan", "inf"] {
             let text = format!(
-                "{BASE}\n[host.slingshot]\nprovider = \"stub\"\n\
-                 [host.slingshot.constraints]\nmax_price_usd_hour = {value}\n"
+                "{BASE}\n[host.cloudbox]\nprovider = \"stub\"\n\
+                 [host.cloudbox.constraints]\nmax_price_usd_hour = {value}\n"
             );
             assert!(rejection(&text).contains("max_price_usd_hour"), "{value}");
         }
@@ -1538,10 +1538,10 @@ mod tests {
     #[test]
     fn migrate_names_a_declared_host() -> Result<()> {
         let loaded = load_text(&migrating(
-            "slingshot",
-            "[host.slingshot]\nprovider = \"stub\"\n",
+            "cloudbox",
+            "[host.cloudbox]\nprovider = \"stub\"\n",
         ))?;
-        assert_eq!(loaded.orchestrator.migrate.as_deref(), Some("slingshot"));
+        assert_eq!(loaded.orchestrator.migrate.as_deref(), Some("cloudbox"));
         Ok(())
     }
 
@@ -1557,8 +1557,8 @@ mod tests {
 
     #[test]
     fn migrate_naming_nothing_declared_is_rejected() {
-        let message = rejection(&migrating("slingshot", ""));
-        assert!(message.contains("slingshot"), "{message}");
+        let message = rejection(&migrating("cloudbox", ""));
+        assert!(message.contains("cloudbox"), "{message}");
         assert!(message.contains("host"), "{message}");
     }
 

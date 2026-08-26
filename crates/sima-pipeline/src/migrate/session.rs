@@ -884,7 +884,7 @@ mod tests {
         let (outcome, _) = session_over(&local, &far, None, &AtomicBool::new(false));
         let error = outcome.expect_err("a run that never journaled cannot be followed");
         let text = error.to_string();
-        assert!(text.contains("slingshot"), "names the machine: {text}");
+        assert!(text.contains("cloudbox"), "names the machine: {text}");
         assert!(
             text.contains("install script install.sh exited"),
             "carries the far run's own words: {text}"
@@ -916,7 +916,7 @@ mod tests {
         let text = outcome
             .expect_err("a stale finalization is not this migration's outcome")
             .to_string();
-        assert!(text.contains("slingshot"), "names the machine: {text}");
+        assert!(text.contains("cloudbox"), "names the machine: {text}");
         assert!(
             text.contains("install script install.sh exited"),
             "carries the far run's own words: {text}"
@@ -966,7 +966,7 @@ mod tests {
         let text = outcome
             .expect_err("a run that never journaled cannot be followed")
             .to_string();
-        assert!(text.contains("slingshot"), "{text}");
+        assert!(text.contains("cloudbox"), "{text}");
         assert!(text.contains("log is empty"), "{text}");
         Ok(())
     }
@@ -1262,7 +1262,7 @@ mod tests {
             outcome?,
             MigrateOutcome::Detached {
                 run,
-                machine: "slingshot".to_string(),
+                machine: "cloudbox".to_string(),
             },
             "letting go is its own outcome, and it names where the run is"
         );
@@ -1305,7 +1305,7 @@ mod tests {
         let run = local.config.run.id();
         let lock = local.store.acquire_run_lock(&run)?;
         let provider = marketplace();
-        let HostForm::Rented(spec) = &local.config.hosts["slingshot"].form else {
+        let HostForm::Rented(spec) = &local.config.hosts["cloudbox"].form else {
             panic!("the fixture declares a rented machine");
         };
 
@@ -1343,7 +1343,7 @@ mod tests {
             outcome?,
             MigrateOutcome::Detached {
                 run,
-                machine: "slingshot".to_string(),
+                machine: "cloudbox".to_string(),
             }
         );
         Ok(())
@@ -1438,7 +1438,7 @@ mod tests {
         // The graceful path was tried and reported before anything harder was
         // reached for.
         let report = reported(&records);
-        assert!(report.contains("slingshot"), "names the machine: {report}");
+        assert!(report.contains("cloudbox"), "names the machine: {report}");
         assert!(report.contains("did not exit"), "{report}");
 
         let steps = far.steps();
@@ -1474,7 +1474,7 @@ mod tests {
         let (outcome, records) = session_over(&local, &far, None, &AtomicBool::new(false));
         let error = outcome.expect_err("a far run that will not end fails the migration");
         let text = error.to_string();
-        assert!(text.contains("slingshot"), "names the machine: {text}");
+        assert!(text.contains("cloudbox"), "names the machine: {text}");
         assert!(text.contains(&PID.to_string()), "names the pid: {text}");
         assert!(reported(&records).contains("did not exit"));
         assert!(
@@ -1756,7 +1756,7 @@ mod tests {
             created_ms: 1_700_000_000_000,
         })?;
 
-        let HostForm::Rented(spec) = &local.config.hosts["slingshot"].form else {
+        let HostForm::Rented(spec) = &local.config.hosts["cloudbox"].form else {
             panic!("the fixture declares a rented machine");
         };
         let guard = hold(

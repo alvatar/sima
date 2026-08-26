@@ -12,14 +12,14 @@ govern it are stated first.
 sima runs in three execution modes:
 
 - **local** — one machine runs the search end to end.
-- **slingshot** — a local process dispatches execution to a more powerful
-  remote machine and collects the results.
-- **distributed** — many machines run many experiments together.
+- **migrate** — the run moves onto a more powerful machine, computes there,
+  and its results come home.
+- **fleet** — many machines lend workers to one search driven from the
+  operator's machine.
 
-Local is implemented first. The store and identity model are designed so
-slingshot and distributed add transport over the same objects, not new
-semantics: a result computed on any machine carries the same content address
-and commits to the same catalog.
+The store and identity model make the remote modes transport over the same
+objects, not new semantics: a result computed on any machine carries the
+same content address and commits to the same catalog.
 
 ## RULES
 
@@ -2487,6 +2487,17 @@ missing its `VAST_API_KEY` fails before any store mutation — and only when the
 invocation asked for the fleet at all. The `stub`
 provider is an in-process marketplace, reached by spawning workers on this
 machine, so the whole spine exercises with no network.
+
+**State travels with the task; machines share nothing.** A leased task
+carries its input-state and resume bytes in the dispatch itself, and its
+result returns home with the commit, so the store remains the orchestrator's
+alone: fleet machines hold no store and never address one another. The
+topology is hub and spoke. A ready task binds to no machine — a chain's next
+segment runs wherever a free worker of its device class is — and a chain
+that hops machines costs nothing extra, because every task's input leaves
+the home store the same way regardless of where its predecessor computed.
+The per-task wire cost is proportional to the domain's state size and to
+nothing else.
 
 **A backend says how its machines are reached.** `Reachability` is `Ssh` or
 `Local`, defaulted to `Ssh` on the provider contract because a control plane

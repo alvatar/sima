@@ -1,5 +1,5 @@
 [run]
-root_seed = 7
+root_seed = 1
 format = "example.stepper.v1"
 segments = 3
 
@@ -51,6 +51,22 @@ binary   = "sima"     # the sima binary there (on the image's PATH)
 [host.cloudbox.constraints]
 max_price_usd_hour = 0.20   # take no offer above this
 verified_only      = true   # verified datacenters only
+
+# Two machines rented to one specification, as cheap as the market offers.
+[host_class.cheap]
+provider = "vast"
+count    = 2
+disk_gb  = 32
+
+[host_class.cheap.constraints]
+max_price_usd_hour = 0.10   # cheapest end of the market
+verified_only      = true
+
+# The machines `sima run --fleet` draws workers from: store and orchestrator
+# stay here, members only lend workers. Without the flag no member is engaged
+# and no rental key is read.
+[fleet]
+members = ["cheap"]
 
 [budget]
 max_spend_usd     = 2.0     # wind the run down if rental spend reaches this

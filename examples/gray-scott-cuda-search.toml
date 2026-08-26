@@ -59,7 +59,7 @@ max_attempts = 3
 # in which case they run in a container here.
 [orchestrator]
 workers = 2
-# migrate  = "slingshot"                  # the host `sima migrate` moves the run onto
+# migrate  = "cloudbox"                  # the host `sima migrate` moves the run onto
 # image    = "localhost/sima:latest"      # run this machine's workers in a container
 # runtime  = "podman"                     # docker | podman; default docker, needs an image
 # run_args = ["--gpus", "all"]            # verbatim container-run flags, needs an image
@@ -105,13 +105,13 @@ workers = 2
 # asks for it and its devices come from the enumeration probe. The provider's
 # API key is read from the environment (VAST_API_KEY), never from config, which
 # is content-addressed.
-# [host.slingshot]
+# [host.cloudbox]
 # provider         = "vast"               # vast | stub (stub: in-process, for tests)
 # image            = "ghcr.io/alvatar/sima:latest"          # default as shown
 # disk_gb          = 64                   # default 32
 # ready_timeout_ms = 600000               # default as shown
 # ready_poll_ms    = 5000                 # default as shown
-# [host.slingshot.constraints]            # every key optional
+# [host.cloudbox.constraints]            # every key optional
 # gpu_models         = ["RTX 4090"]
 # min_gpu_count      = 1
 # min_vram_mb        = 16000
