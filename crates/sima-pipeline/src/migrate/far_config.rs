@@ -28,6 +28,7 @@
 //! while driven from here executes on the destination alone once moved.
 
 use std::collections::BTreeMap;
+use std::path::Path;
 
 use sima_core::{Error, Hash, Result};
 use sima_domains::devices::DeviceInfo;
@@ -94,6 +95,18 @@ impl FarLayout {
     /// The run the far side is driving, which addresses its store.
     pub(crate) fn run(&self) -> &RunId {
         &self.run
+    }
+
+    /// The far run's journal, inside the far store.
+    ///
+    /// Where a journal sits under a store root is the store's layout, so the
+    /// path is derived through [`sima_store::journal_path`] rather than
+    /// restated here. The join is textual: the far root is a path on the
+    /// destination, which only the far shell resolves.
+    pub(crate) fn journal(&self) -> String {
+        sima_store::journal_path(Path::new(&self.store()), &self.run)
+            .to_string_lossy()
+            .into_owned()
     }
 
     /// The far-side `sima run` process id, what a second invocation reads to
@@ -560,6 +573,24 @@ mod tests {
         assert_eq!(layout.config(), format!("~/sima-runs/{run}/sima.toml"));
         assert_eq!(layout.pid(), format!("~/sima-runs/{run}/run.pid"));
         assert_eq!(layout.log(), format!("~/sima-runs/{run}/run.log"));
+    }
+
+    #[test]
+    fn the_far_journal_sits_where_the_store_s_own_layout_puts_it() {
+        // The probe that tells an absent journal from a fault reading one has
+        // to look where the far store actually keeps it, so the path is the
+        // store's layout applied to the far root — never a second spelling of
+        // it here.
+        let run = RunId::from_hash(sima_core::hash_bytes(b"a run"));
+        let layout = FarLayout::new("~/sima-runs", &run);
+        assert_eq!(
+            layout.journal(),
+            format!("{}/runs/{run}/journal", layout.store())
+        );
+        assert_eq!(
+            layout.journal(),
+            format!("~/sima-runs/{run}/store/runs/{run}/journal")
+        );
     }
 
     #[test]

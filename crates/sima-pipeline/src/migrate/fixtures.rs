@@ -63,6 +63,20 @@ pub(crate) enum Scope {
     Referenced,
 }
 
+/// What the far store's journal is, which the probe and the read of it
+/// answer between them.
+#[derive(Debug, Clone)]
+pub(crate) enum FarJournal {
+    /// No journal file at all: nothing has ever journaled on that
+    /// destination.
+    Absent,
+    /// A journal holding these records, served in full.
+    Holding(Vec<Record>),
+    /// A journal that is there and cannot be read: the far side answers for
+    /// itself with these words. Never an absence.
+    Faulting(String),
+}
+
 /// What ends a scripted far run, which is what the wind-down's escalation
 /// is measured against.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -111,8 +125,8 @@ pub(crate) struct Scripted<'a> {
     pub(crate) polls: Arc<Mutex<VecDeque<Vec<Record>>>>,
     /// The journal the far store already holds: what a follow opened before
     /// this run starts replays, and what a one-shot read of the far side
-    /// answers with. Empty for a destination no run has ever journaled on.
-    existing: Mutex<Vec<Record>>,
+    /// answers with. Absent for a destination no run has ever journaled on.
+    journal: Mutex<FarJournal>,
     /// The far side's own store and the run it holds, when a sync is to be
     /// performed for real rather than recorded and skipped.
     far: Option<(&'a Store, &'a LoadedConfig)>,
@@ -155,7 +169,7 @@ impl<'a> Scripted<'a> {
             unplaced: false,
             deaf: Mutex::new(0),
             polls: Arc::new(Mutex::new(VecDeque::new())),
-            existing: Mutex::new(Vec::new()),
+            journal: Mutex::new(FarJournal::Absent),
             far: None,
             steps: Mutex::new(Vec::new()),
             placed: Mutex::new(None),
@@ -250,8 +264,24 @@ impl<'a> Scripted<'a> {
     /// run starts replays, what a run that ended on this destination left
     /// behind, and what a recall reads to learn how it ended.
     pub(crate) fn over_an_existing_journal(self, records: Vec<Record>) -> Scripted<'a> {
-        *self.existing.lock().expect("the journal lock") = records;
+        *self.journal.lock().expect("the journal lock") = FarJournal::Holding(records);
         self
+    }
+
+    /// A far side holding a journal it cannot serve, answering the read with
+    /// `words` of its own.
+    pub(crate) fn faulting_on_the_journal_read(self, words: &str) -> Scripted<'a> {
+        *self.journal.lock().expect("the journal lock") = FarJournal::Faulting(words.to_string());
+        self
+    }
+
+    /// The records the far journal holds, which a follow replays before
+    /// anything live. A journal that is absent or unreadable replays nothing.
+    fn journaled_records(&self) -> Vec<Record> {
+        match &*self.journal.lock().expect("the journal lock") {
+            FarJournal::Holding(records) => records.clone(),
+            FarJournal::Absent | FarJournal::Faulting(_) => Vec::new(),
+        }
     }
 
     /// The records the follow delivers, one batch per poll, from the second
@@ -372,12 +402,16 @@ impl FarSide for Scripted<'_> {
         }
     }
 
-    fn snapshot(&self) -> Result<Vec<Record>> {
+    fn snapshot(&self) -> Result<Option<Vec<Record>>> {
         self.record(Step::Snapshot);
         // The far store's journal as it stands, which is what `follow-serve
-        // --once` writes out. A far side that journaled nothing answers with
-        // nothing, as its refusal reads from here.
-        Ok(self.existing.lock().expect("the journal lock").clone())
+        // --once` writes out — and, for a journal the far side holds and
+        // cannot serve, the words it answers with instead.
+        match &*self.journal.lock().expect("the journal lock") {
+            FarJournal::Absent => Ok(None),
+            FarJournal::Holding(records) => Ok(Some(records.clone())),
+            FarJournal::Faulting(words) => Err(Error::Reported(words.to_string())),
+        }
     }
 
     fn log_tail(&self) -> Result<String> {
@@ -391,7 +425,7 @@ impl FarSide for Scripted<'_> {
         // the whole of what this side can learn from it. The far journal holds
         // something when an earlier session left records or a run is there
         // writing its own; a run that died while loading left neither.
-        let existing = self.existing.lock().expect("the journal lock");
+        let existing = self.journaled_records();
         let unjournaled = existing.is_empty() && self.alive.lock().expect("the pid lock").is_none();
         let mut refusals = self.follow_refusals.lock().expect("the follow lock");
         if unjournaled || *refusals > 0 {
@@ -407,7 +441,7 @@ impl FarSide for Scripted<'_> {
                 workers: 1,
             },
             polls: Arc::clone(&self.polls),
-            history: Some(existing.clone()),
+            history: Some(existing),
             alive: Arc::clone(&self.alive),
             ending: self.ending,
             vanishing: self.vanishing,

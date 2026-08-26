@@ -98,16 +98,21 @@ pub(crate) trait FarSide {
     /// Opens a live follow of the far run.
     fn follow(&self) -> Result<Box<dyn RunFeed>>;
 
-    /// The far run's journal, read once and in full.
+    /// The far run's journal, read once and in full — or `None` when the far
+    /// store holds no journal at all.
     ///
     /// A recall follows nothing, so this is the only way what the far run ended
     /// as reaches this side: a definitive failure is written there and travels
     /// no other way, since journals do not sync.
     ///
-    /// A far side with no journal to serve — a run that died before writing a
-    /// line, a directory holding no store yet — answers with no records, which
-    /// is an absence rather than a fault.
-    fn snapshot(&self) -> Result<Vec<Record>>;
+    /// **Absence is a filesystem fact, never an inference from a fault.** The
+    /// journal file is probed for before it is read, and that probe alone
+    /// answers `None` — a run that died before writing a line, a directory
+    /// holding no store yet. Everything else fails: a far side that holds a
+    /// journal and answers the read with a fault said nothing about how the run
+    /// ended, and taking that for an empty journal would bring a run that
+    /// cannot complete home as one with work still to do.
+    fn snapshot(&self) -> Result<Option<Vec<Record>>>;
 
     /// The last lines of the far run's log.
     ///
@@ -243,6 +248,22 @@ impl Remote {
         }
         String::from_utf8(output.stdout)
             .map_err(|e| Error::Transport(format!("output from {label} is not UTF-8: {e}")))
+    }
+
+    /// Whether the far store holds this run's journal, which is what the
+    /// one-shot read needs there to be.
+    ///
+    /// The path is the store's own layout applied to the far store root, so
+    /// nothing here restates where a journal sits.
+    fn journaled(&self) -> Result<bool> {
+        // As with the directory `placed` probes for, the file's absence is an
+        // answer rather than a failure, so the script exits zero either way and
+        // its output is the whole of what it said.
+        let stdout = self.shell(&format!(
+            "[ -f {journal} ] && echo yes\nexit 0\n",
+            journal = self.layout.journal(),
+        ))?;
+        Ok(stdout.trim() == "yes")
     }
 }
 
@@ -393,18 +414,17 @@ impl FarSide for Remote {
         Ok(Box::new(RemoteFeed::open_over(&argv, &self.reach.label())?))
     }
 
-    fn snapshot(&self) -> Result<Vec<Record>> {
-        let argv = self.reach.follow_serve_once_argv(&self.layout.config());
-        match snapshot_over_argv(&argv, &self.reach.label()) {
-            Ok((_, records)) => Ok(records),
-            // A far side that answered for itself has no journal to serve: a
-            // run never started in the store there, a config that does not
-            // load. There is no state to read, which is what no records says;
-            // a destination that could not be reached at all fails instead,
-            // and the pull behind this would fail on it too.
-            Err(Error::Reported(_)) => Ok(Vec::new()),
-            Err(error) => Err(error),
+    fn snapshot(&self) -> Result<Option<Vec<Record>>> {
+        // The probe first: a journal file that is not there is the one absence,
+        // so every way the read below can fail is a failure — including a far
+        // side answering for itself, which says nothing about how the run
+        // ended.
+        if !self.journaled()? {
+            return Ok(None);
         }
+        let argv = self.reach.follow_serve_once_argv(&self.layout.config());
+        let (_, records) = snapshot_over_argv(&argv, &self.reach.label())?;
+        Ok(Some(records))
     }
 
     fn log_tail(&self) -> Result<String> {
@@ -524,6 +544,104 @@ mod tests {
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
             .expect("make it executable");
         path
+    }
+
+    /// A stand-in for the far side's `sima` that answers a follow with one
+    /// `Fault` frame and nothing else, which is how a far side reports for
+    /// itself: a config that does not load, a store that will not open, a
+    /// journal that will not parse.
+    fn faulting_binary(dir: &Path, words: &str) -> std::path::PathBuf {
+        answering_binary(dir, &[crate::feed::FollowFrame::Fault(words.to_string())])
+    }
+
+    /// A stand-in that answers a one-shot follow the way a far side serving a
+    /// journal does: the handshake, the journal's lines — none here — and the
+    /// end of the stream.
+    fn serving_binary(dir: &Path) -> std::path::PathBuf {
+        answering_binary(
+            dir,
+            &[
+                crate::feed::FollowFrame::Hello {
+                    protocol: crate::feed::FOLLOW_PROTOCOL_VERSION,
+                    run: run(),
+                    format: FormatId::new("stub.v1").expect("format id"),
+                    workers: 1,
+                    holder: None,
+                },
+                crate::feed::FollowFrame::Records(Vec::new()),
+                crate::feed::FollowFrame::Complete,
+            ],
+        )
+    }
+
+    /// A stand-in for the far side's `sima` that writes `frames` and exits,
+    /// which is the whole of what a follow reads from it.
+    fn answering_binary(dir: &Path, frames: &[crate::feed::FollowFrame]) -> std::path::PathBuf {
+        let path = dir.join("frames");
+        let mut bytes = Vec::new();
+        for frame in frames {
+            sima_core::write_frame(&mut bytes, &frame.encode()).expect("frame the answer");
+        }
+        std::fs::write(&path, bytes).expect("write the frames");
+        let binary = dir.join("sima");
+        std::fs::write(&binary, format!("#!/bin/sh\nexec cat {}\n", path.display()))
+            .expect("write the stand-in");
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755))
+            .expect("make it executable");
+        binary
+    }
+
+    /// Writes an empty journal where the far store's own layout puts this
+    /// run's, which is what a destination that has journaled looks like to the
+    /// probe.
+    fn far_journal(far: &Remote) {
+        let path = sima_store::journal_path(Path::new(&far.layout.store()), &run());
+        std::fs::create_dir_all(path.parent().expect("the run's directory"))
+            .expect("the store tree");
+        std::fs::write(&path, "").expect("write the journal");
+    }
+
+    #[test]
+    fn a_journal_that_is_not_there_is_an_absence_and_one_that_is_is_read() -> Result<()> {
+        // The two answers the probe decides between, over the path the far
+        // store's own layout fixes: no file at all is the absence a wind-back
+        // settles over, and a file is a read whose records — none here — are
+        // what the far run journaled.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let binary = serving_binary(dir.path());
+        let far = here(dir.path(), &binary);
+        far.place("[run]\nroot_seed = 1\n")?;
+
+        assert!(!far.journaled()?, "nothing has journaled there");
+        assert_eq!(far.snapshot()?, None, "so there is nothing to read");
+        far_journal(&far);
+        assert!(far.journaled()?, "the journal is where the layout puts it");
+        assert_eq!(far.snapshot()?, Some(Vec::new()), "and it is read");
+        Ok(())
+    }
+
+    #[test]
+    fn a_fault_over_an_existing_journal_is_a_failure_rather_than_no_records() -> Result<()> {
+        // Absence is a filesystem fact, and a fault is not one: the far side
+        // holds a journal and could not serve it, so what the run ended as is
+        // exactly what it did not say. Reading that as an empty journal would
+        // bring a run that failed definitively home as resumable.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let binary = faulting_binary(
+            dir.path(),
+            "validation error: the store there will not open",
+        );
+        let far = here(dir.path(), &binary);
+        far.place("[run]\nroot_seed = 1\n")?;
+        far_journal(&far);
+
+        let error = far.snapshot().expect_err("the journal could not be read");
+        assert!(
+            error.to_string().contains("the store there will not open"),
+            "the far side's own words come home: {error}"
+        );
+        Ok(())
     }
 
     /// The arguments the recording stand-in was started with, waited for: the

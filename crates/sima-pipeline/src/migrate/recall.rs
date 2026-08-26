@@ -285,6 +285,35 @@ mod tests {
     }
 
     #[test]
+    fn a_fault_reading_the_far_journal_fails_the_recall_naming_the_read() -> Result<()> {
+        // Absence is a filesystem fact, never an inference from a fault: a far
+        // side that holds a journal and could not serve it said nothing about
+        // what the run ended as, and reading that as an empty journal would
+        // bring a run that failed definitively home as one with work still to
+        // do.
+        let local = local(RENTED, PROMPT, Some(3));
+        let far = Scripted::new().faulting_on_the_journal_read("the store there will not open");
+
+        let (outcome, _) = recall_over(&local, &far, None);
+        let text = outcome
+            .expect_err("the far journal could not be read")
+            .to_string();
+        assert!(text.contains("slingshot"), "names the machine: {text}");
+        assert!(text.contains("journal"), "names the read: {text}");
+        assert!(
+            text.contains("the store there will not open"),
+            "carries the far side's own words: {text}"
+        );
+        assert_eq!(
+            far.steps(),
+            [Step::Placed, Step::Driving, Step::Snapshot],
+            "and nothing is pulled or settled over a read that failed: {:?}",
+            far.steps()
+        );
+        Ok(())
+    }
+
+    #[test]
     fn a_recall_of_a_far_run_that_ended_well_settles_over_what_came_home() -> Result<()> {
         // The counterpart, and what the journal read must not disturb: a far
         // run whose journal ends in its finalization comes home on the strength

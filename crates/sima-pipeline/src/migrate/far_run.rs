@@ -217,12 +217,19 @@ impl<'a> FarRun<'a> {
     /// The state the far run's own journal projects, over the records the far
     /// side serves in one read.
     ///
-    /// A far side with no journal to serve reports nothing, which projects a
-    /// run still in progress: what the store holds after the pull is then the
-    /// whole of what decides the outcome.
+    /// A far store holding no journal projects what an empty one does — a run
+    /// still in progress — so what the store holds after the pull is then the
+    /// whole of what decides the outcome. A read that faulted is not that: the
+    /// far side said nothing about how its run ended, and the failure names the
+    /// machine and the read and carries the far side's own words.
     fn far_state(&self) -> Result<RunState> {
-        let records = self.far.snapshot()?;
-        Ok(status_records(self.config.run.id(), &records).state)
+        let records = self.far.snapshot().map_err(|error| {
+            Error::Validation(format!(
+                "the journal of the run on {:?} could not be read: {error}",
+                self.destination.name
+            ))
+        })?;
+        Ok(status_records(self.config.run.id(), &records.unwrap_or_default()).state)
     }
 
     /// Step 10: everything the far side's records reference, which is what
