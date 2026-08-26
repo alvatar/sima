@@ -26,24 +26,18 @@ pub fn own_process_group(command: &mut Command) -> &mut Command {
     command
 }
 
-#[cfg(test)]
+// What the rule states holds on unix and nowhere else, so what exercises it is
+// compiled there: everything below asks the system for a process group.
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use std::process::Stdio;
 
-    /// The process group `pid` belongs to, from the process table.
-    /// `/proc/<pid>/stat` frames the command name in parentheses; the fields
-    /// after the closing parenthesis are the state, the parent pid, and the
-    /// group id.
+    /// The process group `pid` belongs to, as the system reports it.
     fn group_of(pid: u32) -> u32 {
-        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).expect("read the stat");
-        let close = stat.rfind(')').expect("the command name is framed");
-        stat[close + 1..]
-            .split_whitespace()
-            .nth(2)
-            .expect("the group id follows the parent pid")
-            .parse()
-            .expect("the group id is a number")
+        let group = unsafe { libc::getpgid(pid as libc::pid_t) };
+        assert!(group >= 0, "the process table knows pid {pid}");
+        group as u32
     }
 
     /// Spawns a child that stays up long enough to be looked at, optionally

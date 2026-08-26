@@ -30,9 +30,13 @@ pub struct RunSummary {
 
 /// Every run in the store at `root`, by id.
 ///
-/// A store root that does not exist is [`Error::Validation`] before anything
-/// touches the disk, since opening a store creates its skeleton and a query
-/// must not. A run registered but never driven has no journal and no records,
+/// A store root that is not there at all is [`Error::Validation`] before
+/// anything touches the disk, since opening a store creates its skeleton and a
+/// query for a store nobody drove in must not conjure one. A directory that is
+/// there and holds no store is opened like any other, and the skeleton that
+/// writes is the same one every verb reaching that path writes.
+///
+/// A run registered but never driven has no journal and no records,
 /// so it summarizes as in progress with an empty ledger — which is what it is.
 pub fn runs(root: &Path) -> Result<Vec<RunSummary>> {
     if !root.is_dir() {

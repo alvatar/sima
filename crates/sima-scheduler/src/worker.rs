@@ -727,49 +727,6 @@ fn task_fault(ctx: &WorkerContext<'_>, task: String, attempt: u32, key: TaskKey,
 
 #[cfg(test)]
 mod tests {
-
-    /// A base instant every liveness test measures from.
-    fn moment() -> Instant {
-        Instant::now()
-    }
-
-    #[test]
-    fn an_attempt_says_it_is_alive_at_its_first_save() {
-        // A task that saves once and then computes for an hour has said the
-        // one thing there was to say.
-        let mut alive = Liveness::new();
-        assert!(alive.due(moment()));
-    }
-
-    #[test]
-    fn a_task_saving_faster_than_the_interval_says_so_once_per_interval() {
-        // The cadence is the domain's business and can be a second or less;
-        // what reaches the terminal is on the scale a person reads at.
-        let start = moment();
-        let mut alive = Liveness::new();
-        assert!(alive.due(start));
-        let mut said = 1;
-        // Every second for four intervals: the first of each interval says so
-        // and the rest are dropped.
-        for second in 1..=(4 * LIVENESS_INTERVAL.as_secs()) {
-            if alive.due(start + Duration::from_secs(second)) {
-                said += 1;
-            }
-        }
-        assert_eq!(said, 5, "one at the start and one per interval since");
-    }
-
-    #[test]
-    fn a_task_saving_slower_than_the_interval_says_so_at_every_save() {
-        let start = moment();
-        let mut alive = Liveness::new();
-        for save in 0..4 {
-            assert!(
-                alive.due(start + LIVENESS_INTERVAL * save * 2),
-                "save {save} is past the interval"
-            );
-        }
-    }
     use crate::coordinator::RunState;
     use sima_core::Codec;
     use std::num::NonZeroU64;
@@ -1643,5 +1600,50 @@ mod tests {
         assert_eq!(off.state_artifact()?, on.state_artifact()?);
         assert_eq!(off.state_artifact()?, resumed.state_artifact()?);
         Ok(())
+    }
+
+    // ---- The rate limit on an attempt's liveness ----
+
+    /// A base instant every liveness test measures from.
+    fn moment() -> Instant {
+        Instant::now()
+    }
+
+    #[test]
+    fn an_attempt_says_it_is_alive_at_its_first_save() {
+        // A task that saves once and then computes for an hour has said the
+        // one thing there was to say.
+        let mut alive = Liveness::new();
+        assert!(alive.due(moment()));
+    }
+
+    #[test]
+    fn a_task_saving_faster_than_the_interval_says_so_once_per_interval() {
+        // The cadence is the domain's business and can be a second or less;
+        // what reaches the terminal is on the scale a person reads at.
+        let start = moment();
+        let mut alive = Liveness::new();
+        assert!(alive.due(start));
+        let mut said = 1;
+        // Every second for four intervals: the first of each interval says so
+        // and the rest are dropped.
+        for second in 1..=(4 * LIVENESS_INTERVAL.as_secs()) {
+            if alive.due(start + Duration::from_secs(second)) {
+                said += 1;
+            }
+        }
+        assert_eq!(said, 5, "one at the start and one per interval since");
+    }
+
+    #[test]
+    fn a_task_saving_slower_than_the_interval_says_so_at_every_save() {
+        let start = moment();
+        let mut alive = Liveness::new();
+        for save in 0..4 {
+            assert!(
+                alive.due(start + LIVENESS_INTERVAL * save * 2),
+                "save {save} is past the interval"
+            );
+        }
     }
 }

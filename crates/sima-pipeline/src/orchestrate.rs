@@ -159,9 +159,6 @@ pub fn orchestrate(
     } else {
         None
     };
-    // The program reaches every machine of yours before any pool of one exists,
-    // so a pool is only ever built where a worker can actually be served.
-
     // Rentals are acquired under the held lock — each machine behind a teardown
     // guard held for the run's life. A strict-fill shortfall tears down whatever
     // was acquired and fails here, before any task runs.

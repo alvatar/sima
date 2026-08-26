@@ -211,8 +211,10 @@ pub enum Event {
     /// for a migration.
     SendingRun { member: String, objects: usize },
     /// The program the run's format is served by is being installed on the
-    /// machine. `member` names the fleet member installing it, and is empty
-    /// for a migration, whose destination installs it as its run loads.
+    /// machine. `member` names the machine installing it as the run addresses
+    /// it — a fleet member by its entry and index, a machine of yours by its
+    /// ssh destination — and is empty for a migration, whose destination
+    /// installs it as its run loads.
     InstallingProgram { member: String },
     /// The far `sima run` is being started on the destination, which is what
     /// the migration waits on until its first journal line arrives.
