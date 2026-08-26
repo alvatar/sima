@@ -602,6 +602,24 @@ mod tests {
     }
 
     #[test]
+    fn a_hello_from_the_build_before_this_protocol_is_refused_by_name() {
+        // The version is what a build whose journal events an older reader
+        // cannot parse moves, so v1 is a build this one cannot follow: it is
+        // refused at the handshake, naming both versions, rather than reaching
+        // the first records frame and failing there as corruption.
+        let bytes = stream_of(&[hello_at(1)]);
+        let Err(Error::Validation(message)) =
+            RemoteFeed::over(Stream::over(std::io::Cursor::new(bytes)))
+        else {
+            panic!("expected a validation error over a version gap");
+        };
+        assert!(
+            message.contains("v1") && message.contains(&format!("v{FOLLOW_PROTOCOL_VERSION}")),
+            "{message}"
+        );
+    }
+
+    #[test]
     fn a_first_frame_that_is_not_hello_is_an_error() {
         let bytes = stream_of(&[records_of("aa")]);
         assert!(RemoteFeed::over(Stream::over(std::io::Cursor::new(bytes))).is_err());

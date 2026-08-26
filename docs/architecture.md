@@ -3227,7 +3227,10 @@ canonical `Enc`/`Dec` with a leading tag, mirroring the worker protocol. The
 opening frame is a version-carrying handshake; a mismatch is refused by name
 rather than decoded, so two builds that disagree never interpret each other's
 bytes. Records travel as raw journal lines, so one parser and one torn-write
-rule serve both ends. A failure on the far side crosses as a fault frame
+rule serve both ends — which is why the version covers the journal's events as
+well as the frames: a reader that meets an event it does not know fails the
+whole stream as corruption, so a build that adds one moves the version and the
+handshake names the cause instead. A failure on the far side crosses as a fault frame
 carrying the text that machine rendered, and surfaces here unchanged: the
 machine that failed owns the classification.
 
