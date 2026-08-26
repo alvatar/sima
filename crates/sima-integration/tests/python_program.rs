@@ -20,6 +20,7 @@
 mod common;
 
 use std::io::{Read, Write};
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::sync::Once;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -287,6 +288,82 @@ fn expected_final(search: &Search) -> Vec<(u64, u64)> {
     let mut expected = search.expected_states();
     expected.sort_unstable();
     expected
+}
+
+#[test]
+fn a_terminal_interrupt_leaves_the_interpreter_no_signal_to_print_about() -> Result<()> {
+    // A terminal delivers Ctrl-C to every process in its foreground group, and
+    // the program serving this format is an interpreter: signalled directly, it
+    // raises `KeyboardInterrupt` and prints its traceback over whatever the
+    // operator was reading. sima is the one interrupt handler, so its children
+    // lead groups of their own and the program is ended by the wind-down, with
+    // nothing of its own to say.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let program = wrapper(dir.path(), &[]);
+    // Long enough that the signal lands while the program is computing, so
+    // what it does with a signal is what the test observes.
+    let search = Search {
+        count: 2,
+        steps: 400_000,
+        ..Search::new()
+    };
+    let config = loaded_text(dir.path(), "sima.toml", &search.text("./store", &program))?;
+    let path = dir.path().join("sima.toml");
+
+    let child = std::process::Command::new(common::built_binary("sima"))
+        .args(["run", path.to_str().expect("utf-8 path")])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        // A group of its own, so the signal below reaches the run and its
+        // children the way a terminal's does, and nothing of the suite's.
+        .process_group(0)
+        .spawn()
+        .expect("spawn sima run");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while !journal_events(&config)
+        .iter()
+        .any(|event| matches!(event, Event::Leased { .. }))
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the run leased a task before the interrupt"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    // A negative pid names the group, which is what a terminal signals.
+    assert_eq!(
+        unsafe { libc::kill(-(child.id() as libc::pid_t), libc::SIGINT) },
+        0,
+        "the run's process group was signalled"
+    );
+    let output = child.wait_with_output().expect("wait for sima run");
+    assert_eq!(
+        output.status.code(),
+        Some(130),
+        "the run wound itself down: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    // Neither on the terminal nor in the journal: the program's captured
+    // stderr is journaled as diagnostics, so a traceback would be recorded
+    // there even when nothing reached the terminal.
+    let terminal = String::from_utf8(output.stderr).expect("stderr is UTF-8");
+    let journaled: String = journal_events(&config)
+        .iter()
+        .filter_map(|event| match event {
+            Event::Diagnostic { message, .. } => Some(message.clone()),
+            _ => None,
+        })
+        .collect::<Vec<String>>()
+        .join("\n");
+    for said in ["Traceback", "KeyboardInterrupt"] {
+        assert!(
+            !terminal.contains(said),
+            "{said} on the terminal: {terminal}"
+        );
+        assert!(!journaled.contains(said), "{said} journaled: {journaled}");
+    }
+    Ok(())
 }
 
 #[test]

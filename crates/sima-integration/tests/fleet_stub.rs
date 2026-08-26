@@ -156,6 +156,71 @@ fn a_fleet_names_each_member_it_rents_before_that_machine_comes_up() -> Result<(
 }
 
 #[test]
+fn a_run_that_dies_acquiring_is_in_the_store_with_what_it_said() -> Result<()> {
+    // The run is registered before any machine is asked for, so what putting it
+    // on its machines takes is journaled where the work will be. A fleet that
+    // cannot be brought up therefore leaves a run in the store: no task ran, so
+    // it stands at nothing committed, and its journal holds what it said about
+    // the acquisition that failed.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let text = r#"
+        [run]
+        root_seed = 3
+        format = "stub.v1"
+
+        [run.generator]
+        id = "stub.v1"
+        behaviors = ["succeed", "succeed"]
+
+        [config]
+        store = "./store"
+        max_attempts = 3
+
+        [host_class.rented]
+        provider = "stub"
+        count = 1
+
+        [host_class.rented.constraints]
+        max_price_usd_hour = 0.01
+
+        [fleet]
+        members = ["rented"]
+    "#;
+    let config = loaded_text(dir.path(), "fleet.toml", text)?;
+    let error = orchestrate(
+        &config,
+        &RunControl::detached(),
+        Engagement::Fleet,
+        BinaryChange::Refuse,
+    )
+    .expect_err("no offer sits under a cent an hour");
+    assert!(
+        error.to_string().contains("no offer satisfies"),
+        "the market's own answer reaches the caller: {error}"
+    );
+
+    // What the store holds: the run, listed, in progress with an empty ledger.
+    let summaries = sima_pipeline::runs(&config.store)?;
+    let [summary] = summaries.as_slice() else {
+        panic!("one run was registered: {summaries:?}");
+    };
+    assert_eq!(summary.run, config.run.id());
+    assert_eq!((summary.tasks, summary.committed), (0, 0));
+    // And its journal holds the shortfall, so why there is nothing there is
+    // readable after the fact rather than only on the terminal that watched.
+    let events = journal_events(&config);
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            Event::Diagnostic { source, message, .. }
+                if source == "rental" && message.contains("rented[0] could not be brought up")
+        )),
+        "{events:?}"
+    );
+    Ok(())
+}
+
+#[test]
 fn the_ledger_holds_one_closed_entry_per_instance() -> Result<()> {
     let dir = tempfile::tempdir().expect("temp dir");
     let config = fleet_config(

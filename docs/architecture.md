@@ -412,10 +412,14 @@ names one of that store's runs directly, for the ones a config no longer names:
 a store accumulates the runs of every identity ever driven against it, and an
 edited seed leaves the previous run reachable by nothing else. Any unambiguous
 prefix addresses a run, as one does a task; an ambiguous one is refused naming
-every run it matched. `sima runs <store-dir>` is what lists them — one line per
-run, with its id, the state its journal projects, and its task ledger — and is
-the one read command that takes a store directory rather than a config, because
-what a store holds is precisely the question a config cannot ask. Both are run-grained and
+every run it matched, and the empty prefix — which begins every run — is
+refused before the store is searched. `sima runs <store-dir>` is what lists
+them — one line per run, with its id, the state its journal projects, and its
+task ledger — and is the one read command that takes a store directory rather
+than a config, because what a store holds is precisely the question a config
+cannot ask. A run is registered before any machine is asked for, so a fleet that
+never came up leaves a run in that listing: nothing committed, and a journal
+holding what it said about the acquisition that failed. Both are run-grained and
 reference-guarded, so the smallest thing either erases is a whole run's private
 objects. Expiry is the operator's act alone, as consolidation is: the store
 reads no clock.

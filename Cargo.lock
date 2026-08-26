@@ -1166,6 +1166,7 @@ dependencies = [
 name = "sima-integration"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "sima-contracts",
  "sima-core",
  "sima-domains",

@@ -1240,13 +1240,9 @@ fn a_terminal_interrupt_winds_the_run_down_without_killing_its_workers() {
     );
 }
 
-#[test]
-fn the_stream_shows_each_attempt_starting_and_the_task_staying_alive() {
-    // Between `started` and the first commit the terminal was silent for as
-    // long as a task takes, and a silent terminal reads the same whether the
-    // run is computing or wedged. An attempt says when it begins, and a task
-    // that checkpoints says so as it goes.
-    let dir = tempfile::tempdir().expect("temp dir");
+/// Two chains of two segments each, saving every 50 ms: four attempts, every
+/// one of them checkpointing while it computes.
+fn checkpointing_config(dir: &Path) -> PathBuf {
     let text = r#"
         [run]
         root_seed = 11
@@ -1265,8 +1261,24 @@ fn the_stream_shows_each_attempt_starting_and_the_task_staying_alive() {
         [orchestrator]
         workers = 2
     "#;
-    let config = common::write_config_text(dir.path(), "sima.toml", text);
+    common::write_config_text(dir, "sima.toml", text)
+}
+
+/// How long an attempt goes between saying it is alive, as
+/// `sima-scheduler`'s `LIVENESS_INTERVAL` states it.
+const LIVENESS_SECS: u64 = 10;
+
+#[test]
+fn the_stream_shows_each_attempt_starting_and_the_task_staying_alive() {
+    // Between `started` and the first commit the terminal was silent for as
+    // long as a task takes, and a silent terminal reads the same whether the
+    // run is computing or wedged. An attempt says when it begins, and a task
+    // that checkpoints says so as it goes.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config = checkpointing_config(dir.path());
+    let began = Instant::now();
     let output = sima(&["run", config.to_str().expect("utf-8 path")]);
+    let took = began.elapsed();
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let text = stdout(&output);
 
@@ -1279,21 +1291,20 @@ fn the_stream_shows_each_attempt_starting_and_the_task_staying_alive() {
         4,
         "one line per attempt, naming the worker it went to: {text}"
     );
+    let alive = text
+        .lines()
+        .filter(|line| line.contains("checkpointed"))
+        .count() as u64;
+    assert!(alive >= 4, "every attempt's first save says so: {text}");
+    // And no more than the run had time for: the tasks here save every 50 ms,
+    // so a second line for an attempt costs a whole liveness interval, and how
+    // many of those fit is what the run's own duration bounds. A loaded
+    // machine takes longer and is allowed more, without the count ever
+    // depending on how fast this one is.
     assert!(
-        text.lines()
-            .filter(|line| line.contains("checkpointed"))
-            .count()
-            >= 2,
-        "a task that saves says it is alive: {text}"
-    );
-    // One per attempt and no more: the tasks here save every 50 ms and run for
-    // a fraction of the interval a second line would need.
-    assert_eq!(
-        text.lines()
-            .filter(|line| line.contains("checkpointed"))
-            .count(),
-        4,
-        "a task saving faster than the interval says so once: {text}"
+        alive <= 4 * (1 + took.as_secs() / LIVENESS_SECS),
+        "a task saving faster than the interval says so once per interval, \
+         and this run took {took:?}: {text}"
     );
     // Each line names its task by the same short address a commit does.
     for line in started {
@@ -1370,6 +1381,34 @@ fn a_quiet_run_still_prints_the_run_its_start_its_commits_and_its_outcome() {
     assert!(text.contains("finalized: 2 tasks committed"), "{text}");
 }
 
+#[test]
+fn a_quiet_run_prints_neither_the_attempts_nor_their_signs_of_life() {
+    // The other half of what `--quiet` states, over a run that produces both:
+    // four attempts, each checkpointing as it computes. What a script reads is
+    // the run's ledger, and none of the lines that exist to fill a silence.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config = checkpointing_config(dir.path());
+    let output = sima(&["run", config.to_str().expect("utf-8 path"), "--quiet"]);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let text = stdout(&output);
+    assert!(text.contains("committed 4/4"), "{text}");
+    assert!(text.contains("finalized: 4 tasks committed"), "{text}");
+    for silent in ["started (worker", "checkpointed"] {
+        assert!(
+            !text.contains(silent),
+            "{silent:?} is narration and is dropped: {text}"
+        );
+    }
+    // Driven again without the flag, the same run says both, so what the flag
+    // dropped is what this run produces rather than what it lacks.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config = checkpointing_config(dir.path());
+    let text = stdout(&sima(&["run", config.to_str().expect("utf-8 path")]));
+    for said in ["started (worker", "checkpointed"] {
+        assert!(text.contains(said), "{said:?} missing from: {text}");
+    }
+}
+
 /// Writes a config under `dir` named `name` whose run is seeded with `seed`,
 /// over the store beside it — two of them are two runs of one store.
 fn seeded_config(dir: &Path, name: &str, seed: u64) -> PathBuf {
@@ -1435,14 +1474,42 @@ fn runs_lists_every_run_the_store_holds_with_its_state_and_ledger() {
     }
 }
 
+/// Two configs in `dir` whose run ids begin with the same character, so a
+/// store holding both holds a prefix that names neither in particular.
+///
+/// Run ids are hashes, so which seeds collide is fixed by the configs rather
+/// than chosen: the search walks them in order and takes the first pair that
+/// does, which makes the same two every time.
+fn sharing_a_leading_character(dir: &Path) -> (PathBuf, PathBuf) {
+    let leading = |config: &Path| {
+        load(config)
+            .expect("load config")
+            .run
+            .id()
+            .to_string()
+            .chars()
+            .next()
+            .expect("a run id has characters")
+    };
+    let mut seen: Vec<(char, PathBuf)> = Vec::new();
+    for seed in 1..64 {
+        let config = seeded_config(dir, &format!("seed-{seed}.toml"), seed);
+        let leading = leading(&config);
+        if let Some((_, earlier)) = seen.iter().find(|(char, _)| *char == leading) {
+            return (earlier.clone(), config);
+        }
+        seen.push((leading, config));
+    }
+    panic!("sixteen leading characters cannot hold sixty-three run ids apart");
+}
+
 #[test]
 fn rm_by_run_prefix_deletes_that_run_and_refuses_an_ambiguous_one() {
     // The run a config no longer names is reachable by its own id, and a
     // prefix that names more than one is refused with the candidates, since
     // typing more of one of them is the answer.
     let dir = tempfile::tempdir().expect("temp dir");
-    let first = seeded_config(dir.path(), "first.toml", 1);
-    let second = seeded_config(dir.path(), "second.toml", 2);
+    let (first, second) = sharing_a_leading_character(dir.path());
     for config in [&first, &second] {
         assert_eq!(
             sima(&["run", config.to_str().expect("utf-8 path")])
@@ -1455,8 +1522,14 @@ fn rm_by_run_prefix_deletes_that_run_and_refuses_an_ambiguous_one() {
     let kept = load(&second).expect("load config").run.id().to_string();
     let path = second.to_str().expect("utf-8 path");
 
-    // Ambiguous: the empty prefix matches both, and nothing is deleted.
-    let ambiguous = sima(&["rm", path, "--run", ""]);
+    // Nothing typed at all names no run, and says which flag wants one.
+    let empty = sima(&["rm", path, "--run", ""]);
+    assert_eq!(empty.status.code(), Some(1), "{empty:?}");
+    let stderr = String::from_utf8(empty.stderr).expect("stderr is UTF-8");
+    assert!(stderr.contains("--run"), "{stderr}");
+
+    // Ambiguous: both ids begin that way, and nothing is deleted.
+    let ambiguous = sima(&["rm", path, "--run", &doomed[..1]]);
     assert_eq!(ambiguous.status.code(), Some(1), "{ambiguous:?}");
     let stderr = String::from_utf8(ambiguous.stderr).expect("stderr is UTF-8");
     assert!(stderr.contains("ambiguous"), "{stderr}");

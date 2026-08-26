@@ -1014,11 +1014,30 @@ mod tests {
                 run: "ab".repeat(32),
                 committed: 3,
             },
+            // A machine lost under a run is not narration of a placement: it
+            // is the fleet changing under the work, which a quiet run states.
+            Event::InstanceLost {
+                tag: "t".to_string(),
+                instance: "ab".repeat(32),
+            },
+            Event::InstanceReplaced {
+                tag: "t".to_string(),
+                from: "ab".repeat(32),
+                to: "cd".repeat(32),
+            },
             Event::Diagnostic {
                 level: sima_pipeline::Level::Warn,
                 source: "rental".to_string(),
                 message: "cheap[1] could not be brought up".to_string(),
                 worker: None,
+                host: None,
+                task: None,
+            },
+            Event::Diagnostic {
+                level: sima_pipeline::Level::Error,
+                source: "worker".to_string(),
+                message: "the executor panicked".to_string(),
+                worker: Some(1),
                 host: None,
                 task: None,
             },

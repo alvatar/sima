@@ -687,6 +687,15 @@ mod tests {
             let varied = BASE.replace(from, to);
             assert_eq!(base, id_of(&varied), "{to} must not change the run id");
         }
+        // And dropping the store key entirely, which is the edit the shipped
+        // examples made when the default arrived: a run identity cannot turn
+        // on where its results are kept.
+        let unstated = BASE.replace("        store = \"./store\"\n", "");
+        assert_eq!(
+            base,
+            id_of(&unstated),
+            "an unstated store must not change the run id"
+        );
     }
 
     #[test]
