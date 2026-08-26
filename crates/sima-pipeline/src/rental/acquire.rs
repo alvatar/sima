@@ -6,7 +6,7 @@
 //! the entry's own declaration: strict fails the run and tears down what came
 //! up, best-effort runs on whatever did.
 
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -258,27 +258,39 @@ fn acquire_one<'a>(
         // run: it answers, it receives what the run needs, and it says where
         // that work can go. A failure in any of them records an incident, drops
         // the guard — tearing the machine down — and moves to another machine.
-        let outcome = probe_ready(mode, &target, usable_by, spec.ready_poll, program, format)
-            .map(|answered| (answered, IncidentKind::ProbeFailed))
-            .and_then(|(answered, _)| {
-                if matches!(program, RentedProgram::Delivered { .. }) {
-                    events.emit(Event::InstallingProgram {
-                        member: member.to_string(),
-                    });
-                }
-                program
-                    .install(store, mode, &target)
-                    .map(|()| answered)
-                    .map_err(|error| (error, IncidentKind::InstallFailed))
-            })
-            .and_then(|answered| {
-                program
-                    .devices(answered, mode, &target, format, exec.answer_timeout)
-                    .map_err(|error| (error, IncidentKind::ProbeFailed))
-            });
+        let outcome = probe_ready(
+            mode,
+            &target,
+            usable_by,
+            spec.ready_poll,
+            program,
+            format,
+            interrupt,
+        )
+        .and_then(|answered| {
+            if matches!(program, RentedProgram::Delivered { .. }) {
+                events.emit(Event::InstallingProgram {
+                    member: member.to_string(),
+                });
+            }
+            program
+                .install(store, mode, &target)
+                .map(|()| answered)
+                .map_err(|error| Unusable::Machine(error, IncidentKind::InstallFailed))
+        })
+        .and_then(|answered| {
+            program
+                .devices(answered, mode, &target, format, exec.answer_timeout)
+                .map_err(|error| Unusable::Machine(error, IncidentKind::ProbeFailed))
+        });
         let slots = match outcome {
             Ok(devices) => derived_slots(&devices),
-            Err((error, kind)) => {
+            // The operator let go while this machine was being brought up. It
+            // was never given its time to answer, so nothing is held against
+            // it and no other machine is rented in its place; the guard drops
+            // on the way out and tears this one down.
+            Err(Unusable::Interrupted) => return Err(interrupted()),
+            Err(Unusable::Machine(error, kind)) => {
                 // The machine reported ready but cannot serve this run: an
                 // incident against it, recorded before the guard drops and
                 // tears it down. A store failure recording the incident
@@ -326,6 +338,24 @@ fn acquire_one<'a>(
     Err(refused.unwrap_or_else(|| Error::Provider("the acquisition never ran".to_string())))
 }
 
+/// Why a machine did not come to serve this run.
+enum Unusable {
+    /// The machine's own doing: an incident is recorded against it, it is
+    /// excluded from the attempts that follow, and another machine is tried.
+    Machine(Error, IncidentKind),
+    /// The run was interrupted while the machine was being brought up. It
+    /// answered for nothing, so nothing is recorded against it and no other
+    /// machine is asked for.
+    Interrupted,
+}
+
+/// The error an acquisition the run's interrupt reached returns. What an
+/// operator reads is the abandoned line and the run's own interrupted
+/// outcome; this states the fact for a caller holding the error alone.
+fn interrupted() -> Error {
+    Error::Provider("the acquisition was interrupted".to_string())
+}
+
 /// Waits for a machine to answer its readiness probe, and returns what it
 /// answered, retrying under the machine's own readiness bounds.
 ///
@@ -337,6 +367,9 @@ fn acquire_one<'a>(
 /// this is the second stage of that one wait. A machine that answers at once
 /// costs nothing. Giving up destroys this rental and takes the next offer, so
 /// the bound is what separates a machine that is slow from one that is broken.
+///
+/// `interrupt` is read once per attempt, before the wait for the next one, so
+/// an operator letting go is answered inside the wait rather than after it.
 fn probe_ready(
     mode: &SpawnMode,
     target: &SshDestination,
@@ -344,7 +377,8 @@ fn probe_ready(
     poll: Duration,
     program: &RentedProgram<'_>,
     format: &FormatId,
-) -> std::result::Result<Vec<DeviceInfo>, (Error, IncidentKind)> {
+    interrupt: &AtomicBool,
+) -> std::result::Result<Vec<DeviceInfo>, Unusable> {
     let argv = sima_transport::ssh::probe_argv(mode, target, program.readiness(format));
     let deadline = usable_by;
     loop {
@@ -352,9 +386,15 @@ fn probe_ready(
             Ok(devices) => return Ok(devices),
             Err(error) => {
                 if Instant::now() >= deadline {
-                    return Err((error, IncidentKind::ProbeFailed));
+                    return Err(Unusable::Machine(error, IncidentKind::ProbeFailed));
                 }
             }
+        }
+        // Read after the attempt that just refused and before the sleep, so a
+        // refusal the operator interrupted is not read as the machine's
+        // answer: the deadline is what decides that, and it has not passed.
+        if interrupt.load(Ordering::Relaxed) {
+            return Err(Unusable::Interrupted);
         }
         thread::sleep(poll);
     }
@@ -466,7 +506,6 @@ fn shortfall(member: &str, rental: &Rental<'_>, error: &Error, acquired: usize) 
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
-    use std::sync::atomic::Ordering;
     use std::sync::mpsc::Receiver;
 
     use sima_contracts::DeviceClass;
@@ -882,36 +921,49 @@ mod tests {
         Ok(())
     }
 
-    /// Runs `acquisition` with a thread standing by to set `interrupt` the
-    /// moment an event matching `at` is emitted, and returns what the
-    /// acquisition answered.
+    /// Runs `acquisition` with a thread standing by to set `interrupt` as soon
+    /// as `reached` returns, and answers what the acquisition did.
     ///
-    /// The flag has to land inside a wait the acquisition is already in, which
-    /// is a window no test can hit by sleeping: the journal is what says the
-    /// acquisition got there, so the journal is what the flag is driven from.
-    fn interrupted_at<T>(
+    /// The flag has to land inside a wait the acquisition is already in, and
+    /// that window is one no test hits by sleeping. So each caller passes the
+    /// evidence its own wait leaves — a journal line, or a file the probe it
+    /// runs touches — and `reached` blocks until that evidence is there.
+    fn interrupted_when<T: Send>(
         interrupt: &AtomicBool,
-        heard: Receiver<Event>,
-        at: fn(&Event) -> bool,
+        reached: impl FnOnce() + Send,
         acquisition: impl FnOnce() -> T + Send,
-    ) -> T
-    where
-        T: Send,
-    {
+    ) -> T {
         thread::scope(|scope| {
             scope.spawn(|| {
-                // The receiver drains until the emitter is dropped, so a run
-                // that never reaches `at` ends this thread rather than
-                // stranding it.
-                for event in heard {
-                    if at(&event) {
-                        interrupt.store(true, Ordering::Relaxed);
-                        return;
-                    }
-                }
+                reached();
+                interrupt.store(true, Ordering::Relaxed);
             });
             acquisition()
         })
+    }
+
+    /// Blocks until the acquisition emits an event matching `at`, or until it
+    /// stops emitting: `heard` drains when the acquisition drops its emitter,
+    /// so a run that never gets there ends this wait rather than stranding it.
+    fn after_saying(heard: Receiver<Event>, at: fn(&Event) -> bool) -> impl FnOnce() + Send {
+        move || {
+            for event in heard {
+                if at(&event) {
+                    return;
+                }
+            }
+        }
+    }
+
+    /// Blocks until `marker` exists, which is how a probe run as a local
+    /// command says it is being retried — the one point in an acquisition
+    /// nothing is emitted from.
+    fn after_touching(marker: PathBuf) -> impl FnOnce() + Send {
+        move || {
+            while !marker.exists() {
+                thread::sleep(Duration::from_millis(1));
+            }
+        }
     }
 
     #[test]
@@ -931,10 +983,9 @@ mod tests {
         let interrupt = AtomicBool::new(false);
         let (events, said) = heard();
         let started = Instant::now();
-        let result = interrupted_at(
+        let result = interrupted_when(
             &interrupt,
-            said,
-            |event| matches!(event, Event::AwaitingMachine { .. }),
+            after_saying(said, |event| matches!(event, Event::AwaitingMachine { .. })),
             || {
                 acquire_hosts(
                     &rental(&spec, 1, FillPolicy::Strict),
@@ -965,6 +1016,81 @@ mod tests {
             store.machine_incidents()?.is_empty(),
             "a machine an operator interrupted answered for nothing"
         );
+        Ok(())
+    }
+
+    /// A probe that refuses every attempt and leaves `marker` behind on each
+    /// one, written where the acquisition's own temp directory is.
+    ///
+    /// A machine still being retried and a machine that has failed look the
+    /// same from outside the probe, so the probe is what the tests take the
+    /// difference from.
+    fn refusing_probe(dir: &std::path::Path, marker: &std::path::Path) -> Result<SpawnMode> {
+        use std::os::unix::fs::PermissionsExt;
+
+        let script = dir.join("probe");
+        std::fs::write(&script, format!("#!/bin/sh\ntouch {marker:?}\nexit 1\n")).map_err(
+            |source| Error::Io {
+                path: script.clone(),
+                source,
+            },
+        )?;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).map_err(
+            |source| Error::Io {
+                path: script.clone(),
+                source,
+            },
+        )?;
+        Ok(SpawnMode::Local(script))
+    }
+
+    #[test]
+    fn an_interrupt_in_the_probe_holds_nothing_against_the_machine() -> Result<()> {
+        // A machine that is up but has not answered its probe yet is still
+        // inside the time the entry gave it. An operator letting go there says
+        // nothing about the machine, so it is torn down carrying no incident
+        // — it would otherwise be excluded from the retries and, at two across
+        // runs, blacklisted — and no second machine is rented in its place.
+        let (dir, store, run) = acquisition_env();
+        let lock = store.acquire_run_lock(&run)?;
+        let provider = StubProvider::new(vec![offer("a", 100_000), offer("b", 200_000)]);
+        let format = FormatId::new("stub.v1")?;
+        let spec = waiting_spec();
+        let marker = dir.path().join("probed");
+        let probe = refusing_probe(dir.path(), &marker)?;
+        let interrupt = AtomicBool::new(false);
+        let started = Instant::now();
+        let result = interrupted_when(&interrupt, after_touching(marker), || {
+            acquire_hosts(
+                &rental(&spec, 1, FillPolicy::Strict),
+                &Budget::default(),
+                &provider,
+                &store,
+                &lock,
+                &probe,
+                &format,
+                &exec(),
+                None,
+                &interrupt,
+                &unheard(),
+            )
+        });
+        assert!(result.is_err(), "the acquisition ends with no machine");
+        assert!(
+            started.elapsed() < spec.ready_timeout,
+            "the probe ended on the flag, not on its deadline: {:?}",
+            started.elapsed()
+        );
+        assert!(
+            store.machine_incidents()?.is_empty(),
+            "a machine an operator interrupted answered for nothing"
+        );
+        assert_eq!(
+            provider.destroyed().len(),
+            1,
+            "one machine taken and torn down, and no other rented after it"
+        );
+        assert!(provider.live().is_empty());
         Ok(())
     }
 
