@@ -2831,6 +2831,15 @@ handled, and what it does is print where the run is and how to come back; the
 rest are unhandled, so the default death has the same effect. A migration
 interrupted this way exits 0, because detaching is what was asked for.
 
+**A stream that ends with the operator is the detach, not a fault.** The
+transport carrying the follow is a child of the migration, and it leads a
+group of its own precisely so a terminal's Ctrl-C does not end it — but a
+detach is also what an operator asks for while the connection is failing on
+its own. Once the interrupt is raised, a follow whose stream ends carries the
+outcome the interrupt already decided: the far run is left computing, the two
+ways back are printed, and the exit is 0. Before the interrupt, the same
+ending is a fault and is reported as one, naming the destination.
+
 **The destructive act has its own verb.** `sima recall <config>` is the inverse
 of `sima migrate`: it contacts the destination, winds a far run down if one is
 driving, reads what that run ended as, pulls what it produced, settles the run
