@@ -101,7 +101,7 @@ use crate::migrate::far_side::{Contact, Remote};
 use crate::migrate::objects::push_objects;
 use crate::payload::{PayloadSpec, closure, ingest};
 use crate::program_binding::BinaryChange;
-use crate::rental::{budget_exhausted, provider_for_rental, renting};
+use crate::rental::{budget_exhausted, provider_for_rental, taken};
 use crate::sdk::Sdk;
 use crate::status::{RunState, RunStatus};
 use crate::task_keys::task_keys;
@@ -362,17 +362,9 @@ fn hold<'a>(
         &limits,
         budget,
         interrupt,
-        &|offer| {
-            events.emit(renting("", offer));
-            // The wait for that machine begins here and is stated once,
-            // whatever it costs in polls: it spans the provider reporting the
-            // instance ready and the route to it carrying an ssh, which is a
-            // boot and an image pull, and the operator is owed the reason for
-            // the silence rather than one line per attempt.
-            events.emit(Event::AwaitingMachine {
-                timeout_ms: spec.ready_timeout.as_millis() as u64,
-            });
-        },
+        // A migration rents the one machine its destination names, so the
+        // member it is taken for is nothing to name.
+        &|offer| taken(events, "", spec.ready_timeout, offer),
     )
 }
 

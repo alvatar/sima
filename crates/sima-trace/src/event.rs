@@ -199,10 +199,11 @@ pub enum Event {
         gpu_count: u32,
         rate_microusd_hour: u64,
     },
-    /// The wait for a rented destination to become reachable began: the
-    /// machine is paid for and is coming up, which on a fresh one includes
-    /// pulling the worker image. Reported once per migration, however many
-    /// times the destination is polled.
+    /// The wait for a rented machine to become usable began: it is paid for
+    /// and is coming up, which on a fresh one includes pulling the worker
+    /// image. Reported once per machine taken, by the acquisition that took
+    /// it, however many times that machine is then polled. `timeout_ms` is
+    /// what the entry describing it states the wait may take.
     AwaitingMachine { timeout_ms: u64 },
     /// The run's objects are being sent to the machine that will drive it:
     /// the identity components, the frontier states, and the program when one

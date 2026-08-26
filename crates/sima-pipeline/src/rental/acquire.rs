@@ -240,7 +240,7 @@ fn acquire_one<'a>(
             // Run-start acquisition has nothing to cancel: the run is not yet
             // driving, so no wind-down is in flight.
             never_cancelled(),
-            &|offer| events.emit(renting(member, offer)),
+            &|offer| taken(events, member, spec.ready_timeout, offer),
         )?;
         let target = endpoint_target(guard.endpoint().clone());
         let host = target.host().to_string();
@@ -393,11 +393,26 @@ pub(crate) fn budget_exhausted(exhaustion: Exhaustion) -> Event {
     }
 }
 
+/// What an acquisition says as it takes an offer: what is now being paid for,
+/// and the wait for that machine to become usable.
+///
+/// The wait is stated once, whatever it costs in polls. It spans the provider
+/// reporting the instance ready and the route to it carrying an ssh — a boot
+/// and an image pull — and the operator is owed the reason for the silence
+/// rather than one line per attempt. `ready_timeout` is what the entry
+/// describing the machine states about how long that may take.
+pub(crate) fn taken(events: &Emitter, member: &str, ready_timeout: Duration, offer: &Offer) {
+    events.emit(renting(member, offer));
+    events.emit(Event::AwaitingMachine {
+        timeout_ms: ready_timeout.as_millis() as u64,
+    });
+}
+
 /// The `Renting` event for an offer a machine has just been provisioned
 /// against: what is now being paid for, stated before the wait for it to come
 /// up. `member` names the fleet member it was taken for, and is empty for a
 /// migration, which rents the one machine its destination names.
-pub(crate) fn renting(member: &str, offer: &Offer) -> Event {
+fn renting(member: &str, offer: &Offer) -> Event {
     Event::Renting {
         member: member.to_string(),
         machine: offer.machine.clone(),
@@ -695,6 +710,57 @@ mod tests {
             "states what the run does instead: {warning}"
         );
         release_all(one_group(&provider, &spec, FillPolicy::BestEffort, hosts))?;
+        Ok(())
+    }
+
+    #[test]
+    fn every_machine_a_fleet_takes_says_it_is_waiting_for_it() -> Result<()> {
+        // Between taking an offer and the machine answering lie a boot and an
+        // image pull, and the run is paying through all of it. What is being
+        // waited for is stated once per machine, right after what it costs.
+        let (_dir, store, run) = acquisition_env();
+        let lock = store.acquire_run_lock(&run)?;
+        let provider = StubProvider::new(vec![offer("a", 100_000), offer("b", 200_000)]);
+        let format = FormatId::new("stub.v1")?;
+        let spec = spec();
+        let (events, said) = heard();
+        let hosts = acquire_hosts(
+            &rental(&spec, 2, FillPolicy::Strict),
+            &Budget::default(),
+            &provider,
+            &store,
+            &lock,
+            &deviceless_probe(),
+            &format,
+            &exec(),
+            None,
+            &events,
+        )?;
+        drop(events);
+        let waits: Vec<Event> = said
+            .into_iter()
+            .filter(|event| matches!(event, Event::Renting { .. } | Event::AwaitingMachine { .. }))
+            .collect();
+        let [
+            Event::Renting { member: first, .. },
+            Event::AwaitingMachine {
+                timeout_ms: first_wait,
+            },
+            Event::Renting { member: second, .. },
+            Event::AwaitingMachine {
+                timeout_ms: second_wait,
+            },
+        ] = waits.as_slice()
+        else {
+            panic!("each member says what it took and what it waits for: {waits:?}");
+        };
+        assert_eq!(
+            (first.as_str(), second.as_str()),
+            ("rented[0]", "rented[1]")
+        );
+        let stated = spec.ready_timeout.as_millis() as u64;
+        assert_eq!((*first_wait, *second_wait), (stated, stated));
+        release_all(one_group(&provider, &spec, FillPolicy::Strict, hosts))?;
         Ok(())
     }
 

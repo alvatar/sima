@@ -2323,7 +2323,10 @@ the placement begins — **renting**, **awaiting machine**, **sending run**,
 **installing program**, **starting run**. They state where a placement is
 while there is no far run to journal anything, which is the stretch an
 operator would otherwise read as a hang; `renting` carries what is now being
-paid for. Being events, they are journaled like any other, so what an
+paid for. The first two belong to the acquisition rather than to the verb, so
+a fleet emits them too, once per machine it takes: renting and awaiting
+machine are what any run says about a rental between taking the offer and the
+machine answering. Being events, they are journaled like any other, so what an
 operator watched is also what the run's journal holds. They move no counter
 and free no worker: status, timeline, and task history each pass over them.
 
