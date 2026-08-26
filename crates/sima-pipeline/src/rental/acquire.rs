@@ -423,7 +423,8 @@ fn shortfall(member: &str, rental: &Rental<'_>, error: &Error, acquired: usize) 
             rental.name
         ),
         FillPolicy::BestEffort => format!(
-            "{:?} states best-effort fill, so the run goes on with the {acquired} machine(s)              that came up",
+            "{:?} states best-effort fill, so the run goes on with the {acquired} machine(s) \
+             that came up",
             rental.name
         ),
     };
@@ -684,8 +685,13 @@ mod tests {
             panic!("one shortfall, one warning: {warnings:?}");
         };
         assert!(warning.contains("rented[1]"), "names the member: {warning}");
+        // Pinned whole, because this is the sentence an operator reads when a
+        // fleet comes up short and it has to read as one.
         assert!(
-            warning.contains("best-effort fill") && warning.contains("goes on with the 1"),
+            warning.ends_with(
+                "; \"rented\" states best-effort fill, so the run goes on with the 1 machine(s) \
+                 that came up"
+            ),
             "states what the run does instead: {warning}"
         );
         release_all(one_group(&provider, &spec, FillPolicy::BestEffort, hosts))?;
