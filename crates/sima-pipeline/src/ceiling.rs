@@ -3,7 +3,8 @@
 //!
 //! A run that states a ceiling interrupts itself when it elapses, through the
 //! flag `SIGINT` sets — so what follows is the wind-down that already exists:
-//! in-flight attempts drain and commit, and the store is left resumable.
+//! the attempts in flight are abandoned, their checkpoints stand, and the
+//! store is left resumable.
 //!
 //! **The clock starts with this execution, not with the run.** A resumed run
 //! gets a fresh ceiling, and so does each session of a migrated one. The

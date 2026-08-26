@@ -221,6 +221,9 @@ impl RunStatus {
             | Event::InstanceReplaced { .. }
             | Event::BudgetSpendExhausted { .. }
             | Event::BudgetWallClockExhausted { .. } => {}
+            // A checkpoint persisted says the attempt is alive; it moves no
+            // counter and changes no state.
+            Event::Checkpointed { .. } => {}
             // The phases of placing a run on a machine: where the run is in
             // being put somewhere, which is not where its work is.
             Event::Renting { .. }

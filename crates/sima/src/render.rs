@@ -18,7 +18,7 @@ pub fn short(id: &str) -> &str {
 }
 
 /// Renders `event` to the one line it warrants, or `None` for the `Queued`,
-/// `Leased`, `WorkerBound`, and `ProgramBound` bookkeeping events.
+/// `WorkerBound`, and `ProgramBound` bookkeeping events.
 /// `committed`/`tasks` supply
 /// the running `committed k/n` count a commit line shows; on `RunStarted`, a
 /// nonzero `committed` is the run's prior progress and the line names it, so a
@@ -52,6 +52,16 @@ pub fn describe(event: &Event, committed: usize, tasks: usize) -> Option<String>
         } => format!("lease expired {} ({elapsed_ms} ms)", short(task)),
         Event::CheckpointDegraded { task, error } => {
             format!("checkpoint degraded {}: {error}", short(task))
+        }
+        // What a run looks like while it is computing: an attempt begins, and
+        // its checkpoints stand for it still being alive. Between them a
+        // terminal that showed only commits was silent for as long as a task
+        // takes, and silence reads the same whether a run computes or wedges.
+        Event::Leased { task, worker, .. } => {
+            format!("task {} started (worker {worker})", short(task))
+        }
+        Event::Checkpointed { task, worker } => {
+            format!("task {} checkpointed (worker {worker})", short(task))
         }
         Event::RunFinalized { committed, .. } => {
             format!("finalized: {committed} tasks committed")
@@ -160,10 +170,9 @@ pub fn describe(event: &Event, committed: usize, tasks: usize) -> Option<String>
             };
             format!("warning: the driver for {place} changed: {from} is now {to}")
         }
-        Event::Queued { .. }
-        | Event::Leased { .. }
-        | Event::WorkerBound { .. }
-        | Event::ProgramBound { .. } => return None,
+        Event::Queued { .. } | Event::WorkerBound { .. } | Event::ProgramBound { .. } => {
+            return None;
+        }
     })
 }
 
@@ -221,6 +230,8 @@ fn narrated(event: &Event) -> bool {
             | Event::InstallingProgram { .. }
             | Event::StartingRun
             | Event::InstanceOnline { .. }
+            | Event::Leased { .. }
+            | Event::Checkpointed { .. }
     )
 }
 
@@ -936,6 +947,15 @@ mod tests {
                 member: String::new(),
             },
             Event::StartingRun,
+            Event::Leased {
+                task: "cd".repeat(32),
+                worker: 1,
+                attempt: 0,
+            },
+            Event::Checkpointed {
+                task: "cd".repeat(32),
+                worker: 1,
+            },
             Event::InstanceOnline {
                 tag: "t".to_string(),
                 instance: "ab".repeat(32),

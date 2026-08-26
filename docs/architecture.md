@@ -2222,9 +2222,11 @@ search:
   consumes this boundary.
 - **interrupt** — a level-triggered flag the driver polls within a bounded
   wait. Once set, the run winds down gracefully: no more tasks are handed
-  out, in-flight attempts finish and commit, queued tasks are abandoned,
-  and the run returns `Interrupted` with no manifest written — the store
-  stays resumable and the next orchestration continues the abandoned work.
+  out, the attempt in flight on each worker is abandoned within one
+  wind-down poll, queued tasks are abandoned, and the run returns
+  `Interrupted` with no manifest written — the store stays resumable, and
+  the next orchestration re-derives each abandoned task in its frontier and
+  resumes it from the checkpoint it had laid.
 
 The wind-down states form a precedence order — running < interrupted <
 failed < fault — and each setter only upgrades: a definitive failure or an
@@ -2267,7 +2269,9 @@ The vocabulary:
 - **run started** — the run began; carries the planned task total, those
   already committed and those still to run.
 - **queued** — a task entered the ready queue.
-- **leased** — a worker leased a task for one attempt.
+- **leased** — a worker leased a task for one attempt. Rendered as the
+  attempt beginning, which is where a run's terminal would otherwise fall
+  silent for as long as a task takes.
 - **committed** — a task's result was committed, referencing its record.
 - **failed** — an attempt failed transiently and may be retried.
 - **retried** — a failed task was re-enqueued for another attempt.
@@ -2280,6 +2284,12 @@ The vocabulary:
 - **checkpoint degraded** — a checkpoint save or load failed; execution
   continues and the attempt's result is unaffected, so this event is the
   only trace.
+- **checkpointed** — a task's checkpoint was persisted, which is the one sign
+  a long attempt gives that it is computing rather than wedged. Rate-limited
+  where it is emitted, to the attempt's first save and one per ten seconds
+  after it, so a domain checkpointing every second floods neither the journal
+  nor the terminal. A run whose tasks never checkpoint has no such sign, and
+  its attempts are bounded by `attempt_timeout` instead.
 - **worker bound** — a worker's child reported the device it computes on, at
   every spawn and respawn.
 - **driver changed** — a worker's child reported a driver other than the one
@@ -2290,8 +2300,8 @@ The vocabulary:
 - **run finalized** — every task committed and the manifest was written.
 - **run failed** — a definitive candidate failure terminated the run; no
   manifest was written.
-- **run interrupted** — the caller interrupted the run: in-flight attempts
-  drained and committed, no manifest was written, and the store is
+- **run interrupted** — the caller interrupted the run: the attempts in
+  flight were abandoned, no manifest was written, and the store is
   resumable.
 - **diagnostic** — a correlated line of observational text: captured worker
   stderr (info), a transport degradation (warn), or an executor panic's

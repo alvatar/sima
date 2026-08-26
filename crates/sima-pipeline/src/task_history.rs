@@ -205,7 +205,9 @@ impl TaskHistory {
             }
             // A retry is answered by the lease that follows it, and a degraded
             // checkpoint leaves the attempt's result untouched.
-            Event::Retried { .. } | Event::CheckpointDegraded { .. } => {}
+            Event::Retried { .. }
+            | Event::CheckpointDegraded { .. }
+            | Event::Checkpointed { .. } => {}
             // The run-level frame and the bookkeeping events name no task, so
             // the merge routes none of them here.
             Event::RunStarted { .. }
@@ -262,7 +264,8 @@ pub(crate) fn lifecycle_task(event: &Event) -> Option<&str> {
         | Event::Rejected { task, .. }
         | Event::Faulted { task, .. }
         | Event::LeaseExpired { task, .. }
-        | Event::CheckpointDegraded { task, .. } => Some(task),
+        | Event::CheckpointDegraded { task, .. }
+        | Event::Checkpointed { task, .. } => Some(task),
         Event::RunStarted { .. }
         | Event::RunFinalized { .. }
         | Event::RunFailed { .. }

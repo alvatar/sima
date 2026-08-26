@@ -187,6 +187,8 @@ pub fn timeline_records(run: RunId, records: &[Record]) -> RunTimeline {
             | Event::InstanceReplaced { .. }
             | Event::BudgetSpendExhausted { .. }
             | Event::BudgetWallClockExhausted { .. }
+            // A checkpoint persisted times nothing an attempt is measured by.
+            | Event::Checkpointed { .. }
             // The phases of placing a run on a machine time nothing a worker
             // did.
             | Event::Renting { .. }

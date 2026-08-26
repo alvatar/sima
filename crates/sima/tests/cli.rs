@@ -1241,6 +1241,76 @@ fn a_terminal_interrupt_winds_the_run_down_without_killing_its_workers() {
 }
 
 #[test]
+fn the_stream_shows_each_attempt_starting_and_the_task_staying_alive() {
+    // Between `started` and the first commit the terminal was silent for as
+    // long as a task takes, and a silent terminal reads the same whether the
+    // run is computing or wedged. An attempt says when it begins, and a task
+    // that checkpoints says so as it goes.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let text = r#"
+        [run]
+        root_seed = 11
+        format = "stub.v1"
+        segments = 2
+
+        [run.generator]
+        id = "stub.v1"
+        behaviors = ["accumulate:4:60", "accumulate:4:60"]
+
+        [config]
+        store = "./store"
+        max_attempts = 3
+        checkpoint_interval_ms = 50
+
+        [orchestrator]
+        workers = 2
+    "#;
+    let config = common::write_config_text(dir.path(), "sima.toml", text);
+    let output = sima(&["run", config.to_str().expect("utf-8 path")]);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let text = stdout(&output);
+
+    let started: Vec<&str> = text
+        .lines()
+        .filter(|line| line.contains("started (worker"))
+        .collect();
+    assert_eq!(
+        started.len(),
+        4,
+        "one line per attempt, naming the worker it went to: {text}"
+    );
+    assert!(
+        text.lines()
+            .filter(|line| line.contains("checkpointed"))
+            .count()
+            >= 2,
+        "a task that saves says it is alive: {text}"
+    );
+    // One per attempt and no more: the tasks here save every 50 ms and run for
+    // a fraction of the interval a second line would need.
+    assert_eq!(
+        text.lines()
+            .filter(|line| line.contains("checkpointed"))
+            .count(),
+        4,
+        "a task saving faster than the interval says so once: {text}"
+    );
+    // Each line names its task by the same short address a commit does.
+    for line in started {
+        let task = line
+            .split_whitespace()
+            .nth(1)
+            .expect("the line names a task");
+        assert_eq!(task.len(), 12, "{line}");
+        assert!(
+            text.lines()
+                .any(|line| line.starts_with("committed") && line.ends_with(task)),
+            "the same address commits: {text}"
+        );
+    }
+}
+
+#[test]
 fn a_quiet_run_still_prints_the_run_its_start_its_commits_and_its_outcome() {
     // The minimal stream `--quiet` leaves: what the run is, what it started,
     // what it committed, and how it ended.

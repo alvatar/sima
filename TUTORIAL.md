@@ -165,14 +165,17 @@ sima run search.toml
 ```
 run bff61aa384aa94add7c1609ae6634ca0825ac9548b69712563af224e18b800ef
 started: 6 tasks
+task 99edb1e25385 started (worker 0)
+task 6863796364eb started (worker 1)
+task 99edb1e25385 checkpointed (worker 0)
+task 6863796364eb checkpointed (worker 1)
 committed 1/6  99edb1e25385
 committed 2/6  6863796364eb
-committed 3/6  27f7405a9ff1
-committed 4/6  ee0f5a8cb965
-committed 5/6  c28a080f85c9
-committed 6/6  15fe1ae7fe0e
+…
 finalized: 6 tasks committed
 ```
+
+An attempt says when it begins and which worker took it; a task that saves checkpoints says so as it goes, at most once in ten seconds however often it saves. Between them the terminal shows a run computing rather than a run that has merely not finished. `--quiet` leaves the run, its start, its commits, and its ending.
 
 Six tasks is `count = 2` candidates × `segments = 3`. The config decided that; the program did not. As shipped, the run computes for some couple of minutes; reduce `steps` by a few orders of magnitude if you wish merely to see the shape of the output.
 
@@ -343,7 +346,7 @@ Everything to this point has run upon your machine. A real search outgrows one �
 
 The example is already provisioned for the trip: `steps` gives each task minutes of computation rather than instants, and `checkpoint_interval_ms = 2000` means that every couple of seconds each task lays by state from which it may resume — which is what permits this run to change machines in the middle of a task.
 
-**Start local.** `sima run search.toml`; suffer a couple of tasks to commit, then Ctrl-C. The run winds down — work in flight drains and commits what it may — and exits `130`: interrupted, resumable. Your store now holds a run that is partly done.
+**Start local.** `sima run search.toml`; suffer a couple of tasks to commit, then Ctrl-C. The run winds down — the attempts in flight are abandoned, their checkpoints standing where they were laid — and exits `130`: interrupted, resumable. Your store now holds a run that is partly done, and a re-run resumes each abandoned attempt from its checkpoint rather than from its beginning.
 
 **Send it away.** The example's config already declares whither:
 

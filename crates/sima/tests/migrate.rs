@@ -362,6 +362,12 @@ fn a_migration_narrates_the_phases_of_placing_the_run() -> Result<()> {
         1,
         "{stdout}"
     );
+    // The far run's records reach the same renderer a local run's do, so what
+    // a migration shows of the work is what `sima run` shows of it.
+    assert!(
+        stdout.contains("started (worker"),
+        "the far side's attempts are rendered here: {stdout}"
+    );
     Ok(())
 }
 
