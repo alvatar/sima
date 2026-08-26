@@ -13,8 +13,8 @@ use std::collections::HashSet;
 use std::time::Duration;
 
 use common::{
-    chained_config, device, device_naming_resolver, exec_over, journal_events, named_class, run_id,
-    run_pools, task_classes, temp_store,
+    chained_config, class, class_slot, device, device_naming_resolver, exec_over, journal_events,
+    named_class, run_id, run_pools, task_classes, temp_store,
 };
 use sima_core::Result;
 use sima_domains::StubBehavior;
@@ -33,16 +33,8 @@ fn a_run_spreads_across_two_pools_and_places_by_class() -> Result<()> {
     // Seed one chain onto each class, so both pools run real work and the
     // cross-pool binding is concrete rather than a placement race.
     store.create_run(&config)?;
-    store.bind_chain(
-        &run,
-        0,
-        format!(r#"{{"vendor_id":{INTEL},"device_id":1}}"#).as_bytes(),
-    )?;
-    store.bind_chain(
-        &run,
-        1,
-        format!(r#"{{"vendor_id":{NVIDIA},"device_id":1}}"#).as_bytes(),
-    )?;
+    store.bind_chain(&run, 0, &class_slot(&class(INTEL)))?;
+    store.bind_chain(&run, 1, &class_slot(&class(NVIDIA)))?;
 
     // Two pools, each a class of its own on a distinct host. The execs supply
     // each pool's two slots; only their cadence reaches the run.

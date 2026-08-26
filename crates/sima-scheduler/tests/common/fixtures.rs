@@ -68,6 +68,16 @@ pub fn class(vendor_id: u32) -> DeviceClass {
     DeviceClass::new(format!("{vendor_id:04x}:0001")).expect("class id")
 }
 
+/// The payload a chain's placement slot holds: the class it is bound to, in
+/// the shape the driver reads a binding back in.
+///
+/// A slot of any other shape reads as an absent binding — a chain whose slot
+/// is unusable binds again rather than stranding — so seeding a placement
+/// means writing this and nothing else.
+pub fn class_slot(class: &DeviceClass) -> Vec<u8> {
+    format!(r#"{{"class":"{class}"}}"#).into_bytes()
+}
+
 /// A resolved device entry: `workers` workers on one single-card class.
 pub fn device(vendor_id: u32, workers: usize) -> DeviceEntry {
     DeviceEntry {
