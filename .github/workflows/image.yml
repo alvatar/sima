@@ -70,4 +70,4 @@ jobs:
           # would fail the step before grep saw anything.
           usage="$(docker run --rm --entrypoint sima "$IMAGE" 2>&1 || true)"
           printf '%s' "$usage" | grep -q 'usage: sima'
-          docker run --rm "$IMAGE" --enumerate stub.v1
+          docker run --rm "$IMAGE" --enumerate-devices stub.v1
