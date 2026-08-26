@@ -126,6 +126,14 @@ pub fn remote_snapshot(host: &str, config: &str) -> Result<(FeedInfo, Vec<Record
     snapshot_over(Stream::spawn(&follow_serve_argv(host, config, true), host)?)
 }
 
+/// Reads a run once over an explicit invocation of `sima follow-serve --once`,
+/// for a destination the caller reaches its own way — the counterpart of
+/// [`RemoteFeed::open_over`], which a recall uses to read what the far run
+/// ended as. `label` names the destination in the errors that report it.
+pub(crate) fn snapshot_over_argv(argv: &[String], label: &str) -> Result<(FeedInfo, Vec<Record>)> {
+    snapshot_over(Stream::spawn(argv, label)?)
+}
+
 /// The snapshot over an open stream, read to its `Complete`. The boundary the
 /// protocol tests drive without a subprocess.
 fn snapshot_over(mut stream: Stream) -> Result<(FeedInfo, Vec<Record>)> {

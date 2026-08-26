@@ -812,6 +812,117 @@ fn migrate_refuses_a_host_because_it_drives_a_run() {
 }
 
 #[test]
+fn a_run_under_a_wall_clock_ceiling_winds_itself_down_and_says_why() {
+    // The ceiling is the run's own and is enforced wherever the run executes,
+    // so a plain local run keeps it: nothing else is watching this one.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let text = format!(
+        "{}\n[budget]\nmax_wall_clock_ms = 200\n",
+        std::fs::read_to_string(common::write_config(
+            dir.path(),
+            "bounded.toml",
+            r#""sleep:4000", "sleep:4000""#,
+            "./store",
+        ))
+        .expect("read the config")
+    );
+    let config = common::write_config_text(dir.path(), "bounded.toml", &text);
+
+    let output = sima(&["run", config.to_str().expect("utf-8 path")]);
+    assert_eq!(
+        output.status.code(),
+        Some(130),
+        "the ceiling wound the run down: {output:?}"
+    );
+    assert!(
+        manifest_of(&config).is_none(),
+        "an interrupted run seals nothing"
+    );
+    let reported = common::journal_events(&config)
+        .iter()
+        .find_map(|event| match event {
+            Event::Diagnostic { message, .. } => Some(message.clone()),
+            _ => None,
+        })
+        .expect("the journal says why the run interrupted");
+    assert!(
+        reported.contains("max_wall_clock_ms"),
+        "it names the ceiling: {reported}"
+    );
+}
+
+#[test]
+fn a_run_declaring_no_ceiling_is_never_wound_down_by_one() {
+    // The counterpart: the deadline exists only where a config states one.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config = write_config(dir.path(), r#""sleep:200", "sleep:200""#);
+    let output = sima(&["run", config.to_str().expect("utf-8 path")]);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert!(manifest_of(&config).is_some(), "the run finished");
+}
+
+#[test]
+fn a_run_declaring_a_zero_ceiling_is_never_wound_down_by_one() {
+    // Zero is the written form of stating none, so the run finishes exactly as
+    // one that omitted the key does — rather than ending before it computes.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let text = format!(
+        "{}\n[budget]\nmax_wall_clock_ms = 0\n",
+        std::fs::read_to_string(common::write_config(
+            dir.path(),
+            "unbounded.toml",
+            r#""sleep:200", "sleep:200""#,
+            "./store",
+        ))
+        .expect("read the config")
+    );
+    let config = common::write_config_text(dir.path(), "unbounded.toml", &text);
+
+    let output = sima(&["run", config.to_str().expect("utf-8 path")]);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert!(manifest_of(&config).is_some(), "the run finished");
+}
+
+#[test]
+fn recall_parses_and_reaches_the_pipeline() {
+    // The same evidence a migration's parse leaves: a config naming no
+    // destination is refused by the pipeline, which only a parsed invocation
+    // reaches.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config = write_config(dir.path(), r#""succeed""#);
+    let output = sima(&["recall", config.to_str().expect("utf-8 path")]);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).expect("stderr is UTF-8");
+    assert!(
+        !stderr.contains("usage: sima"),
+        "the arguments parsed: {stderr}"
+    );
+    assert!(
+        stderr.contains("migrate"),
+        "the config names no destination: {stderr}"
+    );
+}
+
+#[test]
+fn recall_refuses_a_host_and_the_binary_flag() {
+    // `--on` observes a run elsewhere; a recall ends one, and where it ends is
+    // the config's to say. `--accept-binary` answers a comparison only a start
+    // makes, and a recall starts nothing.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config = write_config(dir.path(), r#""succeed""#);
+    let path = config.to_str().expect("utf-8 path");
+    for args in [
+        vec!["recall", path, "--on", "gpubox"],
+        vec!["recall", path, "--accept-binary"],
+    ] {
+        let output = sima(&args);
+        assert_eq!(output.status.code(), Some(1), "{args:?}: {output:?}");
+        let stderr = String::from_utf8(output.stderr).expect("stderr is UTF-8");
+        assert!(stderr.contains("usage: sima"), "{args:?}: {stderr}");
+    }
+}
+
+#[test]
 fn run_accepts_the_binary_flag_beside_the_fleet_flag_in_either_order() {
     // The two flags answer different questions — which machines, and what a
     // changed program does — so a run states them in whatever order it likes.
@@ -897,6 +1008,7 @@ fn the_usage_text_names_every_command_form() {
         "sima reconcile",
         "--hosted",
         "sima migrate",
+        "sima recall",
         "sima tui",
         "sima follow",
         "--on",

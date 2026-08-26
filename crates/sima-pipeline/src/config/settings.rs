@@ -73,7 +73,14 @@ pub(super) fn resolve_budget(path: &Path, section: Option<BudgetSection>) -> Res
         .transpose()?;
     Ok(Budget {
         max_spend,
-        max_wall_clock: section.max_wall_clock_ms.map(Duration::from_millis),
+        // Zero states the absence of a ceiling, the same as omitting the key.
+        // The only other reading is a deadline that has already passed, which
+        // would wind the run down before it computed anything — nothing to ask
+        // for, and a trap for a config that arrives at zero by arithmetic.
+        max_wall_clock: section
+            .max_wall_clock_ms
+            .filter(|ms| *ms > 0)
+            .map(Duration::from_millis),
     })
 }
 

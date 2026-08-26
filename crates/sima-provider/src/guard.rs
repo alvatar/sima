@@ -117,6 +117,17 @@ impl<'a, P: Provider + ?Sized> InstanceGuard<'a, P> {
         self.released = true;
         outcome
     }
+
+    /// Gives up ownership without destroying anything: the instance keeps
+    /// running and its ledger record stands.
+    ///
+    /// This is what a caller that is done watching a machine still doing work
+    /// asks for. The record left behind is what the next invocation adopts,
+    /// and what `sima reconcile` reads; nothing is billed to the run until one
+    /// of them takes the machine down.
+    pub fn keep(mut self) {
+        self.released = true;
+    }
 }
 
 impl<P: Provider + ?Sized> Drop for InstanceGuard<'_, P> {
@@ -249,6 +260,28 @@ mod tests {
         assert_eq!(entries[0].provider, "stub");
         assert_eq!(entries[0].owner, sample_run(7).to_string());
         assert_charges(&entries[0], 250_000, record.created_ms);
+        Ok(())
+    }
+
+    #[test]
+    fn keeping_a_guard_leaves_the_instance_running_and_its_record_standing() -> Result<()> {
+        // What a caller that is done watching a machine still doing work asks
+        // for: nothing is destroyed, nothing is billed, and the record the
+        // next invocation adopts is still there.
+        let (_dir, store) = temp_store();
+        let stub = one_offer();
+        let guard = acquire_any(&stub, &store)?;
+        let tag = guard.tag().to_string();
+        guard.keep();
+        assert!(stub.destroyed().is_empty(), "the instance keeps running");
+        assert!(
+            store.instance_record(&tag)?.is_some(),
+            "its record stands for the next invocation"
+        );
+        assert!(
+            spend_entries(&store, &sample_run(7))?.is_empty(),
+            "and the rental is not closed out"
+        );
         Ok(())
     }
 

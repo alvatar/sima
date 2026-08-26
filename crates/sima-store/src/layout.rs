@@ -164,7 +164,11 @@ pub(crate) fn manifest_path(root: &Path, run: &RunId) -> PathBuf {
 }
 
 /// A run's journal path: `runs/<run-id-hex>/journal`.
-pub(crate) fn journal_path(root: &Path, run: &RunId) -> PathBuf {
+///
+/// Public because the path is asked for outside this crate: a migration probes
+/// the far side's journal over a store root that is a path on another machine,
+/// and this is the one place that path is stated.
+pub fn journal_path(root: &Path, run: &RunId) -> PathBuf {
     run_dir(root, run).join("journal")
 }
 

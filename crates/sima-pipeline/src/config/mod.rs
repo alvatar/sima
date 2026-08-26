@@ -78,9 +78,15 @@
 //! [fleet]
 //! members = ["gpubox", "lab", "rtx4090"]
 //!
-//! [budget]                                # ceilings over every rental in the run
-//! max_spend_usd     = 20.0
-//! max_wall_clock_ms = 21600000
+//! [budget]
+//! max_spend_usd     = 20.0                # ceiling on the run's total rental
+//!                                         # spend, assessed only while a
+//!                                         # migration or a fleet run is attached
+//! max_wall_clock_ms = 0                   # ceiling on how long the run may
+//!                                         # compute, measured from the start of
+//!                                         # each execution; 0 is no ceiling.
+//!                                         # Kept on a local run and on a machine
+//!                                         # of yours, never sent to a rental
 //!
 //! [orchestrator]                          # this machine
 //! migrate = "slingshot"                   # the host `sima migrate` moves the run onto
@@ -229,7 +235,22 @@
 //! rejected without one.
 //!
 //! `[budget]` is run-global: a run may draw on several rented classes under one
-//! ceiling, so the ceiling is a property of the run.
+//! ceiling, so the ceiling is a property of the run. Its two keys differ in
+//! where they are kept:
+//!
+//! - `max_spend_usd` bounds what the run's rentals cost, and enforcing it means
+//!   destroying a machine — a provider-API call, which needs the credential
+//!   that never leaves this machine. It is therefore assessed only while
+//!   something here is attached, and a section stating it alone is inert to a
+//!   run that rents nothing.
+//! - `max_wall_clock_ms` bounds how long the run may compute, measured from the
+//!   start of each execution, and `0` states no ceiling at all — the same as
+//!   omitting the key. It is kept where no bill runs against the time it
+//!   bounds: a plain `sima run` interrupts itself on it, and so does a run
+//!   migrated onto a machine of yours, which carries the key. The key does not
+//!   travel to a rented destination, because a rental bills by the hour rather
+//!   than by use — a run stopped early there saves nothing, and the machine
+//!   bills on until `sima recall` or `sima reconcile` takes it down.
 //!
 //! ## What a run uses
 //!

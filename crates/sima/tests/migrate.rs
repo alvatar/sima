@@ -2,9 +2,13 @@
 //! moved onto another machine, finished there, and brought home — with the
 //! manifest byte-identical to a run that was never interrupted.
 //!
-//! The far side is the real `sima` binary, reached through the stub provider,
-//! whose machines are local subprocesses. Nothing here needs a network, a GPU,
-//! an ssh hop, or a container, so it runs in the ordinary gate.
+//! The far side is the real `sima` binary. A rented destination reaches it
+//! through the stub provider, whose machines are local subprocesses; a machine
+//! of yours reaches it through the `ssh` and container-runtime stand-ins
+//! `common::machine_stubs` writes, which strip their own wrapping and run the
+//! command here. Every argv the pipeline builds is therefore the real one, and
+//! nothing needs a network, a GPU, or a namespace, so it runs in the ordinary
+//! gate.
 //!
 //! The local halves are driven in-process, so the interrupt is raised from the
 //! run observer rather than by signalling a subprocess: a fixed number of
@@ -19,7 +23,7 @@ mod common;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
@@ -334,25 +338,343 @@ fn a_second_migration_over_a_finished_run_finalizes_to_the_same_manifest() -> Re
     Ok(())
 }
 
+/// The far-side `sima run` process id, read from the run directory the
+/// migration placed, and `None` once nothing answers to it.
+fn far_pid(config: &Path, root: &Path) -> Option<u32> {
+    let run = load(config).expect("the config loads").run.id();
+    let pid: u32 = std::fs::read_to_string(root.join(run.to_string()).join("run.pid"))
+        .ok()?
+        .trim()
+        .parse()
+        .ok()?;
+    // The signal's own complaint over a pid nothing answers to is the answer,
+    // not something to print.
+    Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .output()
+        .expect("run kill -0")
+        .status
+        .success()
+        .then_some(pid)
+}
+
+/// Ends a far run a test detached from, so no paced chain outlives the suite.
+/// A run that has already gone is the outcome, not a fault, so the signal's
+/// own complaint is captured rather than printed.
+fn end_far_run(pid: u32) {
+    let _ = Command::new("kill")
+        .args(["-KILL", &pid.to_string()])
+        .output();
+}
+
 #[test]
-fn a_migration_interrupted_during_the_follow_still_pulls_and_tears_down() -> Result<()> {
+fn a_migration_interrupted_during_the_follow_detaches_and_a_second_one_reattaches() -> Result<()> {
     workers_built();
     let dir = tempfile::tempdir().expect("temp dir");
     let far_root = dir.path().join("far");
     // A chain the far side cannot reach the end of while this migration is
     // still reading its first record: every segment sleeps, so a hundred
-    // seconds of far-side work remain when the wind-down lands, and the
-    // outcome is decided by the wind-down rather than by a race with how
+    // seconds of far-side work remain when the interrupt lands, and the
+    // outcome is decided by the interrupt rather than by a race with how
     // fast this machine runs.
     let migrated = migrating(dir.path(), &far_root, UNFINISHABLE, PACED);
     assert!(matches!(
         drive(&migrated, Some(2))?,
         RunOutcome::Interrupted { .. }
     ));
-    let before = committed_records(&migrated)?;
 
-    // Wound down as soon as the far run's first record arrives: the far side is
-    // signalled, whatever it committed is pulled, and the rental is destroyed.
+    // Interrupted as soon as the far run's first record arrives: the operator
+    // let go, and everything on the far side stays as it was.
+    let interrupt = AtomicBool::new(false);
+    let loaded = sima_pipeline::load(&migrated)?;
+    let outcome = migrate(
+        &migrated,
+        &loaded,
+        &|_: &Record| interrupt.store(true, Ordering::Relaxed),
+        &interrupt,
+        BinaryChange::Refuse,
+    )?;
+    assert_eq!(
+        outcome,
+        MigrateOutcome::Detached {
+            run: loaded.run.id(),
+            machine: "far".to_string(),
+        },
+        "an interrupted migration detaches"
+    );
+    assert!(
+        manifest_bytes(&migrated).is_none(),
+        "a detached migration seals nothing"
+    );
+
+    let pid = far_pid(&migrated, &far_root).expect("the far run keeps computing");
+    let store = Store::open(&load(&migrated)?.store)?;
+    assert!(
+        !store.instance_records()?.is_empty(),
+        "the machine it computes on was not torn down"
+    );
+
+    // The way back: a second migration finds the same far run and attaches to
+    // it rather than starting another.
+    let second = AtomicBool::new(false);
+    let outcome = migrate(
+        &migrated,
+        &loaded,
+        &|_: &Record| second.store(true, Ordering::Relaxed),
+        &second,
+        BinaryChange::Refuse,
+    )?;
+    assert!(
+        matches!(outcome, MigrateOutcome::Detached { .. }),
+        "the second migration detached too: {outcome:?}"
+    );
+    assert_eq!(
+        far_pid(&migrated, &far_root),
+        Some(pid),
+        "it attached to the run already there rather than starting another"
+    );
+
+    end_far_run(pid);
+    Ok(())
+}
+
+/// A config in `dir` whose orchestrator migrates onto a machine of yours,
+/// rooted at `root` and reached at the ssh destination `host`.
+///
+/// It names the same run as [`migrating`], because a run's directory on a
+/// machine derives from the run id under the host's root: the same far run is
+/// therefore reachable through either form of entry, which is what lets a
+/// migration onto a rented machine be recalled from a machine of yours whose
+/// hop the test stands in for.
+fn recalling(dir: &Path, root: &Path, host: &str, segments: u64, behaviors: &str) -> PathBuf {
+    config(
+        dir,
+        "recalling.toml",
+        segments,
+        behaviors,
+        &format!(
+            r#"
+            migrate = "far"
+
+            [host.far]
+            ssh = {host:?}
+            workers = 1
+            root = {root:?}
+            binary = {binary:?}
+            "#,
+            root = root.to_string_lossy(),
+            binary = far_binary(),
+        ),
+    )
+}
+
+/// Runs `sima <args…>` with `bin` ahead of the PATH, so the stand-in `ssh` is
+/// the one it finds.
+fn sima_with(bin: &Path, args: &[&str]) -> Output {
+    let path = std::env::var("PATH").expect("a PATH");
+    sima_command()
+        .args(args)
+        .env("PATH", format!("{}:{path}", bin.display()))
+        .output()
+        .expect("spawn sima")
+}
+
+/// A migrating config whose run may spend `cap` dollars in total.
+fn migrating_under_budget(dir: &Path, root: &Path, cap: f64) -> PathBuf {
+    let text = format!(
+        "{}\n[budget]\nmax_spend_usd = {cap}\n",
+        std::fs::read_to_string(migrating(dir, root, UNFINISHABLE, PACED))
+            .expect("read the migrating config")
+    );
+    common::write_config_text(dir, "migrating.toml", &text)
+}
+
+#[test]
+fn an_exhausted_budget_winds_the_far_run_down_pulls_and_takes_the_machine_away() -> Result<()> {
+    // The one thing that still ends a far run from this side while a migration
+    // watches it: money cannot wait for an operator to come back.
+    //
+    // The ceiling is one micro-dollar, which the stub's machine accrues in
+    // some tens of milliseconds: nothing is owed when the rental is asked for,
+    // so it is granted, and the ceiling is past by the time the follow first
+    // assesses it — which is after the far run has started and journaled.
+    workers_built();
+    let dir = tempfile::tempdir().expect("temp dir");
+    let far_root = dir.path().join("far");
+    let migrated = migrating_under_budget(dir.path(), &far_root, 0.000_001);
+    assert!(matches!(
+        drive(&migrated, Some(2))?,
+        RunOutcome::Interrupted { .. }
+    ));
+
+    let outcome = move_run(&migrated)?;
+    assert!(
+        matches!(outcome, MigrateOutcome::Interrupted { .. }),
+        "the ceiling wound the run down: {outcome:?}"
+    );
+    assert_eq!(
+        far_pid(&migrated, &far_root),
+        None,
+        "the far run was ended rather than left computing"
+    );
+    assert!(
+        manifest_bytes(&migrated).is_none(),
+        "a wound-down migration seals nothing"
+    );
+
+    // The pull ran, and the machine it ran against is gone.
+    let far = far_store(&migrated, &far_root)?;
+    let store = Store::open(&load(&migrated)?.store)?;
+    for (key, record) in &far_committed(&migrated, &far)? {
+        assert_eq!(
+            store.record(key)?.as_ref(),
+            Some(record),
+            "task {key} was left on the far side"
+        );
+    }
+    assert!(
+        store.instance_records()?.is_empty(),
+        "the machine was torn down on the wind-down path"
+    );
+    Ok(())
+}
+
+/// A migrating config whose run may compute for `ms` milliseconds per launch,
+/// on the rented stub machine [`migrating`] names.
+fn migrating_under_ceiling(dir: &Path, root: &Path, ms: u64) -> PathBuf {
+    let text = format!(
+        "{}\n[budget]\nmax_wall_clock_ms = {ms}\n",
+        std::fs::read_to_string(migrating(dir, root, UNFINISHABLE, PACED))
+            .expect("read the migrating config")
+    );
+    common::write_config_text(dir, "migrating.toml", &text)
+}
+
+/// A config in `dir` whose orchestrator migrates onto a machine of yours,
+/// rooted at `root`, whose run may compute for `ms` milliseconds per launch.
+///
+/// The machine is reached through the stand-ins [`common::machine_stubs`]
+/// writes, so its workers run in a container the same way a real one's do and
+/// the far side is still this machine.
+fn owned_under_ceiling(dir: &Path, root: &Path, ms: u64) -> PathBuf {
+    let text = format!(
+        "{}\n[budget]\nmax_wall_clock_ms = {ms}\n",
+        std::fs::read_to_string(config(
+            dir,
+            "owned.toml",
+            UNFINISHABLE,
+            PACED,
+            &format!(
+                r#"
+            migrate = "far"
+
+            [host.far]
+            ssh = "farbox"
+            image = "{image}"
+            runtime = "docker"
+            workers = 1
+            root = {root:?}
+            binary = {binary:?}
+            "#,
+                image = common::IMAGE,
+                root = root.to_string_lossy(),
+                binary = far_binary(),
+            ),
+        ))
+        .expect("read the owned config")
+    );
+    common::write_config_text(dir, "owned.toml", &text)
+}
+
+#[test]
+fn a_migrated_run_under_a_wall_clock_ceiling_winds_itself_down_on_the_far_side() -> Result<()> {
+    // The ceiling travels to a machine of yours, so the far run keeps it: the
+    // chain has a hundred seconds of work left and the run ends anyway, on its
+    // own.
+    workers_built();
+    let dir = tempfile::tempdir().expect("temp dir");
+    let far_root = dir.path().join("far");
+    let bin = common::machine_stubs(dir.path(), false);
+    let migrated = owned_under_ceiling(dir.path(), &far_root, 1_500);
+
+    let output = sima_with(&bin, &["migrate", migrated.to_str().expect("utf-8 path")]);
+    assert_eq!(
+        output.status.code(),
+        Some(130),
+        "the far run interrupted itself: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        far_pid(&migrated, &far_root),
+        None,
+        "and nothing is left computing there"
+    );
+    assert!(
+        manifest_bytes(&migrated).is_none(),
+        "an interrupted run seals nothing"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_detached_run_ends_on_its_own_ceiling_and_the_next_attach_brings_it_home() -> Result<()> {
+    // What bounds a run nobody is watching on a machine of yours: this side
+    // lets go, and the far run's own ceiling is what ends it.
+    workers_built();
+    let dir = tempfile::tempdir().expect("temp dir");
+    let far_root = dir.path().join("far");
+    let bin = common::machine_stubs(dir.path(), false);
+    // Long enough that the interrupt below lands while the far run is still
+    // computing, so what ends it is the ceiling rather than a race with the
+    // detach.
+    let migrated = owned_under_ceiling(dir.path(), &far_root, 8_000);
+
+    let output = detached_from(&bin, &migrated, &far_root);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "letting go is its own outcome: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).expect("stdout is UTF-8");
+    assert!(stdout.contains("detached"), "{stdout}");
+
+    // Nothing is attached to it now, and it ends all the same.
+    assert!(
+        poll_for(Duration::from_secs(60), || far_pid(&migrated, &far_root)
+            .is_none()
+            .then_some(()))
+        .is_some(),
+        "the far run wound itself down unattended"
+    );
+
+    // What it committed before the ceiling comes home on the next attach.
+    let far = far_store(&migrated, &far_root)?;
+    let far_keys = far_committed(&migrated, &far)?;
+    assert!(!far_keys.is_empty(), "the far run committed something");
+    sima_with(&bin, &["migrate", migrated.to_str().expect("utf-8 path")]);
+    let store = Store::open(&load(&migrated)?.store)?;
+    for (key, record) in &far_keys {
+        assert_eq!(
+            store.record(key)?.as_ref(),
+            Some(record),
+            "task {key} was left on the far side"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn a_detached_run_on_a_rented_machine_carries_no_ceiling_and_keeps_computing() -> Result<()> {
+    // A rental bills by the hour rather than by use, so a run that stops early
+    // there saves nothing and leaves the worst state of all: a machine still
+    // billing and no longer computing. The ceiling stays home — the far config
+    // states none — and the far run computes past it until a recall ends it.
+    workers_built();
+    let dir = tempfile::tempdir().expect("temp dir");
+    let far_root = dir.path().join("far");
+    let migrated = migrating_under_ceiling(dir.path(), &far_root, 1_000);
+
     let interrupt = AtomicBool::new(false);
     let loaded = sima_pipeline::load(&migrated)?;
     let outcome = migrate(
@@ -363,39 +685,189 @@ fn a_migration_interrupted_during_the_follow_still_pulls_and_tears_down() -> Res
         BinaryChange::Refuse,
     )?;
     assert!(
-        matches!(outcome, MigrateOutcome::Interrupted { .. }),
-        "a wound-down migration is resumable, not finalized: {outcome:?}"
-    );
-    assert!(
-        manifest_bytes(&migrated).is_none(),
-        "an interrupted migration seals nothing"
+        matches!(outcome, MigrateOutcome::Detached { .. }),
+        "{outcome:?}"
     );
 
-    // The results that existed still do.
+    let far_text =
+        std::fs::read_to_string(far_root.join(loaded.run.id().to_string()).join("sima.toml"))
+            .expect("the far config");
+    assert!(
+        !far_text.contains("max_wall_clock_ms"),
+        "the ceiling stayed home: {far_text}"
+    );
+
+    // Three times the ceiling this side states, and the far run is still going.
+    assert!(
+        poll_for(Duration::from_secs(3), || far_pid(&migrated, &far_root)
+            .is_none()
+            .then_some(()))
+        .is_none(),
+        "nothing on the far side ended a run under no ceiling"
+    );
+    end_far_run(far_pid(&migrated, &far_root).expect("the far run is still computing"));
+    Ok(())
+}
+
+/// Runs `sima migrate <config>` with `bin` ahead of the PATH and interrupts it
+/// once the far run is computing, which is what letting go of one looks like.
+fn detached_from(bin: &Path, config: &Path, root: &Path) -> Output {
+    let path = std::env::var("PATH").expect("a PATH");
+    let child = sima_command()
+        .args(["migrate", config.to_str().expect("utf-8 path")])
+        .env("PATH", format!("{}:{path}", bin.display()))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn sima");
+    // The far run writes its pid when it starts, so that file appearing is what
+    // says the migration has something to let go of.
+    assert!(
+        poll_for(Duration::from_secs(60), || far_pid(config, root)).is_some(),
+        "the far run started"
+    );
+    let _ = Command::new("kill")
+        .args(["-INT", &child.id().to_string()])
+        .output();
+    child.wait_with_output().expect("the migration ends")
+}
+
+#[test]
+fn a_recall_ends_a_detached_run_and_brings_its_results_home() -> Result<()> {
+    workers_built();
+    let dir = tempfile::tempdir().expect("temp dir");
+    let far_root = dir.path().join("far");
+    let migrated = migrating(dir.path(), &far_root, UNFINISHABLE, PACED);
+    assert!(matches!(
+        drive(&migrated, Some(2))?,
+        RunOutcome::Interrupted { .. }
+    ));
+    let before = committed_records(&migrated)?;
+
+    // Detached: the far run is left computing, which is the state a recall
+    // exists to end.
+    let interrupt = AtomicBool::new(false);
+    let loaded = sima_pipeline::load(&migrated)?;
+    let outcome = migrate(
+        &migrated,
+        &loaded,
+        &|_: &Record| interrupt.store(true, Ordering::Relaxed),
+        &interrupt,
+        BinaryChange::Refuse,
+    )?;
+    assert!(
+        matches!(outcome, MigrateOutcome::Detached { .. }),
+        "{outcome:?}"
+    );
+    let pid = far_pid(&migrated, &far_root).expect("the far run is computing before the recall");
+
+    // Everything the far side committed while it ran: it is on that machine
+    // and nowhere else until the recall pulls it.
+    let far = far_store(&migrated, &far_root)?;
+    assert!(
+        !far_committed(&migrated, &far)?.is_empty(),
+        "the far side held the chain it was sent"
+    );
+
+    let bin = common::machine_stubs(dir.path(), false);
+    let recalling = recalling(dir.path(), &far_root, "farbox", UNFINISHABLE, PACED);
+    let output = sima_with(&bin, &["recall", recalling.to_str().expect("utf-8 path")]);
+    assert_eq!(
+        output.status.code(),
+        Some(130),
+        "a recalled run is resumable, not finalized: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!process_alive(pid), "the far run was ended");
+    assert!(
+        manifest_bytes(&migrated).is_none(),
+        "a recalled run seals nothing"
+    );
+
+    // The results that existed still do, and the pull left nothing behind.
+    let store = Store::open(&load(&migrated)?.store)?;
     let after = committed_records(&migrated)?;
     for (key, record) in &before {
         assert_eq!(after.get(key), Some(record), "task {key} came home intact");
     }
-    // And the pull ran to completion: nothing the far side committed was left
-    // behind, however far it got before the signal.
-    let far = far_store(&migrated, &far_root)?;
-    let far_keys = far_committed(&migrated, &far)?;
-    assert!(
-        !far_keys.is_empty(),
-        "the far side held the chain it was sent"
-    );
-    for (key, record) in &far_keys {
+    for (key, record) in &far_committed(&migrated, &far)? {
         assert_eq!(
-            Store::open(&load(&migrated)?.store)?.record(key)?.as_ref(),
+            store.record(key)?.as_ref(),
             Some(record),
             "task {key} was left on the far side"
         );
     }
+    Ok(())
+}
 
-    let store = Store::open(&load(&migrated)?.store)?;
+#[test]
+fn a_recall_of_a_machine_never_migrated_to_names_what_is_missing() -> Result<()> {
+    // Nothing was ever put there, so there is nothing to end and nothing to
+    // pull — and a recall says so rather than creating a far directory.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let far_root = dir.path().join("far");
+    let bin = common::machine_stubs(dir.path(), false);
+    let recalling = recalling(dir.path(), &far_root, "farbox", SEGMENTS, CHAINS);
+
+    let output = sima_with(&bin, &["recall", recalling.to_str().expect("utf-8 path")]);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).expect("stderr is UTF-8");
+    assert!(stderr.contains("nothing to recall"), "{stderr}");
+    let run = load(&recalling)?.run.id();
     assert!(
-        store.instance_records()?.is_empty(),
-        "the machine was torn down on the interrupt path"
+        !far_root.join(run.to_string()).exists(),
+        "and nothing was created there"
+    );
+    Ok(())
+}
+
+/// The candidate behaviors of a run that cannot complete: one accumulating
+/// chain, and one candidate the domain rejects outright — a definitive failure
+/// no retry revisits, which is what a far run ending in `RunFailed` is.
+const REJECTED: &str = r#""accumulate:2", "reject""#;
+
+#[test]
+fn a_recall_of_a_far_run_that_failed_brings_the_failure_home() -> Result<()> {
+    // A definitive failure is written in the far run's journal, which does not
+    // travel: a recall follows nothing, so reading that journal is the only way
+    // the failure reaches this side. Without it the run would come home
+    // resumable, counting the tasks the failure made unreachable as work left.
+    workers_built();
+    let dir = tempfile::tempdir().expect("temp dir");
+    let far_root = dir.path().join("far");
+
+    // The far run really fails: it is the migration that puts it there and the
+    // far `sima run` that writes the failure into its own journal.
+    let migrated = migrating(dir.path(), &far_root, SEGMENTS, REJECTED);
+    let outcome = move_run(&migrated)?;
+    assert!(
+        matches!(outcome, MigrateOutcome::Failed { .. }),
+        "the far run failed definitively: {outcome:?}"
+    );
+    assert!(
+        far_pid(&migrated, &far_root).is_none(),
+        "a run that failed exited"
+    );
+
+    // The recall reaches that same far directory as a machine of yours, over a
+    // far side that ended before it ever arrived.
+    let bin = common::machine_stubs(dir.path(), false);
+    let recalling = recalling(dir.path(), &far_root, "farbox", SEGMENTS, REJECTED);
+    let output = sima_with(&bin, &["recall", recalling.to_str().expect("utf-8 path")]);
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "a run that failed comes home failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).expect("stdout is UTF-8");
+    assert!(
+        stdout.contains("definitive failure"),
+        "the failure is what it reports: {stdout}"
+    );
+    assert!(
+        manifest_bytes(&recalling).is_none(),
+        "a failed run seals nothing"
     );
     Ok(())
 }

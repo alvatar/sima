@@ -18,6 +18,7 @@
 //! produced, while [`timeline`] measures how efficiently the run executed.
 //! The queries return data; rendering it is the caller's.
 
+mod ceiling;
 mod config;
 mod devices;
 mod domain_registry;
@@ -60,7 +61,7 @@ pub use feed::{
 };
 pub use fleet::Engagement;
 pub use machines::machines;
-pub use migrate::{MigrateOutcome, migrate, sync_serve};
+pub use migrate::{MigrateOutcome, migrate, recall, sync_serve};
 pub use orchestrate::orchestrate;
 pub use program_binding::BinaryChange;
 pub use program_delivery::{ProgramDelivery, ingest_program, receive_program};

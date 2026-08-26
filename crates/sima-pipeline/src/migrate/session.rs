@@ -15,11 +15,15 @@
 //!  │  4  create the far-side directory; write the synthesized config        │
 //!  │  5  is the far side already driving this run?                          │
 //!  │       ├─ yes ──▶ skip to 7; this invocation is a reattach              │
-//!  │       └─ no  ──▶ PUSH the run's closure, then                          │
+//!  │       └─ no  ──▶ PUSH the run's closure; open the FOLLOW, whose first  │
+//!  │                    poll is then the journal as it already stood, then  │
 //!  │  6  START: setsid the far `sima run`, capture its pid into run.pid     │
 //!  │  7  FOLLOW: render each record and forward it into the local journal;  │
 //!  │       poll the budget verdict when this is a rental                    │
 //!  │  8  end on: a terminal run event | local interrupt | budget exhaustion │
+//!  │       ├─ interrupt ──▶ DETACH: leave the far run and its machine as    │
+//!  │       │                  they are; the migration is over here          │
+//!  │       └─ otherwise ──▶                                                 │
 //!  │  9  WIND DOWN: signal the far run, wait for it to exit (bounded)       │
 //!  │ 10  PULL: everything the far side's records reference                  │
 //!  │ 11  re-derive the key set; finalize when every key is committed,       │
@@ -29,22 +33,38 @@
 //! ```
 //!
 //! **The far run is detached.** It is started with `setsid` and its pid
-//! recorded, so a laptop that sleeps, a network that drops, or a `sima migrate`
-//! that is killed leaves the destination computing. Re-running reattaches: a
-//! rented machine is found through the instance ledger, a machine of yours
-//! through `run.pid`, and either way the push and the start are skipped.
+//! recorded, so a laptop that sleeps, a network that drops, a `sima migrate`
+//! that is killed, and a Ctrl-C all leave the destination computing. Re-running
+//! reattaches: a rented machine is found through the instance ledger, a machine
+//! of yours through `run.pid`, and either way the push and the start are
+//! skipped. The far run outlives everything except a terminal event and its
+//! own ceiling.
 //!
 //! **Journals do not sync**, so each record the follow delivers is forwarded
 //! into the local journal through the collector every other event crosses —
 //! without it the local journal would hold a gap for every segment executed
-//! remotely. A reattaching migration discards the history its first poll
-//! replays and forwards only what arrives after it; the records it therefore
-//! loses are diagnostic detail, since journals are observational and excluded
-//! from every identity criterion.
+//! remotely. The records a migration does not forward are diagnostic detail,
+//! since journals are observational and excluded from every identity criterion.
+//!
+//! **The follow's first poll is the journal as it already stood**, and what
+//! that is depends on when the follow opened:
+//!
+//! - A migration that starts the far run opens the follow **before** the start,
+//!   so the first poll is an earlier session's journal — a run that once
+//!   finished on this destination leaves one ending in its finalization. Those
+//!   records are neither forwarded nor allowed to decide this run's outcome,
+//!   and a far process that dies before writing any of its own is reported as
+//!   the death it is rather than as that stale ending.
+//! - A reattach opens the follow on a run already going, so the first poll is
+//!   that run's own history: it decides the state, and is not re-emitted,
+//!   having been produced while nothing was attached to journal it.
+//! - A destination whose journal is empty cannot be followed at all until the
+//!   run writes its first line, so the follow opens after the start and its
+//!   first poll is this run's.
 
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::thread::{self, sleep};
+use std::thread::sleep;
 use std::time::{Duration, Instant};
 
 use sima_core::{Error, Result};
@@ -54,20 +74,20 @@ use sima_provider::{
     AcquireLimits, Budget, InstanceGuard, Objective, Provider, Verdict, acquire, adopt, assess,
     now_ms,
 };
-use sima_scheduler::{Event, Level};
 use sima_store::{ObjectScope, Rental as RentalRole, RunLock, Store};
-use sima_trace::{Collector, Emitter, Observer};
+use sima_trace::{Emitter, Observer};
 
 use crate::config::{FillPolicy, HostForm, LoadedConfig, Rented};
 // The readiness defaults are what a destination stating none falls back on,
 // which under test comes from the session's test overrides instead.
-#[cfg(not(test))]
-use crate::config::{DEFAULT_READY_POLL_MS, DEFAULT_READY_TIMEOUT_MS};
 use crate::feed::RunFeed;
 use crate::fleet::Rental;
-use crate::migrate::destination::{Destination, destination_for};
-use crate::migrate::far_config::{FarWorkers, Registration, far_config};
-use crate::migrate::far_side::{Contact, FarSide, Remote};
+use crate::migrate::destination::destination_for;
+use crate::migrate::far_config::{Registration, far_config};
+#[cfg(test)]
+use crate::migrate::far_run::Overrides;
+use crate::migrate::far_run::{FarRun, FollowEnd, MigrateOutcome};
+use crate::migrate::far_side::{Contact, Remote};
 use crate::migrate::objects::push_objects;
 use crate::payload::{PayloadSpec, closure, ingest};
 use crate::program_binding::BinaryChange;
@@ -77,6 +97,10 @@ use crate::status::{RunState, RunStatus};
 use crate::task_keys::task_keys;
 
 /// How long the follow waits before polling again when nothing has arrived.
+///
+/// The suite reads it from a test override instead, so what it fixes is the
+/// order of what a follow asks for rather than the rate it asks at.
+#[cfg(not(test))]
 const TICK: Duration = Duration::from_millis(100);
 
 /// How often a rental's budget is assessed while the follow runs. The ceiling
@@ -99,30 +123,15 @@ const BUDGET_INTERVAL: Duration = Duration::from_secs(10);
 #[cfg(not(test))]
 const ATTACH_BOUND: Duration = Duration::from_secs(30);
 
-/// What a migration came home with.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum MigrateOutcome {
-    /// Every task committed and the local manifest was written.
-    Finalized { run: RunId },
-    /// The far run ended and the results came home, with tasks still to run.
-    /// The run is resumable, here or on another migration.
-    Outstanding { run: RunId, remaining: usize },
-    /// A task failed definitively on the far side; no manifest was written.
-    Failed { task: String, reason: String },
-    /// The migration was wound down — locally interrupted, or out of budget.
-    /// The results were pulled and any rental destroyed, so the run is
-    /// resumable.
-    Interrupted { run: RunId, remaining: usize },
-}
-
 /// Moves the run `config` describes onto the machine its `[orchestrator]`
 /// names, follows it there, and brings the results home.
 ///
 /// `observer` receives every record the far run produced, in journal order,
 /// through the same collector that appends them locally. `interrupt` is the
-/// level-triggered wind-down request `SIGINT` sets: once raised, the far run is
-/// signalled, its results are pulled, and a rental is destroyed, leaving the run
-/// resumable.
+/// level-triggered request `SIGINT` sets, and it means two different things by
+/// when it arrives: during the acquisition it abandons the offer walk, since
+/// there is no far run yet to leave behind; during the follow it detaches,
+/// leaving the far run computing and its machine standing.
 ///
 /// The local run lock is held for the whole call, so nothing else drives or
 /// reconciles this run while it is away.
@@ -170,24 +179,29 @@ pub fn migrate(
         // provider is constructed and no credential is read.
         HostForm::Owned(owned) => {
             let far = Remote::owned(&destination, owned, &run);
-            Session {
+            FarRun {
                 far: &far,
                 store: &store,
                 config: loaded,
                 destination: &destination,
-                local_text: &local_text,
-                registration: registration.as_ref(),
-                accept,
-                rental: None,
                 observer,
-                interrupt,
-                // Nothing asked for this machine before now, so the contact is
-                // what starts its clock.
-                usable_by: None,
+                rental: None,
                 #[cfg(test)]
                 overrides: Overrides::default(),
             }
-            .drive()
+            .under_teardown(|far_run| {
+                Session {
+                    far_run,
+                    local_text: &local_text,
+                    registration: registration.as_ref(),
+                    accept,
+                    interrupt,
+                    // Nothing asked for this machine before now, so the contact
+                    // is what starts its clock.
+                    usable_by: None,
+                }
+                .run_to_end()
+            })
         }
         HostForm::Rented(spec) => {
             // One machine under strict fill: `migrate` names exactly one, so
@@ -226,22 +240,27 @@ pub fn migrate(
                 &run,
                 registration.is_none().then_some(&loaded.run.format),
             )?;
-            Session {
+            FarRun {
                 far: &far,
                 store: &store,
                 config: loaded,
                 destination: &destination,
-                local_text: &local_text,
-                registration: registration.as_ref(),
-                accept,
-                rental: Some(guard),
                 observer,
-                interrupt,
-                usable_by: Some(usable_by),
+                rental: Some(guard),
                 #[cfg(test)]
                 overrides: Overrides::default(),
             }
-            .drive()
+            .under_teardown(|far_run| {
+                Session {
+                    far_run,
+                    local_text: &local_text,
+                    registration: registration.as_ref(),
+                    accept,
+                    interrupt,
+                    usable_by: Some(usable_by),
+                }
+                .run_to_end()
+            })
         }
     }
 }
@@ -293,7 +312,8 @@ fn carried(loaded: &LoadedConfig) -> Result<Option<Carried>> {
 /// Adoption comes first because a migration detaches the far side deliberately,
 /// so a machine already working and already being paid for is the common case
 /// on a second invocation. `interrupt` aborts an offer walk in flight, so a
-/// `SIGINT` during acquisition is not waited out.
+/// `SIGINT` during acquisition is not waited out — and that is all it can mean
+/// here: detaching exists only once a far run is driving, and nothing is yet.
 fn hold<'a>(
     provider: &'a (dyn Provider + Sync),
     store: &'a Store,
@@ -323,43 +343,13 @@ fn hold<'a>(
     )
 }
 
-/// One migration, past the destination's resolution: steps 3 through 12 over a
-/// machine already in hand.
+/// One migration, past the destination's resolution: steps 3 through 8 over the
+/// far run it starts or attaches to.
 ///
 /// Split from [`migrate`] so the choreography is driven against a recording
-/// [`FarSide`] with no machine at all, and so every path out of it passes back
-/// through the teardown.
-/// The session's test-only overrides, in one struct on the type rather than
-/// scattered across its fields.
-#[cfg(test)]
-#[derive(Debug, Clone, Copy)]
-struct Overrides {
-    /// What a destination stating no readiness bounds falls back on. The suite
-    /// takes the same tolerance production takes — the attempts and what each
-    /// records are what its tests fix — at a poll that costs no wall clock.
-    stated_nowhere: (Duration, Duration),
-    /// How long the follow waits for the far run's first journal line. The
-    /// production bound covers a process start; what the suite fixes is which
-    /// failure a wait that ran out reports, so it runs the same path in a
-    /// fraction of the time.
-    attach_bound: Duration,
-}
-
-#[cfg(test)]
-impl Default for Overrides {
-    fn default() -> Overrides {
-        Overrides {
-            stated_nowhere: (Duration::from_millis(200), Duration::from_millis(1)),
-            attach_bound: Duration::from_millis(500),
-        }
-    }
-}
-
+/// [`FarSide`] with no machine at all.
 struct Session<'a> {
-    far: &'a dyn FarSide,
-    store: &'a Store,
-    config: &'a LoadedConfig,
-    destination: &'a Destination<'a>,
+    far_run: &'a FarRun<'a>,
     /// The local config's own file text, which is what travels.
     local_text: &'a str,
     /// How the far side answers for this run's format, when a `[domain.*]`
@@ -370,147 +360,166 @@ struct Session<'a> {
     /// the run — carried to the far `sima run`, whose own binding guard is
     /// what compares the two.
     accept: BinaryChange,
-    /// The rented machine hosting the run, released on every path out; `None`
-    /// for a machine of yours, which is nothing to tear down.
-    rental: Option<InstanceGuard<'a, dyn Provider + Sync + 'a>>,
-    observer: Observer<'a>,
     interrupt: &'a AtomicBool,
     /// When the destination must be usable by, established when the machine was
     /// first asked for. `None` for a destination with no acquisition phase — a
     /// machine of yours — whose contact is the first thing to ask for it and so
     /// starts the deadline itself.
     usable_by: Option<Instant>,
-    #[cfg(test)]
-    overrides: Overrides,
 }
 
 impl Session<'_> {
-    /// The whole migration, with the teardown of step 12 on every path out.
-    fn drive(mut self) -> Result<MigrateOutcome> {
-        let rental = self.rental.take();
-        let outcome = self.run_to_end();
-        // A guard left alive is a machine still being paid for, so the teardown
-        // runs whatever the migration did.
-        let teardown = match rental {
-            Some(guard) => guard.release(),
-            None => Ok(()),
-        };
-        match (outcome, teardown) {
-            (Ok(outcome), Ok(())) => Ok(outcome),
-            // The migration's own failure is the cause; the ledger record a
-            // failed teardown leaves is what the next reconciliation pass acts
-            // on.
-            (Err(error), _) | (Ok(_), Err(error)) => Err(error),
-        }
-    }
-
     /// Steps 3 through 11: reach the machine, place the run on it, push, start,
     /// follow, wind down, pull, and settle.
     fn run_to_end(&self) -> Result<MigrateOutcome> {
+        let far_run = self.far_run;
         let probed = self.reach()?;
         let far_text = far_config(
             self.local_text,
-            FarWorkers::for_form(self.destination.form, &probed),
+            far_run.destination.form,
+            &probed,
             self.registration,
         )?;
-        self.far.place(&far_text)?;
+        far_run.far.place(&far_text)?;
 
         // A far side already driving this run is a reattach: it holds the
         // closure it was sent and its own progress since, so pushing would send
         // what it already has, and starting would run a second orchestrator
         // against a store whose lock the first one holds.
-        let reattached = self.far.driving()?;
-        let pid = match reattached {
-            Some(pid) => pid,
+        let reattached = far_run.far.driving()?;
+        let (pid, opened) = match reattached {
+            Some(pid) => (pid, None),
             None => {
-                let keys = task_keys(self.config, self.store)?;
-                let mut objects = push_objects(self.store, &keys)?;
+                let keys = task_keys(far_run.config, far_run.store)?;
+                let mut objects = push_objects(far_run.store, &keys)?;
                 // The program travels with the run it serves: the manifest and
                 // its files ride the same push, and the sync's negotiation is
                 // what skips the bytes the destination already holds.
                 if let Some(registration) = self.registration {
-                    objects.extend(closure(self.store, &registration.payload_digest)?);
+                    objects.extend(closure(far_run.store, &registration.payload_digest)?);
                 }
-                self.far
-                    .sync(self.store, &keys, ObjectScope::Named(&objects))?;
-                self.far.start(self.accept)?
+                far_run
+                    .far
+                    .sync(far_run.store, &keys, ObjectScope::Named(&objects))?;
+                // The follow opens before the far run starts, so its first poll
+                // is the journal as an earlier session left it and everything
+                // after that is this run's. It is what tells a run that once
+                // finished on this destination from the one starting now.
+                //
+                // A journal that is not there yet cannot be followed, and there
+                // is then nothing earlier to tell apart: the follow opens after
+                // the start instead, waiting for the run's first line.
+                let opened = far_run.far.follow().ok();
+                (far_run.far.start(self.accept)?, opened)
             }
         };
 
-        let (state, wound_down) = self.watch(pid, reattached.is_some())?;
+        let (state, end) = self.watch(pid, reattached.is_some(), opened)?;
+        // Detaching leaves the far run computing, so there is nothing to pull:
+        // its results come home on the next migration that sees it end, or on
+        // a recall. Skipping the pull is what makes letting go immediate.
+        if end == FollowEnd::Detached {
+            return Ok(MigrateOutcome::Detached {
+                run: far_run.config.run.id(),
+                machine: far_run.destination.name.to_string(),
+            });
+        }
 
-        // The pull takes everything the far side's records reference, so the
-        // store that comes home is complete. The far run has ended by now on
-        // every path that reaches here — of its own accord, on the wind-down's
-        // signal, or on the termination the wind-down escalates to — so the far
-        // side's run lock is free for `sima sync-serve` to take.
-        let keys = task_keys(self.config, self.store)?;
-        self.far.sync(self.store, &keys, ObjectScope::Referenced)?;
-        self.settle(state, wound_down)
+        far_run.pull()?;
+        far_run.settle(state, end)
     }
 
     /// Steps 7 through 9: follow the far run to its end, then wind it down and
     /// wait for it to exit.
     ///
-    /// Returns the state the far run's journal projects and whether this side
-    /// wound it down. Both happen under the run's collector, so every record the
-    /// follow delivers reaches the local journal and the operator's view through
-    /// one boundary, and the budget and timeout reports land in that same journal.
-    fn watch(&self, pid: u32, reattached: bool) -> Result<(RunState, bool)> {
-        let run = self.config.run.id();
-        let writer = self.store.journal_writer(&run)?;
-        thread::scope(|scope| -> Result<(RunState, bool)> {
-            let collector = Collector::spawn(scope, writer, self.observer);
-            let events = collector.emitter();
-            let followed =
-                self.follow(&run, reattached, &events)
-                    .and_then(|(state, wound_down)| {
-                        self.wind_down(pid, wound_down, &events)?;
-                        Ok((state, wound_down))
-                    });
-            // The collector joins only once every emitter is dropped.
-            drop(events);
-            let journal = collector.shutdown();
-            // A journal that could not be appended is a store fault worth
-            // reporting, but only when the follow itself did not already fail.
-            followed.and_then(|out| journal.map(|()| out))
+    /// Returns the state the far run's journal projects and what ended the
+    /// follow, both under the run's journal boundary.
+    fn watch(
+        &self,
+        pid: u32,
+        reattached: bool,
+        opened: Option<Box<dyn RunFeed>>,
+    ) -> Result<(RunState, FollowEnd)> {
+        let run = self.far_run.config.run.id();
+        self.far_run.journaling(|events| {
+            let (state, end) = self.follow(&run, reattached, opened, events)?;
+            match end {
+                // Letting go signals nothing and waits for nothing: the far run
+                // is left exactly as it was.
+                FollowEnd::Detached => {}
+                FollowEnd::FarRun => self.far_run.wind_down(pid, false, events)?,
+                FollowEnd::WoundDown => self.far_run.wind_down(pid, true, events)?,
+            }
+            Ok((state, end))
         })
     }
 
     /// Follows the far run until it ends, this side is interrupted, or a
     /// rental's budget runs out, forwarding each record into the run's journal.
-    fn follow(&self, run: &RunId, reattached: bool, events: &Emitter) -> Result<(RunState, bool)> {
+    fn follow(
+        &self,
+        run: &RunId,
+        reattached: bool,
+        opened: Option<Box<dyn RunFeed>>,
+        events: &Emitter,
+    ) -> Result<(RunState, FollowEnd)> {
         let budget = self.budget();
-        let mut feed = self.attach()?;
+        // A follow opened before the far run started is the one to use; every
+        // other case waits for the run's first journal line and opens then.
+        // What the first poll holds follows from which it was:
+        //
+        // - opened before the start: an earlier session's journal. This
+        //   migration is not watching that run, so its records neither decide
+        //   this outcome nor cross into the local journal a second time.
+        // - a reattach: the far run's own history, produced while nothing was
+        //   attached to journal it. It decides the state, and is not re-emitted.
+        // - opened after the start: the journal was empty before it, so the
+        //   first poll is this run's like any other.
+        let earlier_session = opened.is_some();
+        let mut feed = match opened {
+            Some(feed) => feed,
+            None => self.attach()?,
+        };
         let mut status = RunStatus::new(*run);
-        let mut replay = reattached;
+        let mut first = true;
+        // Whether this run has journaled a line of its own.
+        let mut journaled = false;
         // Unset, so the first tick assesses: a migration re-run under a ceiling
         // already spent must not first watch for an interval.
         let mut assessed: Option<Instant> = None;
         loop {
             let records = feed.poll()?;
-            for record in &records {
-                status.apply(record);
-                // The first poll of a reattached follow is the far run's whole
-                // history, produced while nothing was attached to journal it.
-                if !replay {
-                    events.emit(record.event.clone());
+            if !(first && earlier_session) {
+                let replayed = first && reattached;
+                for record in &records {
+                    status.apply(record);
+                    if !replayed {
+                        events.emit(record.event.clone());
+                    }
                 }
+                journaled |= !records.is_empty();
             }
-            replay = false;
+            first = false;
             if !matches!(status.state, RunState::InProgress) {
-                return Ok((status.state, false));
+                return Ok((status.state, FollowEnd::FarRun));
             }
+            // The operator letting go, which is the whole of what a `SIGINT`
+            // asks for: the far run is none of this side's business from here.
             if self.interrupt.load(Ordering::Relaxed) {
-                return Ok((status.state, true));
+                return Ok((status.state, FollowEnd::Detached));
             }
+            // Money is the one thing that cannot wait for an operator to come
+            // back, so an exhausted ceiling ends the far run rather than
+            // letting go of it.
             if let Some(budget) = budget
                 && assessed.is_none_or(|at| at.elapsed() >= BUDGET_INTERVAL)
             {
                 assessed = Some(Instant::now());
-                if let Verdict::Exhausted(exhaustion) = assess(self.store, run, budget, now_ms())? {
+                if let Verdict::Exhausted(exhaustion) =
+                    assess(self.far_run.store, run, budget, now_ms())?
+                {
                     events.emit(budget_exhausted(exhaustion));
-                    return Ok((status.state, true));
+                    return Ok((status.state, FollowEnd::WoundDown));
                 }
             }
             if records.is_empty() {
@@ -519,10 +528,18 @@ impl Session<'_> {
                 // and the follow can connect before that. The pid it was started
                 // under answers without a race, so it is what decides — and it
                 // is asked only on the rare tick where the lock reads free.
-                if feed.holder()?.is_none() && self.far.driving()?.is_none() {
-                    return Ok((status.state, false));
+                if feed.holder()?.is_none() && self.far_run.far.driving()?.is_none() {
+                    // The far run this migration started is gone and journaled
+                    // nothing of its own, so everything the state rests on was
+                    // written by an earlier session. It died while loading —
+                    // an install that could not build, a binding guard that
+                    // refused — and its own words are in the log it wrote.
+                    if !reattached && !journaled {
+                        return Err(self.far_run.died("ended before it journaled anything"));
+                    }
+                    return Ok((status.state, FollowEnd::FarRun));
                 }
-                sleep(TICK);
+                sleep(self.tick());
             }
         }
     }
@@ -537,14 +554,14 @@ impl Session<'_> {
     fn attach(&self) -> Result<Box<dyn RunFeed>> {
         let deadline = Instant::now() + self.attach_bound();
         loop {
-            match self.far.follow() {
+            match self.far_run.far.follow() {
                 Ok(feed) => return Ok(feed),
                 Err(error) => {
-                    let gone = self.far.driving()?.is_none();
+                    let gone = self.far_run.far.driving()?.is_none();
                     if gone || Instant::now() >= deadline {
                         return Err(self.unattachable(error, gone));
                     }
-                    sleep(TICK);
+                    sleep(self.tick());
                 }
             }
         }
@@ -565,15 +582,8 @@ impl Session<'_> {
         if !gone {
             return refusal;
         }
-        let tail = match self.far.log_tail() {
-            Ok(tail) if tail.trim().is_empty() => "(its log is empty)".to_string(),
-            Ok(tail) => tail,
-            Err(error) => format!("(its log could not be read: {error})"),
-        };
-        Error::Validation(format!(
-            "the run on {:?} ended before it journaled anything, so there is nothing to \
-             follow: {refusal}. Its last words were:\n{tail}",
-            self.destination.name
+        self.far_run.died(&format!(
+            "ended before it journaled anything, so there is nothing to follow: {refusal}"
         ))
     }
 
@@ -602,7 +612,7 @@ impl Session<'_> {
             // A machine that answered has answered: what it said is the result,
             // whether that is its devices or a reason the run cannot proceed.
             // Only a machine that could not be reached is worth asking again.
-            match self.far.devices()? {
+            match self.far_run.far.devices()? {
                 Contact::Answered(devices) => return Ok(devices),
                 Contact::Unreachable(error) => {
                     if Instant::now() >= deadline {
@@ -614,136 +624,17 @@ impl Session<'_> {
         }
     }
 
-    /// Step 9: asks the far run to wind down when this side ended the follow,
-    /// then waits for it to exit.
-    ///
-    /// `sima sync-serve` takes the far side's run lock and the far `sima run`
-    /// holds it while running, so the pull cannot proceed until the far run is
-    /// gone. A wait that runs out is recorded and then escalated: the run is
-    /// ended outright, and one that survives even that fails the migration by
-    /// name. Either way the far run does not outlive the migration that started
-    /// it.
-    ///
-    /// The signal is re-sent on every poll rather than once, because a far run
-    /// is not signallable from the instant it starts. A shell starts an
-    /// asynchronous command with `SIGINT` ignored and the disposition survives
-    /// the exec, so the far run becomes signallable only once its own handler
-    /// replaces the inherited ignore — which is after it has loaded its config.
-    /// A wind-down that begins inside that window would otherwise signal into
-    /// nothing and wait out the whole bound. Re-sending is idempotent against a
-    /// run already winding down and costs one signal per poll interval.
-    fn wind_down(&self, pid: u32, signal: bool, events: &Emitter) -> Result<()> {
-        let (bound, poll) = self.ready_bounds();
-        let deadline = Instant::now() + bound;
-        loop {
-            if signal {
-                self.far.interrupt(pid)?;
-            }
-            if self.far.driving()?.is_none() {
-                return Ok(());
-            }
-            if Instant::now() >= deadline {
-                events.emit(Event::Diagnostic {
-                    level: Level::Warn,
-                    source: "migrate".to_string(),
-                    message: format!(
-                        "the run on {:?} did not exit within {}ms of the wind-down; \
-                         terminating it",
-                        self.destination.name,
-                        bound.as_millis()
-                    ),
-                    worker: None,
-                    host: Some(self.destination.name.to_string()),
-                    task: None,
-                });
-                // Ending it outright is safe by the same invariant crash
-                // recovery rests on: a run that dies without winding down leaves
-                // a resumable store. Abandoning it is what is not safe — an
-                // owned destination has no rental to destroy, so the run would
-                // keep computing, and the pull it is left in front of cannot
-                // take a lock the survivor still holds.
-                self.far.terminate(pid)?;
-                // One interval for the far side to reap it, then the answer is
-                // final: nothing here can end a process that survived that.
-                sleep(poll);
-                if self.far.driving()?.is_some() {
-                    return Err(Error::Validation(format!(
-                        "the run on {:?} is still there as pid {pid} after being terminated",
-                        self.destination.name
-                    )));
-                }
-                return Ok(());
-            }
-            sleep(poll);
-        }
-    }
-
-    /// Step 11: what the run comes home as, over the store the pull extended.
-    ///
-    /// A definitive far-side failure is the outcome whatever the store holds —
-    /// the run cannot complete. Otherwise the key set is re-derived and every
-    /// key checked: a complete run finalizes, a wound-down one stays resumable,
-    /// and one whose far side ended early reports what is left.
-    fn settle(&self, state: RunState, wound_down: bool) -> Result<MigrateOutcome> {
-        if let RunState::Failed { task, reason } = state {
-            return Ok(MigrateOutcome::Failed { task, reason });
-        }
-        let run = self.config.run.id();
-        let keys = task_keys(self.config, self.store)?;
-        let mut remaining = 0;
-        for key in &keys {
-            if !self.store.has_record(key)? {
-                remaining += 1;
-            }
-        }
-        if wound_down || matches!(state, RunState::Interrupted) {
-            return Ok(MigrateOutcome::Interrupted { run, remaining });
-        }
-        if remaining > 0 {
-            return Ok(MigrateOutcome::Outstanding { run, remaining });
-        }
-        self.store.finalize_run(&run, &keys)?;
-        Ok(MigrateOutcome::Finalized { run })
-    }
-
     /// The ceiling this migration runs under, or `None` when nothing is being
     /// paid for. `[budget]` is the run's own, the same ceiling a fleet spends
     /// under; a machine of yours has no rate and so no ceiling to keep.
     fn budget(&self) -> Option<&Budget> {
-        matches!(self.destination.form, HostForm::Rented(_)).then_some(&self.config.budget)
+        matches!(self.far_run.destination.form, HostForm::Rented(_))
+            .then_some(&self.far_run.config.budget)
     }
 
-    /// The destination's readiness bounds: how long to wait, and how often to
-    /// look. A rented machine states its own; a machine of yours states none,
-    /// so it takes the same defaults a rental would. The wind-down waits for
-    /// the far run to exit under them, and the first contact spaces its
-    /// attempts by the poll.
+    /// The readiness bounds this session waits under, which are the far run's.
     fn ready_bounds(&self) -> (Duration, Duration) {
-        match self.destination.form {
-            HostForm::Rented(spec) => (spec.ready_timeout, spec.ready_poll),
-            HostForm::Owned(_) => self.stated_nowhere_bounds(),
-        }
-    }
-
-    /// The bounds a destination that states none falls back on. A machine of
-    /// yours is the only such destination: the config admits the readiness keys
-    /// on a rented entry alone.
-    ///
-    /// The suite reads them from a test override instead, so it spends no wall clock
-    /// waiting out a tolerance whose attempts are what its tests fix. The
-    /// values below are therefore exercised by the config's own tests rather
-    /// than by anything here.
-    #[cfg(not(test))]
-    fn stated_nowhere_bounds(&self) -> (Duration, Duration) {
-        (
-            Duration::from_millis(DEFAULT_READY_TIMEOUT_MS),
-            Duration::from_millis(DEFAULT_READY_POLL_MS),
-        )
-    }
-
-    #[cfg(test)]
-    fn stated_nowhere_bounds(&self) -> (Duration, Duration) {
-        self.overrides.stated_nowhere
+        self.far_run.ready_bounds()
     }
 
     /// How long the follow waits for the far run's first journal line.
@@ -754,479 +645,37 @@ impl Session<'_> {
 
     #[cfg(test)]
     fn attach_bound(&self) -> Duration {
-        self.overrides.attach_bound
+        self.far_run.overrides.attach_bound
+    }
+
+    /// How long the follow waits before polling again.
+    #[cfg(not(test))]
+    fn tick(&self) -> Duration {
+        TICK
+    }
+
+    #[cfg(test)]
+    fn tick(&self) -> Duration {
+        self.far_run.overrides.tick
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::collections::VecDeque;
-    use std::sync::{Arc, Mutex};
+    use std::sync::Mutex;
 
-    use sima_contracts::DeviceClass;
     use sima_core::Result;
-    use sima_domains::devices::{DeviceInfo, DeviceType};
     use sima_model::TaskKey;
-    use sima_provider::stub::StubProvider;
-    use sima_provider::{Constraints, InstanceStatus, Provision};
-    use sima_scheduler::{Record, RunOutcome};
-    use sima_store::{
-        InstanceRecord, InstanceRecordState, Rental as RentalRole, SpendEntry, SyncReport,
-    };
-    use tempfile::TempDir;
+    use sima_provider::{InstanceStatus, Provision};
+    use sima_scheduler::{Event, Record};
+    use sima_store::{InstanceRecord, InstanceRecordState, Rental as RentalRole, SyncReport};
 
     use super::*;
-    use crate::feed::{FeedInfo, RunFeed};
-    use crate::fixtures::{drive_run, sync_between};
-
-    /// The pid the scripted far side reports for a run it started.
-    const PID: u32 = 4242;
-
-    // ---- The recording far side ----
-
-    /// One far-side operation, in the order it was asked for.
-    #[derive(Debug, Clone, PartialEq, Eq)]
-    enum Step {
-        Devices,
-        Place,
-        Driving,
-        Start,
-        /// A sync, under the object scope the session chose for it — which is
-        /// the whole of what makes one direction a push and the other a pull.
-        Sync(Scope),
-        Follow,
-        LogTail,
-        Interrupt(u32),
-        Terminate(u32),
-    }
-
-    /// The object scope a sync was handed.
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    enum Scope {
-        /// The identity components and each chain's frontier state: a push.
-        Named,
-        /// Everything the records reference: a pull.
-        Referenced,
-    }
-
-    /// What ends a scripted far run, which is what the wind-down's escalation
-    /// is measured against.
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    enum Ending {
-        /// Winds down on the first signal it hears, as `sima run` does.
-        OnInterrupt,
-        /// Outlasts the wind-down and ends when it is terminated.
-        OnTermination,
-        /// Never exits, however it is asked to.
-        Never,
-    }
-
-    /// The push, named where a step sequence reads it.
-    const PUSH: Step = Step::Sync(Scope::Named);
-    /// The pull.
-    const PULL: Step = Step::Sync(Scope::Referenced);
-
-    /// A far side that records what it was asked to do and answers from a
-    /// script, so the choreography is driven with no machine at all.
-    ///
-    /// Its far run is alive from the start (or from a preset, for a reattach)
-    /// until the feed delivers a terminal record or the wind-down signals it —
-    /// which is what a real `sima run` does — unless it is stubborn, in which
-    /// case it never exits and the wind-down's wait runs out on it.
-    struct Scripted<'a> {
-        devices: Vec<DeviceInfo>,
-        /// The far-side run's pid while it is alive.
-        alive: Arc<Mutex<Option<u32>>>,
-        /// What ends this far run.
-        ending: Ending,
-        /// How many times the first contact is refused before the machine
-        /// answers: a freshly rented host's sshd can lag its provider's
-        /// `Ready`, and the connection is refused until it is up.
-        refusals: Mutex<usize>,
-        /// A machine that answers, without the worker image its pool needs —
-        /// a failure no amount of waiting resolves.
-        image_absent: bool,
-        /// How many signals the far run discards before it winds down: a run
-        /// that has not yet installed its own handler is not signallable, and
-        /// the disposition it inherited discards what it is sent.
-        deaf: Mutex<usize>,
-        /// The records the follow feed delivers, one batch per poll.
-        polls: Arc<Mutex<VecDeque<Vec<Record>>>>,
-        /// The far side's own store and the run it holds, when a sync is to be
-        /// performed for real rather than recorded and skipped.
-        far: Option<(&'a Store, &'a LoadedConfig)>,
-        steps: Mutex<Vec<Step>>,
-        placed: Mutex<Option<String>>,
-        /// What the far `sima run` was started with about a changed program.
-        started_with: Mutex<Option<BinaryChange>>,
-        /// The objects the push named, which is what a program has to be in.
-        pushed: Mutex<Vec<sima_core::Hash>>,
-        /// What the far run's log holds, when it wrote one.
-        log: Option<String>,
-        /// How many times the follow is refused before it opens: a far run is
-        /// up before it journals, and `sima follow-serve` refuses a run that
-        /// journaled nothing.
-        follow_refusals: Mutex<usize>,
-    }
-
-    impl<'a> Scripted<'a> {
-        /// A far side driving nothing, offering one card, with nothing to
-        /// deliver.
-        fn new() -> Scripted<'a> {
-            Scripted {
-                devices: vec![DeviceInfo {
-                    class: DeviceClass::new("10de:2684").expect("class id"),
-                    name: "NVIDIA GeForce RTX 4090".to_string(),
-                    device_type: DeviceType::Discrete,
-                    member: 0,
-                }],
-                alive: Arc::new(Mutex::new(None)),
-                ending: Ending::OnInterrupt,
-                refusals: Mutex::new(0),
-                image_absent: false,
-                deaf: Mutex::new(0),
-                polls: Arc::new(Mutex::new(VecDeque::new())),
-                far: None,
-                steps: Mutex::new(Vec::new()),
-                placed: Mutex::new(None),
-                started_with: Mutex::new(None),
-                pushed: Mutex::new(Vec::new()),
-                log: None,
-                follow_refusals: Mutex::new(0),
-            }
-        }
-
-        /// A far side already driving this run, which is what a reattach finds.
-        fn already_driving(self) -> Scripted<'a> {
-            *self.alive.lock().expect("the pid lock") = Some(PID);
-            self
-        }
-
-        /// A far run that never exits, however it is asked to.
-        fn stubborn(mut self) -> Scripted<'a> {
-            self.ending = Ending::Never;
-            self
-        }
-
-        /// A far run that keeps going through the whole wind-down and ends only
-        /// when it is terminated.
-        fn outlasting_the_wind_down(mut self) -> Scripted<'a> {
-            self.ending = Ending::OnTermination;
-            self
-        }
-
-        /// A machine that answers but does not hold the worker image.
-        fn without_the_image(mut self) -> Scripted<'a> {
-            self.image_absent = true;
-            self
-        }
-
-        /// A machine that refuses its first `contacts` connections before it
-        /// answers at all.
-        fn refusing(self, contacts: usize) -> Scripted<'a> {
-            *self.refusals.lock().expect("the refusal lock") = contacts;
-            self
-        }
-
-        /// A far run that discards its first `signals` before it becomes
-        /// signallable.
-        fn deaf_for(self, signals: usize) -> Scripted<'a> {
-            *self.deaf.lock().expect("the deafness lock") = signals;
-            self
-        }
-
-        /// A far run that is up but has not journaled yet, so the follow is
-        /// refused its first `attempts` times before it opens.
-        fn refusing_the_follow(self, attempts: usize) -> Scripted<'a> {
-            *self.follow_refusals.lock().expect("the follow lock") = attempts;
-            self
-        }
-
-        /// A far run that exits before it journals anything, leaving `log`
-        /// behind — what a far-side load failure looks like from here.
-        fn dying_before_journaling(mut self, log: &str) -> Scripted<'a> {
-            self.log = Some(log.to_string());
-            self
-        }
-
-        /// The records the follow delivers, one batch per poll.
-        fn delivering(self, batches: Vec<Vec<Record>>) -> Scripted<'a> {
-            *self.polls.lock().expect("the poll lock") = batches.into();
-            self
-        }
-
-        /// The store a sync actually exchanges with, and the config whose run it
-        /// holds. Without it a sync is recorded and nothing moves.
-        fn syncing_with(mut self, store: &'a Store, config: &'a LoadedConfig) -> Scripted<'a> {
-            self.far = Some((store, config));
-            self
-        }
-
-        fn record(&self, step: Step) {
-            self.steps.lock().expect("the step lock").push(step);
-        }
-
-        fn steps(&self) -> Vec<Step> {
-            self.steps.lock().expect("the step lock").clone()
-        }
-    }
-
-    impl FarSide for Scripted<'_> {
-        fn devices(&self) -> Result<Contact> {
-            self.record(Step::Devices);
-            let mut refusals = self.refusals.lock().expect("the refusal lock");
-            if *refusals > 0 {
-                *refusals -= 1;
-                return Ok(Contact::Unreachable(Error::Validation(
-                    "ssh: connect to host: Connection refused".to_string(),
-                )));
-            }
-            if self.image_absent {
-                return Err(Error::Validation(
-                    "worker image \"sima:latest\" is not present on \"gpubox\"".to_string(),
-                ));
-            }
-            Ok(Contact::Answered(self.devices.clone()))
-        }
-
-        fn place(&self, config: &str) -> Result<()> {
-            self.record(Step::Place);
-            *self.placed.lock().expect("the placement lock") = Some(config.to_string());
-            Ok(())
-        }
-
-        fn driving(&self) -> Result<Option<u32>> {
-            self.record(Step::Driving);
-            Ok(*self.alive.lock().expect("the pid lock"))
-        }
-
-        fn start(&self, accept: BinaryChange) -> Result<u32> {
-            self.record(Step::Start);
-            *self.started_with.lock().expect("the acceptance lock") = Some(accept);
-            // A run that dies while loading its config is gone by the time
-            // anything asks, which is what leaves the pid naming nothing.
-            if self.log.is_none() {
-                *self.alive.lock().expect("the pid lock") = Some(PID);
-            }
-            Ok(PID)
-        }
-
-        fn interrupt(&self, pid: u32) -> Result<()> {
-            self.record(Step::Interrupt(pid));
-            let mut deaf = self.deaf.lock().expect("the deafness lock");
-            if *deaf > 0 {
-                // Sent into the window before the run's own handler replaced
-                // the disposition it inherited: discarded, with no trace.
-                *deaf -= 1;
-                return Ok(());
-            }
-            if self.ending == Ending::OnInterrupt {
-                *self.alive.lock().expect("the pid lock") = None;
-            }
-            Ok(())
-        }
-
-        fn terminate(&self, pid: u32) -> Result<()> {
-            self.record(Step::Terminate(pid));
-            // A termination is not declinable, so only a far run scripted to
-            // outlast everything survives it.
-            if self.ending != Ending::Never {
-                *self.alive.lock().expect("the pid lock") = None;
-            }
-            Ok(())
-        }
-
-        fn sync(
-            &self,
-            store: &Store,
-            keys: &[TaskKey],
-            scope: ObjectScope<'_>,
-        ) -> Result<SyncReport> {
-            self.record(match scope {
-                ObjectScope::Named(named) => {
-                    *self.pushed.lock().expect("the push lock") = named.to_vec();
-                    PUSH
-                }
-                ObjectScope::Referenced => PULL,
-            });
-            match self.far {
-                // The far side derives its own key set where it sits, as
-                // `sima sync-serve` does over the run's journal; no key list
-                // crosses the wire. This double holds the config, so it
-                // derives the same set the far side's journal would name.
-                Some((far, config)) => {
-                    let far_keys = task_keys(config, far)?;
-                    sync_between(store, keys, scope, far, &far_keys)
-                }
-                None => Ok(SyncReport::default()),
-            }
-        }
-
-        fn log_tail(&self) -> Result<String> {
-            self.record(Step::LogTail);
-            Ok(self.log.clone().unwrap_or_default())
-        }
-
-        fn follow(&self) -> Result<Box<dyn RunFeed>> {
-            self.record(Step::Follow);
-            // `sima follow-serve` refuses a run that journaled nothing, which
-            // is the whole of what this side can learn from it.
-            let mut refusals = self.follow_refusals.lock().expect("the follow lock");
-            if self.log.is_some() || *refusals > 0 {
-                *refusals = refusals.saturating_sub(1);
-                return Err(Error::Validation(
-                    "run 00 was never started in this store".to_string(),
-                ));
-            }
-            Ok(Box::new(ScriptedFeed {
-                info: FeedInfo {
-                    run: RunId::from_hash(sima_core::hash_bytes(b"scripted")),
-                    format: sima_model::FormatId::new("stub.v1").expect("format id"),
-                    workers: 1,
-                },
-                polls: Arc::clone(&self.polls),
-                alive: Arc::clone(&self.alive),
-                ending: self.ending,
-            }))
-        }
-    }
-
-    /// The feed a scripted far side hands out: one batch per poll, and the far
-    /// run ends when a terminal record is delivered.
-    struct ScriptedFeed {
-        info: FeedInfo,
-        polls: Arc<Mutex<VecDeque<Vec<Record>>>>,
-        alive: Arc<Mutex<Option<u32>>>,
-        ending: Ending,
-    }
-
-    impl RunFeed for ScriptedFeed {
-        fn info(&self) -> &FeedInfo {
-            &self.info
-        }
-
-        fn poll(&mut self) -> Result<Vec<Record>> {
-            let batch = self
-                .polls
-                .lock()
-                .expect("the poll lock")
-                .pop_front()
-                .unwrap_or_default();
-            let terminal = batch.iter().any(|record| {
-                matches!(
-                    record.event,
-                    Event::RunFinalized { .. }
-                        | Event::RunFailed { .. }
-                        | Event::RunInterrupted { .. }
-                )
-            });
-            if terminal && self.ending != Ending::Never {
-                // A `sima run` that wrote its terminal event exits.
-                *self.alive.lock().expect("the pid lock") = None;
-            }
-            Ok(batch)
-        }
-
-        fn holder(&self) -> Result<Option<String>> {
-            // The far side holds its run lock for as long as its run does.
-            Ok(self
-                .alive
-                .lock()
-                .expect("the pid lock")
-                .map(|pid| format!("{pid} far")))
-        }
-    }
-
-    // ---- The local side ----
-
-    /// The local side of a migration: the config file's text, its loaded form,
-    /// and the store the run lives in.
-    struct Local {
-        _dir: TempDir,
-        text: String,
-        config: LoadedConfig,
-        store: Store,
-    }
-
-    /// The run every session test moves: one candidate over twenty accumulating
-    /// segments, so the chain has a frontier at every stage.
-    fn config_text(machine: &str, root: &str, bounds: &str) -> String {
-        format!(
-            r#"
-            [run]
-            root_seed = 5
-            segments = 20
-            format = "stub.v1"
-
-            [run.generator]
-            id = "stub.v1"
-            behaviors = ["accumulate:2"]
-
-            [run.params]
-            hex = "01"
-
-            [config]
-            store = "./store"
-            max_attempts = 1
-
-            [orchestrator]
-            workers = 1
-            migrate = "slingshot"
-
-            [host.slingshot]
-            root = {root:?}
-            binary = "/bin/true"
-            {machine}
-            {bounds}
-
-            [budget]
-            max_spend_usd = 1.0
-            "#
-        )
-    }
-
-    /// A local side whose store holds `committed` segments of the run, over a
-    /// destination of the given form.
-    ///
-    /// The run-global ceiling is a dollar, which nothing here reaches unless the
-    /// test seeds spend against it.
-    fn local(machine: &str, bounds: &str, committed: Option<usize>) -> Local {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let root = dir.path().join("far");
-        let text = config_text(machine, &root.to_string_lossy(), bounds);
-        let path = dir.path().join("sima.toml");
-        std::fs::write(&path, &text).expect("write the config");
-        let config = crate::config::load(&path).expect("the config loads");
-        let store = Store::open(&config.store).expect("open the store");
-        if let Some(committed) = committed {
-            assert!(matches!(
-                drive_run(&store, &config.run, Some(committed)),
-                RunOutcome::Interrupted { .. }
-            ));
-        }
-        Local {
-            _dir: dir,
-            text,
-            config,
-            store,
-        }
-    }
-
-    /// The declaration of a rented machine, with bounds that never wait.
-    const RENTED: &str = "provider = \"stub\"";
-    /// The declaration of a machine of yours.
-    const OWNED: &str = "workers = 1";
-    /// Readiness bounds a wind-down runs through without sleeping.
-    const PROMPT: &str = "ready_timeout_ms = 200\nready_poll_ms = 1";
-
-    /// A second store holding the same run, driven `committed` segments in —
-    /// the far side of a migration, as a real sync finds it.
-    fn far_store(config: &LoadedConfig, committed: Option<usize>) -> (TempDir, Store) {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let store = Store::open(dir.path()).expect("open the store");
-        drive_run(&store, &config.run, committed);
-        (dir, store)
-    }
+    use crate::migrate::far_side::FarSide;
+    use crate::migrate::fixtures::{
+        Local, OWNED, PID, PROMPT, PULL, PUSH, RENTED, Scripted, Step, committed, config_text,
+        failed, far_store, finalized, hosting, local, marketplace, over_budget, started,
+    };
 
     /// Drives one session over `far`, capturing every record the follow
     /// forwarded.
@@ -1256,108 +705,28 @@ mod tests {
                 .push(record.clone());
         };
         let destination = destination_for(&local.config).expect("the host is declared");
-        let outcome = Session {
+        let outcome = FarRun {
             far,
             store: &local.store,
             config: &local.config,
             destination: &destination,
-            local_text: &local.text,
-            registration: None,
-            accept: BinaryChange::Refuse,
-            rental,
             observer: &observer,
-            interrupt,
-            usable_by,
+            rental,
             overrides: Overrides::default(),
         }
-        .drive();
+        .under_teardown(|far_run| {
+            Session {
+                far_run,
+                local_text: &local.text,
+                registration: None,
+                accept: BinaryChange::Refuse,
+                interrupt,
+                usable_by,
+            }
+            .run_to_end()
+        });
         let records = std::mem::take(&mut *captured.lock().expect("the capture lock"));
         (outcome, records)
-    }
-
-    // ---- Journal records the scripted far side delivers ----
-
-    fn rec(event: Event) -> Record {
-        Record { ts_ms: 0, event }
-    }
-
-    fn started(run: &RunId) -> Record {
-        rec(Event::RunStarted {
-            run: run.to_string(),
-            tasks: 20,
-            committed: 0,
-        })
-    }
-
-    fn committed(task: &str) -> Record {
-        rec(Event::Committed {
-            task: task.to_string(),
-            record: "11".repeat(32),
-            stats: Vec::new(),
-            stats_blob_hex: String::new(),
-        })
-    }
-
-    fn finalized(run: &RunId) -> Record {
-        rec(Event::RunFinalized {
-            run: run.to_string(),
-            committed: 20,
-        })
-    }
-
-    fn failed(run: &RunId, task: &str, reason: &str) -> Record {
-        rec(Event::RunFailed {
-            run: run.to_string(),
-            task: task.to_string(),
-            reason: reason.to_string(),
-        })
-    }
-
-    // ---- A rented machine, provisioned and adopted ----
-
-    /// A stub marketplace of one generous offer.
-    fn marketplace() -> StubProvider {
-        StubProvider::new(vec![sima_provider::Offer {
-            id: sima_provider::OfferId("offer-0".to_string()),
-            machine: "machine-0".to_string(),
-            gpu_model: "stub-gpu".to_string(),
-            gpu_count: 1,
-            vram_mb: 24_000,
-            price: sima_provider::Price(100_000),
-            reliability: 1.0,
-            verified: true,
-            disk_gb: 1_000,
-            bandwidth_mbps: 10_000,
-            location: String::new(),
-        }])
-    }
-
-    /// Bounds that never wait.
-    fn limits() -> AcquireLimits {
-        AcquireLimits {
-            usable_by: Instant::now() + Duration::from_millis(500),
-            ready_poll: Duration::ZERO,
-        }
-    }
-
-    /// Rents one machine to host the run, as `hold` does when there is nothing
-    /// to adopt.
-    fn hosting<'a>(
-        provider: &'a (dyn Provider + Sync),
-        store: &'a Store,
-        lock: &RunLock,
-    ) -> Result<InstanceGuard<'a, dyn Provider + Sync + 'a>> {
-        acquire(
-            provider,
-            store,
-            lock,
-            RentalRole::Orchestrator,
-            &Constraints::default(),
-            Objective::CheapestPerHour,
-            &limits(),
-            &Budget::default(),
-            &AtomicBool::new(false),
-        )
     }
 
     // ---- The program the run carries with it ----
@@ -1372,21 +741,26 @@ mod tests {
     ) -> Result<MigrateOutcome> {
         let observer = |_: &Record| {};
         let destination = destination_for(&local.config).expect("the host is declared");
-        Session {
+        FarRun {
             far,
             store: &local.store,
             config: &local.config,
             destination: &destination,
-            local_text: &local.text,
-            registration,
-            accept,
-            rental: None,
             observer: &observer,
-            interrupt: &AtomicBool::new(false),
-            usable_by: None,
+            rental: None,
             overrides: Overrides::default(),
         }
-        .drive()
+        .under_teardown(|far_run| {
+            Session {
+                far_run,
+                local_text: &local.text,
+                registration,
+                accept,
+                interrupt: &AtomicBool::new(false),
+                usable_by: None,
+            }
+            .run_to_end()
+        })
     }
 
     #[test]
@@ -1503,7 +877,7 @@ mod tests {
         // which one it was. An install that could not build the program is the
         // case this exists for.
         let local = local(RENTED, PROMPT, Some(3));
-        let far = Scripted::new().dying_before_journaling(
+        let far = Scripted::new().dying_while_loading(
             "sima: validation error: the install script install.sh exited with exit status: 3",
         );
 
@@ -1524,11 +898,69 @@ mod tests {
     }
 
     #[test]
+    fn a_far_run_that_dies_over_an_earlier_session_s_journal_reports_its_death() -> Result<()> {
+        // A second migration onto a run that once finished on the destination:
+        // the far journal already ends in that finalization, and this
+        // invocation's process dies while loading. The follow attaches to the
+        // journal that is there, so the stale ending is all it can replay —
+        // and it is not this migration's outcome.
+        let local = local(RENTED, PROMPT, Some(3));
+        let run = local.config.run.id();
+        let far = Scripted::new()
+            .dying_while_loading(
+                "sima: validation error: the install script install.sh exited with exit status: 3",
+            )
+            .over_an_existing_journal(vec![started(&run), finalized(&run)]);
+
+        let (outcome, _) = session_over(&local, &far, None, &AtomicBool::new(false));
+        let text = outcome
+            .expect_err("a stale finalization is not this migration's outcome")
+            .to_string();
+        assert!(text.contains("slingshot"), "names the machine: {text}");
+        assert!(
+            text.contains("install script install.sh exited"),
+            "carries the far run's own words: {text}"
+        );
+        assert!(
+            !far.steps().contains(&PULL),
+            "nothing was pulled: {:?}",
+            far.steps()
+        );
+        assert!(
+            local.store.manifest(&run)?.is_none(),
+            "and nothing was sealed"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_far_run_that_dies_after_journaling_still_comes_home_outstanding() -> Result<()> {
+        // The counterpart, and the behavior that must not drift: a far run
+        // that journaled its own records and then vanished mid-run is a run
+        // whose results come home, not a death to report.
+        let local = local(RENTED, PROMPT, Some(3));
+        let run = local.config.run.id();
+        let far = Scripted::new()
+            .vanishing_when_drained()
+            .delivering(vec![vec![started(&run), committed("aa")]]);
+
+        let (outcome, _) = session_over(&local, &far, None, &AtomicBool::new(false));
+        assert!(matches!(outcome?, MigrateOutcome::Outstanding { .. }));
+        assert_eq!(
+            far.steps().last(),
+            Some(&PULL),
+            "its results came home: {:?}",
+            far.steps()
+        );
+        Ok(())
+    }
+
+    #[test]
     fn a_far_run_that_died_leaving_no_log_still_names_the_machine() -> Result<()> {
         // A run that never wrote a line leaves the absence to report, which is
         // still more than the follow's own refusal states.
         let local = local(RENTED, PROMPT, Some(3));
-        let far = Scripted::new().dying_before_journaling("");
+        let far = Scripted::new().dying_while_loading("");
 
         let (outcome, _) = session_over(&local, &far, None, &AtomicBool::new(false));
         let text = outcome
@@ -1613,7 +1045,12 @@ mod tests {
                 Step::Place,
                 Step::Driving,
                 PUSH,
+                // The follow opens before the start, so its first poll is the
+                // journal as it stood before this run wrote to it.
+                Step::Follow,
                 Step::Start,
+                // The far side holds nothing yet, so that follow was refused
+                // and the one that reads this run's records opens after it.
                 Step::Follow,
                 // The wind-down finds the run already gone: it wrote its
                 // terminal event and exited.
@@ -1806,7 +1243,10 @@ mod tests {
     }
 
     #[test]
-    fn a_raised_interrupt_signals_the_far_run_pulls_and_tears_the_rental_down() -> Result<()> {
+    fn a_raised_interrupt_detaches_and_leaves_the_far_run_computing() -> Result<()> {
+        // Ctrl-C is the operator letting go, not the operator stopping the
+        // run: the far side is neither signalled nor pulled from, and the
+        // machine it computes on is kept.
         let local = local(RENTED, PROMPT, Some(3));
         let run = local.config.run.id();
         let lock = local.store.acquire_run_lock(&run)?;
@@ -1818,7 +1258,14 @@ mod tests {
         let far = Scripted::new().delivering(vec![vec![started(&run), committed("aa")]]);
 
         let (outcome, _) = session_over(&local, &far, Some(guard), &interrupt);
-        assert!(matches!(outcome?, MigrateOutcome::Interrupted { .. }));
+        assert_eq!(
+            outcome?,
+            MigrateOutcome::Detached {
+                run,
+                machine: "slingshot".to_string(),
+            },
+            "letting go is its own outcome, and it names where the run is"
+        );
         assert_eq!(
             far.steps(),
             [
@@ -1826,15 +1273,79 @@ mod tests {
                 Step::Place,
                 Step::Driving,
                 PUSH,
+                Step::Follow,
                 Step::Start,
                 Step::Follow,
-                Step::Interrupt(PID),
-                Step::Driving,
-                PULL,
             ],
-            "signal, wait, pull — in that order"
+            "nothing was signalled and nothing was pulled"
         );
-        assert_eq!(provider.destroyed().len(), 1, "the rental is torn down");
+        assert_eq!(
+            *far.alive.lock().expect("the pid lock"),
+            Some(PID),
+            "the far run keeps computing"
+        );
+        assert!(
+            provider.destroyed().is_empty(),
+            "the machine it computes on is kept"
+        );
+        assert_eq!(
+            local.store.instance_records()?.len(),
+            1,
+            "its ledger record stands, so the next migration adopts it"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn an_interrupt_during_the_acquisition_abandons_it_and_rents_nothing() -> Result<()> {
+        // Detaching exists only once there is a far run to detach from. Before
+        // one, the interrupt keeps the meaning it has always had: abandon the
+        // offer walk and leave nothing rented.
+        let local = local(RENTED, PROMPT, Some(3));
+        let run = local.config.run.id();
+        let lock = local.store.acquire_run_lock(&run)?;
+        let provider = marketplace();
+        let HostForm::Rented(spec) = &local.config.hosts["slingshot"].form else {
+            panic!("the fixture declares a rented machine");
+        };
+
+        let held = hold(
+            &provider,
+            &local.store,
+            &lock,
+            spec,
+            Instant::now() + spec.ready_timeout,
+            &Budget::default(),
+            &AtomicBool::new(true),
+        );
+        let Err(error) = held else {
+            panic!("an interrupted acquisition rents nothing");
+        };
+        assert!(error.to_string().contains("cancelled"), "{error}");
+        assert!(provider.live().is_empty(), "no machine was left running");
+        assert!(
+            local.store.instance_records()?.is_empty(),
+            "and none is left in the ledger"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_detached_migration_of_a_machine_of_yours_reports_where_the_run_is() -> Result<()> {
+        // The outcome carries what the operator needs to come back: the run,
+        // and the machine it is still computing on.
+        let local = local(OWNED, "", Some(3));
+        let run = local.config.run.id();
+        let far = Scripted::new().delivering(vec![vec![started(&run), committed("aa")]]);
+
+        let (outcome, _) = session_over(&local, &far, None, &AtomicBool::new(true));
+        assert_eq!(
+            outcome?,
+            MigrateOutcome::Detached {
+                run,
+                machine: "slingshot".to_string(),
+            }
+        );
         Ok(())
     }
 
@@ -1847,15 +1358,7 @@ mod tests {
         let guard = hosting(&provider, &local.store, &lock)?;
         // A closed rental this run already paid for, well past the ceiling the
         // config declares.
-        local.store.put_spend(&SpendEntry {
-            tag: "sima-prior-0".to_string(),
-            provider: "stub".to_string(),
-            owner: run.to_string(),
-            price_micro_usd_hour: 100_000,
-            started_ms: 1_700_000_000_000,
-            ended_ms: 1_700_000_003_600_000,
-            cost_micro_usd: 2_000_000,
-        })?;
+        over_budget(&local)?;
         // The far run would go on to finalize; the ceiling is what stops it
         // first, so a migration that never assessed would come home finalized
         // instead of wound down.
@@ -1925,11 +1428,12 @@ mod tests {
     fn a_far_run_that_outlasts_the_wind_down_is_terminated_and_the_pull_follows() -> Result<()> {
         let local = local(RENTED, PROMPT, Some(3));
         let run = local.config.run.id();
+        over_budget(&local)?;
         let far = Scripted::new()
             .outlasting_the_wind_down()
             .delivering(vec![vec![started(&run), committed("aa")]]);
 
-        let (outcome, records) = session_over(&local, &far, None, &AtomicBool::new(true));
+        let (outcome, records) = session_over(&local, &far, None, &AtomicBool::new(false));
         assert!(matches!(outcome?, MigrateOutcome::Interrupted { .. }));
         // The graceful path was tried and reported before anything harder was
         // reached for.
@@ -1962,11 +1466,12 @@ mod tests {
         // would report the lock instead.
         let local = local(RENTED, PROMPT, Some(3));
         let run = local.config.run.id();
+        over_budget(&local)?;
         let far = Scripted::new()
             .stubborn()
             .delivering(vec![vec![started(&run), committed("aa")]]);
 
-        let (outcome, records) = session_over(&local, &far, None, &AtomicBool::new(true));
+        let (outcome, records) = session_over(&local, &far, None, &AtomicBool::new(false));
         let error = outcome.expect_err("a far run that will not end fails the migration");
         let text = error.to_string();
         assert!(text.contains("slingshot"), "names the machine: {text}");
@@ -1988,11 +1493,12 @@ mod tests {
         // every poll is what closes that window.
         let local = local(RENTED, PROMPT, Some(3));
         let run = local.config.run.id();
+        over_budget(&local)?;
         let far = Scripted::new()
             .deaf_for(2)
             .delivering(vec![vec![started(&run), committed("aa")]]);
 
-        let (outcome, records) = session_over(&local, &far, None, &AtomicBool::new(true));
+        let (outcome, records) = session_over(&local, &far, None, &AtomicBool::new(false));
         assert!(matches!(outcome?, MigrateOutcome::Interrupted { .. }));
         assert_eq!(
             far.steps()
@@ -2091,16 +1597,22 @@ mod tests {
 
     #[test]
     fn every_path_out_of_a_migration_tears_the_rental_down() -> Result<()> {
-        // The end state that matters: no path leaves a machine running and
-        // being paid for. The session releases the guard explicitly so a
-        // teardown failure is reported rather than swallowed; the guard's own
-        // drop is the second line of the same guarantee.
-        let run_to = |far: &dyn FarSide, interrupt: bool| -> Result<usize> {
+        // The end state that matters: no path that ends the far run leaves a
+        // machine running and being paid for. The session releases the guard
+        // explicitly so a teardown failure is reported rather than swallowed;
+        // the guard's own drop is the second line of the same guarantee.
+        //
+        // Detaching is the one path that keeps the machine, since the run it
+        // hosts is still computing; it has its own test.
+        let run_to = |far: &dyn FarSide, exhausted: bool| -> Result<usize> {
             let local = local(RENTED, PROMPT, Some(3));
+            if exhausted {
+                over_budget(&local)?;
+            }
             let lock = local.store.acquire_run_lock(&local.config.run.id())?;
             let provider = marketplace();
             let guard = hosting(&provider, &local.store, &lock)?;
-            let _ = session_over(&local, far, Some(guard), &AtomicBool::new(interrupt));
+            let _ = session_over(&local, far, Some(guard), &AtomicBool::new(false));
             Ok(provider.destroyed().len())
         };
 
@@ -2117,6 +1629,9 @@ mod tests {
                 Err(Error::Validation("the machine is unreachable".to_string()))
             }
             fn place(&self, _: &str) -> Result<()> {
+                unreachable!("the migration never got past the reach check")
+            }
+            fn placed(&self) -> Result<bool> {
                 unreachable!("the migration never got past the reach check")
             }
             fn driving(&self) -> Result<Option<u32>> {
@@ -2140,6 +1655,9 @@ mod tests {
             fn follow(&self) -> Result<Box<dyn RunFeed>> {
                 unreachable!("the migration never got past the reach check")
             }
+            fn snapshot(&self) -> Result<Option<Vec<Record>>> {
+                unreachable!("the migration never got past the reach check")
+            }
         }
         assert_eq!(
             run_to(&Unreachable, false)?,
@@ -2147,12 +1665,13 @@ mod tests {
             "the failure path tears down"
         );
 
-        // The interrupt path.
-        let interrupted = Scripted::new().delivering(vec![vec![started(&run), committed("aa")]]);
+        // The wind-down path: the ceiling ran out and this side ended the far
+        // run.
+        let wound_down = Scripted::new().delivering(vec![vec![started(&run), committed("aa")]]);
         assert_eq!(
-            run_to(&interrupted, true)?,
+            run_to(&wound_down, true)?,
             1,
-            "the interrupt path tears down"
+            "the wind-down path tears down"
         );
 
         // A far run that survived even termination fails the migration, and the
@@ -2305,10 +1824,10 @@ mod tests {
         // nothing was attached to journal it.
         let local = local(OWNED, "", Some(3));
         let run = local.config.run.id();
-        let far = Scripted::new().already_driving().delivering(vec![
-            vec![started(&run), committed("aa")],
-            vec![committed("bb"), finalized(&run)],
-        ]);
+        let far = Scripted::new()
+            .already_driving()
+            .over_an_existing_journal(vec![started(&run), committed("aa")])
+            .delivering(vec![vec![committed("bb"), finalized(&run)]]);
 
         let (outcome, records) = session_over(&local, &far, None, &AtomicBool::new(false));
         outcome?;

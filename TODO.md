@@ -72,11 +72,11 @@ disposable at any instant.
 ## Execution order
 
 Phases are numbered in the order they run, and the ladder is P1 through P9:
-P1 through P8 are done, and P9 (registered programs beyond the orchestrator's
-machine) is under way — a registered program travels to the machines a run
-uses, its build is agreed across them, and its tasks are routed there — leaving
-detach as a verb of its own. After that the ladder pauses. A phase or milestone
-number means work this version of sima will do.
+P1 through P9 are done — a registered program travels to the machines a run
+uses, its build is agreed across them, its tasks are routed there, and
+attaching, detaching, and winding down are verbs an operator names. After that
+the ladder pauses. A phase or milestone number means work this version of sima
+will do.
 
 Everything model-specific — the evaluation funnel, continuous-family rigor,
 Physarum — is future work, carried unnumbered at the end of this document.
@@ -972,8 +972,9 @@ model or metric. Last active phase before the pause.
 A format bound through `[domain.*]` ran only where the orchestrator ran. The
 phase lifts that: the program travels to the machines a run uses and its build
 is agreed across them, whether the run moves onto one machine or spreads across
-several. Fleet under a migrated orchestrator is out of scope and recorded at the
-end of the phase with its reasons.
+several. It closes by making a run that left this machine outlive the command
+that sent it. Fleet under a migrated orchestrator is out of scope and recorded
+at the end of the phase with its reasons.
 
 The decision the whole phase rests on: **the program travels per run.** sima
 ships the bytes and a script installs them, so a change reaches a machine
@@ -1073,22 +1074,40 @@ without publishing anywhere and without rebuilding an image.
       - **A machine that cannot receive the program costs what it should**: a
         machine of yours fails the run, a rented one records `InstallFailed`,
         is excluded, and is replaced.
-- [ ] M9.4 Detach as a verb: `sima migrate` catches `SIGINT` alone and winds the
-      far run down, so the deliberate gesture stops the run while an accidental
-      one — a closed terminal, a dropped connection — detaches and leaves it
-      computing. The two intentions swap places, and the command takes no flag
-      to say which was meant. Split them: attaching, detaching, and winding down
-      become things an operator asks for by name rather than by which signal
-      reached the process. The recorded limit this milestone also closes:
-      - **A far run that dies before journaling is reported as the far
-        journal's last terminal event.** The follow's first poll replays the
-        whole journal, so a second migration onto a finished run whose program
-        fails to install, or whose binding guard refuses the installed program,
-        surfaces as the earlier finalization rather than as the death.
-        Diagnosis is the far `run.log`, which the attach reads and the
-        migration prints. Telling history from this session's records needs a
-        session boundary the follow protocol carries only once following is a
-        verb of its own.
+- [x] M9.4 Detach as a verb: attaching, detaching, and winding down are things
+      an operator asks for by name, and no signal — deliberate or accidental —
+      ends a far run. What was settled:
+      - **Ctrl-C on `sima migrate` detaches**, printing where the run is and
+        both ways back, and exits 0. `SIGHUP` and `SIGTERM` stay unhandled,
+        because the default death now coincides with the safe intention. An
+        interrupt during the acquisition keeps its own meaning: there is no far
+        run yet to leave behind, so it abandons the offer walk.
+      - **`sima recall <config>` is the inverse verb.** It winds a driving far
+        run down, reads what it ended as, pulls, settles, and destroys the
+        rental; over one that has ended it collects without restarting
+        anything, which is what re-running `sima migrate` used to be the only
+        way to do. It never places, pushes, starts, or rents — the journal read
+        is one `sima follow-serve --once`, which is what brings a definitive
+        far-side failure home as a failure.
+      - **Budget exhaustion still winds down** while attached: money is the one
+        thing that cannot wait for an operator to come back.
+      - **`[budget] max_wall_clock_ms` is the run's own deadline**, measured
+        from the start of each execution, with `0` stating no ceiling. It is
+        kept where no bill runs against the time: a local run and a machine of
+        yours, whose far config carries the key. It does not travel to a rented
+        destination, since a rental bills by the hour rather than by use and a
+        run stopped early there saves nothing while leaving a machine that
+        bills and computes nothing. `max_spend_usd` travels nowhere, because
+        enforcing it means destroying a machine and the provider key never
+        leaves this machine — which is also why a far run cannot end its own
+        billing.
+      - **A far run that dies before journaling is reported as its death.** The
+        follow opens before the far run starts, which makes its first poll
+        exactly the journal an earlier session left; nothing arriving after it,
+        over a far process that is gone, is a run that journaled nothing. The
+        milestone's own phrasing is corrected here: the follow protocol needed
+        no session boundary of its own, only an opening that precedes the run.
+        `FOLLOW_PROTOCOL_VERSION` is 1 before and after.
 
 **A registered format reaches an owned destination declaring a container.** The
 far run's containerized pool would probe and spawn the image's own worker, which
@@ -1116,9 +1135,11 @@ sections across:
 
 Each is a decision in its own right, and together they are a phase rather than a
 milestone. What the exclusion costs an operator is stated plainly: **many
-machines and an unattended run are alternatives, not a pair** — a fleet needs
-the orchestrator's machine to stay up, and a migration is one machine however
-many devices it holds.
+machines and one machine are the alternatives** — a fleet needs the
+orchestrator's machine to stay up for as long as the run does, and a migration
+is one machine however many devices it holds. Attendance is no longer part of
+the trade: a migrated run survives the operator's departure by design, bounded
+by its own ceiling and ended by `sima recall`.
 
 
 ## Future work

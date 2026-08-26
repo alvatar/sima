@@ -2370,9 +2370,9 @@ everywhere else.
   asserting it. Besides its own worker layout it names `migrate`, the
   `[host.*]` entry a migration moves the run onto — never a class, and the named
   entry's own form decides whether anything is rented.
-- **`[budget]`** — the spend and wall-clock ceilings over every rental in the
-  run. Run-global, because a run may draw on several rented entries under one
-  ceiling.
+- **`[budget]`** — the run's spend ceiling over every rental it draws on, and
+  its wall-clock ceiling over its own computing. Run-global, because a run may
+  draw on several rented entries under one ceiling.
 
 **Addressing.** An entry's name is its ssh destination unless `ssh` says
 otherwise, so a class scales by changing one number and nothing has to be kept
@@ -2773,14 +2773,99 @@ well as the migration, and it runs only after the far run installed its
 program.
 
 **The far run is detached.** It is started with `setsid` and its pid recorded,
-so a laptop that sleeps, a network that drops, or a `sima migrate` that is
-killed leaves the destination computing. Re-running reattaches, and the two
-destination kinds reattach by different evidence: a rented machine is found in
-the instance ledger and adopted, which is what stops a second invocation renting
-a second machine; a machine of yours has no ledger record, so `run.pid` naming a
-live process is the whole of it. The `run.pid` check applies to a rental too —
-adopting the machine says nothing about whether the run on it is still going.
-Either way the push and the start are skipped.
+so a laptop that sleeps, a network that drops, a `sima migrate` that is killed,
+and a Ctrl-C all leave the destination computing. Re-running reattaches, and the
+two destination kinds reattach by different evidence: a rented machine is found
+in the instance ledger and adopted, which is what stops a second invocation
+renting a second machine; a machine of yours has no ledger record, so `run.pid`
+naming a live process is the whole of it. The `run.pid` check applies to a
+rental too — adopting the machine says nothing about whether the run on it is
+still going. Either way the push and the start are skipped.
+
+#### Attaching, detaching, and winding down
+
+A migrated run has three states, and an operator moves between them by name:
+
+```
+                       ┌──────────────────────────────────────────┐
+                       │            far run computing             │
+                       └──────────────────────────────────────────┘
+                         ▲          │                  ▲      │
+           start/reattach│          │ terminal event   │      │ kill -INT
+                         │          ▼                  │      ▼ (escalating)
+ ┌───────────┐ attach  ┌──────────────┐  pull+settle ┌──────────────┐
+ │ detached  │────────▶│   attached   │─────────────▶│  wound down  │
+ │ (passive) │◀────────│ sima migrate │              │ sima recall  │
+ └───────────┘ Ctrl-C  └──────────────┘              └──────────────┘
+      ▲        or any        │                             │
+      │        death         │ its own ceiling             │ pull, settle,
+      └──────────────────────┘ (winds down, exit 130)      ▼ teardown
+                                                     results home
+```
+
+**Every exit path from an attached migration lands in the same passive state.**
+Ctrl-C, `SIGHUP`, `SIGTERM`, a closed terminal, a crash: the far run keeps
+computing, the rental stays standing, and nothing is pulled. Only `SIGINT` is
+handled, and what it does is print where the run is and how to come back; the
+rest are unhandled, so the default death has the same effect. A migration
+interrupted this way exits 0, because detaching is what was asked for.
+
+**The destructive act has its own verb.** `sima recall <config>` is the inverse
+of `sima migrate`: it contacts the destination, winds a far run down if one is
+driving, reads what that run ended as, pulls what it produced, settles the run
+over the store that came home, and destroys the rental. It places nothing,
+pushes nothing, and starts nothing, so a destination that was never migrated to
+is refused by name rather than created. Adoption is its only way onto a rented
+machine — a recall never rents — and a rental already gone leaves nothing to
+contact, which settles the run over what the local store holds.
+
+**A recall reads the far journal, and a definitive failure comes home as one.**
+Journals do not sync and a recall follows nothing, so a far run that failed
+definitively would otherwise come home as a run with tasks still to do. The read
+is one `sima follow-serve --once` against the destination, taken once the far
+run is quiet so what it holds is final. So the outcomes of a recall are the
+outcomes of a migration: finalized, outstanding, wound down, or failed by task
+and reason.
+
+**Absence is a filesystem fact, never an inference from a fault.** The journal
+file is probed for — over the same shell channel the directory check uses, at
+the path the store layout fixes under the far store root — before it is read.
+That probe alone answers that there is nothing to read, and the recall then
+settles over the store the pull brought home. Every fault of the read itself
+fails the recall, naming the machine and the journal read and carrying the far
+side's own words: a far side that holds a journal and could not serve it said
+nothing about how its run ended, and reading that as an empty journal would
+bring a run that cannot complete home as resumable.
+
+**The invariant that is repealed.** A far run no longer ends with the migration
+that started it. What replaces it: **the far run outlives everything except a
+terminal event, its own wall-clock ceiling where it has one, and `sima
+recall`.**
+
+**Stopping a rented run early saves nothing.** A rental bills by the hour rather
+than by use, so the bill is identical whether the machine computes or idles. And
+a far run cannot end the bill: destroying an instance is a provider-API call and
+the provider key never travels, so after a detach the instance bills until the
+key acts, through `sima recall` in the normal course or `sima reconcile` as the
+safety net for orphans. That billing tail is inherent to the key staying home
+and applies even to a far run that finished well. What follows from it is that
+a stopped-but-billing machine is strictly the worst of the states available: it
+costs what a computing one costs and returns nothing.
+
+**A wall-clock ceiling is kept where no bill runs against the time.** `[budget]
+max_wall_clock_ms` is the run's own deadline, measured from the start of each
+execution, and it raises the same flag `SIGINT` raises — so what follows is the
+wind-down that already exists, and the journal carries a `Diagnostic` naming the
+ceiling. A value of `0` states no ceiling, exactly as omitting the key does.
+
+The ceiling is worth something on a plain local run and on a machine of yours,
+so it is kept on both, and the far config a migration onto a machine of yours
+synthesizes carries the key. It is worth nothing on a rented destination, by the
+paragraph above, so the key stays home and a detached rented run computes until
+a recall ends it. `max_spend_usd` travels nowhere at all, for the same reason
+the ceiling cannot tear a machine down, and stays assessed by whatever is
+attached. Each far session measures from its own start, so a restarted far run
+gets a fresh ceiling: the ceiling bounds unattended computing per launch.
 
 **Signalling a detached run.** A shell starts an asynchronous command with
 `SIGINT` set to ignored, and the disposition survives the exec, so the far run
@@ -2806,24 +2891,45 @@ it.
 the local journal through the collector every other event crosses; without it
 the local journal would hold a gap for every segment executed remotely, and
 `sima status`, `sima report`, and `sima report --timeline` would under-report
-after a migration. One rule handles the replay a reattaching migration receives,
-since a feed's first poll returns the far run's whole history: a migration that
-**started** the far run forwards everything, and one that **reattached** discards
-that first history and forwards only what arrives after it. A reattaching
-migration therefore loses, from the local journal, the far records produced while
-nothing was attached. Journals are observational and excluded from every identity
-criterion, so the cost is diagnostic detail; the records, the manifest, and the
-run's identity are unaffected.
+after a migration.
+
+A feed's first poll is the journal as it already stood when the follow opened,
+and what that is depends on when it opened:
+
+- **A migration that starts the far run opens the follow first.** Its first poll
+  is then an earlier session's journal, exactly — a run that once finished on
+  this destination leaves one ending in that finalization. Those records are
+  neither forwarded a second time nor allowed to decide this run's outcome.
+- **A reattach opens the follow on a run already going**, so its first poll is
+  that run's own history: it decides the state and is not re-emitted, having
+  been produced while nothing was attached to journal it. The reattaching
+  migration therefore loses those records from the local journal.
+- **A destination whose journal is empty cannot be followed at all** until the
+  run writes its first line, so the follow opens after the start and its first
+  poll is this run's.
+
+Journals are observational and excluded from every identity criterion, so what
+is lost is diagnostic detail; the records, the manifest, and the run's identity
+are unaffected.
 
 **A far run that dies before journaling states its own last words.** Every
 far-side load failure looks alike from here — a program that cannot answer for
-its format, an install script that exited non-zero, a store that will not open —
-because the far `sima run` dies before it journals and the follow can then say
-only that there is no run to follow. The attach therefore reads the last lines
-of the far run's log over the shell channel every other far-side operation uses,
-and reports them with the machine's name. A far run that is up and simply has
-not journaled yet is a different thing: the follow waits it out under its own
-bound and, if that runs out, reports the refusal unchanged.
+its format, an install script that exited non-zero, a binding guard that refused
+a changed program, a store that will not open — because the far `sima run` dies
+before it journals anything of its own. Two shapes reach the same report:
+
+- **Nothing to follow.** Over an empty far journal the follow is refused
+  outright, and the refusal says only that there is no run to follow.
+- **A journal an earlier session left.** The follow opens on it and replays a
+  finalization that is not this run's. Opening the follow before the start is
+  what tells the two apart: nothing arriving after that first poll, over a far
+  process that is gone, is a run that journaled nothing.
+
+Either way the last lines of the far run's log are read over the shell channel
+every other far-side operation uses and reported with the machine's name. A far
+run that is up and simply has not journaled yet is a different thing: the follow
+waits it out under its own bound and, if that runs out, reports the refusal
+unchanged.
 
 ### Run status
 
@@ -2861,8 +2967,17 @@ command form keeps its shape whether or not a host is named:
   `run` uses, and brings the results home; see
   [Migration](#migration). It takes no destination argument, since where a run
   executes belongs in the file that describes it, and no `--on`, since it drives
-  a run rather than observing one. SIGINT winds the far run down, pulls what it
-  committed, and destroys any rental.
+  a run rather than observing one. SIGINT detaches: the far run keeps computing,
+  the line it prints names the machine and both ways back, and it exits 0.
+- **`sima recall <config.toml>`** — the inverse: winds the far run down, reads
+  what it ended as, pulls what it committed, settles the run, and destroys any
+  rental. A far run that failed definitively is reported by task and reason and
+  exits 2, as an attached migration reports one; a far journal that is there and
+  cannot be read fails the recall by name rather than passing for an empty one.
+  It starts
+  nothing, so a destination that was never migrated to is refused by name. No
+  interrupt is registered — a recall is short and every step of it is resumable
+  — so Ctrl-C during one takes the default death and a second recall carries on.
 - **`sima reconcile <config.toml>`** — destroys the machines the config's
   store still holds instance records for, and prints how many machines it
   destroyed and how many records it cleared. `--hosted` includes the machines
@@ -3000,14 +3115,15 @@ unreachable, or that would ask for a password, fails promptly with a named
 cause. A host that authenticates and then stalls before its first frame is a
 live connection, and the near side waits on it.
 
-Exit codes (shared across `run`, `migrate`, `tui`, and `follow`):
+Exit codes (shared across `run`, `migrate`, `recall`, `tui`, and `follow`):
 
-- **0** — the run finalized, `status` answered, or `follow` reached the end of
-  a run nobody is driving, which is resumable rather than failed;
+- **0** — the run finalized, `status` answered, `follow` reached the end of
+  a run nobody is driving, which is resumable rather than failed, or a migration
+  detached, which is what was asked of it;
 - **2** — a definitive candidate failure;
 - **130** — interrupted, store resumable;
 - **1** — everything else: infrastructure fault, config error, usage error, and
-  a `migrate` that came home with tasks outstanding.
+  a `migrate` or `recall` that came home with tasks outstanding.
 
 ## Determinism proof obligations
 

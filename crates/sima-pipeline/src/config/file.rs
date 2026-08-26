@@ -168,7 +168,8 @@ pub(super) struct ConstraintsSection {
 }
 
 /// The `[budget]` table: both keys optional. `max_spend_usd` is dollars,
-/// converted to a micro-USD cost cap rounded up.
+/// converted to a micro-USD cost cap rounded up. `max_wall_clock_ms` is
+/// milliseconds, where `0` states no ceiling — the same as omitting the key.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct BudgetSection {

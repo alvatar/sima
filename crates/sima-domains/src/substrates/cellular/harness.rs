@@ -53,11 +53,15 @@ impl<O: CellularOps> Trajectory<'_, O> {
     /// Downloads the final grid and rebuilds it into a [`Grid`].
     pub(crate) fn grid(&self) -> Result<Grid> {
         // Rebuild the payload from little-endian bytes four at a time: a u8 ->
-        // f32 cast of the unaligned download buffer would be unsound.
+        // f32 cast of the unaligned download buffer would be unsound. The
+        // buffer was sized at four bytes per f32, so the remainder is empty and
+        // the chunks are the whole of it.
         let bytes = self.ops.download(&self.current)?;
         let data: Vec<f32> = bytes
-            .chunks_exact(4)
-            .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|chunk| f32::from_le_bytes(*chunk))
             .collect();
         Grid::new(self.width, self.height, self.channels, data)
     }
