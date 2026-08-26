@@ -36,82 +36,10 @@ mod common;
 
 use std::path::{Path, PathBuf};
 
-use common::{sima_command, worker_binary, write_config_text};
+use common::{IMAGE, executable, machine_stubs, sima_command, worker_binary, write_config_text};
 use sima_core::Result;
 use sima_pipeline::{Event, Record, load};
 use sima_store::Store;
-
-/// The image name the stand-in runtime looks for to know where the container's
-/// own flags end and its command begins.
-const IMAGE: &str = "IMAGE";
-
-/// Writes an executable file at `path`, creating its parents.
-fn executable(path: &Path, text: &str) -> PathBuf {
-    std::fs::create_dir_all(path.parent().expect("a parent")).expect("create the parent");
-    std::fs::write(path, text).expect("write the file");
-    std::fs::set_permissions(path, std::os::unix::fs::PermissionsExt::from_mode(0o755))
-        .expect("make it executable");
-    path.to_path_buf()
-}
-
-/// Writes the stand-ins a machine of yours is reached through, and answers the
-/// directory holding them — to be put ahead of everything on the run's `PATH`.
-///
-/// `ssh` drops its own options and destination and runs the rest here. The
-/// runtime answers `image inspect` and `kill`, and for `run` drops everything up
-/// to and including the image name, then runs the command that follows. The
-/// bind mount needs no honouring: the mount states the identical path on both
-/// sides, and here both sides are one filesystem.
-///
-/// `run_fails` makes every `run` exit non-zero instead, which is what a machine
-/// that cannot receive the program looks like.
-fn machine_stubs(dir: &Path, run_fails: bool) -> PathBuf {
-    let bin = dir.join("machine-bin");
-    executable(
-        &bin.join("ssh"),
-        "#!/bin/sh\n\
-         while [ $# -gt 0 ]; do\n\
-         \x20 case \"$1\" in\n\
-         \x20   -o|-p) shift 2 ;;\n\
-         \x20   --) shift; break ;;\n\
-         \x20   *) shift ;;\n\
-         \x20 esac\n\
-         done\n\
-         exec \"$@\"\n",
-    );
-    executable(
-        &bin.join("docker"),
-        &format!(
-            "#!/bin/sh\n\
-             verb=$1; shift\n\
-             case \"$verb\" in\n\
-             \x20 image|kill) exit 0 ;;\n\
-             \x20 run)\n\
-             \x20   {fail}\n\
-             \x20   while [ $# -gt 0 ]; do\n\
-             \x20     if [ \"$1\" = \"{IMAGE}\" ]; then shift; break; fi\n\
-             \x20     shift\n\
-             \x20   done\n\
-             \x20   exec \"$@\" ;;\n\
-             esac\n\
-             exit 1\n",
-            fail = if run_fails {
-                "echo 'the runtime refused' >&2; exit 3;"
-            } else {
-                ""
-            }
-        ),
-    );
-    // What an image carries, by the names they answer to on the PATH there: the
-    // worker a builtin format's pool spawns, and the `sima` a delivery runs.
-    for (built, name) in [
-        (PathBuf::from(env!("CARGO_BIN_EXE_sima")), "sima"),
-        (worker_binary(), "sima-worker"),
-    ] {
-        std::os::unix::fs::symlink(&built, bin.join(name)).expect("link the image's binary");
-    }
-    bin
-}
 
 /// A `sima` command whose `PATH` leads with the machine stand-ins.
 fn fleet_command(bin: &Path) -> std::process::Command {

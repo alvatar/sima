@@ -1,6 +1,7 @@
 //! Shared fixtures for the sima CLI test suites: the config-file writer,
 //! the spawn helper over the built binary, the worker-binary build, the
-//! process-table scan, and manifest lookup through the pipeline surface.
+//! stand-ins a machine of yours is reached through, the process-table scan,
+//! and manifest lookup through the pipeline surface.
 #![allow(dead_code)]
 
 use std::collections::{HashMap, HashSet};
@@ -49,6 +50,84 @@ pub fn write_config_text(dir: &Path, name: &str, text: &str) -> PathBuf {
     let path = dir.join(name);
     std::fs::write(&path, text).expect("write config");
     path
+}
+
+/// Writes an executable file at `path`, creating its parents.
+pub fn executable(path: &Path, text: &str) -> PathBuf {
+    std::fs::create_dir_all(path.parent().expect("a parent")).expect("create the parent");
+    std::fs::write(path, text).expect("write the file");
+    std::fs::set_permissions(path, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+        .expect("make it executable");
+    path.to_path_buf()
+}
+
+/// The image name the stand-in runtime looks for to know where the container's
+/// own flags end and its command begins. A config reached through
+/// [`machine_stubs`] states it as the machine's `image`.
+pub const IMAGE: &str = "IMAGE";
+
+/// Writes the stand-ins a machine of yours is reached through, and answers the
+/// directory holding them — to be put ahead of everything on the `PATH` of the
+/// `sima` that reaches it.
+///
+/// `ssh` drops its own options and destination and runs the rest here. The
+/// runtime answers `image inspect` and `kill`, and for `run` drops everything up
+/// to and including the image name, then runs the command that follows. The
+/// bind mount needs no honouring: the mount states the identical path on both
+/// sides, and here both sides are one filesystem.
+///
+/// `run_fails` makes every `run` exit non-zero instead, which is what a machine
+/// that cannot receive the program looks like.
+///
+/// Every argv the pipeline builds is therefore the real one, and the far side is
+/// this machine, so a machine of yours is exercised end to end without a network
+/// or a namespace.
+pub fn machine_stubs(dir: &Path, run_fails: bool) -> PathBuf {
+    let bin = dir.join("machine-bin");
+    executable(
+        &bin.join("ssh"),
+        "#!/bin/sh\n\
+         while [ $# -gt 0 ]; do\n\
+         \x20 case \"$1\" in\n\
+         \x20   -o|-p) shift 2 ;;\n\
+         \x20   --) shift; break ;;\n\
+         \x20   *) shift ;;\n\
+         \x20 esac\n\
+         done\n\
+         exec \"$@\"\n",
+    );
+    executable(
+        &bin.join("docker"),
+        &format!(
+            "#!/bin/sh\n\
+             verb=$1; shift\n\
+             case \"$verb\" in\n\
+             \x20 image|kill) exit 0 ;;\n\
+             \x20 run)\n\
+             \x20   {fail}\n\
+             \x20   while [ $# -gt 0 ]; do\n\
+             \x20     if [ \"$1\" = \"{IMAGE}\" ]; then shift; break; fi\n\
+             \x20     shift\n\
+             \x20   done\n\
+             \x20   exec \"$@\" ;;\n\
+             esac\n\
+             exit 1\n",
+            fail = if run_fails {
+                "echo 'the runtime refused' >&2; exit 3;"
+            } else {
+                ""
+            }
+        ),
+    );
+    // What an image carries, by the names they answer to on the PATH there: the
+    // worker a builtin format's pool spawns, and the `sima` a delivery runs.
+    for (built, name) in [
+        (PathBuf::from(env!("CARGO_BIN_EXE_sima")), "sima"),
+        (worker_binary(), "sima-worker"),
+    ] {
+        std::os::unix::fs::symlink(&built, bin.join(name)).expect("link the image's binary");
+    }
+    bin
 }
 
 /// A command over the built sima binary, its environment cleared of any
