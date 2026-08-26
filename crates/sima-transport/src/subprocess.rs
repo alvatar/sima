@@ -20,7 +20,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use sima_contracts::DeviceBinding;
-use sima_core::{Error, Result, read_frame, write_frame};
+use sima_core::{Error, Result, own_process_group, read_frame, write_frame};
 use sima_trace::{Emitter, Event, Level};
 use tempfile::TempDir;
 
@@ -110,7 +110,7 @@ pub(crate) fn spawn_worker(
     context: EventContext,
 ) -> Result<Box<dyn WorkerLink>> {
     let mut command = Command::new(program);
-    command
+    own_process_group(&mut command)
         .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

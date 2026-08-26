@@ -12,9 +12,10 @@ mod common;
 use std::collections::HashSet;
 
 use common::{
-    chained_config, device, device_naming_resolver, exec_over, journal_events, named_class, run_id,
-    run_with, task_classes, temp_store, worker_devices,
+    chained_config, class, class_slot, device, device_naming_resolver, exec_over, journal_events,
+    named_class, run_id, run_with, task_classes, temp_store, worker_devices,
 };
+use sima_contracts::DeviceClass;
 use sima_core::Result;
 use sima_domains::StubBehavior;
 use sima_scheduler::{Event, RunOutcome};
@@ -104,8 +105,8 @@ fn a_chain_whose_class_is_gone_rebinds_and_the_run_completes() -> Result<()> {
     let run = run_id(&config);
     // The run directory must exist before a slot can be written into it.
     store.create_run(&config)?;
-    let absent = br#"{"class":"1002:0001"}"#;
-    store.bind_chain(&run, 0, absent)?;
+    let absent = class_slot(&DeviceClass::new("1002:0001").expect("class id"));
+    store.bind_chain(&run, 0, &absent)?;
 
     let exec = exec_over(vec![device(NVIDIA, 2)], 1);
     let outcome = run_with(&store, &config, &exec, device_naming_resolver())?;
@@ -138,11 +139,7 @@ fn a_chain_resumed_from_its_slot_stays_on_its_class() -> Result<()> {
     let config = chained_config(13, vec![StubBehavior::Accumulate(2)], 3);
     let run = run_id(&config);
     store.create_run(&config)?;
-    store.bind_chain(
-        &run,
-        0,
-        format!(r#"{{"class":"{INTEL:04x}:0001"}}"#).as_bytes(),
-    )?;
+    store.bind_chain(&run, 0, &class_slot(&class(INTEL)))?;
 
     // The Intel class carries one worker against NVIDIA's three, so a chain
     // that ignored its binding would almost certainly land on NVIDIA.

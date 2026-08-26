@@ -16,6 +16,7 @@ use sima_provider::Budget;
 use sima_scheduler::ExecutionConfig;
 use sima_store::Store;
 
+use super::GENERATED_DIR;
 use super::file::{DomainSection, FileConfig, fs_read};
 use super::machines::{
     Fleet, Host, HostClass, HostClassForm, HostForm, Orchestrator, resolve_host,
@@ -57,6 +58,10 @@ pub struct LoadedConfig {
     pub domains: DomainRegistry,
 }
 
+/// The store's directory name under [`GENERATED_DIR`], for a config that
+/// names no path of its own.
+const STORE_DIR: &str = "store";
+
 /// Loads and translates the `sima.toml` at `path`. Parse errors, unknown or
 /// missing keys, and invalid values are [`Error::Validation`] naming the file;
 /// the generator and params tables are validated by the code the config names.
@@ -75,7 +80,13 @@ pub fn load(path: &Path) -> Result<LoadedConfig> {
     // install the program the same entry's binary names. Naming a path opens
     // nothing: a config that routes no payload never touches it.
     let base = path.parent().unwrap_or(Path::new(""));
-    let store = base.join(&file.config.store);
+    // A config that names no store keeps one where everything else it
+    // generates goes, so a driven config leaves one directory beside itself
+    // rather than several.
+    let store = match &file.config.store {
+        Some(stated) => base.join(stated),
+        None => base.join(GENERATED_DIR).join(STORE_DIR),
+    };
     // The registry precedes the run's translation, which is answered through
     // it: a program declared for a format is spawned and asked here, so an
     // entry naming one that cannot answer fails before the run has a store.
@@ -676,6 +687,19 @@ mod tests {
             let varied = BASE.replace(from, to);
             assert_eq!(base, id_of(&varied), "{to} must not change the run id");
         }
+        // And dropping the store key entirely, which is the edit the shipped
+        // examples made when the default arrived: a run identity cannot turn
+        // on where its results are kept.
+        let unstated = BASE.replace("        store = \"./store\"\n", "");
+        assert_ne!(
+            unstated, BASE,
+            "the store key was not removed, so this pins nothing"
+        );
+        assert_eq!(
+            base,
+            id_of(&unstated),
+            "an unstated store must not change the run id"
+        );
     }
 
     #[test]
@@ -695,6 +719,21 @@ mod tests {
         );
         let loaded = load(&write_config(&nested, "absolute.toml", &text))?;
         assert_eq!(loaded.store, absolute);
+        Ok(())
+    }
+
+    #[test]
+    fn a_config_stating_no_store_lands_in_the_dot_directory_beside_it() -> Result<()> {
+        // Everything a driven config generates goes under one directory beside
+        // it, and the store is the largest of them. Stating the key is for the
+        // stores that live somewhere else.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let text = BASE.replace("        store = \"./store\"\n", "");
+        let loaded = load(&write_config(dir.path(), "sima.toml", &text))?;
+        assert_eq!(loaded.store, dir.path().join(".sima").join("store"));
+        // Naming a path is what overrides it, verbatim.
+        let loaded = load(&write_config(dir.path(), "stated.toml", BASE))?;
+        assert_eq!(loaded.store, dir.path().join("./store"));
         Ok(())
     }
 
@@ -825,7 +864,6 @@ mod tests {
             "root_seed = 42",
             "format = \"stub.v1\"",
             "id = \"stub.v1\"",
-            "store = \"./store\"",
             "max_attempts = 3",
         ] {
             let text = BASE.replace(required, "");
@@ -1744,7 +1782,7 @@ mod tests {
             ),
         );
         let config = load(&path).expect("the config loads");
-        let installed = dir.path().join("sdk/python/installed");
+        let installed = dir.path().join(".sima/sdk/python/installed");
         assert!(
             installed.join("sima/__init__.py").is_file(),
             "the package is on this machine"
@@ -1772,7 +1810,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let path = write_config(dir.path(), "sima.toml", BASE);
         load(&path).expect("the config loads");
-        assert!(!dir.path().join("sdk").exists());
+        assert!(!dir.path().join(".sima").exists());
     }
 
     #[test]
@@ -2198,7 +2236,9 @@ mod tests {
 
         /// The entry point the install is contracted to leave.
         fn entry_point(&self) -> PathBuf {
-            self.dir.path().join("program/stub.v1/installed/program")
+            self.dir
+                .path()
+                .join(".sima/program/stub.v1/installed/program")
         }
 
         /// How many times an install script that counts itself has run.
@@ -2263,10 +2303,7 @@ mod tests {
         let path = write_config(dir.path(), "sima.toml", BASE);
         load(&path)?;
         assert!(!dir.path().join("store").exists(), "no store was opened");
-        assert!(
-            !dir.path().join("program").exists(),
-            "nothing was installed"
-        );
+        assert!(!dir.path().join(".sima").exists(), "nothing was installed");
         Ok(())
     }
 
@@ -2335,7 +2372,7 @@ mod tests {
         assert!(
             far.dir
                 .path()
-                .join("program/stub.v1/payload/wrapper.sh")
+                .join(".sima/program/stub.v1/payload/wrapper.sh")
                 .is_file()
         );
         Ok(())
@@ -2390,8 +2427,11 @@ mod tests {
         };
         let far = FarSide::new(|dir| leaves(dir, "touch \"$SIMA_INSTALL_DIR/leftover\""));
         far.load()?;
-        let leftover = far.dir.path().join("program/stub.v1/installed/leftover");
-        let stale_payload = far.dir.path().join("program/stub.v1/payload/note");
+        let leftover = far
+            .dir
+            .path()
+            .join(".sima/program/stub.v1/installed/leftover");
+        let stale_payload = far.dir.path().join(".sima/program/stub.v1/payload/note");
         assert!(leftover.is_file(), "the first install left it");
         assert_eq!(
             fs::read_to_string(&stale_payload).expect("the note"),

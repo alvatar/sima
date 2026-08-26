@@ -19,6 +19,7 @@ use crate::config::{Container, LoadedConfig, Pool};
 use crate::devices;
 use crate::domain_registry::DomainSource;
 use crate::fleet::{Engagement, Members, OwnedMachine, members};
+use crate::journal::under_collector;
 use crate::process::{ImageCheck, bootstrap_image, command_stdout};
 use crate::program_binding::{BinaryChange, bind};
 use crate::program_delivery::{ProgramDelivery, deliver_to_owned, ingest_program, sendable};
@@ -134,6 +135,11 @@ pub fn orchestrate(
     };
     let store = Store::open(&config.store)?;
     let lock = store.acquire_run_lock(&run)?;
+    // Registering the run gives it a journal before any machine is asked for,
+    // so what putting the run on its machines takes is journaled where the
+    // work will be. The driver performs the same registration, idempotently,
+    // when it takes over.
+    store.create_run(&config.run)?;
     // The build serving a config-routed format is compared against the one the
     // run was last driven by, and recorded, under the held lock: the journal
     // read and the append race no other orchestrator. A format this build
@@ -153,42 +159,52 @@ pub fn orchestrate(
     } else {
         None
     };
-    // The program reaches every machine of yours before any pool of one exists,
-    // so a pool is only ever built where a worker can actually be served.
-    deliver_to_owned(&members.owned, &store, delivery.as_ref())?;
-    let owned = match owned {
-        Some(pools) => pools,
-        None => owned_pools(
-            &members.owned,
-            &run,
-            &execution,
-            &program,
-            delivery.as_ref(),
-        )?,
-    };
     // Rentals are acquired under the held lock — each machine behind a teardown
     // guard held for the run's life. A strict-fill shortfall tears down whatever
     // was acquired and fails here, before any task runs.
-    let mut groups: Vec<RentalGroup<'_>> = Vec::with_capacity(members.rentals.len());
-    for ((rental, provider), mode) in members.rentals.iter().zip(&providers).zip(&modes) {
-        let hosts = acquire_hosts(
-            rental,
-            &config.budget,
-            provider.as_ref(),
-            &store,
-            &lock,
-            mode,
-            &config.run.format,
-            &execution,
-            delivery.as_ref(),
-        )?;
-        groups.push(RentalGroup {
-            provider: provider.as_ref(),
-            spec: rental.spec,
-            fill: rental.fill,
-            hosts,
-        });
-    }
+    //
+    // Putting the run on its machines happens under the run's own journal
+    // boundary: it is minutes of delivery and spending with no worker yet
+    // bound, and what it is doing crosses the same boundary the run's records
+    // cross once it drives.
+    let (owned, groups) = under_collector(&store, &run, control.observer, |events| {
+        // The program reaches every machine of yours before any pool of
+        // one exists, so a pool is only ever built where a worker can
+        // actually be served.
+        deliver_to_owned(&members.owned, &store, delivery.as_ref(), events)?;
+        let owned = match owned {
+            Some(pools) => pools,
+            None => owned_pools(
+                &members.owned,
+                &run,
+                &execution,
+                &program,
+                delivery.as_ref(),
+            )?,
+        };
+        let mut groups = Vec::with_capacity(members.rentals.len());
+        for ((rental, provider), mode) in members.rentals.iter().zip(&providers).zip(&modes) {
+            let hosts = acquire_hosts(
+                rental,
+                &config.budget,
+                provider.as_ref(),
+                &store,
+                &lock,
+                mode,
+                &config.run.format,
+                &execution,
+                delivery.as_ref(),
+                events,
+            )?;
+            groups.push(RentalGroup {
+                provider: provider.as_ref(),
+                spec: rental.spec,
+                fill: rental.fill,
+                hosts,
+            });
+        }
+        Ok((owned, groups))
+    })?;
     // The pools, the orchestrator's first: its own workers, then one container
     // pool per machine of yours, then one pool per rented machine. Worker ids
     // run global and sequential across them. The pools borrow the transports

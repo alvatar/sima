@@ -13,5 +13,10 @@ crash-injection = ["dep:libc"]
 blake3.workspace = true
 libc = { workspace = true, optional = true }
 
+[dev-dependencies]
+# The process-group rule is stated against the system's own view of a process,
+# so the tests ask it directly.
+libc.workspace = true
+
 [lints]
 workspace = true

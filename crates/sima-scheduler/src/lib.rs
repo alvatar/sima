@@ -39,4 +39,5 @@ pub use segment_chain::SegmentChain;
 pub use sima_trace::{Event, Level, Record, StatScalar};
 pub use static_batch::StaticBatch;
 pub use task_source::{RunnableTask, TaskSource};
+pub use worker::LIVENESS_INTERVAL;
 pub use worker_pool::WorkerPool;

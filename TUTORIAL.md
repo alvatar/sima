@@ -122,7 +122,6 @@ count = 2
 steps = 300000000
 
 [config]
-store = "./store"
 max_attempts = 3
 checkpoint_interval_ms = 2000
 
@@ -139,7 +138,7 @@ sdk = "python"
 - **`[run]`** is the identity: seed, format, and `segments = 3`, which divides each candidate's work into a chain of 3 tasks, each continuing from the committed state of the last.
 - **`[run.generator]`** names the generator; the keys following `id` belong to your program and cross as TOML text.
 - **`[run.params]`** belongs to your program likewise.
-- **`[config]`** and **`[[orchestrator.device]]`** are operational — the store's location, the ceiling upon retries, the cadence of checkpoints, which class of device performs the work and with how many workers. To change them changes no task key.
+- **`[config]`** and **`[[orchestrator.device]]`** are operational — the ceiling upon retries, the cadence of checkpoints, which class of device performs the work and with how many workers. To change them changes no task key. The store's location is among them and is stated by no key here: everything a driven config generates — its store, the SDK vended for your program, the tree a payload installs into — goes under `.sima/` beside the config file, and a `store` key is what puts the store somewhere else.
 - **`[domain."example.stepper.v1"]`** is the registration: this format is answered by `./stepper.py`, resolved against the config file's own directory, and written against the Python SDK.
 
 ### The environment a spawned program receives
@@ -165,14 +164,17 @@ sima run search.toml
 ```
 run bff61aa384aa94add7c1609ae6634ca0825ac9548b69712563af224e18b800ef
 started: 6 tasks
+task 99edb1e25385 started (worker 0)
+task 6863796364eb started (worker 1)
+task 99edb1e25385 checkpointed (worker 0)
+task 6863796364eb checkpointed (worker 1)
 committed 1/6  99edb1e25385
 committed 2/6  6863796364eb
-committed 3/6  27f7405a9ff1
-committed 4/6  ee0f5a8cb965
-committed 5/6  c28a080f85c9
-committed 6/6  15fe1ae7fe0e
+…
 finalized: 6 tasks committed
 ```
+
+An attempt says when it begins and which worker took it; a task that saves checkpoints says so as it goes, at most once in ten seconds however often it saves. Between them the terminal shows a run computing rather than a run that has merely not finished. `--quiet` leaves the run, its start, its commits, and its ending.
 
 Six tasks is `count = 2` candidates × `segments = 3`. The config decided that; the program did not. As shipped, the run computes for some couple of minutes; reduce `steps` by a few orders of magnitude if you wish merely to see the shape of the output.
 
@@ -343,7 +345,7 @@ Everything to this point has run upon your machine. A real search outgrows one �
 
 The example is already provisioned for the trip: `steps` gives each task minutes of computation rather than instants, and `checkpoint_interval_ms = 2000` means that every couple of seconds each task lays by state from which it may resume — which is what permits this run to change machines in the middle of a task.
 
-**Start local.** `sima run search.toml`; suffer a couple of tasks to commit, then Ctrl-C. The run winds down — work in flight drains and commits what it may — and exits `130`: interrupted, resumable. Your store now holds a run that is partly done.
+**Start local.** `sima run search.toml`; suffer a couple of tasks to commit, then Ctrl-C. The run winds down — the attempts in flight are abandoned, their checkpoints standing where they were laid — and exits `130`: interrupted, resumable. Your store now holds a run that is partly done, and a re-run resumes each abandoned attempt from its checkpoint rather than from its beginning.
 
 **Send it away.** The example's config already declares whither:
 
@@ -372,11 +374,24 @@ Then, with your provider key in the environment:
 sima migrate search.toml
 ```
 
-sima rents the cheapest machine that satisfies the constraints, boots its image upon it, and ships the run — the store's objects, your program, the whole of it. Expect some quiet minutes while the machine comes up (stray lines of `ssh: connect … Connection refused` during the boot are the readiness probe knocking, and no failure). Then the stream resumes exactly where your laptop left off: the tasks committed locally are not computed again, for the far machine's store already holds them.
+sima rents the cheapest machine that satisfies the constraints, boots its image upon it, and ships the run — the store's objects, your program, the whole of it. Each phase names itself as it begins, so that the quiet minutes while the machine comes up are quiet for a stated reason:
+
+```
+run 4728422a…
+renting: 1× RTX 4090 on 8127-a41 at $0.174/hr
+waiting for the machine to come up (pulls the image; up to 600s)
+sending the run: 214 objects
+installing the program
+starting the run
+resuming: 2/6 committed, 4 outstanding
+task 27f7405a9ff1 started (worker 0)
+```
+
+The far run states the ledger it inherits rather than a task count, which is how you see at a glance that it continued your work instead of beginning it again. The stream then resumes exactly where your laptop left off: the tasks committed locally are not computed again, for the far machine's store already holds them, and the commit counter carries on from what is already in it.
 
 The program's bytes travel as content-addressed objects, so an unchanged program crosses the wire once: a second migration sends nothing and installs nothing. Every worker upon a machine that received your program answers with the digest from which that machine's own tree was built, and one answering anything else fails its spawn — so a machine running something other than what you sent stops the run, rather than filling your store with results from it.
 
-**Walk away.** Ctrl-C. This no longer ends anything: the far run computes on, and the command exits telling you the two ways back. A closed laptop or a dropped connection does the same — nothing that befalls your machine ends the far run. To end it is a thing you must ask for by name.
+**Walk away.** Ctrl-C. This no longer ends anything: the far run computes on, and the command exits telling you the two ways back. A closed laptop or a dropped connection does the same — nothing that befalls your machine ends the far run. To end it is a thing you must ask for by name. Interrupt it earlier, while the run is still being placed, and there is as yet no far run to leave computing: the migration stops where it stands, any machine it took is released, and it says that nothing was started.
 
 **Come back.** `sima migrate search.toml` once more. Upon a run already living at the destination, the same command reattaches: what committed in your absence is replayed, and the live stream then continues.
 
@@ -430,6 +445,12 @@ sima run search.toml --fleet
 
 ```
 run b80a8ca…
+renting cheap[0]: 1× GTX 1660 on 8127-a41 at $0.056/hr
+waiting for the machine to come up (pulls the image; up to 600s)
+installing the program cheap[0]
+renting cheap[1]: 1× RTX 3060 Ti on 5512-c09 at $0.048/hr
+waiting for the machine to come up (pulls the image; up to 600s)
+installing the program cheap[1]
 started: 6 tasks
 instance online 48763646 on ssh8.vast.ai: 1× GTX 1660 at $0.056/hr
 instance online 48763734 on ssh8.vast.ai: 1× RTX 3060 Ti at $0.048/hr
@@ -437,6 +458,8 @@ committed 1/6  ef16c6b54f49
 …
 finalized: 6 tasks committed
 ```
+
+Each member is taken, waited for, and given your program in turn, so the lines arrive a member at a time rather than a phase at a time. Each says what it took and at what rate the moment its offer is taken, which is minutes before that machine is up; the wait line states what those minutes are spent upon, and the online line marks the boot completed. Should a member fail to come up, it says so and states what your `fill` policy makes of it — the run stops under `strict`, and goes on with the machines that did come up under `best-effort`. Pass `--quiet` and none of it is printed: what remains is the run, its start, its commits, and its ending.
 
 Your program went to both machines just as it traveled in the migration; each installed it, and its workers ran what was installed. When the run ends, the rentals are torn down of their own accord — `sima reconcile search.toml` confirms the ledger clean.
 
@@ -454,13 +477,31 @@ What has just happened deserves understanding in three particulars:
 sima rm search.toml
 ```
 
-Mark that "presently names": the target is resolved through the config, so a store holding runs of past seeds is cleaned by restoring each seed in turn and repeating the command. Ask for a run the store never held, and it refuses by name:
+Mark that "presently names": the target is resolved through the config. A store accumulates the runs of every identity ever driven against it — an edited seed, a changed parameter — and what it holds is asked of the store rather than of a config:
+
+```
+sima runs .sima/store
+```
+
+```
+run                                                               state         committed
+b80a8ca384aa94add7c1609ae6634ca0825ac9548b69712563af224e18b800ef  finalized     6/6
+4728422a1c0e4f8d90a1b3c5d7e9f0a2b4c6d8e0f2a4b6c8d0e2f4a6b8c0d2e4  finalized     6/6
+```
+
+Any run of the listing is removed by its own id, whether or not the config still names it — any unambiguous prefix will serve:
+
+```
+sima rm search.toml --run 4728422a
+```
+
+Ask for a run the store never held, and it refuses by name:
 
 ```
 sima: validation error: cannot remove run 7c19fe97…: run not found
 ```
 
-`rm -rf store/` removes every run at once, the store being disposable in its entirety. After the cleaning, by either instrument, the same seed computes afresh from nothing — whereas without it, a rerun finds its commits and does nothing.
+`rm -rf .sima/` removes every run at once, together with the rest of what the config generated, all of it being disposable in its entirety. After the cleaning, by either instrument, the same seed computes afresh from nothing — whereas without it, a rerun finds its commits and does nothing.
 
 ### A deadline where time is free
 

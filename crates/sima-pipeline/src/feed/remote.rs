@@ -19,7 +19,7 @@ use std::process::{Child, ChildStderr, Command, Stdio};
 use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
 use std::thread::JoinHandle;
 
-use sima_core::{Error, Result, read_frame};
+use sima_core::{Error, Result, own_process_group, read_frame};
 use sima_scheduler::Record;
 use sima_transport::SshDestination;
 
@@ -235,7 +235,7 @@ impl Stream {
     /// stdout as frames. `label` is what the errors name the far side by.
     fn spawn(argv: &[String], label: &str) -> Result<Stream> {
         let (program, args) = argv.split_first().expect("the argv names a program");
-        let mut child = Command::new(program)
+        let mut child = own_process_group(&mut Command::new(program))
             .args(args)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -597,6 +597,24 @@ mod tests {
         assert!(
             message.contains(&FOLLOW_PROTOCOL_VERSION.to_string())
                 && message.contains(&(FOLLOW_PROTOCOL_VERSION + 1).to_string()),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn a_hello_from_the_build_before_this_protocol_is_refused_by_name() {
+        // The version is what a build whose journal events an older reader
+        // cannot parse moves, so v1 is a build this one cannot follow: it is
+        // refused at the handshake, naming both versions, rather than reaching
+        // the first records frame and failing there as corruption.
+        let bytes = stream_of(&[hello_at(1)]);
+        let Err(Error::Validation(message)) =
+            RemoteFeed::over(Stream::over(std::io::Cursor::new(bytes)))
+        else {
+            panic!("expected a validation error over a version gap");
+        };
+        assert!(
+            message.contains("v1") && message.contains(&format!("v{FOLLOW_PROTOCOL_VERSION}")),
             "{message}"
         );
     }

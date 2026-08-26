@@ -40,6 +40,14 @@
 //! skipped. The far run outlives everything except a terminal event and its
 //! own ceiling.
 //!
+//! **An interrupt before the start abandons the placement.** Steps 3 through 6
+//! reach a machine, write a config on it, and send it a store, and an operator
+//! who lets go inside that window asked for the migration to stop: no far run
+//! is started, a rental taken for it is released with everything else the
+//! teardown releases, and the run is left as it was. Detaching is what the same
+//! flag means from the start on, because only then is there a far run to leave
+//! computing.
+//!
 //! **Journals do not sync**, so each record the follow delivers is forwarded
 //! into the local journal through the collector every other event crosses —
 //! without it the local journal would hold a gap for every segment executed
@@ -74,6 +82,7 @@ use sima_provider::{
     AcquireLimits, Budget, InstanceGuard, Objective, Provider, Verdict, acquire, adopt, assess,
     now_ms,
 };
+use sima_scheduler::Event;
 use sima_store::{ObjectScope, Rental as RentalRole, RunLock, Store};
 use sima_trace::{Emitter, Observer};
 
@@ -82,6 +91,7 @@ use crate::config::{FillPolicy, HostForm, LoadedConfig, Rented};
 // which under test comes from the session's test overrides instead.
 use crate::feed::RunFeed;
 use crate::fleet::Rental;
+use crate::journal::under_collector;
 use crate::migrate::destination::destination_for;
 use crate::migrate::far_config::{Registration, far_config};
 #[cfg(test)]
@@ -91,7 +101,7 @@ use crate::migrate::far_side::{Contact, Remote};
 use crate::migrate::objects::push_objects;
 use crate::payload::{PayloadSpec, closure, ingest};
 use crate::program_binding::BinaryChange;
-use crate::rental::{budget_exhausted, provider_for_rental};
+use crate::rental::{budget_exhausted, provider_for_rental, taken};
 use crate::sdk::Sdk;
 use crate::status::{RunState, RunStatus};
 use crate::task_keys::task_keys;
@@ -129,9 +139,10 @@ const ATTACH_BOUND: Duration = Duration::from_secs(30);
 /// `observer` receives every record the far run produced, in journal order,
 /// through the same collector that appends them locally. `interrupt` is the
 /// level-triggered request `SIGINT` sets, and it means two different things by
-/// when it arrives: during the acquisition it abandons the offer walk, since
-/// there is no far run yet to leave behind; during the follow it detaches,
-/// leaving the far run computing and its machine standing.
+/// when it arrives: before the far run is started — through the acquisition and
+/// the placement — it abandons the migration, since there is no far run yet to
+/// leave behind and nothing it took is worth keeping; from the start on it
+/// detaches, leaving the far run computing and its machine standing.
 ///
 /// The local run lock is held for the whole call, so nothing else drives or
 /// reconciles this run while it is away.
@@ -174,7 +185,10 @@ pub fn migrate(
     let run = store.create_run(&loaded.run)?;
     let lock = store.acquire_run_lock(&run)?;
 
-    match destination.form {
+    // One journal boundary around the whole migration: the phases of placing
+    // the run cross it before there is a far run, and the far run's own records
+    // cross it after.
+    under_collector(&store, &run, observer, |events| match destination.form {
         // A machine of yours is reached as it stands: nothing is rented, so no
         // provider is constructed and no credential is read.
         HostForm::Owned(owned) => {
@@ -184,7 +198,7 @@ pub fn migrate(
                 store: &store,
                 config: loaded,
                 destination: &destination,
-                observer,
+                events,
                 rental: None,
                 #[cfg(test)]
                 overrides: Overrides::default(),
@@ -228,6 +242,7 @@ pub fn migrate(
                 usable_by,
                 &loaded.budget,
                 interrupt,
+                events,
             )?;
             // A run whose format is a program asks the machine about no
             // format: nothing there can resolve one it has not been given, and
@@ -245,7 +260,7 @@ pub fn migrate(
                 store: &store,
                 config: loaded,
                 destination: &destination,
-                observer,
+                events,
                 rental: Some(guard),
                 #[cfg(test)]
                 overrides: Overrides::default(),
@@ -262,7 +277,7 @@ pub fn migrate(
                 .run_to_end()
             })
         }
-    }
+    })
 }
 
 /// What a migration of this run has to carry to the destination beyond the
@@ -314,6 +329,12 @@ fn carried(loaded: &LoadedConfig) -> Result<Option<Carried>> {
 /// on a second invocation. `interrupt` aborts an offer walk in flight, so a
 /// `SIGINT` during acquisition is not waited out — and that is all it can mean
 /// here: detaching exists only once a far run is driving, and nothing is yet.
+///
+/// `events` carries what the acquisition is doing: an offer taken says what is
+/// now being paid for, before the wait for that machine to come up. An adopted
+/// machine says nothing — it was already rented, and by an earlier invocation
+/// that announced it.
+#[allow(clippy::too_many_arguments)]
 fn hold<'a>(
     provider: &'a (dyn Provider + Sync),
     store: &'a Store,
@@ -322,6 +343,7 @@ fn hold<'a>(
     usable_by: Instant,
     budget: &Budget,
     interrupt: &AtomicBool,
+    events: &Emitter,
 ) -> Result<InstanceGuard<'a, dyn Provider + Sync + 'a>> {
     let limits = AcquireLimits {
         usable_by,
@@ -340,6 +362,9 @@ fn hold<'a>(
         &limits,
         budget,
         interrupt,
+        // A migration rents the one machine its destination names, so the
+        // member it is taken for is nothing to name.
+        &|offer| taken(events, "", spec.ready_timeout, offer),
     )
 }
 
@@ -373,7 +398,17 @@ impl Session<'_> {
     /// follow, wind down, pull, and settle.
     fn run_to_end(&self) -> Result<MigrateOutcome> {
         let far_run = self.far_run;
-        let probed = self.reach()?;
+        // Placing a run is reaching a machine, sending it a store, and starting
+        // a process there, and through all of it the interrupt keeps the
+        // meaning it has during the acquisition: stop, and leave nothing
+        // behind. Detaching is what it comes to mean once the start below
+        // returns, and there is nothing to detach from before that.
+        if self.let_go() {
+            return Ok(self.abandoned());
+        }
+        let Some(probed) = self.reach()? else {
+            return Ok(self.abandoned());
+        };
         let far_text = far_config(
             self.local_text,
             far_run.destination.form,
@@ -398,9 +433,24 @@ impl Session<'_> {
                 if let Some(registration) = self.registration {
                     objects.extend(closure(far_run.store, &registration.payload_digest)?);
                 }
+                if self.let_go() {
+                    return Ok(self.abandoned());
+                }
+                far_run.events.emit(Event::SendingRun {
+                    member: String::new(),
+                    objects: objects.len(),
+                });
                 far_run
                     .far
                     .sync(far_run.store, &keys, ObjectScope::Named(&objects))?;
+                // The program the run carries is installed by the far `sima
+                // run` as it loads, which is the longest part of the start it
+                // is about to wait on.
+                if self.registration.is_some() {
+                    far_run.events.emit(Event::InstallingProgram {
+                        member: String::new(),
+                    });
+                }
                 // The follow opens before the far run starts, so its first poll
                 // is the journal as an earlier session left it and everything
                 // after that is this run's. It is what tells a run that once
@@ -410,6 +460,13 @@ impl Session<'_> {
                 // is then nothing earlier to tell apart: the follow opens after
                 // the start instead, waiting for the run's first line.
                 let opened = far_run.far.follow().ok();
+                // The last point where nothing is computing on the destination:
+                // past the start there is a far run to be left alone, so a flag
+                // raised after this detaches instead.
+                if self.let_go() {
+                    return Ok(self.abandoned());
+                }
+                far_run.events.emit(Event::StartingRun);
                 (far_run.far.start(self.accept)?, opened)
             }
         };
@@ -441,17 +498,16 @@ impl Session<'_> {
         opened: Option<Box<dyn RunFeed>>,
     ) -> Result<(RunState, FollowEnd)> {
         let run = self.far_run.config.run.id();
-        self.far_run.journaling(|events| {
-            let (state, end) = self.follow(&run, reattached, opened, events)?;
-            match end {
-                // Letting go signals nothing and waits for nothing: the far run
-                // is left exactly as it was.
-                FollowEnd::Detached => {}
-                FollowEnd::FarRun => self.far_run.wind_down(pid, false, events)?,
-                FollowEnd::WoundDown => self.far_run.wind_down(pid, true, events)?,
-            }
-            Ok((state, end))
-        })
+        let events = self.far_run.events;
+        let (state, end) = self.follow(&run, reattached, opened, events)?;
+        match end {
+            // Letting go signals nothing and waits for nothing: the far run
+            // is left exactly as it was.
+            FollowEnd::Detached => {}
+            FollowEnd::FarRun => self.far_run.wind_down(pid, false, events)?,
+            FollowEnd::WoundDown => self.far_run.wind_down(pid, true, events)?,
+        }
+        Ok((state, end))
     }
 
     /// Follows the far run until it ends, this side is interrupted, or a
@@ -476,11 +532,16 @@ impl Session<'_> {
         // - opened after the start: the journal was empty before it, so the
         //   first poll is this run's like any other.
         let earlier_session = opened.is_some();
+        let mut status = RunStatus::new(*run);
         let mut feed = match opened {
             Some(feed) => feed,
-            None => self.attach()?,
+            None => match self.attach()? {
+                Some(feed) => feed,
+                // The far run is up and this side let go while waiting for its
+                // first line, which is the detach it would be a moment later.
+                None => return Ok((status.state, FollowEnd::Detached)),
+            },
         };
-        let mut status = RunStatus::new(*run);
         let mut first = true;
         // Whether this run has journaled a line of its own.
         let mut journaled = false;
@@ -488,7 +549,25 @@ impl Session<'_> {
         // already spent must not first watch for an interval.
         let mut assessed: Option<Instant> = None;
         loop {
-            let records = feed.poll()?;
+            let records = match feed.poll() {
+                Ok(records) => records,
+                // The operator has let go, and the stream went with them: a
+                // terminal delivers its interrupt to the whole foreground
+                // group, so the transport carrying this follow can be gone
+                // before this side reads its own flag. The detach is what was
+                // asked for, and its own consequence does not turn it into a
+                // fault to report.
+                //
+                // A fault frame is the exception, and the only error the far
+                // side raised rather than this side observing: the far side is
+                // reporting trouble of its own, which the interrupt neither
+                // caused nor answers, so it decides the migration as it would
+                // have without one.
+                Err(error) if self.let_go() && !matches!(error, Error::Reported(_)) => {
+                    return Ok((status.state, FollowEnd::Detached));
+                }
+                Err(e) => return Err(e),
+            };
             if !(first && earlier_session) {
                 let replayed = first && reattached;
                 for record in &records {
@@ -505,7 +584,7 @@ impl Session<'_> {
             }
             // The operator letting go, which is the whole of what a `SIGINT`
             // asks for: the far run is none of this side's business from here.
-            if self.interrupt.load(Ordering::Relaxed) {
+            if self.let_go() {
                 return Ok((status.state, FollowEnd::Detached));
             }
             // Money is the one thing that cannot wait for an operator to come
@@ -549,17 +628,36 @@ impl Session<'_> {
     ///
     /// A migration knows the run is coming up, because it started it, so it
     /// waits for that rather than reporting the refusal a view of an unjournaled
-    /// run gets. The wait ends the moment the far run is gone: one that has
-    /// exited will never journal, and its refusal is then the answer.
-    fn attach(&self) -> Result<Box<dyn RunFeed>> {
+    /// run gets. The wait ends the moment the far run is gone, and the ask is
+    /// then made once more: a run that has exited writes nothing further, so a
+    /// refusal that survives it is the answer, while a run short enough to have
+    /// finished inside the wait is followed from the journal it left.
+    ///
+    /// `None` is the operator letting go inside that wait. A far run is up by
+    /// now, so the flag means here what it means for the rest of the follow:
+    /// leave it computing.
+    fn attach(&self) -> Result<Option<Box<dyn RunFeed>>> {
         let deadline = Instant::now() + self.attach_bound();
         loop {
             match self.far_run.far.follow() {
-                Ok(feed) => return Ok(feed),
+                Ok(feed) => return Ok(Some(feed)),
                 Err(error) => {
-                    let gone = self.far_run.far.driving()?.is_none();
-                    if gone || Instant::now() >= deadline {
-                        return Err(self.unattachable(error, gone));
+                    if self.far_run.far.driving()?.is_none() {
+                        // A far run that is gone is not a far run that
+                        // journaled nothing: one short enough to end inside
+                        // this window wrote its lines between the refusal
+                        // above and this check. Nothing is racing the journal
+                        // any more, so one more ask settles which it was.
+                        return match self.far_run.far.follow() {
+                            Ok(feed) => Ok(Some(feed)),
+                            Err(again) => Err(self.unattachable(again, true)),
+                        };
+                    }
+                    if Instant::now() >= deadline {
+                        return Err(self.unattachable(error, false));
+                    }
+                    if self.let_go() {
+                        return Ok(None);
                     }
                     sleep(self.tick());
                 }
@@ -569,7 +667,8 @@ impl Session<'_> {
 
     /// What a follow that could not attach reports.
     ///
-    /// A far run that is gone died before it journaled anything, which is what
+    /// A far run that is gone and still refuses the follow died before it
+    /// journaled anything, which is what
     /// every far-side load failure looks like from here — a program that cannot
     /// answer for its format, an install script that exited non-zero, a store
     /// that will not open. The follow's own refusal says only that there is no
@@ -603,7 +702,11 @@ impl Session<'_> {
     /// that has already answered, so a failure there states something real —
     /// the run's directory could not be written, the far side could not be
     /// started, a sync broke mid-session — and repeating it would hide that.
-    fn reach(&self) -> Result<Vec<DeviceInfo>> {
+    ///
+    /// `None` is the operator letting go while the wait ran: it is the longest
+    /// step of a placement, so the interrupt ends it where it is rather than at
+    /// the machine's deadline.
+    fn reach(&self) -> Result<Option<Vec<DeviceInfo>>> {
         let (bound, poll) = self.ready_bounds();
         // A rented destination was asked for before this, and that is when its
         // clock started; a machine of yours is first asked for here.
@@ -613,14 +716,33 @@ impl Session<'_> {
             // whether that is its devices or a reason the run cannot proceed.
             // Only a machine that could not be reached is worth asking again.
             match self.far_run.far.devices()? {
-                Contact::Answered(devices) => return Ok(devices),
+                Contact::Answered(devices) => return Ok(Some(devices)),
                 Contact::Unreachable(error) => {
                     if Instant::now() >= deadline {
                         return Err(error);
                     }
                 }
             }
+            if self.let_go() {
+                return Ok(None);
+            }
             sleep(poll);
+        }
+    }
+
+    /// Whether the operator has let go, read between the steps of placing the
+    /// run and inside the waits those steps spend.
+    fn let_go(&self) -> bool {
+        self.interrupt.load(Ordering::Relaxed)
+    }
+
+    /// What an interrupt before the far run started comes home as: nothing was
+    /// started on the destination, and the teardown releases a rental taken for
+    /// it exactly as it does on any placement failure.
+    fn abandoned(&self) -> MigrateOutcome {
+        MigrateOutcome::Abandoned {
+            run: self.far_run.config.run.id(),
+            machine: self.far_run.destination.name.to_string(),
         }
     }
 
@@ -662,7 +784,7 @@ impl Session<'_> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Mutex;
+    use std::sync::{Arc, Mutex};
 
     use sima_core::Result;
     use sima_model::TaskKey;
@@ -674,7 +796,7 @@ mod tests {
     use crate::migrate::far_side::FarSide;
     use crate::migrate::fixtures::{
         Local, OWNED, PID, PROMPT, PULL, PUSH, RENTED, Scripted, Step, committed, config_text,
-        failed, far_store, finalized, hosting, local, marketplace, over_budget, started,
+        failed, far_store, finalized, hosting, local, marketplace, over_budget, started, unheard,
     };
 
     /// Drives one session over `far`, capturing every record the follow
@@ -705,25 +827,27 @@ mod tests {
                 .push(record.clone());
         };
         let destination = destination_for(&local.config).expect("the host is declared");
-        let outcome = FarRun {
-            far,
-            store: &local.store,
-            config: &local.config,
-            destination: &destination,
-            observer: &observer,
-            rental,
-            overrides: Overrides::default(),
-        }
-        .under_teardown(|far_run| {
-            Session {
-                far_run,
-                local_text: &local.text,
-                registration: None,
-                accept: BinaryChange::Refuse,
-                interrupt,
-                usable_by,
+        let outcome = under_collector(&local.store, &local.config.run.id(), &observer, |events| {
+            FarRun {
+                far,
+                store: &local.store,
+                config: &local.config,
+                destination: &destination,
+                events,
+                rental,
+                overrides: Overrides::default(),
             }
-            .run_to_end()
+            .under_teardown(|far_run| {
+                Session {
+                    far_run,
+                    local_text: &local.text,
+                    registration: None,
+                    accept: BinaryChange::Refuse,
+                    interrupt,
+                    usable_by,
+                }
+                .run_to_end()
+            })
         });
         let records = std::mem::take(&mut *captured.lock().expect("the capture lock"));
         (outcome, records)
@@ -741,25 +865,27 @@ mod tests {
     ) -> Result<MigrateOutcome> {
         let observer = |_: &Record| {};
         let destination = destination_for(&local.config).expect("the host is declared");
-        FarRun {
-            far,
-            store: &local.store,
-            config: &local.config,
-            destination: &destination,
-            observer: &observer,
-            rental: None,
-            overrides: Overrides::default(),
-        }
-        .under_teardown(|far_run| {
-            Session {
-                far_run,
-                local_text: &local.text,
-                registration,
-                accept,
-                interrupt: &AtomicBool::new(false),
-                usable_by: None,
+        under_collector(&local.store, &local.config.run.id(), &observer, |events| {
+            FarRun {
+                far,
+                store: &local.store,
+                config: &local.config,
+                destination: &destination,
+                events,
+                rental: None,
+                overrides: Overrides::default(),
             }
-            .run_to_end()
+            .under_teardown(|far_run| {
+                Session {
+                    far_run,
+                    local_text: &local.text,
+                    registration,
+                    accept,
+                    interrupt: &AtomicBool::new(false),
+                    usable_by: None,
+                }
+                .run_to_end()
+            })
         })
     }
 
@@ -1026,6 +1152,39 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn a_far_run_over_before_the_follow_attaches_is_read_from_its_journal() -> Result<()> {
+        // A run short enough to end inside the start window is gone by the
+        // time the attach asks what is driving the machine, and a follow that
+        // landed a moment earlier was refused a journal that was still empty.
+        // Gone is not the same as journaled nothing: the records are there by
+        // the second ask, and they are this run's.
+        let local = local(RENTED, PROMPT, Some(3));
+        let run = local.config.run.id();
+        let far = Scripted::new()
+            // Two refusals: the follow tried before the start, over a journal
+            // that is still empty, and the attach that lands before the far
+            // run's lines are readable — which is the race this pins.
+            .refusing_the_follow(2)
+            .finishing_at_the_start(vec![started(&run), committed("aa"), finalized(&run)]);
+
+        let (outcome, records) = session_over(&local, &far, None, &AtomicBool::new(false));
+        outcome?;
+        assert!(
+            records
+                .iter()
+                .any(|record| matches!(record.event, Event::Committed { .. })),
+            "the far run's own records came home: {records:?}"
+        );
+        assert_eq!(
+            far.steps().last(),
+            Some(&PULL),
+            "and its results were pulled: {:?}",
+            far.steps()
+        );
+        Ok(())
+    }
+
     // ---- The choreography ----
 
     #[test]
@@ -1243,6 +1402,70 @@ mod tests {
     }
 
     #[test]
+    fn an_interrupt_while_the_run_is_being_sent_starts_nothing_and_keeps_no_machine() -> Result<()>
+    {
+        // The window a placement spends sending a run is minutes long, and an
+        // operator who lets go inside it asked for the migration to stop —
+        // starting the far run anyway would leave a machine computing and
+        // billing behind a `sima migrate` that already exited.
+        let local = local(RENTED, PROMPT, Some(3));
+        let run = local.config.run.id();
+        let lock = local.store.acquire_run_lock(&run)?;
+        let provider = marketplace();
+        let guard = hosting(&provider, &local.store, &lock)?;
+        let interrupt = Arc::new(AtomicBool::new(false));
+        let far = Scripted::new()
+            .letting_go_at(PUSH, &interrupt)
+            .delivering(vec![vec![started(&run), committed("aa")]]);
+
+        let (outcome, _) = session_over(&local, &far, Some(guard), &interrupt);
+        assert_eq!(
+            outcome?,
+            MigrateOutcome::Abandoned {
+                run,
+                machine: "cloudbox".to_string(),
+            },
+            "a placement the operator stopped is its own outcome"
+        );
+        assert!(
+            !far.steps().contains(&Step::Start),
+            "no far run was started: {:?}",
+            far.steps()
+        );
+        assert_eq!(
+            *far.alive.lock().expect("the pid lock"),
+            None,
+            "and nothing is computing there"
+        );
+        assert_eq!(
+            provider.destroyed().len(),
+            1,
+            "the machine taken for it was released"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn an_interrupt_before_the_placement_leaves_the_destination_untouched() -> Result<()> {
+        // The flag raised before anything: the migration stops where it is,
+        // which is before the machine has been asked for anything at all.
+        let local = local(OWNED, "", Some(3));
+        let run = local.config.run.id();
+        let far = Scripted::new().delivering(vec![vec![started(&run), committed("aa")]]);
+
+        let (outcome, _) = session_over(&local, &far, None, &AtomicBool::new(true));
+        assert_eq!(
+            outcome?,
+            MigrateOutcome::Abandoned {
+                run,
+                machine: "cloudbox".to_string(),
+            }
+        );
+        assert!(far.steps().is_empty(), "{:?}", far.steps());
+        Ok(())
+    }
+
+    #[test]
     fn a_raised_interrupt_detaches_and_leaves_the_far_run_computing() -> Result<()> {
         // Ctrl-C is the operator letting go, not the operator stopping the
         // run: the far side is neither signalled nor pulled from, and the
@@ -1252,10 +1475,12 @@ mod tests {
         let lock = local.store.acquire_run_lock(&run)?;
         let provider = marketplace();
         let guard = hosting(&provider, &local.store, &lock)?;
-        // Raised before the follow starts, which is what a `sima migrate`
-        // interrupted early looks like.
-        let interrupt = AtomicBool::new(true);
-        let far = Scripted::new().delivering(vec![vec![started(&run), committed("aa")]]);
+        // Raised as the far run is started, which is the first moment there is
+        // one to let go of.
+        let interrupt = Arc::new(AtomicBool::new(false));
+        let far = Scripted::new()
+            .letting_go_at(Step::Start, &interrupt)
+            .delivering(vec![vec![started(&run), committed("aa")]]);
 
         let (outcome, _) = session_over(&local, &far, Some(guard), &interrupt);
         assert_eq!(
@@ -1297,6 +1522,122 @@ mod tests {
     }
 
     #[test]
+    fn a_stream_that_dies_with_nothing_raised_fails_the_migration() -> Result<()> {
+        // What the detach must not swallow: a transport that ends while the
+        // operator is still watching is a fault, and it is reported as one
+        // rather than read as letting go.
+        let local = local(RENTED, PROMPT, Some(3));
+        let far = Scripted::new().losing_the_stream("the remote follow stream ended");
+
+        let (outcome, _) = session_over(&local, &far, None, &AtomicBool::new(false));
+        let error = outcome.expect_err("a stream that died mid-follow is a fault");
+        assert!(
+            error.to_string().contains("the remote follow stream ended"),
+            "the fault reaches the caller unchanged: {error}"
+        );
+        assert!(
+            !far.steps().contains(&PULL),
+            "nothing was pulled: {:?}",
+            far.steps()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_stream_that_dies_once_the_operator_has_let_go_is_the_detach_it_asked_for() -> Result<()> {
+        // A terminal delivers its interrupt to the whole foreground process
+        // group, so the transport carrying the follow can be gone by the time
+        // this side reads its own flag. The interrupt is what was asked for and
+        // the dead stream is a consequence of it: letting go stays letting go.
+        let local = local(RENTED, PROMPT, Some(3));
+        let run = local.config.run.id();
+        let interrupt = Arc::new(AtomicBool::new(false));
+        let far = Scripted::new()
+            .letting_go_at(Step::Start, &interrupt)
+            .losing_the_stream("the remote follow stream ended");
+
+        let (outcome, _) = session_over(&local, &far, None, &interrupt);
+        assert_eq!(
+            outcome?,
+            MigrateOutcome::Detached {
+                run,
+                machine: "cloudbox".to_string(),
+            }
+        );
+        assert!(
+            !far.steps().contains(&PULL),
+            "nothing was pulled: {:?}",
+            far.steps()
+        );
+        assert_eq!(
+            *far.alive.lock().expect("the pid lock"),
+            Some(PID),
+            "the far run keeps computing"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn an_interrupt_while_the_follow_opens_lets_go_of_the_run_it_started() -> Result<()> {
+        // A far run is up by the time this side waits for its first journal
+        // line, so the flag means there what it means from the start on: let
+        // go of it, rather than wait out the bound and report a run that never
+        // journaled as a fault.
+        let local = local(RENTED, PROMPT, Some(3));
+        let run = local.config.run.id();
+        let interrupt = Arc::new(AtomicBool::new(false));
+        let far = Scripted::new()
+            .letting_go_at(Step::Start, &interrupt)
+            .refusing_the_follow(usize::MAX);
+
+        let (outcome, _) = session_over(&local, &far, None, &interrupt);
+        assert_eq!(
+            outcome?,
+            MigrateOutcome::Detached {
+                run,
+                machine: "cloudbox".to_string(),
+            }
+        );
+        assert_eq!(
+            *far.alive.lock().expect("the pid lock"),
+            Some(PID),
+            "the far run it started keeps computing"
+        );
+        assert!(
+            !far.steps().contains(&Step::LogTail),
+            "and nothing was asked to explain a death that did not happen: {:?}",
+            far.steps()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_far_side_fault_fails_the_migration_even_after_the_operator_let_go() -> Result<()> {
+        // The two endings a raised flag has to keep apart. A transport that
+        // went away with the operator is the detach they asked for; a far side
+        // that wrote a fault frame is reporting trouble of its own, and its
+        // words are the migration's outcome whatever this side's flag says.
+        let local = local(RENTED, PROMPT, Some(3));
+        let interrupt = Arc::new(AtomicBool::new(false));
+        let far = Scripted::new()
+            .letting_go_at(Step::Start, &interrupt)
+            .faulting_the_stream("the run's journal on cloudbox could not be read");
+
+        let (outcome, _) = session_over(&local, &far, None, &interrupt);
+        let error = outcome.expect_err("a far side reporting trouble is not a detach");
+        assert!(
+            error.to_string().contains("journal on cloudbox could not"),
+            "the far side's own words reach the caller: {error}"
+        );
+        assert!(
+            !far.steps().contains(&PULL),
+            "nothing was pulled: {:?}",
+            far.steps()
+        );
+        Ok(())
+    }
+
+    #[test]
     fn an_interrupt_during_the_acquisition_abandons_it_and_rents_nothing() -> Result<()> {
         // Detaching exists only once there is a far run to detach from. Before
         // one, the interrupt keeps the meaning it has always had: abandon the
@@ -1317,6 +1658,7 @@ mod tests {
             Instant::now() + spec.ready_timeout,
             &Budget::default(),
             &AtomicBool::new(true),
+            &unheard(),
         );
         let Err(error) = held else {
             panic!("an interrupted acquisition rents nothing");
@@ -1336,9 +1678,12 @@ mod tests {
         // and the machine it is still computing on.
         let local = local(OWNED, "", Some(3));
         let run = local.config.run.id();
-        let far = Scripted::new().delivering(vec![vec![started(&run), committed("aa")]]);
+        let interrupt = Arc::new(AtomicBool::new(false));
+        let far = Scripted::new()
+            .letting_go_at(Step::Start, &interrupt)
+            .delivering(vec![vec![started(&run), committed("aa")]]);
 
-        let (outcome, _) = session_over(&local, &far, None, &AtomicBool::new(true));
+        let (outcome, _) = session_over(&local, &far, None, &interrupt);
         assert_eq!(
             outcome?,
             MigrateOutcome::Detached {
@@ -1767,6 +2112,7 @@ mod tests {
             Instant::now() + spec.ready_timeout,
             &Budget::default(),
             &AtomicBool::new(false),
+            &unheard(),
         )?;
         assert_eq!(
             guard.id(),

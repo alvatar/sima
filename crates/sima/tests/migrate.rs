@@ -22,6 +22,7 @@
 mod common;
 
 use std::collections::BTreeMap;
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -307,6 +308,131 @@ fn a_migrated_run_finalizes_to_the_manifest_an_uninterrupted_run_writes() -> Res
     Ok(())
 }
 
+/// Asserts `lines` appear in `text` in the order given, naming the first one
+/// that does not.
+fn in_order(text: &str, lines: &[&str]) {
+    let mut rest = text;
+    for line in lines {
+        let at = rest
+            .find(line)
+            .unwrap_or_else(|| panic!("{line:?} follows what precedes it, in:\n{text}"));
+        rest = &rest[at + line.len()..];
+    }
+}
+
+#[test]
+fn a_migration_narrates_the_phases_of_placing_the_run() -> Result<()> {
+    // Between the run id and the far run's first record a migration rents a
+    // machine, waits for it to come up, and puts the run on it — minutes on a
+    // real destination. Each phase says so as it begins, so an operator can
+    // tell a placement in progress from a hang.
+    workers_built();
+    let dir = tempfile::tempdir().expect("temp dir");
+    let far_root = dir.path().join("far");
+    let migrated = migrating(dir.path(), &far_root, SEGMENTS, CHAINS);
+
+    let output = sima_command()
+        .args(["migrate", migrated.to_str().expect("utf-8 path")])
+        .output()
+        .expect("spawn sima migrate");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "the migration finalized: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).expect("stdout is UTF-8");
+    in_order(
+        &stdout,
+        &[
+            "run ",
+            "renting",
+            "waiting for the machine to come up",
+            "sending the run",
+            "starting the run",
+            "started:",
+            "committed",
+            "migrated:",
+        ],
+    );
+    // The wait is one phase however many times it polls, so a machine slow to
+    // answer says so once rather than once a second.
+    assert_eq!(
+        stdout.matches("waiting for the machine to come up").count(),
+        1,
+        "{stdout}"
+    );
+    // The far run's records reach the same renderer a local run's do, so what
+    // a migration shows of the work is what `sima run` shows of it.
+    assert!(
+        stdout.contains("started (worker"),
+        "the far side's attempts are rendered here: {stdout}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_quiet_migration_prints_the_run_its_commits_and_its_outcome_and_nothing_else() -> Result<()> {
+    // The narration is for watching a placement happen; a script wants the
+    // run's own progress and no more.
+    workers_built();
+    let dir = tempfile::tempdir().expect("temp dir");
+    let far_root = dir.path().join("far");
+    let migrated = migrating(dir.path(), &far_root, SEGMENTS, CHAINS);
+
+    let output = sima_command()
+        .args(["migrate", migrated.to_str().expect("utf-8 path"), "--quiet"])
+        .output()
+        .expect("spawn sima migrate");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "the migration finalized: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).expect("stdout is UTF-8");
+    in_order(&stdout, &["run ", "started:", "committed", "migrated:"]);
+    for narrated in [
+        "renting",
+        "waiting for the machine",
+        "sending the run",
+        "starting the run",
+    ] {
+        assert!(!stdout.contains(narrated), "{narrated:?} in:\n{stdout}");
+    }
+    Ok(())
+}
+
+#[test]
+fn a_migration_onto_a_machine_of_yours_narrates_the_phases_it_has() -> Result<()> {
+    // A machine of yours is standing and is not paid for, so the phases that
+    // acquire one do not exist; the ones that place the run on it do.
+    workers_built();
+    let dir = tempfile::tempdir().expect("temp dir");
+    let far_root = dir.path().join("far");
+    let bin = common::machine_stubs(dir.path(), false);
+    let migrated = owned(dir.path(), &far_root, SEGMENTS, CHAINS);
+
+    let output = sima_with(&bin, &["migrate", migrated.to_str().expect("utf-8 path")]);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "the migration finalized: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).expect("stdout is UTF-8");
+    in_order(
+        &stdout,
+        &["run ", "sending the run", "starting the run", "migrated:"],
+    );
+    assert!(!stdout.contains("renting"), "nothing was rented: {stdout}");
+    assert!(
+        !stdout.contains("waiting for the machine"),
+        "nothing was waited for: {stdout}"
+    );
+    Ok(())
+}
+
 #[test]
 fn a_second_migration_over_a_finished_run_finalizes_to_the_same_manifest() -> Result<()> {
     workers_built();
@@ -336,6 +462,23 @@ fn a_second_migration_over_a_finished_run_finalizes_to_the_same_manifest() -> Re
         "nothing was left rented"
     );
     Ok(())
+}
+
+/// An observer that lets go the moment the far run produces a record of its
+/// own, which is what an operator does once they can see the run is going.
+///
+/// The phases of placing the run are records too, and reaching for the
+/// interrupt during those means something else entirely: an offer walk is
+/// abandoned rather than a far run left computing.
+fn letting_go(interrupt: &AtomicBool) -> impl Fn(&Record) + '_ {
+    move |record: &Record| {
+        if matches!(
+            record.event,
+            Event::RunStarted { .. } | Event::Committed { .. }
+        ) {
+            interrupt.store(true, Ordering::Relaxed);
+        }
+    }
 }
 
 /// The far-side `sima run` process id, read from the run directory the
@@ -390,7 +533,7 @@ fn a_migration_interrupted_during_the_follow_detaches_and_a_second_one_reattache
     let outcome = migrate(
         &migrated,
         &loaded,
-        &|_: &Record| interrupt.store(true, Ordering::Relaxed),
+        &letting_go(&interrupt),
         &interrupt,
         BinaryChange::Refuse,
     )?;
@@ -420,7 +563,7 @@ fn a_migration_interrupted_during_the_follow_detaches_and_a_second_one_reattache
     let outcome = migrate(
         &migrated,
         &loaded,
-        &|_: &Record| second.store(true, Ordering::Relaxed),
+        &letting_go(&second),
         &second,
         BinaryChange::Refuse,
     )?;
@@ -551,21 +694,19 @@ fn migrating_under_ceiling(dir: &Path, root: &Path, ms: u64) -> PathBuf {
 }
 
 /// A config in `dir` whose orchestrator migrates onto a machine of yours,
-/// rooted at `root`, whose run may compute for `ms` milliseconds per launch.
+/// rooted at `root`.
 ///
 /// The machine is reached through the stand-ins [`common::machine_stubs`]
 /// writes, so its workers run in a container the same way a real one's do and
 /// the far side is still this machine.
-fn owned_under_ceiling(dir: &Path, root: &Path, ms: u64) -> PathBuf {
-    let text = format!(
-        "{}\n[budget]\nmax_wall_clock_ms = {ms}\n",
-        std::fs::read_to_string(config(
-            dir,
-            "owned.toml",
-            UNFINISHABLE,
-            PACED,
-            &format!(
-                r#"
+fn owned(dir: &Path, root: &Path, segments: u64, behaviors: &str) -> PathBuf {
+    config(
+        dir,
+        "owned.toml",
+        segments,
+        behaviors,
+        &format!(
+            r#"
             migrate = "far"
 
             [host.far]
@@ -576,12 +717,20 @@ fn owned_under_ceiling(dir: &Path, root: &Path, ms: u64) -> PathBuf {
             root = {root:?}
             binary = {binary:?}
             "#,
-                image = common::IMAGE,
-                root = root.to_string_lossy(),
-                binary = far_binary(),
-            ),
-        ))
-        .expect("read the owned config")
+            image = common::IMAGE,
+            root = root.to_string_lossy(),
+            binary = far_binary(),
+        ),
+    )
+}
+
+/// The same machine of yours, whose run may compute for `ms` milliseconds per
+/// launch.
+fn owned_under_ceiling(dir: &Path, root: &Path, ms: u64) -> PathBuf {
+    let text = format!(
+        "{}\n[budget]\nmax_wall_clock_ms = {ms}\n",
+        std::fs::read_to_string(owned(dir, root, UNFINISHABLE, PACED))
+            .expect("read the owned config")
     );
     common::write_config_text(dir, "owned.toml", &text)
 }
@@ -629,7 +778,7 @@ fn a_detached_run_ends_on_its_own_ceiling_and_the_next_attach_brings_it_home() -
     // detach.
     let migrated = owned_under_ceiling(dir.path(), &far_root, 8_000);
 
-    let output = detached_from(&bin, &migrated, &far_root);
+    let output = detached_from(&bin, &migrated, &far_root, Signalled::Migration);
     assert_eq!(
         output.status.code(),
         Some(0),
@@ -680,7 +829,7 @@ fn a_detached_run_on_a_rented_machine_carries_no_ceiling_and_keeps_computing() -
     let outcome = migrate(
         &migrated,
         &loaded,
-        &|_: &Record| interrupt.store(true, Ordering::Relaxed),
+        &letting_go(&interrupt),
         &interrupt,
         BinaryChange::Refuse,
     )?;
@@ -709,15 +858,29 @@ fn a_detached_run_on_a_rented_machine_carries_no_ceiling_and_keeps_computing() -
     Ok(())
 }
 
+/// Who the interrupt that ends a migration is delivered to.
+#[derive(Clone, Copy)]
+enum Signalled {
+    /// The `sima` process alone, as a `kill` naming it does.
+    Migration,
+    /// Every process in the migration's group, as a terminal's Ctrl-C does:
+    /// the children it spawned are signalled directly, before sima handles
+    /// anything.
+    Terminal,
+}
+
 /// Runs `sima migrate <config>` with `bin` ahead of the PATH and interrupts it
 /// once the far run is computing, which is what letting go of one looks like.
-fn detached_from(bin: &Path, config: &Path, root: &Path) -> Output {
+fn detached_from(bin: &Path, config: &Path, root: &Path, signalled: Signalled) -> Output {
     let path = std::env::var("PATH").expect("a PATH");
     let child = sima_command()
         .args(["migrate", config.to_str().expect("utf-8 path")])
         .env("PATH", format!("{}:{path}", bin.display()))
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
+        // A group of its own, so signalling the whole of it reaches the
+        // migration and its children and nothing of the suite's.
+        .process_group(0)
         .spawn()
         .expect("spawn sima");
     // The far run writes its pid when it starts, so that file appearing is what
@@ -726,10 +889,149 @@ fn detached_from(bin: &Path, config: &Path, root: &Path) -> Output {
         poll_for(Duration::from_secs(60), || far_pid(config, root)).is_some(),
         "the far run started"
     );
-    let _ = Command::new("kill")
-        .args(["-INT", &child.id().to_string()])
-        .output();
+    let target = match signalled {
+        Signalled::Migration => child.id() as libc::pid_t,
+        // A negative pid names the group.
+        Signalled::Terminal => -(child.id() as libc::pid_t),
+    };
+    assert_eq!(
+        unsafe { libc::kill(target, libc::SIGINT) },
+        0,
+        "the migration was signalled"
+    );
     child.wait_with_output().expect("the migration ends")
+}
+
+/// An `ssh` stand-in that holds the push open and says when it is in it,
+/// delegating everything else to the stand-ins already at `bin`.
+///
+/// Sending a run is the longest step of a placement, and this is what makes it
+/// long enough to interrupt inside on purpose rather than by racing it.
+fn dwelling_on_the_push(dir: &Path, bin: &Path, marker: &Path) -> PathBuf {
+    let dwelling = dir.join("dwelling-bin");
+    common::executable(
+        &dwelling.join("ssh"),
+        &format!(
+            "#!/bin/sh\n\
+             case \"$*\" in\n\
+             \x20 *sync-serve*) : > {marker}; sleep 2 ;;\n\
+             esac\n\
+             exec {ssh} \"$@\"\n",
+            marker = marker.display(),
+            ssh = bin.join("ssh").display(),
+        ),
+    );
+    dwelling
+}
+
+/// Runs `sima migrate <config>` with `bins` ahead of the PATH and interrupts
+/// its whole group once `marker` appears, which is a Ctrl-C landing inside the
+/// placement rather than after it.
+fn interrupted_at(bins: &[&Path], config: &Path, marker: &Path) -> Output {
+    let path = std::env::var("PATH").expect("a PATH");
+    let ahead = bins
+        .iter()
+        .map(|bin| bin.display().to_string())
+        .collect::<Vec<String>>()
+        .join(":");
+    let child = sima_command()
+        .args(["migrate", config.to_str().expect("utf-8 path")])
+        .env("PATH", format!("{ahead}:{path}"))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .process_group(0)
+        .spawn()
+        .expect("spawn sima");
+    assert!(
+        poll_for(Duration::from_secs(60), || marker.exists().then_some(())).is_some(),
+        "the placement reached the push"
+    );
+    assert_eq!(
+        // A negative pid names the group, as a terminal's Ctrl-C reaches it.
+        unsafe { libc::kill(-(child.id() as libc::pid_t), libc::SIGINT) },
+        0,
+        "the migration was signalled"
+    );
+    child.wait_with_output().expect("the migration ends")
+}
+
+#[test]
+fn an_interrupt_inside_the_placement_starts_no_far_run() -> Result<()> {
+    // Letting go before a far run exists is not letting go of one: nothing is
+    // started on the destination, so nothing is left computing behind a `sima
+    // migrate` that has already exited.
+    workers_built();
+    let dir = tempfile::tempdir().expect("temp dir");
+    let far_root = dir.path().join("far");
+    let bin = common::machine_stubs(dir.path(), false);
+    let marker = dir.path().join("pushing");
+    let dwelling = dwelling_on_the_push(dir.path(), &bin, &marker);
+    let migrated = owned(dir.path(), &far_root, UNFINISHABLE, PACED);
+
+    let output = interrupted_at(&[&dwelling, &bin], &migrated, &marker);
+    assert_eq!(
+        output.status.code(),
+        Some(130),
+        "a placement the operator stopped is an interrupt: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).expect("stdout is UTF-8");
+    assert!(
+        stdout.contains("abandoned") && stdout.contains("nothing was started"),
+        "{stdout}"
+    );
+    assert_eq!(
+        far_pid(&migrated, &far_root),
+        None,
+        "and nothing is computing there"
+    );
+    assert!(
+        manifest_bytes(&migrated).is_none(),
+        "an abandoned placement seals nothing"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_terminal_interrupt_detaches_the_migration_it_is_meant_to() -> Result<()> {
+    // The bug a real terminal shows and a raised flag cannot: Ctrl-C reaches
+    // every process in the foreground group, so the transport carrying the
+    // follow dies before sima handles its own signal. Letting go is what was
+    // asked for, and a stream that ended with the operator does not turn it
+    // into a fault.
+    workers_built();
+    let dir = tempfile::tempdir().expect("temp dir");
+    let far_root = dir.path().join("far");
+    let bin = common::machine_stubs(dir.path(), false);
+    let migrated = migrating(dir.path(), &far_root, UNFINISHABLE, PACED);
+
+    let output = detached_from(&bin, &migrated, &far_root, Signalled::Terminal);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "letting go is its own outcome: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).expect("stdout is UTF-8");
+    assert!(stdout.contains("detached"), "{stdout}");
+    assert!(
+        stdout.contains("sima migrate") && stdout.contains("sima recall"),
+        "both ways back are printed: {stdout}"
+    );
+    assert!(
+        manifest_bytes(&migrated).is_none(),
+        "a detached migration seals nothing"
+    );
+
+    // And the far run is where it was left: still computing, still rented.
+    let pid = far_pid(&migrated, &far_root).expect("the far run keeps computing");
+    let store = Store::open(&load(&migrated)?.store)?;
+    assert!(
+        !store.instance_records()?.is_empty(),
+        "the machine it computes on was not torn down"
+    );
+    end_far_run(pid);
+    Ok(())
 }
 
 #[test]
@@ -751,7 +1053,7 @@ fn a_recall_ends_a_detached_run_and_brings_its_results_home() -> Result<()> {
     let outcome = migrate(
         &migrated,
         &loaded,
-        &|_: &Record| interrupt.store(true, Ordering::Relaxed),
+        &letting_go(&interrupt),
         &interrupt,
         BinaryChange::Refuse,
     )?;

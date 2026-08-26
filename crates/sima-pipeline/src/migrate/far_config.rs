@@ -853,7 +853,7 @@ mod tests {
             .expect("the entry");
         assert_eq!(
             entry["binary"].as_str(),
-            Some("./program/acme.thing.v1/installed/program"),
+            Some("./.sima/program/acme.thing.v1/installed/program"),
             "the binary names what the install leaves"
         );
         assert_eq!(

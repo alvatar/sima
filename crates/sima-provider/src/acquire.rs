@@ -21,6 +21,10 @@ use crate::provider::{Instance, InstanceStatus, Provider, Provision, SshEndpoint
 use crate::reconcile::{ReconcileScope, reconcile};
 use crate::reputation::{IncidentKind, excluded_machines, record_incident};
 
+/// An acquisition nobody is narrating: what a caller with nothing to say
+/// about the offer it took passes as `taken`.
+pub static UNREPORTED: &(dyn Fn(&Offer) + Sync) = &|_: &Offer| ();
+
 /// Bounds on waiting for a provisioned instance to become ready.
 #[derive(Debug, Clone, Copy)]
 pub struct AcquireLimits {
@@ -77,6 +81,13 @@ static NONCE: LazyLock<String> = LazyLock::new(|| {
 /// however many candidates it tries. A cancellation tears down any machine
 /// already provisioned and returns [`Error::Provider`] naming it. A caller with
 /// nothing to cancel passes a never-set flag.
+///
+/// `taken` is called with each offer a machine has been provisioned against,
+/// before the wait for that machine to come up: it is where a caller says what
+/// is now being paid for, which is the one thing an operator cannot see while
+/// the wait runs. A walk whose first machine never comes up calls it again for
+/// the next offer it takes. A caller with nothing to say passes
+/// [`UNREPORTED`].
 #[allow(clippy::too_many_arguments)]
 pub fn acquire<'a, P: Provider + ?Sized>(
     provider: &'a P,
@@ -88,6 +99,7 @@ pub fn acquire<'a, P: Provider + ?Sized>(
     limits: &AcquireLimits,
     budget: &Budget,
     cancel: &AtomicBool,
+    taken: &dyn Fn(&Offer),
 ) -> Result<InstanceGuard<'a, P>> {
     let owner = lock.run();
     // Orphans of an earlier crash are destroyed before a new machine is
@@ -159,6 +171,8 @@ pub fn acquire<'a, P: Provider + ?Sized>(
         // exists: reconcile matches the tag and destroys the untracked
         // instance, so nothing leaks.
         sima_core::crashpoint("provider.provisioned");
+        // The money starts here, whatever the readiness wait goes on to find.
+        taken(&offer);
         store.put_instance(&record(
             &tag,
             provider.id(),
@@ -338,7 +352,7 @@ mod tests {
         Store,
     };
 
-    use super::{AcquireLimits, Ordering, acquire, attempt_tag};
+    use super::{AcquireLimits, Ordering, UNREPORTED, acquire, attempt_tag};
     use crate::budget::{Budget, Cost};
     use crate::guard::InstanceGuard;
     use crate::offer::{Constraints, Objective, Offer, OfferId, Price};
@@ -542,6 +556,7 @@ mod tests {
             &limits,
             &Budget::default(),
             never_cancelled(),
+            UNREPORTED,
         )?;
         let records = store.instance_records()?;
         assert_eq!(records.len(), 1);
@@ -574,6 +589,7 @@ mod tests {
             &limits,
             &Budget::default(),
             never_cancelled(),
+            UNREPORTED,
         )?;
         // The abandoned machine ran and was billed for, so the walk that
         // moved past it left its cost behind.
@@ -605,6 +621,7 @@ mod tests {
             &limits,
             &Budget::default(),
             never_cancelled(),
+            UNREPORTED,
         )?;
         // The abandoned machine left one incident naming its own machine and
         // the attempt that observed it; the taken machine left none.
@@ -642,6 +659,7 @@ mod tests {
             &limits,
             &Budget::default(),
             never_cancelled(),
+            UNREPORTED,
         )?;
         assert!(store.machine_incidents()?.is_empty());
         Ok(())
@@ -746,6 +764,7 @@ mod tests {
                 &limits,
                 &Budget::default(),
                 never_cancelled(),
+                UNREPORTED,
             )?;
             Ok(store
                 .instance_record(guard.tag())?
@@ -819,6 +838,7 @@ mod tests {
             &prompt_limits(),
             budget,
             never_cancelled(),
+            UNREPORTED,
         )
     }
 
@@ -908,6 +928,7 @@ mod tests {
             },
             &budget,
             never_cancelled(),
+            UNREPORTED,
         );
         assert!(matches!(
             outcome,
@@ -960,6 +981,7 @@ mod tests {
             &limits,
             &Budget::default(),
             never_cancelled(),
+            UNREPORTED,
         )?;
         let records = store.instance_records()?;
         assert_eq!(records.len(), 1);
@@ -1006,6 +1028,7 @@ mod tests {
             &prompt_limits(),
             &Budget::default(),
             never_cancelled(),
+            UNREPORTED,
         );
         assert!(matches!(outcome, Err(Error::Provider(_))));
         // Nothing was rented, so nothing is owed.
@@ -1108,6 +1131,7 @@ mod tests {
             &prompt_limits(),
             &Budget::default(),
             never_cancelled(),
+            UNREPORTED,
         )?;
         assert!(stub.destroyed().is_empty());
         let tags: Vec<String> = store
@@ -1203,6 +1227,7 @@ mod tests {
             &prompt_limits(),
             &Budget::default(),
             &cancel,
+            UNREPORTED,
         );
         assert!(matches!(
             outcome,
@@ -1240,6 +1265,7 @@ mod tests {
             },
             &Budget::default(),
             &cancel,
+            UNREPORTED,
         );
         assert!(matches!(
             outcome,

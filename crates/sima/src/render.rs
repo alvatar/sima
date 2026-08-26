@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use sima_pipeline::{
     Attempt, AttemptResult, Event, MachineReport, Record, RetryStats, RunId, RunState, RunStatus,
-    RunTimeline, SpendReport, TaskHistory, TaskOutcome, WorkerMetrics,
+    RunSummary, RunTimeline, SpendReport, TaskHistory, TaskOutcome, WorkerMetrics,
 };
 
 /// How many hex characters of an id a progress line shows.
@@ -18,18 +18,22 @@ pub fn short(id: &str) -> &str {
 }
 
 /// Renders `event` to the one line it warrants, or `None` for the `Queued`,
-/// `Leased`, `WorkerBound`, and `ProgramBound` bookkeeping events.
+/// `WorkerBound`, and `ProgramBound` bookkeeping events.
 /// `committed`/`tasks` supply
 /// the running `committed k/n` count a commit line shows; on `RunStarted`, a
-/// nonzero `committed` is the run's prior progress and the line names it, so a
-/// resumed session does not read as a restart. The single source of the
+/// nonzero `committed` is the run's prior progress and the line states the
+/// ledger it resumes, so a resumed session does not read as a restart. The single source of the
 /// event wording: `sima run` prints these lines to stdout and the tui folds
 /// them into its event log.
 pub fn describe(event: &Event, committed: usize, tasks: usize) -> Option<String> {
     Some(match event {
-        Event::RunStarted { tasks, .. } if committed > 0 => {
-            format!("started: {tasks} tasks, {committed} already committed")
-        }
+        // A run over a store that already holds progress states its ledger
+        // rather than a task count: continuing and restarting otherwise read
+        // the same, and only one of them is what happened.
+        Event::RunStarted { tasks, .. } if committed > 0 => format!(
+            "resuming: {committed}/{tasks} committed, {} outstanding",
+            tasks.saturating_sub(committed)
+        ),
         Event::RunStarted { tasks, .. } => format!("started: {tasks} tasks"),
         Event::Committed { task, .. } => {
             format!("committed {committed}/{tasks}  {}", short(task))
@@ -52,6 +56,16 @@ pub fn describe(event: &Event, committed: usize, tasks: usize) -> Option<String>
         } => format!("lease expired {} ({elapsed_ms} ms)", short(task)),
         Event::CheckpointDegraded { task, error } => {
             format!("checkpoint degraded {}: {error}", short(task))
+        }
+        // What a run looks like while it is computing: an attempt begins, and
+        // its checkpoints stand for it still being alive. Between them a
+        // terminal that showed only commits was silent for as long as a task
+        // takes, and silence reads the same whether a run computes or wedges.
+        Event::Leased { task, worker, .. } => {
+            format!("task {} started (worker {worker})", short(task))
+        }
+        Event::Checkpointed { task, worker } => {
+            format!("task {} checkpointed (worker {worker})", short(task))
         }
         Event::RunFinalized { committed, .. } => {
             format!("finalized: {committed} tasks committed")
@@ -87,6 +101,32 @@ pub fn describe(event: &Event, committed: usize, tasks: usize) -> Option<String>
                 None => format!("{level} {source}: {message}"),
             }
         }
+        // The phases of putting a run on a machine, each stated as it begins:
+        // between them lie the minutes a placement takes, and an operator
+        // reading a silent terminal cannot otherwise tell them from a hang.
+        Event::Renting {
+            member,
+            machine,
+            gpu_model,
+            gpu_count,
+            rate_microusd_hour,
+        } => format!(
+            "renting{}: {} on {machine} at {}/hr",
+            named(member),
+            hardware(gpu_model, *gpu_count),
+            dollars(*rate_microusd_hour)
+        ),
+        Event::AwaitingMachine { timeout_ms } => format!(
+            "waiting for the machine to come up (pulls the image; up to {}s)",
+            timeout_ms / 1_000
+        ),
+        Event::SendingRun { member, objects } => {
+            format!("sending the run{}: {objects} objects", named(member))
+        }
+        Event::InstallingProgram { member } => {
+            format!("installing the program{}", named(member))
+        }
+        Event::StartingRun => "starting the run".to_string(),
         // A rented machine came online: reported at supervisor start and for
         // each replacement, naming where the work will run.
         Event::InstanceOnline {
@@ -96,18 +136,12 @@ pub fn describe(event: &Event, committed: usize, tasks: usize) -> Option<String>
             rate_microusd_hour,
             host,
             ..
-        } => {
-            let hardware = if *gpu_count == 0 || gpu_model.is_empty() {
-                "no GPU".to_string()
-            } else {
-                format!("{gpu_count}× {gpu_model}")
-            };
-            format!(
-                "instance online {} on {host}: {hardware} at {}/hr",
-                short(instance),
-                dollars(*rate_microusd_hour)
-            )
-        }
+        } => format!(
+            "instance online {} on {host}: {} at {}/hr",
+            short(instance),
+            hardware(gpu_model, *gpu_count),
+            dollars(*rate_microusd_hour)
+        ),
         Event::InstanceLost { instance, .. } => {
             format!("instance lost {}", short(instance))
         }
@@ -140,10 +174,9 @@ pub fn describe(event: &Event, committed: usize, tasks: usize) -> Option<String>
             };
             format!("warning: the driver for {place} changed: {from} is now {to}")
         }
-        Event::Queued { .. }
-        | Event::Leased { .. }
-        | Event::WorkerBound { .. }
-        | Event::ProgramBound { .. } => return None,
+        Event::Queued { .. } | Event::WorkerBound { .. } | Event::ProgramBound { .. } => {
+            return None;
+        }
     })
 }
 
@@ -151,6 +184,59 @@ pub fn describe(event: &Event, committed: usize, tasks: usize) -> Option<String>
 /// stay legible: `$0.412`, `$5.000`.
 pub fn dollars(micro_usd: u64) -> String {
     format!("${:.3}", micro_usd as f64 / 1_000_000.0)
+}
+
+/// What a machine offers, as a rental line names it: `2× RTX 4090`, or
+/// `no GPU` for an offer that states none.
+fn hardware(gpu_model: &str, gpu_count: u32) -> String {
+    if gpu_count == 0 || gpu_model.is_empty() {
+        "no GPU".to_string()
+    } else {
+        format!("{gpu_count}× {gpu_model}")
+    }
+}
+
+/// The member a phase line names, as the ` <member>` that follows the verb —
+/// empty for a migration, which places its run on the one machine its
+/// destination names.
+fn named(member: &str) -> String {
+    if member.is_empty() {
+        String::new()
+    } else {
+        format!(" {member}")
+    }
+}
+
+/// How much of a run's stream reaches the terminal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Narration {
+    /// Every line a run's events warrant.
+    Full,
+    /// The run's own progress alone — what it is, what it started, what it
+    /// committed, how it ended — plus anything gone wrong. What `--quiet`
+    /// states, for an invocation whose output is read by something other than
+    /// an operator watching it happen.
+    Minimal,
+}
+
+/// Whether `event` is narration: a line saying where the run's placement or
+/// its work has got to, rather than what the run did. These are what
+/// [`Narration::Minimal`] drops.
+///
+/// A machine lost or replaced is not among them: it reports hardware going
+/// away under a run, which is a fact about the run whoever is reading.
+fn narrated(event: &Event) -> bool {
+    matches!(
+        event,
+        Event::Renting { .. }
+            | Event::AwaitingMachine { .. }
+            | Event::SendingRun { .. }
+            | Event::InstallingProgram { .. }
+            | Event::StartingRun
+            | Event::InstanceOnline { .. }
+            | Event::Leased { .. }
+            | Event::Checkpointed { .. }
+    )
 }
 
 /// Progress rendering over a run's event stream: prints one line per
@@ -162,16 +248,19 @@ pub struct Progress {
     tasks: AtomicUsize,
     /// Commits accounted for: the run's prior commits plus those seen live.
     committed: AtomicUsize,
+    /// How much of the stream this renderer prints.
+    narration: Narration,
 }
 
 impl Progress {
-    /// A progress renderer over a session's events. Both counters come from
-    /// the run's own `RunStarted`, so nothing needs to be known before the
-    /// run starts.
-    pub fn new() -> Progress {
+    /// A progress renderer over a session's events, printing as much of them
+    /// as `narration` states. Both counters come from the run's own
+    /// `RunStarted`, so nothing needs to be known before the run starts.
+    pub fn new(narration: Narration) -> Progress {
         Progress {
             tasks: AtomicUsize::new(0),
             committed: AtomicUsize::new(0),
+            narration,
         }
     }
 
@@ -180,6 +269,9 @@ impl Progress {
     /// and `WorkerBound` yield no line and stay silent.
     pub fn event(&self, record: &Record) {
         let event = &record.event;
+        if self.narration == Narration::Minimal && narrated(event) {
+            return;
+        }
         if let Event::RunStarted {
             tasks, committed, ..
         } = event
@@ -206,6 +298,26 @@ impl Progress {
     fn committed(&self) -> usize {
         self.committed.load(Ordering::Relaxed)
     }
+}
+
+/// The runs a store holds, one line each: id, state, and task ledger. A store
+/// holding none is a line saying so, since an empty answer to a question about
+/// a store is still an answer.
+pub fn runs_block(summaries: &[RunSummary]) -> String {
+    if summaries.is_empty() {
+        return "this store holds no run".to_string();
+    }
+    let mut block = format!("{:<64}  {:<12}  {}", "run", "state", "committed");
+    for summary in summaries {
+        block.push_str(&format!(
+            "\n{:<64}  {:<12}  {}/{}",
+            summary.run,
+            run_state(&summary.state),
+            summary.committed,
+            summary.tasks
+        ));
+    }
+    block
 }
 
 /// The attempt table's column headers, in render order.
@@ -413,16 +525,22 @@ fn attempt_note(attempt: &Attempt) -> String {
     note
 }
 
-/// Renders the status block, one aligned `name  value` line per field.
-pub fn status_block(status: &RunStatus) -> String {
-    let state = match &status.state {
+/// A run's state as a line names it. The one wording, shared by the status
+/// block and the store's listing.
+fn run_state(state: &RunState) -> String {
+    match state {
         RunState::InProgress => "in progress".to_string(),
         RunState::Finalized => "finalized".to_string(),
         RunState::Failed { task, reason } => {
             format!("failed on {}: {reason}", short(task))
         }
         RunState::Interrupted => "interrupted".to_string(),
-    };
+    }
+}
+
+/// Renders the status block, one aligned `name  value` line per field.
+pub fn status_block(status: &RunStatus) -> String {
+    let state = run_state(&status.state);
     let block = format!(
         "run                  {}\n\
          state                {state}\n\
@@ -813,8 +931,9 @@ mod tests {
 
     #[test]
     fn a_run_started_line_reports_prior_commits_when_resuming() {
-        // The started line names the prior commits so a resumed session does
-        // not read as a restart. A fresh run keeps the bare form.
+        // A resumed run states its ledger rather than a task count: what is
+        // committed, out of how many, and how much is left. A fresh run keeps
+        // the bare form, since there is no ledger to state.
         let event = Event::RunStarted {
             run: "ab".repeat(32),
             tasks: 200,
@@ -822,7 +941,7 @@ mod tests {
         };
         assert_eq!(
             describe(&event, 26, 200).expect("a started line"),
-            "started: 200 tasks, 26 already committed"
+            "resuming: 26/200 committed, 174 outstanding"
         );
         assert_eq!(
             describe(&event, 0, 200).expect("a started line"),
@@ -837,8 +956,99 @@ mod tests {
     }
 
     #[test]
+    fn a_minimal_narration_drops_the_placement_lines_and_keeps_the_run_s_own() {
+        // What `--quiet` leaves: the run's own progress, and anything gone
+        // wrong. The placement lines are for watching a placement happen.
+        for event in [
+            Event::Renting {
+                member: "cheap[0]".to_string(),
+                machine: "m-1".to_string(),
+                gpu_model: "RTX 4090".to_string(),
+                gpu_count: 1,
+                rate_microusd_hour: 70_000,
+            },
+            Event::AwaitingMachine {
+                timeout_ms: 600_000,
+            },
+            Event::SendingRun {
+                member: String::new(),
+                objects: 12,
+            },
+            Event::InstallingProgram {
+                member: String::new(),
+            },
+            Event::StartingRun,
+            Event::Leased {
+                task: "cd".repeat(32),
+                worker: 1,
+                attempt: 0,
+            },
+            Event::Checkpointed {
+                task: "cd".repeat(32),
+                worker: 1,
+            },
+            Event::InstanceOnline {
+                tag: "t".to_string(),
+                instance: "ab".repeat(32),
+                gpu_model: "RTX 4090".to_string(),
+                gpu_count: 1,
+                rate_microusd_hour: 70_000,
+                host: "gpubox".to_string(),
+            },
+        ] {
+            assert!(narrated(&event), "{event:?} is narration");
+        }
+        for event in [
+            Event::RunStarted {
+                run: "ab".repeat(32),
+                tasks: 3,
+                committed: 0,
+            },
+            Event::Committed {
+                task: "cd".repeat(32),
+                record: "ef".repeat(32),
+                stats: Vec::new(),
+                stats_blob_hex: String::new(),
+            },
+            Event::RunFinalized {
+                run: "ab".repeat(32),
+                committed: 3,
+            },
+            // A machine lost under a run is not narration of a placement: it
+            // is the fleet changing under the work, which a quiet run states.
+            Event::InstanceLost {
+                tag: "t".to_string(),
+                instance: "ab".repeat(32),
+            },
+            Event::InstanceReplaced {
+                tag: "t".to_string(),
+                from: "ab".repeat(32),
+                to: "cd".repeat(32),
+            },
+            Event::Diagnostic {
+                level: sima_pipeline::Level::Warn,
+                source: "rental".to_string(),
+                message: "cheap[1] could not be brought up".to_string(),
+                worker: None,
+                host: None,
+                task: None,
+            },
+            Event::Diagnostic {
+                level: sima_pipeline::Level::Error,
+                source: "worker".to_string(),
+                message: "the executor panicked".to_string(),
+                worker: Some(1),
+                host: None,
+                task: None,
+            },
+        ] {
+            assert!(!narrated(&event), "{event:?} is the run's own");
+        }
+    }
+
+    #[test]
     fn a_session_counts_commits_on_from_the_started_event() {
-        let progress = Progress::new();
+        let progress = Progress::new(Narration::Full);
         progress.event(&rec(Event::RunStarted {
             run: "ab".repeat(32),
             tasks: 3,

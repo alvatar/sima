@@ -55,7 +55,7 @@ Strictly downward dependencies, enforced by workspace crate edges.
 
 | Layer | Crate            | Responsibility                                                        |
 |-------|------------------|-----------------------------------------------------------------------|
-| L0    | `sima-core`      | error type, canonical encoding, content hash, PRNG                    |
+| L0    | `sima-core`      | error type, canonical encoding, content hash, PRNG, child spawn disposition |
 | L0.5  | `sima-trace`     | structured events: the typed vocabulary, journal records, emitters, the collector |
 | L1    | `sima-model`     | identity vocabulary: spec, params, environment, task key, record, run config |
 | L2    | `sima-store`     | durable state: CAS, task index, run manifests, journals               |
@@ -406,7 +406,20 @@ predicate of `sima-domains`; retention holds what the run committed.
 **For how long.** Until the operator asks for a deletion. The two operations are
 the *removal* and the *sweep* above: `sima rm` deletes one run and everything no
 surviving closure references, `sima pack --gc` deletes everything outside the
-union of the finalized runs' closures. Both are run-grained and
+union of the finalized runs' closures. Which run `rm` deletes is the config's
+by default — the run its identity section hashes to — and `--run <id-prefix>`
+names one of that store's runs directly, for the ones a config no longer names:
+a store accumulates the runs of every identity ever driven against it, and an
+edited seed leaves the previous run reachable by nothing else. Any unambiguous
+prefix addresses a run, as one does a task; an ambiguous one is refused naming
+every run it matched, and the empty prefix — which begins every run — is
+refused before the store is searched. `sima runs <store-dir>` is what lists
+them — one line per run, with its id, the state its journal projects, and its
+task ledger — and is the one read command that takes a store directory rather
+than a config, because what a store holds is precisely the question a config
+cannot ask. A run is registered before any machine is asked for, so a fleet that
+never came up leaves a run in that listing: nothing committed, and a journal
+holding what it said about the acquisition that failed. Both are run-grained and
 reference-guarded, so the smallest thing either erases is a whole run's private
 objects. Expiry is the operator's act alone, as consolidation is: the store
 reads no clock.
@@ -1240,7 +1253,7 @@ run identity is untouched.
 **Materialization happens at config load, on every machine alike.**
 
 ```
-<config-dir>/sdk/python/
+<config-dir>/.sima/sdk/python/
     .lock                 held while writing
     installed/sima/*.py   the package, as this binary holds it
     installed.digest      the digest of the package that was written
@@ -1314,7 +1327,7 @@ installation verb: an entry carrying `payload_digest` has its program built
 where the config resolves, before the binary that entry names is spawned.
 
 ```
-<config-dir>/program/<format>/
+<config-dir>/.sima/program/<format>/
     .lock              held while installing
     payload/           the manifest's files, materialized
     install.sh         the manifest's script, when it carries one
@@ -2222,14 +2235,26 @@ search:
   consumes this boundary.
 - **interrupt** — a level-triggered flag the driver polls within a bounded
   wait. Once set, the run winds down gracefully: no more tasks are handed
-  out, in-flight attempts finish and commit, queued tasks are abandoned,
-  and the run returns `Interrupted` with no manifest written — the store
-  stays resumable and the next orchestration continues the abandoned work.
+  out, the attempt in flight on each worker is abandoned within one
+  wind-down poll, queued tasks are abandoned, and the run returns
+  `Interrupted` with no manifest written — the store stays resumable, and
+  the next orchestration re-derives each abandoned task in its frontier and
+  resumes it from the checkpoint it had laid.
 
 The wind-down states form a precedence order — running < interrupted <
 failed < fault — and each setter only upgrades: a definitive failure or an
 infrastructure fault landing during an interrupt wind-down still decides
 the run, and among faults the first wins.
+
+**Every child sima spawns leads a process group of its own.** A terminal
+delivers Ctrl-C to every process in its foreground group, so a worker, a
+program serving a domain, an ssh, a container runtime client, or an install
+script left in sima's group would be signalled directly and die where it
+stands — a worker killed mid-attempt reads as a transient failure and is
+retried against, and an ssh killed mid-frame reads as a transport fault.
+sima is the one interrupt handler and the wind-down it runs is what ends its
+children, so each is spawned into a group the terminal does not reach
+(`sima_core::own_process_group`, applied at every spawn site).
 
 ### Leases and preemption
 
@@ -2257,7 +2282,9 @@ The vocabulary:
 - **run started** — the run began; carries the planned task total, those
   already committed and those still to run.
 - **queued** — a task entered the ready queue.
-- **leased** — a worker leased a task for one attempt.
+- **leased** — a worker leased a task for one attempt. Rendered as the
+  attempt beginning, which is where a run's terminal would otherwise fall
+  silent for as long as a task takes.
 - **committed** — a task's result was committed, referencing its record.
 - **failed** — an attempt failed transiently and may be retried.
 - **retried** — a failed task was re-enqueued for another attempt.
@@ -2270,6 +2297,12 @@ The vocabulary:
 - **checkpoint degraded** — a checkpoint save or load failed; execution
   continues and the attempt's result is unaffected, so this event is the
   only trace.
+- **checkpointed** — a task's checkpoint was persisted, which is the one sign
+  a long attempt gives that it is computing rather than wedged. Rate-limited
+  where it is emitted, to the attempt's first save and one per ten seconds
+  after it, so a domain checkpointing every second floods neither the journal
+  nor the terminal. A run whose tasks never checkpoint has no such sign, and
+  its attempts are bounded by `attempt_timeout` instead.
 - **worker bound** — a worker's child reported the device it computes on, at
   every spawn and respawn.
 - **driver changed** — a worker's child reported a driver other than the one
@@ -2280,14 +2313,26 @@ The vocabulary:
 - **run finalized** — every task committed and the manifest was written.
 - **run failed** — a definitive candidate failure terminated the run; no
   manifest was written.
-- **run interrupted** — the caller interrupted the run: in-flight attempts
-  drained and committed, no manifest was written, and the store is
+- **run interrupted** — the caller interrupted the run: the attempts in
+  flight were abandoned, no manifest was written, and the store is
   resumable.
 - **diagnostic** — a correlated line of observational text: captured worker
   stderr (info), a transport degradation (warn), or an executor panic's
   backtrace (error), attributed to its source, worker, host, and task where
   known. Status ignores it entirely; the CLI renders warn and error lines
   and keeps info journaled, never echoed.
+
+The verb that puts a run on a machine emits five more, one as each phase of
+the placement begins — **renting**, **awaiting machine**, **sending run**,
+**installing program**, **starting run**. They state where a placement is
+while there is no far run to journal anything, which is the stretch an
+operator would otherwise read as a hang; `renting` carries what is now being
+paid for. The first two belong to the acquisition rather than to the verb, so
+a fleet emits them too, once per machine it takes: renting and awaiting
+machine are what any run says about a rental between taking the offer and the
+machine answering. Being events, they are journaled like any other, so what an
+operator watched is also what the run's journal holds. They move no counter
+and free no worker: status, timeline, and task history each pass over them.
 
 The driver spawns the trace collector over the run's journal writer, with
 the caller's observer as its record consumer; the driver, the workers, and
@@ -2344,12 +2389,20 @@ The config file carries the same split the model enforces:
   its fields define the `RunId`: the root seed, the format, the optional
   segment count (at least 1; absent means a static batch), the generator
   (its id plus the generator-owned keys), and the domain-owned run params.
-- **`[config]`** — the global operational settings: the store path (resolved
-  relative to the config file's directory), the attempt cap, an optional
+- **`[config]`** — the global operational settings: the store path (optional,
+  resolved relative to the config file's directory, and `.sima/store` when the
+  key is absent), the attempt cap, an optional
   attempt timeout whose absence disables the enforced attempt deadline, an
   optional answer timeout bounding every protocol answer a program owes (see
   [Isolation and trust at the program boundary](#isolation-and-trust-at-the-program-boundary)),
   and two optional checkpoint cadences whose absence disables checkpointing.
+
+**Everything a driven config generates goes under `.sima/` beside it**: its
+store unless the config names another path, the SDK package this binary vends
+for the programs it spawns here, and the tree each declared payload installs
+into. One directory to ignore in a repository, and one to delete to reclaim
+what a config generated — and none of it enters a hash, so deleting it costs
+recomputation and never identity.
 
 Every section below `[run]` is operational and never hashed — a run resumed
 with different parallelism, a different store path, or a different set of
@@ -2487,6 +2540,19 @@ missing its `VAST_API_KEY` fails before any store mutation — and only when the
 invocation asked for the fleet at all. The `stub`
 provider is an in-process marketplace, reached by spawning workers on this
 machine, so the whole spine exercises with no network.
+
+**Every member says what it took.** An acquisition is minutes of spending
+before a worker binds, so each member names itself, what it rented, and at
+what rate the moment its offer is taken — `renting cheap[0]: 1× GTX 1660 on
+8127-a41 at $0.056/hr` — under the run's own journal boundary, which
+orchestration opens around putting the run on its machines. The member's name
+is the entry that declared it and its index within that entry's count. A
+delivery says which member it is installing the program on. A member that
+could not be brought up is a warning naming it, the reason, and what the
+entry's `fill` policy makes of it, so a fleet one machine short is not silent.
+The provider's acquisition loop knows none of this wording: it reports the
+offer it provisioned through a callback, and the caller decides what that is
+worth saying.
 
 **State travels with the task; machines share nothing.** A leased task
 carries its input-state and resume bytes in the dispatch itself, and its
@@ -2688,7 +2754,9 @@ would only force the transfer again.
 **The far-side config** is the local one with everything about here removed.
 `[run]` travels verbatim as a parsed value, so the run id is preserved by
 construction. `[config]` travels with its store path rewritten to `./store`,
-which the load resolves against the config file's own directory. The local
+which the load resolves against the config file's own directory — stated
+rather than left to the default, since the far side's run directory is where
+that store belongs. The local
 `[orchestrator]` is dropped whole — its worker layout names this machine's
 hardware, and its `migrate` key names a destination the far side must not carry
 onward, since a run that has arrived does not migrate again. Every `[host.*]`,
@@ -2705,7 +2773,7 @@ on this machine.
 
 ```toml
 [domain."acme.thing.v1"]
-binary = "./program/acme.thing.v1/installed/program"
+binary = "./.sima/program/acme.thing.v1/installed/program"
 payload_digest = "<64 hex>"
 env = ["PATH"]
 sdk = "python"
@@ -2757,6 +2825,24 @@ moved.
  └────────────────────────────────────────────────────────────────────────┘
 ```
 
+**Each phase says so as it begins.** Steps 2 through 6 are where a migration
+spends its minutes — an offer walk, a machine booting and pulling an image, a
+closure crossing the wire, a far run loading and installing a program — and
+until step 7 there is no far run producing records, so a terminal that printed
+only the run id would be indistinguishable from a hang. One line opens each:
+what was rented and at what rate, that the machine is being waited for and for
+how long, how many objects are being sent, that the program is being installed,
+and that the far run is being started. A machine of yours is standing and is
+not paid for, so it has neither of the first two. The lines are journal events
+like any other, so the operator's view and the run's journal state the same
+placement.
+
+The readiness probes behind step 3 capture their own stderr rather than
+inheriting it: a probe is polled until the machine answers, and ssh writes
+`Connection refused` on every attempt until it does. What the probe said
+reaches the one error that reports a machine which never came up, and reaches
+the terminal nowhere else.
+
 Push and pull are one `Store::sync` at two moments, differing only in the
 [object scope](#workers-on-another-machine) each side advertises. A push over a
 registered format names the payload's closure — the manifest and every file it
@@ -2784,12 +2870,14 @@ well as the migration, and it runs only after the far run installed its
 program.
 
 **The far run is detached.** It is started with `setsid` and its pid recorded,
-so a laptop that sleeps, a network that drops, a `sima migrate` that is killed,
-and a Ctrl-C all leave the destination computing. Re-running reattaches, and the
-two destination kinds reattach by different evidence: a rented machine is found
-in the instance ledger and adopted, which is what stops a second invocation
-renting a second machine; a machine of yours has no ledger record, so `run.pid`
-naming a live process is the whole of it. The `run.pid` check applies to a
+so once it is started, a laptop that sleeps, a network that drops, a
+`sima migrate` that is killed, and a Ctrl-C all leave the destination computing.
+An interrupt arriving before that point abandons the placement instead: nothing
+was started, so there is nothing to leave computing. Re-running reattaches, and
+the two destination kinds reattach by different evidence: a rented machine is
+found in the instance ledger and adopted, which is what stops a second
+invocation renting a second machine; a machine of yours has no ledger record, so
+`run.pid` naming a live process is the whole of it. The `run.pid` check applies to a
 rental too — adopting the machine says nothing about whether the run on it is
 still going. Either way the push and the start are skipped.
 
@@ -2820,6 +2908,29 @@ computing, the rental stays standing, and nothing is pulled. Only `SIGINT` is
 handled, and what it does is print where the run is and how to come back; the
 rest are unhandled, so the default death has the same effect. A migration
 interrupted this way exits 0, because detaching is what was asked for.
+
+**An interrupt before the start abandons the placement.** Reaching a machine,
+writing a config on it, and sending it the run's store take minutes, and a
+`SIGINT` inside that window is read as it is during the acquisition: the
+migration stops where it is, no far run is started, a rental taken for the
+placement is released by the same teardown any placement failure runs through,
+and the run is left as it was. The verb exits 130 and states that nothing was
+started, which separates it from a detach — the two are told apart by whether
+there is a far run, and the start is what makes one.
+
+**A stream that ends with the operator is the detach, not a fault.** The
+transport carrying the follow is a child of the migration, and it leads a
+group of its own precisely so a terminal's Ctrl-C does not end it — but a
+detach is also what an operator asks for while the connection is failing on
+its own. Once the interrupt is raised, a follow whose stream ends carries the
+outcome the interrupt already decided: the far run is left computing, the two
+ways back are printed, and the exit is 0. Before the interrupt, the same
+ending is a fault and is reported as one, naming the destination.
+
+A fault frame is the exception, and the one error on that stream the far side
+raised rather than this side observing. The far side is reporting trouble of
+its own, which an interrupt here neither caused nor answers, so it fails the
+migration in its own words whether or not the flag is raised.
 
 **The destructive act has its own verb.** `sima recall <config>` is the inverse
 of `sima migrate`: it contacts the destination, winds a far run down if one is
@@ -2930,7 +3041,10 @@ a changed program, a store that will not open — because the far `sima run` die
 before it journals anything of its own. Two shapes reach the same report:
 
 - **Nothing to follow.** Over an empty far journal the follow is refused
-  outright, and the refusal says only that there is no run to follow.
+  outright, and the refusal says only that there is no run to follow. A far
+  process that is gone is asked once more before that refusal is read as a
+  death: a run short enough to finish inside the attach window is gone too, and
+  the journal it left is what separates the two.
 - **A journal an earlier session left.** The follow opens on it and replays a
   finalization that is not this run's. Opening the follow before the start is
   what tells the two apart: nothing arriving after that first poll, over a far
@@ -2972,14 +3086,30 @@ command form keeps its shape whether or not a host is named:
   plain line per meaningful event from the observer boundary. SIGINT sets the
   interrupt flag for a graceful wind-down; a second SIGINT falls through
   to default death, which is exactly the crash the recovery guarantees
-  cover.
+  cover. A run over a store that already holds progress opens with the ledger
+  it resumes — `resuming: 4/6 committed, 2 outstanding` — rather than a task
+  count, and its commit counter continues that ledger, so continuing and
+  restarting never read alike. The figures are the run's own `RunStarted`,
+  counted from the store's records, so a migration's follow states the same
+  ledger the far run does.
+- **`--quiet`** — taken by the three verbs that render a run's stream (`run`,
+  `migrate`, `recall`) and split out of the arguments before the command
+  match, as `--accept-binary` is, so it composes with the other flags in
+  either order. It narrows the stream to the run's own progress — the run id,
+  its start, its commits, its ending — and anything gone wrong. What it drops
+  says where a placement has got to: the phases of putting a run on machines,
+  and a rented machine coming online. It is a rendering choice and nothing
+  more: every line it drops is still journaled, so a quiet run's journal is a
+  loud one's.
 - **`sima migrate <config.toml>`** — moves the run onto the machine
   `[orchestrator].migrate` names, follows it there through the same renderer
   `run` uses, and brings the results home; see
   [Migration](#migration). It takes no destination argument, since where a run
   executes belongs in the file that describes it, and no `--on`, since it drives
-  a run rather than observing one. SIGINT detaches: the far run keeps computing,
-  the line it prints names the machine and both ways back, and it exits 0.
+  a run rather than observing one. SIGINT once the far run is started detaches:
+  the far run keeps computing, the line it prints names the machine and both
+  ways back, and it exits 0. SIGINT before that abandons the placement: nothing
+  is started, a rental taken for it is released, and it exits 130.
 - **`sima recall <config.toml>`** — the inverse: winds the far run down, reads
   what it ended as, pulls what it committed, settles the run, and destroys any
   rental. A far run that failed definitively is reported by task and reason and
@@ -3109,7 +3239,10 @@ canonical `Enc`/`Dec` with a leading tag, mirroring the worker protocol. The
 opening frame is a version-carrying handshake; a mismatch is refused by name
 rather than decoded, so two builds that disagree never interpret each other's
 bytes. Records travel as raw journal lines, so one parser and one torn-write
-rule serve both ends. A failure on the far side crosses as a fault frame
+rule serve both ends — which is why the version covers the journal's events as
+well as the frames: a reader that meets an event it does not know fails the
+whole stream as corruption, so a build that adds one moves the version and the
+handshake names the cause instead. A failure on the far side crosses as a fault frame
 carrying the text that machine rendered, and surfaces here unchanged: the
 machine that failed owns the classification.
 

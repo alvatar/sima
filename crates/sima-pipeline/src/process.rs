@@ -11,7 +11,7 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 
-use sima_core::{Error, Result};
+use sima_core::{Error, Result, own_process_group};
 use sima_transport::container::image_inspect_argv;
 
 use crate::config::Container;
@@ -82,7 +82,7 @@ pub(crate) fn bootstrap_image(host: Option<&str>, container: &Container) -> Resu
 /// Runs `argv`, discarding its streams, and reports whether it exited zero.
 fn command_status(argv: &[String]) -> Result<ExitStatus> {
     let (program, args) = argv.split_first().expect("a non-empty command vector");
-    Command::new(program)
+    own_process_group(&mut Command::new(program))
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -92,20 +92,30 @@ fn command_status(argv: &[String]) -> Result<ExitStatus> {
 }
 
 /// Runs `argv` and returns its stdout, or an error if it fails or its output
-/// is not UTF-8. Stderr is inherited for diagnostics.
+/// is not UTF-8.
+///
+/// Stderr is captured and folded into the error rather than inherited. Every
+/// caller here is a device-enumeration probe, and a probe is polled until the
+/// machine answers: an inherited stderr writes ssh's own `Connection refused`
+/// to the operator's terminal once per attempt, which reads as a fault while
+/// the wait is doing exactly what it is meant to. Captured, it says nothing
+/// until something actually fails — and then it says what the far side said,
+/// which the exit status alone does not.
 pub(crate) fn command_stdout(argv: &[String]) -> Result<String> {
     let (program, args) = argv.split_first().expect("a non-empty command vector");
-    let output = Command::new(program)
+    let output = own_process_group(&mut Command::new(program))
         .args(args)
         .stdin(Stdio::null())
-        .stderr(Stdio::inherit())
         .output()
         .map_err(|e| Error::Transport(format!("running {program:?} failed: {e}")))?;
     if !output.status.success() {
-        return Err(Error::Transport(format!(
-            "{program:?} exited with {}",
-            output.status
-        )));
+        let said = String::from_utf8_lossy(&output.stderr);
+        let said = said.trim();
+        let status = output.status;
+        return Err(Error::Transport(match said.is_empty() {
+            true => format!("{program:?} exited with {status}"),
+            false => format!("{program:?} exited with {status}: {said}"),
+        }));
     }
     String::from_utf8(output.stdout)
         .map_err(|e| Error::Transport(format!("{program:?} output is not UTF-8: {e}")))
@@ -152,4 +162,37 @@ pub(crate) fn worker_binary() -> Result<PathBuf> {
             .collect::<Vec<_>>()
             .join(", ")
     )))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_command_that_fails_carries_what_it_said_rather_than_printing_it() {
+        // The probe loop's ssh writes its refusal to stderr on every attempt.
+        // Captured, it reaches the one error that reports the wait ran out;
+        // inherited, it would reach the terminal once per attempt while the
+        // wait was still doing its job.
+        let error = command_stdout(&[
+            "/bin/sh".to_string(),
+            "-c".to_string(),
+            "echo 'connection refused' >&2; exit 255".to_string(),
+        ])
+        .expect_err("a command that exits non-zero fails");
+        let text = error.to_string();
+        assert!(text.contains("connection refused"), "{text}");
+        assert!(text.contains("255"), "names the status: {text}");
+    }
+
+    #[test]
+    fn a_command_that_succeeds_answers_with_its_stdout_alone() {
+        let stdout = command_stdout(&[
+            "/bin/sh".to_string(),
+            "-c".to_string(),
+            "echo answer; echo noise >&2".to_string(),
+        ])
+        .expect("the command succeeded");
+        assert_eq!(stdout, "answer\n");
+    }
 }

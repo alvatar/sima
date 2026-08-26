@@ -22,7 +22,8 @@
 //! hex = ""                                # optional hex string, default empty
 //!
 //! [config]                                # global settings, fully qualified
-//! store                     = "./store"   # resolved against this file's directory
+//! store                     = "./store"   # optional; resolved against this file's
+//!                                         # directory, and .sima/store by default
 //! max_attempts              = 3
 //! attempt_timeout_ms        = 300000      # optional; absent disables the deadline
 //! answer_timeout_ms         = 120000      # optional; absent disables the deadline
@@ -280,6 +281,13 @@
 //!
 //! A device `select` names real hardware, so it resolves when a run starts and
 //! never at load — reading a config needs no GPU.
+
+/// The one directory a driven config writes into beside itself: its store
+/// unless the config names another path, the SDK package this binary vends for
+/// the programs it spawns here, and the tree each declared payload installs
+/// into. One directory to ignore in a repository, and one to delete to reclaim
+/// everything a config generated.
+pub(crate) const GENERATED_DIR: &str = ".sima";
 
 mod file;
 mod load;

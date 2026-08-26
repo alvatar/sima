@@ -17,10 +17,11 @@ use sima_domains::devices::{DeviceInfo, DeviceType};
 use sima_model::{RunId, TaskKey};
 use sima_provider::stub::StubProvider;
 use sima_provider::{
-    AcquireLimits, Budget, Constraints, InstanceGuard, Objective, Provider, acquire,
+    AcquireLimits, Budget, Constraints, InstanceGuard, Objective, Provider, UNREPORTED, acquire,
 };
 use sima_scheduler::{Event, Record, RunOutcome};
 use sima_store::{ObjectScope, Rental as RentalRole, RunLock, SpendEntry, Store, SyncReport};
+use sima_trace::Emitter;
 use tempfile::TempDir;
 
 use crate::config::LoadedConfig;
@@ -31,6 +32,14 @@ use crate::program_binding::BinaryChange;
 use crate::task_keys::task_keys;
 
 pub(crate) const PID: u32 = 4242;
+
+/// An emitter nothing reads, for a step driven on its own whose narration is
+/// not what the test is about.
+pub(crate) fn unheard() -> Emitter {
+    // The receiver is dropped at the end of this expression, so every send
+    // through the emitter is a no-op.
+    Emitter::from(std::sync::mpsc::channel().0)
+}
 
 // ---- The recording far side ----
 
@@ -141,6 +150,10 @@ pub(crate) struct Scripted<'a> {
     /// Whether the far run exits the moment it is started, which is what a
     /// far-side load failure looks like from here.
     dies_at_start: bool,
+    /// The records a far run short enough to end inside the start window
+    /// leaves in the far journal, its pid naming nothing by the time the
+    /// attach asks.
+    finishes_at_start: Option<Vec<Record>>,
     /// Whether the far run goes away once its feed has delivered everything
     /// it was scripted with: a run that died mid-flight, journaling nothing
     /// terminal.
@@ -149,6 +162,25 @@ pub(crate) struct Scripted<'a> {
     /// up before it journals, and `sima follow-serve` refuses a run that
     /// journaled nothing.
     follow_refusals: Mutex<usize>,
+    /// How the follow's stream ends once it has delivered everything it was
+    /// scripted with, for a stream that stops rather than a far side that
+    /// stopped having anything to say.
+    stream_ends: Option<StreamEnd>,
+    /// The step whose asking raises `flag`, which is how a test places an
+    /// interrupt inside the choreography rather than before it.
+    letting_go_at: Option<(Step, Arc<AtomicBool>)>,
+}
+
+/// How a scripted follow stream ends, which is what tells a transport that
+/// went away from a far side reporting trouble of its own.
+#[derive(Debug, Clone)]
+pub(crate) enum StreamEnd {
+    /// The transport went away: this side's own words about a stream it can
+    /// no longer read.
+    Gone(String),
+    /// The far side wrote a fault frame, whose words reach this side as the
+    /// far side's own.
+    Fault(String),
 }
 
 impl<'a> Scripted<'a> {
@@ -177,8 +209,11 @@ impl<'a> Scripted<'a> {
             pushed: Mutex::new(Vec::new()),
             log: None,
             dies_at_start: false,
+            finishes_at_start: None,
             vanishing: false,
             follow_refusals: Mutex::new(0),
+            stream_ends: None,
+            letting_go_at: None,
         }
     }
 
@@ -247,6 +282,39 @@ impl<'a> Scripted<'a> {
         self
     }
 
+    /// A follow whose stream dies with `words` once it has delivered
+    /// everything it was scripted with: the transport carrying it went away,
+    /// which is what a terminal's own signal does to an ssh in sima's process
+    /// group.
+    pub(crate) fn losing_the_stream(mut self, words: &str) -> Scripted<'a> {
+        self.stream_ends = Some(StreamEnd::Gone(words.to_string()));
+        self
+    }
+
+    /// A follow whose far side reports trouble of its own with `words` once it
+    /// has delivered everything it was scripted with: a fault frame, which is
+    /// the far side speaking rather than a transport that went away.
+    pub(crate) fn faulting_the_stream(mut self, words: &str) -> Scripted<'a> {
+        self.stream_ends = Some(StreamEnd::Fault(words.to_string()));
+        self
+    }
+
+    /// A far side that raises `interrupt` when `step` is asked of it, which is
+    /// what a Ctrl-C landing in the middle of the choreography looks like.
+    pub(crate) fn letting_go_at(mut self, step: Step, interrupt: &Arc<AtomicBool>) -> Scripted<'a> {
+        self.letting_go_at = Some((step, Arc::clone(interrupt)));
+        self
+    }
+
+    /// A far run that is over by the time the follow attaches: starting it
+    /// leaves `records` in the far journal and its pid naming nothing, which
+    /// is what a run short enough to end inside the start window looks like
+    /// from here.
+    pub(crate) fn finishing_at_the_start(mut self, records: Vec<Record>) -> Scripted<'a> {
+        self.finishes_at_start = Some(records);
+        self
+    }
+
     /// A far run that goes away once its feed has delivered everything it was
     /// scripted with, journaling nothing terminal: a death mid-run.
     pub(crate) fn vanishing_when_drained(mut self) -> Scripted<'a> {
@@ -297,6 +365,13 @@ impl<'a> Scripted<'a> {
     }
 
     pub(crate) fn record(&self, step: Step) {
+        // The interrupt lands as this step is asked for, so what the session
+        // does with it is decided where the test put it.
+        if let Some((at, interrupt)) = &self.letting_go_at
+            && *at == step
+        {
+            interrupt.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
         self.steps.lock().expect("the step lock").push(step);
     }
 
@@ -342,9 +417,13 @@ impl FarSide for Scripted<'_> {
     fn start(&self, accept: BinaryChange) -> Result<u32> {
         self.record(Step::Start);
         *self.started_with.lock().expect("the acceptance lock") = Some(accept);
-        // A run that dies while loading its config is gone by the time
-        // anything asks, which is what leaves the pid naming nothing.
-        if !self.dies_at_start {
+        // A run short enough to end inside the start window journaled
+        // everything it had to say and is already gone.
+        if let Some(records) = &self.finishes_at_start {
+            *self.journal.lock().expect("the journal lock") = FarJournal::Holding(records.clone());
+        } else if !self.dies_at_start {
+            // A run that dies while loading its config is gone by the time
+            // anything asks, which is what leaves the pid naming nothing.
             *self.alive.lock().expect("the pid lock") = Some(PID);
         }
         Ok(PID)
@@ -439,6 +518,7 @@ impl FarSide for Scripted<'_> {
             alive: Arc::clone(&self.alive),
             ending: self.ending,
             vanishing: self.vanishing,
+            stream_ends: self.stream_ends.clone(),
         }))
     }
 }
@@ -456,6 +536,9 @@ pub(crate) struct ScriptedFeed {
     ending: Ending,
     /// Whether the far run goes away once every batch has been delivered.
     vanishing: bool,
+    /// How the stream ends once every batch has been delivered: a transport
+    /// that went away, or a fault the far side wrote.
+    stream_ends: Option<StreamEnd>,
 }
 
 impl RunFeed for ScriptedFeed {
@@ -477,6 +560,18 @@ impl RunFeed for ScriptedFeed {
             .expect("the poll lock")
             .pop_front()
             .unwrap_or_default();
+        // A stream that ended answers no further poll, whatever the far run
+        // itself is doing. Which error it ends with is what separates the two
+        // endings: a transport that went away is this side's own reading of a
+        // stream it lost, and a fault frame carries the far side's words
+        // verbatim.
+        if batch.is_empty() {
+            match &self.stream_ends {
+                Some(StreamEnd::Gone(words)) => return Err(Error::Validation(words.clone())),
+                Some(StreamEnd::Fault(words)) => return Err(Error::Reported(words.clone())),
+                None => {}
+            }
+        }
         if self.vanishing && batch.is_empty() {
             // Everything it was scripted with has been delivered, and the far
             // run is gone without journaling anything terminal.
@@ -695,5 +790,6 @@ pub(crate) fn hosting<'a>(
         &limits(),
         &Budget::default(),
         &AtomicBool::new(false),
+        UNREPORTED,
     )
 }

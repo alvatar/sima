@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use sima_core::Result;
 use sima_provider::{
     AcquireLimits, Budget, Exhaustion, IncidentKind, InstanceGuard, InstanceStatus, Objective,
-    Provider, Verdict, acquire, assess, now_ms, record_incident,
+    Provider, UNREPORTED, Verdict, acquire, assess, now_ms, record_incident,
 };
 use sima_scheduler::Event;
 use sima_store::{Rental as RentalRole, RunLock, Store};
@@ -370,6 +370,7 @@ impl<'a, 'b> Supervisor<'a, 'b> {
             // slow offer walk never delays the run's exit; a caller with no
             // cancellation (the unit tests) walks to completion.
             self.cancel.unwrap_or(never_cancelled()),
+            UNREPORTED,
         ) {
             Ok(new_guard) => {
                 self.emit(Event::InstanceReplaced {
@@ -476,7 +477,7 @@ mod tests {
     use super::*;
     use crate::rental::acquire::{acquire_hosts, release_all};
     use crate::rental::fixtures::{
-        acquisition_env, deviceless_probe, exec, offer, one_group, rental, spec,
+        acquisition_env, deviceless_probe, exec, offer, one_group, rental, spec, unheard,
     };
 
     /// A journal sink that discards every line: tests capture events through
@@ -538,6 +539,7 @@ mod tests {
             &format,
             &exec(),
             None,
+            &unheard(),
         )?;
         let groups = one_group(&provider, &spec, FillPolicy::Strict, hosts);
         let interrupt = AtomicBool::new(false);
@@ -574,6 +576,7 @@ mod tests {
             &format,
             &exec(),
             None,
+            &unheard(),
         )?;
         let groups = one_group(&provider, &spec, FillPolicy::Strict, hosts);
         let interrupt = AtomicBool::new(false);
@@ -608,6 +611,7 @@ mod tests {
             &format,
             &exec(),
             None,
+            &unheard(),
         )?;
         let groups = one_group(&provider, &spec, FillPolicy::Strict, hosts);
         let live_before = provider.live();
@@ -646,6 +650,7 @@ mod tests {
             &format,
             &exec(),
             None,
+            &unheard(),
         )?;
         let groups = one_group(&provider, &spec, FillPolicy::Strict, hosts);
         let host = &groups[0].hosts[0];
@@ -730,6 +735,7 @@ mod tests {
             &format,
             &exec(),
             None,
+            &unheard(),
         )?;
         let groups = one_group(&provider, &spec, FillPolicy::Strict, hosts);
         let dead_id = groups[0].hosts[0]
@@ -790,6 +796,7 @@ mod tests {
             &format,
             &exec(),
             None,
+            &unheard(),
         )?;
         let groups = one_group(&provider, &spec, FillPolicy::Strict, hosts);
         let original_host = groups[0].hosts[0]
@@ -846,6 +853,7 @@ mod tests {
             &format,
             &exec(),
             None,
+            &unheard(),
         )?;
         let groups = one_group(&provider, &spec, FillPolicy::Strict, hosts);
         // A prior closed rental already past the cap, so any replacement
@@ -912,6 +920,7 @@ mod tests {
                 &format,
                 &exec(),
                 None,
+                &unheard(),
             )?;
             groups.push(RentalGroup {
                 provider,
@@ -964,6 +973,7 @@ mod tests {
             &format,
             &exec(),
             None,
+            &unheard(),
         )?;
         let groups = one_group(&provider, &spec, FillPolicy::Strict, hosts);
         let interrupt = AtomicBool::new(false);
@@ -1025,6 +1035,7 @@ mod tests {
             &format,
             &exec(),
             None,
+            &unheard(),
         )?;
         let groups = one_group(&provider, &spec, FillPolicy::Strict, hosts);
         let interrupt = AtomicBool::new(false);
@@ -1062,6 +1073,7 @@ mod tests {
             &format,
             &exec(),
             None,
+            &unheard(),
         )?;
         let groups = one_group(&provider, &spec, FillPolicy::Strict, hosts);
         assert!(groups[0].hosts[0].transport.live_host().is_some());
@@ -1110,6 +1122,7 @@ mod tests {
             &format,
             &exec(),
             None,
+            &unheard(),
         )?;
         let groups = one_group(&provider, &spec, FillPolicy::Strict, hosts);
         assert!(groups[0].hosts[0].transport.live_host().is_some());

@@ -8,7 +8,7 @@
 //! came home, and dispose of the machine — so they live here rather than in
 //! either verb.
 
-use std::thread::{self, sleep};
+use std::thread::sleep;
 use std::time::{Duration, Instant};
 
 use sima_core::{Error, Result};
@@ -16,7 +16,7 @@ use sima_model::RunId;
 use sima_provider::{InstanceGuard, Provider};
 use sima_scheduler::{Event, Level};
 use sima_store::{ObjectScope, Store};
-use sima_trace::{Collector, Emitter, Observer};
+use sima_trace::Emitter;
 
 #[cfg(not(test))]
 use crate::config::{DEFAULT_READY_POLL_MS, DEFAULT_READY_TIMEOUT_MS};
@@ -44,6 +44,10 @@ pub enum MigrateOutcome {
     /// pulled, and a rental is left standing. The run comes home on the next
     /// migration that sees it end, or on a recall.
     Detached { run: RunId, machine: String },
+    /// The operator let go while the run was still being placed, so no far run
+    /// was started: nothing computes on `machine`, a rental taken for it was
+    /// released, and the run is exactly as it was.
+    Abandoned { run: RunId, machine: String },
 }
 
 /// What ended the follow, which decides what happens to the far run after it.
@@ -102,7 +106,10 @@ pub(crate) struct FarRun<'a> {
     pub(crate) store: &'a Store,
     pub(crate) config: &'a LoadedConfig,
     pub(crate) destination: &'a Destination<'a>,
-    pub(crate) observer: Observer<'a>,
+    /// The run's journal boundary, opened by the verb around everything it
+    /// does, so a phase this side narrates and a record the far side produced
+    /// cross the same one.
+    pub(crate) events: &'a Emitter,
     /// The rented machine hosting the run, disposed of on every path out;
     /// `None` for a machine of yours, which is nothing to tear down.
     pub(crate) rental: Option<InstanceGuard<'a, dyn Provider + Sync + 'a>>,
@@ -143,8 +150,10 @@ impl<'a> FarRun<'a> {
     /// A guard left alive is a machine still being paid for, so every path that
     /// ended the far run destroys it. A detached migration is the one path that
     /// does not: the run is still computing there, so the machine is kept and
-    /// its ledger record left standing for the next invocation to adopt.
-    /// Nothing here applies to a machine of yours, which was never rented.
+    /// its ledger record left standing for the next invocation to adopt. An
+    /// abandoned placement started nothing, so its machine is released like any
+    /// other that computes nothing. Nothing here applies to a machine of yours,
+    /// which was never rented.
     fn dispose(&mut self, outcome: &Result<MigrateOutcome>) -> Result<()> {
         let Some(guard) = self.rental.take() else {
             return Ok(());
@@ -154,27 +163,6 @@ impl<'a> FarRun<'a> {
             return Ok(());
         }
         guard.release()
-    }
-
-    /// Runs `body` under the run's collector, so everything it emits reaches
-    /// the local journal and the operator's view through one boundary.
-    ///
-    /// Journals do not sync, so this is the only way a far run's records land
-    /// here at all; the wind-down's own diagnostic crosses it too.
-    pub(crate) fn journaling<T>(&self, body: impl FnOnce(&Emitter) -> Result<T>) -> Result<T> {
-        let run = self.config.run.id();
-        let writer = self.store.journal_writer(&run)?;
-        thread::scope(|scope| -> Result<T> {
-            let collector = Collector::spawn(scope, writer, self.observer);
-            let events = collector.emitter();
-            let out = body(&events);
-            // The collector joins only once every emitter is dropped.
-            drop(events);
-            let journal = collector.shutdown();
-            // A journal that could not be appended is a store fault worth
-            // reporting, but only when the body itself did not already fail.
-            out.and_then(|value| journal.map(|()| value))
-        })
     }
 
     /// Steps 9 through 11 over a far run this side never followed: end it if it
@@ -196,10 +184,9 @@ impl<'a> FarRun<'a> {
         let end = match self.far.driving()? {
             // A run still going is ended the way an attached migration ends
             // one: signalled on every poll, waited for, terminated past the
-            // bound. The journal boundary is opened for the diagnostic that
-            // wait can produce.
+            // bound.
             Some(pid) => {
-                self.journaling(|events| self.wind_down(pid, true, events))?;
+                self.wind_down(pid, true, self.events)?;
                 FollowEnd::WoundDown
             }
             // One that already ended is only collected from.

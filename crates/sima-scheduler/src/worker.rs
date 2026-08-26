@@ -315,6 +315,39 @@ fn checkpointing_enabled(exec: &ExecutionConfig) -> bool {
 /// acquisitions per second per worker.
 const WINDDOWN_POLL: Duration = Duration::from_millis(50);
 
+/// How often one attempt says it is still computing, however often it saves.
+///
+/// A checkpoint cadence is the domain's business and can be a second or less,
+/// while what the terminal needs is a sign of life on the scale a person reads
+/// at. The first save of an attempt is always reported: a task that saves once
+/// and computes for an hour has said the one thing there was to say.
+pub const LIVENESS_INTERVAL: Duration = Duration::from_secs(10);
+
+/// The rate limit on one attempt's liveness lines: at most one per
+/// [`LIVENESS_INTERVAL`], and the attempt's first always.
+struct Liveness {
+    /// When this attempt last said it was alive; `None` until it first does.
+    said: Option<Instant>,
+}
+
+impl Liveness {
+    fn new() -> Liveness {
+        Liveness { said: None }
+    }
+
+    /// Whether a sign of life is due at `now`, recording it when it is.
+    fn due(&mut self, now: Instant) -> bool {
+        if self
+            .said
+            .is_some_and(|said| now.duration_since(said) < LIVENESS_INTERVAL)
+        {
+            return false;
+        }
+        self.said = Some(now);
+        true
+    }
+}
+
 /// Drives one leased task on the worker's child and resolves its outcome:
 /// commit, retry, reject, or record an infrastructure fault. Returns whether
 /// the child survives for the next task.
@@ -400,6 +433,9 @@ fn process(
     // The enforced attempt deadline; a timeout too large to land on the
     // clock (Duration::MAX) disables enforcement.
     let deadline = started.checked_add(ctx.exec.attempt_timeout);
+    // The lease is already journaled, and stands for the attempt beginning;
+    // its checkpoints stand for the attempt staying alive.
+    let mut alive = Liveness::new();
 
     if let Err(e) = link.assign(&assignment) {
         // The pipe broke mid-write: the child is dead or dying.
@@ -446,13 +482,23 @@ fn process(
                 // failure degrades, execution in the child continues
                 // unaffected. A save from a task that does not checkpoint is
                 // dropped: no slot was selected for it.
-                if let Some(slot) = slot
-                    && let Err(e) = ctx.store.save_checkpoint(&ctx.run, slot, &key, &payload)
-                {
-                    ctx.events.emit(Event::CheckpointDegraded {
-                        task: task.clone(),
-                        error: e.to_string(),
-                    });
+                if let Some(slot) = slot {
+                    match ctx.store.save_checkpoint(&ctx.run, slot, &key, &payload) {
+                        Err(e) => ctx.events.emit(Event::CheckpointDegraded {
+                            task: task.clone(),
+                            error: e.to_string(),
+                        }),
+                        // A save that landed is what says the attempt is
+                        // computing; the rate limit is what keeps a task
+                        // saving every second from saying it every second.
+                        Ok(()) if alive.due(Instant::now()) => {
+                            ctx.events.emit(Event::Checkpointed {
+                                task: task.clone(),
+                                worker: worker.0,
+                            })
+                        }
+                        Ok(()) => {}
+                    }
                 }
             }
             LinkEvent::Done(Outcome::Completed { artifacts, stats }) => {
@@ -1554,5 +1600,50 @@ mod tests {
         assert_eq!(off.state_artifact()?, on.state_artifact()?);
         assert_eq!(off.state_artifact()?, resumed.state_artifact()?);
         Ok(())
+    }
+
+    // ---- The rate limit on an attempt's liveness ----
+
+    /// A base instant every liveness test measures from.
+    fn moment() -> Instant {
+        Instant::now()
+    }
+
+    #[test]
+    fn an_attempt_says_it_is_alive_at_its_first_save() {
+        // A task that saves once and then computes for an hour has said the
+        // one thing there was to say.
+        let mut alive = Liveness::new();
+        assert!(alive.due(moment()));
+    }
+
+    #[test]
+    fn a_task_saving_faster_than_the_interval_says_so_once_per_interval() {
+        // The cadence is the domain's business and can be a second or less;
+        // what reaches the terminal is on the scale a person reads at.
+        let start = moment();
+        let mut alive = Liveness::new();
+        assert!(alive.due(start));
+        let mut said = 1;
+        // Every second for four intervals: the first of each interval says so
+        // and the rest are dropped.
+        for second in 1..=(4 * LIVENESS_INTERVAL.as_secs()) {
+            if alive.due(start + Duration::from_secs(second)) {
+                said += 1;
+            }
+        }
+        assert_eq!(said, 5, "one at the start and one per interval since");
+    }
+
+    #[test]
+    fn a_task_saving_slower_than_the_interval_says_so_at_every_save() {
+        let start = moment();
+        let mut alive = Liveness::new();
+        for save in 0..4 {
+            assert!(
+                alive.due(start + LIVENESS_INTERVAL * save * 2),
+                "save {save} is past the interval"
+            );
+        }
     }
 }

@@ -17,7 +17,13 @@ use sima_model::{FormatId, RunId};
 
 /// Version of the follow protocol; the near side refuses a mismatch rather
 /// than interpreting foreign bytes.
-pub const FOLLOW_PROTOCOL_VERSION: u32 = 1;
+///
+/// It covers the journal events the records frame carries as well as the frame
+/// layout, since a near side reading a record whose event it does not know
+/// fails the whole stream as corruption. A build that adds an event therefore
+/// moves the version, and the refusal at the handshake is what names the cause
+/// in place of that corruption.
+pub const FOLLOW_PROTOCOL_VERSION: u32 = 2;
 
 const TAG_HELLO: u8 = 0;
 const TAG_RECORDS: u8 = 1;
@@ -198,7 +204,7 @@ mod tests {
         // The handshake contract both machines compile against; bumping it is
         // a deliberate act, and the mismatch tests derive their foreign
         // version from this one.
-        assert_eq!(FOLLOW_PROTOCOL_VERSION, 1);
+        assert_eq!(FOLLOW_PROTOCOL_VERSION, 2);
     }
 
     #[test]

@@ -507,8 +507,8 @@ fn a_resumed_run_reports_prior_commits_in_its_progress() {
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let text = String::from_utf8(output.stdout).expect("stdout is UTF-8");
     assert!(
-        text.contains("started: 2 tasks, 1 already committed"),
-        "the started line names the prior commit: {text}"
+        text.contains("resuming: 1/2 committed, 1 outstanding"),
+        "the start line states the ledger it resumes: {text}"
     );
     assert!(
         text.contains("committed 2/2"),

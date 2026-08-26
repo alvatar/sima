@@ -16,12 +16,13 @@ use sima_core::{Error, Result};
 use sima_domains::devices::DeviceInfo;
 use sima_model::FormatId;
 use sima_provider::{
-    AcquireLimits, Budget, Exhaustion, IncidentKind, InstanceGuard, Objective, Provider,
+    AcquireLimits, Budget, Exhaustion, IncidentKind, InstanceGuard, Objective, Offer, Provider,
     Reachability, SshEndpoint, acquire, now_ms, record_incident,
 };
-use sima_scheduler::Event;
 use sima_scheduler::ExecutionConfig;
+use sima_scheduler::{Event, Level};
 use sima_store::{Rental as RentalRole, RunLock, Store};
+use sima_trace::Emitter;
 use sima_transport::{SpawnMode, SshDestination, SshTransport};
 
 use crate::config::{FillPolicy, Rented};
@@ -134,6 +135,7 @@ pub(crate) fn acquire_hosts<'a>(
     format: &FormatId,
     exec: &ExecutionConfig,
     delivery: Option<&ProgramDelivery>,
+    events: &Emitter,
 ) -> Result<Vec<RentedHost<'a>>> {
     let program = match delivery {
         None => RentedProgram::Image,
@@ -144,7 +146,8 @@ pub(crate) fn acquire_hosts<'a>(
         },
     };
     let mut hosts: Vec<RentedHost<'a>> = Vec::with_capacity(rental.count);
-    for _ in 0..rental.count {
+    for index in 0..rental.count {
+        let member = member(rental.name, index);
         // A machine that fails to acquire, probe, or receive the program is
         // torn down inside `acquire_one` before its error returns here.
         match acquire_one(
@@ -157,16 +160,25 @@ pub(crate) fn acquire_hosts<'a>(
             format,
             exec,
             &program,
+            events,
+            &member,
         ) {
             Ok(host) => hosts.push(host),
-            Err(error) => match rental.fill {
-                // Strict: the declared count or nothing. Dropping `hosts` here
-                // tears down every machine already acquired.
-                FillPolicy::Strict => return Err(error),
-                // Best-effort: run with what came up. Stop asking on the first
-                // shortfall — the market is not filling the count.
-                FillPolicy::BestEffort => break,
-            },
+            Err(error) => {
+                // What the shortfall costs is the entry's own declaration, and
+                // the operator is told which member fell short and what
+                // follows from it — one machine short of a fleet is otherwise
+                // invisible until the run's rate looks wrong.
+                events.emit(shortfall(&member, rental, &error, hosts.len()));
+                match rental.fill {
+                    // Strict: the declared count or nothing. Dropping `hosts`
+                    // here tears down every machine already acquired.
+                    FillPolicy::Strict => return Err(error),
+                    // Best-effort: run with what came up. Stop asking on the
+                    // first shortfall — the market is not filling the count.
+                    FillPolicy::BestEffort => break,
+                }
+            }
         }
     }
     if hosts.is_empty() {
@@ -194,6 +206,8 @@ fn acquire_one<'a>(
     format: &FormatId,
     exec: &ExecutionConfig,
     program: &RentedProgram<'_>,
+    events: &Emitter,
+    member: &str,
 ) -> Result<RentedHost<'a>> {
     // A machine that fails its probe is excluded from the attempts that
     // follow, so the retry reaches a different machine instead of renting
@@ -226,6 +240,7 @@ fn acquire_one<'a>(
             // Run-start acquisition has nothing to cancel: the run is not yet
             // driving, so no wind-down is in flight.
             never_cancelled(),
+            &|offer| taken(events, member, spec.ready_timeout, offer),
         )?;
         let target = endpoint_target(guard.endpoint().clone());
         let host = target.host().to_string();
@@ -236,6 +251,11 @@ fn acquire_one<'a>(
         let outcome = probe_ready(mode, &target, usable_by, spec.ready_poll, program, format)
             .map(|answered| (answered, IncidentKind::ProbeFailed))
             .and_then(|(answered, _)| {
+                if matches!(program, RentedProgram::Delivered { .. }) {
+                    events.emit(Event::InstallingProgram {
+                        member: member.to_string(),
+                    });
+                }
                 program
                     .install(store, mode, &target)
                     .map(|()| answered)
@@ -373,6 +393,66 @@ pub(crate) fn budget_exhausted(exhaustion: Exhaustion) -> Event {
     }
 }
 
+/// What an acquisition says as it takes an offer: what is now being paid for,
+/// and the wait for that machine to become usable.
+///
+/// The wait is stated once, whatever it costs in polls. It spans the provider
+/// reporting the instance ready and the route to it carrying an ssh — a boot
+/// and an image pull — and the operator is owed the reason for the silence
+/// rather than one line per attempt. `ready_timeout` is what the entry
+/// describing the machine states about how long that may take.
+pub(crate) fn taken(events: &Emitter, member: &str, ready_timeout: Duration, offer: &Offer) {
+    events.emit(renting(member, offer));
+    events.emit(Event::AwaitingMachine {
+        timeout_ms: ready_timeout.as_millis() as u64,
+    });
+}
+
+/// The `Renting` event for an offer a machine has just been provisioned
+/// against: what is now being paid for, stated before the wait for it to come
+/// up. `member` names the fleet member it was taken for, and is empty for a
+/// migration, which rents the one machine its destination names.
+fn renting(member: &str, offer: &Offer) -> Event {
+    Event::Renting {
+        member: member.to_string(),
+        machine: offer.machine.clone(),
+        gpu_model: offer.gpu_model.clone(),
+        gpu_count: offer.gpu_count,
+        rate_microusd_hour: offer.price.0,
+    }
+}
+
+/// How a fleet member is named in what the run says about it: the entry that
+/// declared it and its index within that entry's count.
+fn member(name: &str, index: usize) -> String {
+    format!("{name}[{index}]")
+}
+
+/// What a member that could not be brought up is reported as: the member, why,
+/// and what the entry's fill policy makes of it. `acquired` is how many
+/// machines of this entry did come up.
+fn shortfall(member: &str, rental: &Rental<'_>, error: &Error, acquired: usize) -> Event {
+    let consequence = match rental.fill {
+        FillPolicy::Strict => format!(
+            "{:?} states strict fill, so the run stops and what it acquired is torn down",
+            rental.name
+        ),
+        FillPolicy::BestEffort => format!(
+            "{:?} states best-effort fill, so the run goes on with the {acquired} machine(s) \
+             that came up",
+            rental.name
+        ),
+    };
+    Event::Diagnostic {
+        level: Level::Warn,
+        source: "rental".to_string(),
+        message: format!("{member} could not be brought up: {error}; {consequence}"),
+        worker: None,
+        host: None,
+        task: None,
+    }
+}
+
 /// A cancellation flag that is never set, for an acquisition with no wind-down
 /// to observe — the run-start acquisition, before the run drives.
 pub(super) fn never_cancelled() -> &'static AtomicBool {
@@ -383,6 +463,7 @@ pub(super) fn never_cancelled() -> &'static AtomicBool {
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
+    use std::sync::mpsc::Receiver;
 
     use sima_contracts::DeviceClass;
     use sima_domains::devices::DeviceType;
@@ -392,7 +473,7 @@ mod tests {
     use super::*;
     use crate::config::FillPolicy;
     use crate::rental::fixtures::{
-        acquisition_env, deviceless_probe, exec, offer, one_group, rental, spec,
+        acquisition_env, deviceless_probe, exec, heard, offer, one_group, rental, spec, unheard,
     };
 
     /// One enumerated device of the given category.
@@ -491,6 +572,7 @@ mod tests {
             &format,
             &exec(),
             None,
+            &unheard(),
         );
         assert!(matches!(result, Err(Error::Provider(_))));
         assert_eq!(
@@ -521,6 +603,7 @@ mod tests {
             &format,
             &exec(),
             None,
+            &unheard(),
         )?;
         assert_eq!(hosts.len(), 1, "best-effort runs on what came up");
         assert!(
@@ -534,6 +617,150 @@ mod tests {
             "release tears the machine down"
         );
         assert!(provider.live().is_empty());
+        Ok(())
+    }
+
+    /// The warn diagnostics `events` carried, which is where a shortfall is
+    /// reported.
+    fn warnings(heard: Receiver<Event>) -> Vec<String> {
+        heard
+            .into_iter()
+            .filter_map(|event| match event {
+                Event::Diagnostic {
+                    level: Level::Warn,
+                    message,
+                    ..
+                } => Some(message),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_strict_shortfall_names_the_member_and_says_the_run_stops() -> Result<()> {
+        // One offer for two machines: the member that could not be brought up
+        // is named, with what the entry's fill policy makes of it. A fleet one
+        // machine short is otherwise invisible until the run's rate looks
+        // wrong.
+        let (_dir, store, run) = acquisition_env();
+        let lock = store.acquire_run_lock(&run)?;
+        let provider = StubProvider::new(vec![offer("a", 100_000)]);
+        let format = FormatId::new("stub.v1")?;
+        let spec = spec();
+        let (events, said) = heard();
+        let result = acquire_hosts(
+            &rental(&spec, 2, FillPolicy::Strict),
+            &Budget::default(),
+            &provider,
+            &store,
+            &lock,
+            &deviceless_probe(),
+            &format,
+            &exec(),
+            None,
+            &events,
+        );
+        assert!(matches!(result, Err(Error::Provider(_))));
+        drop(events);
+        let warnings = warnings(said);
+        let [warning] = warnings.as_slice() else {
+            panic!("one shortfall, one warning: {warnings:?}");
+        };
+        assert!(warning.contains("rented[1]"), "names the member: {warning}");
+        assert!(
+            warning.contains("strict fill") && warning.contains("the run stops"),
+            "states what follows from it: {warning}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_best_effort_shortfall_names_the_member_and_says_the_run_goes_on() -> Result<()> {
+        let (_dir, store, run) = acquisition_env();
+        let lock = store.acquire_run_lock(&run)?;
+        let provider = StubProvider::new(vec![offer("a", 100_000)]);
+        let format = FormatId::new("stub.v1")?;
+        let spec = spec();
+        let (events, said) = heard();
+        let hosts = acquire_hosts(
+            &rental(&spec, 2, FillPolicy::BestEffort),
+            &Budget::default(),
+            &provider,
+            &store,
+            &lock,
+            &deviceless_probe(),
+            &format,
+            &exec(),
+            None,
+            &events,
+        )?;
+        drop(events);
+        let warnings = warnings(said);
+        let [warning] = warnings.as_slice() else {
+            panic!("one shortfall, one warning: {warnings:?}");
+        };
+        assert!(warning.contains("rented[1]"), "names the member: {warning}");
+        // Pinned whole, because this is the sentence an operator reads when a
+        // fleet comes up short and it has to read as one.
+        assert!(
+            warning.ends_with(
+                "; \"rented\" states best-effort fill, so the run goes on with the 1 machine(s) \
+                 that came up"
+            ),
+            "states what the run does instead: {warning}"
+        );
+        release_all(one_group(&provider, &spec, FillPolicy::BestEffort, hosts))?;
+        Ok(())
+    }
+
+    #[test]
+    fn every_machine_a_fleet_takes_says_it_is_waiting_for_it() -> Result<()> {
+        // Between taking an offer and the machine answering lie a boot and an
+        // image pull, and the run is paying through all of it. What is being
+        // waited for is stated once per machine, right after what it costs.
+        let (_dir, store, run) = acquisition_env();
+        let lock = store.acquire_run_lock(&run)?;
+        let provider = StubProvider::new(vec![offer("a", 100_000), offer("b", 200_000)]);
+        let format = FormatId::new("stub.v1")?;
+        let spec = spec();
+        let (events, said) = heard();
+        let hosts = acquire_hosts(
+            &rental(&spec, 2, FillPolicy::Strict),
+            &Budget::default(),
+            &provider,
+            &store,
+            &lock,
+            &deviceless_probe(),
+            &format,
+            &exec(),
+            None,
+            &events,
+        )?;
+        drop(events);
+        let waits: Vec<Event> = said
+            .into_iter()
+            .filter(|event| matches!(event, Event::Renting { .. } | Event::AwaitingMachine { .. }))
+            .collect();
+        let [
+            Event::Renting { member: first, .. },
+            Event::AwaitingMachine {
+                timeout_ms: first_wait,
+            },
+            Event::Renting { member: second, .. },
+            Event::AwaitingMachine {
+                timeout_ms: second_wait,
+            },
+        ] = waits.as_slice()
+        else {
+            panic!("each member says what it took and what it waits for: {waits:?}");
+        };
+        assert_eq!(
+            (first.as_str(), second.as_str()),
+            ("rented[0]", "rented[1]")
+        );
+        let stated = spec.ready_timeout.as_millis() as u64;
+        assert_eq!((*first_wait, *second_wait), (stated, stated));
+        release_all(one_group(&provider, &spec, FillPolicy::Strict, hosts))?;
         Ok(())
     }
 
@@ -556,6 +783,7 @@ mod tests {
             &format,
             &exec(),
             None,
+            &unheard(),
         )?;
         assert_eq!(hosts.len(), 2);
         for host in &hosts {
@@ -590,6 +818,7 @@ mod tests {
             &format,
             &exec(),
             None,
+            &unheard(),
         );
         assert!(result.is_err(), "a probe failure fails the acquisition");
         assert_eq!(provider.destroyed().len(), 1, "the machine is torn down");
@@ -625,6 +854,7 @@ mod tests {
             &format,
             &exec(),
             None,
+            &unheard(),
         );
         assert!(result.is_err(), "no machine in the market could be probed");
         assert_eq!(provider.destroyed().len(), 2, "each attempt is torn down");

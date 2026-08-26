@@ -35,16 +35,17 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use sima_core::{Codec, Dec, Enc, Error, Hash, MAX_PAYLOAD, Result};
+use sima_core::{Codec, Dec, Enc, Error, Hash, MAX_PAYLOAD, Result, own_process_group};
 use sima_store::Store;
 
+use crate::config::GENERATED_DIR;
 use crate::stamped_tree::{
     EXECUTABLE_MODE, REGULAR_MODE, STAMP_FILE, build_once, create_dir, executable, read_file,
     remove_dir, validate_path, write_file,
 };
 
-/// The directory every installed program hangs off, under the directory the
-/// config file itself sits in.
+/// The directory every installed program hangs off, under the generated
+/// directory beside the config file.
 const PROGRAM_DIR: &str = "program";
 /// Where the manifest's files are materialized. Stable, so a wrapper an
 /// install script writes may point into it.
@@ -382,7 +383,12 @@ impl ProgramTree {
     /// would mean a directory other than this one is refused.
     pub(crate) fn new(config_dir: &Path, format: &str) -> Result<ProgramTree> {
         validate_path(format)?;
-        Ok(ProgramTree::at(config_dir.join(PROGRAM_DIR).join(format)))
+        Ok(ProgramTree::at(
+            config_dir
+                .join(GENERATED_DIR)
+                .join(PROGRAM_DIR)
+                .join(format),
+        ))
     }
 
     /// The tree rooted at `root`, whatever named it.
@@ -424,7 +430,7 @@ impl ProgramTree {
 /// Stated here beside the tree it names, so the path a config points at and the
 /// path an install fills have one definition between them.
 pub(crate) fn relative_entry_point(format: &str) -> String {
-    format!("./{PROGRAM_DIR}/{format}/{INSTALLED_DIR}/{ENTRY_POINT}")
+    format!("./{GENERATED_DIR}/{PROGRAM_DIR}/{format}/{INSTALLED_DIR}/{ENTRY_POINT}")
 }
 
 /// Installs the payload `digest` names into `tree`, so the entry point is on
@@ -505,7 +511,7 @@ fn run_install(tree: &ProgramTree, script: &str) -> Result<()> {
     // Absolute, because the script may `cd` anywhere it likes.
     let payload = absolute(&tree.payload())?;
     let installed = absolute(&tree.installed())?;
-    let status = Command::new("/bin/sh")
+    let status = own_process_group(&mut Command::new("/bin/sh"))
         .arg(&script_path)
         .current_dir(&tree.root)
         .env("SIMA_PAYLOAD_DIR", &payload)

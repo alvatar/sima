@@ -20,6 +20,7 @@
 mod common;
 
 use std::io::{Read, Write};
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::sync::Once;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -287,6 +288,82 @@ fn expected_final(search: &Search) -> Vec<(u64, u64)> {
     let mut expected = search.expected_states();
     expected.sort_unstable();
     expected
+}
+
+#[test]
+fn a_terminal_interrupt_leaves_the_interpreter_no_signal_to_print_about() -> Result<()> {
+    // A terminal delivers Ctrl-C to every process in its foreground group, and
+    // the program serving this format is an interpreter: signalled directly, it
+    // raises `KeyboardInterrupt` and prints its traceback over whatever the
+    // operator was reading. sima is the one interrupt handler, so its children
+    // lead groups of their own and the program is ended by the wind-down, with
+    // nothing of its own to say.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let program = wrapper(dir.path(), &[]);
+    // Long enough that the signal lands while the program is computing, so
+    // what it does with a signal is what the test observes.
+    let search = Search {
+        count: 2,
+        steps: 400_000,
+        ..Search::new()
+    };
+    let config = loaded_text(dir.path(), "sima.toml", &search.text("./store", &program))?;
+    let path = dir.path().join("sima.toml");
+
+    let child = std::process::Command::new(common::built_binary("sima"))
+        .args(["run", path.to_str().expect("utf-8 path")])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        // A group of its own, so the signal below reaches the run and its
+        // children the way a terminal's does, and nothing of the suite's.
+        .process_group(0)
+        .spawn()
+        .expect("spawn sima run");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while !journal_events(&config)
+        .iter()
+        .any(|event| matches!(event, Event::Leased { .. }))
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the run leased a task before the interrupt"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    // A negative pid names the group, which is what a terminal signals.
+    assert_eq!(
+        unsafe { libc::kill(-(child.id() as libc::pid_t), libc::SIGINT) },
+        0,
+        "the run's process group was signalled"
+    );
+    let output = child.wait_with_output().expect("wait for sima run");
+    assert_eq!(
+        output.status.code(),
+        Some(130),
+        "the run wound itself down: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    // Neither on the terminal nor in the journal: the program's captured
+    // stderr is journaled as diagnostics, so a traceback would be recorded
+    // there even when nothing reached the terminal.
+    let terminal = String::from_utf8(output.stderr).expect("stderr is UTF-8");
+    let journaled: String = journal_events(&config)
+        .iter()
+        .filter_map(|event| match event {
+            Event::Diagnostic { message, .. } => Some(message.clone()),
+            _ => None,
+        })
+        .collect::<Vec<String>>()
+        .join("\n");
+    for said in ["Traceback", "KeyboardInterrupt"] {
+        assert!(
+            !terminal.contains(said),
+            "{said} on the terminal: {terminal}"
+        );
+        assert!(!journaled.contains(said), "{said} journaled: {journaled}");
+    }
+    Ok(())
 }
 
 #[test]
@@ -625,6 +702,28 @@ fn worker_hello() -> Vec<u8> {
     hello
 }
 
+/// Spawns `command`, waiting out a wrapper that is momentarily unexecutable.
+///
+/// A file open for writing anywhere in the system cannot be executed. Every
+/// test here writes its own wrapper and then runs it, and a spawn elsewhere in
+/// this process that forks while one of those writes is open holds that write
+/// end until its own exec — so an exec landing inside that window is refused
+/// with `ETXTBSY`. The window closes on its own, so the spawn is retried
+/// through it and fails loudly past a bound no such window reaches.
+fn spawned(command: &mut std::process::Command) -> std::process::Child {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        match command.spawn() {
+            Ok(child) => return child,
+            Err(error)
+                if error.raw_os_error() == Some(libc::ETXTBSY)
+                    && std::time::Instant::now() < deadline => {}
+            Err(error) => panic!("spawn the program: {error}"),
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
 /// Drives one worker-role handshake against the example program spawned with
 /// `env` on top of the module path, and answers the `Ready` payload's strings.
 fn worker_ready(env: &[(&str, &str)]) -> Vec<String> {
@@ -640,7 +739,7 @@ fn worker_ready(env: &[(&str, &str)]) -> Vec<String> {
     for (name, value) in env {
         command.env(name, value);
     }
-    let mut child = command.spawn().expect("spawn the program's worker role");
+    let mut child = spawned(&mut command);
     let mut stdin = child.stdin.take().expect("the piped stdin");
     let mut stdout = child.stdout.take().expect("the piped stdout");
     write_frame(&mut stdin, &worker_hello());
@@ -692,14 +791,14 @@ fn a_protocol_violation_ends_the_python_session_rather_than_being_answered() {
     // the program could not parse and reading on for the next one.
     let dir = tempfile::tempdir().expect("temp dir");
     let program = wrapper(dir.path(), &[]);
-    let mut child = std::process::Command::new(&program)
+    let mut command = std::process::Command::new(&program);
+    command
         .args(["--serve-domain", FORMAT])
         .env("PYTHONPATH", vended_sdk(dir.path()))
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .expect("spawn the program's domain service");
+        .stderr(std::process::Stdio::null());
+    let mut child = spawned(&mut command);
     let mut stdin = child.stdin.take().expect("the piped stdin");
     let mut stdout = child.stdout.take().expect("the piped stdout");
 
@@ -732,14 +831,14 @@ fn a_malformed_format_id_ends_the_python_session_rather_than_being_answered() {
     // session running on. The two sides answer a malformed frame the same way.
     let dir = tempfile::tempdir().expect("temp dir");
     let program = wrapper(dir.path(), &[]);
-    let mut child = std::process::Command::new(&program)
+    let mut command = std::process::Command::new(&program);
+    command
         .args(["--serve-domain", FORMAT])
         .env("PYTHONPATH", vended_sdk(dir.path()))
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .expect("spawn the program's domain service");
+        .stderr(std::process::Stdio::null());
+    let mut child = spawned(&mut command);
     let mut stdin = child.stdin.take().expect("the piped stdin");
     let mut stdout = child.stdout.take().expect("the piped stdout");
 

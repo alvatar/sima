@@ -124,6 +124,12 @@ pub enum Event {
     /// never a task outcome: execution continues and the attempt's result is
     /// unaffected, so this event is the only trace.
     CheckpointDegraded { task: String, error: String },
+    /// A task's checkpoint was persisted, which is the one sign a long attempt
+    /// gives that it is computing rather than wedged. Rate-limited where it is
+    /// emitted — at most one per attempt per interval, however often the task
+    /// saves — so a task saving every second neither floods the journal nor
+    /// the terminal.
+    Checkpointed { task: String, worker: u64 },
     /// A worker's child reported the device it computes on, at every spawn and
     /// respawn. The device name and driver version are the child's own,
     /// verbatim; a domain that uses no device reports both empty. The host is
@@ -177,9 +183,42 @@ pub enum Event {
         task: String,
         reason: String,
     },
-    /// The caller interrupted the run: in-flight attempts drained and
-    /// committed, and no manifest was written, so the store is resumable.
+    /// The caller interrupted the run: the attempts in flight were abandoned
+    /// and no manifest was written, so the store is resumable — each abandoned
+    /// attempt re-derives in the frontier, resuming from its checkpoint.
     RunInterrupted { run: String },
+    /// An offer was taken and a machine is being paid for, before it is up.
+    /// `member` names the fleet member it was rented for, and is empty for a
+    /// migration, which rents the one machine its destination names. A walk
+    /// that takes an offer whose machine never comes up reports each one it
+    /// takes.
+    Renting {
+        member: String,
+        machine: String,
+        gpu_model: String,
+        gpu_count: u32,
+        rate_microusd_hour: u64,
+    },
+    /// The wait for a rented machine to become usable began: it is paid for
+    /// and is coming up, which on a fresh one includes pulling the worker
+    /// image. Reported once per machine taken, by the acquisition that took
+    /// it, however many times that machine is then polled. `timeout_ms` is
+    /// what the entry describing it states the wait may take.
+    AwaitingMachine { timeout_ms: u64 },
+    /// The run's objects are being sent to the machine that will drive it:
+    /// the identity components, the frontier states, and the program when one
+    /// travels. `member` names the fleet member receiving them, and is empty
+    /// for a migration.
+    SendingRun { member: String, objects: usize },
+    /// The program the run's format is served by is being installed on the
+    /// machine. `member` names the machine installing it as the run addresses
+    /// it — a fleet member by its entry and index, a machine of yours by its
+    /// ssh destination — and is empty for a migration, whose destination
+    /// installs it as its run loads.
+    InstallingProgram { member: String },
+    /// The far `sima run` is being started on the destination, which is what
+    /// the migration waits on until its first journal line arrives.
+    StartingRun,
     /// A rented machine came online: reported at supervisor start for
     /// each instance, and again for each replacement. `tag` is the rental's
     /// ledger key, `instance` the provider's id, `rate_microusd_hour` its
