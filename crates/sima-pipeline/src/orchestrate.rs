@@ -167,7 +167,7 @@ pub fn orchestrate(
     // boundary: it is minutes of delivery and spending with no worker yet
     // bound, and what it is doing crosses the same boundary the run's records
     // cross once it drives.
-    let (owned, groups) = under_collector(&store, &run, control.observer, |events| {
+    let built = under_collector(&store, &run, control.observer, |events| {
         // The program reaches every machine of yours before any pool of
         // one exists, so a pool is only ever built where a worker can
         // actually be served.
@@ -205,7 +205,20 @@ pub fn orchestrate(
             });
         }
         Ok((owned, groups))
-    })?;
+    });
+    // An interrupt reaching the run while its machines were still being
+    // acquired ends it here. The acquisition released every machine it held as
+    // it unwound and nothing has executed, so the store stands exactly as it
+    // did and the run is resumable — which is what the run's own interrupted
+    // outcome states, and is why one Ctrl-C during a placement is answered like
+    // one during the work.
+    let (owned, groups) = match built {
+        Ok(built) => built,
+        Err(_) if control.interrupt.load(std::sync::atomic::Ordering::Relaxed) => {
+            return Ok(RunOutcome::Interrupted { run });
+        }
+        Err(error) => return Err(error),
+    };
     // The pools, the orchestrator's first: its own workers, then one container
     // pool per machine of yours, then one pool per rented machine. Worker ids
     // run global and sequential across them. The pools borrow the transports

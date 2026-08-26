@@ -325,6 +325,51 @@ fn an_interrupt_tears_the_fleet_down_and_leaves_the_ledger_closed() -> Result<()
     Ok(())
 }
 
+#[test]
+fn an_interrupt_while_the_fleet_is_being_acquired_abandons_the_run() -> Result<()> {
+    // Acquisition is minutes of paid-for waiting before a single task runs,
+    // and it is where an operator most often changes their mind. The flag is
+    // already up when the run starts, so the first member's walk is called off
+    // before any offer is taken: the run comes back interrupted rather than
+    // failed, nothing was executed, and the store stands as it did.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config = fleet_config(
+        dir.path(),
+        "abandon.toml",
+        "./store",
+        r#""succeed", "succeed""#,
+        2,
+    )?;
+    let interrupt = AtomicBool::new(true);
+    let control = RunControl {
+        observer: &|_: &Record| {},
+        interrupt: &interrupt,
+        on_start: None,
+    };
+    assert!(matches!(
+        orchestrate(&config, &control, Engagement::Fleet, BinaryChange::Refuse)?,
+        RunOutcome::Interrupted { .. }
+    ));
+
+    // The run is registered and resumable: no manifest, and a ledger holding
+    // nothing, because no offer was ever taken.
+    let store = Store::open(&config.store)?;
+    assert!(store.manifest(&config.run.id())?.is_none());
+    let report = spend(&config)?;
+    assert!(report.open.is_empty(), "no rental is left open");
+    assert!(report.entries.is_empty(), "no rental was ever made");
+    // And the journal says why there is nothing there, which is the only place
+    // a run abandoned before it drove leaves an account of itself.
+    let events = journal_events(&config);
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, Event::AcquisitionAbandoned { released: 0 })),
+        "{events:?}"
+    );
+    Ok(())
+}
+
 /// A config declaring a rented class beside an orchestrator that can carry the
 /// run itself, so the invocation decides which machines are used.
 fn opt_in_config(dir: &std::path::Path, name: &str, store: &str) -> Result<LoadedConfig> {
