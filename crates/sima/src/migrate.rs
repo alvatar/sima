@@ -18,6 +18,7 @@ use std::process::ExitCode;
 use sima_core::Result;
 use sima_pipeline::{BinaryChange, MigrateOutcome, load, migrate, recall};
 
+use crate::render::Narration;
 use crate::{EXIT_ERROR, EXIT_FAILED, EXIT_INTERRUPTED, render, report};
 
 /// `sima migrate <config.toml> [--accept-binary]`: moves the run onto its
@@ -25,8 +26,12 @@ use crate::{EXIT_ERROR, EXIT_FAILED, EXIT_INTERRUPTED, render, report};
 /// outcome. `accept` is what the invocation asked for about a program whose
 /// build changed under the run; it travels to the far `sima run`, whose own
 /// binding guard is what compares the two.
-pub(crate) fn migrate_command(config: &Path, accept: BinaryChange) -> ExitCode {
-    match moved(config, accept) {
+pub(crate) fn migrate_command(
+    config: &Path,
+    accept: BinaryChange,
+    narration: Narration,
+) -> ExitCode {
+    match moved(config, accept, narration) {
         Ok(outcome) => {
             println!("{}", describe(&outcome, config));
             ExitCode::from(exit_code(&outcome))
@@ -37,7 +42,7 @@ pub(crate) fn migrate_command(config: &Path, accept: BinaryChange) -> ExitCode {
 
 /// Registers the interrupt flag before any output — so Ctrl-C detaches from the
 /// first line on — and moves the run.
-fn moved(config: &Path, accept: BinaryChange) -> Result<MigrateOutcome> {
+fn moved(config: &Path, accept: BinaryChange, narration: Narration) -> Result<MigrateOutcome> {
     let interrupt = crate::register_interrupt()?;
 
     // Named before the move, as `sima run` names it: the far side's directory
@@ -49,7 +54,7 @@ fn moved(config: &Path, accept: BinaryChange) -> Result<MigrateOutcome> {
     println!("run {}", loaded.run.id());
     // The far run's records reach the same renderer a local run's do, so one
     // run reads the same whichever machine drove it.
-    let progress = render::Progress::new();
+    let progress = render::Progress::new(narration);
     migrate(
         config,
         &loaded,
@@ -64,12 +69,12 @@ fn moved(config: &Path, accept: BinaryChange) -> Result<MigrateOutcome> {
 ///
 /// No interrupt flag is registered: a recall is short and every step of it is
 /// resumable, so a Ctrl-C during one takes the default death.
-pub(crate) fn recall_command(config: &Path) -> ExitCode {
+pub(crate) fn recall_command(config: &Path, narration: Narration) -> ExitCode {
     match load(config).and_then(|loaded| {
         println!("run {}", loaded.run.id());
         // The far run's records do not reach a recall — it follows nothing —
         // so the renderer sees only what this side journals while it waits.
-        let progress = render::Progress::new();
+        let progress = render::Progress::new(narration);
         recall(&loaded, &|record| progress.event(record))
     }) {
         Ok(outcome) => {

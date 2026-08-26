@@ -477,7 +477,7 @@ mod tests {
     use super::*;
     use crate::rental::acquire::{acquire_hosts, release_all};
     use crate::rental::fixtures::{
-        acquisition_env, deviceless_probe, exec, offer, one_group, rental, spec,
+        acquisition_env, deviceless_probe, exec, offer, one_group, rental, spec, unheard,
     };
 
     /// A journal sink that discards every line: tests capture events through
@@ -539,6 +539,7 @@ mod tests {
             &format,
             &exec(),
             None,
+            &unheard(),
         )?;
         let groups = one_group(&provider, &spec, FillPolicy::Strict, hosts);
         let interrupt = AtomicBool::new(false);
@@ -575,6 +576,7 @@ mod tests {
             &format,
             &exec(),
             None,
+            &unheard(),
         )?;
         let groups = one_group(&provider, &spec, FillPolicy::Strict, hosts);
         let interrupt = AtomicBool::new(false);
@@ -609,6 +611,7 @@ mod tests {
             &format,
             &exec(),
             None,
+            &unheard(),
         )?;
         let groups = one_group(&provider, &spec, FillPolicy::Strict, hosts);
         let live_before = provider.live();
@@ -647,6 +650,7 @@ mod tests {
             &format,
             &exec(),
             None,
+            &unheard(),
         )?;
         let groups = one_group(&provider, &spec, FillPolicy::Strict, hosts);
         let host = &groups[0].hosts[0];
@@ -731,6 +735,7 @@ mod tests {
             &format,
             &exec(),
             None,
+            &unheard(),
         )?;
         let groups = one_group(&provider, &spec, FillPolicy::Strict, hosts);
         let dead_id = groups[0].hosts[0]
@@ -791,6 +796,7 @@ mod tests {
             &format,
             &exec(),
             None,
+            &unheard(),
         )?;
         let groups = one_group(&provider, &spec, FillPolicy::Strict, hosts);
         let original_host = groups[0].hosts[0]
@@ -847,6 +853,7 @@ mod tests {
             &format,
             &exec(),
             None,
+            &unheard(),
         )?;
         let groups = one_group(&provider, &spec, FillPolicy::Strict, hosts);
         // A prior closed rental already past the cap, so any replacement
@@ -913,6 +920,7 @@ mod tests {
                 &format,
                 &exec(),
                 None,
+                &unheard(),
             )?;
             groups.push(RentalGroup {
                 provider,
@@ -965,6 +973,7 @@ mod tests {
             &format,
             &exec(),
             None,
+            &unheard(),
         )?;
         let groups = one_group(&provider, &spec, FillPolicy::Strict, hosts);
         let interrupt = AtomicBool::new(false);
@@ -1026,6 +1035,7 @@ mod tests {
             &format,
             &exec(),
             None,
+            &unheard(),
         )?;
         let groups = one_group(&provider, &spec, FillPolicy::Strict, hosts);
         let interrupt = AtomicBool::new(false);
@@ -1063,6 +1073,7 @@ mod tests {
             &format,
             &exec(),
             None,
+            &unheard(),
         )?;
         let groups = one_group(&provider, &spec, FillPolicy::Strict, hosts);
         assert!(groups[0].hosts[0].transport.live_host().is_some());
@@ -1111,6 +1122,7 @@ mod tests {
             &format,
             &exec(),
             None,
+            &unheard(),
         )?;
         let groups = one_group(&provider, &spec, FillPolicy::Strict, hosts);
         assert!(groups[0].hosts[0].transport.live_host().is_some());

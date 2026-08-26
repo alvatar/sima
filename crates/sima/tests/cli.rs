@@ -1241,6 +1241,22 @@ fn a_terminal_interrupt_winds_the_run_down_without_killing_its_workers() {
 }
 
 #[test]
+fn a_quiet_run_still_prints_the_run_its_start_its_commits_and_its_outcome() {
+    // The minimal stream `--quiet` leaves: what the run is, what it started,
+    // what it committed, and how it ended.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config = write_config(dir.path(), r#""succeed", "succeed""#);
+    let output = sima(&["run", config.to_str().expect("utf-8 path"), "--quiet"]);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let text = stdout(&output);
+    let run = load(&config).expect("load config").run.id().to_string();
+    assert!(text.contains(&format!("run {run}")), "{text}");
+    assert!(text.contains("started: 2 tasks"), "{text}");
+    assert!(text.contains("committed 2/2"), "{text}");
+    assert!(text.contains("finalized: 2 tasks committed"), "{text}");
+}
+
+#[test]
 fn the_write_commands_refuse_a_remote_host() {
     let dir = tempfile::tempdir().expect("temp dir");
     let config = write_config(dir.path(), r#""succeed""#);

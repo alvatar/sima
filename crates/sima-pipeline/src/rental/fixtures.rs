@@ -7,18 +7,34 @@
 //! the tests, which are the whole of what reaches them.
 
 use std::path::PathBuf;
+use std::sync::mpsc::{Receiver, channel};
 use std::time::Duration;
 
 use sima_model::{FormatId, GeneratorConfig, GeneratorId, Params, RunConfig, RunId};
 use sima_provider::{Constraints, Offer, OfferId, Price, Provider};
-use sima_scheduler::ExecutionConfig;
+use sima_scheduler::{Event, ExecutionConfig};
 use sima_store::Store;
+use sima_trace::Emitter;
 use sima_transport::SpawnMode;
 use tempfile::TempDir;
 
 use crate::config::{FillPolicy, ProviderId, Rented};
 use crate::fleet::Rental;
 use crate::rental::acquire::{RentalGroup, RentedHost};
+
+/// An emitter and everything emitted through it, for the tests that read what
+/// an acquisition said.
+pub(super) fn heard() -> (Emitter, Receiver<Event>) {
+    let (sender, heard) = channel();
+    (Emitter::from(sender), heard)
+}
+
+/// An emitter nothing reads, for the tests whose subject is not the narration.
+pub(super) fn unheard() -> Emitter {
+    // The receiver is dropped at the end of this expression, so every send
+    // through the emitter is a no-op.
+    Emitter::from(channel().0)
+}
 
 /// A rented specification reaching the stub control plane, polling without
 /// waiting so a probe retry never sleeps in tests.

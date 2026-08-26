@@ -26,6 +26,12 @@
 //! program's build changed since the run last ran; `--accept-binary` is the
 //! invocation stating that the changed build should drive it anyway.
 //!
+//! `run`, `migrate`, and `recall` render a run's stream as it happens, and
+//! `--quiet` narrows that to the run's own progress: what it is, what it
+//! started, what it committed, how it ended, and anything gone wrong. The
+//! lines it drops say where a placement has got to, which is for an operator
+//! watching one rather than for whatever reads the output of a script.
+//!
 //! `sdk` writes the SDK this binary carries into a directory, which is how a
 //! program is developed against the package the runs that spawn it vend.
 //!
@@ -62,6 +68,8 @@ use sima_pipeline::{
 };
 use sima_provider::ReconcileScope;
 
+use crate::render::Narration;
+
 /// Exit code for a definitive candidate failure.
 pub(crate) const EXIT_FAILED: u8 = 2;
 /// Exit code for a run wound down by an interrupt, matching the shell
@@ -85,6 +93,7 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let (args, host) = split_target(&args);
     let (args, accept) = split_binary_change(&args);
+    let (args, narration) = split_quiet(&args);
     // A store on the far side of `--on` is not this machine's to pack, so
     // only a local invocation is measured.
     if host.is_none()
@@ -97,20 +106,28 @@ fn main() -> ExitCode {
         // The write commands never observe: `run` drives a run, which happens
         // where the hardware is, and `rm` and `reconcile` mutate a store. A
         // host on any of them falls through to the usage error.
-        ["run", config] if host.is_none() => {
-            run_command(&resolve_config(config), Engagement::Orchestrator, accept)
-        }
-        ["run", config, "--fleet"] if host.is_none() => {
-            run_command(&resolve_config(config), Engagement::Fleet, accept)
-        }
+        ["run", config] if host.is_none() => run_command(
+            &resolve_config(config),
+            Engagement::Orchestrator,
+            accept,
+            narration,
+        ),
+        ["run", config, "--fleet"] if host.is_none() => run_command(
+            &resolve_config(config),
+            Engagement::Fleet,
+            accept,
+            narration,
+        ),
         ["migrate", config] if host.is_none() => {
-            migrate::migrate_command(&resolve_config(config), accept)
+            migrate::migrate_command(&resolve_config(config), accept, narration)
         }
         // The inverse of `migrate`, and the only thing that ends a far run. It
         // takes no `--accept-binary`: that answers a comparison only a start
         // makes, and a recall starts nothing, so the flag stays among the
         // arguments and falls to the usage error.
-        ["recall", config] if host.is_none() => migrate::recall_command(&resolve_config(config)),
+        ["recall", config] if host.is_none() => {
+            migrate::recall_command(&resolve_config(config), narration)
+        }
         ["rm", config] if host.is_none() => rm_command(&resolve_config(config)),
         // The only verb whose argument is a store directory rather than a
         // config: packing needs no run knowledge, and a store defines every
@@ -171,6 +188,7 @@ fn main() -> ExitCode {
                 "usage: sima run <config>                  drive the run on this machine\n\
                  \x20      sima run <config> --fleet          drive it on this machine and [fleet]\n\
                  \x20      sima run <config> --accept-binary  continue through a changed program\n\
+                 \x20      sima run <config> --quiet          print the run's own progress and no more\n\
                  \x20      sima status <config>               report the run's state\n\
                  \x20      sima status <config> --task <key>  print one task's attempt timeline\n\
                  \x20      sima status <config> --failed      digest the tasks that did not commit\n\
@@ -260,6 +278,36 @@ fn split_binary_change<'a>(args: &[&'a str]) -> (Vec<&'a str>, BinaryChange) {
     (rest, accept)
 }
 
+/// Splits `--quiet` out of an invocation that renders a run's stream, wherever
+/// in it the flag appears, returning the rest and how much of the stream to
+/// print. It composes with the other flags in either order, as
+/// [`split_binary_change`] does, rather than multiplying the command forms.
+///
+/// The three verbs that render a live stream take it — `run`, `migrate`, and
+/// `recall`. Every other command keeps the flag among its arguments, where it
+/// matches no form and falls to the usage error.
+fn split_quiet<'a>(args: &[&'a str]) -> (Vec<&'a str>, Narration) {
+    if !matches!(
+        args.first(),
+        Some(&"run") | Some(&"migrate") | Some(&"recall")
+    ) {
+        return (args.to_vec(), Narration::Full);
+    }
+    let mut narration = Narration::Full;
+    let rest = args
+        .iter()
+        .copied()
+        .filter(|arg| {
+            let flag = *arg == "--quiet";
+            if flag {
+                narration = Narration::Minimal;
+            }
+            !flag
+        })
+        .collect();
+    (rest, narration)
+}
+
 /// The run a read command addresses: one on this machine, or one on the host
 /// its orchestrator runs on.
 ///
@@ -333,22 +381,32 @@ fn resolve_config(arg: &str) -> PathBuf {
 /// maps the outcome to the exit code. `engagement` is what the invocation asked
 /// for: this machine alone, or this machine and the fleet. `accept` is what it
 /// asked for about a program whose build changed under the run.
-fn run_command(config: &Path, engagement: Engagement, accept: BinaryChange) -> ExitCode {
-    match drive(config, engagement, accept) {
+fn run_command(
+    config: &Path,
+    engagement: Engagement,
+    accept: BinaryChange,
+    narration: Narration,
+) -> ExitCode {
+    match drive(config, engagement, accept, narration) {
         Ok(outcome) => ExitCode::from(outcome_exit_code(&outcome)),
         Err(e) => report(e),
     }
 }
 
 /// Loads the config and drives its run.
-fn drive(config: &Path, engagement: Engagement, accept: BinaryChange) -> Result<RunOutcome> {
+fn drive(
+    config: &Path,
+    engagement: Engagement,
+    accept: BinaryChange,
+    narration: Narration,
+) -> Result<RunOutcome> {
     let loaded = load(config)?;
     let interrupt = register_interrupt()?;
 
     println!("run {}", loaded.run.id());
     // The run's own `RunStarted` carries the prior commits, counted from the
     // store, so a resumed run counts on from where it stopped.
-    let progress = render::Progress::new();
+    let progress = render::Progress::new(narration);
     let control = RunControl {
         observer: &|record| progress.event(record),
         interrupt: &interrupt,

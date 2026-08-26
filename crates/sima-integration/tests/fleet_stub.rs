@@ -100,6 +100,62 @@ fn a_stub_fleet_run_finalizes_with_records_from_fleet_workers() -> Result<()> {
 }
 
 #[test]
+fn a_fleet_names_each_member_it_rents_before_that_machine_comes_up() -> Result<()> {
+    // Acquisition is minutes of spending with nothing to show, so each member
+    // says what it took and at what rate the moment the offer is taken —
+    // before the machine it names is up and before its worker binds.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config = fleet_config(
+        dir.path(),
+        "fleet.toml",
+        "./store",
+        r#""succeed", "succeed""#,
+        2,
+    )?;
+    orchestrate(
+        &config,
+        &RunControl::detached(),
+        Engagement::Fleet,
+        BinaryChange::Refuse,
+    )?;
+
+    let events = journal_events(&config);
+    let members: Vec<&str> = events
+        .iter()
+        .filter_map(|event| match event {
+            Event::Renting { member, .. } => Some(member.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        members,
+        ["rented[0]", "rented[1]"],
+        "each member names its class and index: {events:?}"
+    );
+    // A rate travels with it: what is being paid for is the whole point of
+    // saying so at all.
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            Event::Renting { rate_microusd_hour, .. } if *rate_microusd_hour > 0
+        )),
+        "the line carries what it costs: {events:?}"
+    );
+    // And it precedes the machine serving anything, which is the silence it
+    // exists to fill.
+    let renting = events
+        .iter()
+        .position(|event| matches!(event, Event::Renting { .. }))
+        .expect("a member was rented");
+    let bound = events
+        .iter()
+        .position(|event| matches!(event, Event::WorkerBound { .. }))
+        .expect("a worker bound on it");
+    assert!(renting < bound, "{events:?}");
+    Ok(())
+}
+
+#[test]
 fn the_ledger_holds_one_closed_entry_per_instance() -> Result<()> {
     let dir = tempfile::tempdir().expect("temp dir");
     let config = fleet_config(

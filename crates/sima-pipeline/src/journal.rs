@@ -1,11 +1,43 @@
-//! Reading a run's journal, under the guards every read-only query applies.
+//! Reading a run's journal, under the guards every read-only query applies,
+//! and the boundary a verb writes to it through.
+
+use std::thread;
 
 use sima_core::{Error, Result};
 use sima_model::RunId;
 use sima_scheduler::Record;
 use sima_store::Store;
+use sima_trace::{Collector, Emitter, Observer};
 
 use crate::config::LoadedConfig;
+
+/// Runs `body` under the run's collector, so everything a verb emits reaches
+/// the local journal and the operator's view through one boundary.
+///
+/// It spans the whole of what a verb does rather than the part that drives
+/// tasks: the phases of putting a run on machines are what the operator
+/// watches while there is nothing yet driving, and they cross the same
+/// boundary the run's own records cross later. For a migration it is also the
+/// only way a far run's records land here at all, since journals do not sync.
+pub(crate) fn under_collector<T>(
+    store: &Store,
+    run: &RunId,
+    observer: Observer<'_>,
+    body: impl FnOnce(&Emitter) -> Result<T>,
+) -> Result<T> {
+    let writer = store.journal_writer(run)?;
+    thread::scope(|scope| -> Result<T> {
+        let collector = Collector::spawn(scope, writer, observer);
+        let events = collector.emitter();
+        let out = body(&events);
+        // The collector joins only once every emitter is dropped.
+        drop(events);
+        let journal = collector.shutdown();
+        // A journal that could not be appended is a store fault worth
+        // reporting, but only when the body itself did not already fail.
+        out.and_then(|value| journal.map(|()| value))
+    })
+}
 
 /// Reads the journal of the run a loaded config describes, parsed into
 /// records. A store root that does not exist is [`Error::Validation`] before

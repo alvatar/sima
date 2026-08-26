@@ -83,11 +83,12 @@ use crate::config::{FillPolicy, HostForm, LoadedConfig, Rented};
 // which under test comes from the session's test overrides instead.
 use crate::feed::RunFeed;
 use crate::fleet::Rental;
+use crate::journal::under_collector;
 use crate::migrate::destination::destination_for;
 use crate::migrate::far_config::{Registration, far_config};
 #[cfg(test)]
 use crate::migrate::far_run::Overrides;
-use crate::migrate::far_run::{FarRun, FollowEnd, MigrateOutcome, journaling};
+use crate::migrate::far_run::{FarRun, FollowEnd, MigrateOutcome};
 use crate::migrate::far_side::{Contact, Remote};
 use crate::migrate::objects::push_objects;
 use crate::payload::{PayloadSpec, closure, ingest};
@@ -178,7 +179,7 @@ pub fn migrate(
     // One journal boundary around the whole migration: the phases of placing
     // the run cross it before there is a far run, and the far run's own records
     // cross it after.
-    journaling(&store, &run, observer, |events| match destination.form {
+    under_collector(&store, &run, observer, |events| match destination.form {
         // A machine of yours is reached as it stands: nothing is rented, so no
         // provider is constructed and no credential is read.
         HostForm::Owned(owned) => {
@@ -752,7 +753,7 @@ mod tests {
                 .push(record.clone());
         };
         let destination = destination_for(&local.config).expect("the host is declared");
-        let outcome = journaling(&local.store, &local.config.run.id(), &observer, |events| {
+        let outcome = under_collector(&local.store, &local.config.run.id(), &observer, |events| {
             FarRun {
                 far,
                 store: &local.store,
@@ -790,7 +791,7 @@ mod tests {
     ) -> Result<MigrateOutcome> {
         let observer = |_: &Record| {};
         let destination = destination_for(&local.config).expect("the host is declared");
-        journaling(&local.store, &local.config.run.id(), &observer, |events| {
+        under_collector(&local.store, &local.config.run.id(), &observer, |events| {
             FarRun {
                 far,
                 store: &local.store,

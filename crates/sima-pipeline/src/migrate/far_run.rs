@@ -8,7 +8,7 @@
 //! came home, and dispose of the machine — so they live here rather than in
 //! either verb.
 
-use std::thread::{self, sleep};
+use std::thread::sleep;
 use std::time::{Duration, Instant};
 
 use sima_core::{Error, Result};
@@ -16,7 +16,7 @@ use sima_model::RunId;
 use sima_provider::{InstanceGuard, Provider};
 use sima_scheduler::{Event, Level};
 use sima_store::{ObjectScope, Store};
-use sima_trace::{Collector, Emitter, Observer};
+use sima_trace::Emitter;
 
 #[cfg(not(test))]
 use crate::config::{DEFAULT_READY_POLL_MS, DEFAULT_READY_TIMEOUT_MS};
@@ -111,34 +111,6 @@ pub(crate) struct FarRun<'a> {
     pub(crate) rental: Option<InstanceGuard<'a, dyn Provider + Sync + 'a>>,
     #[cfg(test)]
     pub(crate) overrides: Overrides,
-}
-
-/// Runs `body` under the run's collector, so everything a verb emits reaches
-/// the local journal and the operator's view through one boundary.
-///
-/// It spans the whole verb rather than the part that follows a far run: the
-/// phases of placing a run on a machine are what the operator watches while
-/// there is no far run yet, and they cross the same boundary the far run's own
-/// records cross later. Journals do not sync, so this is the only way a far
-/// run's records land here at all.
-pub(crate) fn journaling<T>(
-    store: &Store,
-    run: &RunId,
-    observer: Observer<'_>,
-    body: impl FnOnce(&Emitter) -> Result<T>,
-) -> Result<T> {
-    let writer = store.journal_writer(run)?;
-    thread::scope(|scope| -> Result<T> {
-        let collector = Collector::spawn(scope, writer, observer);
-        let events = collector.emitter();
-        let out = body(&events);
-        // The collector joins only once every emitter is dropped.
-        drop(events);
-        let journal = collector.shutdown();
-        // A journal that could not be appended is a store fault worth
-        // reporting, but only when the body itself did not already fail.
-        out.and_then(|value| journal.map(|()| value))
-    })
 }
 
 /// The one answer a verb comes home with, from what it did and what became of

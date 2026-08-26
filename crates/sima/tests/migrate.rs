@@ -366,6 +366,38 @@ fn a_migration_narrates_the_phases_of_placing_the_run() -> Result<()> {
 }
 
 #[test]
+fn a_quiet_migration_prints_the_run_its_commits_and_its_outcome_and_nothing_else() -> Result<()> {
+    // The narration is for watching a placement happen; a script wants the
+    // run's own progress and no more.
+    workers_built();
+    let dir = tempfile::tempdir().expect("temp dir");
+    let far_root = dir.path().join("far");
+    let migrated = migrating(dir.path(), &far_root, SEGMENTS, CHAINS);
+
+    let output = sima_command()
+        .args(["migrate", migrated.to_str().expect("utf-8 path"), "--quiet"])
+        .output()
+        .expect("spawn sima migrate");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "the migration finalized: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).expect("stdout is UTF-8");
+    in_order(&stdout, &["run ", "started:", "committed", "migrated:"]);
+    for narrated in [
+        "renting",
+        "waiting for the machine",
+        "sending the run",
+        "starting the run",
+    ] {
+        assert!(!stdout.contains(narrated), "{narrated:?} in:\n{stdout}");
+    }
+    Ok(())
+}
+
+#[test]
 fn a_migration_onto_a_machine_of_yours_narrates_the_phases_it_has() -> Result<()> {
     // A machine of yours is standing and is not paid for, so the phases that
     // acquire one do not exist; the ones that place the run on it do.

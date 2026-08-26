@@ -194,6 +194,36 @@ fn named(member: &str) -> String {
     }
 }
 
+/// How much of a run's stream reaches the terminal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Narration {
+    /// Every line a run's events warrant.
+    Full,
+    /// The run's own progress alone — what it is, what it started, what it
+    /// committed, how it ended — plus anything gone wrong. What `--quiet`
+    /// states, for an invocation whose output is read by something other than
+    /// an operator watching it happen.
+    Minimal,
+}
+
+/// Whether `event` is narration: a line saying where the run's placement or
+/// its work has got to, rather than what the run did. These are what
+/// [`Narration::Minimal`] drops.
+///
+/// A machine lost or replaced is not among them: it reports hardware going
+/// away under a run, which is a fact about the run whoever is reading.
+fn narrated(event: &Event) -> bool {
+    matches!(
+        event,
+        Event::Renting { .. }
+            | Event::AwaitingMachine { .. }
+            | Event::SendingRun { .. }
+            | Event::InstallingProgram { .. }
+            | Event::StartingRun
+            | Event::InstanceOnline { .. }
+    )
+}
+
 /// Progress rendering over a run's event stream: prints one line per
 /// meaningful event. Called from the collector thread, one record at a
 /// time, in journal order; the counters give the `committed k/n` running
@@ -203,16 +233,19 @@ pub struct Progress {
     tasks: AtomicUsize,
     /// Commits accounted for: the run's prior commits plus those seen live.
     committed: AtomicUsize,
+    /// How much of the stream this renderer prints.
+    narration: Narration,
 }
 
 impl Progress {
-    /// A progress renderer over a session's events. Both counters come from
-    /// the run's own `RunStarted`, so nothing needs to be known before the
-    /// run starts.
-    pub fn new() -> Progress {
+    /// A progress renderer over a session's events, printing as much of them
+    /// as `narration` states. Both counters come from the run's own
+    /// `RunStarted`, so nothing needs to be known before the run starts.
+    pub fn new(narration: Narration) -> Progress {
         Progress {
             tasks: AtomicUsize::new(0),
             committed: AtomicUsize::new(0),
+            narration,
         }
     }
 
@@ -221,6 +254,9 @@ impl Progress {
     /// and `WorkerBound` yield no line and stay silent.
     pub fn event(&self, record: &Record) {
         let event = &record.event;
+        if self.narration == Narration::Minimal && narrated(event) {
+            return;
+        }
         if let Event::RunStarted {
             tasks, committed, ..
         } = event
@@ -878,8 +914,71 @@ mod tests {
     }
 
     #[test]
+    fn a_minimal_narration_drops_the_placement_lines_and_keeps_the_run_s_own() {
+        // What `--quiet` leaves: the run's own progress, and anything gone
+        // wrong. The placement lines are for watching a placement happen.
+        for event in [
+            Event::Renting {
+                member: "cheap[0]".to_string(),
+                machine: "m-1".to_string(),
+                gpu_model: "RTX 4090".to_string(),
+                gpu_count: 1,
+                rate_microusd_hour: 70_000,
+            },
+            Event::AwaitingMachine {
+                timeout_ms: 600_000,
+            },
+            Event::SendingRun {
+                member: String::new(),
+                objects: 12,
+            },
+            Event::InstallingProgram {
+                member: String::new(),
+            },
+            Event::StartingRun,
+            Event::InstanceOnline {
+                tag: "t".to_string(),
+                instance: "ab".repeat(32),
+                gpu_model: "RTX 4090".to_string(),
+                gpu_count: 1,
+                rate_microusd_hour: 70_000,
+                host: "gpubox".to_string(),
+            },
+        ] {
+            assert!(narrated(&event), "{event:?} is narration");
+        }
+        for event in [
+            Event::RunStarted {
+                run: "ab".repeat(32),
+                tasks: 3,
+                committed: 0,
+            },
+            Event::Committed {
+                task: "cd".repeat(32),
+                record: "ef".repeat(32),
+                stats: Vec::new(),
+                stats_blob_hex: String::new(),
+            },
+            Event::RunFinalized {
+                run: "ab".repeat(32),
+                committed: 3,
+            },
+            Event::Diagnostic {
+                level: sima_pipeline::Level::Warn,
+                source: "rental".to_string(),
+                message: "cheap[1] could not be brought up".to_string(),
+                worker: None,
+                host: None,
+                task: None,
+            },
+        ] {
+            assert!(!narrated(&event), "{event:?} is the run's own");
+        }
+    }
+
+    #[test]
     fn a_session_counts_commits_on_from_the_started_event() {
-        let progress = Progress::new();
+        let progress = Progress::new(Narration::Full);
         progress.event(&rec(Event::RunStarted {
             run: "ab".repeat(32),
             tasks: 3,

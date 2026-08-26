@@ -2507,6 +2507,19 @@ invocation asked for the fleet at all. The `stub`
 provider is an in-process marketplace, reached by spawning workers on this
 machine, so the whole spine exercises with no network.
 
+**Every member says what it took.** An acquisition is minutes of spending
+before a worker binds, so each member names itself, what it rented, and at
+what rate the moment its offer is taken — `renting cheap[0]: 1× GTX 1660 on
+8127-a41 at $0.056/hr` — under the run's own journal boundary, which
+orchestration opens around putting the run on its machines. The member's name
+is the entry that declared it and its index within that entry's count. A
+delivery says which member it is installing the program on. A member that
+could not be brought up is a warning naming it, the reason, and what the
+entry's `fill` policy makes of it, so a fleet one machine short is not silent.
+The provider's acquisition loop knows none of this wording: it reports the
+offer it provisioned through a callback, and the caller decides what that is
+worth saying.
+
 **State travels with the task; machines share nothing.** A leased task
 carries its input-state and resume bytes in the dispatch itself, and its
 result returns home with the commit, so the store remains the orchestrator's
@@ -3019,6 +3032,15 @@ command form keeps its shape whether or not a host is named:
   interrupt flag for a graceful wind-down; a second SIGINT falls through
   to default death, which is exactly the crash the recovery guarantees
   cover.
+- **`--quiet`** — taken by the three verbs that render a run's stream (`run`,
+  `migrate`, `recall`) and split out of the arguments before the command
+  match, as `--accept-binary` is, so it composes with the other flags in
+  either order. It narrows the stream to the run's own progress — the run id,
+  its start, its commits, its ending — and anything gone wrong. What it drops
+  says where a placement has got to: the phases of putting a run on machines,
+  and a rented machine coming online. It is a rendering choice and nothing
+  more: every line it drops is still journaled, so a quiet run's journal is a
+  loud one's.
 - **`sima migrate <config.toml>`** — moves the run onto the machine
   `[orchestrator].migrate` names, follows it there through the same renderer
   `run` uses, and brings the results home; see

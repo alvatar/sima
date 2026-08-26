@@ -55,7 +55,9 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use sima_core::{Error, Hash, Result};
+use sima_scheduler::Event;
 use sima_store::{ObjectScope, Store, SyncReport};
+use sima_trace::Emitter;
 use sima_transport::container::{ContainerRun, once_argv};
 use sima_transport::protocol::PROGRAM_DIGEST_VAR;
 use sima_transport::{RemoteCommand, SpawnPolicy};
@@ -372,6 +374,7 @@ pub(crate) fn deliver_to_owned(
     machines: &[OwnedMachine<'_>],
     store: &Store,
     delivery: Option<&ProgramDelivery>,
+    events: &Emitter,
 ) -> Result<()> {
     // A run whose format every machine's image answers for itself sends
     // nothing, so no machine is contacted here at all.
@@ -379,6 +382,11 @@ pub(crate) fn deliver_to_owned(
         return Ok(());
     };
     for machine in machines {
+        // A delivery installs the program on the machine, which is the longest
+        // thing a fleet run does before its first worker binds.
+        events.emit(Event::InstallingProgram {
+            member: machine.ssh.to_string(),
+        });
         let programs = programs_dir(machine.root);
         let mut command = vec![IMAGE_BINARY.to_string()];
         command.extend(delivery.args(&programs));

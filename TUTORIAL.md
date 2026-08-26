@@ -442,6 +442,10 @@ sima run search.toml --fleet
 
 ```
 run b80a8ca…
+renting cheap[0]: 1× GTX 1660 on 8127-a41 at $0.056/hr
+renting cheap[1]: 1× RTX 3060 Ti on 5512-c09 at $0.048/hr
+installing the program cheap[0]
+installing the program cheap[1]
 started: 6 tasks
 instance online 48763646 on ssh8.vast.ai: 1× GTX 1660 at $0.056/hr
 instance online 48763734 on ssh8.vast.ai: 1× RTX 3060 Ti at $0.048/hr
@@ -449,6 +453,8 @@ committed 1/6  ef16c6b54f49
 …
 finalized: 6 tasks committed
 ```
+
+Each member says what it took and at what rate the moment its offer is taken, which is minutes before that machine is up; the online line marks the boot completed. Should a member fail to come up, it says so and states what your `fill` policy makes of it — the run stops under `strict`, and goes on with the machines that did come up under `best-effort`. Pass `--quiet` and none of it is printed: what remains is the run, its start, its commits, and its ending.
 
 Your program went to both machines just as it traveled in the migration; each installed it, and its workers ran what was installed. When the run ends, the rentals are torn down of their own accord — `sima reconcile search.toml` confirms the ledger clean.
 

@@ -47,10 +47,11 @@ use sima_trace::Observer;
 
 use crate::config::{FillPolicy, HostForm, LoadedConfig};
 use crate::fleet::Rental;
+use crate::journal::under_collector;
 use crate::migrate::destination::destination_for;
 #[cfg(test)]
 use crate::migrate::far_run::Overrides;
-use crate::migrate::far_run::{FarRun, FollowEnd, MigrateOutcome, journaling, settle};
+use crate::migrate::far_run::{FarRun, FollowEnd, MigrateOutcome, settle};
 use crate::migrate::far_side::Remote;
 use crate::rental::provider_for_rental;
 use crate::status::RunState;
@@ -74,7 +75,7 @@ pub fn recall(loaded: &LoadedConfig, observer: Observer<'_>) -> Result<MigrateOu
 
     // One journal boundary around the whole recall, as a migration opens: the
     // wind-down's own report is what crosses it.
-    journaling(&store, &run, observer, |events| match destination.form {
+    under_collector(&store, &run, observer, |events| match destination.form {
         HostForm::Owned(owned) => {
             let far = Remote::owned(&destination, owned, &run);
             FarRun {
@@ -160,7 +161,7 @@ mod tests {
                 .push(record.clone());
         };
         let destination = destination_for(&local.config).expect("the host is declared");
-        let outcome = journaling(&local.store, &local.config.run.id(), &observer, |events| {
+        let outcome = under_collector(&local.store, &local.config.run.id(), &observer, |events| {
             FarRun {
                 far,
                 store: &local.store,
