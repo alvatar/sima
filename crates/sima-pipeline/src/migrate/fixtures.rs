@@ -235,18 +235,12 @@ impl<'a> Scripted<'a> {
         self
     }
 
-    /// A far run that exits before it journals anything, over a store that
-    /// holds no journal at all, leaving `log` behind — what a first migration
-    /// finds when the far side fails to load.
-    pub(crate) fn dying_before_journaling(mut self, log: &str) -> Scripted<'a> {
-        self.log = Some(log.to_string());
-        self.dies_at_start = true;
-        self
-    }
-
-    /// A far run that exits while loading, leaving `log` behind, over a store
-    /// whose journal an earlier session already filled — what a second
-    /// migration onto a run that once finished there finds.
+    /// A far run that exits while loading its config, leaving `log` behind —
+    /// what a migration finds when the far side fails to start.
+    ///
+    /// What the far store's journal holds is separate: nothing at all for a
+    /// first migration, an earlier session's records under
+    /// [`over_an_existing_journal`](Scripted::over_an_existing_journal).
     pub(crate) fn dying_while_loading(mut self, log: &str) -> Scripted<'a> {
         self.log = Some(log.to_string());
         self.dies_at_start = true;

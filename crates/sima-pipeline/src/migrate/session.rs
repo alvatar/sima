@@ -876,7 +876,7 @@ mod tests {
         // which one it was. An install that could not build the program is the
         // case this exists for.
         let local = local(RENTED, PROMPT, Some(3));
-        let far = Scripted::new().dying_before_journaling(
+        let far = Scripted::new().dying_while_loading(
             "sima: validation error: the install script install.sh exited with exit status: 3",
         );
 
@@ -959,7 +959,7 @@ mod tests {
         // A run that never wrote a line leaves the absence to report, which is
         // still more than the follow's own refusal states.
         let local = local(RENTED, PROMPT, Some(3));
-        let far = Scripted::new().dying_before_journaling("");
+        let far = Scripted::new().dying_while_loading("");
 
         let (outcome, _) = session_over(&local, &far, None, &AtomicBool::new(false));
         let text = outcome
@@ -1257,10 +1257,13 @@ mod tests {
         let far = Scripted::new().delivering(vec![vec![started(&run), committed("aa")]]);
 
         let (outcome, _) = session_over(&local, &far, Some(guard), &interrupt);
-        let outcome = outcome?;
-        assert!(
-            !matches!(outcome, MigrateOutcome::Interrupted { .. }),
-            "letting go is not winding down: {outcome:?}"
+        assert_eq!(
+            outcome?,
+            MigrateOutcome::Detached {
+                run,
+                machine: "slingshot".to_string(),
+            },
+            "letting go is its own outcome, and it names where the run is"
         );
         assert_eq!(
             far.steps(),
