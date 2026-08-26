@@ -108,6 +108,13 @@ fn describe(outcome: &MigrateOutcome, config: &Path) -> String {
                  \x20 sima recall {config}   wind it down and bring the results home"
             )
         }
+        MigrateOutcome::Abandoned { run, machine } => {
+            let config = config.display();
+            format!(
+                "abandoned: nothing was started on {machine:?}, so run {run} is where it was\n\
+                 \x20 sima migrate {config}  place it there again"
+            )
+        }
         // Either verb reaches it: a migration watched the failure arrive, a
         // recall read it in the journal the far run left.
         MigrateOutcome::Failed { task, reason } => {
@@ -119,12 +126,13 @@ fn describe(outcome: &MigrateOutcome, config: &Path) -> String {
 /// The exit code an outcome carries, on the binary's own mapping: a migration
 /// that came home with tasks outstanding is neither a success nor a candidate
 /// failure, so it takes the general error code. Detaching did what was asked,
-/// so it is a success.
+/// so it is a success; a placement the operator stopped is an interrupt, and
+/// takes the code every interrupted run takes.
 fn exit_code(outcome: &MigrateOutcome) -> u8 {
     match outcome {
         MigrateOutcome::Finalized { .. } | MigrateOutcome::Detached { .. } => 0,
         MigrateOutcome::Failed { .. } => EXIT_FAILED,
-        MigrateOutcome::Interrupted { .. } => EXIT_INTERRUPTED,
+        MigrateOutcome::Interrupted { .. } | MigrateOutcome::Abandoned { .. } => EXIT_INTERRUPTED,
         MigrateOutcome::Outstanding { .. } => EXIT_ERROR,
     }
 }

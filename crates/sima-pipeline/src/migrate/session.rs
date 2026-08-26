@@ -40,6 +40,14 @@
 //! skipped. The far run outlives everything except a terminal event and its
 //! own ceiling.
 //!
+//! **An interrupt before the start abandons the placement.** Steps 3 through 6
+//! reach a machine, write a config on it, and send it a store, and an operator
+//! who lets go inside that window asked for the migration to stop: no far run
+//! is started, a rental taken for it is released with everything else the
+//! teardown releases, and the run is left as it was. Detaching is what the same
+//! flag means from the start on, because only then is there a far run to leave
+//! computing.
+//!
 //! **Journals do not sync**, so each record the follow delivers is forwarded
 //! into the local journal through the collector every other event crosses —
 //! without it the local journal would hold a gap for every segment executed
@@ -131,9 +139,10 @@ const ATTACH_BOUND: Duration = Duration::from_secs(30);
 /// `observer` receives every record the far run produced, in journal order,
 /// through the same collector that appends them locally. `interrupt` is the
 /// level-triggered request `SIGINT` sets, and it means two different things by
-/// when it arrives: during the acquisition it abandons the offer walk, since
-/// there is no far run yet to leave behind; during the follow it detaches,
-/// leaving the far run computing and its machine standing.
+/// when it arrives: before the far run is started — through the acquisition and
+/// the placement — it abandons the migration, since there is no far run yet to
+/// leave behind and nothing it took is worth keeping; from the start on it
+/// detaches, leaving the far run computing and its machine standing.
 ///
 /// The local run lock is held for the whole call, so nothing else drives or
 /// reconciles this run while it is away.
@@ -397,7 +406,17 @@ impl Session<'_> {
     /// follow, wind down, pull, and settle.
     fn run_to_end(&self) -> Result<MigrateOutcome> {
         let far_run = self.far_run;
-        let probed = self.reach()?;
+        // Placing a run is reaching a machine, sending it a store, and starting
+        // a process there, and through all of it the interrupt keeps the
+        // meaning it has during the acquisition: stop, and leave nothing
+        // behind. Detaching is what it comes to mean once the start below
+        // returns, and there is nothing to detach from before that.
+        if self.let_go() {
+            return Ok(self.abandoned());
+        }
+        let Some(probed) = self.reach()? else {
+            return Ok(self.abandoned());
+        };
         let far_text = far_config(
             self.local_text,
             far_run.destination.form,
@@ -421,6 +440,9 @@ impl Session<'_> {
                 // what skips the bytes the destination already holds.
                 if let Some(registration) = self.registration {
                     objects.extend(closure(far_run.store, &registration.payload_digest)?);
+                }
+                if self.let_go() {
+                    return Ok(self.abandoned());
                 }
                 far_run.events.emit(Event::SendingRun {
                     member: String::new(),
@@ -446,6 +468,12 @@ impl Session<'_> {
                 // is then nothing earlier to tell apart: the follow opens after
                 // the start instead, waiting for the run's first line.
                 let opened = far_run.far.follow().ok();
+                // The last point where nothing is computing on the destination:
+                // past the start there is a far run to be left alone, so a flag
+                // raised after this detaches instead.
+                if self.let_go() {
+                    return Ok(self.abandoned());
+                }
                 far_run.events.emit(Event::StartingRun);
                 (far_run.far.start(self.accept)?, opened)
             }
@@ -651,7 +679,11 @@ impl Session<'_> {
     /// that has already answered, so a failure there states something real —
     /// the run's directory could not be written, the far side could not be
     /// started, a sync broke mid-session — and repeating it would hide that.
-    fn reach(&self) -> Result<Vec<DeviceInfo>> {
+    ///
+    /// `None` is the operator letting go while the wait ran: it is the longest
+    /// step of a placement, so the interrupt ends it where it is rather than at
+    /// the machine's deadline.
+    fn reach(&self) -> Result<Option<Vec<DeviceInfo>>> {
         let (bound, poll) = self.ready_bounds();
         // A rented destination was asked for before this, and that is when its
         // clock started; a machine of yours is first asked for here.
@@ -661,14 +693,33 @@ impl Session<'_> {
             // whether that is its devices or a reason the run cannot proceed.
             // Only a machine that could not be reached is worth asking again.
             match self.far_run.far.devices()? {
-                Contact::Answered(devices) => return Ok(devices),
+                Contact::Answered(devices) => return Ok(Some(devices)),
                 Contact::Unreachable(error) => {
                     if Instant::now() >= deadline {
                         return Err(error);
                     }
                 }
             }
+            if self.let_go() {
+                return Ok(None);
+            }
             sleep(poll);
+        }
+    }
+
+    /// Whether the operator has let go, read between the steps of placing the
+    /// run and inside the waits those steps spend.
+    fn let_go(&self) -> bool {
+        self.interrupt.load(Ordering::Relaxed)
+    }
+
+    /// What an interrupt before the far run started comes home as: nothing was
+    /// started on the destination, and the teardown releases a rental taken for
+    /// it exactly as it does on any placement failure.
+    fn abandoned(&self) -> MigrateOutcome {
+        MigrateOutcome::Abandoned {
+            run: self.far_run.config.run.id(),
+            machine: self.far_run.destination.name.to_string(),
         }
     }
 
@@ -710,7 +761,7 @@ impl Session<'_> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Mutex;
+    use std::sync::{Arc, Mutex};
 
     use sima_core::Result;
     use sima_model::TaskKey;
@@ -1295,6 +1346,70 @@ mod tests {
     }
 
     #[test]
+    fn an_interrupt_while_the_run_is_being_sent_starts_nothing_and_keeps_no_machine() -> Result<()>
+    {
+        // The window a placement spends sending a run is minutes long, and an
+        // operator who lets go inside it asked for the migration to stop —
+        // starting the far run anyway would leave a machine computing and
+        // billing behind a `sima migrate` that already exited.
+        let local = local(RENTED, PROMPT, Some(3));
+        let run = local.config.run.id();
+        let lock = local.store.acquire_run_lock(&run)?;
+        let provider = marketplace();
+        let guard = hosting(&provider, &local.store, &lock)?;
+        let interrupt = Arc::new(AtomicBool::new(false));
+        let far = Scripted::new()
+            .letting_go_at(PUSH, &interrupt)
+            .delivering(vec![vec![started(&run), committed("aa")]]);
+
+        let (outcome, _) = session_over(&local, &far, Some(guard), &interrupt);
+        assert_eq!(
+            outcome?,
+            MigrateOutcome::Abandoned {
+                run,
+                machine: "cloudbox".to_string(),
+            },
+            "a placement the operator stopped is its own outcome"
+        );
+        assert!(
+            !far.steps().contains(&Step::Start),
+            "no far run was started: {:?}",
+            far.steps()
+        );
+        assert_eq!(
+            *far.alive.lock().expect("the pid lock"),
+            None,
+            "and nothing is computing there"
+        );
+        assert_eq!(
+            provider.destroyed().len(),
+            1,
+            "the machine taken for it was released"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn an_interrupt_before_the_placement_leaves_the_destination_untouched() -> Result<()> {
+        // The flag raised before anything: the migration stops where it is,
+        // which is before the machine has been asked for anything at all.
+        let local = local(OWNED, "", Some(3));
+        let run = local.config.run.id();
+        let far = Scripted::new().delivering(vec![vec![started(&run), committed("aa")]]);
+
+        let (outcome, _) = session_over(&local, &far, None, &AtomicBool::new(true));
+        assert_eq!(
+            outcome?,
+            MigrateOutcome::Abandoned {
+                run,
+                machine: "cloudbox".to_string(),
+            }
+        );
+        assert!(far.steps().is_empty(), "{:?}", far.steps());
+        Ok(())
+    }
+
+    #[test]
     fn a_raised_interrupt_detaches_and_leaves_the_far_run_computing() -> Result<()> {
         // Ctrl-C is the operator letting go, not the operator stopping the
         // run: the far side is neither signalled nor pulled from, and the
@@ -1304,10 +1419,12 @@ mod tests {
         let lock = local.store.acquire_run_lock(&run)?;
         let provider = marketplace();
         let guard = hosting(&provider, &local.store, &lock)?;
-        // Raised before the follow starts, which is what a `sima migrate`
-        // interrupted early looks like.
-        let interrupt = AtomicBool::new(true);
-        let far = Scripted::new().delivering(vec![vec![started(&run), committed("aa")]]);
+        // Raised as the far run is started, which is the first moment there is
+        // one to let go of.
+        let interrupt = Arc::new(AtomicBool::new(false));
+        let far = Scripted::new()
+            .letting_go_at(Step::Start, &interrupt)
+            .delivering(vec![vec![started(&run), committed("aa")]]);
 
         let (outcome, _) = session_over(&local, &far, Some(guard), &interrupt);
         assert_eq!(
@@ -1378,9 +1495,12 @@ mod tests {
         // the dead stream is a consequence of it: letting go stays letting go.
         let local = local(RENTED, PROMPT, Some(3));
         let run = local.config.run.id();
-        let far = Scripted::new().losing_the_stream("the remote follow stream ended");
+        let interrupt = Arc::new(AtomicBool::new(false));
+        let far = Scripted::new()
+            .letting_go_at(Step::Start, &interrupt)
+            .losing_the_stream("the remote follow stream ended");
 
-        let (outcome, _) = session_over(&local, &far, None, &AtomicBool::new(true));
+        let (outcome, _) = session_over(&local, &far, None, &interrupt);
         assert_eq!(
             outcome?,
             MigrateOutcome::Detached {
@@ -1442,9 +1562,12 @@ mod tests {
         // and the machine it is still computing on.
         let local = local(OWNED, "", Some(3));
         let run = local.config.run.id();
-        let far = Scripted::new().delivering(vec![vec![started(&run), committed("aa")]]);
+        let interrupt = Arc::new(AtomicBool::new(false));
+        let far = Scripted::new()
+            .letting_go_at(Step::Start, &interrupt)
+            .delivering(vec![vec![started(&run), committed("aa")]]);
 
-        let (outcome, _) = session_over(&local, &far, None, &AtomicBool::new(true));
+        let (outcome, _) = session_over(&local, &far, None, &interrupt);
         assert_eq!(
             outcome?,
             MigrateOutcome::Detached {

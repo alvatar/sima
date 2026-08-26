@@ -158,10 +158,25 @@ pub(crate) struct Scripted<'a> {
     /// up before it journals, and `sima follow-serve` refuses a run that
     /// journaled nothing.
     follow_refusals: Mutex<usize>,
-    /// What the follow's stream fails with once it has delivered everything
-    /// it was scripted with, for a transport that went away rather than a far
-    /// side that stopped having anything to say.
-    stream_dies: Option<String>,
+    /// How the follow's stream ends once it has delivered everything it was
+    /// scripted with, for a stream that stops rather than a far side that
+    /// stopped having anything to say.
+    stream_ends: Option<StreamEnd>,
+    /// The step whose asking raises `flag`, which is how a test places an
+    /// interrupt inside the choreography rather than before it.
+    letting_go_at: Option<(Step, Arc<AtomicBool>)>,
+}
+
+/// How a scripted follow stream ends, which is what tells a transport that
+/// went away from a far side reporting trouble of its own.
+#[derive(Debug, Clone)]
+pub(crate) enum StreamEnd {
+    /// The transport went away: this side's own words about a stream it can
+    /// no longer read.
+    Gone(String),
+    /// The far side wrote a fault frame, whose words reach this side as the
+    /// far side's own.
+    Fault(String),
 }
 
 impl<'a> Scripted<'a> {
@@ -192,7 +207,8 @@ impl<'a> Scripted<'a> {
             dies_at_start: false,
             vanishing: false,
             follow_refusals: Mutex::new(0),
-            stream_dies: None,
+            stream_ends: None,
+            letting_go_at: None,
         }
     }
 
@@ -266,7 +282,22 @@ impl<'a> Scripted<'a> {
     /// which is what a terminal's own signal does to an ssh in sima's process
     /// group.
     pub(crate) fn losing_the_stream(mut self, words: &str) -> Scripted<'a> {
-        self.stream_dies = Some(words.to_string());
+        self.stream_ends = Some(StreamEnd::Gone(words.to_string()));
+        self
+    }
+
+    /// A follow whose far side reports trouble of its own with `words` once it
+    /// has delivered everything it was scripted with: a fault frame, which is
+    /// the far side speaking rather than a transport that went away.
+    pub(crate) fn faulting_the_stream(mut self, words: &str) -> Scripted<'a> {
+        self.stream_ends = Some(StreamEnd::Fault(words.to_string()));
+        self
+    }
+
+    /// A far side that raises `interrupt` when `step` is asked of it, which is
+    /// what a Ctrl-C landing in the middle of the choreography looks like.
+    pub(crate) fn letting_go_at(mut self, step: Step, interrupt: &Arc<AtomicBool>) -> Scripted<'a> {
+        self.letting_go_at = Some((step, Arc::clone(interrupt)));
         self
     }
 
@@ -320,6 +351,13 @@ impl<'a> Scripted<'a> {
     }
 
     pub(crate) fn record(&self, step: Step) {
+        // The interrupt lands as this step is asked for, so what the session
+        // does with it is decided where the test put it.
+        if let Some((at, interrupt)) = &self.letting_go_at
+            && *at == step
+        {
+            interrupt.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
         self.steps.lock().expect("the step lock").push(step);
     }
 
@@ -462,7 +500,7 @@ impl FarSide for Scripted<'_> {
             alive: Arc::clone(&self.alive),
             ending: self.ending,
             vanishing: self.vanishing,
-            stream_dies: self.stream_dies.clone(),
+            stream_ends: self.stream_ends.clone(),
         }))
     }
 }
@@ -480,9 +518,9 @@ pub(crate) struct ScriptedFeed {
     ending: Ending,
     /// Whether the far run goes away once every batch has been delivered.
     vanishing: bool,
-    /// What the stream fails with once every batch has been delivered, for a
-    /// transport that went away mid-follow.
-    stream_dies: Option<String>,
+    /// How the stream ends once every batch has been delivered: a transport
+    /// that went away, or a fault the far side wrote.
+    stream_ends: Option<StreamEnd>,
 }
 
 impl RunFeed for ScriptedFeed {
@@ -504,12 +542,17 @@ impl RunFeed for ScriptedFeed {
             .expect("the poll lock")
             .pop_front()
             .unwrap_or_default();
-        // A transport that went away answers no further poll, whatever the far
-        // run itself is doing: the stream ends where the transport did.
-        if batch.is_empty()
-            && let Some(words) = &self.stream_dies
-        {
-            return Err(Error::Validation(words.clone()));
+        // A stream that ended answers no further poll, whatever the far run
+        // itself is doing. Which error it ends with is what separates the two
+        // endings: a transport that went away is this side's own reading of a
+        // stream it lost, and a fault frame carries the far side's words
+        // verbatim.
+        if batch.is_empty() {
+            match &self.stream_ends {
+                Some(StreamEnd::Gone(words)) => return Err(Error::Validation(words.clone())),
+                Some(StreamEnd::Fault(words)) => return Err(Error::Reported(words.clone())),
+                None => {}
+            }
         }
         if self.vanishing && batch.is_empty() {
             // Everything it was scripted with has been delivered, and the far

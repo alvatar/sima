@@ -44,6 +44,10 @@ pub enum MigrateOutcome {
     /// pulled, and a rental is left standing. The run comes home on the next
     /// migration that sees it end, or on a recall.
     Detached { run: RunId, machine: String },
+    /// The operator let go while the run was still being placed, so no far run
+    /// was started: nothing computes on `machine`, a rental taken for it was
+    /// released, and the run is exactly as it was.
+    Abandoned { run: RunId, machine: String },
 }
 
 /// What ended the follow, which decides what happens to the far run after it.
@@ -146,8 +150,10 @@ impl<'a> FarRun<'a> {
     /// A guard left alive is a machine still being paid for, so every path that
     /// ended the far run destroys it. A detached migration is the one path that
     /// does not: the run is still computing there, so the machine is kept and
-    /// its ledger record left standing for the next invocation to adopt.
-    /// Nothing here applies to a machine of yours, which was never rented.
+    /// its ledger record left standing for the next invocation to adopt. An
+    /// abandoned placement started nothing, so its machine is released like any
+    /// other that computes nothing. Nothing here applies to a machine of yours,
+    /// which was never rented.
     fn dispose(&mut self, outcome: &Result<MigrateOutcome>) -> Result<()> {
         let Some(guard) = self.rental.take() else {
             return Ok(());

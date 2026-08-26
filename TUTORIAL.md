@@ -391,7 +391,7 @@ The far run states the ledger it inherits rather than a task count, which is how
 
 The program's bytes travel as content-addressed objects, so an unchanged program crosses the wire once: a second migration sends nothing and installs nothing. Every worker upon a machine that received your program answers with the digest from which that machine's own tree was built, and one answering anything else fails its spawn — so a machine running something other than what you sent stops the run, rather than filling your store with results from it.
 
-**Walk away.** Ctrl-C. This no longer ends anything: the far run computes on, and the command exits telling you the two ways back. A closed laptop or a dropped connection does the same — nothing that befalls your machine ends the far run. To end it is a thing you must ask for by name.
+**Walk away.** Ctrl-C. This no longer ends anything: the far run computes on, and the command exits telling you the two ways back. A closed laptop or a dropped connection does the same — nothing that befalls your machine ends the far run. To end it is a thing you must ask for by name. Interrupt it earlier, while the run is still being placed, and there is as yet no far run to leave computing: the migration stops where it stands, any machine it took is released, and it says that nothing was started.
 
 **Come back.** `sima migrate search.toml` once more. Upon a run already living at the destination, the same command reattaches: what committed in your absence is replayed, and the live stream then continues.
 

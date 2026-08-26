@@ -2900,6 +2900,15 @@ handled, and what it does is print where the run is and how to come back; the
 rest are unhandled, so the default death has the same effect. A migration
 interrupted this way exits 0, because detaching is what was asked for.
 
+**An interrupt before the start abandons the placement.** Reaching a machine,
+writing a config on it, and sending it the run's store take minutes, and a
+`SIGINT` inside that window is read as it is during the acquisition: the
+migration stops where it is, no far run is started, a rental taken for the
+placement is released by the same teardown any placement failure runs through,
+and the run is left as it was. The verb exits 130 and states that nothing was
+started, which separates it from a detach — the two are told apart by whether
+there is a far run, and the start is what makes one.
+
 **A stream that ends with the operator is the detach, not a fault.** The
 transport carrying the follow is a child of the migration, and it leads a
 group of its own precisely so a terminal's Ctrl-C does not end it — but a
@@ -3080,8 +3089,10 @@ command form keeps its shape whether or not a host is named:
   `run` uses, and brings the results home; see
   [Migration](#migration). It takes no destination argument, since where a run
   executes belongs in the file that describes it, and no `--on`, since it drives
-  a run rather than observing one. SIGINT detaches: the far run keeps computing,
-  the line it prints names the machine and both ways back, and it exits 0.
+  a run rather than observing one. SIGINT once the far run is started detaches:
+  the far run keeps computing, the line it prints names the machine and both
+  ways back, and it exits 0. SIGINT before that abandons the placement: nothing
+  is started, a rental taken for it is released, and it exits 130.
 - **`sima recall <config.toml>`** — the inverse: winds the far run down, reads
   what it ended as, pulls what it committed, settles the run, and destroys any
   rental. A far run that failed definitively is reported by task and reason and
