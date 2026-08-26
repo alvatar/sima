@@ -540,11 +540,16 @@ impl Session<'_> {
         // - opened after the start: the journal was empty before it, so the
         //   first poll is this run's like any other.
         let earlier_session = opened.is_some();
+        let mut status = RunStatus::new(*run);
         let mut feed = match opened {
             Some(feed) => feed,
-            None => self.attach()?,
+            None => match self.attach()? {
+                Some(feed) => feed,
+                // The far run is up and this side let go while waiting for its
+                // first line, which is the detach it would be a moment later.
+                None => return Ok((status.state, FollowEnd::Detached)),
+            },
         };
-        let mut status = RunStatus::new(*run);
         let mut first = true;
         // Whether this run has journaled a line of its own.
         let mut journaled = false;
@@ -633,15 +638,22 @@ impl Session<'_> {
     /// waits for that rather than reporting the refusal a view of an unjournaled
     /// run gets. The wait ends the moment the far run is gone: one that has
     /// exited will never journal, and its refusal is then the answer.
-    fn attach(&self) -> Result<Box<dyn RunFeed>> {
+    ///
+    /// `None` is the operator letting go inside that wait. A far run is up by
+    /// now, so the flag means here what it means for the rest of the follow:
+    /// leave it computing.
+    fn attach(&self) -> Result<Option<Box<dyn RunFeed>>> {
         let deadline = Instant::now() + self.attach_bound();
         loop {
             match self.far_run.far.follow() {
-                Ok(feed) => return Ok(feed),
+                Ok(feed) => return Ok(Some(feed)),
                 Err(error) => {
                     let gone = self.far_run.far.driving()?.is_none();
                     if gone || Instant::now() >= deadline {
                         return Err(self.unattachable(error, gone));
+                    }
+                    if self.let_go() {
+                        return Ok(None);
                     }
                     sleep(self.tick());
                 }
@@ -1523,6 +1535,40 @@ mod tests {
             *far.alive.lock().expect("the pid lock"),
             Some(PID),
             "the far run keeps computing"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn an_interrupt_while_the_follow_opens_lets_go_of_the_run_it_started() -> Result<()> {
+        // A far run is up by the time this side waits for its first journal
+        // line, so the flag means there what it means from the start on: let
+        // go of it, rather than wait out the bound and report a run that never
+        // journaled as a fault.
+        let local = local(RENTED, PROMPT, Some(3));
+        let run = local.config.run.id();
+        let interrupt = Arc::new(AtomicBool::new(false));
+        let far = Scripted::new()
+            .letting_go_at(Step::Start, &interrupt)
+            .refusing_the_follow(usize::MAX);
+
+        let (outcome, _) = session_over(&local, &far, None, &interrupt);
+        assert_eq!(
+            outcome?,
+            MigrateOutcome::Detached {
+                run,
+                machine: "cloudbox".to_string(),
+            }
+        );
+        assert_eq!(
+            *far.alive.lock().expect("the pid lock"),
+            Some(PID),
+            "the far run it started keeps computing"
+        );
+        assert!(
+            !far.steps().contains(&Step::LogTail),
+            "and nothing was asked to explain a death that did not happen: {:?}",
+            far.steps()
         );
         Ok(())
     }
