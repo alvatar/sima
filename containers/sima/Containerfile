@@ -28,9 +28,15 @@ FROM debian:bookworm-slim AS runtime
 # openssh-client is what a migrated run reaches its own destination with; a
 # migration onto a rented machine also spawns `sima sync-serve` back over the
 # hop it arrived on.
+#
+# python3 is the interpreter for programs written against the Python SDK: sima
+# vends the package onto the module path, and the vend presupposes an
+# interpreter to import it. Third-party dependencies remain the payload's
+# business, installed by its own script.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         libvulkan1 mesa-vulkan-drivers libxext6 libglvnd0 openssh-client \
+        python3 \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=build /src/target/release/sima-worker /usr/local/bin/sima-worker
 COPY --from=build /src/target/release/sima /usr/local/bin/sima
