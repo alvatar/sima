@@ -150,6 +150,10 @@ pub(crate) struct Scripted<'a> {
     /// Whether the far run exits the moment it is started, which is what a
     /// far-side load failure looks like from here.
     dies_at_start: bool,
+    /// The records a far run short enough to end inside the start window
+    /// leaves in the far journal, its pid naming nothing by the time the
+    /// attach asks.
+    finishes_at_start: Option<Vec<Record>>,
     /// Whether the far run goes away once its feed has delivered everything
     /// it was scripted with: a run that died mid-flight, journaling nothing
     /// terminal.
@@ -205,6 +209,7 @@ impl<'a> Scripted<'a> {
             pushed: Mutex::new(Vec::new()),
             log: None,
             dies_at_start: false,
+            finishes_at_start: None,
             vanishing: false,
             follow_refusals: Mutex::new(0),
             stream_ends: None,
@@ -298,6 +303,15 @@ impl<'a> Scripted<'a> {
     /// what a Ctrl-C landing in the middle of the choreography looks like.
     pub(crate) fn letting_go_at(mut self, step: Step, interrupt: &Arc<AtomicBool>) -> Scripted<'a> {
         self.letting_go_at = Some((step, Arc::clone(interrupt)));
+        self
+    }
+
+    /// A far run that is over by the time the follow attaches: starting it
+    /// leaves `records` in the far journal and its pid naming nothing, which
+    /// is what a run short enough to end inside the start window looks like
+    /// from here.
+    pub(crate) fn finishing_at_the_start(mut self, records: Vec<Record>) -> Scripted<'a> {
+        self.finishes_at_start = Some(records);
         self
     }
 
@@ -403,9 +417,13 @@ impl FarSide for Scripted<'_> {
     fn start(&self, accept: BinaryChange) -> Result<u32> {
         self.record(Step::Start);
         *self.started_with.lock().expect("the acceptance lock") = Some(accept);
-        // A run that dies while loading its config is gone by the time
-        // anything asks, which is what leaves the pid naming nothing.
-        if !self.dies_at_start {
+        // A run short enough to end inside the start window journaled
+        // everything it had to say and is already gone.
+        if let Some(records) = &self.finishes_at_start {
+            *self.journal.lock().expect("the journal lock") = FarJournal::Holding(records.clone());
+        } else if !self.dies_at_start {
+            // A run that dies while loading its config is gone by the time
+            // anything asks, which is what leaves the pid naming nothing.
             *self.alive.lock().expect("the pid lock") = Some(PID);
         }
         Ok(PID)

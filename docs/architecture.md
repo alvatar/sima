@@ -3041,7 +3041,10 @@ a changed program, a store that will not open — because the far `sima run` die
 before it journals anything of its own. Two shapes reach the same report:
 
 - **Nothing to follow.** Over an empty far journal the follow is refused
-  outright, and the refusal says only that there is no run to follow.
+  outright, and the refusal says only that there is no run to follow. A far
+  process that is gone is asked once more before that refusal is read as a
+  death: a run short enough to finish inside the attach window is gone too, and
+  the journal it left is what separates the two.
 - **A journal an earlier session left.** The follow opens on it and replays a
   finalization that is not this run's. Opening the follow before the start is
   what tells the two apart: nothing arriving after that first poll, over a far

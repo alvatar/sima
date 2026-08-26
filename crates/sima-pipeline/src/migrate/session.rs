@@ -628,8 +628,10 @@ impl Session<'_> {
     ///
     /// A migration knows the run is coming up, because it started it, so it
     /// waits for that rather than reporting the refusal a view of an unjournaled
-    /// run gets. The wait ends the moment the far run is gone: one that has
-    /// exited will never journal, and its refusal is then the answer.
+    /// run gets. The wait ends the moment the far run is gone, and the ask is
+    /// then made once more: a run that has exited writes nothing further, so a
+    /// refusal that survives it is the answer, while a run short enough to have
+    /// finished inside the wait is followed from the journal it left.
     ///
     /// `None` is the operator letting go inside that wait. A far run is up by
     /// now, so the flag means here what it means for the rest of the follow:
@@ -640,9 +642,19 @@ impl Session<'_> {
             match self.far_run.far.follow() {
                 Ok(feed) => return Ok(Some(feed)),
                 Err(error) => {
-                    let gone = self.far_run.far.driving()?.is_none();
-                    if gone || Instant::now() >= deadline {
-                        return Err(self.unattachable(error, gone));
+                    if self.far_run.far.driving()?.is_none() {
+                        // A far run that is gone is not a far run that
+                        // journaled nothing: one short enough to end inside
+                        // this window wrote its lines between the refusal
+                        // above and this check. Nothing is racing the journal
+                        // any more, so one more ask settles which it was.
+                        return match self.far_run.far.follow() {
+                            Ok(feed) => Ok(Some(feed)),
+                            Err(again) => Err(self.unattachable(again, true)),
+                        };
+                    }
+                    if Instant::now() >= deadline {
+                        return Err(self.unattachable(error, false));
                     }
                     if self.let_go() {
                         return Ok(None);
@@ -655,7 +667,8 @@ impl Session<'_> {
 
     /// What a follow that could not attach reports.
     ///
-    /// A far run that is gone died before it journaled anything, which is what
+    /// A far run that is gone and still refuses the follow died before it
+    /// journaled anything, which is what
     /// every far-side load failure looks like from here — a program that cannot
     /// answer for its format, an install script that exited non-zero, a store
     /// that will not open. The follow's own refusal says only that there is no
@@ -1134,6 +1147,39 @@ mod tests {
         assert!(
             !far.steps().contains(&Step::LogTail),
             "a run that is up owes no explanation: {:?}",
+            far.steps()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_far_run_over_before_the_follow_attaches_is_read_from_its_journal() -> Result<()> {
+        // A run short enough to end inside the start window is gone by the
+        // time the attach asks what is driving the machine, and a follow that
+        // landed a moment earlier was refused a journal that was still empty.
+        // Gone is not the same as journaled nothing: the records are there by
+        // the second ask, and they are this run's.
+        let local = local(RENTED, PROMPT, Some(3));
+        let run = local.config.run.id();
+        let far = Scripted::new()
+            // Two refusals: the follow tried before the start, over a journal
+            // that is still empty, and the attach that lands before the far
+            // run's lines are readable — which is the race this pins.
+            .refusing_the_follow(2)
+            .finishing_at_the_start(vec![started(&run), committed("aa"), finalized(&run)]);
+
+        let (outcome, records) = session_over(&local, &far, None, &AtomicBool::new(false));
+        outcome?;
+        assert!(
+            records
+                .iter()
+                .any(|record| matches!(record.event, Event::Committed { .. })),
+            "the far run's own records came home: {records:?}"
+        );
+        assert_eq!(
+            far.steps().last(),
+            Some(&PULL),
+            "and its results were pulled: {:?}",
             far.steps()
         );
         Ok(())
