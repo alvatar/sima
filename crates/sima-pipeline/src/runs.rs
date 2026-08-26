@@ -62,8 +62,18 @@ pub fn runs(root: &Path) -> Result<Vec<RunSummary>> {
 ///
 /// Any unambiguous prefix addresses a run, as one does a task. An ambiguous
 /// one is refused naming every run it matches, since the answer to it is to
-/// type more of one of them.
+/// type more of one of them. The empty prefix is refused before that: it
+/// begins every run, so in a store holding one it would address that run
+/// while naming nothing.
 pub(crate) fn resolve_run(store: &Store, prefix: &str) -> Result<RunId> {
+    if prefix.is_empty() {
+        return Err(Error::Validation(
+            "--run takes a run id or a leading part of one, and was given nothing. Every run \
+             begins with the empty prefix, so it addresses no run in particular; `sima runs \
+             <store-dir>` lists what the store holds."
+                .to_string(),
+        ));
+    }
     let matched: Vec<RunId> = store
         .runs()?
         .into_iter()
@@ -113,12 +123,36 @@ mod tests {
         ))
     }
 
+    /// Two identities over `root` whose run ids begin with the same character,
+    /// so the store they are driven into holds a prefix that names both.
+    ///
+    /// Run ids are hashes, so which seeds collide is fixed by the configs
+    /// rather than chosen: the search walks them in order and takes the first
+    /// pair that does, which makes the same two every time.
+    fn sharing_a_leading_character(root: &Path) -> (crate::config::LoadedConfig, u64) {
+        let mut seen: Vec<(char, u64)> = Vec::new();
+        for seed in 1..u64::MAX {
+            let leading = seeded(seed, root)
+                .run
+                .id()
+                .to_string()
+                .chars()
+                .next()
+                .expect("a run id has characters");
+            if let Some((_, earlier)) = seen.iter().find(|(char, _)| *char == leading) {
+                return (seeded(*earlier, root), seed);
+            }
+            seen.push((leading, seed));
+        }
+        unreachable!("sixteen leading characters cannot hold seventeen run ids apart");
+    }
+
     /// A store holding two runs of different identities, and their ids.
     fn two_runs(dir: &Path) -> Result<(Store, RunId, RunId)> {
         let root = dir.join("store");
         let store = Store::open(&root)?;
-        let first = seeded(1, &root);
-        let second = seeded(7, &root);
+        let (first, second) = sharing_a_leading_character(&root);
+        let second = seeded(second, &root);
         drive_run(&store, &first.run, None);
         drive_run(&store, &second.run, None);
         Ok((store, first.run.id(), second.run.id()))
@@ -164,9 +198,10 @@ mod tests {
         assert_eq!(resolve_run(&store, &id[..12])?, first);
         assert_eq!(resolve_run(&store, &id)?, first);
 
-        // The empty prefix matches both, so it is refused naming them, which
-        // is what makes typing more of one an answer.
-        let error = resolve_run(&store, "").expect_err("two runs match nothing in particular");
+        // A prefix both runs begin with is refused naming them, which is what
+        // makes typing more of one an answer.
+        let shared = &first.to_string()[..1];
+        let error = resolve_run(&store, shared).expect_err("both runs begin that way");
         let text = error.to_string();
         assert!(text.contains("ambiguous"), "{text}");
         assert!(text.contains(&first.to_string()), "{text}");
@@ -174,6 +209,28 @@ mod tests {
 
         let error = resolve_run(&store, "ffffffffffff").expect_err("no run matches");
         assert!(error.to_string().contains("no run"), "{error}");
+        Ok(())
+    }
+
+    #[test]
+    fn an_empty_prefix_is_refused_rather_than_read_as_any_run() -> Result<()> {
+        // It is a prefix of every run, so a store holding one would have that
+        // one deleted by an argument that named nothing. The flag is what the
+        // refusal names, since the fix is to type a run into it.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root = dir.path().join("store");
+        let store = Store::open(&root)?;
+        let only = seeded(1, &root);
+        drive_run(&store, &only.run, None);
+
+        let error = resolve_run(&store, "").expect_err("an empty prefix names no run");
+        let text = error.to_string();
+        assert!(text.contains("--run"), "names the flag: {text}");
+        assert_eq!(
+            store.runs()?,
+            vec![only.run.id()],
+            "and nothing was touched"
+        );
         Ok(())
     }
 }
