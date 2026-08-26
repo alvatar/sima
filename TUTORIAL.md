@@ -461,6 +461,8 @@ finalized: 6 tasks committed
 
 Each member is taken, waited for, and given your program in turn, so the lines arrive a member at a time rather than a phase at a time. Each says what it took and at what rate the moment its offer is taken, which is minutes before that machine is up; the wait line states what those minutes are spent upon, and the online line marks the boot completed. Should a member fail to come up, it says so and states what your `fill` policy makes of it — the run stops under `strict`, and goes on with the machines that did come up under `best-effort`. Pass `--quiet` and none of it is printed: what remains is the run, its start, its commits, and its ending.
 
+Change your mind while the machines are still coming up, and one Ctrl-C suffices. The acquisition stops where it stands, every machine already rented is released, and the run exits `130` — nothing executed, your store as it was, and a line saying how many machines went back. You need neither wait out a boot nor kill the process over one.
+
 Your program went to both machines just as it traveled in the migration; each installed it, and its workers ran what was installed. When the run ends, the rentals are torn down of their own accord — `sima reconcile search.toml` confirms the ledger clean.
 
 What has just happened deserves understanding in three particulars:

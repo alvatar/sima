@@ -636,7 +636,9 @@ success, on failure, and on interrupt. Three tiers cover the exits:
   outcome because a destructor has nowhere to report it. Teardown also
   closes the rental's spend entry, so what the machine cost outlives it.
 - **Interrupt.** The first SIGINT is a graceful wind-down, so it unwinds
-  through the guard like any other exit.
+  through the guard like any other exit. It reaches an acquisition still in
+  flight too, which is where the machines are paid for and no work has started:
+  the acquisition is [abandoned](#renting) and releases what it held.
 - **Crash.** SIGKILL or power loss runs no code at all. What covers it is
   durable state: the ledger, plus reconciliation.
 
@@ -2541,6 +2543,20 @@ invocation asked for the fleet at all. The `stub`
 provider is an in-process marketplace, reached by spawning workers on this
 machine, so the whole spine exercises with no network.
 
+**An interrupt during acquisition abandons it.** The flag SIGINT raises reaches
+every wait an acquisition spends — for a machine to report ready, and for the
+readiness probe that follows — so one Ctrl-C is answered while a boot is still
+running rather than after the entry's `ready_timeout`. What follows is the same
+wherever it lands: no further member is rented, every machine already acquired
+is released by its guard, and the run comes back interrupted, exits `130`, and
+is resumable with nothing executed. A machine interrupted mid-wait carries no
+incident — it was never given the time its entry allows, so it has said nothing
+about itself, and an incident would exclude it from this acquisition's retries
+and blacklist it at two across runs. A machine that fails on its own still
+carries one. One line states the abandonment, naming how many machines the
+acquisition had and that they are gone, and it is the whole account a run
+abandoned before it drove leaves.
+
 **Every member says what it took.** An acquisition is minutes of spending
 before a worker binds, so each member names itself, what it rented, and at
 what rate the moment its offer is taken — `renting cheap[0]: 1× GTX 1660 on
@@ -3086,7 +3102,9 @@ command form keeps its shape whether or not a host is named:
   plain line per meaningful event from the observer boundary. SIGINT sets the
   interrupt flag for a graceful wind-down; a second SIGINT falls through
   to default death, which is exactly the crash the recovery guarantees
-  cover. A run over a store that already holds progress opens with the ledger
+  cover. One SIGINT suffices while a fleet is still being acquired: it
+  [abandons the acquisition](#renting), releases the machines it had, and exits
+  `130`. A run over a store that already holds progress opens with the ledger
   it resumes — `resuming: 4/6 committed, 2 outstanding` — rather than a task
   count, and its commit counter continues that ledger, so continuing and
   restarting never read alike. The figures are the run's own `RunStarted`,
