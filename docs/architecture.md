@@ -594,6 +594,7 @@ admit   ──── refuse an exhausted budget before the marketplace is listed
 offers  ──── the live marketplace, normalized
 select  ──── constraints disqualify, the objective ranks
 for each ranked offer:
+    ready budget spent ──────────── end the walk
     admit                           (refuse an exhausted budget)
     write the intent record         (ledger, state: intent)
     provision(offer, tag)
@@ -602,7 +603,10 @@ for each ranked offer:
         Provisioned(instance) ───── upgrade the record (state: live)
             poll until ready
                 Ready ───────────── return the guard
-                gone or timed out ─ destroy, clear the record, next offer
+                gone ────────────── destroy, clear the record, charge the
+                                    machine, next offer
+                budget spent ────── destroy, clear the record, charge the
+                                    first candidate, end the walk
 list exhausted ──────────────────── Error::Provider
 ```
 
@@ -620,10 +624,23 @@ answer. An API error is different — it would repeat against every remaining
 offer — so it aborts the loop and propagates, and the attempt's intent
 record stays behind: an error answer does not say whether the request
 landed, so a machine that may carry the tag must remain discoverable, and
-reconciliation resolves it. A machine that never reports
-itself ready is a bad offer: it is destroyed and the walk continues.
+reconciliation resolves it. A machine that goes gone while coming up is a bad
+offer: it is destroyed, charged an incident, and the walk continues.
 Readiness is the provider's own answer, carrying the SSH endpoint; whether
 sshd is listening is the bootstrap layer's question.
+
+**The ready budget belongs to the walk, and spending it ends the walk.** Every
+candidate polls against the one deadline `AcquireLimits` carries, so getting a
+usable machine costs that budget once however many offers are tried. A wait that
+reaches the deadline destroys its pending machine and returns
+`Error::Provider`; taking another offer past it would pay for a machine only to
+find it late at its first status call, which is how one stalled machine can cost
+a walk dozens of pointless rentals. Only the walk's **first** candidate is
+charged a `NeverReady` incident for spending the budget — it is the one that had
+all of it — while a candidate that inherits the leftover was never given its own
+time and answers for nothing. Two incidents blacklist a machine across runs, so
+charging inherited waits would wipe the cheap end of the market from the
+candidate pool.
 
 ### The teardown guarantee
 
@@ -2558,6 +2575,12 @@ from its ledger stamp to now, so one admitted a moment ago has accrued nothing
 and can never be what stops the next; a cap is kept by the supervisor's
 wind-down, not by admission. Serializing admission preserves exactly what
 admission enforced serially, and claims no more.
+
+**A member's `ready_timeout` is one budget for one machine.** It is shared by
+every offer that member's [walk](#the-acquisition-loop) tries, so a machine that
+spends it ends the member's acquisition instead of moving the walk to the next
+offer, and only the walk's first candidate — the one that had the whole timeout
+— is charged a `NeverReady` incident for spending it.
 
 **The fill verdict is taken at the join.** With every member in flight there is
 no first shortfall to stop asking after, so the policy is applied once, over
