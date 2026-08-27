@@ -783,6 +783,26 @@ mod tests {
     }
 
     #[test]
+    fn a_machine_that_goes_gone_while_coming_up_is_charged_and_the_next_offer_taken() -> Result<()> {
+        let (_dir, store) = temp_store();
+        let withdrawn = stub_offer("cheap", 100_000);
+        let stub = StubProvider::new(vec![withdrawn.clone(), stub_offer("dearer", 200_000)])
+            .gone_after(withdrawn.id.clone(), 1);
+        let guard = acquire_within(&stub, &store, &Budget::default())?;
+        // A machine that vanished under us answered for itself, whatever the
+        // clock read, so it is charged an incident and the walk goes on to the
+        // next offer with what is left of the budget.
+        assert_eq!(guard.machine(), "m-dearer");
+        let incidents = store.machine_incidents()?;
+        assert_eq!(incidents.len(), 1);
+        assert_eq!(incidents[0].kind, sima_store::IncidentKind::NeverReady);
+        assert_eq!(incidents[0].machine, "m-cheap");
+        assert_eq!(stub.destroyed().len(), 1);
+        assert_ne!(stub.destroyed()[0], *guard.id());
+        Ok(())
+    }
+
+    #[test]
     fn a_never_ready_machine_with_no_identity_records_nothing() -> Result<()> {
         let (_dir, store) = temp_store();
         // A provider reporting no machine identifier normalizes it to empty;
