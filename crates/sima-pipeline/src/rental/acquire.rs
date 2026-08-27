@@ -568,7 +568,7 @@ fn shortfall(member: &str, rental: &Rental<'_>, error: &Error, acquired: usize) 
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
-    use std::sync::mpsc::Receiver;
+    use std::sync::mpsc::{Receiver, RecvTimeoutError};
 
     use sima_contracts::DeviceClass;
     use sima_domains::devices::DeviceType;
@@ -1145,20 +1145,52 @@ mod tests {
         }
     }
 
-    /// Sets `interrupt` once `marker` exists — which is how a probe run as a
-    /// local command says a member got as far as probing — and answers
-    /// everything the acquisition said.
-    fn interrupt_on_touch(
+    /// Sets `interrupt` once `members` machines have been rented and `marker`
+    /// exists, and answers everything the acquisition said.
+    ///
+    /// Both conditions are read, because either alone leaves the acquisition
+    /// holding something the test cannot name. A `Renting` line is emitted once
+    /// a machine is provisioned, so one per member is what says every member's
+    /// machine is taken and paid for; the marker, which a probe run as a local
+    /// command touches, is what says one of them got through its boot wait. A
+    /// flag set off the marker alone lands while a slower member is still at
+    /// the admission gate, and that member then rents nothing at all.
+    fn interrupt_once_rented_and_probed(
         interrupt: &AtomicBool,
         marker: PathBuf,
         heard: Receiver<Event>,
+        members: usize,
     ) -> impl FnOnce() -> Vec<Event> + Send {
         move || {
-            while !marker.exists() {
-                thread::sleep(Duration::from_millis(1));
+            let mut said = Vec::new();
+            let mut rented: Vec<String> = Vec::new();
+            loop {
+                match heard.recv_timeout(Duration::from_millis(1)) {
+                    Ok(event) => {
+                        if let Event::Renting { member, .. } = &event
+                            && !rented.contains(member)
+                        {
+                            rented.push(member.clone());
+                        }
+                        said.push(event);
+                    }
+                    // The stretch this waits through emits nothing: a member
+                    // that is through is inside its probe and one that is not
+                    // is inside its boot wait. So the marker is read between
+                    // reads of the journal rather than off an event.
+                    Err(RecvTimeoutError::Timeout) => {}
+                    // The acquisition ended without ever reaching the state the
+                    // interrupt is aimed at. The flag stays down and the test
+                    // fails on what it asserts, rather than spinning here.
+                    Err(RecvTimeoutError::Disconnected) => return said,
+                }
+                if rented.len() >= members && marker.exists() {
+                    interrupt.store(true, Ordering::Relaxed);
+                    break;
+                }
             }
-            interrupt.store(true, Ordering::Relaxed);
-            heard.into_iter().collect()
+            said.extend(heard);
+            said
         }
     }
 
@@ -1238,9 +1270,9 @@ mod tests {
     ///
     /// The cheaper offer is ready at once and the dearer one never comes up, so
     /// of the two members racing for them one is through and one is in its boot
-    /// wait. The flag lands when the probe runs, which only the member that is
-    /// through reaches — no other point in an acquisition says a member got
-    /// that far.
+    /// wait. The flag lands once both have rented and one has probed, which is
+    /// exactly the state the assertions name: two machines paid for, one of
+    /// them a host the acquisition is holding.
     fn abandons_under(fill: FillPolicy) -> Result<()> {
         let (dir, store, run) = acquisition_env();
         let lock = store.acquire_run_lock(&run)?;
@@ -1254,7 +1286,7 @@ mod tests {
         let (events, heard) = heard();
         let (result, said) = while_watched(
             events,
-            interrupt_on_touch(&interrupt, marker, heard),
+            interrupt_once_rented_and_probed(&interrupt, marker, heard, 2),
             |events| {
                 acquire_hosts(
                     &rental(&spec, 2, fill),
@@ -1362,7 +1394,7 @@ mod tests {
         let (events, heard) = heard();
         let (result, _) = while_watched(
             events,
-            interrupt_on_touch(&interrupt, marker, heard),
+            interrupt_once_rented_and_probed(&interrupt, marker, heard, 1),
             |events| {
                 acquire_hosts(
                     &rental(&spec, 1, FillPolicy::Strict),
