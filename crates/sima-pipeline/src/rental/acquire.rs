@@ -2,9 +2,11 @@
 //!
 //! A rental asks its control plane for `count` machines, holds each behind a
 //! teardown guard until the whole group is admitted, and probes every one for
-//! the devices its workers are placed on. What a partial acquisition means is
-//! the entry's own declaration: strict fails the run and tears down what came
-//! up, best-effort runs on whatever did.
+//! the devices its workers are placed on. The members are asked for at once —
+//! a boot is minutes, and the same minutes for each of them — with only the
+//! offer take serialized. What a partial acquisition means is the entry's own
+//! declaration: strict fails the run and tears down what came up, best-effort
+//! runs on whatever did.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, PoisonError};

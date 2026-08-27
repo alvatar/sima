@@ -3,6 +3,10 @@
 //! The loop walks the ranked offers and treats a lost offer, and a machine
 //! that never comes up, as reasons to try the next one. Only an API failure
 //! aborts it: that failure would repeat against every remaining offer.
+//!
+//! Taking an offer is where the ledger is written, and acquisitions run at once
+//! over one store; the gate the caller supplies keeps those writes off each
+//! other, while the wait for a machine to come up stays outside it.
 
 use std::collections::hash_map::RandomState;
 use std::hash::{BuildHasher, Hasher};
