@@ -16,8 +16,8 @@ use sima_core::{Error, Result};
 use sima_domains::devices::DeviceInfo;
 use sima_model::FormatId;
 use sima_provider::{
-    AcquireLimits, Budget, Exhaustion, IncidentKind, InstanceGuard, Objective, Offer, Provider,
-    Reachability, SshEndpoint, acquire, now_ms, record_incident,
+    AcquireLimits, Admission, Budget, Exhaustion, IncidentKind, InstanceGuard, Objective, Offer,
+    Provider, Reachability, SshEndpoint, acquire, now_ms, record_incident,
 };
 use sima_scheduler::ExecutionConfig;
 use sima_scheduler::{Event, Level};
@@ -151,6 +151,10 @@ pub(crate) fn acquire_hosts<'a>(
             root: rental.root,
         },
     };
+    // The gate the entry's members take their offers through: one machine is
+    // admitted, recorded, and provisioned at a time, whatever else this rental
+    // has in flight.
+    let admission = Admission::new();
     let mut hosts: Vec<RentedHost<'a>> = Vec::with_capacity(rental.count);
     for index in 0..rental.count {
         let member = member(rental.name, index);
@@ -166,6 +170,7 @@ pub(crate) fn acquire_hosts<'a>(
             format,
             exec,
             &program,
+            &admission,
             interrupt,
             events,
             &member,
@@ -226,6 +231,7 @@ fn acquire_one<'a>(
     format: &FormatId,
     exec: &ExecutionConfig,
     program: &RentedProgram<'_>,
+    admission: &Admission,
     interrupt: &AtomicBool,
     events: &Emitter,
     member: &str,
@@ -258,6 +264,7 @@ fn acquire_one<'a>(
             Objective::CheapestPerHour,
             &limits,
             budget,
+            admission,
             // The wait for a machine to come up is the longest thing an
             // acquisition does, so the run's interrupt reaches inside it: an
             // operator letting go here is answered without waiting the machine

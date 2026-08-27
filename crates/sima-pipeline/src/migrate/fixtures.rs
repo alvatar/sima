@@ -17,7 +17,8 @@ use sima_domains::devices::{DeviceInfo, DeviceType};
 use sima_model::{RunId, TaskKey};
 use sima_provider::stub::StubProvider;
 use sima_provider::{
-    AcquireLimits, Budget, Constraints, InstanceGuard, Objective, Provider, UNREPORTED, acquire,
+    AcquireLimits, Admission, Budget, Constraints, InstanceGuard, Objective, Provider, UNREPORTED,
+    acquire,
 };
 use sima_scheduler::{Event, Record, RunOutcome};
 use sima_store::{ObjectScope, Rental as RentalRole, RunLock, SpendEntry, Store, SyncReport};
@@ -789,6 +790,7 @@ pub(crate) fn hosting<'a>(
         Objective::CheapestPerHour,
         &limits(),
         &Budget::default(),
+        &Admission::new(),
         &AtomicBool::new(false),
         UNREPORTED,
     )
