@@ -1467,6 +1467,40 @@ mod tests {
     }
 
     #[test]
+    fn a_cancelled_walk_says_so_whatever_is_left_of_the_ready_budget() -> Result<()> {
+        let (_dir, store) = temp_store();
+        let stub = StubProvider::new(vec![stub_offer("cheap", 100_000)]);
+        let cancel = AtomicBool::new(true);
+        let lock = store.acquire_run_lock(&sample_run(7))?;
+        let outcome = acquire(
+            &stub,
+            &store,
+            &lock,
+            Rental::Worker,
+            &Constraints::default(),
+            Objective::CheapestPerHour,
+            // Nothing is left of the budget either, and the operator letting
+            // go is what the caller is told: it maps to an interrupted run,
+            // where a spent wait maps to a failed one.
+            &AcquireLimits {
+                usable_by: Instant::now(),
+                ready_poll: Duration::ZERO,
+            },
+            &Budget::default(),
+            &Admission::new(),
+            &cancel,
+            UNREPORTED,
+        );
+        assert!(matches!(
+            outcome,
+            Err(Error::Provider(message)) if message.contains("cancelled")
+        ));
+        assert!(store.instance_records()?.is_empty());
+        assert!(stub.live().is_empty());
+        Ok(())
+    }
+
+    #[test]
     fn a_cancellation_during_the_readiness_wait_tears_the_pending_machine_down() -> Result<()> {
         let (_dir, store) = temp_store();
         let stalling = stub_offer("cheap", 100_000);
