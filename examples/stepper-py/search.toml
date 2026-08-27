@@ -50,6 +50,7 @@ binary   = "sima"     # the sima binary there (on the image's PATH)
 [host.cloudbox.constraints]
 max_price_usd_hour = 0.20   # take no offer above this
 verified_only      = true   # verified datacenters only
+min_reliability    = 0.98   # skip the flaky bottom of the market
 
 # Two machines rented to one specification, as cheap as the market offers.
 [host_class.cheap]
@@ -60,6 +61,7 @@ disk_gb  = 32
 [host_class.cheap.constraints]
 max_price_usd_hour = 0.10   # cheapest end of the market
 verified_only      = true
+min_reliability    = 0.98   # skip the flaky bottom of the market
 
 # The machines `sima run --fleet` draws workers from: store and orchestrator
 # stay here, members only lend workers. Without the flag no member is engaged
