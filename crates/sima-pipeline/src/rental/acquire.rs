@@ -1099,6 +1099,54 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn a_member_whose_machine_spends_the_ready_wait_rents_nothing_further() -> Result<()> {
+        // The ready timeout is what the operator gave this member to come up
+        // in, and one machine spending it ends the member's acquisition: the
+        // second offer is never rented, and the probe retry does not hand the
+        // member another window on top of the one it was given.
+        let (_dir, store, run) = acquisition_env();
+        let lock = store.acquire_run_lock(&run)?;
+        let provider = StubProvider::new(vec![offer("a", 100_000), offer("b", 200_000)])
+            .never_ready(OfferId("a".to_string()));
+        let format = FormatId::new("stub.v1")?;
+        // A window reached by elapsed time over several polls, short enough to
+        // keep the suite quick.
+        let spec = Rented {
+            ready_timeout: Duration::from_millis(50),
+            ready_poll: Duration::from_millis(1),
+            ..spec()
+        };
+        let result = acquire_hosts(
+            &rental(&spec, 1, FillPolicy::Strict),
+            &Budget::default(),
+            &provider,
+            &store,
+            &lock,
+            &deviceless_probe(),
+            &format,
+            &exec(),
+            None,
+            never_cancelled(),
+            &unheard(),
+        );
+        assert!(matches!(
+            result,
+            Err(Error::Provider(message))
+                if message == "the ready wait ran out before a machine came up"
+        ));
+        // One machine was rented and torn down. The second offer was never
+        // taken, by this attempt or by another one.
+        assert_eq!(provider.destroyed().len(), 1);
+        assert!(provider.live().is_empty());
+        assert!(store.instance_records()?.is_empty());
+        let incidents = store.machine_incidents()?;
+        assert_eq!(incidents.len(), 1);
+        assert_eq!(incidents[0].kind, IncidentKind::NeverReady);
+        assert_eq!(incidents[0].machine, "machine-a");
+        Ok(())
+    }
+
     /// Runs `acquisition` over `events` with `watching` beside it on another
     /// thread, and answers what each of them returned.
     ///
