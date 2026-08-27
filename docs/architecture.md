@@ -2543,6 +2543,30 @@ invocation asked for the fleet at all. The `stub`
 provider is an in-process marketplace, reached by spawning workers on this
 machine, so the whole spine exercises with no network.
 
+**Members acquire at once; the take is serialized.** The `count` machines of one
+rented entry are asked for on `count` threads, because what each of them spends
+is a boot and an image pull — minutes, and the same minutes for every member —
+so asking for them in turn multiplies a wait that overlapping removes. What is
+not concurrent is the take: the orphan reap that opens a walk, the budget read
+against the ledger, the intent record, the provision call, and the live record
+all run under one admission gate the members share, so the ledger they write is
+never raced and no two members reap orphans at once. The readiness wait sits
+outside the gate, and it is the whole of what overlaps.
+
+What the budget can refuse there is a budget already spent. A rental is charged
+from its ledger stamp to now, so one admitted a moment ago has accrued nothing
+and can never be what stops the next; a cap is kept by the supervisor's
+wind-down, not by admission. Serializing admission preserves exactly what
+admission enforced serially, and claims no more.
+
+**The fill verdict is taken at the join.** With every member in flight there is
+no first shortfall to stop asking after, so the policy is applied once, over
+every member's answer: strict fails and drops every machine that did come up;
+best-effort keeps the survivors and fails only if none did. Every member that
+fell short is named, since any number of them may have. The answers come back in
+member order however the machines came up, so which machine the journal calls
+`cheap[0]` is the entry's to decide and not the market's.
+
 **An interrupt during acquisition abandons it.** The flag SIGINT raises reaches
 every wait an acquisition spends — for a machine to report ready, and for the
 readiness probe that follows — so one Ctrl-C is answered while a boot is still
@@ -2562,8 +2586,9 @@ before a worker binds, so each member names itself, what it rented, and at
 what rate the moment its offer is taken — `renting cheap[0]: 1× GTX 1660 on
 8127-a41 at $0.056/hr` — under the run's own journal boundary, which
 orchestration opens around putting the run on its machines. The member's name
-is the entry that declared it and its index within that entry's count. A
-delivery says which member it is installing the program on. A member that
+is the entry that declared it and its index within that entry's count. The wait
+that follows names it too, and so does the delivery installing the program,
+because the members run together and their lines interleave. A member that
 could not be brought up is a warning naming it, the reason, and what the
 entry's `fill` policy makes of it, so a fleet one machine short is not silent.
 The provider's acquisition loop knows none of this wording: it reports the

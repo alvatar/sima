@@ -446,20 +446,22 @@ sima run search.toml --fleet
 ```
 run b80a8ca…
 renting cheap[0]: 1× GTX 1660 on 8127-a41 at $0.056/hr
-waiting for the machine to come up (pulls the image; up to 600s)
-installing the program cheap[0]
+waiting for the machine cheap[0] to come up (pulls the image; up to 600s)
 renting cheap[1]: 1× RTX 3060 Ti on 5512-c09 at $0.048/hr
-waiting for the machine to come up (pulls the image; up to 600s)
+waiting for the machine cheap[1] to come up (pulls the image; up to 600s)
 installing the program cheap[1]
+installing the program cheap[0]
 started: 6 tasks
-instance online 48763646 on ssh8.vast.ai: 1× GTX 1660 at $0.056/hr
 instance online 48763734 on ssh8.vast.ai: 1× RTX 3060 Ti at $0.048/hr
+instance online 48763646 on ssh8.vast.ai: 1× GTX 1660 at $0.056/hr
 committed 1/6  ef16c6b54f49
 …
 finalized: 6 tasks committed
 ```
 
-Each member is taken, waited for, and given your program in turn, so the lines arrive a member at a time rather than a phase at a time. Each says what it took and at what rate the moment its offer is taken, which is minutes before that machine is up; the wait line states what those minutes are spent upon, and the online line marks the boot completed. Should a member fail to come up, it says so and states what your `fill` policy makes of it — the run stops under `strict`, and goes on with the machines that did come up under `best-effort`. Pass `--quiet` and none of it is printed: what remains is the run, its start, its commits, and its ending.
+Every member is asked for at once, which is why the lines interleave and why each carries the member it belongs to. The two rentals are taken moments apart — the market is asked for one member at a time, so no two of them commit spend against your budget in the same instant — and from there the boots run together. Two members cost one boot rather than two, and eight members cost that same one. Which machine comes up first is the market's business, so the order of the lines after the rentals is not fixed: here `cheap[1]` was ready first and took the program first.
+
+Each member says what it took and at what rate the moment its offer is taken, which is minutes before that machine is up; the wait line states what those minutes are spent upon, and the online line marks the boot completed. Should a member fail to come up, it says so and states what your `fill` policy makes of it — the run stops under `strict`, and goes on with the machines that did come up under `best-effort`. Every member that fell short says so, since they were all asked for together. Pass `--quiet` and none of it is printed: what remains is the run, its start, its commits, and its ending.
 
 Change your mind while the machines are still coming up, and one Ctrl-C suffices. The acquisition stops where it stands, every machine already rented is released, and the run exits `130` — nothing executed, your store as it was, and a line saying how many machines went back. You need neither wait out a boot nor kill the process over one.
 
