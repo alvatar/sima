@@ -844,15 +844,17 @@ mod tests {
     #[test]
     fn only_the_first_candidate_answers_for_the_ready_wait_it_spent() -> Result<()> {
         let (_dir, store) = temp_store();
-        // The first machine vanishes early, so the second is taken with part
-        // of the ready budget already gone and never gets a whole one.
+        // The first machine vanishes at its first status call, so the second is
+        // taken having already had a wait ahead of it and is never the walk's
+        // first candidate.
         let withdrawn = stub_offer("cheap", 100_000);
         let stalling = stub_offer("dearer", 200_000);
         let stub = StubProvider::new(vec![withdrawn.clone(), stalling.clone()])
-            .gone_after(withdrawn.id.clone(), 1)
+            .gone_after(withdrawn.id.clone(), 0)
             .never_ready(stalling.id.clone());
-        // A budget wide enough that the first machine's two polls leave most
-        // of it to the second, which is the one that spends it.
+        // Nothing sleeps before the fall-through, so the budget only has to
+        // outlast the store writes of taking, tearing down and charging the
+        // first machine — the second is the one that spends what is left.
         let limits = AcquireLimits {
             usable_by: Instant::now() + Duration::from_millis(100),
             ready_poll: Duration::from_millis(1),
