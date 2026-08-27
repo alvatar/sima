@@ -208,14 +208,14 @@ pub fn acquire<'a, P: Provider + ?Sized>(
             Took::Gone => continue,
         };
         let waited = wait_ready(provider, &instance, limits, cancel)?;
-        // A wait that ends with no endpoint leaves a pending machine, and it
-        // is torn down on one path whatever ended the wait. The record already
-        // carries the rate the provider named.
-        if matches!(waited, Waited::Gone | Waited::RanOut | Waited::LetGo) {
+        // Every wait but a ready one leaves a pending machine, torn down on one
+        // path whatever ended it. The record already carries the rate the
+        // provider named.
+        if !matches!(waited, Waited::Ready(_)) {
             teardown(provider, store, &tag, &instance.id, None)?;
         }
-        // Each way a wait can end has one handling: what is charged, and
-        // whether the walk goes on.
+        // Each way a wait can end has one handling: what the machine is
+        // charged, and whether the walk goes on.
         match waited {
             Waited::Ready(endpoint) => {
                 return Ok(InstanceGuard::new(
@@ -232,17 +232,9 @@ pub fn acquire<'a, P: Provider + ?Sized>(
             }
             // The machine actively vanished, which is its own doing whatever
             // the clock reads: it is charged, and the walk goes on to the next
-            // offer with what is left of the budget. A machine with no identity
-            // records nothing.
+            // offer with what is left of the budget.
             Waited::Gone => {
-                record_incident(
-                    store,
-                    provider.id(),
-                    &offer.machine,
-                    &tag,
-                    IncidentKind::NeverReady,
-                    now_ms(),
-                )?;
+                charge_never_ready(provider, store, &offer.machine, &tag)?;
                 first_wait = false;
             }
             // The budget for a usable machine is spent, so the walk ends here.
@@ -251,14 +243,7 @@ pub fn acquire<'a, P: Provider + ?Sized>(
             // it answers for nothing.
             Waited::RanOut => {
                 if first_wait {
-                    record_incident(
-                        store,
-                        provider.id(),
-                        &offer.machine,
-                        &tag,
-                        IncidentKind::NeverReady,
-                        now_ms(),
-                    )?;
+                    charge_never_ready(provider, store, &offer.machine, &tag)?;
                 }
                 return Err(ran_out());
             }
@@ -282,6 +267,25 @@ fn cancelled() -> Error {
 /// cancellation.
 fn ran_out() -> Error {
     Error::Provider("the ready wait ran out before a machine came up".to_string())
+}
+
+/// Charges `machine` for an attempt that paid for it and never reached a
+/// usable machine: one incident, under the `tag` of the attempt that observed
+/// it. A machine the provider named no identity for is charged nothing.
+fn charge_never_ready<P: Provider + ?Sized>(
+    provider: &P,
+    store: &Store,
+    machine: &str,
+    tag: &str,
+) -> Result<()> {
+    record_incident(
+        store,
+        provider.id(),
+        machine,
+        tag,
+        IncidentKind::NeverReady,
+        now_ms(),
+    )
 }
 
 /// What taking one offer answered.
