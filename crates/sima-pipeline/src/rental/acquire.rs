@@ -121,11 +121,13 @@ pub(crate) struct RentalGroup<'a> {
 /// Acquires a rental's machines, each behind a teardown guard, and builds a
 /// transport and worker slots for each.
 ///
-/// Every acquisition is budget-admitted and intent-recorded by
-/// [`acquire`](sima_provider::acquire), and a machine that fails to acquire or
-/// probe is torn down individually. On a shortfall the fill policy decides:
-/// strict tears down everything acquired so far and fails the run; best-effort
-/// proceeds with what came up, so long as one machine did.
+/// The members are acquired at once, one thread each, sharing the admission
+/// gate that keeps their offer takes off one another. Every acquisition is
+/// budget-admitted and intent-recorded by [`acquire`](sima_provider::acquire),
+/// and a machine that fails to acquire or probe is torn down individually. The
+/// fill policy decides once, over every member's answer: strict tears down
+/// every machine that came up and fails the run; best-effort proceeds with
+/// them, so long as one machine did.
 ///
 /// `interrupt` is the run's own wind-down flag, read inside every wait an
 /// acquisition spends: the machines are minutes of paid-for waiting before the
