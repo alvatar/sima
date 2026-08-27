@@ -119,18 +119,33 @@ fn a_fleet_names_each_member_it_rents_before_that_machine_comes_up() -> Result<(
         BinaryChange::Refuse,
     )?;
 
+    // The members are asked for at once, so which reaches the market first is
+    // not fixed. What is fixed is that each names its class and index, and
+    // that the wait it then sits in says the same name — the two lines
+    // interleave with the other member's, and an operator has to be able to
+    // tell whose is whose.
     let events = journal_events(&config);
-    let members: Vec<&str> = events
-        .iter()
-        .filter_map(|event| match event {
-            Event::Renting { member, .. } => Some(member.as_str()),
-            _ => None,
-        })
-        .collect();
+    let named = |whose: fn(&Event) -> Option<&str>| {
+        let mut members: Vec<&str> = events.iter().filter_map(whose).collect();
+        members.sort_unstable();
+        members
+    };
+    let members = named(|event| match event {
+        Event::Renting { member, .. } => Some(member.as_str()),
+        _ => None,
+    });
     assert_eq!(
         members,
         ["rented[0]", "rented[1]"],
         "each member names its class and index: {events:?}"
+    );
+    assert_eq!(
+        named(|event| match event {
+            Event::AwaitingMachine { member, .. } => Some(member.as_str()),
+            _ => None,
+        }),
+        members,
+        "and says the same name while it waits: {events:?}"
     );
     // A rate travels with it: what is being paid for is the whole point of
     // saying so at all.

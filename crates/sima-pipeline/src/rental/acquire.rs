@@ -155,64 +155,101 @@ pub(crate) fn acquire_hosts<'a>(
     // admitted, recorded, and provisioned at a time, whatever else this rental
     // has in flight.
     let admission = Admission::new();
+    let members: Vec<String> = (0..rental.count)
+        .map(|index| member(rental.name, index))
+        .collect();
+    // One thread per member. What a member spends is a boot and an image pull
+    // — minutes, and the same minutes for every one of them — so asking for
+    // them at once costs one member's wait rather than the sum. Only the take
+    // is serialized, by the gate they share. A machine that fails to acquire,
+    // probe, or receive the program is torn down inside `acquire_one` before
+    // its error comes back here.
+    let attempts: Vec<Result<RentedHost<'a>>> = thread::scope(|scope| {
+        let running: Vec<_> = members
+            .iter()
+            .map(|member| {
+                let program = &program;
+                let admission = &admission;
+                scope.spawn(move || {
+                    acquire_one(
+                        provider,
+                        store,
+                        lock,
+                        rental.spec,
+                        budget,
+                        mode,
+                        format,
+                        exec,
+                        program,
+                        admission,
+                        interrupt,
+                        events,
+                        member,
+                    )
+                })
+            })
+            .collect();
+        // Joined in the order they were spawned, so what comes back is in
+        // member order however the machines came up, and each answer stays
+        // beside the member that asked for it.
+        running
+            .into_iter()
+            .map(|handle| handle.join().expect("a member's acquisition joins"))
+            .collect()
+    });
     let mut hosts: Vec<RentedHost<'a>> = Vec::with_capacity(rental.count);
-    for index in 0..rental.count {
-        let member = member(rental.name, index);
-        // A machine that fails to acquire, probe, or receive the program is
-        // torn down inside `acquire_one` before its error returns here.
-        match acquire_one(
-            provider,
-            store,
-            lock,
-            rental.spec,
-            budget,
-            mode,
-            format,
-            exec,
-            &program,
-            &admission,
-            interrupt,
-            events,
-            &member,
-        ) {
+    let mut short: Vec<(&str, Error)> = Vec::new();
+    for (member, attempt) in members.iter().zip(attempts) {
+        match attempt {
             Ok(host) => hosts.push(host),
-            Err(error) => {
-                // An operator who let go stops the acquisition where it is,
-                // whatever the fill policy would make of a member that could
-                // not be brought up: nothing fell short, the run is ending.
-                // Dropping `hosts` on the way out tears down every machine
-                // this rental had, which is the whole of what is said here —
-                // a fleet released before it ran leaves nothing else to read
-                // it from.
-                if interrupt.load(Ordering::Relaxed) {
-                    events.emit(Event::AcquisitionAbandoned {
-                        released: hosts.len(),
-                    });
-                    return Err(error);
-                }
-                // What the shortfall costs is the entry's own declaration, and
-                // the operator is told which member fell short and what
-                // follows from it — one machine short of a fleet is otherwise
-                // invisible until the run's rate looks wrong.
-                events.emit(shortfall(&member, rental, &error, hosts.len()));
-                match rental.fill {
-                    // Strict: the declared count or nothing. Dropping `hosts`
-                    // here tears down every machine already acquired.
-                    FillPolicy::Strict => return Err(error),
-                    // Best-effort: run with what came up. Stop asking on the
-                    // first shortfall — the market is not filling the count.
-                    FillPolicy::BestEffort => break,
-                }
-            }
+            Err(error) => short.push((member.as_str(), error)),
         }
     }
-    if hosts.is_empty() {
-        return Err(Error::Provider(format!(
+    // An operator who let go stops the whole rental, whatever the fill policy
+    // would make of a member that could not be brought up: nothing fell short,
+    // the run is ending. Dropping `hosts` on the way out tears down every
+    // machine this rental had, which is the whole of what is said here — a
+    // fleet released before it ran leaves nothing else to read it from.
+    if interrupt.load(Ordering::Relaxed) {
+        events.emit(Event::AcquisitionAbandoned {
+            released: hosts.len(),
+        });
+        return Err(first_error(short));
+    }
+    // What the shortfall costs is the entry's own declaration, and the operator
+    // is told which member fell short and what follows from it — one machine
+    // short of a fleet is otherwise invisible until the run's rate looks wrong.
+    // Every member that fell short says so: they were asked for at once, so any
+    // number of them may have.
+    for (member, error) in &short {
+        events.emit(shortfall(member, rental, error, hosts.len()));
+    }
+    match rental.fill {
+        // Strict: the declared count or nothing. Dropping `hosts` here tears
+        // down every machine that did come up.
+        FillPolicy::Strict if !short.is_empty() => Err(first_error(short)),
+        // Best-effort: run with what came up, so long as one machine did. The
+        // verdict is taken here, at the join, and it is what keeps the entry
+        // from paying a market that is not filling it: with every member asked
+        // for at once there is no first shortfall left to stop asking after.
+        _ if hosts.is_empty() => Err(Error::Provider(format!(
             "the rental {:?} acquired no machine",
             rental.name
-        )));
+        ))),
+        _ => Ok(hosts),
     }
-    Ok(hosts)
+}
+
+/// What a rental several of whose members fell short fails with: the first by
+/// member index, since one has to be named and the members are alike.
+///
+/// A rental failing with no member short of anything was interrupted — every
+/// member came up and the operator let go — so that is what it says.
+fn first_error(short: Vec<(&str, Error)>) -> Error {
+    short
+        .into_iter()
+        .next()
+        .map_or_else(interrupted, |(_, error)| error)
 }
 
 /// Acquires one machine, probes it, and builds its transport and slots. On a
@@ -532,13 +569,14 @@ mod tests {
     use sima_contracts::DeviceClass;
     use sima_domains::devices::DeviceType;
     use sima_provider::stub::StubProvider;
-    use sima_provider::{InstanceStatus, OfferId, Provision, never_cancelled};
+    use sima_provider::{Cost, InstanceStatus, OfferId, Provision, never_cancelled};
+    use sima_store::SpendEntry;
 
     use super::*;
     use crate::config::FillPolicy;
     use crate::rental::fixtures::{
-        acquisition_env, deviceless_probe, exec, heard, offer, one_group, rental, spec, unheard,
-        waiting_spec,
+        BOOT_POLL, BOOT_POLLS, acquisition_env, booting_spec, deviceless_probe, exec, heard, offer,
+        one_group, rental, spec, unheard, waiting_spec,
     };
 
     /// One enumerated device of the given category.
@@ -734,7 +772,12 @@ mod tests {
         let [warning] = warnings.as_slice() else {
             panic!("one shortfall, one warning: {warnings:?}");
         };
-        assert!(warning.contains("rented[1]"), "names the member: {warning}");
+        // The members race for the one offer, so which of them lost it is not
+        // fixed; that one of them is named, and named as this entry's, is.
+        assert!(
+            warning.starts_with("rented[0] ") || warning.starts_with("rented[1] "),
+            "names the member: {warning}"
+        );
         assert!(
             warning.contains("strict fill") && warning.contains("the run stops"),
             "states what follows from it: {warning}"
@@ -768,7 +811,10 @@ mod tests {
         let [warning] = warnings.as_slice() else {
             panic!("one shortfall, one warning: {warnings:?}");
         };
-        assert!(warning.contains("rented[1]"), "names the member: {warning}");
+        assert!(
+            warning.starts_with("rented[0] ") || warning.starts_with("rented[1] "),
+            "names the member: {warning}"
+        );
         // Pinned whole, because this is the sentence an operator reads when a
         // fleet comes up short and it has to read as one.
         assert!(
@@ -873,6 +919,107 @@ mod tests {
         release_all(one_group(&provider, &spec, FillPolicy::Strict, hosts))?;
         assert_eq!(provider.destroyed().len(), 2);
         assert!(provider.live().is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn the_members_of_one_rental_come_up_at_once() -> Result<()> {
+        // A boot and an image pull are minutes, and every member of a rental
+        // spends them on its own machine. Asked for one after another they add
+        // up; asked for at once they are the same minutes. Four members, each
+        // held in a readiness wait of the same length: the whole acquisition
+        // costs about one of them, and nothing like four.
+        let (_dir, store, run) = acquisition_env();
+        let lock = store.acquire_run_lock(&run)?;
+        let provider = StubProvider::new(vec![
+            offer("a", 100_000),
+            offer("b", 200_000),
+            offer("c", 300_000),
+            offer("d", 400_000),
+        ])
+        .ready_after(BOOT_POLLS);
+        let format = FormatId::new("stub.v1")?;
+        let spec = booting_spec();
+        let started = Instant::now();
+        let hosts = acquire_hosts(
+            &rental(&spec, 4, FillPolicy::Strict),
+            &Budget::default(),
+            &provider,
+            &store,
+            &lock,
+            &deviceless_probe(),
+            &format,
+            &exec(),
+            None,
+            never_cancelled(),
+            &unheard(),
+        )?;
+        let took = started.elapsed();
+        assert_eq!(hosts.len(), 4, "every member came up");
+        // Two boots is the bound: one is what the members overlap into, four
+        // is what asking for them in turn would cost.
+        let boot = BOOT_POLL * BOOT_POLLS;
+        assert!(
+            took < boot * 2,
+            "four boots of {boot:?} overlapped into {took:?}"
+        );
+        release_all(one_group(&provider, &spec, FillPolicy::Strict, hosts))?;
+        Ok(())
+    }
+
+    #[test]
+    fn an_exhausted_budget_refuses_every_member() -> Result<()> {
+        // Admission is serialized, so what the budget refuses it refuses to
+        // every member alike. What it can refuse is a budget already spent: a
+        // rental is charged from its ledger stamp to now, so one admitted a
+        // moment ago has accrued nothing and can never be what stops the next.
+        // A cap is kept by the wind-down that follows it, not by prevention
+        // here, and that is as true of members asked for at once as of members
+        // asked for in turn.
+        let (_dir, store, run) = acquisition_env();
+        let lock = store.acquire_run_lock(&run)?;
+        // A rental of this run, closed out, that already cost more than the cap.
+        store.put_spend(&SpendEntry {
+            tag: "sima-deadbeefdeadbeef-1-aabbccdd-0".to_string(),
+            provider: "stub".to_string(),
+            owner: run.to_string(),
+            price_micro_usd_hour: 2_000_000,
+            started_ms: 1,
+            ended_ms: 3_600_001,
+            cost_micro_usd: 2_000_000,
+        })?;
+        let budget = Budget {
+            max_spend: Some(Cost(1_000_000)),
+            max_wall_clock: None,
+        };
+        let provider = StubProvider::new(vec![offer("a", 100_000), offer("b", 200_000)]);
+        let format = FormatId::new("stub.v1")?;
+        let spec = spec();
+        let result = acquire_hosts(
+            &rental(&spec, 2, FillPolicy::Strict),
+            &budget,
+            &provider,
+            &store,
+            &lock,
+            &deviceless_probe(),
+            &format,
+            &exec(),
+            None,
+            never_cancelled(),
+            &unheard(),
+        );
+        assert!(matches!(result, Err(Error::Provider(_))));
+        assert!(
+            provider.live().is_empty() && provider.destroyed().is_empty(),
+            "no member was ever provisioned"
+        );
+        assert!(
+            store
+                .instance_records()?
+                .iter()
+                .all(|record| record.owner != run.to_string()),
+            "and none of them wrote an intent record"
+        );
         Ok(())
     }
 
@@ -994,15 +1141,20 @@ mod tests {
         }
     }
 
-    /// Sets `interrupt` once `marker` exists, which is how a probe run as a
-    /// local command says it is being retried — the one wait in an acquisition
-    /// nothing is emitted from.
-    fn interrupt_on_touch(interrupt: &AtomicBool, marker: PathBuf) -> impl FnOnce() + Send {
+    /// Sets `interrupt` once `marker` exists — which is how a probe run as a
+    /// local command says a member got as far as probing — and answers
+    /// everything the acquisition said.
+    fn interrupt_on_touch(
+        interrupt: &AtomicBool,
+        marker: PathBuf,
+        heard: Receiver<Event>,
+    ) -> impl FnOnce() -> Vec<Event> + Send {
         move || {
             while !marker.exists() {
                 thread::sleep(Duration::from_millis(1));
             }
             interrupt.store(true, Ordering::Relaxed);
+            heard.into_iter().collect()
         }
     }
 
@@ -1075,29 +1227,30 @@ mod tests {
         Ok(())
     }
 
-    /// Interrupts a two-member acquisition during its second member, under
-    /// `fill`, and holds it to abandoning: one machine released and counted,
-    /// no shortfall reported, nothing left running, and the interrupt reaching
-    /// the caller.
+    /// Interrupts a two-member acquisition once one member is up and the other
+    /// is still coming up, under `fill`, and holds it to abandoning: one
+    /// machine released and counted, no shortfall reported, nothing left
+    /// running, and the interrupt reaching the caller.
+    ///
+    /// The cheaper offer is ready at once and the dearer one never comes up, so
+    /// of the two members racing for them one is through and one is in its boot
+    /// wait. The flag lands when the probe runs, which only the member that is
+    /// through reaches — no other point in an acquisition says a member got
+    /// that far.
     fn abandons_under(fill: FillPolicy) -> Result<()> {
-        let (_dir, store, run) = acquisition_env();
+        let (dir, store, run) = acquisition_env();
         let lock = store.acquire_run_lock(&run)?;
         let provider = StubProvider::new(vec![offer("a", 100_000), offer("b", 200_000)])
             .never_ready(OfferId("b".to_string()));
         let format = FormatId::new("stub.v1")?;
         let spec = waiting_spec();
+        let marker = dir.path().join("probed");
+        let probe = marking_probe(dir.path(), &marker, Answer::Enumerates)?;
         let interrupt = AtomicBool::new(false);
         let (events, heard) = heard();
         let (result, said) = while_watched(
             events,
-            // The second member's offer is taken and its machine is coming up:
-            // one member is held, and this one is in the wait the flag lands
-            // in.
-            interrupt_on(
-                &interrupt,
-                heard,
-                |event| matches!(event, Event::Renting { member, .. } if member == "rented[1]"),
-            ),
+            interrupt_on_touch(&interrupt, marker, heard),
             |events| {
                 acquire_hosts(
                     &rental(&spec, 2, fill),
@@ -1105,7 +1258,7 @@ mod tests {
                     &provider,
                     &store,
                     &lock,
-                    &deviceless_probe(),
+                    &probe,
                     &format,
                     &exec(),
                     None,
@@ -1140,28 +1293,49 @@ mod tests {
         Ok(())
     }
 
-    /// A probe that refuses every attempt and leaves `marker` behind on each
-    /// one, written where the acquisition's own temp directory is.
+    /// What a machine's readiness probe answers.
+    enum Answer {
+        /// It enumerates, printing nothing, so the machine derives one
+        /// deviceless slot.
+        Enumerates,
+        /// It refuses, as a machine whose route is not carrying an ssh yet
+        /// does.
+        Refuses,
+    }
+
+    /// A probe that answers `answer` and leaves `marker` behind on every
+    /// attempt, written into the acquisition's own temp directory.
     ///
-    /// A machine still being retried and a machine that has failed look the
-    /// same from outside the probe, so the probe is what the tests take the
-    /// difference from.
-    fn refusing_probe(dir: &std::path::Path, marker: &std::path::Path) -> Result<SpawnMode> {
+    /// The marker is how a test sees a member get as far as probing: a machine
+    /// still being retried and one that has failed look the same from outside,
+    /// and nothing is emitted between a machine coming up and its slots being
+    /// derived.
+    fn marking_probe(
+        dir: &std::path::Path,
+        marker: &std::path::Path,
+        answer: Answer,
+    ) -> Result<SpawnMode> {
         use std::os::unix::fs::PermissionsExt;
 
+        let code = match answer {
+            Answer::Enumerates => 0,
+            Answer::Refuses => 1,
+        };
         let script = dir.join("probe");
-        std::fs::write(&script, format!("#!/bin/sh\ntouch {marker:?}\nexit 1\n")).map_err(
-            |source| Error::Io {
+        let write = |result: std::io::Result<()>| {
+            result.map_err(|source| Error::Io {
                 path: script.clone(),
                 source,
-            },
-        )?;
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).map_err(
-            |source| Error::Io {
-                path: script.clone(),
-                source,
-            },
-        )?;
+            })
+        };
+        write(std::fs::write(
+            &script,
+            format!("#!/bin/sh\ntouch {marker:?}\nexit {code}\n"),
+        ))?;
+        write(std::fs::set_permissions(
+            &script,
+            std::fs::Permissions::from_mode(0o755),
+        ))?;
         Ok(SpawnMode::Local(script))
     }
 
@@ -1178,12 +1352,13 @@ mod tests {
         let format = FormatId::new("stub.v1")?;
         let spec = waiting_spec();
         let marker = dir.path().join("probed");
-        let probe = refusing_probe(dir.path(), &marker)?;
+        let probe = marking_probe(dir.path(), &marker, Answer::Refuses)?;
         let interrupt = AtomicBool::new(false);
         let started = Instant::now();
-        let (result, ()) = while_watched(
-            unheard(),
-            interrupt_on_touch(&interrupt, marker),
+        let (events, heard) = heard();
+        let (result, _) = while_watched(
+            events,
+            interrupt_on_touch(&interrupt, marker, heard),
             |events| {
                 acquire_hosts(
                     &rental(&spec, 1, FillPolicy::Strict),
