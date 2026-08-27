@@ -1,8 +1,11 @@
 //! [`acquire`]: renting one machine, from the marketplace to a guard.
 //!
 //! The loop walks the ranked offers and treats a lost offer, and a machine
-//! that never comes up, as reasons to try the next one. Only an API failure
-//! aborts it: that failure would repeat against every remaining offer.
+//! that goes gone while coming up, as reasons to try the next one. Two things
+//! abort it: an API failure, which would repeat against every remaining offer,
+//! and a spent ready budget, since the walk's candidates share the one deadline
+//! and a machine taken past it is paid for only to be found late at its first
+//! status call.
 //!
 //! Taking an offer is where the ledger is written, and acquisitions run at once
 //! over one store; the gate the caller supplies keeps those writes off each
@@ -97,11 +100,12 @@ static NONCE: LazyLock<String> = LazyLock::new(|| {
 /// Rents one machine satisfying `constraints`, best by `objective`: list
 /// the marketplace, rank it, then walk the ranked offers — write the intent
 /// record, provision, upgrade the record, wait for readiness — falling
-/// through to the next offer on a lost offer or a machine that never comes
-/// up.
+/// through to the next offer on a lost offer or a machine that goes gone
+/// while coming up.
 ///
-/// The returned guard owns the instance. An empty ranked list, and a list
-/// walked to its end, are both [`Error::Provider`].
+/// The returned guard owns the instance. An empty ranked list, a list walked
+/// to its end, and a ready budget spent before a machine came up are all
+/// [`Error::Provider`].
 ///
 /// `lock` is the acquiring run's orchestrator lock, and taking it by
 /// reference is how the caller's obligation is met: reconciliation reads a
@@ -115,14 +119,18 @@ static NONCE: LazyLock<String> = LazyLock::new(|| {
 /// attempt, so no money is committed past it. A caller that must tell
 /// exhaustion from every other failure reads [`assess`] itself.
 ///
+/// `limits` carries the one deadline every offer in the walk shares, so a walk
+/// costs the budget for a usable machine once however many candidates it tries.
+/// Spending it ends the walk rather than moving to the next offer, and only the
+/// walk's first candidate — the one that had the whole budget to come up in —
+/// is charged an incident for spending it.
+///
 /// `cancel` aborts a walk in progress: it is read between ranked offers and
 /// inside the readiness poll, so a caller winding down — the fleet supervisor
 /// on interrupt or run teardown — abandons the acquisition promptly rather than
-/// sitting out the deadline. Every offer in the walk shares the one deadline
-/// `limits` carries, so a walk costs the budget for a usable machine once
-/// however many candidates it tries. A cancellation tears down any machine
-/// already provisioned and returns [`Error::Provider`] naming it. A caller with
-/// nothing to cancel passes a never-set flag.
+/// sitting out the deadline. A cancellation tears down any machine already
+/// provisioned and returns [`Error::Provider`] naming it. A caller with nothing
+/// to cancel passes a never-set flag.
 ///
 /// `taken` is called with each offer a machine has been provisioned against,
 /// before the wait for that machine to come up: it is where a caller says what
@@ -175,54 +183,88 @@ pub fn acquire<'a, P: Provider + ?Sized>(
             "no offer satisfies the constraints {constraints:?}"
         )));
     }
+    // Only the walk's first candidate has the whole ready budget to come up
+    // in; one taken after it inherits whatever is left.
+    let mut first_wait = true;
     for offer in ranked {
         // Cancellation between offers abandons the walk before another machine
         // is paid for.
         if cancel.load(Ordering::Relaxed) {
             return Err(cancelled());
         }
+        // So does a spent ready budget, whether a wait spent it or the walk
+        // reached here having waited on the gate or the listing. A machine
+        // taken now would be paid for and found late at its first status call.
+        if Instant::now() >= limits.usable_by {
+            return Err(ran_out());
+        }
         let (tag, instance) = match take(
             provider, store, owner, role, budget, &offer, admission, taken,
         )? {
             Took::Machine { tag, instance } => (tag, instance),
             // The offer went to another renter: the next-ranked one is the
-            // acquisition's answer.
+            // acquisition's answer. Nothing was waited for, so the budget is
+            // untouched and the next candidate is still the first.
             Took::Gone => continue,
         };
-        if let Some(endpoint) = wait_ready(provider, &instance, limits, cancel)? {
-            return Ok(InstanceGuard::new(
-                provider,
-                store,
-                tag,
-                instance.id,
-                endpoint,
-                offer.machine.clone(),
-                offer.gpu_model.clone(),
-                offer.gpu_count,
-                instance.price,
-            ));
+        let waited = wait_ready(provider, &instance, limits, cancel)?;
+        // A wait that ends with no endpoint leaves a pending machine, and it
+        // is torn down on one path whatever ended the wait. The record already
+        // carries the rate the provider named.
+        if matches!(waited, Waited::Gone | Waited::RanOut | Waited::LetGo) {
+            teardown(provider, store, &tag, &instance.id, None)?;
         }
-        // A machine that never came up is a bad offer, not a fatal error;
-        // a cancelled wait leaves the same pending machine. Either way it is
-        // torn down. The record already carries the rate the provider named.
-        teardown(provider, store, &tag, &instance.id, None)?;
-        // A cancellation during the wait abandons the walk once the pending
-        // machine is down, rather than moving on to the next offer.
-        if cancel.load(Ordering::Relaxed) {
-            return Err(cancelled());
+        // Each way a wait can end has one handling: what is charged, and
+        // whether the walk goes on.
+        match waited {
+            Waited::Ready(endpoint) => {
+                return Ok(InstanceGuard::new(
+                    provider,
+                    store,
+                    tag,
+                    instance.id,
+                    endpoint,
+                    offer.machine.clone(),
+                    offer.gpu_model.clone(),
+                    offer.gpu_count,
+                    instance.price,
+                ));
+            }
+            // The machine actively vanished, which is its own doing whatever
+            // the clock reads: it is charged, and the walk goes on to the next
+            // offer with what is left of the budget. A machine with no identity
+            // records nothing.
+            Waited::Gone => {
+                record_incident(
+                    store,
+                    provider.id(),
+                    &offer.machine,
+                    &tag,
+                    IncidentKind::NeverReady,
+                    now_ms(),
+                )?;
+                first_wait = false;
+            }
+            // The budget for a usable machine is spent, so the walk ends here.
+            // A candidate that had all of it and never came up answers for it;
+            // one that inherited the leftover was never given its own time, so
+            // it answers for nothing.
+            Waited::RanOut => {
+                if first_wait {
+                    record_incident(
+                        store,
+                        provider.id(),
+                        &offer.machine,
+                        &tag,
+                        IncidentKind::NeverReady,
+                        now_ms(),
+                    )?;
+                }
+                return Err(ran_out());
+            }
+            // Our wind-down, not the machine's fault: nothing is recorded.
+            Waited::LetGo => return Err(cancelled()),
         }
-        // The wait ran out on a machine that never reported an endpoint (or one
-        // that went gone while provisioning): an incident against the machine,
-        // recorded now that a cancellation has been ruled out. A machine with
-        // no identity records nothing.
-        record_incident(
-            store,
-            provider.id(),
-            &offer.machine,
-            &tag,
-            IncidentKind::NeverReady,
-            now_ms(),
-        )?;
     }
     Err(Error::Provider(
         "every qualifying offer was lost or failed to become ready".to_string(),
@@ -233,6 +275,13 @@ pub fn acquire<'a, P: Provider + ?Sized>(
 /// caller tells it from a market that simply had nothing.
 fn cancelled() -> Error {
     Error::Provider("the acquisition was cancelled".to_string())
+}
+
+/// The error a walk whose ready budget is spent returns, naming the wait so
+/// the caller tells it from a market that had nothing to offer and from a
+/// cancellation.
+fn ran_out() -> Error {
+    Error::Provider("the ready wait ran out before a machine came up".to_string())
 }
 
 /// What taking one offer answered.
@@ -340,31 +389,45 @@ fn admit(store: &Store, owner: &RunId, budget: &Budget) -> Result<()> {
     }
 }
 
-/// Polls `instance` until it reports an endpoint, `None` when it is gone, the
-/// deadline passes, or `cancel` is set. The deadline is an [`Instant`], so a
-/// wall-clock adjustment cannot extend or cut the wait, and every offer in one
-/// walk shares it: the budget is for getting a usable machine, not for each
-/// candidate in turn. A cancellation returns `None` — the same "no endpoint"
-/// the caller tears the pending machine down for — so the caller closes it out
-/// on one path.
+/// How one readiness wait ended. Each way carries its own handling — what the
+/// machine is charged, and whether the walk goes on — so the caller reads the
+/// reason here rather than re-deriving it once the machine is down.
+enum Waited {
+    /// The machine reported where it can be reached.
+    Ready(SshEndpoint),
+    /// The account no longer holds the machine.
+    Gone,
+    /// The walk's ready budget was spent with the machine still provisioning.
+    RanOut,
+    /// The caller called the acquisition off mid-wait.
+    LetGo,
+}
+
+/// Polls `instance` until it reports an endpoint, it is gone, the deadline
+/// passes, or `cancel` is set.
+///
+/// The deadline is an [`Instant`], so a wall-clock adjustment cannot extend or
+/// cut the wait, and every offer in one walk shares it: the budget is for
+/// getting a usable machine, not for each candidate in turn. Spending it is
+/// [`Waited::RanOut`], which is what ends the walk.
 fn wait_ready<P: Provider + ?Sized>(
     provider: &P,
     instance: &Instance,
     limits: &AcquireLimits,
     cancel: &AtomicBool,
-) -> Result<Option<SshEndpoint>> {
+) -> Result<Waited> {
     loop {
         // Checked before each status call, so a cancellation set while the
         // machine is still provisioning abandons the wait promptly.
         if cancel.load(Ordering::Relaxed) {
-            return Ok(None);
+            return Ok(Waited::LetGo);
         }
         match provider.instance(&instance.id)? {
-            InstanceStatus::Ready(endpoint) => return Ok(Some(endpoint)),
-            InstanceStatus::Gone => return Ok(None),
+            InstanceStatus::Ready(endpoint) => return Ok(Waited::Ready(endpoint)),
+            InstanceStatus::Gone => return Ok(Waited::Gone),
             InstanceStatus::Provisioning => {
                 if Instant::now() >= limits.usable_by {
-                    return Ok(None);
+                    return Ok(Waited::RanOut);
                 }
                 std::thread::sleep(limits.ready_poll);
             }
@@ -681,69 +744,79 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn a_machine_that_never_comes_up_is_destroyed_and_the_next_offer_taken() -> Result<()> {
-        let (_dir, store) = temp_store();
-        let stalling = stub_offer("cheap", 100_000);
-        let stub = StubProvider::new(vec![stalling.clone(), stub_offer("dearer", 200_000)])
-            .never_ready(stalling.id.clone());
-        let limits = AcquireLimits {
-            usable_by: Instant::now(),
-            ready_poll: Duration::ZERO,
-        };
+    /// A ready budget a wait of a few polls spends, reached by elapsed time
+    /// rather than by a deadline the clock is already past.
+    fn short_window() -> AcquireLimits {
+        AcquireLimits {
+            usable_by: Instant::now() + Duration::from_millis(10),
+            ready_poll: Duration::from_millis(1),
+        }
+    }
+
+    /// Rents over `provider` under `limits`, for the tests whose subject is
+    /// what the walk does with the ready budget.
+    fn acquire_under<'a, P: Provider>(
+        provider: &'a P,
+        store: &'a Store,
+        limits: &AcquireLimits,
+    ) -> Result<InstanceGuard<'a, P>> {
         let lock = store.acquire_run_lock(&sample_run(7))?;
-        let guard = acquire(
-            &stub,
-            &store,
+        acquire(
+            provider,
+            store,
             &lock,
             Rental::Worker,
             &Constraints::default(),
             Objective::CheapestPerHour,
-            &limits,
+            limits,
             &Budget::default(),
             &Admission::new(),
             never_cancelled(),
             UNREPORTED,
-        )?;
-        let records = store.instance_records()?;
-        assert_eq!(records.len(), 1);
-        assert_eq!(records[0].price_micro_usd_hour, 200_000);
-        assert_eq!(records[0].tag, guard.tag());
-        // The abandoned machine was taken down, not left running.
-        assert_eq!(stub.destroyed().len(), 1);
-        assert_ne!(stub.destroyed()[0], *guard.id());
+        )
+    }
+
+    /// Asserts that `outcome` is the walk answering that its ready budget is
+    /// spent.
+    fn assert_ran_out<T>(outcome: Result<T>) {
+        let message = match outcome {
+            Err(Error::Provider(message)) => message,
+            Err(other) => panic!("the walk answers with a provider error: {other:?}"),
+            Ok(_) => panic!("the walk answers with no machine"),
+        };
+        assert_eq!(message, "the ready wait ran out before a machine came up");
+    }
+
+    #[test]
+    fn a_machine_that_never_comes_up_is_destroyed_and_no_further_offer_taken() -> Result<()> {
+        let (dir, store) = temp_store();
+        let stalling = stub_offer("cheap", 100_000);
+        let stub = StubProvider::new(vec![stalling.clone(), stub_offer("dearer", 200_000)])
+            .never_ready(stalling.id.clone());
+        let watching = WatchingProvider::new(stub, dir.path().to_path_buf());
+        assert_ran_out(acquire_under(&watching, &store, &short_window()));
+        // The ready budget is the run's, and this machine spent it. The next
+        // offer is never taken: its machine would be paid for only to be found
+        // past the deadline at its first status call.
+        assert_eq!(watching.provisioned_tags().len(), 1);
+        // The machine that spent it was taken down, not left running.
+        assert_eq!(watching.inner.destroyed().len(), 1);
+        assert!(watching.inner.live().is_empty());
+        assert!(store.instance_records()?.is_empty());
         Ok(())
     }
 
     #[test]
-    fn a_machine_that_never_comes_up_is_closed_out_before_the_next_offer() -> Result<()> {
+    fn a_machine_that_never_comes_up_is_closed_out_when_the_walk_ends() -> Result<()> {
         let (_dir, store) = temp_store();
         let stalling = stub_offer("cheap", 100_000);
         let stub = StubProvider::new(vec![stalling.clone(), stub_offer("dearer", 200_000)])
             .never_ready(stalling.id.clone());
-        let limits = AcquireLimits {
-            usable_by: Instant::now(),
-            ready_poll: Duration::ZERO,
-        };
-        let lock = store.acquire_run_lock(&sample_run(7))?;
-        let guard = acquire(
-            &stub,
-            &store,
-            &lock,
-            Rental::Worker,
-            &Constraints::default(),
-            Objective::CheapestPerHour,
-            &limits,
-            &Budget::default(),
-            &Admission::new(),
-            never_cancelled(),
-            UNREPORTED,
-        )?;
-        // The abandoned machine ran and was billed for, so the walk that
-        // moved past it left its cost behind.
+        assert_ran_out(acquire_under(&stub, &store, &short_window()));
+        // The abandoned machine ran and was billed for, so the walk that ended
+        // on it left its cost behind.
         let entries = spend_entries(&store, &sample_run(7))?;
         assert_eq!(entries.len(), 1);
-        assert_ne!(entries[0].tag, guard.tag());
         assert_eq!(entries[0].price_micro_usd_hour, 100_000);
         Ok(())
     }
@@ -754,31 +827,69 @@ mod tests {
         let stalling = stub_offer("cheap", 100_000);
         let stub = StubProvider::new(vec![stalling.clone(), stub_offer("dearer", 200_000)])
             .never_ready(stalling.id.clone());
-        let limits = AcquireLimits {
-            usable_by: Instant::now(),
-            ready_poll: Duration::ZERO,
-        };
-        let lock = store.acquire_run_lock(&sample_run(7))?;
-        let guard = acquire(
-            &stub,
-            &store,
-            &lock,
-            Rental::Worker,
-            &Constraints::default(),
-            Objective::CheapestPerHour,
-            &limits,
-            &Budget::default(),
-            &Admission::new(),
-            never_cancelled(),
-            UNREPORTED,
-        )?;
-        // The abandoned machine left one incident naming its own machine and
-        // the attempt that observed it; the taken machine left none.
+        assert_ran_out(acquire_under(&stub, &store, &short_window()));
+        // The machine that had the whole ready budget to come up in, and did
+        // not, answers for it: one incident, naming it and the attempt that
+        // observed it.
         let incidents = store.machine_incidents()?;
         assert_eq!(incidents.len(), 1);
         assert_eq!(incidents[0].kind, sima_store::IncidentKind::NeverReady);
         assert_eq!(incidents[0].machine, "m-cheap");
-        assert_ne!(incidents[0].tag, guard.tag());
+        Ok(())
+    }
+
+    #[test]
+    fn only_the_first_candidate_answers_for_the_ready_wait_it_spent() -> Result<()> {
+        let (_dir, store) = temp_store();
+        // The first machine vanishes early, so the second is taken with part
+        // of the ready budget already gone and never gets a whole one.
+        let withdrawn = stub_offer("cheap", 100_000);
+        let stalling = stub_offer("dearer", 200_000);
+        let stub = StubProvider::new(vec![withdrawn.clone(), stalling.clone()])
+            .gone_after(withdrawn.id.clone(), 1)
+            .never_ready(stalling.id.clone());
+        // A budget wide enough that the first machine's two polls leave most
+        // of it to the second, which is the one that spends it.
+        let limits = AcquireLimits {
+            usable_by: Instant::now() + Duration::from_millis(100),
+            ready_poll: Duration::from_millis(1),
+        };
+        assert_ran_out(acquire_under(&stub, &store, &limits));
+        let incidents = store.machine_incidents()?;
+        assert_eq!(
+            incidents.len(),
+            1,
+            "the machine that vanished answers for itself; the one that \
+             inherited the leftover of the wait answers for nothing"
+        );
+        assert_eq!(incidents[0].machine, "m-cheap");
+        // Both machines were paid for and both were taken down.
+        assert_eq!(stub.destroyed().len(), 2);
+        assert!(stub.live().is_empty());
+        assert!(store.instance_records()?.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn a_ready_budget_already_spent_at_the_walks_entry_takes_no_offer() -> Result<()> {
+        let (dir, store) = temp_store();
+        let stub = StubProvider::new(vec![
+            stub_offer("cheap", 100_000),
+            stub_offer("dearer", 200_000),
+        ]);
+        let watching = WatchingProvider::new(stub, dir.path().to_path_buf());
+        // What a walk that waited out the gate or the listing arrives at.
+        let limits = AcquireLimits {
+            usable_by: Instant::now(),
+            ready_poll: Duration::ZERO,
+        };
+        assert_ran_out(acquire_under(&watching, &store, &limits));
+        // No machine can come up inside a budget with nothing left in it, so
+        // none is paid for.
+        assert!(watching.provisioned_tags().is_empty());
+        assert!(watching.inner.live().is_empty());
+        assert!(store.instance_records()?.is_empty());
+        assert!(store.machine_incidents()?.is_empty());
         Ok(())
     }
 
@@ -813,24 +924,7 @@ mod tests {
         };
         let stub = StubProvider::new(vec![stalling.clone(), stub_offer("dearer", 200_000)])
             .never_ready(stalling.id.clone());
-        let limits = AcquireLimits {
-            usable_by: Instant::now(),
-            ready_poll: Duration::ZERO,
-        };
-        let lock = store.acquire_run_lock(&sample_run(7))?;
-        let _guard = acquire(
-            &stub,
-            &store,
-            &lock,
-            Rental::Worker,
-            &Constraints::default(),
-            Objective::CheapestPerHour,
-            &limits,
-            &Budget::default(),
-            &Admission::new(),
-            never_cancelled(),
-            UNREPORTED,
-        )?;
+        assert_ran_out(acquire_under(&stub, &store, &short_window()));
         assert!(store.machine_incidents()?.is_empty());
         Ok(())
     }
@@ -908,10 +1002,6 @@ mod tests {
         // refused the third time — recorded, derived, and excluded through
         // `acquire` alone.
         let (_dir, store) = temp_store();
-        let limits = AcquireLimits {
-            usable_by: Instant::now(),
-            ready_poll: Duration::ZERO,
-        };
         // One flaky offer sharing the machine `m-flaky` and a distinct clean
         // fallback per round, as a marketplace relisting one machine looks.
         let round = |flaky_id: &str, clean_id: &str| -> StubProvider {
@@ -922,21 +1012,9 @@ mod tests {
             StubProvider::new(vec![flaky.clone(), stub_offer(clean_id, 200_000)])
                 .never_ready(flaky.id.clone())
         };
+        // Each round is its own acquisition and gets its own ready budget.
         let rent = |stub: &StubProvider| -> Result<InstanceRecord> {
-            let lock = store.acquire_run_lock(&sample_run(7))?;
-            let guard = acquire(
-                stub,
-                &store,
-                &lock,
-                Rental::Worker,
-                &Constraints::default(),
-                Objective::CheapestPerHour,
-                &limits,
-                &Budget::default(),
-                &Admission::new(),
-                never_cancelled(),
-                UNREPORTED,
-            )?;
+            let guard = acquire_under(stub, &store, &short_window())?;
             Ok(store
                 .instance_record(guard.tag())?
                 .expect("the rented record's tag"))
@@ -944,12 +1022,14 @@ mod tests {
         let stub1 = round("f1", "c1");
         let stub2 = round("f2", "c2");
         let stub3 = round("f3", "c3");
-        // The first two rounds each rent the clean fallback and leave a strike.
-        assert_eq!(rent(&stub1)?.machine, "m-c1");
-        assert_eq!(rent(&stub2)?.machine, "m-c2");
+        // The first two rounds each end on the flaky machine spending the
+        // budget, and each leaves a strike against it.
+        assert_ran_out(rent(&stub1));
+        assert_ran_out(rent(&stub2));
         assert_eq!(store.machine_incidents()?.len(), 2);
         // The third round finds `m-flaky` blacklisted: its offer is never
-        // provisioned, so the clean fallback is taken and no strike is added.
+        // provisioned, so the clean fallback is the walk's first candidate,
+        // comes up at once, and no strike is added.
         assert_eq!(rent(&stub3)?.machine, "m-c3");
         assert_eq!(store.machine_incidents()?.len(), 2);
         Ok(())
@@ -1074,9 +1154,11 @@ mod tests {
     #[test]
     fn a_budget_the_first_attempt_consumes_refuses_the_second() -> Result<()> {
         let (dir, store) = temp_store();
-        let stalling = stub_offer("cheap", 100_000);
-        let stub = StubProvider::new(vec![stalling.clone(), stub_offer("dearer", 200_000)])
-            .never_ready(stalling.id.clone())
+        // The first machine vanishes while coming up, which is the fall-through
+        // that reaches a second take at all.
+        let withdrawn = stub_offer("cheap", 100_000);
+        let stub = StubProvider::new(vec![withdrawn.clone(), stub_offer("dearer", 200_000)])
+            .gone_after(withdrawn.id.clone(), 1)
             // A rate that consumes the cap within a millisecond of running.
             .charging_instances_at(Price(u64::MAX / 2));
         let watching = WatchingProvider::new(stub, dir.path().to_path_buf());
@@ -1092,10 +1174,11 @@ mod tests {
             Rental::Worker,
             &Constraints::default(),
             Objective::CheapestPerHour,
-            // At least one poll sleeps, so the abandoned machine's charged
-            // window is never empty.
+            // One poll sleeps before the machine is gone, so its charged
+            // window is never empty, and the budget the second take is
+            // refused by is money rather than the clock.
             &AcquireLimits {
-                usable_by: Instant::now() + Duration::from_millis(1),
+                usable_by: Instant::now() + Duration::from_millis(500),
                 ready_poll: Duration::from_millis(1),
             },
             &budget,
@@ -1128,43 +1211,6 @@ mod tests {
         let records = store.instance_records()?;
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].instance(), Some(guard.id().0.as_str()));
-        Ok(())
-    }
-
-    #[test]
-    fn a_machine_still_provisioning_when_the_wait_elapses_is_abandoned() -> Result<()> {
-        let (_dir, store) = temp_store();
-        let stalling = stub_offer("cheap", 100_000);
-        let stub = StubProvider::new(vec![stalling.clone(), stub_offer("dearer", 200_000)])
-            .never_ready(stalling.id.clone());
-        // A window the wait reaches by elapsed time, over several polls, and
-        // short enough to keep the suite quick.
-        let limits = AcquireLimits {
-            usable_by: Instant::now() + Duration::from_millis(10),
-            ready_poll: Duration::from_millis(1),
-        };
-        let lock = store.acquire_run_lock(&sample_run(7))?;
-        let guard = acquire(
-            &stub,
-            &store,
-            &lock,
-            Rental::Worker,
-            &Constraints::default(),
-            Objective::CheapestPerHour,
-            &limits,
-            &Budget::default(),
-            &Admission::new(),
-            never_cancelled(),
-            UNREPORTED,
-        )?;
-        let records = store.instance_records()?;
-        assert_eq!(records.len(), 1);
-        assert_eq!(records[0].price_micro_usd_hour, 200_000);
-        assert_eq!(records[0].tag, guard.tag());
-        // The stalling machine was taken down before the next offer was
-        // rented.
-        assert_eq!(stub.destroyed().len(), 1);
-        assert_ne!(stub.destroyed()[0], *guard.id());
         Ok(())
     }
 
