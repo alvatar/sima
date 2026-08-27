@@ -135,9 +135,8 @@ static NONCE: LazyLock<String> = LazyLock::new(|| {
 /// `taken` is called with each offer a machine has been provisioned against,
 /// before the wait for that machine to come up: it is where a caller says what
 /// is now being paid for, which is the one thing an operator cannot see while
-/// the wait runs. A walk whose first machine never comes up calls it again for
-/// the next offer it takes. A caller with nothing to say passes
-/// [`UNREPORTED`].
+/// the wait runs. A walk whose first machine goes gone calls it again for the
+/// next offer it takes. A caller with nothing to say passes [`UNREPORTED`].
 ///
 /// `admission` serializes the ledger-writing half of this against every other
 /// acquisition holding the same gate, so acquisitions run concurrently over one
@@ -898,7 +897,7 @@ mod tests {
     }
 
     #[test]
-    fn a_machine_that_goes_gone_while_coming_up_is_charged_and_the_next_offer_taken() -> Result<()> {
+    fn a_machine_gone_while_coming_up_is_charged_and_the_next_offer_taken() -> Result<()> {
         let (_dir, store) = temp_store();
         let withdrawn = stub_offer("cheap", 100_000);
         let stub = StubProvider::new(vec![withdrawn.clone(), stub_offer("dearer", 200_000)])
