@@ -34,6 +34,9 @@ struct StubState {
     lost: Vec<OfferId>,
     /// Offers whose instances stay `Provisioning` forever.
     stalling: Vec<OfferId>,
+    /// Offers whose instances answer `Provisioning` for a scripted number of
+    /// status calls and are gone from then on.
+    vanishing: Vec<(OfferId, u32)>,
     /// The rate created instances are charged at, when it departs from the
     /// offer's.
     instance_price: Option<Price>,
@@ -69,6 +72,9 @@ struct StubInstance {
     listed: bool,
     /// Whether it stays `Provisioning` however long it is polled.
     stalling: bool,
+    /// The status call it is gone from, `None` for an instance the account
+    /// keeps holding.
+    gone_after: Option<u32>,
     /// Status calls it has answered so far.
     polls: u32,
     /// Whether `destroy` has taken it.
@@ -142,6 +148,15 @@ impl StubProvider {
         self
     }
 
+    /// Scripts `offer` to provision into an instance that answers
+    /// `Provisioning` for `polls` status calls and is gone from then on,
+    /// which is what a machine the marketplace withdraws while it is coming
+    /// up looks like.
+    pub fn gone_after(self, offer: OfferId, polls: u32) -> StubProvider {
+        self.edit(|state| state.vanishing.push((offer, polls)));
+        self
+    }
+
     /// Scripts [`Provider::offers`] to fail with `message`.
     pub fn failing_offers(self, message: &str) -> StubProvider {
         self.edit(|state| state.offers_failure = Some(message.to_string()));
@@ -184,6 +199,7 @@ impl StubProvider {
                     price: None,
                     listed,
                     stalling: false,
+                    gone_after: None,
                     polls: 0,
                     destroyed: false,
                 },
@@ -250,6 +266,11 @@ impl Provider for StubProvider {
         };
         let price = state.instance_price.unwrap_or(listed.price);
         let stalling = state.stalling.contains(offer);
+        let gone_after = state
+            .vanishing
+            .iter()
+            .find(|(scripted, _)| scripted == offer)
+            .map(|(_, polls)| *polls);
         let id = InstanceId(format!("stub-{}", state.next_id));
         state.next_id += 1;
         state.taken.push(offer.clone());
@@ -260,6 +281,7 @@ impl Provider for StubProvider {
                 price: Some(price),
                 listed: true,
                 stalling,
+                gone_after,
                 polls: 0,
                 destroyed: false,
             },
@@ -278,6 +300,16 @@ impl Provider for StubProvider {
         };
         if instance.destroyed {
             return Ok(InstanceStatus::Gone);
+        }
+        // A machine scripted to vanish counts the calls it answers itself:
+        // it comes up until the scripted one, and the account holds it no
+        // more from there.
+        if let Some(gone_after) = instance.gone_after {
+            if instance.polls >= gone_after {
+                return Ok(InstanceStatus::Gone);
+            }
+            instance.polls += 1;
+            return Ok(InstanceStatus::Provisioning);
         }
         if instance.stalling {
             return Ok(InstanceStatus::Provisioning);
@@ -447,6 +479,19 @@ mod tests {
         for _ in 0..5 {
             assert_eq!(stub.instance(&id)?, InstanceStatus::Provisioning);
         }
+        Ok(())
+    }
+
+    #[test]
+    fn a_vanishing_offers_instance_comes_up_until_the_scripted_call() -> Result<()> {
+        let offer = stub_offer("withdrawn", 100_000);
+        let stub = StubProvider::new(vec![offer.clone()]).gone_after(offer.id.clone(), 2);
+        let id = provisioned(stub.provision(&offer.id, "sima-tag-0")?);
+        assert_eq!(stub.instance(&id)?, InstanceStatus::Provisioning);
+        assert_eq!(stub.instance(&id)?, InstanceStatus::Provisioning);
+        // Gone from the scripted call on, however often it is asked for.
+        assert_eq!(stub.instance(&id)?, InstanceStatus::Gone);
+        assert_eq!(stub.instance(&id)?, InstanceStatus::Gone);
         Ok(())
     }
 
