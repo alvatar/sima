@@ -79,8 +79,8 @@ use sima_core::{Error, Result};
 use sima_domains::devices::DeviceInfo;
 use sima_model::RunId;
 use sima_provider::{
-    AcquireLimits, Budget, InstanceGuard, Objective, Provider, Verdict, acquire, adopt, assess,
-    now_ms,
+    AcquireLimits, Admission, Budget, InstanceGuard, Objective, Provider, Verdict, acquire, adopt,
+    assess, now_ms,
 };
 use sima_scheduler::Event;
 use sima_store::{ObjectScope, Rental as RentalRole, RunLock, Store};
@@ -361,6 +361,9 @@ fn hold<'a>(
         Objective::CheapestPerHour,
         &limits,
         budget,
+        // A migration rents the one machine its destination names, so its take
+        // contends with nothing.
+        &Admission::new(),
         interrupt,
         // A migration rents the one machine its destination names, so the
         // member it is taken for is nothing to name.

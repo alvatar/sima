@@ -220,7 +220,8 @@ impl RunStatus {
             | Event::InstanceLost { .. }
             | Event::InstanceReplaced { .. }
             | Event::BudgetSpendExhausted { .. }
-            | Event::BudgetWallClockExhausted { .. } => {}
+            | Event::BudgetWallClockExhausted { .. }
+            | Event::AcquisitionAbandoned { .. } => {}
             // A checkpoint persisted says the attempt is alive; it moves no
             // counter and changes no state.
             Event::Checkpointed { .. } => {}

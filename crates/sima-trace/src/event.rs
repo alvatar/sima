@@ -202,9 +202,12 @@ pub enum Event {
     /// The wait for a rented machine to become usable began: it is paid for
     /// and is coming up, which on a fresh one includes pulling the worker
     /// image. Reported once per machine taken, by the acquisition that took
-    /// it, however many times that machine is then polled. `timeout_ms` is
-    /// what the entry describing it states the wait may take.
-    AwaitingMachine { timeout_ms: u64 },
+    /// it, however many times that machine is then polled. `member` names the
+    /// fleet member it is waiting for — the members of one rental come up at
+    /// once, so their lines interleave and each has to say whose it is — and
+    /// is empty for a migration. `timeout_ms` is what the entry describing it
+    /// states the wait may take.
+    AwaitingMachine { member: String, timeout_ms: u64 },
     /// The run's objects are being sent to the machine that will drive it:
     /// the identity components, the frontier states, and the program when one
     /// travels. `member` names the fleet member receiving them, and is empty
@@ -219,6 +222,10 @@ pub enum Event {
     /// The far `sima run` is being started on the destination, which is what
     /// the migration waits on until its first journal line arrives.
     StartingRun,
+    /// The run was interrupted while its machines were still being acquired,
+    /// so no further member was rented and every machine the acquisition
+    /// already held was released. `released` is how many that was.
+    AcquisitionAbandoned { released: usize },
     /// A rented machine came online: reported at supervisor start for
     /// each instance, and again for each replacement. `tag` is the rental's
     /// ledger key, `instance` the provider's id, `rate_microusd_hour` its
@@ -359,6 +366,11 @@ mod tests {
             },
             Event::BudgetWallClockExhausted {
                 deadline_ms: 1_700_000_000_000,
+            },
+            Event::AcquisitionAbandoned { released: 2 },
+            Event::AwaitingMachine {
+                member: "cheap[1]".to_string(),
+                timeout_ms: 600_000,
             },
         ];
         for event in events {

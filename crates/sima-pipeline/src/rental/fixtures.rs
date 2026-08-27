@@ -49,6 +49,38 @@ pub(super) fn spec() -> Rented {
     }
 }
 
+/// A rented specification whose readiness wait is long enough that sitting it
+/// out shows plainly in a test's wall clock, and polled often enough that
+/// nothing waits on the poll itself. The tests about ending a wait early
+/// measure against it.
+pub(super) fn waiting_spec() -> Rented {
+    Rented {
+        ready_timeout: Duration::from_secs(3),
+        ready_poll: Duration::from_millis(5),
+        ..spec()
+    }
+}
+
+/// How long one poll of a machine coming up under [`booting_spec`] waits, and
+/// how many polls it answers before it is ready. Their product is one member's
+/// boot, which is what a rental acquiring its members at once should cost
+/// however many it has.
+///
+/// The count is the stub's own setting, so a test using this spec scripts its
+/// provider with [`BOOT_POLLS`] for the two to describe the same machine.
+pub(super) const BOOT_POLL: Duration = Duration::from_millis(150);
+pub(super) const BOOT_POLLS: u32 = 4;
+
+/// A rented specification whose machines take a boot to come up, under a
+/// timeout far longer than one, so what a test measures is the boot.
+pub(super) fn booting_spec() -> Rented {
+    Rented {
+        ready_timeout: Duration::from_secs(10),
+        ready_poll: BOOT_POLL,
+        ..spec()
+    }
+}
+
 /// A rental of `count` machines under `fill`, over `spec`.
 pub(super) fn rental(spec: &Rented, count: usize, fill: FillPolicy) -> Rental<'_> {
     Rental {

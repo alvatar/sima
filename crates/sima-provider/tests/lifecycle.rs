@@ -93,6 +93,7 @@ fn rent_within<'a, P: Provider>(
         budget,
         // This lifecycle exercise runs an acquisition to completion; nothing
         // cancels it.
+        &sima_provider::Admission::new(),
         &std::sync::atomic::AtomicBool::new(false),
         UNREPORTED,
     )?;

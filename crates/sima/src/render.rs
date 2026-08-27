@@ -116,8 +116,9 @@ pub fn describe(event: &Event, committed: usize, tasks: usize) -> Option<String>
             hardware(gpu_model, *gpu_count),
             dollars(*rate_microusd_hour)
         ),
-        Event::AwaitingMachine { timeout_ms } => format!(
-            "waiting for the machine to come up (pulls the image; up to {}s)",
+        Event::AwaitingMachine { member, timeout_ms } => format!(
+            "waiting for the machine{} to come up (pulls the image; up to {}s)",
+            named(member),
             timeout_ms / 1_000
         ),
         Event::SendingRun { member, objects } => {
@@ -127,6 +128,11 @@ pub fn describe(event: &Event, committed: usize, tasks: usize) -> Option<String>
             format!("installing the program{}", named(member))
         }
         Event::StartingRun => "starting the run".to_string(),
+        // Not narration: it says machines the run was paying for are gone,
+        // which an operator reads whatever they asked to be told.
+        Event::AcquisitionAbandoned { released } => format!(
+            "acquisition abandoned: {released} machine(s) released, none of them left running"
+        ),
         // A rented machine came online: reported at supervisor start and for
         // each replacement, naming where the work will run.
         Event::InstanceOnline {
@@ -968,6 +974,7 @@ mod tests {
                 rate_microusd_hour: 70_000,
             },
             Event::AwaitingMachine {
+                member: "cheap[0]".to_string(),
                 timeout_ms: 600_000,
             },
             Event::SendingRun {
@@ -1025,6 +1032,10 @@ mod tests {
                 from: "ab".repeat(32),
                 to: "cd".repeat(32),
             },
+            // An acquisition abandoned states the same kind of fact: machines
+            // the run was paying for are gone, and the run is not going to
+            // start.
+            Event::AcquisitionAbandoned { released: 2 },
             Event::Diagnostic {
                 level: sima_pipeline::Level::Warn,
                 source: "rental".to_string(),
@@ -1182,6 +1193,35 @@ mod tests {
             describe(&wall, 0, 0)
                 .expect("a wall-clock line")
                 .contains("rental deadline")
+        );
+
+        // Members of one rental come up at once, so their waits interleave and
+        // each line has to say whose machine it is waiting for. A migration
+        // rents the one machine its destination names and says no member.
+        let waiting = Event::AwaitingMachine {
+            member: "cheap[1]".to_string(),
+            timeout_ms: 600_000,
+        };
+        assert_eq!(
+            describe(&waiting, 0, 0).expect("a waiting line"),
+            "waiting for the machine cheap[1] to come up (pulls the image; up to 600s)"
+        );
+        let alone = Event::AwaitingMachine {
+            member: String::new(),
+            timeout_ms: 600_000,
+        };
+        assert_eq!(
+            describe(&alone, 0, 0).expect("a waiting line"),
+            "waiting for the machine to come up (pulls the image; up to 600s)"
+        );
+
+        // The one line an interrupt during acquisition leaves: what happened,
+        // and what became of the machines that were already paid for. Pinned
+        // whole, because it is the whole of what the operator is told.
+        let abandoned = Event::AcquisitionAbandoned { released: 2 };
+        assert_eq!(
+            describe(&abandoned, 0, 0).expect("an abandoned line"),
+            "acquisition abandoned: 2 machine(s) released, none of them left running"
         );
     }
 

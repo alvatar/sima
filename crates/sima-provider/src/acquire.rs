@@ -3,11 +3,15 @@
 //! The loop walks the ranked offers and treats a lost offer, and a machine
 //! that never comes up, as reasons to try the next one. Only an API failure
 //! aborts it: that failure would repeat against every remaining offer.
+//!
+//! Taking an offer is where the ledger is written, and acquisitions run at once
+//! over one store; the gate the caller supplies keeps those writes off each
+//! other, while the wait for a machine to come up stays outside it.
 
 use std::collections::hash_map::RandomState;
 use std::hash::{BuildHasher, Hasher};
-use std::sync::LazyLock;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{LazyLock, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use sima_core::{Error, Result};
@@ -24,6 +28,44 @@ use crate::reputation::{IncidentKind, excluded_machines, record_incident};
 /// An acquisition nobody is narrating: what a caller with nothing to say
 /// about the offer it took passes as `taken`.
 pub static UNREPORTED: &(dyn Fn(&Offer) + Sync) = &|_: &Offer| ();
+
+/// An acquisition nobody can call off: what a caller with no wind-down to
+/// observe passes as `cancel`. The flag is never set, so the walk runs to its
+/// own conclusion, and it is behind a call because nothing outside may reach
+/// the flag to set it.
+pub fn never_cancelled() -> &'static AtomicBool {
+    static NEVER: AtomicBool = AtomicBool::new(false);
+    &NEVER
+}
+
+/// The gate concurrent acquisitions over one store take their offers through.
+///
+/// Taking an offer is all the ledger writing an acquisition does — the orphan
+/// reap that opens a walk, the budget read against the ledger, and the intent
+/// and live records for the machine — and acquisitions that run at once share
+/// the store those land in. Only the take is under the gate: the wait for the
+/// machine to come up is where the minutes go, and it runs outside, which is
+/// the whole point of holding one.
+///
+/// A caller acquiring alone builds its own and contends with nobody.
+#[derive(Default)]
+pub struct Admission(Mutex<()>);
+
+impl Admission {
+    /// A gate the acquisitions sharing one store take their offers through.
+    pub fn new() -> Admission {
+        Admission::default()
+    }
+
+    /// Enters the gate, waiting out whichever acquisition holds it.
+    ///
+    /// A gate a panicking take poisoned is entered all the same: what such a
+    /// take left in the ledger is reconciliation's to clear, and refusing
+    /// every acquisition after it would strand the run instead.
+    fn enter(&self) -> MutexGuard<'_, ()> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
 
 /// Bounds on waiting for a provisioned instance to become ready.
 #[derive(Debug, Clone, Copy)]
@@ -88,6 +130,10 @@ static NONCE: LazyLock<String> = LazyLock::new(|| {
 /// the wait runs. A walk whose first machine never comes up calls it again for
 /// the next offer it takes. A caller with nothing to say passes
 /// [`UNREPORTED`].
+///
+/// `admission` serializes the ledger-writing half of this against every other
+/// acquisition holding the same gate, so acquisitions run concurrently over one
+/// store without racing on it. The readiness wait is deliberately outside it.
 #[allow(clippy::too_many_arguments)]
 pub fn acquire<'a, P: Provider + ?Sized>(
     provider: &'a P,
@@ -98,24 +144,32 @@ pub fn acquire<'a, P: Provider + ?Sized>(
     objective: Objective,
     limits: &AcquireLimits,
     budget: &Budget,
+    admission: &Admission,
     cancel: &AtomicBool,
     taken: &dyn Fn(&Offer),
 ) -> Result<InstanceGuard<'a, P>> {
     let owner = lock.run();
-    // Orphans of an earlier crash are destroyed before a new machine is
-    // paid for. This comes before the budget check: destroying orphans
-    // stops spending, which matters most when the budget is exhausted.
-    reconcile(provider, store, ReconcileScope::Workers)?;
-    // An exhausted budget refuses before the marketplace is even listed.
-    admit(store, owner, budget)?;
-    // Every offer selection, initial and every supervisor replacement, flows
-    // through here, so deriving the excluded set once before `select` covers
-    // both. The set is computed from the incident ledger, never stored.
     let mut constraints = constraints.clone();
-    constraints
-        .excluded_machines
-        .extend(excluded_machines(store, provider.id())?);
-    let ranked = select(provider.offers()?, &constraints, objective);
+    let ranked = {
+        // Reaping, reading the budget, and reading the incident ledger all
+        // touch the store the concurrent acquisitions share, so the walk is
+        // ranked under the gate and taken under it offer by offer.
+        let _taking = admission.enter();
+        // Orphans of an earlier crash are destroyed before a new machine is
+        // paid for. This comes before the budget check: destroying orphans
+        // stops spending, which matters most when the budget is exhausted.
+        reconcile(provider, store, ReconcileScope::Workers)?;
+        // An exhausted budget refuses before the marketplace is even listed.
+        admit(store, owner, budget)?;
+        // Every offer selection, initial and every supervisor replacement,
+        // flows through here, so deriving the excluded set once before
+        // `select` covers both. The set is computed from the incident ledger,
+        // never stored.
+        constraints
+            .excluded_machines
+            .extend(excluded_machines(store, provider.id())?);
+        select(provider.offers()?, &constraints, objective)
+    };
     if ranked.is_empty() {
         return Err(Error::Provider(format!(
             "no offer satisfies the constraints {constraints:?}"
@@ -127,61 +181,14 @@ pub fn acquire<'a, P: Provider + ?Sized>(
         if cancel.load(Ordering::Relaxed) {
             return Err(cancelled());
         }
-        // A machine that consumed the budget during a failed readiness wait
-        // must not be followed by another rental.
-        admit(store, owner, budget)?;
-        let tag = attempt_tag(owner);
-        // One stamp per attempt: the live write carries the intent's, which
-        // is what the record's field states.
-        let created_ms = now_ms();
-        // Durable before the provider is asked for anything: the provider
-        // attaches this tag to whatever it creates, so a death anywhere
-        // after this line leaves a record naming the machine that may
-        // exist. Without it, a crash between the call and its answer would
-        // leak an instance nothing knows about.
-        store.put_instance(&record(
-            &tag,
-            provider.id(),
-            owner,
-            &offer,
-            None,
-            created_ms,
-            role,
-        ))?;
-        // A death here leaves an intent record naming a tag no machine yet
-        // carries: reconcile clears it, and nothing leaks.
-        sima_core::crashpoint("provider.intent-written");
-        let instance = match provider.provision(&offer.id, &tag) {
-            Ok(Provision::Provisioned(instance)) => instance,
+        let (tag, instance) = match take(
+            provider, store, owner, role, budget, &offer, admission, taken,
+        )? {
+            Took::Machine { tag, instance } => (tag, instance),
             // The offer went to another renter: the next-ranked one is the
             // acquisition's answer.
-            Ok(Provision::OfferGone) => {
-                store.remove_instance(&tag)?;
-                continue;
-            }
-            // An API failure repeats against every remaining offer, so it
-            // aborts the loop. Its intent record stays: an error answer does
-            // not say whether the request landed — a timeout can mean a
-            // machine carrying the tag exists — and the record is the only
-            // thing reconciliation acts on, so clearing it here would make
-            // that machine unreachable.
-            Err(e) => return Err(e),
+            Took::Gone => continue,
         };
-        // A death here leaves an intent record while a machine carrying its tag
-        // exists: reconcile matches the tag and destroys the untracked
-        // instance, so nothing leaks.
-        sima_core::crashpoint("provider.provisioned");
-        // The money starts here, whatever the readiness wait goes on to find.
-        taken(&offer);
-        store.put_instance(&record(
-            &tag,
-            provider.id(),
-            owner,
-            &offer,
-            Some(&instance),
-            created_ms,
-            role,
-        ))?;
         if let Some(endpoint) = wait_ready(provider, &instance, limits, cancel)? {
             return Ok(InstanceGuard::new(
                 provider,
@@ -226,6 +233,91 @@ pub fn acquire<'a, P: Provider + ?Sized>(
 /// caller tells it from a market that simply had nothing.
 fn cancelled() -> Error {
     Error::Provider("the acquisition was cancelled".to_string())
+}
+
+/// What taking one offer answered.
+enum Took {
+    /// The offer is this run's: a machine carrying `tag` exists and is coming
+    /// up.
+    Machine { tag: String, instance: Instance },
+    /// Another renter has it, and nothing was written that outlives the
+    /// attempt.
+    Gone,
+}
+
+/// Takes `offer` under the admission gate: admits the spend, writes the intent
+/// record, provisions the machine, and upgrades the record to the live one.
+///
+/// Everything the acquisition writes to the store for this machine happens
+/// here, which is what makes the gate enough to keep concurrent acquisitions
+/// off each other. The wait for the machine to come up is the caller's, outside
+/// the gate.
+#[allow(clippy::too_many_arguments)]
+fn take<P: Provider + ?Sized>(
+    provider: &P,
+    store: &Store,
+    owner: &RunId,
+    role: Rental,
+    budget: &Budget,
+    offer: &Offer,
+    admission: &Admission,
+    taken: &dyn Fn(&Offer),
+) -> Result<Took> {
+    let _taking = admission.enter();
+    // A machine that consumed the budget during a failed readiness wait
+    // must not be followed by another rental.
+    admit(store, owner, budget)?;
+    let tag = attempt_tag(owner);
+    // One stamp per attempt: the live write carries the intent's, which
+    // is what the record's field states.
+    let created_ms = now_ms();
+    // Durable before the provider is asked for anything: the provider
+    // attaches this tag to whatever it creates, so a death anywhere
+    // after this line leaves a record naming the machine that may
+    // exist. Without it, a crash between the call and its answer would
+    // leak an instance nothing knows about.
+    store.put_instance(&record(
+        &tag,
+        provider.id(),
+        owner,
+        offer,
+        None,
+        created_ms,
+        role,
+    ))?;
+    // A death here leaves an intent record naming a tag no machine yet
+    // carries: reconcile clears it, and nothing leaks.
+    sima_core::crashpoint("provider.intent-written");
+    let instance = match provider.provision(&offer.id, &tag) {
+        Ok(Provision::Provisioned(instance)) => instance,
+        Ok(Provision::OfferGone) => {
+            store.remove_instance(&tag)?;
+            return Ok(Took::Gone);
+        }
+        // An API failure repeats against every remaining offer, so it
+        // aborts the walk. Its intent record stays: an error answer does
+        // not say whether the request landed — a timeout can mean a
+        // machine carrying the tag exists — and the record is the only
+        // thing reconciliation acts on, so clearing it here would make
+        // that machine unreachable.
+        Err(e) => return Err(e),
+    };
+    // A death here leaves an intent record while a machine carrying its tag
+    // exists: reconcile matches the tag and destroys the untracked
+    // instance, so nothing leaks.
+    sima_core::crashpoint("provider.provisioned");
+    // The money starts here, whatever the readiness wait goes on to find.
+    taken(offer);
+    store.put_instance(&record(
+        &tag,
+        provider.id(),
+        owner,
+        offer,
+        Some(&instance),
+        created_ms,
+        role,
+    ))?;
+    Ok(Took::Machine { tag, instance })
 }
 
 /// Admits one rental attempt, or refuses it naming the limit `owner`
@@ -352,7 +444,9 @@ mod tests {
         Store,
     };
 
-    use super::{AcquireLimits, Ordering, UNREPORTED, acquire, attempt_tag};
+    use super::{
+        AcquireLimits, Admission, Ordering, UNREPORTED, acquire, attempt_tag, never_cancelled,
+    };
     use crate::budget::{Budget, Cost};
     use crate::guard::InstanceGuard;
     use crate::offer::{Constraints, Objective, Offer, OfferId, Price};
@@ -360,8 +454,8 @@ mod tests {
     use crate::reconcile::{ReconcileScope, reconcile};
     use crate::stub::StubProvider;
     use crate::testutil::{
-        acquire_any, instance_record, live_state, never_cancelled, prompt_limits, sample_run,
-        spend_entries, stub_offer, temp_store,
+        acquire_any, instance_record, live_state, prompt_limits, sample_run, spend_entries,
+        stub_offer, temp_store,
     };
 
     /// A provider that watches what the acquisition loop does before and
@@ -478,6 +572,58 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn acquisitions_sharing_a_gate_each_come_back_with_their_own_machine() -> Result<()> {
+        // Members of one rental acquire at once, over one store and one run
+        // lock. Their takes pass through the gate one at a time, so each ends
+        // up on an offer of its own and the ledger holds one live record per
+        // machine — no two attempts under one tag, and no offer taken twice.
+        let (_dir, store) = temp_store();
+        let stub = StubProvider::new(vec![
+            stub_offer("cheap", 100_000),
+            stub_offer("dear", 200_000),
+        ]);
+        let lock = store.acquire_run_lock(&sample_run(7))?;
+        let admission = Admission::new();
+        let guards: Vec<InstanceGuard<'_, StubProvider>> = std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..2)
+                .map(|_| {
+                    scope.spawn(|| {
+                        acquire(
+                            &stub,
+                            &store,
+                            &lock,
+                            Rental::Worker,
+                            &Constraints::default(),
+                            Objective::CheapestPerHour,
+                            &prompt_limits(),
+                            &Budget::default(),
+                            &admission,
+                            never_cancelled(),
+                            UNREPORTED,
+                        )
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|handle| handle.join().expect("an acquiring thread joins"))
+                .collect::<Result<Vec<_>>>()
+        })?;
+        let mut machines: Vec<&str> = guards.iter().map(InstanceGuard::machine).collect();
+        machines.sort_unstable();
+        assert_eq!(machines, vec!["m-cheap", "m-dear"]);
+        let mut tags: Vec<String> = store
+            .instance_records()?
+            .into_iter()
+            .map(|record| record.tag)
+            .collect();
+        tags.sort();
+        tags.dedup();
+        assert_eq!(tags.len(), 2, "one record per machine, under its own tag");
+        Ok(())
+    }
+
     /// Asserts that `tag` has the documented shape —
     /// `sima-<owner16>-<pid>-<rand8hex>-<seq>` over the owner these tests
     /// acquire under — and returns its parts.
@@ -555,6 +701,7 @@ mod tests {
             Objective::CheapestPerHour,
             &limits,
             &Budget::default(),
+            &Admission::new(),
             never_cancelled(),
             UNREPORTED,
         )?;
@@ -588,6 +735,7 @@ mod tests {
             Objective::CheapestPerHour,
             &limits,
             &Budget::default(),
+            &Admission::new(),
             never_cancelled(),
             UNREPORTED,
         )?;
@@ -620,6 +768,7 @@ mod tests {
             Objective::CheapestPerHour,
             &limits,
             &Budget::default(),
+            &Admission::new(),
             never_cancelled(),
             UNREPORTED,
         )?;
@@ -658,6 +807,7 @@ mod tests {
             Objective::CheapestPerHour,
             &limits,
             &Budget::default(),
+            &Admission::new(),
             never_cancelled(),
             UNREPORTED,
         )?;
@@ -763,6 +913,7 @@ mod tests {
                 Objective::CheapestPerHour,
                 &limits,
                 &Budget::default(),
+                &Admission::new(),
                 never_cancelled(),
                 UNREPORTED,
             )?;
@@ -837,6 +988,7 @@ mod tests {
             Objective::CheapestPerHour,
             &prompt_limits(),
             budget,
+            &Admission::new(),
             never_cancelled(),
             UNREPORTED,
         )
@@ -927,6 +1079,7 @@ mod tests {
                 ready_poll: Duration::from_millis(1),
             },
             &budget,
+            &Admission::new(),
             never_cancelled(),
             UNREPORTED,
         );
@@ -980,6 +1133,7 @@ mod tests {
             Objective::CheapestPerHour,
             &limits,
             &Budget::default(),
+            &Admission::new(),
             never_cancelled(),
             UNREPORTED,
         )?;
@@ -1027,6 +1181,7 @@ mod tests {
             Objective::CheapestPerHour,
             &prompt_limits(),
             &Budget::default(),
+            &Admission::new(),
             never_cancelled(),
             UNREPORTED,
         );
@@ -1130,6 +1285,7 @@ mod tests {
             Objective::CheapestPerHour,
             &prompt_limits(),
             &Budget::default(),
+            &Admission::new(),
             never_cancelled(),
             UNREPORTED,
         )?;
@@ -1226,6 +1382,7 @@ mod tests {
             Objective::CheapestPerHour,
             &prompt_limits(),
             &Budget::default(),
+            &Admission::new(),
             &cancel,
             UNREPORTED,
         );
@@ -1264,6 +1421,7 @@ mod tests {
                 ready_poll: Duration::from_millis(1),
             },
             &Budget::default(),
+            &Admission::new(),
             &cancel,
             UNREPORTED,
         );

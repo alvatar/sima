@@ -14,8 +14,9 @@ use std::time::{Duration, Instant};
 
 use sima_core::Result;
 use sima_provider::{
-    AcquireLimits, Budget, Exhaustion, IncidentKind, InstanceGuard, InstanceStatus, Objective,
-    Provider, UNREPORTED, Verdict, acquire, assess, now_ms, record_incident,
+    AcquireLimits, Admission, Budget, Exhaustion, IncidentKind, InstanceGuard, InstanceStatus,
+    Objective, Provider, UNREPORTED, Verdict, acquire, assess, never_cancelled, now_ms,
+    record_incident,
 };
 use sima_scheduler::Event;
 use sima_store::{Rental as RentalRole, RunLock, Store};
@@ -25,9 +26,7 @@ use sima_transport::{SpawnOutcome, WorkerTransport};
 use sima_contracts::DeviceBinding;
 
 use crate::config::FillPolicy;
-use crate::rental::acquire::{
-    RentalGroup, RentedHost, budget_exhausted, endpoint_target, never_cancelled,
-};
+use crate::rental::acquire::{RentalGroup, RentedHost, budget_exhausted, endpoint_target};
 
 /// A rented pool's transport, wired to stop the run's supervisor when a spawn
 /// fails.
@@ -369,6 +368,10 @@ impl<'a, 'b> Supervisor<'a, 'b> {
             // Run teardown sets this to abort a replacement mid-flight, so a
             // slow offer walk never delays the run's exit; a caller with no
             // cancellation (the unit tests) walks to completion.
+            // Replacements are this one thread's, made one at a time and
+            // long after the run's own acquisition finished, so the take
+            // contends with nothing.
+            &Admission::new(),
             self.cancel.unwrap_or(never_cancelled()),
             UNREPORTED,
         ) {
@@ -539,6 +542,7 @@ mod tests {
             &format,
             &exec(),
             None,
+            never_cancelled(),
             &unheard(),
         )?;
         let groups = one_group(&provider, &spec, FillPolicy::Strict, hosts);
@@ -576,6 +580,7 @@ mod tests {
             &format,
             &exec(),
             None,
+            never_cancelled(),
             &unheard(),
         )?;
         let groups = one_group(&provider, &spec, FillPolicy::Strict, hosts);
@@ -611,6 +616,7 @@ mod tests {
             &format,
             &exec(),
             None,
+            never_cancelled(),
             &unheard(),
         )?;
         let groups = one_group(&provider, &spec, FillPolicy::Strict, hosts);
@@ -650,6 +656,7 @@ mod tests {
             &format,
             &exec(),
             None,
+            never_cancelled(),
             &unheard(),
         )?;
         let groups = one_group(&provider, &spec, FillPolicy::Strict, hosts);
@@ -735,6 +742,7 @@ mod tests {
             &format,
             &exec(),
             None,
+            never_cancelled(),
             &unheard(),
         )?;
         let groups = one_group(&provider, &spec, FillPolicy::Strict, hosts);
@@ -796,6 +804,7 @@ mod tests {
             &format,
             &exec(),
             None,
+            never_cancelled(),
             &unheard(),
         )?;
         let groups = one_group(&provider, &spec, FillPolicy::Strict, hosts);
@@ -853,6 +862,7 @@ mod tests {
             &format,
             &exec(),
             None,
+            never_cancelled(),
             &unheard(),
         )?;
         let groups = one_group(&provider, &spec, FillPolicy::Strict, hosts);
@@ -920,6 +930,7 @@ mod tests {
                 &format,
                 &exec(),
                 None,
+                never_cancelled(),
                 &unheard(),
             )?;
             groups.push(RentalGroup {
@@ -973,6 +984,7 @@ mod tests {
             &format,
             &exec(),
             None,
+            never_cancelled(),
             &unheard(),
         )?;
         let groups = one_group(&provider, &spec, FillPolicy::Strict, hosts);
@@ -1035,6 +1047,7 @@ mod tests {
             &format,
             &exec(),
             None,
+            never_cancelled(),
             &unheard(),
         )?;
         let groups = one_group(&provider, &spec, FillPolicy::Strict, hosts);
@@ -1073,6 +1086,7 @@ mod tests {
             &format,
             &exec(),
             None,
+            never_cancelled(),
             &unheard(),
         )?;
         let groups = one_group(&provider, &spec, FillPolicy::Strict, hosts);
@@ -1122,6 +1136,7 @@ mod tests {
             &format,
             &exec(),
             None,
+            never_cancelled(),
             &unheard(),
         )?;
         let groups = one_group(&provider, &spec, FillPolicy::Strict, hosts);
