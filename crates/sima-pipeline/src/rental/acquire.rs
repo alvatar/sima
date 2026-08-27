@@ -474,6 +474,7 @@ pub(crate) fn budget_exhausted(exhaustion: Exhaustion) -> Event {
 pub(crate) fn taken(events: &Emitter, member: &str, ready_timeout: Duration, offer: &Offer) {
     events.emit(renting(member, offer));
     events.emit(Event::AwaitingMachine {
+        member: member.to_string(),
         timeout_ms: ready_timeout.as_millis() as u64,
     });
 }
@@ -806,29 +807,35 @@ mod tests {
             &events,
         )?;
         drop(events);
-        let waits: Vec<Event> = said
-            .into_iter()
-            .filter(|event| matches!(event, Event::Renting { .. } | Event::AwaitingMachine { .. }))
-            .collect();
-        let [
-            Event::Renting { member: first, .. },
-            Event::AwaitingMachine {
-                timeout_ms: first_wait,
-            },
-            Event::Renting { member: second, .. },
-            Event::AwaitingMachine {
-                timeout_ms: second_wait,
-            },
-        ] = waits.as_slice()
-        else {
-            panic!("each member says what it took and what it waits for: {waits:?}");
-        };
-        assert_eq!(
-            (first.as_str(), second.as_str()),
-            ("rented[0]", "rented[1]")
-        );
+        // Each line is read as (what it says, whose it is). Which member gets
+        // there first is not pinned — they are asked for at once — but every
+        // member says both, and says the wait after the rental it is waiting
+        // on.
         let stated = spec.ready_timeout.as_millis() as u64;
-        assert_eq!((*first_wait, *second_wait), (stated, stated));
+        let waits: Vec<(&str, String)> = said
+            .into_iter()
+            .filter_map(|event| match event {
+                Event::Renting { member, .. } => Some(("renting", member)),
+                Event::AwaitingMachine { member, timeout_ms } => {
+                    assert_eq!(timeout_ms, stated, "the wait the entry states");
+                    Some(("waiting", member))
+                }
+                _ => None,
+            })
+            .collect();
+        for member in ["rented[0]", "rented[1]"] {
+            let at = |said: &str| {
+                waits
+                    .iter()
+                    .position(|(line, whose)| *line == said && whose == member)
+            };
+            let (rented, waiting) = (at("renting"), at("waiting"));
+            assert!(
+                matches!((rented, waiting), (Some(rented), Some(waiting)) if rented < waiting),
+                "{member} says what it took, then what it waits for: {waits:?}"
+            );
+        }
+        assert_eq!(waits.len(), 4, "and neither says either twice: {waits:?}");
         release_all(one_group(&provider, &spec, FillPolicy::Strict, hosts))?;
         Ok(())
     }

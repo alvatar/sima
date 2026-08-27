@@ -116,8 +116,9 @@ pub fn describe(event: &Event, committed: usize, tasks: usize) -> Option<String>
             hardware(gpu_model, *gpu_count),
             dollars(*rate_microusd_hour)
         ),
-        Event::AwaitingMachine { timeout_ms } => format!(
-            "waiting for the machine to come up (pulls the image; up to {}s)",
+        Event::AwaitingMachine { member, timeout_ms } => format!(
+            "waiting for the machine{} to come up (pulls the image; up to {}s)",
+            named(member),
             timeout_ms / 1_000
         ),
         Event::SendingRun { member, objects } => {
@@ -973,6 +974,7 @@ mod tests {
                 rate_microusd_hour: 70_000,
             },
             Event::AwaitingMachine {
+                member: "cheap[0]".to_string(),
                 timeout_ms: 600_000,
             },
             Event::SendingRun {
@@ -1191,6 +1193,26 @@ mod tests {
             describe(&wall, 0, 0)
                 .expect("a wall-clock line")
                 .contains("rental deadline")
+        );
+
+        // Members of one rental come up at once, so their waits interleave and
+        // each line has to say whose machine it is waiting for. A migration
+        // rents the one machine its destination names and says no member.
+        let waiting = Event::AwaitingMachine {
+            member: "cheap[1]".to_string(),
+            timeout_ms: 600_000,
+        };
+        assert_eq!(
+            describe(&waiting, 0, 0).expect("a waiting line"),
+            "waiting for the machine cheap[1] to come up (pulls the image; up to 600s)"
+        );
+        let alone = Event::AwaitingMachine {
+            member: String::new(),
+            timeout_ms: 600_000,
+        };
+        assert_eq!(
+            describe(&alone, 0, 0).expect("a waiting line"),
+            "waiting for the machine to come up (pulls the image; up to 600s)"
         );
 
         // The one line an interrupt during acquisition leaves: what happened,
