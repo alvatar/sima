@@ -352,7 +352,7 @@ fn end(
         RemoteState::Idle => return Ok(SessionOutcome::Release(ExecOutcome::Ended)),
     }
     observer.narration("fetching outputs");
-    match far.fetch(&config.outputs, fetch_to) {
+    match far.fetch(&config.outputs, fetch_to, observer) {
         Ok(()) => Ok(SessionOutcome::Release(ExecOutcome::Ended)),
         Err(error) => {
             observer.narration("fetch failed; instance kept with outputs remote");
@@ -392,7 +392,7 @@ fn follow_to_outcome(
                     far.wait_gone(pid)?;
                 }
                 observer.narration("fetching outputs");
-                far.fetch(&config.outputs, fetch_to)
+                far.fetch(&config.outputs, fetch_to, observer)
             })();
             match teardown {
                 Ok(()) => Ok(SessionOutcome::Release(ExecOutcome::BudgetExhausted(
@@ -406,7 +406,7 @@ fn follow_to_outcome(
         }
         Followed::Completed(code) => {
             observer.narration("fetching outputs");
-            match far.fetch(&config.outputs, fetch_to) {
+            match far.fetch(&config.outputs, fetch_to, observer) {
                 Ok(()) => Ok(SessionOutcome::Keep(ExecOutcome::Completed(code))),
                 Err(error) => {
                     observer.narration("fetch failed; instance kept with outputs remote");
@@ -419,6 +419,15 @@ fn follow_to_outcome(
 
 fn owner_id(host: &str) -> SearchId {
     SearchId::from_hash(hash_bytes(format!("sima-exec:{host}").as_bytes()))
+}
+
+/// One remote path as a shell word, preserving the current user's `~/`
+/// expansion while quoting every path component supplied by config.
+fn remote_path_word(path: &str) -> String {
+    path.strip_prefix("~/").map_or_else(
+        || shell_quote(path),
+        |under_home| format!("\"$HOME\"/{}", shell_quote(under_home)),
+    )
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -462,7 +471,12 @@ trait FarExec {
     /// Waits until the detached command is absent.
     fn wait_gone(&self, pid: u32) -> Result<()>;
     /// Fetches declared outputs and the command log.
-    fn fetch(&self, outputs: &[String], local: &Path) -> Result<()>;
+    fn fetch(
+        &self,
+        outputs: &[String],
+        local: &Path,
+        observer: &mut dyn ExecObserver,
+    ) -> Result<()>;
 }
 
 /// Ends and reaps the local log transport while leaving the detached remote
@@ -592,7 +606,7 @@ impl FarExec for RemoteExec {
         };
         let script = format!(
             "set -e\ntarget={}\nmkdir -p \"$(dirname \"$target\")\"\ncat > \"$target\"\nchmod +x \"$target\"\n",
-            target
+            remote_path_word(&target)
         );
         let argv = self.reach.shell_script_argv(&script);
         let (program, args) = argv.split_first().expect("shell argv");
@@ -753,8 +767,19 @@ impl FarExec for RemoteExec {
         Ok(())
     }
 
-    fn fetch(&self, outputs: &[String], local: &Path) -> Result<()> {
-        fetch_over(&self.reach.shell_argv(), &self.root, outputs, local)
+    fn fetch(
+        &self,
+        outputs: &[String],
+        local: &Path,
+        observer: &mut dyn ExecObserver,
+    ) -> Result<()> {
+        fetch_over(
+            &self.reach.shell_argv(),
+            &self.root,
+            outputs,
+            local,
+            &mut |line| observer.narration(line),
+        )
     }
 }
 
@@ -851,7 +876,12 @@ mod tests {
             Ok(())
         }
 
-        fn fetch(&self, _outputs: &[String], _local: &Path) -> Result<()> {
+        fn fetch(
+            &self,
+            _outputs: &[String],
+            _local: &Path,
+            _observer: &mut dyn ExecObserver,
+        ) -> Result<()> {
             self.calls.borrow_mut().push("fetch");
             Ok(())
         }
@@ -915,6 +945,15 @@ mod tests {
             shell_quote("printf '%s\\n' \"a b\""),
             "'printf '\\''%s\\n'\\'' \"a b\"'"
         );
+    }
+
+    #[test]
+    fn remote_path_quoting_preserves_home_expansion_and_literal_components() {
+        assert_eq!(
+            remote_path_word("~/bin/sima special"),
+            "\"$HOME\"/'bin/sima special'"
+        );
+        assert_eq!(remote_path_word("/opt/sima special"), "'/opt/sima special'");
     }
 
     #[test]

@@ -1,6 +1,6 @@
 //! Fetching files from a remote command tree over a tar stream.
 
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::Path;
 use std::process::{Command, Stdio};
 
@@ -13,6 +13,7 @@ pub(crate) fn fetch_over(
     remote_root: &str,
     patterns: &[String],
     local: &Path,
+    narration: &mut dyn FnMut(&str),
 ) -> Result<()> {
     std::fs::create_dir_all(local).map_err(|source| Error::Io {
         path: local.to_path_buf(),
@@ -23,7 +24,7 @@ pub(crate) fn fetch_over(
         .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
+        .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| Error::Transport(format!("cannot start remote fetch shell: {e}")))?;
     remote
@@ -33,6 +34,11 @@ pub(crate) fn fetch_over(
         .write_all(remote_script(remote_root, patterns).as_bytes())
         .map_err(|e| Error::Transport(format!("cannot send remote fetch command: {e}")))?;
     let stream = remote.stdout.take().expect("piped stdout");
+    let mut errors = remote.stderr.take().expect("piped stderr");
+    let diagnostics = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        errors.read_to_end(&mut bytes).map(|_| bytes)
+    });
     let status = own_process_group(&mut Command::new("tar"))
         .args(["-xf", "-", "-C"])
         .arg(local)
@@ -42,15 +48,28 @@ pub(crate) fn fetch_over(
     let remote_status = remote
         .wait()
         .map_err(|e| Error::Transport(format!("cannot reap remote fetch shell: {e}")))?;
+    let diagnostics = diagnostics
+        .join()
+        .map_err(|_| Error::Transport("remote fetch diagnostic reader panicked".to_string()))?
+        .map_err(|e| Error::Transport(format!("cannot read remote fetch diagnostics: {e}")))?;
+    let diagnostics = String::from_utf8_lossy(&diagnostics);
     if !remote_status.success() {
         return Err(Error::Transport(format!(
-            "remote output archive exited with {remote_status}"
+            "remote output archive exited with {remote_status}{}",
+            if diagnostics.trim().is_empty() {
+                String::new()
+            } else {
+                format!(": {}", diagnostics.trim())
+            }
         )));
     }
     if !status.success() {
         return Err(Error::Transport(format!(
             "unpacking remote output archive exited with {status}"
         )));
+    }
+    for line in diagnostics.lines() {
+        narration(line);
     }
     Ok(())
 }
@@ -97,11 +116,13 @@ mod tests {
         fs::write(remote.path().join("payload/other.bin"), "other").expect("other");
         fs::write(remote.path().join("exec.log"), "command log").expect("log");
         let local = tempfile::tempdir().expect("local");
+        let mut warnings = Vec::new();
         fetch_over(
             &["/bin/sh".to_string()],
             remote.path().to_str().expect("utf8 path"),
             &["reports/*.html".to_string(), "missing/*.pfm".to_string()],
             local.path(),
+            &mut |line| warnings.push(line.to_string()),
         )?;
         assert_eq!(
             fs::read_to_string(local.path().join("reports/index.html")).expect("fetched report"),
@@ -112,6 +133,10 @@ mod tests {
             "command log"
         );
         assert!(!local.path().join("other.bin").exists());
+        assert_eq!(
+            warnings,
+            ["warning: output glob matched nothing: missing/*.pfm"]
+        );
         Ok(())
     }
 }
