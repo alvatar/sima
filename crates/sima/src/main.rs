@@ -225,6 +225,7 @@ fn main() -> ExitCode {
                  \x20      sima exec <config> --one-shot          run, fetch, and destroy the instance\n\
                  \x20      sima exec <config> --end               stop, fetch, and destroy the instance\n\
                  \x20      sima exec <config> --fetch-to <dir>    override the local output directory\n\
+                 \x20      sima exec <config> --quiet             print only the remote command's output\n\
                  \x20      sima status <config>                   report the search's state\n\
                  \x20      sima status <config> --task <key>      print one task's attempt timeline\n\
                  \x20      sima status <config> --failed          digest the tasks that did not commit\n\
