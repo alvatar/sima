@@ -15,7 +15,7 @@ use sima_core::{Error, Result, hash_bytes, own_process_group};
 use sima_model::SearchId;
 use sima_provider::{
     AcquireLimits, Admission, Exhaustion, InstanceGuard, Objective, Provider, Verdict, acquire,
-    adopt, assess, now_ms,
+    adopt, assess, never_cancelled, now_ms,
 };
 use sima_store::{Rental, Store};
 
@@ -73,9 +73,10 @@ pub trait ExecObserver {
     /// One orchestration status line.
     fn narration(&mut self, line: &str);
     /// The machine adopted or acquired for this invocation.
-    fn instance(&mut self, id: &str, rate_microusd_hour: u64) {
+    fn instance(&mut self, id: &str, rate_microusd_hour: u64, adopted: bool) {
         self.narration(&format!(
-            "instance {id} at ${:.6}/hr",
+            "{} instance {id} at ${:.6}/hr",
+            if adopted { "adopted" } else { "acquired" },
             rate_microusd_hour as f64 / 1_000_000.0
         ));
     }
@@ -128,6 +129,7 @@ fn run(
             && record.instance().is_some()
     });
     let mut held = adopt(provider.as_ref(), &store, &lock, Rental::Exec, &limits)?;
+    let adopted = held.is_some();
     if held.is_none() {
         match options.action {
             ExecAction::Attach => {
@@ -141,8 +143,13 @@ fn run(
                 ));
             }
             ExecAction::End => return Ok(ExecOutcome::NoInstance),
-            ExecAction::Start { .. } => {
-                held = Some(acquire(
+            ExecAction::Start { one_shot } => {
+                let cancel = if one_shot {
+                    interrupt
+                } else {
+                    never_cancelled()
+                };
+                held = match acquire(
                     provider.as_ref(),
                     &store,
                     &lock,
@@ -152,14 +159,24 @@ fn run(
                     &limits,
                     &config.budget,
                     &Admission::new(),
-                    interrupt,
+                    cancel,
                     sima_provider::UNREPORTED,
-                )?);
+                ) {
+                    Ok(guard) => Some(guard),
+                    Err(Error::Provider(message))
+                        if one_shot
+                            && interrupt.load(Ordering::Relaxed)
+                            && message == "the acquisition was cancelled" =>
+                    {
+                        return Ok(ExecOutcome::Abandoned { kept: false });
+                    }
+                    Err(error) => return Err(error),
+                };
             }
         }
     }
     let guard = held.expect("adopted or acquired");
-    observer.instance(&guard.id().0, guard.rate().0);
+    observer.instance(&guard.id().0, guard.rate().0, adopted);
     let reach = Reach::new(
         &transport_mode(provider.as_ref())?,
         &endpoint_target(guard.endpoint().clone()),
@@ -218,6 +235,14 @@ fn finish_guard(
             guard.release()?;
             Ok(value)
         }
+        Ok(SessionOutcome::KeepError(error)) => {
+            guard.keep();
+            Err(error)
+        }
+        Ok(SessionOutcome::ReleaseError(error)) => {
+            guard.release()?;
+            Err(error)
+        }
         Err(error) => {
             match action {
                 ExecAction::Attach | ExecAction::Start { one_shot: false } => guard.keep(),
@@ -232,6 +257,8 @@ fn finish_guard(
 enum SessionOutcome {
     Keep(ExecOutcome),
     Release(ExecOutcome),
+    KeepError(Error),
+    ReleaseError(Error),
 }
 
 fn start(
@@ -269,7 +296,7 @@ fn start(
         observer.narration("bootstrapping sima");
         far.bootstrap_sima()?;
     }
-    observer.narration("delivering payload");
+    observer.narration("delivering and installing payload");
     far.deliver(store, &ingest_exec(&config.payload, store)?)?;
     if interrupt.load(Ordering::Relaxed) {
         return Ok(if one_shot {
@@ -319,8 +346,10 @@ fn end(
         RemoteState::Idle => return Ok(SessionOutcome::Release(ExecOutcome::Ended)),
     }
     observer.narration("fetching outputs");
-    far.fetch(&config.outputs, fetch_to)?;
-    Ok(SessionOutcome::Release(ExecOutcome::Ended))
+    match far.fetch(&config.outputs, fetch_to) {
+        Ok(()) => Ok(SessionOutcome::Release(ExecOutcome::Ended)),
+        Err(error) => Ok(SessionOutcome::KeepError(error)),
+    }
 }
 
 fn follow_to_outcome(
@@ -331,29 +360,40 @@ fn follow_to_outcome(
     interrupt: &AtomicBool,
     observer: &mut dyn ExecObserver,
 ) -> Result<SessionOutcome> {
-    match far.follow(
+    let followed = match far.follow(
         store,
         owner_id(&config.host_name),
         &config.budget,
         interrupt,
         observer,
-    )? {
+    ) {
+        Ok(followed) => followed,
+        Err(error) => return Ok(SessionOutcome::KeepError(error)),
+    };
+    match followed {
         Followed::Detached => Ok(SessionOutcome::Keep(ExecOutcome::Detached)),
         Followed::Exhausted(exhaustion) => {
-            if let RemoteState::Running(pid) = far.state()? {
-                far.kill(pid)?;
-                far.wait_gone(pid)?;
+            let teardown = (|| {
+                if let RemoteState::Running(pid) = far.state()? {
+                    far.kill(pid)?;
+                    far.wait_gone(pid)?;
+                }
+                observer.narration("fetching outputs");
+                far.fetch(&config.outputs, fetch_to)
+            })();
+            match teardown {
+                Ok(()) => Ok(SessionOutcome::Release(ExecOutcome::BudgetExhausted(
+                    exhaustion,
+                ))),
+                Err(error) => Ok(SessionOutcome::ReleaseError(error)),
             }
-            observer.narration("fetching outputs");
-            far.fetch(&config.outputs, fetch_to)?;
-            Ok(SessionOutcome::Release(ExecOutcome::BudgetExhausted(
-                exhaustion,
-            )))
         }
         Followed::Completed(code) => {
             observer.narration("fetching outputs");
-            far.fetch(&config.outputs, fetch_to)?;
-            Ok(SessionOutcome::Keep(ExecOutcome::Completed(code)))
+            match far.fetch(&config.outputs, fetch_to) {
+                Ok(()) => Ok(SessionOutcome::Keep(ExecOutcome::Completed(code))),
+                Err(error) => Ok(SessionOutcome::KeepError(error)),
+            }
         }
     }
 }
@@ -424,7 +464,7 @@ impl RemoteExec {
 
     fn state(&self) -> Result<RemoteState> {
         let output = self.shell(&format!(
-            "job={}\npid=$(cat \"$job/exec.pid\" 2>/dev/null || true)\nif [ -n \"$pid\" ] && kill -0 \"$pid\" 2>/dev/null; then echo running:$pid; elif [ -f \"$job/exec.status\" ]; then echo finished:$(cat \"$job/exec.status\"); else echo idle; fi\n",
+            "job={}\npid=$(cat \"$job/exec.pid\" 2>/dev/null || true)\nif [ -f \"$job/exec.status\" ]; then echo finished:$(cat \"$job/exec.status\"); elif [ -n \"$pid\" ] && kill -0 \"$pid\" 2>/dev/null; then echo running:$pid; else echo idle; fi\n",
             self.root
         ))?;
         let state = output.trim();
@@ -744,6 +784,21 @@ mod tests {
     }
 
     #[test]
+    fn a_finished_status_is_authoritative_over_a_reused_pid() -> Result<()> {
+        let dir = tempfile::tempdir().expect("remote root");
+        let far = local_far(dir.path());
+        fs::create_dir_all(&far.root).expect("job tree");
+        fs::write(
+            Path::new(&far.root).join("exec.pid"),
+            std::process::id().to_string(),
+        )
+        .expect("stale pid");
+        fs::write(Path::new(&far.root).join("exec.status"), "23\n").expect("status");
+        assert_eq!(far.state()?, RemoteState::Finished(23));
+        Ok(())
+    }
+
+    #[test]
     fn detached_start_records_log_pid_and_nonzero_status() -> Result<()> {
         let dir = tempfile::tempdir().expect("remote root");
         let far = local_far(dir.path());
@@ -843,6 +898,75 @@ mod tests {
     }
 
     #[test]
+    fn interrupt_before_acquisition_cancels_one_shot_and_default_keeps_after_acquiring()
+    -> Result<()> {
+        let one_shot_dir = tempfile::tempdir().expect("one-shot job");
+        let one_shot = job_config(one_shot_dir.path(), "echo must-not-run");
+        let mut recording = Recording::default();
+        assert_eq!(
+            exec(
+                &one_shot,
+                &ExecOptions {
+                    action: ExecAction::Start { one_shot: true },
+                    fetch_to: None,
+                },
+                &AtomicBool::new(true),
+                &mut recording,
+            )?,
+            ExecOutcome::Abandoned { kept: false }
+        );
+        let store = Store::open(one_shot_dir.path().join(".sima/store"))?;
+        assert!(store.instance_records()?.is_empty());
+
+        let kept_dir = tempfile::tempdir().expect("kept job");
+        let kept = job_config(kept_dir.path(), "echo must-not-run");
+        recording = Recording::default();
+        assert_eq!(
+            exec(
+                &kept,
+                &ExecOptions {
+                    action: ExecAction::Start { one_shot: false },
+                    fetch_to: None,
+                },
+                &AtomicBool::new(true),
+                &mut recording,
+            )?,
+            ExecOutcome::Abandoned { kept: true }
+        );
+        let store = Store::open(kept_dir.path().join(".sima/store"))?;
+        assert_eq!(store.instance_records()?.len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn one_shot_keeps_the_machine_when_fetch_fails() -> Result<()> {
+        let dir = tempfile::tempdir().expect("job");
+        let config = job_config(dir.path(), "mkdir -p reports; echo done > reports/out.txt");
+        let blocked = dir.path().join("blocked-fetch");
+        fs::write(&blocked, "a file cannot be an output directory").expect("block fetch");
+        let mut recording = Recording::default();
+        let error = exec(
+            &config,
+            &ExecOptions {
+                action: ExecAction::Start { one_shot: true },
+                fetch_to: Some(blocked),
+            },
+            &AtomicBool::new(false),
+            &mut recording,
+        )
+        .expect_err("fetch failure");
+        assert!(error.to_string().contains("blocked-fetch"), "{error}");
+        let store = Store::open(dir.path().join(".sima/store"))?;
+        assert_eq!(store.instance_records()?.len(), 1);
+        assert!(
+            store
+                .spend_entries(&owner_id("bench").to_string())?
+                .is_empty()
+        );
+        Ok(())
+    }
+
+    #[test]
     fn attach_and_end_without_a_standing_instance_are_disjoint() -> Result<()> {
         let dir = tempfile::tempdir().expect("job");
         let config = job_config(dir.path(), "true");
@@ -899,6 +1023,27 @@ mod tests {
         )
         .expect_err("finished command is not attachable");
         assert!(error.to_string().contains("exit code 23"), "{error}");
+        Ok(())
+    }
+
+    #[test]
+    fn end_requests_keep_when_fetch_fails() -> Result<()> {
+        let dir = tempfile::tempdir().expect("job");
+        let path = job_config(dir.path(), "echo output");
+        let config = load_exec(&path)?;
+        let far = local_far(&PathBuf::from(&config.host.root));
+        far.start("echo output")?;
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while matches!(far.state()?, RemoteState::Running(_)) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let blocked = dir.path().join("blocked-fetch");
+        fs::write(&blocked, "file").expect("block fetch");
+        let mut recording = Recording::default();
+        assert!(matches!(
+            end(&far, &config, &blocked, &mut recording)?,
+            SessionOutcome::KeepError(_)
+        ));
         Ok(())
     }
 
@@ -1006,6 +1151,33 @@ mod tests {
         ));
         assert!(!matches!(far.state()?, RemoteState::Running(_)));
         assert!(config.fetch_to.join("exec.log").is_file());
+        Ok(())
+    }
+
+    #[test]
+    fn budget_exhaustion_requests_release_when_fetch_fails() -> Result<()> {
+        let dir = tempfile::tempdir().expect("job");
+        let path = job_config(dir.path(), "sleep 30");
+        let mut config = load_exec(&path)?;
+        config.budget.max_spend = Some(sima_provider::Cost(0));
+        let far = local_far(&PathBuf::from(&config.host.root));
+        far.start("sleep 30")?;
+        let store = Store::open(&config.store)?;
+        let blocked = dir.path().join("blocked-fetch");
+        fs::write(&blocked, "file").expect("block fetch");
+        let mut recording = Recording::default();
+        assert!(matches!(
+            follow_to_outcome(
+                &far,
+                &store,
+                &config,
+                &blocked,
+                &AtomicBool::new(false),
+                &mut recording,
+            )?,
+            SessionOutcome::ReleaseError(_)
+        ));
+        assert!(!matches!(far.state()?, RemoteState::Running(_)));
         Ok(())
     }
 

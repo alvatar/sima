@@ -109,7 +109,7 @@ fn main() -> ExitCode {
         && let [verb, config, ..] = args[..]
         && STORE_OPENING_VERBS.contains(&verb)
     {
-        warn_on_loose_objects(&resolve_config(config));
+        warn_on_loose_objects(&resolve_config(config), verb);
     }
     if host.is_none()
         && let Some((config, action, fetch_to)) = exec_form(&args)
@@ -488,10 +488,11 @@ impl ExecObserver for ExecProgress {
         }
     }
 
-    fn instance(&mut self, id: &str, rate_microusd_hour: u64) {
+    fn instance(&mut self, id: &str, rate_microusd_hour: u64, adopted: bool) {
         self.machine = Some((id.to_string(), rate_microusd_hour));
         self.narration(&format!(
-            "instance {id} at ${:.6}/hr",
+            "{} instance {id} at ${:.6}/hr",
+            if adopted { "adopted" } else { "acquired" },
             rate_microusd_hour as f64 / 1_000_000.0
         ));
     }
@@ -567,8 +568,10 @@ fn exec_command(
                         progress.machine(),
                         config.display()
                     );
-                } else {
+                } else if progress.machine.is_some() {
                     println!("abandoned before start; released {}", progress.machine());
+                } else {
+                    println!("abandoned before start; acquisition cancelled");
                 }
             }
             ExitCode::SUCCESS
@@ -1025,14 +1028,16 @@ fn searches_command(store: &Path) -> ExitCode {
 /// cannot be measured says nothing here, because the command itself is
 /// about to report whatever is wrong with far better context. A store that
 /// does not exist yet is left alone rather than opened, since opening one
-/// creates it and the query commands are read-only about that.
-fn warn_on_loose_objects(config: &Path) {
-    let store_path = match load(config) {
-        Ok(loaded) => loaded.store,
-        Err(_) => match load_exec(config) {
-            Ok(loaded) => loaded.store,
-            Err(_) => return,
-        },
+/// creates it and the query commands are read-only about that. `verb` selects
+/// the config contract, so an exec warning resolves no search program.
+fn warn_on_loose_objects(config: &Path, verb: &str) {
+    let store_path = match if verb == "exec" {
+        load_exec(config).map(|loaded| loaded.store)
+    } else {
+        load(config).map(|loaded| loaded.store)
+    } {
+        Ok(store) => store,
+        Err(_) => return,
     };
     if !store_path.is_dir() {
         return;
