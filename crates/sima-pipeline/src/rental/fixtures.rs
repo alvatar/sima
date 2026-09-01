@@ -42,6 +42,8 @@ pub(super) fn spec() -> Rented {
     Rented {
         provider: ProviderId::Stub,
         image: "ghcr.io/alvatar/sima:latest".to_string(),
+        env: Default::default(),
+        bootstrap_sima: false,
         disk_gb: 32,
         ready_timeout: Duration::from_millis(500),
         ready_poll: Duration::ZERO,

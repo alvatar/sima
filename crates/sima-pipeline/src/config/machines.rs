@@ -8,6 +8,7 @@
 //! asks for it. Each kind rejects the other's keys by name, so a declaration
 //! that mixes them fails saying which key belongs where.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::Duration;
 
@@ -135,6 +136,10 @@ pub struct Rented {
     /// The image each instance runs: `sima-worker` for its workers, and the
     /// `sima` a search migrated onto it is driven by.
     pub image: String,
+    /// Environment assigned when the provider creates the instance.
+    pub env: BTreeMap<String, String>,
+    /// Whether exec may install the static sima binary on this machine.
+    pub bootstrap_sima: bool,
     /// The disk each instance is provisioned with, in gigabytes.
     pub disk_gb: u64,
     /// How long to wait for an instance to become reachable before giving up on
@@ -482,6 +487,8 @@ fn reject_cross_form(
     ];
     let rented_keys = [
         ("fill", section.fill.is_some()),
+        ("env", section.env.is_some()),
+        ("bootstrap_sima", section.bootstrap_sima.is_some()),
         ("disk_gb", section.disk_gb.is_some()),
         ("ready_timeout_ms", section.ready_timeout_ms.is_some()),
         ("ready_poll_ms", section.ready_poll_ms.is_some()),
@@ -669,6 +676,8 @@ fn resolve_rented(path: &Path, subject: &str, section: MachineSection) -> Result
         image: section
             .image
             .unwrap_or_else(|| DEFAULT_RENTED_IMAGE.to_string()),
+        env: section.env.unwrap_or_default(),
+        bootstrap_sima: section.bootstrap_sima.unwrap_or(false),
         disk_gb: section.disk_gb.unwrap_or(DEFAULT_DISK_GB),
         ready_timeout: Duration::from_millis(
             section.ready_timeout_ms.unwrap_or(DEFAULT_READY_TIMEOUT_MS),

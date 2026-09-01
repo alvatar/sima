@@ -58,9 +58,33 @@ pub struct LoadedConfig {
     pub domains: DomainRegistry,
 }
 
+/// One `[exec]` job, resolved against its config file and restricted to one
+/// rented host.
+#[derive(Debug)]
+pub struct ExecConfig {
+    /// The `[host.*]` entry name, which also defines the ledger owner.
+    pub host_name: String,
+    /// The resolved rented host and its remote paths.
+    pub host: Host,
+    /// One opaque command interpreted by the remote shell.
+    pub command: String,
+    /// The payload shipped to the machine.
+    pub payload: PayloadSpec,
+    /// Remote shell globs anchored at the payload root.
+    pub outputs: Vec<String>,
+    /// The local directory fetched files are unpacked into.
+    pub fetch_to: PathBuf,
+    /// The spend and wall-clock ceilings for the exec rental.
+    pub budget: Budget,
+    /// The ledger and payload object store.
+    pub store: PathBuf,
+}
+
 /// The store's directory name under [`GENERATED_DIR`], for a config that
 /// names no path of its own.
 const STORE_DIR: &str = "store";
+/// Where exec outputs land when `[exec]` names no directory.
+const EXEC_OUTPUT_DIR: &str = "exec-outputs";
 
 /// Loads and translates the `sima.toml` at `path`. Parse errors, unknown or
 /// missing keys, and invalid values are [`Error::Validation`] naming the file;
@@ -70,28 +94,24 @@ pub fn load(path: &Path) -> Result<LoadedConfig> {
     let file: FileConfig =
         toml::from_str(&text).map_err(|e| Error::Validation(format!("{}: {e}", path.display())))?;
 
+    let search_section = required_section(path, "search", file.search)?;
+    let config_section = required_section(path, "config", file.config)?;
+
     // The answer deadline precedes the registry, which spawns programs and
     // asks them questions: a session opened before the deadline was read
     // would wait on its first answer without one.
-    let answer_timeout = optional_bound(file.config.answer_timeout_ms);
+    let answer_timeout = optional_bound(config_section.answer_timeout_ms);
     // Relative to the config file's directory, never the working directory;
     // join leaves an absolute path as written. Computed here rather than at
     // the end, because an entry naming a payload digest reads that store to
     // install the program the same entry's binary names. Naming a path opens
     // nothing: a config that routes no payload never touches it.
-    let base = path.parent().unwrap_or(Path::new(""));
-    // A config that names no store keeps one where everything else it
-    // generates goes, so a driven config leaves one directory beside itself
-    // rather than several.
-    let store = match &file.config.store {
-        Some(stated) => base.join(stated),
-        None => base.join(GENERATED_DIR).join(STORE_DIR),
-    };
+    let store = resolve_store(path, Some(&config_section));
     // The registry precedes the search's translation, which is answered through
     // it: a program declared for a format is spawned and asked here, so an
     // entry naming one that cannot answer fails before the search has a store.
     let domains = resolve_domains(path, file.domain, answer_timeout, &store)?;
-    let search = resolve_search(path, file.search, &domains)?;
+    let search = resolve_search(path, search_section, &domains)?;
     let orchestrator = resolve_orchestrator(path, file.orchestrator)?;
 
     let mut hosts = BTreeMap::new();
@@ -146,7 +166,7 @@ pub fn load(path: &Path) -> Result<LoadedConfig> {
     reject_repeated_machines(path, &hosts, &host_classes, &fleet)?;
 
     let budget = resolve_budget(path, file.budget)?;
-    let execution = resolve_execution(path, &file.config, &orchestrator)?;
+    let execution = resolve_execution(path, &config_section, &orchestrator)?;
 
     Ok(LoadedConfig {
         search,
@@ -159,6 +179,72 @@ pub fn load(path: &Path) -> Result<LoadedConfig> {
         store,
         domains,
     })
+}
+
+/// Loads the `[exec]` contract without resolving search identity, domains, or
+/// worker layout.
+pub fn load_exec(path: &Path) -> Result<ExecConfig> {
+    let text = fs_read(path)?;
+    let mut file: FileConfig =
+        toml::from_str(&text).map_err(|e| Error::Validation(format!("{}: {e}", path.display())))?;
+    let exec = required_section(path, "exec", file.exec)?;
+    let store = resolve_store(path, file.config.as_ref());
+    let budget = resolve_budget(path, file.budget)?;
+    let host_name = exec.host;
+    let Some(section) = file.host.remove(&host_name) else {
+        let detail = if file.host_class.contains_key(&host_name) {
+            "names a [host_class.*] entry; an exec uses one rented [host.*] entry"
+        } else {
+            "names no [host.*] entry"
+        };
+        return Err(Error::Validation(format!(
+            "{}: [exec] host {host_name:?} {detail}",
+            path.display()
+        )));
+    };
+    let host = resolve_host(path, &host_name, section)?;
+    if !matches!(host.form, HostForm::Rented(_)) {
+        return Err(Error::Validation(format!(
+            "{}: [exec] host {host_name:?} is a machine of yours; an exec names a rented \
+             [host.*] entry",
+            path.display()
+        )));
+    }
+    let base = path.parent().unwrap_or(Path::new(""));
+    let payload =
+        resolve_payload_paths(path, base, "[exec]", &exec.payload, exec.install.as_deref())?;
+    let fetch_to = base.join(exec.fetch_to.as_deref().unwrap_or(EXEC_OUTPUT_DIR));
+    Ok(ExecConfig {
+        host_name,
+        host,
+        command: exec.command,
+        payload,
+        outputs: exec.outputs,
+        fetch_to,
+        budget,
+        store,
+    })
+}
+
+/// Requires one verb-specific top-level section with a direct message instead
+/// of exposing serde's structural representation.
+fn required_section<T>(path: &Path, name: &str, section: Option<T>) -> Result<T> {
+    section.ok_or_else(|| {
+        Error::Validation(format!(
+            "{}: [{name}] section is required for this command",
+            path.display()
+        ))
+    })
+}
+
+/// Resolves the shared store setting, defaulting beside the config when its
+/// section or key is absent.
+fn resolve_store(path: &Path, config: Option<&super::file::ConfigSection>) -> PathBuf {
+    let base = path.parent().unwrap_or(Path::new(""));
+    match config.and_then(|config| config.store.as_deref()) {
+        Some(stated) => base.join(stated),
+        None => base.join(GENERATED_DIR).join(STORE_DIR),
+    }
 }
 
 /// Builds the registry the `[domain.*]` entries declare: each entry's format id
@@ -320,6 +406,27 @@ fn resolve_payload(
         }
         return Ok(None);
     };
+    resolve_payload_paths(
+        path,
+        base,
+        &format!("[domain.{format:?}]"),
+        declared,
+        section.install.as_deref(),
+    )
+    .map(Some)
+}
+
+/// Resolves and validates one declared payload and its optional install script.
+fn resolve_payload_paths(
+    path: &Path,
+    base: &Path,
+    subject: &str,
+    declared: &str,
+    declared_install: Option<&str>,
+) -> Result<PayloadSpec> {
+    let refuse = |message: String| -> Error {
+        Error::Validation(format!("{}: {subject} {message}", path.display()))
+    };
     let payload = base.join(declared);
     // `symlink_metadata` is deliberate: what travels is the entry as written,
     // and a link to a directory is not a directory to walk.
@@ -329,7 +436,7 @@ fn resolve_payload(
             payload.display()
         ))
     })?;
-    let install = match &section.install {
+    let install = match declared_install {
         Some(declared) => {
             let install = base.join(declared);
             let metadata = std::fs::symlink_metadata(&install).map_err(|source| {
@@ -359,7 +466,7 @@ fn resolve_payload(
         }
         None => None,
     };
-    Ok(Some(PayloadSpec { payload, install }))
+    Ok(PayloadSpec { payload, install })
 }
 
 /// Parses the manifest digest an entry states, which is a content address like
@@ -2582,5 +2689,212 @@ mod tests {
             message.contains("ACME_ASSETS=/opt/acme"),
             "names the value: {message}"
         );
+    }
+
+    /// Writes an exec-only config and its directory payload, then returns the
+    /// path. The install path is resolved against the config directory.
+    fn exec_config(dir: &Path, extra: &str) -> PathBuf {
+        let payload = dir.join("payload");
+        fs::create_dir(&payload).expect("create payload");
+        fs::write(payload.join("main.rs"), "fn main() {}\n").expect("write payload");
+        fs::write(dir.join("install.sh"), "#!/bin/sh\nexit 0\n").expect("write install");
+        write_config(
+            dir,
+            "exec.toml",
+            &format!(
+                r#"
+                [exec]
+                host = "bench"
+                command = "RUST_LOG=info cargo test --release"
+                payload = "payload"
+                install = "install.sh"
+                outputs = ["reports/*.html", "*.pfm"]
+                fetch_to = "results"
+
+                [budget]
+                max_spend_usd = 2.5
+
+                [host.bench]
+                provider = "stub"
+                image = "specialized:latest"
+                bootstrap_sima = true
+                disk_gb = 64
+                env = {{ NVIDIA_DRIVER_CAPABILITIES = "all" }}
+                {extra}
+                "#
+            ),
+        )
+    }
+
+    #[test]
+    fn exec_load_resolves_its_job_host_payload_budget_and_output_paths() -> Result<()> {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = exec_config(dir.path(), "");
+        let loaded = load_exec(&path)?;
+        assert_eq!(loaded.host_name, "bench");
+        assert_eq!(loaded.command, "RUST_LOG=info cargo test --release");
+        assert_eq!(loaded.payload.payload, dir.path().join("payload"));
+        assert_eq!(loaded.payload.install, Some(dir.path().join("install.sh")));
+        assert_eq!(loaded.outputs, ["reports/*.html", "*.pfm"]);
+        assert_eq!(loaded.fetch_to, dir.path().join("results"));
+        assert_eq!(loaded.store, dir.path().join(".sima/store"));
+        assert_eq!(loaded.budget.max_spend, Some(Cost(2_500_000)));
+        assert_eq!(loaded.host.root, "~/sima");
+        assert_eq!(loaded.host.binary, "sima");
+        let HostForm::Rented(rented) = &loaded.host.form else {
+            panic!("exec resolves a rented host");
+        };
+        assert_eq!(rented.image, "specialized:latest");
+        assert_eq!(rented.disk_gb, 64);
+        assert!(rented.bootstrap_sima);
+        assert_eq!(
+            rented
+                .env
+                .get("NVIDIA_DRIVER_CAPABILITIES")
+                .map(String::as_str),
+            Some("all")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn exec_fetch_directory_defaults_beside_the_config() -> Result<()> {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = exec_config(dir.path(), "");
+        let text = fs::read_to_string(&path)
+            .expect("read config")
+            .replace("                fetch_to = \"results\"\n", "");
+        fs::write(&path, text).expect("rewrite config");
+        assert_eq!(load_exec(&path)?.fetch_to, dir.path().join("exec-outputs"));
+        Ok(())
+    }
+
+    #[test]
+    fn exec_refuses_keys_carried_by_the_command_string() {
+        for key in ["workdir = \"src\"", "env = { RUST_LOG = \"info\" }"] {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let path = exec_config(dir.path(), "");
+            let text = fs::read_to_string(&path).expect("read config").replace(
+                "                host = \"bench\"",
+                &format!("                host = \"bench\"\n                {key}"),
+            );
+            fs::write(&path, text).expect("rewrite config");
+            let message = load_exec(&path).expect_err("unknown exec key").to_string();
+            assert!(
+                message.contains(key.split_whitespace().next().unwrap()),
+                "{message}"
+            );
+        }
+    }
+
+    #[test]
+    fn exec_host_must_name_one_rented_host() {
+        for (replacement, expected) in [
+            ("host = \"missing\"", "missing"),
+            ("host = \"bench\"", "rented"),
+        ] {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let path = exec_config(dir.path(), "");
+            let mut text = fs::read_to_string(&path)
+                .expect("read config")
+                .replace("host = \"bench\"", replacement);
+            if expected == "rented" {
+                text = text.replace("provider = \"stub\"", "workers = 1");
+                text = text.replace("                image = \"specialized:latest\"\n", "");
+                text = text.replace("                bootstrap_sima = true\n", "");
+                text = text.replace("                disk_gb = 64\n", "");
+                text = text.replace(
+                    "                env = { NVIDIA_DRIVER_CAPABILITIES = \"all\" }\n",
+                    "",
+                );
+            }
+            fs::write(&path, text).expect("rewrite config");
+            let message = load_exec(&path).expect_err("invalid exec host").to_string();
+            assert!(message.contains(expected), "{message}");
+        }
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = exec_config(dir.path(), "");
+        let text = fs::read_to_string(&path)
+            .expect("read config")
+            .replace("                host = \"bench\"\n", "");
+        fs::write(&path, text).expect("rewrite config");
+        let message = load_exec(&path).expect_err("missing host").to_string();
+        assert!(message.contains("host"), "{message}");
+    }
+
+    #[test]
+    fn exec_directory_payload_requires_an_install_script() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = exec_config(dir.path(), "");
+        let text = fs::read_to_string(&path)
+            .expect("read config")
+            .replace("                install = \"install.sh\"\n", "");
+        fs::write(&path, text).expect("rewrite config");
+        let message = load_exec(&path).expect_err("missing install").to_string();
+        assert!(message.contains("install"), "{message}");
+        assert!(message.contains("directory"), "{message}");
+    }
+
+    #[test]
+    fn exec_only_config_loads_for_exec_and_search_names_its_missing_section() -> Result<()> {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = exec_config(dir.path(), "");
+        load_exec(&path)?;
+        let message = load(&path)
+            .expect_err("search section is required")
+            .to_string();
+        assert!(message.contains("[search]"), "{message}");
+        Ok(())
+    }
+
+    #[test]
+    fn search_load_names_each_required_search_section() {
+        for (removed, expected) in [("search", "[search]"), ("config", "[config]")] {
+            let text = match removed {
+                "search" => BASE
+                    .split("        [config]")
+                    .nth(1)
+                    .map(|tail| format!("[config]{tail}"))
+                    .unwrap(),
+                "config" => BASE.split("        [config]").next().unwrap().to_string(),
+                _ => unreachable!(),
+            };
+            let message = load_text(&text).expect_err("required section").to_string();
+            assert!(message.contains(expected), "{message}");
+        }
+    }
+
+    #[test]
+    fn rented_exec_keys_default_and_owned_entries_reject_them() -> Result<()> {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = exec_config(dir.path(), "");
+        let text = fs::read_to_string(&path)
+            .expect("read config")
+            .replace("                bootstrap_sima = true\n", "")
+            .replace(
+                "                env = { NVIDIA_DRIVER_CAPABILITIES = \"all\" }\n",
+                "",
+            );
+        fs::write(&path, text).expect("rewrite config");
+        let HostForm::Rented(rented) = load_exec(&path)?.host.form else {
+            panic!("rented host");
+        };
+        assert!(!rented.bootstrap_sima);
+        assert!(rented.env.is_empty());
+
+        for key in [
+            "env = { NVIDIA_DRIVER_CAPABILITIES = \"all\" }",
+            "bootstrap_sima = true",
+        ] {
+            let text = format!("{BASE}\n[host.owned]\nworkers = 1\n{key}\n");
+            let message = rejection(&text);
+            assert!(
+                message.contains(key.split_whitespace().next().unwrap()),
+                "{message}"
+            );
+            assert!(message.contains("machine of yours"), "{message}");
+        }
+        Ok(())
     }
 }

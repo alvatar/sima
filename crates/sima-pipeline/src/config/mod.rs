@@ -295,7 +295,7 @@ mod machines;
 mod search;
 mod settings;
 
-pub use load::{LoadedConfig, load};
+pub use load::{ExecConfig, LoadedConfig, load, load_exec};
 pub use machines::{
     Container, FillPolicy, Fleet, Host, HostClass, HostClassForm, HostForm, Orchestrator,
     OwnedClass, OwnedHost, Pool, ProviderId, Rented, RentedClass,

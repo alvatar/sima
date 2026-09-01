@@ -51,8 +51,8 @@ mod task_keys;
 mod timeline;
 
 pub use config::{
-    Container, Fleet, Host, HostClass, HostClassForm, HostForm, LoadedConfig, Orchestrator,
-    OwnedClass, OwnedHost, Pool, ProviderId, Rented, RentedClass, load,
+    Container, ExecConfig, Fleet, Host, HostClass, HostClassForm, HostForm, LoadedConfig,
+    Orchestrator, OwnedClass, OwnedHost, Pool, ProviderId, Rented, RentedClass, load, load_exec,
 };
 pub use devices::DeviceSelector;
 pub use domain_registry::DomainRegistry;
@@ -64,6 +64,7 @@ pub use fleet::Engagement;
 pub use machines::machines;
 pub use migrate::{MigrateOutcome, migrate, recall, sync_serve};
 pub use orchestrate::orchestrate;
+pub use payload::PayloadSpec;
 pub use program_binding::BinaryChange;
 pub use program_delivery::{ProgramDelivery, ingest_program, receive_program};
 pub use providers::{ProviderSettings, provider_for};

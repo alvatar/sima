@@ -70,13 +70,13 @@ const LOG_TAIL_LINES: usize = 20;
 /// Both paths are resolved against the config file's directory, the rule every
 /// path in a config follows.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct PayloadSpec {
+pub struct PayloadSpec {
     /// One file or one directory. A single file is the program; a directory is
     /// whatever `install` makes of it.
-    pub(crate) payload: PathBuf,
+    pub payload: PathBuf,
     /// The shell script the destination runs over the materialized payload.
     /// `None` for a single-file payload, which is its own entry point.
-    pub(crate) install: Option<PathBuf>,
+    pub install: Option<PathBuf>,
 }
 
 /// One file of a payload: where it sits in the tree, whether it runs, and the
