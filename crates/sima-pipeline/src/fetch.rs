@@ -60,7 +60,7 @@ fn remote_script(remote_root: &str, patterns: &[String]) -> String {
     let mut script = format!("set -e\njob={}\ncd \"$job/payload\"\nset --\n", remote_root);
     for pattern in patterns {
         script.push_str(&format!(
-            "pattern={}\nmatched=\nfor file in $pattern; do\n  [ -e \"$file\" ] || continue\n  set -- \"$@\" \"$file\"\n  matched=yes\ndone\n[ -n \"$matched\" ] || echo \"warning: output glob matched nothing: $pattern\" >&2\n",
+            "pattern={}\nmatched=\nfor file in $pattern; do\n  [ -e \"$file\" ] || continue\n  set -- \"$@\" \"./$file\"\n  matched=yes\ndone\n[ -n \"$matched\" ] || echo \"warning: output glob matched nothing: $pattern\" >&2\n",
             shell_quote(pattern)
         ));
     }
@@ -84,6 +84,7 @@ mod tests {
         let script = remote_script("~/sima/exec/job", &["reports/*.html".to_string()]);
         assert!(script.contains("cd \"$job/payload\""));
         assert!(script.contains("reports/*.html"));
+        assert!(script.contains("\"./$file\""));
         assert!(script.contains("exec.log"));
     }
 

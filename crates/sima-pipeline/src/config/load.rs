@@ -7,7 +7,7 @@
 //! follows, then the operational settings, then the machines.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
 use sima_core::{Error, Hash, Result};
@@ -213,6 +213,17 @@ pub fn load_exec(path: &Path) -> Result<ExecConfig> {
     let base = path.parent().unwrap_or(Path::new(""));
     let payload =
         resolve_payload_paths(path, base, "[exec]", &exec.payload, exec.install.as_deref())?;
+    for output in &exec.outputs {
+        if Path::new(output)
+            .components()
+            .any(|component| matches!(component, Component::ParentDir | Component::RootDir))
+        {
+            return Err(Error::Validation(format!(
+                "{}: [exec] output glob {output:?} escapes the payload root; output globs are relative to that root",
+                path.display()
+            )));
+        }
+    }
     let fetch_to = base.join(exec.fetch_to.as_deref().unwrap_or(EXEC_OUTPUT_DIR));
     Ok(ExecConfig {
         host_name,
@@ -2769,6 +2780,24 @@ mod tests {
         fs::write(&path, text).expect("rewrite config");
         assert_eq!(load_exec(&path)?.fetch_to, dir.path().join("exec-outputs"));
         Ok(())
+    }
+
+    #[test]
+    fn exec_output_globs_cannot_escape_the_payload_root() {
+        for output in ["../secret", "/etc/passwd", "reports/../../secret"] {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let path = exec_config(dir.path(), "");
+            let text = fs::read_to_string(&path).expect("read config").replace(
+                "outputs = [\"reports/*.html\", \"*.pfm\"]",
+                &format!("outputs = [{output:?}]"),
+            );
+            fs::write(&path, text).expect("rewrite config");
+            let message = load_exec(&path)
+                .expect_err("escaping output glob")
+                .to_string();
+            assert!(message.contains(output), "{message}");
+            assert!(message.contains("payload root"), "{message}");
+        }
     }
 
     #[test]
