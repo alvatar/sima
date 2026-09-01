@@ -30,6 +30,45 @@ fn stdout(output: &Output) -> String {
 }
 
 #[test]
+fn exec_argv_forms_dispatch_and_malformed_forms_report_usage() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config = dir.path().join("job.toml");
+    std::fs::write(&config, "not toml").expect("write invalid config");
+    let path = config.to_str().expect("utf-8 path");
+
+    for args in [
+        vec!["exec", path],
+        vec!["exec", path, "--attach"],
+        vec!["exec", path, "--one-shot"],
+        vec!["exec", path, "--end"],
+        vec!["exec", path, "--fetch-to", "results"],
+        vec!["exec", path, "--one-shot", "--fetch-to", "results"],
+        vec!["exec", path, "--end", "--fetch-to", "results"],
+        vec!["exec", path, "--quiet"],
+    ] {
+        let output = sima(&args);
+        assert_eq!(output.status.code(), Some(1), "{args:?}: {output:?}");
+        let stderr = String::from_utf8(output.stderr).expect("stderr is UTF-8");
+        assert!(
+            stderr.contains(path),
+            "the exec loader handled {args:?}: {stderr}"
+        );
+        assert!(!stderr.contains("usage: sima"), "{args:?}: {stderr}");
+    }
+
+    for args in [
+        vec!["exec", path, "--attach", "--end"],
+        vec!["exec", path, "--attach", "--fetch-to", "results"],
+        vec!["exec", path, "--fetch-to"],
+    ] {
+        let output = sima(&args);
+        assert_eq!(output.status.code(), Some(1), "{args:?}: {output:?}");
+        let stderr = String::from_utf8(output.stderr).expect("stderr is UTF-8");
+        assert!(stderr.contains("usage: sima"), "{args:?}: {stderr}");
+    }
+}
+
+#[test]
 fn search_finalizes_a_succeeding_config_and_writes_the_manifest() {
     let dir = tempfile::tempdir().expect("temp dir");
     let config = write_config(dir.path(), r#""succeed", "succeed""#);

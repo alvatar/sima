@@ -53,6 +53,11 @@ pub enum ExecOutcome {
     Completed(i32),
     /// The operator interrupted the stream; the command and machine remain.
     Detached,
+    /// The operator interrupted before the command started.
+    Abandoned {
+        /// Whether the standing machine was kept for a later invocation.
+        kept: bool,
+    },
     /// `--end` destroyed the standing machine.
     Ended,
     /// `--end` found no standing machine.
@@ -67,6 +72,13 @@ pub trait ExecObserver {
     fn command(&mut self, line: &str);
     /// One orchestration status line.
     fn narration(&mut self, line: &str);
+    /// The machine adopted or acquired for this invocation.
+    fn instance(&mut self, id: &str, rate_microusd_hour: u64) {
+        self.narration(&format!(
+            "instance {id} at ${:.6}/hr",
+            rate_microusd_hour as f64 / 1_000_000.0
+        ));
+    }
 }
 
 /// Runs one exec invocation from `config_path`.
@@ -147,11 +159,7 @@ fn run(
         }
     }
     let guard = held.expect("adopted or acquired");
-    observer.narration(&format!(
-        "instance {} at ${:.6}/hr",
-        guard.id().0,
-        guard.rate().0 as f64 / 1_000_000.0
-    ));
+    observer.instance(&guard.id().0, guard.rate().0);
     let reach = Reach::new(
         &transport_mode(provider.as_ref())?,
         &endpoint_target(guard.endpoint().clone()),
@@ -243,9 +251,9 @@ fn start(
     }
     if interrupt.load(Ordering::Relaxed) {
         return Ok(if one_shot {
-            SessionOutcome::Release(ExecOutcome::Detached)
+            SessionOutcome::Release(ExecOutcome::Abandoned { kept: false })
         } else {
-            SessionOutcome::Keep(ExecOutcome::Detached)
+            SessionOutcome::Keep(ExecOutcome::Abandoned { kept: true })
         });
     }
     let HostForm::Rented(spec) = &config.host.form else {
@@ -265,9 +273,9 @@ fn start(
     far.deliver(store, &ingest_exec(&config.payload, store)?)?;
     if interrupt.load(Ordering::Relaxed) {
         return Ok(if one_shot {
-            SessionOutcome::Release(ExecOutcome::Detached)
+            SessionOutcome::Release(ExecOutcome::Abandoned { kept: false })
         } else {
-            SessionOutcome::Keep(ExecOutcome::Detached)
+            SessionOutcome::Keep(ExecOutcome::Abandoned { kept: true })
         });
     }
     far.start(&config.command)?;
@@ -933,6 +941,44 @@ mod tests {
         assert_eq!(far.state()?, RemoteState::Running(pid));
         far.kill(pid)?;
         far.wait_gone(pid)?;
+        Ok(())
+    }
+
+    #[test]
+    fn interrupt_before_start_abandons_with_the_requested_machine_disposition() -> Result<()> {
+        let dir = tempfile::tempdir().expect("job");
+        let path = job_config(dir.path(), "echo must-not-run");
+        let config = load_exec(&path)?;
+        let far = local_far(&PathBuf::from(&config.host.root));
+        let store = Store::open(&config.store)?;
+        let mut recording = Recording::default();
+
+        assert!(matches!(
+            start(
+                &far,
+                &store,
+                &config,
+                &config.fetch_to,
+                false,
+                &AtomicBool::new(true),
+                &mut recording,
+            )?,
+            SessionOutcome::Keep(ExecOutcome::Abandoned { kept: true })
+        ));
+        assert!(matches!(far.state()?, RemoteState::Idle));
+        assert!(matches!(
+            start(
+                &far,
+                &store,
+                &config,
+                &config.fetch_to,
+                true,
+                &AtomicBool::new(true),
+                &mut recording,
+            )?,
+            SessionOutcome::Release(ExecOutcome::Abandoned { kept: false })
+        ));
+        assert!(matches!(far.state()?, RemoteState::Idle));
         Ok(())
     }
 
