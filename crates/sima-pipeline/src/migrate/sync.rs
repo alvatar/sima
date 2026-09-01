@@ -175,6 +175,19 @@ impl Reach {
         }
     }
 
+    /// The argv that runs one shell script while leaving stdin available for
+    /// arbitrary bytes, as exec bootstrap requires.
+    pub(crate) fn shell_script_argv(&self, script: &str) -> Vec<String> {
+        match self {
+            Reach::Ssh { destination, .. } => {
+                let mut argv = destination.prefix();
+                argv.extend(["sh".to_string(), "-c".to_string(), script.to_string()]);
+                argv
+            }
+            Reach::Here(_) => vec!["/bin/sh".to_string(), "-c".to_string(), script.to_string()],
+        }
+    }
+
     /// The `sima` binary that drives the search on the far side.
     pub(crate) fn binary(&self) -> String {
         match self {

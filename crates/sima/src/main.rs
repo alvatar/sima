@@ -63,8 +63,8 @@ use sima_pipeline::{
     BinaryChange, Engagement, FeedInfo, LoadedConfig, LocalFeed, Record, RemoteFeed, RemovalReport,
     ReportRow, Sdk, SearchControl, SearchFeed, SearchId, SearchOutcome, SearchState, SearchStatus,
     SearchTimeline, TaskHistory, failures_records, follow_serve, load, local_snapshot, orchestrate,
-    receive_program, remote_snapshot, report_records, report_task_records, seeded_status,
-    status_records, sync_serve, task_history_records, timeline_records,
+    receive_exec_payload, receive_program, remote_snapshot, report_records, report_task_records,
+    seeded_status, status_records, sync_serve, task_history_records, timeline_records,
 };
 use sima_provider::ReconcileScope;
 
@@ -166,6 +166,9 @@ fn main() -> ExitCode {
         }
         ["sync-serve", dir, "--payload", payload, "--sdk", sdk] if host.is_none() => {
             receive_program_command(Path::new(dir), payload, Some(sdk))
+        }
+        ["sync-serve", dir, "--exec-payload", payload] if host.is_none() => {
+            receive_exec_payload_command(Path::new(dir), payload)
         }
         // The SDK this binary carries, written out for developing a program
         // outside a search. It opens no store and reads no config.
@@ -733,6 +736,22 @@ fn receive_program_command(dir: &Path, payload: &str, sdk: Option<&str>) -> Exit
     match receive_program(dir, &payload, sdk.as_ref(), &mut input, &mut output) {
         Ok(_) => ExitCode::SUCCESS,
         Err(e) => report(e),
+    }
+}
+
+/// `sima sync-serve <dir> --exec-payload <digest>`: receives an exec payload
+/// into its shared object cache and materializes it over the mutable job tree.
+fn receive_exec_payload_command(dir: &Path, payload: &str) -> ExitCode {
+    let payload = match Hash::from_hex(payload) {
+        Ok(payload) => payload,
+        Err(error) => return report(error),
+    };
+    let stdin = std::io::stdin();
+    let stdout = std::io::stdout();
+    let (mut input, mut output) = (stdin.lock(), stdout.lock());
+    match receive_exec_payload(dir, &payload, &mut input, &mut output) {
+        Ok(_) => ExitCode::SUCCESS,
+        Err(error) => report(error),
     }
 }
 

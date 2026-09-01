@@ -63,6 +63,10 @@ const LOG_FILE: &str = "install.log";
 /// words are what say why it failed; the whole log is at the path the error
 /// also names.
 const LOG_TAIL_LINES: usize = 20;
+/// The digest marker for an exec's mutable payload tree.
+const EXEC_DIGEST_FILE: &str = "payload.digest";
+/// The transient install log retained only when an exec install fails.
+const EXEC_INSTALL_LOG: &str = ".exec-install.log";
 
 /// What a `[domain.*]` entry declares travels: the payload itself, and the
 /// script that turns it into a program on the destination.
@@ -349,6 +353,49 @@ pub(crate) fn materialize(store: &Store, digest: &Hash, dest: &Path) -> Result<M
         write_file(&path, &store.get(&entry.object)?, mode_of(entry.executable))?;
     }
     Ok(manifest)
+}
+
+/// Materializes an exec payload over its mutable tree and runs its install
+/// script once per digest. Files outside the manifest remain in place.
+pub(crate) fn install_mutable(store: &Store, digest: &Hash, root: &Path) -> Result<bool> {
+    let marker = root.join(EXEC_DIGEST_FILE);
+    if std::fs::read_to_string(&marker).is_ok_and(|stamped| stamped.trim() == digest.to_string()) {
+        return Ok(false);
+    }
+    let payload_dir = root.join(PAYLOAD_DIR);
+    let manifest = materialize(store, digest, &payload_dir)?;
+    if let Some(script) = manifest.install() {
+        let log_path = root.join(EXEC_INSTALL_LOG);
+        let log = File::create(&log_path).map_err(|source| Error::Io {
+            path: log_path.clone(),
+            source,
+        })?;
+        let errors = log.try_clone().map_err(|source| Error::Io {
+            path: log_path.clone(),
+            source,
+        })?;
+        let status = own_process_group(&mut Command::new("/bin/sh"))
+            .args(["-c", script])
+            .current_dir(&payload_dir)
+            .stdin(std::process::Stdio::null())
+            .stdout(log)
+            .stderr(errors)
+            .status()
+            .map_err(|source| Error::Io {
+                path: payload_dir.clone(),
+                source,
+            })?;
+        if !status.success() {
+            return Err(Error::Validation(format!(
+                "the exec install script exited with {status}; its log is at {}, and its last lines are:\n{}",
+                log_path.display(),
+                log_tail(&log_path),
+            )));
+        }
+        let _ = std::fs::remove_file(log_path);
+    }
+    write_file(&marker, format!("{digest}\n").as_bytes(), REGULAR_MODE)?;
+    Ok(true)
 }
 
 /// Where the program answering for one format is installed on the machine
@@ -1085,6 +1132,60 @@ mod tests {
         assert_eq!(objects.len(), 2);
         for object in objects {
             assert!(store.has(&object)?, "{object} is in the store");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn mutable_install_overwrites_manifest_files_and_preserves_untracked_files() -> Result<()> {
+        let (_store_dir, store) = store();
+        let (source, spec) = tree();
+        let first = ingest(&store, &spec)?;
+        let job = tempfile::tempdir().expect("job tree");
+        assert!(install_mutable(&store, &first, job.path())?);
+        write(job.path(), "payload/target/cache", b"warm", 0o644);
+
+        write(source.path(), "payload/assets/w.bin", b"new weights", 0o644);
+        let changed = ingest(&store, &spec)?;
+        assert_ne!(first, changed);
+        assert!(install_mutable(&store, &changed, job.path())?);
+        assert_eq!(
+            std::fs::read(job.path().join("payload/assets/w.bin")).expect("changed file"),
+            b"new weights"
+        );
+        assert_eq!(
+            std::fs::read(job.path().join("payload/target/cache")).expect("cache survives"),
+            b"warm"
+        );
+        assert!(!install_mutable(&store, &changed, job.path())?);
+        Ok(())
+    }
+
+    #[test]
+    fn a_failed_mutable_install_leaves_no_digest_and_runs_again() -> Result<()> {
+        let (_store_dir, store) = store();
+        let source = tempfile::tempdir().expect("source");
+        write(source.path(), "payload/input", b"x", 0o644);
+        let install = write(
+            source.path(),
+            "install.sh",
+            b"echo attempt >> ../attempts\nexit 9\n",
+            0o755,
+        );
+        let digest = ingest(
+            &store,
+            &PayloadSpec {
+                payload: source.path().join("payload"),
+                install: Some(install),
+            },
+        )?;
+        let job = tempfile::tempdir().expect("job tree");
+        for expected in [1, 2] {
+            assert!(install_mutable(&store, &digest, job.path()).is_err());
+            assert!(!job.path().join(EXEC_DIGEST_FILE).exists());
+            let attempts =
+                std::fs::read_to_string(job.path().join("attempts")).expect("attempt log");
+            assert_eq!(attempts.lines().count(), expected);
         }
         Ok(())
     }

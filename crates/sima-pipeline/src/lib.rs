@@ -22,7 +22,9 @@ mod ceiling;
 mod config;
 mod devices;
 mod domain_registry;
+mod exec;
 mod feed;
+mod fetch;
 #[cfg(test)]
 mod fixtures;
 mod fleet;
@@ -56,6 +58,7 @@ pub use config::{
 };
 pub use devices::DeviceSelector;
 pub use domain_registry::DomainRegistry;
+pub use exec::{ExecAction, ExecObserver, ExecOptions, ExecOutcome, exec};
 pub use feed::{
     FOLLOW_PROTOCOL_VERSION, FeedInfo, FollowFrame, LocalFeed, RemoteFeed, SearchFeed,
     follow_serve, local_snapshot, remote_snapshot,
@@ -66,7 +69,9 @@ pub use migrate::{MigrateOutcome, migrate, recall, sync_serve};
 pub use orchestrate::orchestrate;
 pub use payload::PayloadSpec;
 pub use program_binding::BinaryChange;
-pub use program_delivery::{ProgramDelivery, ingest_program, receive_program};
+pub use program_delivery::{
+    ProgramDelivery, ingest_program, receive_exec_payload, receive_program,
+};
 pub use providers::{ProviderSettings, provider_for};
 pub use remove::{remove, remove_matching};
 pub use report::{ReportRow, report, report_records, report_task_records};
