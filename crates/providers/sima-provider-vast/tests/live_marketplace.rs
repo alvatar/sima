@@ -9,7 +9,7 @@
 //! ```
 //!
 //! It reads and rents nothing. Renting spends money, so a rental belongs to
-//! a run that is started on purpose.
+//! a search that is started on purpose.
 
 use sima_core::Result;
 use sima_provider::{Constraints, Objective, Provider, select};

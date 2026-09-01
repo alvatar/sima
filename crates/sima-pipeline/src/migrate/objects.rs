@@ -10,7 +10,7 @@
 //! The **state bytes behind them** are what is worth not sending. The far side
 //! reads the last state of each chain and nothing else, so every earlier one is
 //! bandwidth and rental time spent on bytes nobody opens, and the waste grows
-//! with how far the local run got before the interrupt.
+//! with how far the local search got before the interrupt.
 //!
 //! ```text
 //!    chain interrupted after segment 2 of 6
@@ -24,7 +24,7 @@
 //!
 //! The named set is computed here rather than in the store because it needs
 //! [`STATE_ARTIFACT`] from `sima-contracts`, which `sima-store` does not depend
-//! on — and because it is a property of how a run continues, which is this
+//! on — and because it is a property of how a search continues, which is this
 //! layer's subject.
 
 use std::collections::BTreeSet;
@@ -39,7 +39,7 @@ use sima_store::Store;
 ///
 /// That last set is exactly the frontier states, derived from the records alone
 /// with no knowledge of chain structure: a state some successor consumes is not
-/// a frontier, and one nothing consumes is. A run with no segments names the
+/// a frontier, and one nothing consumes is. A search with no segments names the
 /// identity components alone, since a completed stateless task's output is
 /// never an input to anything.
 ///
@@ -94,7 +94,7 @@ mod tests {
         }
     }
 
-    /// The params every fixture task runs under.
+    /// The params every fixture task searches under.
     fn params() -> Params {
         Params { bytes: vec![1] }
     }
@@ -240,18 +240,18 @@ mod tests {
         Ok(())
     }
 
-    /// A generator-derived chain, run partway, then pushed under the named
+    /// A generator-derived chain, search partway, then pushed under the named
     /// scope into a fresh store — the shape a migration produces.
     mod over_a_real_chain {
         use sima_domains::{StubBehavior, StubGenerator, StubGeneratorConfig};
         use sima_model::{GeneratorConfig, GeneratorId, SearchConfig};
-        use sima_scheduler::{RunOutcome, search_keys};
+        use sima_scheduler::{SearchOutcome, search_keys};
         use sima_store::ObjectScope;
 
         use super::*;
-        use crate::fixtures::{drive_run, stub_environment, sync_between};
+        use crate::fixtures::{drive_search, stub_environment, sync_between};
 
-        /// A run of one candidate over twenty accumulating segments.
+        /// A search of one candidate over twenty accumulating segments.
         fn chained_run() -> SearchConfig {
             SearchConfig {
                 root_seed: 5,
@@ -274,7 +274,7 @@ mod tests {
             // every record and only the frontier's state bytes, and derives
             // exactly the frontier the complete store derives — a chain is
             // located from its records, and the state bytes are what the
-            // frontier segment *runs on*, not what finds it.
+            // frontier segment *searches on*, not what finds it.
             let here = tempfile::tempdir().expect("temp dir");
             let there = tempfile::tempdir().expect("temp dir");
             let local = Store::open(here.path())?;
@@ -283,8 +283,8 @@ mod tests {
             // Stopped shortly after it starts committing, so the chain is
             // partway and has a frontier to hand over.
             assert!(matches!(
-                drive_run(&local, &config, Some(3)),
-                RunOutcome::Interrupted { .. }
+                drive_search(&local, &config, Some(3)),
+                SearchOutcome::Interrupted { .. }
             ));
 
             let generator = StubGenerator::new()?;

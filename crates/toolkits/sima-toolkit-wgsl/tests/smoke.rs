@@ -36,7 +36,7 @@ fn smoke_kernel_runs_end_to_end_on_device() {
     let expected: Vec<u32> = input.iter().map(|&value| value * 2 + 1).collect();
     assert_eq!(output, expected.as_slice());
 
-    // The identity inputs a domain records are stable across the run.
+    // The identity inputs a domain records are stable across the search.
     assert_eq!(kernel.source_digest(), source_digest(SMOKE_WGSL));
     assert_eq!(kernel.compiler_id(), COMPILER_ID);
 }

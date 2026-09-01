@@ -9,7 +9,7 @@
 //!
 //! - the two components a program supplies — [`Domain`] and [`Generator`] —
 //!   with [`serve`], the call that hosts them: a program outside the workspace
-//!   implements the two traits and hands them to `serve`, which answers a run's
+//!   implements the two traits and hands them to `serve`, which answers a search's
 //!   two conversations with it;
 //! - the [`Executor`] a domain builds, with the vocabulary it exchanges:
 //!   [`TaskInput`], [`ExecutionContext`], [`Outcome`], [`Artifact`], [`Stats`],
@@ -17,7 +17,7 @@
 //!   with its inert [`NoCheckpoint`] handle;
 //! - the device vocabulary: [`DeviceBinding`] and [`DeviceClass`], which name
 //!   the device an executor is built for, and [`DeviceInfo`] with
-//!   [`DeviceType`], which are how a domain answers what its work runs on;
+//!   [`DeviceType`], which are how a domain answers what its work searches on;
 //! - the identity-bearing values a component is handed: [`Spec`], [`Params`],
 //!   [`FormatId`], [`GeneratorId`], and the [`Environment`] vocabulary;
 //! - the foundations those values are built on: [`Error`] and [`Result`],
@@ -34,7 +34,7 @@
 //! The omissions are the surface's shape, not gaps in it. Each names a
 //! responsibility that belongs to sima's side of the boundary:
 //!
-//! - **run-level configuration** (`SearchConfig`, `SearchId`, `GeneratorConfig`) is
+//! - **search-level configuration** (`SearchConfig`, `SearchId`, `GeneratorConfig`) is
 //!   the orchestrator's, never an executor's;
 //! - **identity and commitment** (`TaskKey`, `TaskIdentity`, `TaskRecord`,
 //!   `ArtifactRef`) are the worker's side: an executor receives loaded bytes

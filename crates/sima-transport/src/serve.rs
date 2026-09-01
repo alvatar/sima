@@ -1,6 +1,6 @@
 //! [`serve`]: the process entry point of a program that hosts a domain.
 //!
-//! One binary answers both roles a run needs of a program, and the arguments
+//! One binary answers both roles a search needs of a program, and the arguments
 //! it was spawned with say which: bare, it hosts the format's executor over
 //! the worker protocol; under `--serve-domain <format>`, it answers what the
 //! format binds over the domain service. A program is then its two components
@@ -70,7 +70,7 @@ pub fn serve(domain: &dyn Domain, generators: &[&dyn Generator]) -> Result<()> {
     match Role::from_args(std::env::args())? {
         Role::Execute => {
             // Panic messages and backtraces latch for the serve loop's
-            // correlated diagnostics; the process's own hook still runs after
+            // correlated diagnostics; the process's own hook still searches after
             // the capture.
             host::capture_panics();
             host::serve(stdin.lock(), stdout.lock(), &|format, device| {

@@ -1,11 +1,11 @@
-//! CUDA compute toolkit: run GPU compute kernels authored in CUDA C without
+//! CUDA compute toolkit: search GPU compute kernels authored in CUDA C without
 //! writing raw driver-API calls.
 //!
 //! A domain describes kernels and buffers and orchestrates dispatches through a
 //! small surface — [`Context`], [`Buffer`], [`Kernel`] — while the toolkit hides
 //! the CUDA driver API behind `cudarc`. It is an execution backend a domain
 //! depends on, a compute library rather than an executor: it holds no store
-//! handle and builds no run identity.
+//! handle and builds no search identity.
 //!
 //! # Kernels ship as PTX
 //!
@@ -13,7 +13,7 @@
 //! [`PTX_OPTIONS`], and the PTX is committed beside its source.
 //! [`Context::kernel`] takes that PTX text and the driver's just-in-time
 //! compiler turns it into machine code for the card it is loaded on. Nothing
-//! compiles CUDA C while a run executes, so no worker needs the CUDA toolkit —
+//! compiles CUDA C while a search executes, so no worker needs the CUDA toolkit —
 //! only the driver, which arrives with the card.
 //!
 //! Regenerating a committed PTX needs `libnvrtc`, and only that: it is a
@@ -28,14 +28,14 @@
 //! `compile-ptx` example is the regeneration step:
 //!
 //! ```text
-//! cargo run -p sima-toolkit-cuda --example compile-ptx \
+//! cargo search -p sima-toolkit-cuda --example compile-ptx \
 //!   -- path/to/kernel.cu > path/to/kernel.ptx
 //! ```
 //!
 //! Each kernel carries a regeneration test asserting its committed artifact is
 //! exactly what its committed source compiles to. NVRTC stamps its own version
 //! into the PTX header, so that test also pins which NVRTC produced the commit:
-//! regenerating with a different one is a real change to what the device runs,
+//! regenerating with a different one is a real change to what the device searches,
 //! and it moves the digest the environment records.
 //!
 //! # What pairs with the WGSL toolkit
@@ -51,7 +51,7 @@
 //!   digest and its compiler id states the lowering.
 //! - **The compiler on the surface.** Compilation happens offline here, so
 //!   [`compile`] is the regeneration entry point a developer machine calls and
-//!   nothing on the execution path does. WGSL lowers at run time instead, so
+//!   nothing on the execution path does. WGSL lowers at search time instead, so
 //!   its surface carries a device-free validity check and no compiler of its
 //!   own.
 //!
@@ -68,18 +68,18 @@
 //!
 //! # Tests
 //!
-//! Tests split three ways by what they touch: pure ones run anywhere, tests
+//! Tests split three ways by what they touch: pure ones search anywhere, tests
 //! that open a [`Context`] need an NVIDIA device, and tests that call
-//! [`compile`] need `libnvrtc`, which the build vendors, so they run anywhere
+//! [`compile`] need `libnvrtc`, which the build vendors, so they search anywhere
 //! too. Each device test sits behind a `mod on_device`, the marker that keeps
-//! it on the device machine. On that machine every test runs under a plain
+//! it on the device machine. On that machine every test searches under a plain
 //! `cargo test`, so a device or compiler fault surfaces as a test failure:
 //!
 //! ```text
 //! cargo test -p sima-toolkit-cuda
 //! ```
 //!
-//! `cudarc` opens the CUDA libraries at run time, so the crate builds with no
+//! `cudarc` opens the CUDA libraries at search time, so the crate builds with no
 //! CUDA toolkit and no driver present.
 
 mod buffer;

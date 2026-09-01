@@ -1,15 +1,15 @@
-//! The driver: it sets up the run, drives the worker pool, and finalizes.
+//! The driver: it sets up the search, drives the worker pool, and finalizes.
 //!
-//! `run` owns the whole run: it registers the run, materializes the frontier,
+//! `search` owns the whole search: it registers the search, materializes the frontier,
 //! spawns the pool inside a scope so workers borrow the store and transport
 //! without `Arc`, feeds the queue by polling the task source, and finalizes on
-//! success. A definitive candidate failure terminates the run without writing a
+//! success. A definitive candidate failure terminates the search without writing a
 //! manifest, leaving the store clean and resumable; an infrastructure fault
 //! returns `Err`. The two mirror the executor's own `Ok(Outcome)`/`Err` split
-//! one level up. A caller's interrupt winds the run down the same way a
+//! one level up. A caller's interrupt winds the search down the same way a
 //! failure does — in-flight attempts are abandoned and their worker processes
 //! killed, queued tasks are abandoned, no manifest — but reports
-//! [`RunOutcome::Interrupted`], the resumable outcome.
+//! [`SearchOutcome::Interrupted`], the resumable outcome.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -24,8 +24,8 @@ use sima_store::Store;
 use sima_trace::{Collector, Emitter, Event};
 
 use crate::config::ExecutionConfig;
-use crate::control::RunControl;
-use crate::coordinator::{Coordinator, Failure, Gate, Pending, RunState};
+use crate::control::SearchControl;
+use crate::coordinator::{Coordinator, Failure, Gate, Pending, SearchState};
 use crate::placement;
 use crate::segment_chain::SegmentChain;
 use crate::static_batch::StaticBatch;
@@ -33,36 +33,36 @@ use crate::task_source::{RunnableTask, TaskSource};
 use crate::worker::{WorkerContext, worker_loop};
 use crate::worker_pool::WorkerPool;
 
-/// The result of a run.
+/// The result of a search.
 #[derive(Debug)]
-pub enum RunOutcome {
+pub enum SearchOutcome {
     /// Every task committed; the manifest is written.
     Finalized {
-        /// The finalized run.
-        run: SearchId,
+        /// The finalized search.
+        search: SearchId,
     },
     /// A task failed definitively; no manifest was written and the store is
     /// left clean and resumable.
     Failed {
-        /// The task whose definitive failure ended the run.
+        /// The task whose definitive failure ended the search.
         task: TaskKey,
         /// Why it failed.
         reason: String,
     },
-    /// The caller interrupted the run: in-flight attempts drained and
+    /// The caller interrupted the search: in-flight attempts drained and
     /// committed, queued tasks were abandoned, and no manifest was written,
     /// so the store is resumable.
     Interrupted {
-        /// The interrupted run.
-        run: SearchId,
+        /// The interrupted search.
+        search: SearchId,
     },
 }
 
-/// The task source the run's work division calls for: a segment count means
+/// The task source the search's work division calls for: a segment count means
 /// per-candidate chains walked through committed state, its absence one
 /// stateless task per candidate.
 ///
-/// Constructing a source generates the run's specs and writes each object to
+/// Constructing a source generates the search's specs and writes each object to
 /// the store, which is idempotent — a spec's address is the hash of its own
 /// bytes, so a second construction over the same store rewrites the same
 /// content under the same key and materializes the same frontier.
@@ -78,20 +78,20 @@ fn task_source<'a>(
     })
 }
 
-/// The task keys the run comprises, as the store's current state materializes
+/// The task keys the search comprises, as the store's current state materializes
 /// them, derived without driving anything.
 ///
 /// This is the frontier's own derivation, so it answers whatever the store
-/// currently supports: over an empty store the keys a run starts from, over a
+/// currently supports: over an empty store the keys a search starts from, over a
 /// partly-committed segment chain its committed prefix plus the successors
-/// those commits made runnable, and over a finalized run exactly what its
+/// those commits made runnable, and over a finalized search exactly what its
 /// manifest lists. A chain is traversable forward only — segment k's key
 /// derives from segment k−1's produced state — so the set grows as the store
 /// answers more of it.
 ///
-/// Deriving the keys **writes the run's spec objects to the store**, since
+/// Deriving the keys **writes the search's spec objects to the store**, since
 /// constructing a source generates them. The write is idempotent and the
-/// derivation is otherwise read-only: no run is registered, no record is
+/// derivation is otherwise read-only: no search is registered, no record is
 /// committed, and no journal line is appended.
 pub fn search_keys(
     store: &Store,
@@ -106,15 +106,15 @@ pub fn search_keys(
 
 /// Runs a search to completion.
 ///
-/// Registers the run, materializes the runnable frontier from `(config,
+/// Registers the search, materializes the runnable frontier from `(config,
 /// environment, store state)`, and evaluates each task on the `pools`' worker
 /// processes, committing successes through `store` and retrying transient
 /// failures up to the cap. Each pool spawns its own slots through its own
 /// transport; worker ids are global and sequential across pools, local first.
-/// Returns [`RunOutcome::Finalized`] once every task is committed and the
-/// manifest is written, or [`RunOutcome::Failed`] when a task fails
-/// definitively, or [`RunOutcome::Interrupted`] when `control`'s interrupt flag
-/// winds the run down — in the latter two cases no manifest is written and the
+/// Returns [`SearchOutcome::Finalized`] once every task is committed and the
+/// manifest is written, or [`SearchOutcome::Failed`] when a task fails
+/// definitively, or [`SearchOutcome::Interrupted`] when `control`'s interrupt flag
+/// winds the search down — in the latter two cases no manifest is written and the
 /// store stays resumable. `Err` signals an infrastructure fault. `control` also
 /// carries the caller's event observer, invoked with each lifecycle event in
 /// journal order.
@@ -125,18 +125,18 @@ pub fn run(
     generator: &dyn Generator,
     pools: &[WorkerPool<'_>],
     exec: &ExecutionConfig,
-    control: &RunControl,
-) -> Result<RunOutcome> {
-    // A run needs a worker somewhere: with every pool's slots empty, no one
-    // would ever pull a task and the run would hang. This is the whole-run form
+    control: &SearchControl,
+) -> Result<SearchOutcome> {
+    // A search needs a worker somewhere: with every pool's slots empty, no one
+    // would ever pull a task and the search would hang. This is the whole-search form
     // of the per-pool worker requirement, enforced where all pools are visible.
     if pools.iter().all(|pool| pool.slots.is_empty()) {
         return Err(Error::Validation(
-            "a run needs at least one worker; every pool is empty".to_string(),
+            "a search needs at least one worker; every pool is empty".to_string(),
         ));
     }
-    // Register the run; its id is the config object's address.
-    let run = store.create_search(config)?;
+    // Register the search; its id is the config object's address.
+    let search = store.create_search(config)?;
     // Every committed record references the params and environment objects, so
     // they must be durable before any commit; the spec objects are stored as
     // the frontier materializes.
@@ -144,28 +144,28 @@ pub fn run(
     store.put(&environment.to_bytes())?;
 
     let mut source = task_source(store, config, environment, generator)?;
-    let writer = store.journal_writer(&run)?;
+    let writer = store.journal_writer(&search)?;
     // Placement resumes from the store: a chain that already ran returns to
-    // its class, and a slot naming a class the run no longer has rebinds when
+    // its class, and a slot naming a class the search no longer has rebinds when
     // a worker first pulls it. A slot the scheduler cannot read carries no
     // usable placement, so it is read as an absent binding and its chain binds
     // again — the stance the store takes one layer down for a slot whose frame
     // is unusable. Placement is advisory coherence state, so one unreadable
     // slot costs coherence for its chain rather than the whole resume.
     let mut chains = HashMap::new();
-    for (chain, payload) in store.chain_bindings(&run)? {
+    for (chain, payload) in store.chain_bindings(&search)? {
         if let Ok(class) = placement::decode_class(&payload) {
             chains.insert(chain, class);
         }
     }
     let coordinator = Coordinator::with_placement(eligible_classes(pools), chains);
     let coordinator = &coordinator;
-    // The driver each (host, device) last reported to this run's journal,
+    // The driver each (host, device) last reported to this search's journal,
     // read before this session appends: the baseline each spawn's report is
     // compared against. One lock shared by every worker keeps the state
     // advancing with the spawns, so a driver transition is journaled once,
     // not once per slot.
-    let drivers = Mutex::new(prior_drivers(store, &run));
+    let drivers = Mutex::new(prior_drivers(store, &search));
     let drivers = &drivers;
 
     // Two nested scopes: the outer one holds the trace collector — a scoped
@@ -176,23 +176,23 @@ pub fn run(
     let (outcome, journal) = thread::scope(|scope| {
         let collector = Collector::spawn(scope, writer, control.observer);
         let events = collector.emitter();
-        // Hand the run's emitter to a caller that emits alongside it — the
+        // Hand the search's emitter to a caller that emits alongside it — the
         // rental supervisor — once, as the collector comes up.
         if let Some(hook) = control.on_start {
             hook(events.clone());
         }
-        events.emit(Event::RunStarted {
-            run: run.to_string(),
+        events.emit(Event::SearchStarted {
+            search: search.to_string(),
             tasks: source.task_total(),
             committed: source.prior_committed(),
         });
 
         let drive_result = thread::scope(|scope| -> Result<DriveOutcome> {
             // Seed the live-worker count to the pool's slot total before the
-            // workers spawn, so the last worker to exit while the run is still
+            // workers spawn, so the last worker to exit while the search is still
             // running faults it rather than leaving the driver to wait forever.
             coordinator.set_live_workers(pools.iter().map(|pool| pool.slots.len()).sum());
-            // Worker ids run global and sequential across pools, local first,
+            // Worker ids search global and sequential across pools, local first,
             // so every slot of every pool has a distinct id in the journal.
             let mut worker = 0u64;
             for pool in pools {
@@ -200,7 +200,7 @@ pub fn run(
                     let ctx = WorkerContext {
                         coordinator,
                         store,
-                        run,
+                        search,
                         config,
                         transport: pool.transport,
                         host: pool.host.clone(),
@@ -222,30 +222,30 @@ pub fn run(
         // and join the journal.
         let outcome = match drive_result {
             Ok(DriveOutcome::Finalize) => {
-                store.finalize_search(&run, source.all_keys()).map(|()| {
-                    events.emit(Event::RunFinalized {
-                        run: run.to_string(),
+                store.finalize_search(&search, source.all_keys()).map(|()| {
+                    events.emit(Event::SearchFinalized {
+                        search: search.to_string(),
                         committed: source.all_keys().len(),
                     });
-                    RunOutcome::Finalized { run }
+                    SearchOutcome::Finalized { search }
                 })
             }
             Ok(DriveOutcome::Fail(failure)) => {
-                events.emit(Event::RunFailed {
-                    run: run.to_string(),
+                events.emit(Event::SearchFailed {
+                    search: search.to_string(),
                     task: failure.task.to_string(),
                     reason: failure.reason.clone(),
                 });
-                Ok(RunOutcome::Failed {
+                Ok(SearchOutcome::Failed {
                     task: failure.task,
                     reason: failure.reason,
                 })
             }
             Ok(DriveOutcome::Interrupt) => {
-                events.emit(Event::RunInterrupted {
-                    run: run.to_string(),
+                events.emit(Event::SearchInterrupted {
+                    search: search.to_string(),
                 });
-                Ok(RunOutcome::Interrupted { run })
+                Ok(SearchOutcome::Interrupted { search })
             }
             Err(fault) => Err(fault),
         };
@@ -256,11 +256,11 @@ pub fn run(
 
     // The domain outcome wins: a definitive candidate failure or an interrupt
     // is returned even when the journal degraded, because the journal is
-    // observational and the same fault resurfaces on the next run that
+    // observational and the same fault resurfaces on the next search that
     // finalizes over this store. Only a Finalized outcome yields to the
     // journal fault — there it is the sole signal anything went wrong.
     let outcome = outcome?;
-    if matches!(outcome, RunOutcome::Finalized { .. }) {
+    if matches!(outcome, SearchOutcome::Finalized { .. }) {
         journal?;
     }
     Ok(outcome)
@@ -291,14 +291,14 @@ pub fn worker_slots(exec: &ExecutionConfig) -> Vec<Option<DeviceBinding>> {
     slots
 }
 
-/// The driver each (host, device) pair last reported in `run`'s journal,
+/// The driver each (host, device) pair last reported in `search`'s journal,
 /// from its `WorkerBound` events. A line that does not parse is skipped, and
 /// a journal that cannot be read seeds nothing: the journal is observational
 /// — a crash can tear its final write, and a degraded journal must fail the
-/// run through its own write path, never through this baseline read.
-fn prior_drivers(store: &Store, run: &SearchId) -> HashMap<(String, String), String> {
+/// search through its own write path, never through this baseline read.
+fn prior_drivers(store: &Store, search: &SearchId) -> HashMap<(String, String), String> {
     let mut drivers = HashMap::new();
-    for line in store.journal(run).unwrap_or_default() {
+    for line in store.journal(search).unwrap_or_default() {
         if let Ok(record) = sima_trace::Record::from_line(&line)
             && let Event::WorkerBound {
                 host,
@@ -313,10 +313,10 @@ fn prior_drivers(store: &Store, run: &SearchId) -> HashMap<(String, String), Str
     drivers
 }
 
-/// The device classes the run's pools carry, distinct, in pool-then-slot
+/// The device classes the search's pools carry, distinct, in pool-then-slot
 /// order. This is placement's eligibility set: a class is global (decision
-/// C3), so a class present on any pool is a class the run has, and a chain
-/// bound to it runs on whichever pool holds it. For a single pool this is
+/// C3), so a class present on any pool is a class the search has, and a chain
+/// bound to it searches on whichever pool holds it. For a single pool this is
 /// exactly that pool's classes in slot order.
 fn eligible_classes(pools: &[WorkerPool<'_>]) -> Vec<DeviceClass> {
     let mut classes = Vec::new();
@@ -330,13 +330,13 @@ fn eligible_classes(pools: &[WorkerPool<'_>]) -> Vec<DeviceClass> {
     classes
 }
 
-/// What the driver decided the run should do once its gate resolved.
+/// What the driver decided the search should do once its gate resolved.
 enum DriveOutcome {
-    /// Every task committed; finalize the run.
+    /// Every task committed; finalize the search.
     Finalize,
     /// A task failed definitively; report it.
     Fail(Failure),
-    /// The caller's interrupt wound the run down; report it.
+    /// The caller's interrupt wound the search down; report it.
     Interrupt,
 }
 
@@ -346,7 +346,7 @@ enum DriveOutcome {
 ///
 /// Only the driver thread takes this bounded wait; workers park on plain
 /// condvar waits with no timeout. At 50 ms the cost is about 20 uncontended
-/// lock acquisitions per second per run process — one per wakeup, to
+/// lock acquisitions per second per search process — one per wakeup, to
 /// re-check quiescence and the interrupt flag under the shared lock. The
 /// poll is what carries a signal into the condvar: a signal handler may not
 /// call `notify_all` (that function is not async-signal-safe), and the
@@ -357,15 +357,15 @@ enum DriveOutcome {
 /// acquisitions.
 const INTERRUPT_POLL: Duration = Duration::from_millis(50);
 
-/// Feeds the queue and waits for the pool, deciding the run's outcome.
+/// Feeds the queue and waits for the pool, deciding the search's outcome.
 /// Three ideas govern the loop:
 ///
-/// - **Poll gate**: while the run is healthy, the source is polled when the
+/// - **Poll gate**: while the search is healthy, the source is polled when the
 ///   queue is empty and a lease has been released since the last poll. A
 ///   source reads committed records to decide what is runnable next, and
 ///   only a settling worker changes them, so releases are the poll trigger.
 /// - **Finalize condition**: an empty poll at an idle pool — no queue, no
-///   leases — means no task remains, and the run finalizes.
+///   leases — means no task remains, and the search finalizes.
 /// - **Terminal drain**: a terminal state (a caller interrupt, a definitive
 ///   failure, a fault) waits for the in-flight leases to drain, abandoning
 ///   queued tasks.
@@ -373,7 +373,7 @@ fn drive(
     coordinator: &Coordinator,
     source: &mut dyn TaskSource,
     events: &Emitter,
-    control: &RunControl,
+    control: &SearchControl,
 ) -> Result<DriveOutcome> {
     // The release count the last poll was current as of; `None` before the
     // first poll, so it fires unconditionally.
@@ -381,12 +381,12 @@ fn drive(
     loop {
         // Every wakeup — a pool notification or the bounded wait elapsing —
         // passes through here, so a set interrupt flag is observed within
-        // `INTERRUPT_POLL`. It upgrades a healthy run to `Interrupted`, and
+        // `INTERRUPT_POLL`. It upgrades a healthy search to `Interrupted`, and
         // the wind-down rides the ordinary drain path below.
         if control.interrupt.load(Ordering::Relaxed) {
             coordinator.interrupt();
         }
-        // The shared state decides; a poll runs outside its lock. Without
+        // The shared state decides; a poll searches outside its lock. Without
         // anything to do the gate parks for one bounded wait and answers
         // `None`, so this loop comes back around to re-check the interrupt
         // flag.
@@ -396,13 +396,13 @@ fn drive(
         match gate {
             Gate::Terminal(terminal) => {
                 return match terminal {
-                    RunState::Failed(failure) => Ok(DriveOutcome::Fail(failure)),
-                    RunState::Fault(fault) => Err(fault),
-                    RunState::Interrupted => Ok(DriveOutcome::Interrupt),
-                    // Drained with the run already wound down: finalize.
-                    RunState::Finished => Ok(DriveOutcome::Finalize),
+                    SearchState::Failed(failure) => Ok(DriveOutcome::Fail(failure)),
+                    SearchState::Fault(fault) => Err(fault),
+                    SearchState::Interrupted => Ok(DriveOutcome::Interrupt),
+                    // Drained with the search already wound down: finalize.
+                    SearchState::Finished => Ok(DriveOutcome::Finalize),
                     // This arm is guarded by the `Running` check above.
-                    RunState::Running => unreachable!("the terminal branch excludes Running"),
+                    SearchState::Running => unreachable!("the terminal branch excludes Running"),
                 };
             }
             Gate::Poll {
@@ -430,7 +430,7 @@ fn drive(
     }
 }
 
-/// Polls the source. A poll error becomes the run's terminal fault so the pool
+/// Polls the source. A poll error becomes the search's terminal fault so the pool
 /// winds down and the driver reports it; `None` signals that routing, `Some`
 /// carries the polled tasks.
 fn poll_source(
@@ -441,7 +441,7 @@ fn poll_source(
     match source.poll(settled) {
         Ok(tasks) => Some(tasks),
         Err(e) => {
-            coordinator.fault_run(e);
+            coordinator.fault_search(e);
             None
         }
     }
@@ -647,7 +647,7 @@ mod tests {
             &coordinator,
             &mut FailingSource,
             &events,
-            &RunControl::detached(),
+            &SearchControl::detached(),
         );
         assert!(matches!(result, Err(Error::Validation(_))));
         // The terminal state is what a real pool observes to drain: a poll
@@ -661,16 +661,16 @@ mod tests {
         let (tx, _rx) = mpsc::channel();
         let events = Emitter::from(tx);
         // Nothing has been polled yet, so the first poll fires immediately;
-        // it comes back empty at an idle pool, which is the whole run:
+        // it comes back empty at an idle pool, which is the whole search:
         // one poll, then finalize.
         let result = drive(
             &coordinator,
             &mut ScriptedSource::default(),
             &events,
-            &RunControl::detached(),
+            &SearchControl::detached(),
         );
         assert!(matches!(result, Ok(DriveOutcome::Finalize)));
-        assert!(coordinator.with_state(|state| matches!(state, RunState::Finished)));
+        assert!(coordinator.with_state(|state| matches!(state, SearchState::Finished)));
     }
 
     #[test]
@@ -684,7 +684,7 @@ mod tests {
             &coordinator,
             &mut ScriptedSource::default(),
             &events,
-            &RunControl::detached(),
+            &SearchControl::detached(),
         );
         match result {
             Ok(DriveOutcome::Fail(failure)) => {
@@ -694,26 +694,26 @@ mod tests {
             _ => panic!("expected the preset failure to be reported"),
         }
         // Finished is left in the state's place: the pool's exit signal.
-        assert!(coordinator.with_state(|state| matches!(state, RunState::Finished)));
+        assert!(coordinator.with_state(|state| matches!(state, SearchState::Finished)));
     }
 
     #[test]
     fn a_preset_fault_is_returned_as_the_run_error() {
         let coordinator = Coordinator::new();
-        coordinator.fault_run(Error::Corruption("store broke".to_string()));
+        coordinator.fault_search(Error::Corruption("store broke".to_string()));
         let (tx, _rx) = mpsc::channel();
         let events = Emitter::from(tx);
         let result = drive(
             &coordinator,
             &mut ScriptedSource::default(),
             &events,
-            &RunControl::detached(),
+            &SearchControl::detached(),
         );
         match result {
             Err(e) => assert_eq!(e.to_string(), "store corruption: store broke"),
             Ok(_) => panic!("expected the preset fault to be returned"),
         }
-        assert!(coordinator.with_state(|state| matches!(state, RunState::Finished)));
+        assert!(coordinator.with_state(|state| matches!(state, SearchState::Finished)));
     }
 
     /// Drains `rx` until a `Queued` event for `key` arrives, bounded by
@@ -739,7 +739,7 @@ mod tests {
         // the whole pool to drain. Scripted: poll 1 yields tasks A and C,
         // poll 2 yields B — modeling C's successor. The fake worker resolves
         // C while holding A's lease; B must be queued before A releases,
-        // which only a poll gate that runs with leases outstanding can do.
+        // which only a poll gate that searches with leases outstanding can do.
         let coordinator = Coordinator::new();
         let (tx, rx) = mpsc::channel();
         let events = Emitter::from(tx);
@@ -765,13 +765,18 @@ mod tests {
                     queued_during_lease.store(true, Ordering::Relaxed);
                 }
                 coordinator.resolve(a.pending.key);
-                // Drain whatever else the driver hands out, so the run can
+                // Drain whatever else the driver hands out, so the search can
                 // finalize in both the passing and the failing sequence.
                 while let Some(t) = coordinator.next_task(None) {
                     coordinator.resolve(t.pending.key);
                 }
             });
-            drive(coordinator, &mut source, &events, &RunControl::detached())
+            drive(
+                coordinator,
+                &mut source,
+                &events,
+                &SearchControl::detached(),
+            )
         });
         assert!(matches!(outcome, Ok(DriveOutcome::Finalize)));
         assert!(
@@ -804,7 +809,12 @@ mod tests {
                     coordinator.resolve(t.pending.key);
                 }
             });
-            drive(&coordinator, &mut source, &events, &RunControl::detached())
+            drive(
+                &coordinator,
+                &mut source,
+                &events,
+                &SearchControl::detached(),
+            )
         });
         assert!(matches!(outcome, Ok(DriveOutcome::Finalize)));
         assert!(
@@ -816,7 +826,7 @@ mod tests {
     #[test]
     fn a_poll_fault_under_an_outstanding_lease_drains_and_reports() {
         // The second poll faults while the fake worker still holds task A.
-        // The run must wind down through the ordinary drain — wait for the
+        // The search must wind down through the ordinary drain — wait for the
         // lease, then report the fault — instead of hanging or returning
         // under the lease.
         struct FaultAfterFirst {
@@ -856,7 +866,12 @@ mod tests {
                     coordinator.resolve(t.pending.key);
                 }
             });
-            drive(&coordinator, &mut source, &events, &RunControl::detached())
+            drive(
+                &coordinator,
+                &mut source,
+                &events,
+                &SearchControl::detached(),
+            )
         });
         assert!(matches!(outcome, Err(Error::Validation(_))));
         assert!(
@@ -869,14 +884,14 @@ mod tests {
     fn an_interrupt_mid_chain_drains_and_reports_interrupted() {
         // The interrupt lands while task A is leased and more chain work
         // remains scripted. The in-flight attempt drains; the pending
-        // successor is never handed out; the run reports Interrupted.
+        // successor is never handed out; the search reports Interrupted.
         let coordinator = Coordinator::new();
         let (tx, _rx) = mpsc::channel();
         let events = Emitter::from(tx);
         // A local flag: `detached()`'s flag is a process-wide static shared
         // by every detached control, so setting it would poison other tests.
         let interrupt = std::sync::atomic::AtomicBool::new(false);
-        let control = RunControl {
+        let control = SearchControl {
             observer: &|_| {},
             interrupt: &interrupt,
             on_start: None,

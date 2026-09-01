@@ -1,4 +1,4 @@
-//! CLI acceptance: `sima run` and `sima status` end to end, spawning the
+//! CLI acceptance: `sima search` and `sima status` end to end, spawning the
 //! built binary against configs written into temp directories.
 
 mod common;
@@ -9,7 +9,7 @@ use std::process::{Command, Output};
 use std::time::{Duration, Instant};
 
 use common::{manifest_of, sima_command, worker_processes};
-use sima_pipeline::{Event, LIVENESS_INTERVAL, RunObserver, load};
+use sima_pipeline::{Event, LIVENESS_INTERVAL, SearchObserver, load};
 use sima_store::{
     IncidentKind, InstanceRecord, InstanceRecordState, MachineIncident, Rental, Store,
 };
@@ -34,28 +34,28 @@ fn run_finalizes_a_succeeding_config_and_writes_the_manifest() {
     let dir = tempfile::tempdir().expect("temp dir");
     let config = write_config(dir.path(), r#""succeed", "succeed""#);
 
-    let output = sima(&["run", config.to_str().expect("utf-8 path")]);
+    let output = sima(&["search", config.to_str().expect("utf-8 path")]);
     assert_eq!(output.status.code(), Some(0), "{output:?}");
 
-    let search_id = load(&config).expect("load config").run.id().to_string();
+    let search_id = load(&config).expect("load config").search.id().to_string();
     let text = stdout(&output);
     assert!(
         text.contains(&search_id[..12]),
-        "stdout names the run: {text}"
+        "stdout names the search: {text}"
     );
     assert!(text.contains("finalized"), "stdout reports the end: {text}");
     assert!(manifest_of(&config).is_some(), "the manifest exists");
 }
 
-/// The run path executes tasks in worker subprocesses: while sleep tasks
-/// run, `sima-worker` children of the run process are visible in the
+/// The search path executes tasks in worker subprocesses: while sleep tasks
+/// search, `sima-worker` children of the search process are visible in the
 /// process table.
 #[test]
 fn run_executes_tasks_in_worker_subprocesses() {
     let dir = tempfile::tempdir().expect("temp dir");
     let config = write_config(dir.path(), r#""sleep:3000", "sleep:3000""#);
     let mut child = sima_command()
-        .args(["run", config.to_str().expect("utf-8 path")])
+        .args(["search", config.to_str().expect("utf-8 path")])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()
@@ -69,7 +69,7 @@ fn run_executes_tasks_in_worker_subprocesses() {
             seen = true;
             break;
         }
-        if child.try_wait().expect("probe the run").is_some() {
+        if child.try_wait().expect("probe the search").is_some() {
             break;
         }
         std::thread::sleep(Duration::from_millis(20));
@@ -78,7 +78,7 @@ fn run_executes_tasks_in_worker_subprocesses() {
     let _ = child.wait();
     assert!(
         seen,
-        "no sima-worker child of the run process appeared in the process table"
+        "no sima-worker child of the search process appeared in the process table"
     );
 }
 
@@ -87,7 +87,7 @@ fn run_exits_2_on_a_definitive_failure_and_prints_the_reason() {
     let dir = tempfile::tempdir().expect("temp dir");
     let config = write_config(dir.path(), r#""succeed", "reject""#);
 
-    let output = sima(&["run", config.to_str().expect("utf-8 path")]);
+    let output = sima(&["search", config.to_str().expect("utf-8 path")]);
     assert_eq!(output.status.code(), Some(2), "{output:?}");
     let text = stdout(&output);
     assert!(
@@ -103,8 +103,8 @@ fn a_second_run_over_the_same_store_re_evaluates_to_success() {
     let config = write_config(dir.path(), r#""succeed", "succeed""#);
     let path = config.to_str().expect("utf-8 path");
 
-    assert_eq!(sima(&["run", path]).status.code(), Some(0));
-    let output = sima(&["run", path]);
+    assert_eq!(sima(&["search", path]).status.code(), Some(0));
+    let output = sima(&["search", path]);
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     assert!(stdout(&output).contains("finalized"));
 }
@@ -118,7 +118,7 @@ fn status_before_any_run_exits_1_and_after_reports_the_counts() {
     let before = sima(&["status", path]);
     assert_eq!(before.status.code(), Some(1), "{before:?}");
 
-    assert_eq!(sima(&["run", path]).status.code(), Some(0));
+    assert_eq!(sima(&["search", path]).status.code(), Some(0));
     let after = sima(&["status", path]);
     assert_eq!(after.status.code(), Some(0), "{after:?}");
     let text = stdout(&after);
@@ -143,12 +143,12 @@ fn report_timeline_reports_the_throughput_utilization_and_temporal_shape_of_a_ru
     let before = sima(&["report", path, "--timeline"]);
     assert_eq!(before.status.code(), Some(1), "{before:?}");
 
-    assert_eq!(sima(&["run", path]).status.code(), Some(0));
+    assert_eq!(sima(&["search", path]).status.code(), Some(0));
     let output = sima(&["report", path, "--timeline"]);
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let text = stdout(&output);
     for field in [
-        "run",
+        "search",
         "wall-clock",
         "committed",
         "throughput",
@@ -180,7 +180,7 @@ fn report_timeline_over_a_local_run_names_no_host_and_no_device() {
     let dir = tempfile::tempdir().expect("temp dir");
     let config = write_config(dir.path(), r#""succeed", "succeed""#);
     let path = config.to_str().expect("utf-8 path");
-    assert_eq!(sima(&["run", path]).status.code(), Some(0));
+    assert_eq!(sima(&["search", path]).status.code(), Some(0));
 
     // Local workers bind as the pool launches and the stub domain names no
     // device, so both columns state their placeholder, the spawn latency is a
@@ -218,15 +218,15 @@ fn report_timeline_over_a_failed_run_answers_and_exits_0() {
     let dir = tempfile::tempdir().expect("temp dir");
     let config = write_config(dir.path(), r#""succeed", "reject""#);
     let path = config.to_str().expect("utf-8 path");
-    assert_eq!(sima(&["run", path]).status.code(), Some(2));
+    assert_eq!(sima(&["search", path]).status.code(), Some(2));
 
-    // The query reports what the run did, whatever the run's own outcome was.
+    // The query reports what the search did, whatever the search's own outcome was.
     let output = sima(&["report", path, "--timeline"]);
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let text = stdout(&output);
     assert!(text.contains("throughput"), "{text}");
-    // The rejection is the attempt the run wasted. How many attempts it took
-    // in total is a race with the definitive failure that ends the run, so the
+    // The rejection is the attempt the search wasted. How many attempts it took
+    // in total is a race with the definitive failure that ends the search, so the
     // assertion names the numerator alone.
     let squeezed = text.split_whitespace().collect::<Vec<&str>>().join(" ");
     assert!(
@@ -235,7 +235,7 @@ fn report_timeline_over_a_failed_run_answers_and_exits_0() {
     );
 }
 
-/// The key of the run's task that ended on `outcome`, from its journal.
+/// The key of the search's task that ended on `outcome`, from its journal.
 fn task_ending_in(config: &Path, outcome: fn(&Event) -> Option<&String>) -> String {
     common::journal_events(config)
         .iter()
@@ -244,7 +244,7 @@ fn task_ending_in(config: &Path, outcome: fn(&Event) -> Option<&String>) -> Stri
         .clone()
 }
 
-/// The key of the first task the run committed. Commit order across workers is
+/// The key of the first task the search committed. Commit order across workers is
 /// a race, so callers use a config in which exactly one task commits.
 fn committed_task(config: &Path) -> String {
     task_ending_in(config, |event| match event {
@@ -253,7 +253,7 @@ fn committed_task(config: &Path) -> String {
     })
 }
 
-/// The key of a task the run rejected.
+/// The key of a task the search rejected.
 fn rejected_task(config: &Path) -> String {
     task_ending_in(config, |event| match event {
         Event::Rejected { task, .. } => Some(task),
@@ -268,7 +268,7 @@ fn status_task_prints_every_attempt_of_a_retried_task() {
     // timeline names both attempts and the outcome each reached.
     let config = write_config(dir.path(), r#""succeed", "flaky:1""#);
     let path = config.to_str().expect("utf-8 path");
-    assert_eq!(sima(&["run", path]).status.code(), Some(0));
+    assert_eq!(sima(&["search", path]).status.code(), Some(0));
 
     let flaky = task_ending_in(&config, |event| match event {
         Event::Failed { task, .. } => Some(task),
@@ -298,7 +298,7 @@ fn status_task_reports_a_rejected_task_and_its_reason() {
     let dir = tempfile::tempdir().expect("temp dir");
     let config = write_config(dir.path(), r#""succeed", "reject""#);
     let path = config.to_str().expect("utf-8 path");
-    assert_eq!(sima(&["run", path]).status.code(), Some(2));
+    assert_eq!(sima(&["search", path]).status.code(), Some(2));
 
     let rejected = rejected_task(&config);
     let output = sima(&["status", path, "--task", &rejected[..8]]);
@@ -313,9 +313,9 @@ fn status_task_rejects_an_ambiguous_or_unmatched_prefix() {
     let dir = tempfile::tempdir().expect("temp dir");
     let config = write_config(dir.path(), r#""succeed", "succeed", "succeed""#);
     let path = config.to_str().expect("utf-8 path");
-    assert_eq!(sima(&["run", path]).status.code(), Some(0));
+    assert_eq!(sima(&["search", path]).status.code(), Some(0));
 
-    // The empty prefix matches every task the run journaled.
+    // The empty prefix matches every task the search journaled.
     let ambiguous = sima(&["status", path, "--task", ""]);
     assert_eq!(ambiguous.status.code(), Some(1), "{ambiguous:?}");
     let stderr = String::from_utf8(ambiguous.stderr).expect("stderr is UTF-8");
@@ -332,9 +332,9 @@ fn status_failed_names_the_tasks_a_failed_run_did_not_commit() {
     let dir = tempfile::tempdir().expect("temp dir");
     let config = write_config(dir.path(), r#""succeed", "reject""#);
     let path = config.to_str().expect("utf-8 path");
-    assert_eq!(sima(&["run", path]).status.code(), Some(2));
+    assert_eq!(sima(&["search", path]).status.code(), Some(2));
 
-    // The run failed; the query over its journal answers, so it exits 0.
+    // The search failed; the query over its journal answers, so it exits 0.
     let output = sima(&["status", path, "--failed"]);
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let text = stdout(&output);
@@ -350,7 +350,7 @@ fn status_failed_over_an_all_committed_run_names_no_task() {
     let dir = tempfile::tempdir().expect("temp dir");
     let config = write_config(dir.path(), r#""succeed", "flaky:1""#);
     let path = config.to_str().expect("utf-8 path");
-    assert_eq!(sima(&["run", path]).status.code(), Some(0));
+    assert_eq!(sima(&["search", path]).status.code(), Some(0));
 
     let output = sima(&["status", path, "--failed"]);
     assert_eq!(output.status.code(), Some(0), "{output:?}");
@@ -368,7 +368,7 @@ fn report_defaults_to_the_compact_summary() {
     let config = write_config(dir.path(), r#""succeed", "succeed", "flaky:1""#);
     let path = config.to_str().expect("utf-8 path");
 
-    assert_eq!(sima(&["run", path]).status.code(), Some(0));
+    assert_eq!(sima(&["search", path]).status.code(), Some(0));
     let output = sima(&["report", path]);
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     // A total header, then one line per distinct stats value with its count,
@@ -385,7 +385,7 @@ fn report_all_prints_one_line_per_committed_task() {
     let config = write_config(dir.path(), r#""succeed", "succeed""#);
     let path = config.to_str().expect("utf-8 path");
 
-    assert_eq!(sima(&["run", path]).status.code(), Some(0));
+    assert_eq!(sima(&["search", path]).status.code(), Some(0));
     let output = sima(&["report", path, "--all"]);
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let text = stdout(&output);
@@ -414,7 +414,7 @@ fn report_task_prints_one_committed_task_s_stats() {
     // attempt it committed on are both fixed regardless of worker ordering.
     let config = write_config(dir.path(), r#""succeed", "reject""#);
     let path = config.to_str().expect("utf-8 path");
-    assert_eq!(sima(&["run", path]).status.code(), Some(2));
+    assert_eq!(sima(&["search", path]).status.code(), Some(2));
 
     let task = committed_task(&config);
     let output = sima(&["report", path, "--task", &task[..8]]);
@@ -430,7 +430,7 @@ fn report_task_over_a_task_that_never_committed_exits_1() {
     let dir = tempfile::tempdir().expect("temp dir");
     let config = write_config(dir.path(), r#""succeed", "reject""#);
     let path = config.to_str().expect("utf-8 path");
-    assert_eq!(sima(&["run", path]).status.code(), Some(2));
+    assert_eq!(sima(&["search", path]).status.code(), Some(2));
 
     let rejected = rejected_task(&config);
     let output = sima(&["report", path, "--task", &rejected[..8]]);
@@ -444,7 +444,7 @@ fn report_full_is_no_longer_a_command() {
     let dir = tempfile::tempdir().expect("temp dir");
     let config = write_config(dir.path(), r#""succeed""#);
     let path = config.to_str().expect("utf-8 path");
-    assert_eq!(sima(&["run", path]).status.code(), Some(0));
+    assert_eq!(sima(&["search", path]).status.code(), Some(0));
 
     for args in [
         vec!["report", "--full", path],
@@ -462,9 +462,9 @@ fn report_spend_reports_the_rental_ledger() {
     let dir = tempfile::tempdir().expect("temp dir");
     let config = write_config(dir.path(), r#""succeed", "succeed""#);
     let path = config.to_str().expect("utf-8 path");
-    assert_eq!(sima(&["run", path]).status.code(), Some(0));
+    assert_eq!(sima(&["search", path]).status.code(), Some(0));
 
-    // A local run rents no hardware, so the ledger is empty; the view still
+    // A local search rents no hardware, so the ledger is empty; the view still
     // renders its three sections, unchanged from the removed `spend` command.
     let output = sima(&["report", path, "--spend"]);
     assert_eq!(output.status.code(), Some(0), "{output:?}");
@@ -482,7 +482,7 @@ fn the_removed_top_level_timeline_and_spend_commands_report_usage() {
     let dir = tempfile::tempdir().expect("temp dir");
     let config = write_config(dir.path(), r#""succeed""#);
     let path = config.to_str().expect("utf-8 path");
-    assert_eq!(sima(&["run", path]).status.code(), Some(0));
+    assert_eq!(sima(&["search", path]).status.code(), Some(0));
 
     // The reporting views moved under `report`; the top-level verbs are gone.
     for args in [vec!["timeline", path], vec!["spend", path]] {
@@ -498,9 +498,9 @@ fn report_machines_over_a_clean_store_reports_no_incidents() {
     let dir = tempfile::tempdir().expect("temp dir");
     let config = write_config(dir.path(), r#""succeed""#);
     let path = config.to_str().expect("utf-8 path");
-    assert_eq!(sima(&["run", path]).status.code(), Some(0));
+    assert_eq!(sima(&["search", path]).status.code(), Some(0));
 
-    // A local run rents no hardware and records no incident; the view still
+    // A local search rents no hardware and records no incident; the view still
     // answers, with its explicit no-incidents line.
     let output = sima(&["report", path, "--machines"]);
     assert_eq!(output.status.code(), Some(0), "{output:?}");
@@ -516,7 +516,7 @@ fn report_machines_names_the_machine_its_count_and_its_blacklist_status() {
     let dir = tempfile::tempdir().expect("temp dir");
     let config = write_config(dir.path(), r#""succeed""#);
     let path = config.to_str().expect("utf-8 path");
-    assert_eq!(sima(&["run", path]).status.code(), Some(0));
+    assert_eq!(sima(&["search", path]).status.code(), Some(0));
 
     // Plant two incidents against one machine directly in the store, as the
     // recording sites would; two strikes blacklist it.
@@ -547,7 +547,7 @@ fn report_machines_refuses_a_remote_host() {
     let dir = tempfile::tempdir().expect("temp dir");
     let config = write_config(dir.path(), r#""succeed""#);
     let path = config.to_str().expect("utf-8 path");
-    assert_eq!(sima(&["run", path]).status.code(), Some(0));
+    assert_eq!(sima(&["search", path]).status.code(), Some(0));
 
     // The reputation ledger is local store state the follow feed does not
     // carry, so the view stays local-only, exactly as `--spend`.
@@ -562,7 +562,7 @@ fn report_view_flags_are_mutually_exclusive() {
     let dir = tempfile::tempdir().expect("temp dir");
     let config = write_config(dir.path(), r#""succeed""#);
     let path = config.to_str().expect("utf-8 path");
-    assert_eq!(sima(&["run", path]).status.code(), Some(0));
+    assert_eq!(sima(&["search", path]).status.code(), Some(0));
 
     // No arm matches two view flags together, so a combination falls to the
     // usage error.
@@ -585,7 +585,7 @@ fn report_spend_refuses_a_remote_host() {
     let dir = tempfile::tempdir().expect("temp dir");
     let config = write_config(dir.path(), r#""succeed""#);
     let path = config.to_str().expect("utf-8 path");
-    assert_eq!(sima(&["run", path]).status.code(), Some(0));
+    assert_eq!(sima(&["search", path]).status.code(), Some(0));
 
     // The ledger is local store state that the follow feed does not carry, so
     // the spend view stays local-only, exactly as the `spend` command was.
@@ -596,15 +596,15 @@ fn report_spend_refuses_a_remote_host() {
 }
 
 #[test]
-fn a_rerun_of_a_finalized_run_reports_prior_commits() {
+fn a_rerun_of_a_finalized_search_reports_prior_commits() {
     let dir = tempfile::tempdir().expect("temp dir");
     let config = write_config(dir.path(), r#""succeed", "succeed""#);
     let path = config.to_str().expect("utf-8 path");
 
-    assert_eq!(sima(&["run", path]).status.code(), Some(0));
+    assert_eq!(sima(&["search", path]).status.code(), Some(0));
     // The rerun re-derives an empty frontier: no task executes, and the
     // progress must say so instead of reading as a restart from zero.
-    let rerun = sima(&["run", path]);
+    let rerun = sima(&["search", path]);
     assert_eq!(rerun.status.code(), Some(0), "{rerun:?}");
     let text = stdout(&rerun);
     assert!(
@@ -631,16 +631,16 @@ fn rm_removes_the_only_run_and_a_second_rm_fails_cleanly() {
     let config = write_config(dir.path(), r#""succeed", "succeed""#);
     let path = config.to_str().expect("utf-8 path");
 
-    assert_eq!(sima(&["run", path]).status.code(), Some(0));
+    assert_eq!(sima(&["search", path]).status.code(), Some(0));
     let rm = sima(&["rm", path]);
     assert_eq!(rm.status.code(), Some(0), "{rm:?}");
     assert!(
-        stdout(&rm).contains("removed run"),
+        stdout(&rm).contains("removed search"),
         "prints the report: {}",
         stdout(&rm)
     );
 
-    // The run is gone: status fails, and the objects directory holds no files.
+    // The search is gone: status fails, and the objects directory holds no files.
     assert_eq!(sima(&["status", path]).status.code(), Some(1));
     let objects = dir.path().join("store").join("objects");
     let object_files: usize = std::fs::read_dir(&objects)
@@ -664,14 +664,14 @@ fn rm_before_any_run_exits_1() {
 }
 
 #[test]
-fn rm_removes_an_unfinalized_run() {
+fn rm_removes_an_unfinalized_search() {
     let dir = tempfile::tempdir().expect("temp dir");
-    // A rejected candidate leaves the run unfinalized: no manifest, committed
-    // work for the succeeding task only. An abandoned run must be removable.
+    // A rejected candidate leaves the search unfinalized: no manifest, committed
+    // work for the succeeding task only. An abandoned search must be removable.
     let config = write_config(dir.path(), r#""succeed", "reject""#);
     let path = config.to_str().expect("utf-8 path");
 
-    assert_eq!(sima(&["run", path]).status.code(), Some(2));
+    assert_eq!(sima(&["search", path]).status.code(), Some(2));
     let rm = sima(&["rm", path]);
     assert_eq!(rm.status.code(), Some(0), "{rm:?}");
     assert_eq!(sima(&["status", path]).status.code(), Some(1));
@@ -691,20 +691,22 @@ fn a_second_rm_reports_run_not_found_and_leaves_no_search_dir() {
     let config = write_config(dir.path(), r#""succeed", "succeed""#);
     let path = config.to_str().expect("utf-8 path");
 
-    assert_eq!(sima(&["run", path]).status.code(), Some(0));
+    assert_eq!(sima(&["search", path]).status.code(), Some(0));
     assert_eq!(sima(&["rm", path]).status.code(), Some(0));
 
     let second = sima(&["rm", path]);
     assert_eq!(second.status.code(), Some(1), "{second:?}");
     let stderr = String::from_utf8(second.stderr).expect("stderr is UTF-8");
     assert!(
-        stderr.contains("run not found"),
-        "the second rm names the absent run: {stderr}"
+        stderr.contains("search not found"),
+        "the second rm names the absent search: {stderr}"
     );
-    // The failed rm mutated nothing: no ghost run directory survives.
-    let runs = dir.path().join("store").join("runs");
-    let search_dirs = std::fs::read_dir(&runs).expect("read runs dir").count();
-    assert_eq!(search_dirs, 0, "a failed rm left a ghost run directory");
+    // The failed rm mutated nothing: no ghost search directory survives.
+    let searches = dir.path().join("store").join("searches");
+    let search_dirs = std::fs::read_dir(&searches)
+        .expect("read searches dir")
+        .count();
+    assert_eq!(search_dirs, 0, "a failed rm left a ghost search directory");
 }
 
 #[test]
@@ -724,14 +726,14 @@ fn rm_on_a_missing_store_exits_1_and_creates_nothing() {
 #[test]
 fn a_failed_second_rm_does_not_block_removing_another_run() {
     let dir = tempfile::tempdir().expect("temp dir");
-    // Two runs sharing one store: different behaviors give distinct run ids.
+    // Two searches sharing one store: different behaviors give distinct search ids.
     let config_a = common::write_config(dir.path(), "a.toml", r#""succeed""#, "./store");
     let config_b = common::write_config(dir.path(), "b.toml", r#""succeed", "succeed""#, "./store");
     let a = config_a.to_str().expect("utf-8 path");
     let b = config_b.to_str().expect("utf-8 path");
 
-    assert_eq!(sima(&["run", a]).status.code(), Some(0));
-    assert_eq!(sima(&["run", b]).status.code(), Some(0));
+    assert_eq!(sima(&["search", a]).status.code(), Some(0));
+    assert_eq!(sima(&["search", b]).status.code(), Some(0));
 
     // Remove A, then attempt A again: the second attempt must fail without
     // leaving an unfinalized ghost that would make B unremovable.
@@ -762,8 +764,8 @@ fn an_extensionless_config_argument_resolves_to_the_toml_file() {
     let bare = dir.path().join("sima");
     let path = bare.to_str().expect("utf-8 path");
 
-    let run = sima(&["run", path]);
-    assert_eq!(run.status.code(), Some(0), "{run:?}");
+    let search = sima(&["search", path]);
+    assert_eq!(search.status.code(), Some(0), "{search:?}");
     let status = sima(&["status", path]);
     assert_eq!(status.status.code(), Some(0), "{status:?}");
 }
@@ -772,8 +774,8 @@ fn an_extensionless_config_argument_resolves_to_the_toml_file() {
 fn a_malformed_config_exits_1() {
     let dir = tempfile::tempdir().expect("temp dir");
     let path = dir.path().join("broken.toml");
-    std::fs::write(&path, "run = [not toml").expect("write config");
-    let output = sima(&["run", path.to_str().expect("utf-8 path")]);
+    std::fs::write(&path, "search = [not toml").expect("write config");
+    let output = sima(&["search", path.to_str().expect("utf-8 path")]);
     assert_eq!(output.status.code(), Some(1), "{output:?}");
 }
 
@@ -800,7 +802,7 @@ fn migrate_parses_and_reaches_the_pipeline() {
 
 #[test]
 fn migrate_refuses_a_host_because_it_drives_a_run() {
-    // `--on` observes a run on another machine; a migration drives one, and
+    // `--on` observes a search on another machine; a migration drives one, and
     // where it drives is the config's to say.
     let dir = tempfile::tempdir().expect("temp dir");
     let config = write_config(dir.path(), r#""succeed""#);
@@ -817,8 +819,8 @@ fn migrate_refuses_a_host_because_it_drives_a_run() {
 
 #[test]
 fn a_run_under_a_wall_clock_ceiling_winds_itself_down_and_says_why() {
-    // The ceiling is the run's own and is enforced wherever the run executes,
-    // so a plain local run keeps it: nothing else is watching this one.
+    // The ceiling is the search's own and is enforced wherever the search executes,
+    // so a plain local search keeps it: nothing else is watching this one.
     let dir = tempfile::tempdir().expect("temp dir");
     let text = format!(
         "{}\n[budget]\nmax_wall_clock_ms = 200\n",
@@ -832,15 +834,15 @@ fn a_run_under_a_wall_clock_ceiling_winds_itself_down_and_says_why() {
     );
     let config = common::write_config_text(dir.path(), "bounded.toml", &text);
 
-    let output = sima(&["run", config.to_str().expect("utf-8 path")]);
+    let output = sima(&["search", config.to_str().expect("utf-8 path")]);
     assert_eq!(
         output.status.code(),
         Some(130),
-        "the ceiling wound the run down: {output:?}"
+        "the ceiling wound the search down: {output:?}"
     );
     assert!(
         manifest_of(&config).is_none(),
-        "an interrupted run seals nothing"
+        "an interrupted search seals nothing"
     );
     let reported = common::journal_events(&config)
         .iter()
@@ -848,7 +850,7 @@ fn a_run_under_a_wall_clock_ceiling_winds_itself_down_and_says_why() {
             Event::Diagnostic { message, .. } => Some(message.clone()),
             _ => None,
         })
-        .expect("the journal says why the run interrupted");
+        .expect("the journal says why the search interrupted");
     assert!(
         reported.contains("max_wall_clock_ms"),
         "it names the ceiling: {reported}"
@@ -860,14 +862,14 @@ fn a_run_declaring_no_ceiling_is_never_wound_down_by_one() {
     // The counterpart: the deadline exists only where a config states one.
     let dir = tempfile::tempdir().expect("temp dir");
     let config = write_config(dir.path(), r#""sleep:200", "sleep:200""#);
-    let output = sima(&["run", config.to_str().expect("utf-8 path")]);
+    let output = sima(&["search", config.to_str().expect("utf-8 path")]);
     assert_eq!(output.status.code(), Some(0), "{output:?}");
-    assert!(manifest_of(&config).is_some(), "the run finished");
+    assert!(manifest_of(&config).is_some(), "the search finished");
 }
 
 #[test]
 fn a_run_declaring_a_zero_ceiling_is_never_wound_down_by_one() {
-    // Zero is the written form of stating none, so the run finishes exactly as
+    // Zero is the written form of stating none, so the search finishes exactly as
     // one that omitted the key does — rather than ending before it computes.
     let dir = tempfile::tempdir().expect("temp dir");
     let text = format!(
@@ -882,9 +884,9 @@ fn a_run_declaring_a_zero_ceiling_is_never_wound_down_by_one() {
     );
     let config = common::write_config_text(dir.path(), "unbounded.toml", &text);
 
-    let output = sima(&["run", config.to_str().expect("utf-8 path")]);
+    let output = sima(&["search", config.to_str().expect("utf-8 path")]);
     assert_eq!(output.status.code(), Some(0), "{output:?}");
-    assert!(manifest_of(&config).is_some(), "the run finished");
+    assert!(manifest_of(&config).is_some(), "the search finished");
 }
 
 #[test]
@@ -909,7 +911,7 @@ fn recall_parses_and_reaches_the_pipeline() {
 
 #[test]
 fn recall_refuses_a_host_and_the_binary_flag() {
-    // `--on` observes a run elsewhere; a recall ends one, and where it ends is
+    // `--on` observes a search elsewhere; a recall ends one, and where it ends is
     // the config's to say. `--accept-binary` answers a comparison only a start
     // makes, and a recall starts nothing.
     let dir = tempfile::tempdir().expect("temp dir");
@@ -929,9 +931,9 @@ fn recall_refuses_a_host_and_the_binary_flag() {
 #[test]
 fn run_accepts_the_binary_flag_beside_the_fleet_flag_in_either_order() {
     // The two flags answer different questions — which machines, and what a
-    // changed program does — so a run states them in whatever order it likes.
+    // changed program does — so a search states them in whatever order it likes.
     // A config this build carries answers itself, so the flag is inert here
-    // and the run finalizes; the gate it arms is covered where a program
+    // and the search finalizes; the gate it arms is covered where a program
     // serves the format.
     let dir = tempfile::tempdir().expect("temp dir");
     for (name, args) in [
@@ -946,7 +948,7 @@ fn run_accepts_the_binary_flag_beside_the_fleet_flag_in_either_order() {
             &format!("./{name}-store"),
         );
         let path = config.to_str().expect("utf-8 path").to_string();
-        let mut invocation = vec!["run", path.as_str()];
+        let mut invocation = vec!["search", path.as_str()];
         invocation.extend(args.iter().copied());
         let output = sima(&invocation);
         assert_eq!(output.status.code(), Some(0), "{invocation:?}: {output:?}");
@@ -966,7 +968,7 @@ fn the_binary_flag_belongs_to_the_commands_that_drive_a_run() {
         let stderr = String::from_utf8(output.stderr).expect("stderr is UTF-8");
         assert!(stderr.contains("usage: sima"), "{command}: {stderr}");
     }
-    // `migrate` takes it: the far `sima run` is where the comparison happens,
+    // `migrate` takes it: the far `sima search` is where the comparison happens,
     // so the acceptance is stated here and travels there. This config declares
     // no destination, so the invocation fails on that — which is what proves
     // the form itself was matched.
@@ -981,7 +983,7 @@ fn an_unknown_subcommand_exits_1_with_usage_on_stderr() {
     for args in [
         vec!["frobnicate"],
         vec![],
-        vec!["run"],
+        vec!["search"],
         vec!["status"],
         vec!["report"],
         vec!["rm"],
@@ -999,7 +1001,7 @@ fn the_usage_text_names_every_command_form() {
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let stderr = String::from_utf8(output.stderr).expect("stderr is UTF-8");
     for form in [
-        "sima run",
+        "sima search",
         "sima status",
         "--failed",
         "--task",
@@ -1072,31 +1074,31 @@ fn tui_without_a_terminal_exits_1_and_names_the_requirement() {
 fn an_observer_follows_a_live_run_to_its_end() {
     let dir = tempfile::tempdir().expect("temp dir");
     // The sleeps keep the child alive long enough that the observer sees the
-    // lock held mid-run: four tasks over two workers span about a second.
+    // lock held mid-search: four tasks over two workers span about a second.
     let config = write_config(
         dir.path(),
         r#""sleep:400", "sleep:400", "sleep:400", "sleep:400""#,
     );
     let mut child = sima_command()
-        .args(["run", config.to_str().expect("utf-8 path")])
+        .args(["search", config.to_str().expect("utf-8 path")])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()
-        .expect("spawn sima run");
+        .expect("spawn sima search");
 
     let loaded = load(&config).expect("load config");
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     let pause = std::time::Duration::from_millis(10);
     // The child bootstraps the store; the observer opens once it exists.
     let mut observer = loop {
-        match RunObserver::new(&loaded) {
+        match SearchObserver::new(&loaded) {
             Ok(observer) => break observer,
             Err(_) if std::time::Instant::now() < deadline => std::thread::sleep(pause),
             Err(e) => panic!("the store never appeared: {e}"),
         }
     };
 
-    // Follow the run to its terminal event, noting the holder while the
+    // Follow the search to its terminal event, noting the holder while the
     // child lives. Every wait polls up to the deadline; no fixed sleep
     // carries a correctness assumption.
     let mut events = Vec::new();
@@ -1104,7 +1106,7 @@ fn an_observer_follows_a_live_run_to_its_end() {
     loop {
         assert!(
             std::time::Instant::now() < deadline,
-            "the run did not end in time; events so far: {events:?}"
+            "the search did not end in time; events so far: {events:?}"
         );
         if held.is_none() {
             held = observer.holder().expect("probe the lock");
@@ -1112,15 +1114,15 @@ fn an_observer_follows_a_live_run_to_its_end() {
         events.extend(observer.poll().expect("poll the journal"));
         if events
             .iter()
-            .any(|record| matches!(record.event, Event::RunFinalized { .. }))
+            .any(|record| matches!(record.event, Event::SearchFinalized { .. }))
         {
             break;
         }
         std::thread::sleep(pause);
     }
 
-    // The lock named the child while it drove the run.
-    let holder = held.expect("the run was held while in flight");
+    // The lock named the child while it drove the search.
+    let holder = held.expect("the search was held while in flight");
     assert_eq!(
         holder.split_whitespace().next(),
         Some(child.id().to_string().as_str()),
@@ -1131,8 +1133,8 @@ fn an_observer_follows_a_live_run_to_its_end() {
     assert!(
         events
             .iter()
-            .any(|record| matches!(record.event, Event::RunStarted { .. })),
-        "the seed replays the run start: {events:?}"
+            .any(|record| matches!(record.event, Event::SearchStarted { .. })),
+        "the seed replays the search start: {events:?}"
     );
     let committed = events
         .iter()
@@ -1141,7 +1143,7 @@ fn an_observer_follows_a_live_run_to_its_end() {
     assert_eq!(committed, 4, "every commit arrives once: {events:?}");
 
     // The child exits after finalizing; the lock frees with it.
-    let status = child.wait().expect("wait for sima run");
+    let status = child.wait().expect("wait for sima search");
     assert_eq!(status.code(), Some(0), "the child finalized");
     assert_eq!(observer.holder().expect("probe after exit"), None);
 }
@@ -1154,15 +1156,15 @@ fn sigint_interrupts_gracefully_and_a_rerun_matches_an_uninterrupted_store() {
     let path = config.to_str().expect("utf-8 path");
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_sima"))
-        .args(["run", path])
+        .args(["search", path])
         .stdout(std::process::Stdio::null())
         .spawn()
-        .expect("spawn sima run");
+        .expect("spawn sima search");
     // Interrupt once work is actually in flight; the drain outlasts the
     // in-flight sleeps, so a prompt exit proves graceful wind-down.
     assert!(
         common::wait_for_first_lease(&config, Duration::from_secs(30)),
-        "the run leased a task before the interrupt"
+        "the search leased a task before the interrupt"
     );
     let kill = Command::new("kill")
         .args(["-INT", &child.id().to_string()])
@@ -1173,15 +1175,15 @@ fn sigint_interrupts_gracefully_and_a_rerun_matches_an_uninterrupted_store() {
     assert_eq!(status.code(), Some(130), "graceful interrupt exits 130");
     assert!(manifest_of(&config).is_none(), "no manifest yet");
 
-    // A clean re-run completes the abandoned work.
-    let rerun = sima(&["run", path]);
+    // A clean re-search completes the abandoned work.
+    let rerun = sima(&["search", path]);
     assert_eq!(rerun.status.code(), Some(0), "{rerun:?}");
 
-    // The resumed store's manifest equals an uninterrupted reference run's.
+    // The resumed store's manifest equals an uninterrupted reference search's.
     let reference_dir = tempfile::tempdir().expect("reference temp dir");
     let reference = write_config(reference_dir.path(), behaviors);
     assert_eq!(
-        sima(&["run", reference.to_str().expect("utf-8 path")])
+        sima(&["search", reference.to_str().expect("utf-8 path")])
             .status
             .code(),
         Some(0)
@@ -1196,39 +1198,39 @@ fn sigint_interrupts_gracefully_and_a_rerun_matches_an_uninterrupted_store() {
 fn a_terminal_interrupt_winds_the_run_down_without_killing_its_workers() {
     // A terminal delivers Ctrl-C to every process in the foreground group, so
     // a worker left in the orchestrator's group is signalled directly and dies
-    // mid-attempt — a death the run reads as a transient failure and retries
+    // mid-attempt — a death the search reads as a transient failure and retries
     // against. sima is the one interrupt handler: its workers are ended by the
     // wind-down, which abandons the attempt rather than failing it.
     let dir = tempfile::tempdir().expect("temp dir");
     let behaviors = r#""sleep:1500", "sleep:1500", "sleep:1500", "sleep:1500""#;
     let config = write_config(dir.path(), behaviors);
 
-    // A process group of its own, so the signal below reaches the run and its
+    // A process group of its own, so the signal below reaches the search and its
     // children the way a terminal's does, and nothing of the suite's.
     let mut child = sima_command()
-        .args(["run", config.to_str().expect("utf-8 path")])
+        .args(["search", config.to_str().expect("utf-8 path")])
         .stdout(std::process::Stdio::null())
         .process_group(0)
         .spawn()
-        .expect("spawn sima run");
+        .expect("spawn sima search");
     assert!(
         common::wait_for_first_lease(&config, Duration::from_secs(30)),
-        "the run leased a task before the interrupt"
+        "the search leased a task before the interrupt"
     );
     // A negative pid names the group, which is what a terminal signals.
     assert_eq!(
         unsafe { libc::kill(-(child.id() as libc::pid_t), libc::SIGINT) },
         0,
-        "the run's process group was signalled"
+        "the search's process group was signalled"
     );
     assert_eq!(
         child.wait().expect("wait for sima").code(),
         Some(130),
-        "the run wound itself down"
+        "the search wound itself down"
     );
 
     // Nothing failed: a worker killed by the terminal dies without an outcome,
-    // which the run records as a transient failure of the task it was running
+    // which the search records as a transient failure of the task it was running
     // and retries against. A wind-down that owns its children records neither.
     let events = common::journal_events(&config);
     assert!(
@@ -1239,7 +1241,7 @@ fn a_terminal_interrupt_winds_the_run_down_without_killing_its_workers() {
     );
     assert!(
         manifest_of(&config).is_none(),
-        "an interrupted run seals nothing"
+        "an interrupted search seals nothing"
     );
 }
 
@@ -1247,12 +1249,12 @@ fn a_terminal_interrupt_winds_the_run_down_without_killing_its_workers() {
 /// one of them checkpointing while it computes.
 fn checkpointing_config(dir: &Path) -> PathBuf {
     let text = r#"
-        [run]
+        [search]
         root_seed = 11
         format = "stub.v1"
         segments = 2
 
-        [run.generator]
+        [search.generator]
         id = "stub.v1"
         behaviors = ["accumulate:4:60", "accumulate:4:60"]
 
@@ -1281,12 +1283,12 @@ fn liveness_lines_allowed(took: Duration) -> u64 {
 fn the_stream_shows_each_attempt_starting_and_the_task_staying_alive() {
     // Between `started` and the first commit the terminal was silent for as
     // long as a task takes, and a silent terminal reads the same whether the
-    // run is computing or wedged. An attempt says when it begins, and a task
+    // search is computing or wedged. An attempt says when it begins, and a task
     // that checkpoints says so as it goes.
     let dir = tempfile::tempdir().expect("temp dir");
     let config = checkpointing_config(dir.path());
     let began = Instant::now();
-    let output = sima(&["run", config.to_str().expect("utf-8 path")]);
+    let output = sima(&["search", config.to_str().expect("utf-8 path")]);
     let took = began.elapsed();
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let text = stdout(&output);
@@ -1305,15 +1307,15 @@ fn the_stream_shows_each_attempt_starting_and_the_task_staying_alive() {
         .filter(|line| line.contains("checkpointed"))
         .count() as u64;
     assert!(alive >= 4, "every attempt's first save says so: {text}");
-    // And no more than the run had time for: the tasks here save every 50 ms,
+    // And no more than the search had time for: the tasks here save every 50 ms,
     // so a second line for an attempt costs a whole liveness interval, and how
-    // many of those fit is what the run's own duration bounds. A loaded
+    // many of those fit is what the search's own duration bounds. A loaded
     // machine takes longer and is allowed more, without the count ever
     // depending on how fast this one is.
     assert!(
         alive <= 4 * liveness_lines_allowed(took),
         "a task saving faster than the interval says so once per interval, \
-         and this run took {took:?}: {text}"
+         and this search took {took:?}: {text}"
     );
     // Each line names its task by the same short address a commit does.
     for line in started {
@@ -1331,8 +1333,8 @@ fn the_stream_shows_each_attempt_starting_and_the_task_staying_alive() {
 }
 
 #[test]
-fn a_resumed_run_states_its_ledger_and_counts_on_from_it() {
-    // A run over a store holding progress must read as continuing, not as
+fn a_resumed_search_states_its_ledger_and_counts_on_from_it() {
+    // A search over a store holding progress must read as continuing, not as
     // starting again: the start line states what is committed and what is
     // left, and the commit counter carries on from there rather than from 1.
     let dir = tempfile::tempdir().expect("temp dir");
@@ -1340,13 +1342,13 @@ fn a_resumed_run_states_its_ledger_and_counts_on_from_it() {
     let path = config.to_str().expect("utf-8 path");
 
     let mut child = sima_command()
-        .args(["run", path])
+        .args(["search", path])
         .stdout(std::process::Stdio::null())
         .spawn()
-        .expect("spawn sima run");
+        .expect("spawn sima search");
     assert!(
         common::wait_for_first_lease(&config, Duration::from_secs(30)),
-        "the run leased a task before the interrupt"
+        "the search leased a task before the interrupt"
     );
     // Long enough for the two workers to commit what they leased, and short
     // enough that the third task is still outstanding.
@@ -1357,7 +1359,7 @@ fn a_resumed_run_states_its_ledger_and_counts_on_from_it() {
     );
     assert_eq!(child.wait().expect("wait for sima").code(), Some(130));
 
-    let resumed = sima(&["run", path]);
+    let resumed = sima(&["search", path]);
     assert_eq!(resumed.status.code(), Some(0), "{resumed:?}");
     let text = stdout(&resumed);
     assert!(
@@ -1366,7 +1368,7 @@ fn a_resumed_run_states_its_ledger_and_counts_on_from_it() {
     );
     assert!(
         text.contains("committed 3/3"),
-        "the counter continues the run's ledger: {text}"
+        "the counter continues the search's ledger: {text}"
     );
     assert!(
         !text.contains("committed 1/3"),
@@ -1376,15 +1378,15 @@ fn a_resumed_run_states_its_ledger_and_counts_on_from_it() {
 
 #[test]
 fn a_quiet_run_still_prints_the_run_its_start_its_commits_and_its_outcome() {
-    // The minimal stream `--quiet` leaves: what the run is, what it started,
+    // The minimal stream `--quiet` leaves: what the search is, what it started,
     // what it committed, and how it ended.
     let dir = tempfile::tempdir().expect("temp dir");
     let config = write_config(dir.path(), r#""succeed", "succeed""#);
-    let output = sima(&["run", config.to_str().expect("utf-8 path"), "--quiet"]);
+    let output = sima(&["search", config.to_str().expect("utf-8 path"), "--quiet"]);
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let text = stdout(&output);
-    let run = load(&config).expect("load config").run.id().to_string();
-    assert!(text.contains(&format!("run {run}")), "{text}");
+    let search = load(&config).expect("load config").search.id().to_string();
+    assert!(text.contains(&format!("search {search}")), "{text}");
     assert!(text.contains("started: 2 tasks"), "{text}");
     assert!(text.contains("committed 2/2"), "{text}");
     assert!(text.contains("finalized: 2 tasks committed"), "{text}");
@@ -1392,12 +1394,12 @@ fn a_quiet_run_still_prints_the_run_its_start_its_commits_and_its_outcome() {
 
 #[test]
 fn a_quiet_run_prints_neither_the_attempts_nor_their_signs_of_life() {
-    // The other half of what `--quiet` states, over a run that produces both:
+    // The other half of what `--quiet` states, over a search that produces both:
     // four attempts, each checkpointing as it computes. What a script reads is
-    // the run's ledger, and none of the lines that exist to fill a silence.
+    // the search's ledger, and none of the lines that exist to fill a silence.
     let dir = tempfile::tempdir().expect("temp dir");
     let config = checkpointing_config(dir.path());
-    let output = sima(&["run", config.to_str().expect("utf-8 path"), "--quiet"]);
+    let output = sima(&["search", config.to_str().expect("utf-8 path"), "--quiet"]);
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let text = stdout(&output);
     assert!(text.contains("committed 4/4"), "{text}");
@@ -1408,26 +1410,26 @@ fn a_quiet_run_prints_neither_the_attempts_nor_their_signs_of_life() {
             "{silent:?} is narration and is dropped: {text}"
         );
     }
-    // Driven again without the flag, the same run says both, so what the flag
-    // dropped is what this run produces rather than what it lacks.
+    // Driven again without the flag, the same search says both, so what the flag
+    // dropped is what this search produces rather than what it lacks.
     let dir = tempfile::tempdir().expect("temp dir");
     let config = checkpointing_config(dir.path());
-    let text = stdout(&sima(&["run", config.to_str().expect("utf-8 path")]));
+    let text = stdout(&sima(&["search", config.to_str().expect("utf-8 path")]));
     for said in ["started (worker", "checkpointed"] {
         assert!(text.contains(said), "{said:?} missing from: {text}");
     }
 }
 
-/// Writes a config under `dir` named `name` whose run is seeded with `seed`,
-/// over the store beside it — two of them are two runs of one store.
+/// Writes a config under `dir` named `name` whose search is seeded with `seed`,
+/// over the store beside it — two of them are two searches of one store.
 fn seeded_config(dir: &Path, name: &str, seed: u64) -> PathBuf {
     let text = format!(
         r#"
-        [run]
+        [search]
         root_seed = {seed}
         format = "stub.v1"
 
-        [run.generator]
+        [search.generator]
         id = "stub.v1"
         behaviors = ["succeed", "succeed"]
 
@@ -1444,14 +1446,14 @@ fn seeded_config(dir: &Path, name: &str, seed: u64) -> PathBuf {
 
 #[test]
 fn runs_lists_every_run_the_store_holds_with_its_state_and_ledger() {
-    // A store accumulates the runs of every identity driven against it, and a
+    // A store accumulates the searches of every identity driven against it, and a
     // config names one of them; this is what says what else is in there.
     let dir = tempfile::tempdir().expect("temp dir");
     let first = seeded_config(dir.path(), "first.toml", 1);
     let second = seeded_config(dir.path(), "second.toml", 2);
     let store = dir.path().join("store");
 
-    let empty = sima(&["runs", store.to_str().expect("utf-8 path")]);
+    let empty = sima(&["searches", store.to_str().expect("utf-8 path")]);
     assert_eq!(empty.status.code(), Some(1), "{empty:?}");
     assert!(
         String::from_utf8(empty.stderr)
@@ -1463,27 +1465,27 @@ fn runs_lists_every_run_the_store_holds_with_its_state_and_ledger() {
 
     for config in [&first, &second] {
         assert_eq!(
-            sima(&["run", config.to_str().expect("utf-8 path")])
+            sima(&["search", config.to_str().expect("utf-8 path")])
                 .status
                 .code(),
             Some(0)
         );
     }
-    let output = sima(&["runs", store.to_str().expect("utf-8 path")]);
+    let output = sima(&["searches", store.to_str().expect("utf-8 path")]);
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let text = stdout(&output);
     for config in [&first, &second] {
-        let run = load(config).expect("load config").run.id().to_string();
+        let search = load(config).expect("load config").search.id().to_string();
         let line = text
             .lines()
-            .find(|line| line.starts_with(&run))
-            .unwrap_or_else(|| panic!("the listing names run {run}: {text}"));
+            .find(|line| line.starts_with(&search))
+            .unwrap_or_else(|| panic!("the listing names search {search}: {text}"));
         assert!(line.contains("finalized"), "{line}");
         assert!(line.contains("2/2"), "the ledger is on the line: {line}");
     }
 }
 
-/// Two configs in `dir` whose run ids begin with the same character, so a
+/// Two configs in `dir` whose search ids begin with the same character, so a
 /// store holding both holds a prefix that names neither in particular.
 ///
 /// Run ids are hashes, so which seeds collide is fixed by the configs rather
@@ -1493,12 +1495,12 @@ fn sharing_a_leading_character(dir: &Path) -> (PathBuf, PathBuf) {
     let leading = |config: &Path| {
         load(config)
             .expect("load config")
-            .run
+            .search
             .id()
             .to_string()
             .chars()
             .next()
-            .expect("a run id has characters")
+            .expect("a search id has characters")
     };
     let mut seen: Vec<(char, PathBuf)> = Vec::new();
     for seed in 1..64 {
@@ -1509,36 +1511,36 @@ fn sharing_a_leading_character(dir: &Path) -> (PathBuf, PathBuf) {
         }
         seen.push((leading, config));
     }
-    panic!("sixteen leading characters cannot hold sixty-three run ids apart");
+    panic!("sixteen leading characters cannot hold sixty-three search ids apart");
 }
 
 #[test]
 fn rm_by_run_prefix_deletes_that_run_and_refuses_an_ambiguous_one() {
-    // The run a config no longer names is reachable by its own id, and a
+    // The search a config no longer names is reachable by its own id, and a
     // prefix that names more than one is refused with the candidates, since
     // typing more of one of them is the answer.
     let dir = tempfile::tempdir().expect("temp dir");
     let (first, second) = sharing_a_leading_character(dir.path());
     for config in [&first, &second] {
         assert_eq!(
-            sima(&["run", config.to_str().expect("utf-8 path")])
+            sima(&["search", config.to_str().expect("utf-8 path")])
                 .status
                 .code(),
             Some(0)
         );
     }
-    let doomed = load(&first).expect("load config").run.id().to_string();
-    let kept = load(&second).expect("load config").run.id().to_string();
+    let doomed = load(&first).expect("load config").search.id().to_string();
+    let kept = load(&second).expect("load config").search.id().to_string();
     let path = second.to_str().expect("utf-8 path");
 
-    // Nothing typed at all names no run, and says which flag wants one.
-    let empty = sima(&["rm", path, "--run", ""]);
+    // Nothing typed at all names no search, and says which flag wants one.
+    let empty = sima(&["rm", path, "--search", ""]);
     assert_eq!(empty.status.code(), Some(1), "{empty:?}");
     let stderr = String::from_utf8(empty.stderr).expect("stderr is UTF-8");
-    assert!(stderr.contains("--run"), "{stderr}");
+    assert!(stderr.contains("--search"), "{stderr}");
 
     // Ambiguous: both ids begin that way, and nothing is deleted.
-    let ambiguous = sima(&["rm", path, "--run", &doomed[..1]]);
+    let ambiguous = sima(&["rm", path, "--search", &doomed[..1]]);
     assert_eq!(ambiguous.status.code(), Some(1), "{ambiguous:?}");
     let stderr = String::from_utf8(ambiguous.stderr).expect("stderr is UTF-8");
     assert!(stderr.contains("ambiguous"), "{stderr}");
@@ -1548,25 +1550,25 @@ fn rm_by_run_prefix_deletes_that_run_and_refuses_an_ambiguous_one() {
     );
 
     // Unknown: refused by name.
-    let unknown = sima(&["rm", path, "--run", "ffffffffffff"]);
+    let unknown = sima(&["rm", path, "--search", "ffffffffffff"]);
     assert_eq!(unknown.status.code(), Some(1), "{unknown:?}");
     assert!(
         String::from_utf8(unknown.stderr)
             .expect("stderr is UTF-8")
-            .contains("no run"),
+            .contains("no search"),
     );
 
-    // The other run of this store, deleted through the config that does not
+    // The other search of this store, deleted through the config that does not
     // name it.
-    let removed = sima(&["rm", path, "--run", &doomed[..12]]);
+    let removed = sima(&["rm", path, "--search", &doomed[..12]]);
     assert_eq!(removed.status.code(), Some(0), "{removed:?}");
     let listed = stdout(&sima(&[
-        "runs",
+        "searches",
         dir.path().join("store").to_str().expect("utf-8"),
     ]));
-    assert!(!listed.contains(&doomed), "the run is gone: {listed}");
+    assert!(!listed.contains(&doomed), "the search is gone: {listed}");
     assert!(listed.contains(&kept), "and the other one is not: {listed}");
-    // The surviving run's own results survive with it.
+    // The surviving search's own results survive with it.
     assert!(manifest_of(&second).is_some(), "{listed}");
 }
 
@@ -1575,10 +1577,10 @@ fn the_write_commands_refuse_a_remote_host() {
     let dir = tempfile::tempdir().expect("temp dir");
     let config = write_config(dir.path(), r#""succeed""#);
     let path = config.to_str().expect("utf-8 path");
-    // Driving a run happens where the hardware is, and removing a run mutates
+    // Driving a search happens where the hardware is, and removing a search mutates
     // a store; neither observes, so neither takes `--on`.
     for args in [
-        vec!["run", path, "--on", "gpubox"],
+        vec!["search", path, "--on", "gpubox"],
         vec!["rm", path, "--on", "gpubox"],
     ] {
         let output = sima(&args);
@@ -1586,8 +1588,8 @@ fn the_write_commands_refuse_a_remote_host() {
         let stderr = String::from_utf8(output.stderr).expect("stderr is UTF-8");
         assert!(stderr.contains("usage"), "{args:?}: {stderr}");
     }
-    // The refusal is the flag, not the command: the run itself still drives.
-    assert_eq!(sima(&["run", path]).status.code(), Some(0));
+    // The refusal is the flag, not the command: the search itself still drives.
+    assert_eq!(sima(&["search", path]).status.code(), Some(0));
 }
 
 #[test]
@@ -1595,7 +1597,7 @@ fn a_host_flag_without_a_host_is_a_usage_error() {
     let dir = tempfile::tempdir().expect("temp dir");
     let config = write_config(dir.path(), r#""succeed""#);
     let path = config.to_str().expect("utf-8 path");
-    assert_eq!(sima(&["run", path]).status.code(), Some(0));
+    assert_eq!(sima(&["search", path]).status.code(), Some(0));
 
     let output = sima(&["status", path, "--on"]);
     assert_eq!(output.status.code(), Some(1), "{output:?}");
@@ -1608,7 +1610,7 @@ fn follow_serve_writes_a_frame_stream_opening_with_a_handshake() {
     let dir = tempfile::tempdir().expect("temp dir");
     let config = write_config(dir.path(), r#""succeed", "succeed""#);
     let path = config.to_str().expect("utf-8 path");
-    assert_eq!(sima(&["run", path]).status.code(), Some(0));
+    assert_eq!(sima(&["search", path]).status.code(), Some(0));
 
     let output = sima(&["follow-serve", path, "--once"]);
     assert_eq!(output.status.code(), Some(0), "{output:?}");
@@ -1621,8 +1623,8 @@ fn follow_serve_writes_a_frame_stream_opening_with_a_handshake() {
         sima_pipeline::FollowFrame::decode(&payload).expect("the opening frame decodes"),
         sima_pipeline::FollowFrame::Hello {
             protocol: sima_pipeline::FOLLOW_PROTOCOL_VERSION,
-            run: loaded.run.id(),
-            format: loaded.run.format.clone(),
+            search: loaded.search.id(),
+            format: loaded.search.format.clone(),
             workers: loaded.execution.workers as u32,
             holder: None,
         }
@@ -1634,10 +1636,10 @@ fn follow_prints_a_finished_run_s_events_and_exits_on_its_outcome() {
     let dir = tempfile::tempdir().expect("temp dir");
     let config = write_config(dir.path(), r#""succeed", "succeed""#);
     let path = config.to_str().expect("utf-8 path");
-    assert_eq!(sima(&["run", path]).status.code(), Some(0));
+    assert_eq!(sima(&["search", path]).status.code(), Some(0));
 
-    // The run is over and nothing holds it: follow replays what it recorded
-    // and leaves with the run's own outcome code.
+    // The search is over and nothing holds it: follow replays what it recorded
+    // and leaves with the search's own outcome code.
     let output = sima(&["follow", path]);
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let text = stdout(&output);
@@ -1659,7 +1661,7 @@ fn follow_over_an_abandoned_run_prints_its_history_and_exits_0() {
     let path = config.to_str().expect("utf-8 path");
     common::abandon_run(&config);
 
-    // The journal stops mid-run and nothing holds the lock: such a run is
+    // The journal stops mid-search and nothing holds the lock: such a search is
     // resumable, so the follow renders what was recorded and leaves
     // successfully rather than reporting a failure that did not happen.
     let output = sima(&["follow", path]);
@@ -1674,7 +1676,7 @@ fn follow_over_a_failed_run_exits_2() {
     let dir = tempfile::tempdir().expect("temp dir");
     let config = write_config(dir.path(), r#""succeed", "reject""#);
     let path = config.to_str().expect("utf-8 path");
-    assert_eq!(sima(&["run", path]).status.code(), Some(2));
+    assert_eq!(sima(&["search", path]).status.code(), Some(2));
 
     let output = sima(&["follow", path]);
     assert_eq!(output.status.code(), Some(2), "{output:?}");
@@ -1687,14 +1689,14 @@ fn follow_over_an_interrupted_run_exits_130() {
     let config = write_config(dir.path(), r#""sleep:1500", "sleep:1500", "sleep:1500""#);
     let path = config.to_str().expect("utf-8 path");
     let mut child = Command::new(env!("CARGO_BIN_EXE_sima"))
-        .args(["run", path])
+        .args(["search", path])
         .env("SIMA_WORKER", common::worker_binary())
         .stdout(std::process::Stdio::null())
         .spawn()
-        .expect("spawn sima run");
+        .expect("spawn sima search");
     assert!(
         common::wait_for_first_lease(&config, Duration::from_secs(30)),
-        "the run leased a task before the interrupt"
+        "the search leased a task before the interrupt"
     );
     assert!(
         Command::new("kill")
@@ -1735,7 +1737,7 @@ fn the_start_gate_surfaces_a_broken_config_instead_of_waiting_it_out() {
     // wrong cause.
     let opened = Instant::now();
     let panic = std::panic::catch_unwind(|| common::poll_until_started(&config))
-        .expect_err("a config that does not load cannot gate a run");
+        .expect_err("a config that does not load cannot gate a search");
     assert!(opened.elapsed() < Duration::from_secs(5), "the gate waited");
     let message = panic
         .downcast_ref::<String>()
@@ -1749,7 +1751,7 @@ fn follow_ends_successfully_when_its_reader_closes_the_pipe() {
     let dir = tempfile::tempdir().expect("temp dir");
     let config = write_config(dir.path(), r#""sleep:400", "sleep:400", "sleep:400""#);
     let path = config.to_str().expect("utf-8 path");
-    let mut run = common::driving(&config);
+    let mut search = common::driving(&config);
 
     let mut followed = sima_command()
         .args(["follow", path])
@@ -1758,7 +1760,7 @@ fn follow_ends_successfully_when_its_reader_closes_the_pipe() {
         .expect("spawn sima follow");
     // `sima follow <config> | head -1`: one line read, then the reader is
     // gone. The next write finds a closed pipe, which ends the follow on the
-    // state the run had reached — in progress, so successfully.
+    // state the search had reached — in progress, so successfully.
     let mut out = std::io::BufReader::new(followed.stdout.take().expect("a piped stdout"));
     let mut line = String::new();
     std::io::BufRead::read_line(&mut out, &mut line).expect("read the first line");
@@ -1767,7 +1769,7 @@ fn follow_ends_successfully_when_its_reader_closes_the_pipe() {
 
     let ended = common::wait_within(followed, Duration::from_secs(30));
     assert_eq!(ended.status.code(), Some(0), "{ended:?}");
-    assert_eq!(run.wait().expect("wait for sima run").code(), Some(0));
+    assert_eq!(search.wait().expect("wait for sima search").code(), Some(0));
 }
 
 #[test]
@@ -1775,12 +1777,12 @@ fn follow_streams_a_live_run_to_its_end() {
     let dir = tempfile::tempdir().expect("temp dir");
     let config = write_config(dir.path(), r#""sleep:800", "sleep:800", "sleep:800""#);
     let path = config.to_str().expect("utf-8 path");
-    let mut run = common::driving(&config);
+    let mut search = common::driving(&config);
 
     let output = sima(&["follow", path]);
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     assert!(stdout(&output).contains("finalized"), "{output:?}");
-    assert_eq!(run.wait().expect("wait for sima run").code(), Some(0));
+    assert_eq!(search.wait().expect("wait for sima search").code(), Some(0));
 }
 
 /// The stderr of `output`, as UTF-8.
@@ -1813,7 +1815,7 @@ fn reconcile_over_a_record_naming_an_unknown_provider_fails_naming_it() {
             tag: "sima-tag-0".to_string(),
             provider: "nowhere".to_string(),
             machine: "m-0".to_string(),
-            owner: loaded.run.id().to_string(),
+            owner: loaded.search.id().to_string(),
             role: Rental::Worker,
             state: InstanceRecordState::Live {
                 instance: "i-1".to_string(),

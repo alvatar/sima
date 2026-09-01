@@ -1,8 +1,8 @@
-//! The runs a store holds: what is in it, and addressing one of them by id.
+//! The searches a store holds: what is in it, and addressing one of them by id.
 //!
-//! A config names one run — the run its identity section hashes to — so every
-//! other verb reaches a store through a config and sees exactly that run. A
-//! store accumulates the runs of every identity ever driven against it: an
+//! A config names one search — the search its identity section hashes to — so every
+//! other verb reaches a store through a config and sees exactly that search. A
+//! store accumulates the searches of every identity ever driven against it: an
 //! edited seed, changed params, a different generator. These two answer the
 //! questions a config cannot: what is in here, and delete that one.
 
@@ -13,22 +13,22 @@ use sima_model::SearchId;
 use sima_store::Store;
 
 use crate::journal::parse;
-use crate::status::{RunState, status_records};
+use crate::status::{SearchState, status_records};
 
-/// One run as a store holds it: its identity, the state its journal projects,
+/// One search as a store holds it: its identity, the state its journal projects,
 /// and its task ledger.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RunSummary {
-    pub run: SearchId,
-    /// What the run's journal projects, by the same fold `sima status` uses.
-    pub state: RunState,
-    /// The run's task count, as its latest session stated it.
+pub struct SearchSummary {
+    pub search: SearchId,
+    /// What the search's journal projects, by the same fold `sima status` uses.
+    pub state: SearchState,
+    /// The search's task count, as its latest session stated it.
     pub tasks: usize,
     /// How many of those tasks the journal shows committed.
     pub committed: usize,
 }
 
-/// Every run in the store at `root`, by id.
+/// Every search in the store at `root`, by id.
 ///
 /// A store root that is not there at all is [`Error::Validation`] before
 /// anything touches the disk, since opening a store creates its skeleton and a
@@ -36,12 +36,12 @@ pub struct RunSummary {
 /// there and holds no store is opened like any other, and the skeleton that
 /// writes is the same one every verb reaching that path writes.
 ///
-/// A run registered but never driven has no journal and no records,
+/// A search registered but never driven has no journal and no records,
 /// so it summarizes as in progress with an empty ledger — which is what it is.
-pub fn runs(root: &Path) -> Result<Vec<RunSummary>> {
+pub fn searches(root: &Path) -> Result<Vec<SearchSummary>> {
     if !root.is_dir() {
         return Err(Error::Validation(format!(
-            "store {} does not exist: no run was ever driven there",
+            "store {} does not exist: no search was ever driven there",
             root.display()
         )));
     }
@@ -49,11 +49,11 @@ pub fn runs(root: &Path) -> Result<Vec<RunSummary>> {
     store
         .searches()?
         .into_iter()
-        .map(|run| {
-            let records = parse(&run, &store.journal(&run)?)?;
-            let status = status_records(run, &records);
-            Ok(RunSummary {
-                run,
+        .map(|search| {
+            let records = parse(&search, &store.journal(&search)?)?;
+            let status = status_records(search, &records);
+            Ok(SearchSummary {
+                search,
                 state: status.state,
                 tasks: status.tasks,
                 committed: status.committed,
@@ -62,18 +62,18 @@ pub fn runs(root: &Path) -> Result<Vec<RunSummary>> {
         .collect()
 }
 
-/// The one run in `store` whose id begins with `prefix`.
+/// The one search in `store` whose id begins with `prefix`.
 ///
-/// Any unambiguous prefix addresses a run, as one does a task. An ambiguous
-/// one is refused naming every run it matches, since the answer to it is to
+/// Any unambiguous prefix addresses a search, as one does a task. An ambiguous
+/// one is refused naming every search it matches, since the answer to it is to
 /// type more of one of them. The empty prefix is refused before that: it
-/// begins every run, so in a store holding one it would address that run
+/// begins every search, so in a store holding one it would address that search
 /// while naming nothing.
-pub(crate) fn resolve_run(store: &Store, prefix: &str) -> Result<SearchId> {
+pub(crate) fn resolve_search(store: &Store, prefix: &str) -> Result<SearchId> {
     if prefix.is_empty() {
         return Err(Error::Validation(
-            "--run takes a run id or a leading part of one, and was given nothing. Every run \
-             begins with the empty prefix, so it addresses no run in particular; `sima runs \
+            "--search takes a search id or a leading part of one, and was given nothing. Every search \
+             begins with the empty prefix, so it addresses no search in particular; `sima searches \
              <store-dir>` lists what the store holds."
                 .to_string(),
         ));
@@ -81,12 +81,12 @@ pub(crate) fn resolve_run(store: &Store, prefix: &str) -> Result<SearchId> {
     let matched: Vec<SearchId> = store
         .searches()?
         .into_iter()
-        .filter(|run| run.to_string().starts_with(prefix))
+        .filter(|search| search.to_string().starts_with(prefix))
         .collect();
     match matched.as_slice() {
-        [run] => Ok(*run),
+        [search] => Ok(*search),
         [] => Err(Error::Validation(format!(
-            "no run in this store matches prefix {prefix}"
+            "no search in this store matches prefix {prefix}"
         ))),
         many => Err(Error::Validation(format!(
             "prefix {prefix} is ambiguous: it matches {}",
@@ -101,18 +101,18 @@ pub(crate) fn resolve_run(store: &Store, prefix: &str) -> Result<SearchId> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fixtures::{drive_run, load_str};
+    use crate::fixtures::{drive_search, load_str};
 
-    /// A run of two succeeding candidates under `root_seed`, which is what
-    /// makes two configs over one store two runs.
+    /// A search of two succeeding candidates under `root_seed`, which is what
+    /// makes two configs over one store two searches.
     fn seeded(root_seed: u64, store: &Path) -> crate::config::LoadedConfig {
         load_str(&format!(
             r#"
-            [run]
+            [search]
             root_seed = {root_seed}
             format = "stub.v1"
 
-            [run.generator]
+            [search.generator]
             id = "stub.v1"
             behaviors = ["succeed", "succeed"]
 
@@ -127,7 +127,7 @@ mod tests {
         ))
     }
 
-    /// Two identities over `root` whose run ids begin with the same character,
+    /// Two identities over `root` whose search ids begin with the same character,
     /// so the store they are driven into holds a prefix that names both.
     ///
     /// Run ids are hashes, so which seeds collide is fixed by the configs
@@ -137,29 +137,29 @@ mod tests {
         let mut seen: Vec<(char, u64)> = Vec::new();
         for seed in 1..u64::MAX {
             let leading = seeded(seed, root)
-                .run
+                .search
                 .id()
                 .to_string()
                 .chars()
                 .next()
-                .expect("a run id has characters");
+                .expect("a search id has characters");
             if let Some((_, earlier)) = seen.iter().find(|(char, _)| *char == leading) {
                 return (seeded(*earlier, root), seed);
             }
             seen.push((leading, seed));
         }
-        unreachable!("sixteen leading characters cannot hold seventeen run ids apart");
+        unreachable!("sixteen leading characters cannot hold seventeen search ids apart");
     }
 
-    /// A store holding two runs of different identities, and their ids.
+    /// A store holding two searches of different identities, and their ids.
     fn two_runs(dir: &Path) -> Result<(Store, SearchId, SearchId)> {
         let root = dir.join("store");
         let store = Store::open(&root)?;
         let (first, second) = sharing_a_leading_character(&root);
         let second = seeded(second, &root);
-        drive_run(&store, &first.run, None);
-        drive_run(&store, &second.run, None);
-        Ok((store, first.run.id(), second.run.id()))
+        drive_search(&store, &first.search, None);
+        drive_search(&store, &second.search, None);
+        Ok((store, first.search.id(), second.search.id()))
     }
 
     #[test]
@@ -169,17 +169,17 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let (store, first, second) = two_runs(dir.path())?;
 
-        let listed = runs(store.root())?;
+        let listed = searches(store.root())?;
         assert_eq!(listed.len(), 2, "{listed:?}");
         for summary in &listed {
-            assert_eq!(summary.state, RunState::Finalized);
+            assert_eq!(summary.state, SearchState::Finalized);
             assert!(summary.tasks > 0, "{summary:?}");
             assert_eq!(
                 summary.committed, summary.tasks,
-                "a finalized run committed all of them: {summary:?}"
+                "a finalized search committed all of them: {summary:?}"
             );
         }
-        let ids: Vec<SearchId> = listed.iter().map(|summary| summary.run).collect();
+        let ids: Vec<SearchId> = listed.iter().map(|summary| summary.search).collect();
         assert!(ids.contains(&first) && ids.contains(&second), "{ids:?}");
         Ok(())
     }
@@ -188,7 +188,7 @@ mod tests {
     fn a_store_that_was_never_driven_in_is_refused_rather_than_created() {
         let dir = tempfile::tempdir().expect("temp dir");
         let absent = dir.path().join("nothing-here");
-        let error = runs(&absent).expect_err("a store that is not there holds no run");
+        let error = searches(&absent).expect_err("a store that is not there holds no search");
         assert!(error.to_string().contains("does not exist"), "{error}");
         assert!(!absent.exists(), "and the query created nothing");
     }
@@ -199,40 +199,40 @@ mod tests {
         let (store, first, second) = two_runs(dir.path())?;
 
         let id = first.to_string();
-        assert_eq!(resolve_run(&store, &id[..12])?, first);
-        assert_eq!(resolve_run(&store, &id)?, first);
+        assert_eq!(resolve_search(&store, &id[..12])?, first);
+        assert_eq!(resolve_search(&store, &id)?, first);
 
-        // A prefix both runs begin with is refused naming them, which is what
+        // A prefix both searches begin with is refused naming them, which is what
         // makes typing more of one an answer.
         let shared = &first.to_string()[..1];
-        let error = resolve_run(&store, shared).expect_err("both runs begin that way");
+        let error = resolve_search(&store, shared).expect_err("both searches begin that way");
         let text = error.to_string();
         assert!(text.contains("ambiguous"), "{text}");
         assert!(text.contains(&first.to_string()), "{text}");
         assert!(text.contains(&second.to_string()), "{text}");
 
-        let error = resolve_run(&store, "ffffffffffff").expect_err("no run matches");
-        assert!(error.to_string().contains("no run"), "{error}");
+        let error = resolve_search(&store, "ffffffffffff").expect_err("no search matches");
+        assert!(error.to_string().contains("no search"), "{error}");
         Ok(())
     }
 
     #[test]
     fn an_empty_prefix_is_refused_rather_than_read_as_any_run() -> Result<()> {
-        // It is a prefix of every run, so a store holding one would have that
+        // It is a prefix of every search, so a store holding one would have that
         // one deleted by an argument that named nothing. The flag is what the
-        // refusal names, since the fix is to type a run into it.
+        // refusal names, since the fix is to type a search into it.
         let dir = tempfile::tempdir().expect("temp dir");
         let root = dir.path().join("store");
         let store = Store::open(&root)?;
         let only = seeded(1, &root);
-        drive_run(&store, &only.run, None);
+        drive_search(&store, &only.search, None);
 
-        let error = resolve_run(&store, "").expect_err("an empty prefix names no run");
+        let error = resolve_search(&store, "").expect_err("an empty prefix names no search");
         let text = error.to_string();
-        assert!(text.contains("--run"), "names the flag: {text}");
+        assert!(text.contains("--search"), "names the flag: {text}");
         assert_eq!(
             store.searches()?,
-            vec![only.run.id()],
+            vec![only.search.id()],
             "and nothing was touched"
         );
         Ok(())

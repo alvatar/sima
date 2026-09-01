@@ -1,7 +1,7 @@
 //! The ratatui rendering of a [`ViewModel`]: header, worker panel, counters,
 //! and event log, with a help overlay drawn over them on request. Layout only
 //! — every value shown is already resolved on the model, so this file holds no
-//! run logic.
+//! search logic.
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -24,7 +24,7 @@ pub fn draw(frame: &mut Frame, vm: &ViewModel) {
         ])
         .split(frame.area());
 
-    // The notice — a refused key naming the run's holder — rides the header
+    // The notice — a refused key naming the search's holder — rides the header
     // line when present.
     let notice = vm
         .notice
@@ -32,8 +32,8 @@ pub fn draw(frame: &mut Frame, vm: &ViewModel) {
         .map(|notice| format!("    {notice}"))
         .unwrap_or_default();
     let header = Paragraph::new(format!(
-        "run {}    state {}{notice}",
-        short(&vm.run),
+        "search {}    state {}{notice}",
+        short(&vm.search),
         vm.state
     ))
     .block(Block::default().borders(Borders::ALL).title("sima tui"));

@@ -1,4 +1,4 @@
-//! The wire protocol of the follow stream: what the host running a run's
+//! The wire protocol of the follow stream: what the host running a search's
 //! orchestrator writes, and what the machine rendering the view reads.
 //!
 //! Framing is [`sima_core::frame`]: a `u32` little-endian payload length
@@ -31,31 +31,31 @@ const TAG_HOLDER: u8 = 2;
 const TAG_COMPLETE: u8 = 3;
 const TAG_FAULT: u8 = 4;
 
-/// One frame of the follow stream, written by the host the run's orchestrator
-/// runs on.
+/// One frame of the follow stream, written by the host the search's orchestrator
+/// searches on.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FollowFrame {
-    /// The opening frame, always first: the protocol version and the run
+    /// The opening frame, always first: the protocol version and the search
     /// metadata the near side renders through.
     Hello {
         /// The far side's [`FOLLOW_PROTOCOL_VERSION`].
         protocol: u32,
-        /// The run being followed, as the far side computed it from the
+        /// The search being followed, as the far side computed it from the
         /// config on its own disk.
-        run: SearchId,
-        /// The run's format id; the near side resolves the domain that
+        search: SearchId,
+        /// The search's format id; the near side resolves the domain that
         /// renders stats from it.
         format: FormatId,
         /// The configured worker count, for the occupancy view.
         workers: u32,
-        /// Who held the run's orchestrator lock when the stream opened.
+        /// Who held the search's orchestrator lock when the stream opened.
         holder: Option<String>,
     },
     /// Raw journal lines, in append order, exactly as the journal stores them
     /// with the newline framing stripped. The near side parses each one, so
     /// the torn-write rule stays on the far side where the file is.
     Records(Vec<String>),
-    /// The run's lock is held by this string, or free.
+    /// The search's lock is held by this string, or free.
     Holder(Option<String>),
     /// Snapshot mode: the far side reached the journal's end and is exiting.
     Complete,
@@ -70,14 +70,14 @@ impl FollowFrame {
         match self {
             FollowFrame::Hello {
                 protocol,
-                run,
+                search,
                 format,
                 workers,
                 holder,
             } => {
                 enc.u8(TAG_HELLO)
                     .u32(*protocol)
-                    .hash(run.as_hash())
+                    .hash(search.as_hash())
                     .str(format.as_str())
                     .u32(*workers);
                 opt_str(&mut enc, holder.as_deref());
@@ -109,13 +109,13 @@ impl FollowFrame {
         let frame = match dec.u8()? {
             TAG_HELLO => {
                 let protocol = dec.u32()?;
-                let run = SearchId::from_hash(dec.hash()?);
+                let search = SearchId::from_hash(dec.hash()?);
                 let format = FormatId::new(dec.str()?)?;
                 let workers = dec.u32()?;
                 let holder = decode_opt_str(&mut dec)?;
                 FollowFrame::Hello {
                     protocol,
-                    run,
+                    search,
                     format,
                     workers,
                     holder,
@@ -178,14 +178,14 @@ mod tests {
         Ok(vec![
             FollowFrame::Hello {
                 protocol: FOLLOW_PROTOCOL_VERSION,
-                run: SearchId::from_hash(hash_bytes(b"a followed run")),
+                search: SearchId::from_hash(hash_bytes(b"a followed search")),
                 format: FormatId::new("stub.v1")?,
                 workers: 4,
                 holder: Some("4242 gpubox".to_string()),
             },
             FollowFrame::Hello {
                 protocol: FOLLOW_PROTOCOL_VERSION,
-                run: SearchId::from_hash(hash_bytes(b"an idle run")),
+                search: SearchId::from_hash(hash_bytes(b"an idle search")),
                 format: FormatId::new("stub.v1")?,
                 workers: 1,
                 holder: None,
@@ -195,7 +195,7 @@ mod tests {
             FollowFrame::Holder(Some("7 host".to_string())),
             FollowFrame::Holder(None),
             FollowFrame::Complete,
-            FollowFrame::Fault("the run was never started".to_string()),
+            FollowFrame::Fault("the search was never started".to_string()),
         ])
     }
 

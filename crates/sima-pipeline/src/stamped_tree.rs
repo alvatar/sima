@@ -30,7 +30,7 @@
 //! it; it is written last and atomically, so a stamp is only ever read beside
 //! the tree it names. The lock is blocking and lives on the open file
 //! description, so a crashed builder's is released by the kernel and no
-//! staleness protocol exists — the rule the store's run lock follows.
+//! staleness protocol exists — the rule the store's search lock follows.
 //!
 //! What "complete" means is the caller's: a program tree is complete when its
 //! entry point is executable, and the SDK's when the package is importable. The
@@ -47,7 +47,7 @@ pub(crate) const STAMP_FILE: &str = "installed.digest";
 /// Held while building, so concurrent loaders build one tree between them.
 const LOCK_FILE: &str = ".lock";
 
-/// The mode a file that runs is written under.
+/// The mode a file that searches is written under.
 pub(crate) const EXECUTABLE_MODE: u32 = 0o755;
 /// The mode every other written file gets.
 pub(crate) const REGULAR_MODE: u32 = 0o644;
@@ -168,7 +168,7 @@ pub(crate) fn validate_path(path: &str) -> Result<()> {
     Ok(())
 }
 
-/// Whether `path` is a file this machine can run.
+/// Whether `path` is a file this machine can search.
 pub(crate) fn executable(path: &Path) -> Result<bool> {
     match std::fs::metadata(path) {
         Ok(metadata) => Ok(metadata.is_file() && metadata.permissions().mode() & 0o111 != 0),

@@ -1,8 +1,8 @@
-//! The stub generator: turns a seeded config into a run's candidate specs.
+//! The stub generator: turns a seeded config into a search's candidate specs.
 //!
 //! [`StubGeneratorConfig`] is the generator's params blob — a list of the
-//! behaviors to program into the run's candidates. [`StubGenerator`] reads it,
-//! stamps each candidate with a nonce derived from the run seed so the specs
+//! behaviors to program into the search's candidates. [`StubGenerator`] reads it,
+//! stamps each candidate with a nonce derived from the search seed so the specs
 //! stay distinct and depend on the seed, and returns one [`Spec`] per behavior.
 
 use sima_core::{Dec, Enc, Result, prng};
@@ -11,7 +11,7 @@ use sima_model::{FormatId, GeneratorId, Spec};
 use super::program::{StubBehavior, StubProgram};
 use sima_contracts::Generator;
 
-/// The stub generator's params: the behaviors to program into a run's
+/// The stub generator's params: the behaviors to program into a search's
 /// candidates, in order. Its canonical form carries no domain tag — it lives
 /// inside a params blob, which frames it. One candidate is produced per
 /// behavior.
@@ -58,8 +58,8 @@ impl StubGeneratorConfig {
     }
 }
 
-/// Produces a run's candidate specs from a [`StubGeneratorConfig`]. Each spec
-/// carries a [`StubProgram`] whose nonce is derived from the run seed, so the
+/// Produces a search's candidate specs from a [`StubGeneratorConfig`]. Each spec
+/// carries a [`StubProgram`] whose nonce is derived from the search seed, so the
 /// generator is genuinely seeded: a different root seed yields different specs.
 #[derive(Debug, Clone)]
 pub struct StubGenerator {

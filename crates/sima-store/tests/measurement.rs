@@ -50,7 +50,7 @@ fn object_path(root: &std::path::Path, hash: &sima_core::Hash) -> std::path::Pat
 }
 
 #[test]
-#[ignore = "measurement, run manually on the dev machine"]
+#[ignore = "measurement, search manually on the dev machine"]
 fn write_cost() {
     let dir = tempfile::tempdir().expect("temp dir");
     let store = Store::open(dir.path()).expect("open store");
@@ -82,7 +82,7 @@ fn write_cost() {
 }
 
 #[test]
-#[ignore = "measurement, run manually on the dev machine"]
+#[ignore = "measurement, search manually on the dev machine"]
 fn read_cost() {
     let dir = tempfile::tempdir().expect("temp dir");
     let store = Store::open(dir.path()).expect("open store");

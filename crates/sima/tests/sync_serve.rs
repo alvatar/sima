@@ -2,14 +2,14 @@
 //! store, a `Store::sync` initiator on another, joined by the child's stdio.
 //!
 //! This is the boundary a migration's push and pull both cross. The verb
-//! addresses a store and a run rather than a config, because loading a config
+//! addresses a store and a search rather than a config, because loading a config
 //! resolves its `[domain.*]` entries — which installs and spawns the program
 //! that the session may be there to deliver. The far side therefore derives
-//! its key set from the run's journal, while the initiator derives its own
+//! its key set from the search's journal, while the initiator derives its own
 //! from (config, store state): no key list travels and the protocol is
 //! unchanged.
 //!
-//! Every test here runs in the ordinary gate: the far half is a subprocess on
+//! Every test here searches in the ordinary gate: the far half is a subprocess on
 //! this machine, with no ssh hop and no network.
 
 mod common;
@@ -25,16 +25,16 @@ use sima_pipeline::{load, task_keys};
 use sima_store::{ObjectScope, Store, SyncReport, SyncRole};
 
 /// A stub config over `store`, dividing each candidate into `segments`
-/// accumulating tasks so a partly-run store has a real chain in it.
+/// accumulating tasks so a partly-search store has a real chain in it.
 fn config_text(store: &str, segments: u64) -> String {
     format!(
         r#"
-        [run]
+        [search]
         root_seed = 21
         format = "stub.v1"
         segments = {segments}
 
-        [run.generator]
+        [search.generator]
         id = "stub.v1"
         behaviors = ["accumulate:2", "accumulate:2"]
 
@@ -48,12 +48,12 @@ fn config_text(store: &str, segments: u64) -> String {
     )
 }
 
-/// Runs `sima run` over `config` to completion, asserting it finalized.
+/// Runs `sima search` over `config` to completion, asserting it finalized.
 fn run_to_completion(config: &Path) {
     let output = sima_command()
-        .args(["run", config.to_str().expect("utf-8 path")])
+        .args(["search", config.to_str().expect("utf-8 path")])
         .output()
-        .expect("spawn sima run");
+        .expect("spawn sima search");
     assert_eq!(output.status.code(), Some(0), "{output:?}");
 }
 
@@ -63,16 +63,16 @@ fn sync_against(near: &Path, far: &Path, scope: ObjectScope<'_>) -> Result<SyncR
     let loaded = load(near)?;
     let store = Store::open(&loaded.store)?;
     let keys = task_keys(&loaded, &store)?;
-    // The initiator addresses the far side by store and run, both of which it
-    // knows: the run id is derived from the config it holds, and the store
+    // The initiator addresses the far side by store and search, both of which it
+    // knows: the search id is derived from the config it holds, and the store
     // sits where the far config names it.
     let far_loaded = load(far)?;
     let mut child = sima_command()
         .args([
             "sync-serve",
             far_loaded.store.to_str().expect("utf-8 path"),
-            "--run",
-            &far_loaded.run.id().to_string(),
+            "--search",
+            &far_loaded.search.id().to_string(),
         ])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -97,7 +97,7 @@ fn sync_against(near: &Path, far: &Path, scope: ObjectScope<'_>) -> Result<SyncR
     }
 }
 
-/// The task keys `config`'s run comprises over its own store.
+/// The task keys `config`'s search comprises over its own store.
 fn keys_of(config: &Path) -> Result<Vec<TaskKey>> {
     let loaded = load(config)?;
     let store = Store::open(&loaded.store)?;
@@ -106,7 +106,7 @@ fn keys_of(config: &Path) -> Result<Vec<TaskKey>> {
 
 #[test]
 fn a_push_lands_the_run_and_the_far_side_derives_the_same_frontier() -> Result<()> {
-    // A finished run pushed into an empty store: every record travels, and the
+    // A finished search pushed into an empty store: every record travels, and the
     // far side ends deriving from its own config exactly the set this side
     // does — which is what makes the transfer complete rather than merely
     // large.
@@ -116,7 +116,7 @@ fn a_push_lands_the_run_and_the_far_side_derives_the_same_frontier() -> Result<(
     run_to_completion(&near);
 
     let report = sync_against(&near, &far, ObjectScope::Referenced)?;
-    assert!(report.records_sent > 0, "the run travelled");
+    assert!(report.records_sent > 0, "the search travelled");
     assert_eq!(keys_of(&far)?, keys_of(&near)?);
     Ok(())
 }
@@ -125,18 +125,18 @@ fn a_push_lands_the_run_and_the_far_side_derives_the_same_frontier() -> Result<(
 fn a_pull_brings_home_a_run_only_the_far_side_drove() -> Result<()> {
     // The direction the verb exists for, and the one that rests on the far
     // side's own key set: it derives from its journal what it holds, and a
-    // near side that holds none of it takes the whole run in one session.
+    // near side that holds none of it takes the whole search in one session.
     let dir = tempfile::tempdir().expect("temp dir");
     let near = write_config_text(dir.path(), "near.toml", &config_text("./near-store", 3));
     let far = write_config_text(dir.path(), "far.toml", &config_text("./far-store", 3));
-    // Only the far side ran, which is what a migrated run looks like when the
+    // Only the far side ran, which is what a migrated search looks like when the
     // orchestrator comes back to collect.
     run_to_completion(&far);
 
     let report = sync_against(&near, &far, ObjectScope::Referenced)?;
-    assert!(report.records_received > 0, "the run came home");
+    assert!(report.records_received > 0, "the search came home");
     assert_eq!(report.records_sent, 0, "and nothing went the other way");
-    // Every key of the run is now committed here, which is what finalizing
+    // Every key of the search is now committed here, which is what finalizing
     // locally rests on.
     let loaded = load(&near)?;
     let store = Store::open(&loaded.store)?;
@@ -166,7 +166,7 @@ fn a_second_session_over_converged_stores_transfers_nothing() -> Result<()> {
 
 #[test]
 fn a_far_side_whose_search_lock_is_held_fails_cleanly_rather_than_hanging() -> Result<()> {
-    // `sync-serve` takes the run lock for the session, so a run driving that
+    // `sync-serve` takes the search lock for the session, so a search driving that
     // store on that machine makes the sync fail on the lock. The failure is the
     // safe one: nothing is written underneath a live orchestrator.
     let dir = tempfile::tempdir().expect("temp dir");
@@ -174,10 +174,10 @@ fn a_far_side_whose_search_lock_is_held_fails_cleanly_rather_than_hanging() -> R
     let far = write_config_text(dir.path(), "far.toml", &config_text("./far-store", 2));
     run_to_completion(&near);
 
-    // Hold the far store's run lock from this process, as a live run would.
+    // Hold the far store's search lock from this process, as a live search would.
     let far_loaded = load(&far)?;
     let far_store = Store::open(&far_loaded.store)?;
-    let _held = far_store.acquire_search_lock(&far_loaded.run.id())?;
+    let _held = far_store.acquire_search_lock(&far_loaded.search.id())?;
 
     assert!(
         sync_against(&near, &far, ObjectScope::Referenced).is_err(),
@@ -195,8 +195,8 @@ fn a_search_id_that_is_not_one_surfaces_as_a_failure() {
         .args([
             "sync-serve",
             dir.path().join("store").to_str().expect("utf-8 path"),
-            "--run",
-            "not-a-run-id",
+            "--search",
+            "not-a-search-id",
         ])
         .stdin(Stdio::null())
         .output()
@@ -216,7 +216,7 @@ fn a_store_serving_a_run_it_never_held_advertises_nothing() -> Result<()> {
 
     let report = sync_against(&near, &far, ObjectScope::Referenced)?;
     assert_eq!(report.records_received, 0, "the far side offered nothing");
-    assert!(report.records_sent > 0, "and took the whole run");
+    assert!(report.records_sent > 0, "and took the whole search");
     Ok(())
 }
 
@@ -230,8 +230,8 @@ fn sync_serve_writes_frames_to_stdout_and_diagnostics_to_stderr() {
         .args([
             "sync-serve",
             dir.path().join("store").to_str().expect("utf-8 path"),
-            "--run",
-            "not-a-run-id",
+            "--search",
+            "not-a-search-id",
         ])
         .stdin(Stdio::null())
         .output()

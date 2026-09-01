@@ -6,7 +6,7 @@
 //!
 //! - the generator section's `behaviors` list — words like `"succeed"` and
 //!   `"flaky:2"` — becomes a [`StubGeneratorConfig`] blob;
-//! - the params section's optional `hex` string becomes the raw run-params
+//! - the params section's optional `hex` string becomes the raw search-params
 //!   bytes, since stub params carry no meaning of their own.
 
 use sima_contracts::{DeviceBinding, DeviceInfo, Domain, Executor};
@@ -63,12 +63,12 @@ impl Domain for StubDomain {
 
     fn translate_config(&self, toml: &str, _segmented: bool) -> Result<Params> {
         // Stub params carry no meaning, so nothing about them can conflict with
-        // a segmented run.
+        // a segmented search.
         params(&table(toml)?)
     }
 }
 
-/// Translates the `[run.params]` table: an optional `hex` string, decoded
+/// Translates the `[search.params]` table: an optional `hex` string, decoded
 /// to the raw params bytes, defaulting to empty. Stub params carry no
 /// meaning, so hex is the transparent spelling of arbitrary bytes. Unknown
 /// keys are rejected.
@@ -87,7 +87,7 @@ pub(crate) fn params(table: &toml::Table) -> Result<Params> {
     Ok(Params { bytes })
 }
 
-/// Translates the `[run.generator]` table (minus `id`): a required
+/// Translates the `[search.generator]` table (minus `id`): a required
 /// `behaviors` list of behavior words, encoded through the stub generator's
 /// own codec. Unknown keys are rejected.
 pub(crate) fn generator_params(table: &toml::Table) -> Result<Vec<u8>> {

@@ -1,7 +1,7 @@
 //! Contract layer: the two components a program supplies, and the vocabulary
 //! they exchange with sima.
 //!
-//! A generator produces a run's candidate specs; an executor evaluates one
+//! A generator produces a search's candidate specs; an executor evaluates one
 //! candidate and returns produced artifacts plus observational stats, or a
 //! failure outcome. Both are pure compute over `sima-model` values — they
 //! never touch the store, so the trust boundary "executors never touch
@@ -34,9 +34,9 @@
 //! it, and each function is pure over the candidate list a backend supplies, so
 //! the policy is verifiable without a device.
 //!
-//! [`Domain`] is the declaration side: what a program hands over so a run can
+//! [`Domain`] is the declaration side: what a program hands over so a search can
 //! reach its executor. It carries the format's environment, the devices its
-//! work runs on, and the translation of the program's own configuration, which
+//! work searches on, and the translation of the program's own configuration, which
 //! crosses as TOML text. A program supplies two components — one [`Domain`] and
 //! one [`Generator`] per way of choosing candidates.
 //!

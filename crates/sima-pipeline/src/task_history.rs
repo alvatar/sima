@@ -1,4 +1,4 @@
-//! [`TaskHistory`]: one task's lifecycle, projected from a run's journal.
+//! [`TaskHistory`]: one task's lifecycle, projected from a search's journal.
 //!
 //! Every per-task view merges the journal once through [`ledger`]: the attempt
 //! timeline of a single task, the digest of the tasks that did not commit, and
@@ -11,7 +11,7 @@ use crate::stats::render_stats;
 use sima_core::{Error, Result};
 use sima_scheduler::{Event, Record};
 
-/// One task's lifecycle, merged from the run journal.
+/// One task's lifecycle, merged from the search journal.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TaskHistory {
     /// The task's key, as journaled — the lowercase-hex string.
@@ -65,7 +65,7 @@ pub enum AttemptResult {
         /// What went wrong.
         error: String,
     },
-    /// The lease is open: the journal names no event that ended it, as a run
+    /// The lease is open: the journal names no event that ended it, as a search
     /// still in flight or one whose orchestrator died leaves.
     InFlight,
 }
@@ -162,7 +162,7 @@ impl TaskHistory {
             }
             Event::Failed { reason, .. } => {
                 // A transient failure ends the attempt and leaves the task
-                // open: a retry, or the run's end, decides the outcome.
+                // open: a retry, or the search's end, decides the outcome.
                 self.close(
                     ts_ms,
                     AttemptResult::Failed {
@@ -208,12 +208,12 @@ impl TaskHistory {
             Event::Retried { .. }
             | Event::CheckpointDegraded { .. }
             | Event::Checkpointed { .. } => {}
-            // The run-level frame and the bookkeeping events name no task, so
+            // The search-level frame and the bookkeeping events name no task, so
             // the merge routes none of them here.
-            Event::RunStarted { .. }
-            | Event::RunFinalized { .. }
-            | Event::RunFailed { .. }
-            | Event::RunInterrupted { .. }
+            Event::SearchStarted { .. }
+            | Event::SearchFinalized { .. }
+            | Event::SearchFailed { .. }
+            | Event::SearchInterrupted { .. }
             | Event::WorkerBound { .. }
             | Event::ProgramBound { .. }
             | Event::DriverChanged { .. }
@@ -226,9 +226,9 @@ impl TaskHistory {
             | Event::BudgetWallClockExhausted { .. }
             | Event::Renting { .. }
             | Event::AwaitingMachine { .. }
-            | Event::SendingRun { .. }
+            | Event::SendingSearch { .. }
             | Event::InstallingProgram { .. }
-            | Event::StartingRun
+            | Event::StartingSearch
             | Event::AcquisitionAbandoned { .. } => {}
         }
     }
@@ -253,8 +253,8 @@ impl TaskHistory {
 }
 
 /// The task a lifecycle event belongs to. A diagnostic's optional task field
-/// is observational text rather than a lifecycle statement, and the run-level
-/// events frame the run rather than a task, so neither names a history.
+/// is observational text rather than a lifecycle statement, and the search-level
+/// events frame the search rather than a task, so neither names a history.
 pub(crate) fn lifecycle_task(event: &Event) -> Option<&str> {
     match event {
         Event::Queued { task }
@@ -267,10 +267,10 @@ pub(crate) fn lifecycle_task(event: &Event) -> Option<&str> {
         | Event::LeaseExpired { task, .. }
         | Event::CheckpointDegraded { task, .. }
         | Event::Checkpointed { task, .. } => Some(task),
-        Event::RunStarted { .. }
-        | Event::RunFinalized { .. }
-        | Event::RunFailed { .. }
-        | Event::RunInterrupted { .. }
+        Event::SearchStarted { .. }
+        | Event::SearchFinalized { .. }
+        | Event::SearchFailed { .. }
+        | Event::SearchInterrupted { .. }
         | Event::WorkerBound { .. }
         | Event::ProgramBound { .. }
         | Event::DriverChanged { .. }
@@ -283,9 +283,9 @@ pub(crate) fn lifecycle_task(event: &Event) -> Option<&str> {
         | Event::BudgetWallClockExhausted { .. }
         | Event::Renting { .. }
         | Event::AwaitingMachine { .. }
-        | Event::SendingRun { .. }
+        | Event::SendingSearch { .. }
         | Event::InstallingProgram { .. }
-        | Event::StartingRun
+        | Event::StartingSearch
         | Event::AcquisitionAbandoned { .. } => None,
     }
 }
@@ -293,7 +293,7 @@ pub(crate) fn lifecycle_task(event: &Event) -> Option<&str> {
 /// The device and host each worker reported at its last spawn — the shared
 /// worker → `(device, host)` pre-pass every merge that attributes work to
 /// hardware joins through. Read ahead of the merge that consumes it so the join
-/// holds however the journal orders the two: a resumed run leases before its
+/// holds however the journal orders the two: a resumed search leases before its
 /// workers restate their bindings.
 pub(crate) fn worker_bindings(records: &[Record]) -> BTreeMap<u64, (String, String)> {
     let mut bound = BTreeMap::new();
@@ -345,7 +345,7 @@ pub(crate) fn resolve_task_key(records: &[Record], prefix: &str) -> Result<Strin
     match (found.next(), found.next()) {
         (Some(task), None) => Ok(task.to_string()),
         (None, _) => Err(Error::Validation(format!(
-            "no task in this run matches prefix {prefix}"
+            "no task in this search matches prefix {prefix}"
         ))),
         (Some(_), Some(_)) => Err(Error::Validation(format!(
             "prefix {prefix} is ambiguous: it matches {} tasks",
@@ -354,7 +354,7 @@ pub(crate) fn resolve_task_key(records: &[Record], prefix: &str) -> Result<Strin
     }
 }
 
-/// Projects one task's lifecycle from `records` — a run's lifecycle events in
+/// Projects one task's lifecycle from `records` — a search's lifecycle events in
 /// append order, over records from any source.
 pub fn task_history_records(records: &[Record], prefix: &str) -> Result<TaskHistory> {
     let task = resolve_task_key(records, prefix)?;
@@ -363,7 +363,7 @@ pub fn task_history_records(records: &[Record], prefix: &str) -> Result<TaskHist
         .ok_or_else(|| Error::Corruption(format!("task {task} resolved to no history")))
 }
 
-/// The histories of the tasks `records` shows the run did not commit, ordered
+/// The histories of the tasks `records` shows the search did not commit, ordered
 /// by key, over records from any source.
 pub fn failures_records(records: &[Record]) -> Vec<TaskHistory> {
     ledger(records)
@@ -628,7 +628,7 @@ mod tests {
 
     #[test]
     fn the_binding_pre_pass_keeps_each_workers_last_device_and_host() {
-        // A local worker names no host; a remote one names the machine it runs
+        // A local worker names no host; a remote one names the machine it searches
         // on; and a worker that spawned again is known by what its later child
         // reported.
         let bound = worker_bindings(&[
@@ -649,8 +649,8 @@ mod tests {
 
     #[test]
     fn a_worker_binding_after_the_lease_still_joins() -> Result<()> {
-        // A resumed run leases before its workers restate their bindings; the
-        // binding pass runs first, so the join holds either way.
+        // A resumed search leases before its workers restate their bindings; the
+        // binding pass searches first, so the join holds either way.
         let history = history_of(
             &[
                 leased("aa", 0, 0, 10),

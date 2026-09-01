@@ -1,10 +1,10 @@
-//! The budget guard: what a run has spent on rented machines, and whether
+//! The budget guard: what a search has spent on rented machines, and whether
 //! it may rent another.
 //!
 //! Spend is counted from durable store state alone — the closed rentals in
 //! the spend ledger, plus the records of rentals still open, charged from
 //! the stamp they were written under to now. Nothing is held in memory
-//! between calls, so a resumed run counts what the process before it spent,
+//! between calls, so a resumed search counts what the process before it spent,
 //! and the provider's own billing API is never consulted.
 //!
 //! The guard supplies a verdict; it enforces nothing. Refusing a rental the
@@ -45,26 +45,26 @@ impl Cost {
     }
 }
 
-/// A run's rental budget. Both limits are optional, and an absent one is
+/// A search's rental budget. Both limits are optional, and an absent one is
 /// unlimited, which is what the default states.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Budget {
-    /// Ceiling on the run's total spend, across every rental it made, live
+    /// Ceiling on the search's total spend, across every rental it made, live
     /// and past.
     pub max_spend: Option<Cost>,
     /// Ceiling on the wall-clock the rental phase may span, measured from
-    /// the run's first rental. One bound per run, across providers.
+    /// the search's first rental. One bound per search, across providers.
     pub max_wall_clock: Option<Duration>,
 }
 
-/// What a run's spend and clock look like against its budget.
+/// What a search's spend and clock look like against its budget.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Verdict {
     /// Both limits hold.
     Within {
-        /// What the run has spent so far.
+        /// What the search has spent so far.
         accrued: Cost,
-        /// When the rental phase runs out, once a wall-clock limit is set
+        /// When the rental phase searches out, once a wall-clock limit is set
         /// and a first rental anchors it.
         deadline_ms: Option<u64>,
     },
@@ -72,12 +72,12 @@ pub enum Verdict {
     Exhausted(Exhaustion),
 }
 
-/// The limit a run reached.
+/// The limit a search reached.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Exhaustion {
     /// Accrued spend reached the cap.
     Spend {
-        /// What the run has spent.
+        /// What the search has spent.
         accrued: Cost,
         /// The cap it reached.
         cap: Cost,
@@ -89,7 +89,7 @@ pub enum Exhaustion {
     },
 }
 
-/// A run's rentals, closed and open, and what they have cost.
+/// A search's rentals, closed and open, and what they have cost.
 #[derive(Debug, Clone)]
 pub struct SpendReport {
     /// Rentals that have been closed out.
@@ -119,7 +119,7 @@ pub struct OpenSpend {
 ///
 /// A record whose rental already has an entry is the entry's own, pending
 /// removal, and is left out — the entry is what that rental cost. Records
-/// of every provider count: the budget is one pool of money per run.
+/// of every provider count: the budget is one pool of money per search.
 pub fn spend_report(store: &Store, owner: &SearchId, now_ms: u64) -> Result<SpendReport> {
     let owner = owner.to_string();
     let entries = store.spend_entries(&owner)?;
@@ -159,7 +159,7 @@ pub fn spend_report(store: &Store, owner: &SearchId, now_ms: u64) -> Result<Spen
 /// Whether `owner` may rent, as of `now_ms`.
 ///
 /// A limit is reached when spend meets its cap or the clock meets the
-/// deadline, so a budget exactly consumed admits nothing further. A run
+/// deadline, so a budget exactly consumed admits nothing further. A search
 /// that has rented nothing has no anchor and therefore no deadline. When
 /// both limits are reached, the spend is the one reported.
 pub fn assess(store: &Store, owner: &SearchId, budget: &Budget, now_ms: u64) -> Result<Verdict> {
@@ -184,7 +184,7 @@ pub fn assess(store: &Store, owner: &SearchId, budget: &Budget, now_ms: u64) -> 
     })
 }
 
-/// When the rental phase runs out: the run's earliest rental plus the
+/// When the rental phase searches out: the search's earliest rental plus the
 /// wall-clock limit. Absent while either the limit or the first rental is.
 ///
 /// The addition saturates, so a limit longer than the clock can express
@@ -225,7 +225,7 @@ mod tests {
 
     use super::{Budget, Cost, Exhaustion, Verdict, assess, spend_report};
     use crate::offer::Price;
-    use crate::testutil::{live_state, sample_run, temp_store};
+    use crate::testutil::{live_state, sample_search, temp_store};
 
     /// The wall-clock stamp the fixtures are placed around.
     const NOON: u64 = 1_700_000_000_000;
@@ -267,7 +267,7 @@ mod tests {
     #[test]
     fn closed_rentals_total_what_their_entries_cost() -> Result<()> {
         let (_dir, store) = temp_store();
-        let owner = sample_run(7);
+        let owner = sample_search(7);
         store.put_spend(&entry("sima-tag-0", &owner, NOON, 82_400))?;
         store.put_spend(&entry("sima-tag-1", &owner, NOON, 17_600))?;
         let report = spend_report(&store, &owner, NOON + 3_600_000)?;
@@ -280,7 +280,7 @@ mod tests {
     #[test]
     fn an_open_rental_is_charged_from_its_stamp_to_now() -> Result<()> {
         let (_dir, store) = temp_store();
-        let owner = sample_run(7);
+        let owner = sample_search(7);
         store.put_instance(&record("sima-tag-0", &owner, 100_000, NOON))?;
         let report = spend_report(&store, &owner, NOON + 1_800_000)?;
         assert!(report.entries.is_empty());
@@ -296,7 +296,7 @@ mod tests {
     #[test]
     fn an_intent_record_is_charged_like_a_live_one() -> Result<()> {
         let (_dir, store) = temp_store();
-        let owner = sample_run(7);
+        let owner = sample_search(7);
         // The window opens at the stamp, which is written before the
         // provider is called, so an attempt that never reached a machine
         // still charges for the time it may have been running one.
@@ -310,7 +310,7 @@ mod tests {
     #[test]
     fn closed_and_open_rentals_total_together() -> Result<()> {
         let (_dir, store) = temp_store();
-        let owner = sample_run(7);
+        let owner = sample_search(7);
         store.put_spend(&entry("sima-tag-0", &owner, NOON, 82_400))?;
         store.put_instance(&record("sima-tag-1", &owner, 100_000, NOON))?;
         assert_eq!(total(&store, &owner, NOON + 3_600_000)?, Cost(182_400));
@@ -320,7 +320,7 @@ mod tests {
     #[test]
     fn a_record_its_own_entry_already_closed_is_counted_once() -> Result<()> {
         let (_dir, store) = temp_store();
-        let owner = sample_run(7);
+        let owner = sample_search(7);
         // The state a crash between the entry write and the record clear
         // leaves: the entry is the closure, and the record is waiting to be
         // removed.
@@ -335,7 +335,7 @@ mod tests {
     #[test]
     fn a_record_sharing_only_a_tag_with_an_entry_is_a_rental_of_its_own() -> Result<()> {
         let (_dir, store) = temp_store();
-        let owner = sample_run(7);
+        let owner = sample_search(7);
         // Tags repeat across process restarts; a later rental under a name
         // an earlier one used is a second machine, and is charged as one.
         store.put_spend(&entry("sima-tag-0", &owner, NOON, 82_400))?;
@@ -349,8 +349,8 @@ mod tests {
     #[test]
     fn another_runs_rentals_are_no_part_of_this_ones_spend() -> Result<()> {
         let (_dir, store) = temp_store();
-        let owner = sample_run(7);
-        let other = sample_run(8);
+        let owner = sample_search(7);
+        let other = sample_search(8);
         store.put_spend(&entry("sima-tag-0", &other, NOON, 82_400))?;
         store.put_instance(&record("sima-tag-1", &other, 100_000, NOON))?;
         assert_eq!(total(&store, &owner, NOON + 3_600_000)?, Cost(0));
@@ -360,8 +360,8 @@ mod tests {
     #[test]
     fn a_rental_from_another_provider_counts_against_the_same_budget() -> Result<()> {
         let (_dir, store) = temp_store();
-        let owner = sample_run(7);
-        // One run, one pool of money: where the machine was rented changes
+        let owner = sample_search(7);
+        // One search, one pool of money: where the machine was rented changes
         // nothing about what it costs.
         let mut foreign = record("sima-tag-0", &owner, 100_000, NOON);
         foreign.provider = "vastai".to_string();
@@ -373,7 +373,7 @@ mod tests {
     #[test]
     fn a_record_stamped_ahead_of_the_clock_accrues_nothing() -> Result<()> {
         let (_dir, store) = temp_store();
-        let owner = sample_run(7);
+        let owner = sample_search(7);
         // A clock that stepped backwards leaves a window of no time rather
         // than an underflow.
         store.put_instance(&record("sima-tag-0", &owner, 100_000, NOON + 3_600_000))?;
@@ -384,7 +384,7 @@ mod tests {
     #[test]
     fn a_budget_with_no_limits_holds_and_names_no_deadline() -> Result<()> {
         let (_dir, store) = temp_store();
-        let owner = sample_run(7);
+        let owner = sample_search(7);
         store.put_spend(&entry("sima-tag-0", &owner, NOON, 82_400))?;
         assert_eq!(
             assess(&store, &owner, &Budget::default(), NOON + 3_600_000)?,
@@ -399,7 +399,7 @@ mod tests {
     #[test]
     fn spend_exhausts_the_budget_at_its_cap_and_not_before() -> Result<()> {
         let (_dir, store) = temp_store();
-        let owner = sample_run(7);
+        let owner = sample_search(7);
         store.put_spend(&entry("sima-tag-0", &owner, NOON, 99_999))?;
         let budget = Budget {
             max_spend: Some(Cost(100_000)),
@@ -433,7 +433,7 @@ mod tests {
     #[test]
     fn the_clock_exhausts_the_budget_at_the_deadline_and_not_before() -> Result<()> {
         let (_dir, store) = temp_store();
-        let owner = sample_run(7);
+        let owner = sample_search(7);
         store.put_spend(&entry("sima-tag-0", &owner, NOON, 0))?;
         let budget = Budget {
             max_wall_clock: Some(Duration::from_secs(3_600)),
@@ -461,7 +461,7 @@ mod tests {
     #[test]
     fn the_deadline_is_anchored_at_the_earliest_rental_of_the_run() -> Result<()> {
         let (_dir, store) = temp_store();
-        let owner = sample_run(7);
+        let owner = sample_search(7);
         // The anchor is the first rental, whether it is closed or open, so
         // a later machine cannot push the deadline out.
         store.put_spend(&entry("sima-tag-1", &owner, NOON + 600_000, 0))?;
@@ -484,13 +484,13 @@ mod tests {
     #[test]
     fn a_run_that_rented_nothing_has_no_deadline_to_pass() -> Result<()> {
         let (_dir, store) = temp_store();
-        let owner = sample_run(7);
+        let owner = sample_search(7);
         let budget = Budget {
             max_wall_clock: Some(Duration::from_millis(1)),
             ..Budget::default()
         };
         // Without a rental there is nothing to anchor the phase to, so the
-        // clock cannot exhaust a budget however long the run has been up.
+        // clock cannot exhaust a budget however long the search has been up.
         assert_eq!(
             assess(&store, &owner, &budget, NOON)?,
             Verdict::Within {
@@ -504,7 +504,7 @@ mod tests {
     #[test]
     fn a_budget_out_of_both_money_and_time_reports_the_money() -> Result<()> {
         let (_dir, store) = temp_store();
-        let owner = sample_run(7);
+        let owner = sample_search(7);
         store.put_spend(&entry("sima-tag-0", &owner, NOON, 100_000))?;
         let budget = Budget {
             max_spend: Some(Cost(100_000)),
@@ -523,7 +523,7 @@ mod tests {
     #[test]
     fn a_wall_clock_beyond_what_the_clock_holds_saturates() -> Result<()> {
         let (_dir, store) = temp_store();
-        let owner = sample_run(7);
+        let owner = sample_search(7);
         store.put_spend(&entry("sima-tag-0", &owner, NOON, 0))?;
         let budget = Budget {
             max_wall_clock: Some(Duration::from_millis(u64::MAX)),
@@ -544,7 +544,7 @@ mod tests {
     #[test]
     fn a_total_beyond_what_the_unit_holds_saturates() -> Result<()> {
         let (_dir, store) = temp_store();
-        let owner = sample_run(7);
+        let owner = sample_search(7);
         store.put_spend(&entry("sima-tag-0", &owner, NOON, u64::MAX))?;
         store.put_spend(&entry("sima-tag-1", &owner, NOON, u64::MAX))?;
         assert_eq!(total(&store, &owner, NOON)?, Cost(u64::MAX));
@@ -559,7 +559,7 @@ mod tests {
     #[test]
     fn a_window_of_no_time_charges_nothing() {
         assert_eq!(Cost::accrued(Price(82_400), 0), Cost(0));
-        // A rate of nothing charges nothing however long it runs.
+        // A rate of nothing charges nothing however long it searches.
         assert_eq!(Cost::accrued(Price(0), 7_200_000), Cost(0));
     }
 

@@ -146,7 +146,7 @@ impl Context {
 ///
 /// The declared size is checked on all three axes: this toolkit launches
 /// one-dimensional grids, so a shader declaring depth on y or z would have its
-/// extra invocations run with no caller sizing for them.
+/// extra invocations search with no caller sizing for them.
 fn check_block_width(
     limits: &vk::PhysicalDeviceLimits,
     module: &naga::Module,

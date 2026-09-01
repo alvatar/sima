@@ -1,4 +1,4 @@
-//! [`RunObserver`]: follow a run's journal and lock while another process
+//! [`SearchObserver`]: follow a search's journal and lock while another process
 //! drives it.
 
 use sima_core::{Error, Result};
@@ -8,70 +8,70 @@ use sima_store::Store;
 
 use crate::config::LoadedConfig;
 
-/// Follows the run a loaded config describes while a separate orchestrator
-/// drives it: [`poll`](RunObserver::poll) returns the lifecycle events
-/// appended since the previous call — the first call returns the run's full
-/// history — and [`holder`](RunObserver::holder) reports who holds the run's
+/// Follows the search a loaded config describes while a separate orchestrator
+/// drives it: [`poll`](SearchObserver::poll) returns the lifecycle events
+/// appended since the previous call — the first call returns the search's full
+/// history — and [`holder`](SearchObserver::holder) reports who holds the search's
 /// orchestrator lock.
 ///
-/// Observation is read-only: the observer never takes the run lock and never
+/// Observation is read-only: the observer never takes the search lock and never
 /// writes the store. Polling is the contract — the caller decides the
-/// cadence, and the observer runs no thread of its own.
-pub struct RunObserver {
+/// cadence, and the observer searches no thread of its own.
+pub struct SearchObserver {
     store: Store,
-    run: SearchId,
+    search: SearchId,
     /// Journal bytes consumed so far; [`Store::journal_from`] resumes here.
     offset: u64,
 }
 
-impl RunObserver {
-    /// Opens an observer over the run the loaded config describes. A store
+impl SearchObserver {
+    /// Opens an observer over the search the loaded config describes. A store
     /// root that does not exist is [`Error::Validation`], matching
     /// [`status`](crate::status): a query must not create the store skeleton.
-    pub fn new(config: &LoadedConfig) -> Result<RunObserver> {
+    pub fn new(config: &LoadedConfig) -> Result<SearchObserver> {
         if !config.store.is_dir() {
             return Err(Error::Validation(format!(
-                "store {} does not exist: no run was ever driven there",
+                "store {} does not exist: no search was ever driven there",
                 config.store.display()
             )));
         }
-        Ok(RunObserver {
+        Ok(SearchObserver {
             store: Store::open(&config.store)?,
-            run: config.run.id(),
+            search: config.search.id(),
             offset: 0,
         })
     }
 
     /// The journal records appended since the previous poll, in append
-    /// order; the first poll returns the run's full history. A line that
-    /// fails to parse is [`Error::Corruption`] naming the run, matching
+    /// order; the first poll returns the search's full history. A line that
+    /// fails to parse is [`Error::Corruption`] naming the search, matching
     /// [`report`](crate::report); the failed region stays unconsumed, so the
     /// next poll reports it again.
     pub fn poll(&mut self) -> Result<Vec<Record>> {
-        let (lines, offset) = self.store.journal_from(&self.run, self.offset)?;
-        let records = crate::journal::parse(&self.run, &lines)?;
+        let (lines, offset) = self.store.journal_from(&self.search, self.offset)?;
+        let records = crate::journal::parse(&self.search, &lines)?;
         // Consume the region only once every line in it parsed.
         self.offset = offset;
         Ok(records)
     }
 
     /// The raw journal lines appended since the previous poll, in append
-    /// order; the first poll returns the run's full history. The unparsed
-    /// counterpart of [`poll`](RunObserver::poll), for the follow stream,
+    /// order; the first poll returns the search's full history. The unparsed
+    /// counterpart of [`poll`](SearchObserver::poll), for the follow stream,
     /// which forwards lines verbatim so the far side stays the only place
     /// that parses them. Nothing can fail past the read, so the region is
     /// consumed unconditionally.
     pub fn poll_lines(&mut self) -> Result<Vec<String>> {
-        let (lines, offset) = self.store.journal_from(&self.run, self.offset)?;
+        let (lines, offset) = self.store.journal_from(&self.search, self.offset)?;
         self.offset = offset;
         Ok(lines)
     }
 
-    /// Who holds the run's orchestrator lock: `Some` with the recorded
-    /// holder line (pid, hostname) while another process drives the run,
+    /// Who holds the search's orchestrator lock: `Some` with the recorded
+    /// holder line (pid, hostname) while another process drives the search,
     /// `None` while the lock is free.
     pub fn holder(&self) -> Result<Option<String>> {
-        self.store.lock_holder(&self.run)
+        self.store.lock_holder(&self.search)
     }
 }
 
@@ -80,16 +80,16 @@ mod tests {
     use super::*;
     use crate::fixtures::{loaded, stub_config};
 
-    /// A fresh store with the stub run created, and the loaded config over
+    /// A fresh store with the stub search created, and the loaded config over
     /// it. The temp dir keeps the store alive for the caller.
     fn created_store() -> Result<(tempfile::TempDir, Store, SearchId, LoadedConfig)> {
         let dir = tempfile::tempdir().expect("temp dir");
         let store = Store::open(dir.path())?;
         let config = stub_config()?;
-        let run = config.id();
+        let search = config.id();
         store.create_search(&config)?;
         let loaded = loaded(dir.path().to_path_buf())?;
-        Ok((dir, store, run, loaded))
+        Ok((dir, store, search, loaded))
     }
 
     /// Wraps an event as a record the tests journal. The stamp is irrelevant
@@ -98,10 +98,10 @@ mod tests {
         Record { ts_ms: 0, event }
     }
 
-    /// A `RunStarted` record for `run`.
-    fn started(run: &SearchId, tasks: usize) -> Record {
-        rec(sima_scheduler::Event::RunStarted {
-            run: run.to_string(),
+    /// A `SearchStarted` record for `search`.
+    fn started(search: &SearchId, tasks: usize) -> Record {
+        rec(sima_scheduler::Event::SearchStarted {
+            search: search.to_string(),
             tasks,
             committed: 0,
         })
@@ -117,10 +117,10 @@ mod tests {
         })
     }
 
-    /// Appends `records` to the run's journal, as the driving orchestrator
+    /// Appends `records` to the search's journal, as the driving orchestrator
     /// would.
-    fn append(store: &Store, run: &SearchId, records: &[Record]) -> Result<()> {
-        let mut writer = store.journal_writer(run)?;
+    fn append(store: &Store, search: &SearchId, records: &[Record]) -> Result<()> {
+        let mut writer = store.journal_writer(search)?;
         for record in records {
             writer.append(&record.to_line()?)?;
         }
@@ -129,14 +129,14 @@ mod tests {
 
     #[test]
     fn the_first_poll_replays_history_and_later_polls_return_increments() -> Result<()> {
-        let (_dir, store, run, loaded) = created_store()?;
-        append(&store, &run, &[started(&run, 2), committed("aa")])?;
+        let (_dir, store, search, loaded) = created_store()?;
+        append(&store, &search, &[started(&search, 2), committed("aa")])?;
 
-        let mut observer = RunObserver::new(&loaded)?;
+        let mut observer = SearchObserver::new(&loaded)?;
         // The first poll is the seed: the full history, in append order.
-        assert_eq!(observer.poll()?, [started(&run, 2), committed("aa")]);
+        assert_eq!(observer.poll()?, [started(&search, 2), committed("aa")]);
         // Later polls deliver only what the orchestrator appended since.
-        append(&store, &run, &[committed("bb")])?;
+        append(&store, &search, &[committed("bb")])?;
         assert_eq!(observer.poll()?, [committed("bb")]);
         // Nothing appended: the poll is empty.
         assert_eq!(observer.poll()?, Vec::<Record>::new());
@@ -145,15 +145,15 @@ mod tests {
 
     #[test]
     fn a_malformed_journal_line_is_corruption_naming_the_run() -> Result<()> {
-        let (_dir, store, run, loaded) = created_store()?;
-        let mut writer = store.journal_writer(&run)?;
+        let (_dir, store, search, loaded) = created_store()?;
+        let mut writer = store.journal_writer(&search)?;
         writer.append("not a lifecycle event")?;
-        let mut observer = RunObserver::new(&loaded)?;
+        let mut observer = SearchObserver::new(&loaded)?;
         match observer.poll() {
             Err(Error::Corruption(message)) => {
                 assert!(
-                    message.contains(&run.to_string()),
-                    "the error names the run: {message}"
+                    message.contains(&search.to_string()),
+                    "the error names the search: {message}"
                 );
             }
             other => panic!("expected Corruption, got {other:?}"),
@@ -167,7 +167,7 @@ mod tests {
         let missing = dir.path().join("no-store");
         let config = loaded(missing.clone())?;
         assert!(matches!(
-            RunObserver::new(&config),
+            SearchObserver::new(&config),
             Err(Error::Validation(_))
         ));
         // The probe of a nonexistent store must not create its skeleton.
@@ -177,10 +177,10 @@ mod tests {
 
     #[test]
     fn holder_reflects_the_search_lock_across_acquire_and_release() -> Result<()> {
-        let (_dir, store, run, loaded) = created_store()?;
-        let observer = RunObserver::new(&loaded)?;
+        let (_dir, store, search, loaded) = created_store()?;
+        let observer = SearchObserver::new(&loaded)?;
         assert_eq!(observer.holder()?, None);
-        let lock = store.acquire_search_lock(&run)?;
+        let lock = store.acquire_search_lock(&search)?;
         let holder = observer.holder()?.expect("a holder while locked");
         let pid = std::process::id().to_string();
         assert_eq!(holder.split_whitespace().next(), Some(pid.as_str()));

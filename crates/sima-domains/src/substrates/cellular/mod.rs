@@ -11,7 +11,7 @@
 //!
 //! # One substrate, two backends
 //!
-//! Which compute backend a kernel runs on is the `CellularOps` boundary in
+//! Which compute backend a kernel searches on is the `CellularOps` boundary in
 //! `ops`. Above it everything is written once and monomorphized: the dispatch
 //! harness in `harness`, the stats reduction in `reduce`, and the engine in
 //! `backend`, which is the sole `CellularEngine` implementation. `WgslEngine`

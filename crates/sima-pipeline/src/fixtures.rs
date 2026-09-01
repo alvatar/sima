@@ -1,6 +1,6 @@
-//! Test fixtures shared by the crate's unit tests: the stub run every
+//! Test fixtures shared by the crate's unit tests: the stub search every
 //! synthetic journal is written under, the store it lives in, and the two
-//! things a test needs a real store for — a run actually driven, and a sync
+//! things a test needs a real store for — a search actually driven, and a sync
 //! actually performed between two of them.
 
 use std::collections::BTreeMap;
@@ -19,7 +19,7 @@ use sima_model::{
 };
 use sima_provider::Budget;
 use sima_scheduler::{
-    Event, ExecutionConfig, Record, RunControl, RunOutcome, WorkerPool, run, worker_slots,
+    Event, ExecutionConfig, Record, SearchControl, SearchOutcome, WorkerPool, run, worker_slots,
 };
 use sima_store::{ObjectScope, Store, SyncReport, SyncRole};
 use sima_transport::loopback::LoopbackTransport;
@@ -49,7 +49,7 @@ pub(crate) fn file_payload() -> (tempfile::TempDir, PayloadSpec) {
     )
 }
 
-/// A minimal stub run config; its id addresses the test's run.
+/// A minimal stub search config; its id addresses the test's search.
 pub(crate) fn stub_config() -> Result<SearchConfig> {
     Ok(SearchConfig {
         root_seed: 1,
@@ -63,11 +63,11 @@ pub(crate) fn stub_config() -> Result<SearchConfig> {
     })
 }
 
-/// A loaded config over `store` for the stub run: one orchestrator worker and
+/// A loaded config over `store` for the stub search: one orchestrator worker and
 /// no other machine.
 pub(crate) fn loaded(store: PathBuf) -> Result<LoadedConfig> {
     Ok(LoadedConfig {
-        run: stub_config()?,
+        search: stub_config()?,
         execution: ExecutionConfig::new(1, 1, Duration::MAX, Duration::MAX, Duration::MAX, None)?,
         orchestrator: Orchestrator {
             migrate: None,
@@ -96,7 +96,7 @@ pub(crate) fn built_worker() -> PathBuf {
         let status = std::process::Command::new(cargo)
             .args(["build", "-p", "sima-worker"])
             .status()
-            .expect("run cargo build for sima-worker");
+            .expect("search cargo build for sima-worker");
         assert!(status.success(), "building sima-worker failed");
     });
     // Beside the test executable's directory: `target/<profile>/deps` holds the
@@ -121,14 +121,14 @@ pub(crate) fn load_str(text: &str) -> LoadedConfig {
     crate::config::load(&path).expect("the config loads")
 }
 
-/// The config text a served run is written from: a stub run over a store
+/// The config text a served search is written from: a stub search over a store
 /// beside the config file, as a far-side host would hold it.
 const SERVED_CONFIG: &str = r#"
-    [run]
+    [search]
     root_seed = 7
     format = "stub.v1"
 
-    [run.generator]
+    [search.generator]
     id = "stub.v1"
     behaviors = ["succeed", "succeed"]
 
@@ -141,25 +141,25 @@ const SERVED_CONFIG: &str = r#"
 "#;
 
 /// Writes a config file under `dir` and returns its path, without touching
-/// the store it names — the state of a host where no run was ever driven.
+/// the store it names — the state of a host where no search was ever driven.
 pub(crate) fn served_config(dir: &std::path::Path) -> PathBuf {
     let path = dir.join("sima.toml");
     std::fs::write(&path, SERVED_CONFIG).expect("write the config file");
     path
 }
 
-/// Writes a config file under `dir`, creates its run in the store the config
+/// Writes a config file under `dir`, creates its search in the store the config
 /// names, and journals `records`: the far-side state a follow stream reads.
 /// Returns the config path and the config it loads to.
-pub(crate) fn served_run(
+pub(crate) fn served_search(
     dir: &std::path::Path,
     records: &[Record],
 ) -> Result<(PathBuf, LoadedConfig)> {
     let path = served_config(dir);
     let loaded = crate::config::load(&path)?;
     let store = Store::open(&loaded.store)?;
-    store.create_search(&loaded.run)?;
-    let mut writer = store.journal_writer(&loaded.run.id())?;
+    store.create_search(&loaded.search)?;
+    let mut writer = store.journal_writer(&loaded.search.id())?;
     for record in records {
         writer.append(&record.to_line()?)?;
     }
@@ -178,14 +178,14 @@ pub(crate) fn stub_environment() -> Environment {
 
 /// Wraps the stub executor so evaluations past the first `free` completed
 /// ones park until `flag` rises. The interrupt a test raises from its
-/// observer races the run — the observer sees a commit only after the
+/// observer races the search — the observer sees a commit only after the
 /// collector processes it, and a fast chain can finalize first — so the tail
 /// holds still until the flag is up, and `Interrupted` is the only reachable
 /// outcome. The park is bounded: a flag that never rises releases the tail
-/// rather than hanging the run.
+/// rather than hanging the search.
 struct ParkedTail {
     inner: StubExecutor,
-    /// Evaluations that run unparked — the commits the test wants.
+    /// Evaluations that search unparked — the commits the test wants.
     free: usize,
     /// Completed evaluations so far.
     completed: AtomicUsize,
@@ -220,16 +220,16 @@ impl Executor for ParkedTail {
 /// Drives `config` into `store` over in-memory workers, so a test has a store
 /// of real records without a worker binary or a device.
 ///
-/// `stop_after` interrupts the run once that many tasks have committed, which
-/// is how a test leaves a chain partway; `None` runs it to its end. The stop
+/// `stop_after` interrupts the search once that many tasks have committed, which
+/// is how a test leaves a chain partway; `None` searches it to its end. The stop
 /// is deterministic, not a race: evaluations past the stop point park until
-/// the interrupt is raised, so the run can never finalize first, whatever the
+/// the interrupt is raised, so the search can never finalize first, whatever the
 /// machine's load.
-pub(crate) fn drive_run(
+pub(crate) fn drive_search(
     store: &Store,
     config: &SearchConfig,
     stop_after: Option<usize>,
-) -> RunOutcome {
+) -> SearchOutcome {
     let exec = ExecutionConfig::new(1, 1, Duration::MAX, Duration::MAX, Duration::MAX, None)
         .expect("execution config");
     let flag = Arc::new(AtomicBool::new(false));
@@ -254,7 +254,7 @@ pub(crate) fn drive_run(
         slots: worker_slots(&exec),
     }];
     let committed = AtomicUsize::new(0);
-    let control = RunControl {
+    let control = SearchControl {
         observer: &|record: &Record| {
             if let Some(stop_after) = stop_after
                 && matches!(record.event, Event::Committed { .. })
@@ -275,7 +275,7 @@ pub(crate) fn drive_run(
         &exec,
         &control,
     )
-    .expect("the run drives")
+    .expect("the search drives")
 }
 
 /// Runs one sync session between two stores over a duplex pipe, `near` as the
@@ -315,7 +315,7 @@ pub(crate) fn sync_between(
     })
 }
 
-/// Writes `records` to the stub run's journal in a fresh store, returning the
+/// Writes `records` to the stub search's journal in a fresh store, returning the
 /// temp dir (kept alive by the caller) and the loaded config over it.
 pub(crate) fn journal_with(records: &[Record]) -> Result<(tempfile::TempDir, LoadedConfig)> {
     let dir = tempfile::tempdir().expect("temp dir");

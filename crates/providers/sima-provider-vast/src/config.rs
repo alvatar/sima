@@ -19,7 +19,7 @@ pub const API_KEY_VAR: &str = "VAST_API_KEY";
 ///
 /// The key is read from the environment and stays there. Run configuration
 /// is content-addressed and identity-bearing, so a key placed in config
-/// would enter run hashes and the store.
+/// would enter search hashes and the store.
 #[derive(Debug, Clone)]
 pub struct VastConfig {
     /// The API root every request is built against.

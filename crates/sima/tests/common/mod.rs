@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use sima_core::Error;
 use sima_domains::{domain_for, generator_for};
 use sima_model::{FormatId, TaskIdentity};
-use sima_pipeline::{Event, Record, RunObserver, load};
+use sima_pipeline::{Event, Record, SearchObserver, load};
 use sima_store::{Manifest, Store};
 
 /// Writes a `sima.toml` named `name` under `dir`: the given behaviors
@@ -23,11 +23,11 @@ use sima_store::{Manifest, Store};
 pub fn write_config(dir: &Path, name: &str, behaviors: &str, store: &str) -> PathBuf {
     let text = format!(
         r#"
-        [run]
+        [search]
         root_seed = 11
         format = "stub.v1"
 
-        [run.generator]
+        [search.generator]
         id = "stub.v1"
         behaviors = [{behaviors}]
 
@@ -70,13 +70,13 @@ pub const IMAGE: &str = "IMAGE";
 /// directory holding them — to be put ahead of everything on the `PATH` of the
 /// `sima` that reaches it.
 ///
-/// `ssh` drops its own options and destination and runs the rest here. The
-/// runtime answers `image inspect` and `kill`, and for `run` drops everything up
-/// to and including the image name, then runs the command that follows. The
+/// `ssh` drops its own options and destination and searches the rest here. The
+/// runtime answers `image inspect` and `kill`, and for `search` drops everything up
+/// to and including the image name, then searches the command that follows. The
 /// bind mount needs no honouring: the mount states the identical path on both
 /// sides, and here both sides are one filesystem.
 ///
-/// `run_fails` makes every `run` exit non-zero instead, which is what a machine
+/// `run_fails` makes every `search` exit non-zero instead, which is what a machine
 /// that cannot receive the program looks like.
 ///
 /// Every argv the pipeline builds is therefore the real one, and the far side is
@@ -103,7 +103,7 @@ pub fn machine_stubs(dir: &Path, run_fails: bool) -> PathBuf {
              verb=$1; shift\n\
              case \"$verb\" in\n\
              \x20 image|kill) exit 0 ;;\n\
-             \x20 run)\n\
+             \x20 search)\n\
              \x20   {fail}\n\
              \x20   while [ $# -gt 0 ]; do\n\
              \x20     if [ \"$1\" = \"{IMAGE}\" ]; then shift; break; fi\n\
@@ -120,7 +120,7 @@ pub fn machine_stubs(dir: &Path, run_fails: bool) -> PathBuf {
         ),
     );
     // What an image carries, by the names they answer to on the PATH there: the
-    // worker a builtin format's pool spawns, and the `sima` a delivery runs.
+    // worker a builtin format's pool spawns, and the `sima` a delivery searches.
     for (built, name) in [
         (PathBuf::from(env!("CARGO_BIN_EXE_sima")), "sima"),
         (worker_binary(), "sima-worker"),
@@ -132,7 +132,7 @@ pub fn machine_stubs(dir: &Path, run_fails: bool) -> PathBuf {
 
 /// A command over the built sima binary, its environment cleared of any
 /// crashpoint arming so only an explicit test arms one, and its worker
-/// binary pinned through `SIMA_WORKER` so the run path never depends on
+/// binary pinned through `SIMA_WORKER` so the search path never depends on
 /// what happens to sit beside the test executable.
 pub fn sima_command() -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_sima"));
@@ -155,7 +155,9 @@ pub fn worker_binary() -> PathBuf {
         if cfg!(feature = "crash-injection") {
             command.args(["--features", "crash-injection"]);
         }
-        let status = command.status().expect("run cargo build for sima-worker");
+        let status = command
+            .status()
+            .expect("search cargo build for sima-worker");
         assert!(status.success(), "building sima-worker failed");
     });
     target_dir().join("debug").join("sima-worker")
@@ -165,7 +167,7 @@ pub fn worker_binary() -> PathBuf {
 /// its path.
 ///
 /// It answers for `example.doubler.v1`, a format this workspace carries no code
-/// for, which is what a suite needs to exercise a run no build here could serve
+/// for, which is what a suite needs to exercise a search no build here could serve
 /// itself.
 pub fn example_binary() -> PathBuf {
     static BUILD: Once = Once::new();
@@ -174,7 +176,7 @@ pub fn example_binary() -> PathBuf {
         let status = Command::new(cargo)
             .args(["build", "-p", "sima-example-executor"])
             .status()
-            .expect("run cargo build for sima-example-executor");
+            .expect("search cargo build for sima-example-executor");
         assert!(status.success(), "building sima-example-executor failed");
     });
     target_dir().join("debug").join("sima-example-executor")
@@ -227,14 +229,14 @@ pub fn pack_files(store: &Path) -> Vec<String> {
     names
 }
 
-/// The manifest of the run `config_path` describes, from its store.
+/// The manifest of the search `config_path` describes, from its store.
 pub fn manifest_of(config_path: &Path) -> Option<Manifest> {
     let config = load(config_path).expect("load config");
     let store = Store::open(&config.store).expect("open store");
-    store.manifest(&config.run.id()).expect("read manifest")
+    store.manifest(&config.search.id()).expect("read manifest")
 }
 
-/// The journal of the run `config_path` describes, parsed into typed events.
+/// The journal of the search `config_path` describes, parsed into typed events.
 pub fn journal_events(config_path: &Path) -> Vec<Event> {
     journal_records(config_path)
         .into_iter()
@@ -242,20 +244,20 @@ pub fn journal_events(config_path: &Path) -> Vec<Event> {
         .collect()
 }
 
-/// The journal of the run `config_path` describes, parsed into full records
+/// The journal of the search `config_path` describes, parsed into full records
 /// — for the suites that assert on the collector's timestamp stamp.
 pub fn journal_records(config_path: &Path) -> Vec<Record> {
     let config = load(config_path).expect("load config");
     let store = Store::open(&config.store).expect("open store");
     store
-        .journal(&config.run.id())
+        .journal(&config.search.id())
         .expect("read journal")
         .iter()
         .map(|line| Record::from_line(line).expect("parse journal line"))
         .collect()
 }
 
-/// Every device the run's workers reported, across the whole journal.
+/// Every device the search's workers reported, across the whole journal.
 pub fn devices_reported(events: &[Event]) -> HashSet<String> {
     events
         .iter()
@@ -269,7 +271,7 @@ pub fn devices_reported(events: &[Event]) -> HashSet<String> {
 /// The devices each task's attempts ran on, in lease order.
 ///
 /// A worker id names a different device from one session to the next — the
-/// pool's shape is a config's business, not a run's — so the walk tracks what
+/// pool's shape is a config's business, not a search's — so the walk tracks what
 /// each worker's device is *at that point* in the journal and attributes each
 /// lease to it. Reading the whole journal first and taking each worker's last
 /// device would credit a resumed session's work to the wrong hardware.
@@ -300,18 +302,18 @@ pub struct ChainTrail {
     pub keys: Vec<String>,
     /// How many of the chain's segments are committed.
     pub committed: usize,
-    /// The chain's segment count, from the run config.
+    /// The chain's segment count, from the search config.
     pub segments: usize,
 }
 
 impl ChainTrail {
-    /// Whether the chain has segments still to run.
+    /// Whether the chain has segments still to search.
     pub fn has_work_left(&self) -> bool {
         self.committed < self.segments
     }
 }
 
-/// Each chain of the run, walked through the state its segments committed:
+/// Each chain of the search, walked through the state its segments committed:
 /// chain `i` is candidate `i`'s trajectory.
 ///
 /// The journal names tasks, never chains, so this is what joins a chain to the
@@ -322,24 +324,24 @@ impl ChainTrail {
 pub fn chain_trails(config_path: &Path) -> Vec<ChainTrail> {
     let config = load(config_path).expect("load config");
     let store = Store::open(&config.store).expect("open store");
-    let generator = generator_for(&config.run.format, &config.run.generator.id)
+    let generator = generator_for(&config.search.format, &config.search.generator.id)
         .expect("dispatch the generator");
-    let environment = domain_for(&config.run.format)
+    let environment = domain_for(&config.search.format)
         .expect("dispatch the domain")
         .environment()
         .id();
     let specs = generator
-        .generate(config.run.root_seed, &config.run.generator.params)
-        .expect("generate the run's candidates");
-    let params = config.run.params.id();
-    let segments = config.run.segments.map_or(1, NonZeroU64::get);
+        .generate(config.search.root_seed, &config.search.generator.params)
+        .expect("generate the search's candidates");
+    let params = config.search.params.id();
+    let segments = config.search.segments.map_or(1, NonZeroU64::get);
 
     let mut chains = Vec::with_capacity(specs.len());
     for (i, spec) in specs.iter().enumerate() {
         let mut identity = TaskIdentity {
             spec: spec.id(),
             params,
-            seed: sima_core::prng::derive(config.run.root_seed, i as u64),
+            seed: sima_core::prng::derive(config.search.root_seed, i as u64),
             environment,
             input_state: None,
         };
@@ -372,15 +374,15 @@ pub fn chain_trails(config_path: &Path) -> Vec<ChainTrail> {
     chains
 }
 
-/// The raw bytes of the manifest the run `config_path` describes wrote, or
+/// The raw bytes of the manifest the search `config_path` describes wrote, or
 /// `None` where it has yet to finalize. The file itself, for the comparisons
 /// that are about bytes rather than about a parsed value.
 pub fn manifest_bytes(config_path: &Path) -> Option<Vec<u8>> {
     let config = load(config_path).expect("load config");
     let path = config
         .store
-        .join("runs")
-        .join(config.run.id().to_string())
+        .join("searches")
+        .join(config.search.id().to_string())
         .join("manifest.json");
     std::fs::read(path).ok()
 }
@@ -389,7 +391,7 @@ pub fn manifest_bytes(config_path: &Path) -> Option<Vec<u8>> {
 /// naming what enumeration found and what the loader was told to admit.
 ///
 /// A multi-device test asserts where work landed, so a machine reporting fewer
-/// classes than the test names fails on placement minutes into a run — which
+/// classes than the test names fails on placement minutes into a search — which
 /// reads as a scheduler defect. The usual cause is environmental: with
 /// `VK_DRIVER_FILES` set, the Vulkan loader admits only the drivers that
 /// variable lists, so a shell exporting one manifest leaves a two-GPU machine
@@ -450,7 +452,7 @@ fn why_unreachable() -> String {
         // test missing its `on_device` marker.
         if Path::new("/sys/module/nvidia").exists() {
             return "/dev/nvidiactl is absent though the nvidia module is loaded, \
-                    so the card is present and merely unreachable: run \
+                    so the card is present and merely unreachable: search \
                     `nvidia-modprobe -c 0 -u` and rerun."
                 .to_string();
         }
@@ -481,12 +483,12 @@ pub fn poll_until(deadline: Duration, probe: impl Fn() -> bool) -> bool {
     }
 }
 
-/// Waits until the run `config_path` describes has journaled its start,
+/// Waits until the search `config_path` describes has journaled its start,
 /// returning whether it did within the deadline. A live view opens against
-/// the journal, so it needs the journal to have content — and a run takes its
+/// the journal, so it needs the journal to have content — and a search takes its
 /// lock before its first line is durable, which leaves a window in which the
-/// lock names a holder and a reader still sees a run never started. Waiting on
-/// the journal closes that window, and implies the lock, since the run locks
+/// lock names a holder and a reader still sees a search never started. Waiting on
+/// the journal closes that window, and implies the lock, since the search locks
 /// before it journals.
 pub fn poll_until_started(config_path: &Path) -> bool {
     poll_until(Duration::from_secs(30), || {
@@ -495,7 +497,7 @@ pub fn poll_until_started(config_path: &Path) -> bool {
         // orchestrator has yet to create the store root. Any other is a fault
         // of the setup, and reporting it here beats spending the deadline and
         // then naming the wrong cause.
-        let mut observer = match RunObserver::new(&config) {
+        let mut observer = match SearchObserver::new(&config) {
             Ok(observer) => observer,
             Err(Error::Validation(_)) => return false,
             Err(e) => panic!("open an observer over {}: {e}", config_path.display()),
@@ -504,25 +506,25 @@ pub fn poll_until_started(config_path: &Path) -> bool {
     })
 }
 
-/// Spawns `sima run` over `config_path` and waits until it has journaled its
-/// start, so a view opened next attaches to a run in flight.
+/// Spawns `sima search` over `config_path` and waits until it has journaled its
+/// start, so a view opened next attaches to a search in flight.
 pub fn driving(config_path: &Path) -> Child {
     let child = sima_command()
-        .args(["run", config_path.to_str().expect("utf-8 path")])
+        .args(["search", config_path.to_str().expect("utf-8 path")])
         .stdout(Stdio::null())
         .spawn()
-        .expect("spawn sima run");
+        .expect("spawn sima search");
     assert!(
         poll_until_started(config_path),
-        "the run takes its lock and journals its start"
+        "the search takes its lock and journals its start"
     );
     child
 }
 
-/// Spawns `sima run` over `config_path`, waits until it has journaled its
+/// Spawns `sima search` over `config_path`, waits until it has journaled its
 /// start, and ends it with SIGKILL. What is left behind is the state a
-/// crashed orchestrator leaves: a journal that stops mid-run with no terminal
-/// event, and a run lock the kernel released when its holder died.
+/// crashed orchestrator leaves: a journal that stops mid-search with no terminal
+/// event, and a search lock the kernel released when its holder died.
 pub fn abandon_run(config_path: &Path) {
     let mut child = driving(config_path);
     child.kill().expect("kill the orchestrator");
@@ -568,16 +570,16 @@ fn comm_of(stat: &str) -> Option<&str> {
     Some(&stat[open + 1..close])
 }
 
-/// Blocks until the run `config_path` describes has leased its first task, and
+/// Blocks until the search `config_path` describes has leased its first task, and
 /// reports whether it did within `within`.
 ///
-/// A fixed sleep before signalling a run is a race in both directions: too
+/// A fixed sleep before signalling a search is a race in both directions: too
 /// short and the interrupt lands before any work is in flight, too long and the
-/// run may already have finished, so the test proves nothing about a wind-down.
+/// search may already have finished, so the test proves nothing about a wind-down.
 /// The journal states when a task was leased, so the signal follows that fact.
 ///
-/// The store may not exist yet, and the run may have no journal yet; both are
-/// the ordinary early state of a run that is still starting, so they read as
+/// The store may not exist yet, and the search may have no journal yet; both are
+/// the ordinary early state of a search that is still starting, so they read as
 /// "not yet" rather than as failures.
 pub fn wait_for_first_lease(config_path: &Path, within: Duration) -> bool {
     let deadline = Instant::now() + within;
@@ -590,8 +592,8 @@ pub fn wait_for_first_lease(config_path: &Path, within: Duration) -> bool {
     leased_yet(config_path)
 }
 
-/// Whether the run's journal already holds a `Leased` event, tolerating every
-/// state a run that has not got there yet can be in.
+/// Whether the search's journal already holds a `Leased` event, tolerating every
+/// state a search that has not got there yet can be in.
 fn leased_yet(config_path: &Path) -> bool {
     let Ok(config) = load(config_path) else {
         return false;
@@ -602,7 +604,7 @@ fn leased_yet(config_path: &Path) -> bool {
     let Ok(store) = Store::open(&config.store) else {
         return false;
     };
-    let Ok(lines) = store.journal(&config.run.id()) else {
+    let Ok(lines) = store.journal(&config.search.id()) else {
         return false;
     };
     lines

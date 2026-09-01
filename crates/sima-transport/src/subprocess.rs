@@ -4,7 +4,7 @@
 //! Each spawn pipes the child's stdin, stdout, and stderr, and performs the
 //! handshake. A reader thread per child decodes stdout frames into a
 //! channel, so the caller's deadline wait is a plain `recv_timeout` and a
-//! kill never races a blocking read; Event frames fork off to the run's
+//! kill never races a blocking read; Event frames fork off to the search's
 //! emitter on that thread. A second thread per child captures stderr line by
 //! line and emits each line as an info diagnostic attributed to the worker
 //! and host, so nothing a child prints lands uncorrelated.
@@ -29,7 +29,7 @@ use crate::link::{LinkEvent, SpawnOutcome, WorkerLink, WorkerTransport};
 use crate::protocol::{Assignment, Hello, PROTOCOL_VERSION, ToChild, ToParent, encode_assign};
 use crate::spawn_settings::SpawnSettings;
 
-/// Spawns worker processes for one run: the command vector to run — a program
+/// Spawns worker processes for one search: the command vector to search — a program
 /// and its arguments — plus the settings every child of this pool is spawned
 /// and greeted under.
 ///
@@ -66,7 +66,7 @@ impl WorkerTransport for SubprocessTransport {
         device: Option<&DeviceBinding>,
         events: Emitter,
     ) -> Result<SpawnOutcome> {
-        // The subprocess transport runs on this machine, so its diagnostics
+        // The subprocess transport searches on this machine, so its diagnostics
         // carry the local pool's empty host label.
         let context = EventContext {
             events,
@@ -85,7 +85,7 @@ impl WorkerTransport for SubprocessTransport {
     }
 }
 
-/// Attribution for one child's reader threads: the run's emitter plus the
+/// Attribution for one child's reader threads: the search's emitter plus the
 /// identity the parent knows about the child — its slot's worker id and the
 /// pool's host label (empty for a local pool).
 #[derive(Clone)]
@@ -96,10 +96,10 @@ pub(crate) struct EventContext {
 }
 
 /// Spawns `program args...` as a worker child under `settings`, pipes its
-/// stdio, runs the reader thread, and performs the handshake bound to
+/// stdio, searches the reader thread, and performs the handshake bound to
 /// `device`. The returned link owns the child and the scratch directory an
 /// explicit policy gave it; a handshake failure kills and reaps it before the
-/// error returns. Shared by every transport that runs a worker over a local
+/// error returns. Shared by every transport that searches a worker over a local
 /// process — a bare `sima-worker` or a container client wrapping one.
 pub(crate) fn spawn_worker(
     program: &Path,
@@ -150,7 +150,7 @@ pub(crate) fn spawn_worker(
     };
     // The handshake: Hello out, Ready back. Any other answer — silence ended
     // by death, silence outlasting the answer deadline, a wrong version, a
-    // program other than the one the run sent, an undecodable echo — is a
+    // program other than the one the search sent, an undecodable echo — is a
     // spawn failure, and the misbehaving child is killed and reaped before the
     // error returns.
     let hello = Hello {
@@ -200,21 +200,21 @@ fn handshake(
 }
 
 /// What a peer answered at the handshake: where it computes, and which program
-/// it runs.
+/// it searches.
 #[derive(Debug)]
 pub(crate) struct Answer {
     /// The device the peer opened, empty for a domain that uses no device.
     pub(crate) device_name: String,
     /// The driver version of that device, empty alongside an empty name.
     pub(crate) driver: String,
-    /// The digest of the program the peer runs, empty when none travelled to
-    /// it. Agreed with the run's own before this value is handed back.
+    /// The digest of the program the peer searches, empty when none travelled to
+    /// it. Agreed with the search's own before this value is handed back.
     pub(crate) program: String,
 }
 
 /// Classifies a peer's answer to `Hello`: what it reported, or why the
 /// handshake failed. `answer` is `None` when the event stream ended first, and
-/// `expected` is the program digest the run sent to this peer's machine.
+/// `expected` is the program digest the search sent to this peer's machine.
 ///
 /// The parent's half of the handshake, shared by every transport and pure over
 /// the answer, so each refusal is verifiable without a peer to produce it.
@@ -254,7 +254,7 @@ pub(crate) fn ready_desc(
     }
 }
 
-/// Agrees the program digest the run sent with the one the peer answered, in
+/// Agrees the program digest the search sent with the one the peer answered, in
 /// both directions:
 ///
 /// ```text
@@ -268,20 +268,20 @@ pub(crate) fn ready_desc(
 /// ```
 ///
 /// The rule is symmetric because either direction means the same thing: the
-/// peer is running something other than what this run put there.
+/// peer is running something other than what this search put there.
 fn agreed(peer: &str, expected: Option<&str>, answered: &str) -> Result<()> {
     match (expected, answered) {
         (Some(sent), answered) if sent == answered => Ok(()),
         (Some(sent), "") => Err(Error::Transport(format!(
-            "{peer} program digest mismatch: the run sent {sent}, {peer} answered none — \
+            "{peer} program digest mismatch: the search sent {sent}, {peer} answered none — \
              the machine never received the program"
         ))),
         (Some(sent), answered) => Err(Error::Transport(format!(
-            "{peer} program digest mismatch: the run sent {sent}, {peer} answered {answered}"
+            "{peer} program digest mismatch: the search sent {sent}, {peer} answered {answered}"
         ))),
         (None, "") => Ok(()),
         (None, answered) => Err(Error::Transport(format!(
-            "{peer} program digest mismatch: the run sent none, {peer} answered {answered}"
+            "{peer} program digest mismatch: the search sent none, {peer} answered {answered}"
         ))),
     }
 }
@@ -444,7 +444,7 @@ pub(crate) fn read_events(
         let message = match read_frame(&mut reader) {
             Ok(Some(payload)) => match ToParent::decode(&payload) {
                 // Event frames belong to the collector, never to the lease
-                // loop: forward them to the run's emitter and keep reading.
+                // loop: forward them to the search's emitter and keep reading.
                 Ok(ToParent::Event(bytes)) => {
                     if let Some(context) = &context {
                         forward_event(context, &bytes);
@@ -507,7 +507,7 @@ const STDERR_LINE_CAP: usize = 4096;
 /// [`STDERR_LINE_CAP`] bytes of any one line: the bytes of an overlong line
 /// past the cap are discarded as they arrive, so a child that streams without
 /// newlines costs a bounded buffer, never one that grows for the life of the
-/// run.
+/// search.
 struct LineCapture {
     /// The retained prefix of the line being assembled; never past the cap.
     retained: Vec<u8>,
@@ -557,7 +557,7 @@ impl LineCapture {
     }
 
     /// Emits the assembled line and resets for the next one. A trailing `\r`
-    /// run is part of the terminator (CRLF), stripped when the line fit —
+    /// search is part of the terminator (CRLF), stripped when the line fit —
     /// past the cap every retained byte is content. A line empty after
     /// stripping carries nothing and is skipped.
     fn complete(&mut self, emit: &mut impl FnMut(&[u8], bool)) {
@@ -650,7 +650,7 @@ pub(crate) fn next_event(
             ));
         }
         // Event frames belong to the transport's reader thread, which
-        // forwards them to the run's collector; one on the lease loop is a
+        // forwards them to the search's collector; one on the lease loop is a
         // routing violation.
         ToParent::Event(_) => {
             return Err(Error::Transport(
@@ -705,7 +705,7 @@ mod tests {
         Emitter::from(channel().0)
     }
 
-    /// What a `Ready` at `protocol` resolves to, or the refusal. The run
+    /// What a `Ready` at `protocol` resolves to, or the refusal. The search
     /// expects no program digest and the answer carries none, the shape of
     /// every format this build answers in process.
     fn answer_ready(protocol: u32) -> Result<Answer> {
@@ -734,7 +734,7 @@ mod tests {
     const SENT: &str = "1111111111111111111111111111111111111111111111111111111111111111";
     const ANSWERED: &str = "2222222222222222222222222222222222222222222222222222222222222222";
 
-    /// The agreement between the digest `expected` of the run and the digest
+    /// The agreement between the digest `expected` of the search and the digest
     /// `answered` by the worker, over an otherwise ordinary `Ready`.
     fn agreement(expected: Option<&str>, answered: &str) -> Result<Answer> {
         ready_desc(
@@ -770,10 +770,13 @@ mod tests {
     #[test]
     fn another_digest_than_the_run_sent_is_refused_naming_both() {
         // The drifted machine: it holds a program, and it is not the one this
-        // run sent. Naming both sides is what makes the difference actionable.
+        // search sent. Naming both sides is what makes the difference actionable.
         let message = refusal(Some(SENT), ANSWERED);
         assert!(message.contains("program digest mismatch"), "{message}");
-        assert!(message.contains(SENT), "names what the run sent: {message}");
+        assert!(
+            message.contains(SENT),
+            "names what the search sent: {message}"
+        );
         assert!(
             message.contains(ANSWERED),
             "names what the worker answered: {message}"
@@ -782,22 +785,25 @@ mod tests {
 
     #[test]
     fn no_digest_where_the_run_sent_one_is_refused_as_a_program_that_never_arrived() {
-        // A worker answering none under a run that sent a program is not a
+        // A worker answering none under a search that sent a program is not a
         // drifted install: nothing was installed there at all.
         let message = refusal(Some(SENT), "");
         assert!(message.contains("program digest mismatch"), "{message}");
-        assert!(message.contains(SENT), "names what the run sent: {message}");
+        assert!(
+            message.contains(SENT),
+            "names what the search sent: {message}"
+        );
         assert!(
             message.contains("never received the program"),
-            "states which way the disagreement runs: {message}"
+            "states which way the disagreement searches: {message}"
         );
     }
 
     #[test]
     fn a_digest_where_the_run_sent_none_is_refused() {
-        // The symmetric direction: a run answering for its format in process
+        // The symmetric direction: a search answering for its format in process
         // sent no program, so a worker that names one is not the worker this
-        // run spawned.
+        // search spawned.
         let message = refusal(None, ANSWERED);
         assert!(message.contains("program digest mismatch"), "{message}");
         assert!(message.contains("sent none"), "{message}");

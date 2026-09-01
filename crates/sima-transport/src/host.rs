@@ -1,7 +1,7 @@
 //! The child side of the transport: [`serve`] hosts a domain executor over a
 //! frame pipe.
 //!
-//! `serve` is what a worker process runs for its whole life: read the
+//! `serve` is what a worker process searches for its whole life: read the
 //! [`Hello`](super::protocol::Hello), resolve the executor for the announced
 //! format and device, reply [`ToParent::Ready`], then execute one
 //! [`Assignment`](super::protocol::Assignment) after another until the parent
@@ -165,7 +165,7 @@ fn execute_assignment<W: Write>(
     writer: &RefCell<W>,
 ) -> Result<()> {
     // The spec's format travels once in the handshake; every assignment of
-    // the run reassembles under it.
+    // the search reassembles under it.
     let spec = Spec {
         format: hello.format.clone(),
         bytes: assignment.spec,
@@ -267,7 +267,7 @@ fn write_event<W: Write>(writer: &RefCell<W>, event: &Event) -> Result<()> {
     write_frame(&mut *writer.borrow_mut(), &ToParent::Event(bytes).encode())
 }
 
-/// The run's checkpoint cadence, decoded from the handshake's settings:
+/// The search's checkpoint cadence, decoded from the handshake's settings:
 /// `u64::MAX` milliseconds disables the wall-clock axis, `0` steps disables
 /// the step axis.
 fn cadence(hello: &Hello) -> CheckpointCadence {
@@ -521,7 +521,7 @@ mod tests {
         }
     }
 
-    /// Frames `messages` into one input buffer, runs `serve` over it with a
+    /// Frames `messages` into one input buffer, searches `serve` over it with a
     /// `behavior` executor, and returns serve's result plus the decoded
     /// output frames.
     fn drive(behavior: Behavior, messages: &[ToChild]) -> (Result<()>, Vec<ToParent>) {

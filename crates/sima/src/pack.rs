@@ -8,13 +8,13 @@
 //! hash of its bytes wherever those bytes are held.
 //!
 //! The argument is the store directory itself, and no config takes part: a
-//! store carries the definition of every run it holds, so packing needs no
-//! run knowledge and works on a store whose config files are long gone.
+//! store carries the definition of every search it holds, so packing needs no
+//! search knowledge and works on a store whose config files are long gone.
 //!
-//! `--gc` additionally deletes everything outside the finalized runs'
-//! closures, unfinalized runs and their directories included, and it runs
+//! `--gc` additionally deletes everything outside the finalized searches'
+//! closures, unfinalized searches and their directories included, and it searches
 //! before the packing so that an orphan is unlinked rather than packed and
-//! then rewritten away. Beside an active run the sweep destroys that run's
+//! then rewritten away. Beside an active search the sweep destroys that search's
 //! work; the operator owns that decision, which is why it is a flag and not
 //! the default.
 
@@ -42,7 +42,7 @@ pub(crate) fn pack_command(store: &Path, gc: bool) -> ExitCode {
     }
 }
 
-/// Opens the store and runs the phases the invocation asked for, in the
+/// Opens the store and searches the phases the invocation asked for, in the
 /// order that does the least work: the sweep first, so an orphan is
 /// unlinked where it lies instead of being packed and then rewritten out of
 /// the pack it just entered. The store both orders leave behind is the
@@ -68,11 +68,11 @@ fn pack_line(report: &PackReport) -> String {
 /// What the sweep did, in one line.
 fn gc_line(report: &GcReport) -> String {
     format!(
-        "gc: removed {} objects, {} index entries, rewrote {} packs, removed {} unfinalized runs, swept {} tmp files",
+        "gc: removed {} objects, {} index entries, rewrote {} packs, removed {} unfinalized searches, swept {} tmp files",
         report.objects_removed,
         report.index_entries_removed,
         report.packs_rewritten,
-        report.runs_removed,
+        report.searches_removed,
         report.tmp_files_removed,
     )
 }
@@ -105,7 +105,7 @@ mod tests {
         assert_eq!(byte_size(1023), "1023 B");
         assert_eq!(byte_size(1024), "1.0 KiB");
         assert_eq!(byte_size(15_246_562_099), "14.2 GiB");
-        // The largest unit holds, however far past it the count runs.
+        // The largest unit holds, however far past it the count searches.
         assert_eq!(byte_size(u64::MAX), "16777216.0 TiB");
     }
 
@@ -127,13 +127,13 @@ mod tests {
             objects_removed: 34_000,
             index_entries_removed: 120,
             packs_rewritten: 2,
-            runs_removed: 3,
+            searches_removed: 3,
             tmp_files_removed: 17,
         };
         assert_eq!(
             gc_line(&swept),
             "gc: removed 34000 objects, 120 index entries, rewrote 2 packs, \
-             removed 3 unfinalized runs, swept 17 tmp files"
+             removed 3 unfinalized searches, swept 17 tmp files"
         );
     }
 }

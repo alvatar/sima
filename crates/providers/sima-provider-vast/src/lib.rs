@@ -11,8 +11,8 @@
 //! rentable machines on demand — and every constraint is applied by
 //! [`select`](sima_provider::select).
 //!
-//! The API key is read from the environment and never enters run
-//! configuration, which is content-addressed and would carry it into run
+//! The API key is read from the environment and never enters search
+//! configuration, which is content-addressed and would carry it into search
 //! hashes and the store.
 
 mod client;

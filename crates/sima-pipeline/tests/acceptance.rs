@@ -2,7 +2,7 @@
 //!
 //! - (a) determinism — one config into two fresh stores yields identical
 //!   manifests;
-//! - (c) re-evaluation — orchestrating a finalized run touches no executor;
+//! - (c) re-evaluation — orchestrating a finalized search touches no executor;
 //! - (d) portability — a copied store resumes elsewhere to the identical
 //!   manifest.
 //!
@@ -16,7 +16,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use common::{journal_events, loaded, loaded_with};
 use sima_core::Result;
-use sima_pipeline::{BinaryChange, Engagement, Event, Record, RunControl, RunOutcome, orchestrate};
+use sima_pipeline::{
+    BinaryChange, Engagement, Event, Record, SearchControl, SearchOutcome, orchestrate,
+};
 use sima_store::Store;
 
 /// A behavior mix covering retry and timing variance alongside plain
@@ -28,58 +30,66 @@ fn a_determinism_one_config_two_fresh_stores_identical_manifests() -> Result<()>
     let dir = tempfile::tempdir().expect("temp dir");
     let first = loaded_with(dir.path(), "first.toml", BEHAVIORS, 2, "./store-first")?;
     let second = loaded_with(dir.path(), "second.toml", BEHAVIORS, 2, "./store-second")?;
-    assert_eq!(first.run.id(), second.run.id(), "one config, one run id");
+    assert_eq!(
+        first.search.id(),
+        second.search.id(),
+        "one config, one search id"
+    );
 
     for config in [&first, &second] {
         assert!(matches!(
             orchestrate(
                 config,
-                &RunControl::detached(),
+                &SearchControl::detached(),
                 Engagement::Orchestrator,
                 BinaryChange::Refuse
             )?,
-            RunOutcome::Finalized { .. }
+            SearchOutcome::Finalized { .. }
         ));
     }
 
-    let run = first.run.id();
+    let search = first.search.id();
     assert_eq!(
-        Store::open(&first.store)?.manifest(&run)?.expect("first"),
-        Store::open(&second.store)?.manifest(&run)?.expect("second"),
+        Store::open(&first.store)?
+            .manifest(&search)?
+            .expect("first"),
+        Store::open(&second.store)?
+            .manifest(&search)?
+            .expect("second"),
     );
     Ok(())
 }
 
 #[test]
-fn c_re_evaluation_of_a_finalized_run_touches_no_executor() -> Result<()> {
+fn c_re_evaluation_of_a_finalized_search_touches_no_executor() -> Result<()> {
     let dir = tempfile::tempdir().expect("temp dir");
     let config = loaded(dir.path(), BEHAVIORS, 2)?;
-    let run = config.run.id();
+    let search = config.search.id();
 
     assert!(matches!(
         orchestrate(
             &config,
-            &RunControl::detached(),
+            &SearchControl::detached(),
             Engagement::Orchestrator,
             BinaryChange::Refuse
         )?,
-        RunOutcome::Finalized { .. }
+        SearchOutcome::Finalized { .. }
     ));
     let store = Store::open(&config.store)?;
-    let manifest = store.manifest(&run)?.expect("finalized manifest");
+    let manifest = store.manifest(&search)?.expect("finalized manifest");
     let journal_len = journal_events(&config).len();
 
     assert!(matches!(
         orchestrate(
             &config,
-            &RunControl::detached(),
+            &SearchControl::detached(),
             Engagement::Orchestrator,
             BinaryChange::Refuse
         )?,
-        RunOutcome::Finalized { .. }
+        SearchOutcome::Finalized { .. }
     ));
     assert_eq!(
-        store.manifest(&run)?.expect("re-finalized manifest"),
+        store.manifest(&search)?.expect("re-finalized manifest"),
         manifest,
         "the manifest is unchanged"
     );
@@ -112,14 +122,14 @@ fn copy_tree(from: &Path, to: &Path) {
 #[test]
 fn d_a_copied_store_resumes_elsewhere_to_the_identical_manifest() -> Result<()> {
     let dir = tempfile::tempdir().expect("temp dir");
-    // Sleeps hold work in flight so the interrupt lands mid-run and the
+    // Sleeps hold work in flight so the interrupt lands mid-search and the
     // copy carries a genuinely partial store.
     let behaviors = r#""succeed", "sleep:200", "sleep:200", "sleep:200""#;
     let config = loaded_with(dir.path(), "origin.toml", behaviors, 2, "./store-origin")?;
-    let run = config.run.id();
+    let search = config.search.id();
 
     let interrupt = AtomicBool::new(false);
-    let control = RunControl {
+    let control = SearchControl {
         observer: &|record: &Record| {
             if matches!(record.event, Event::Committed { .. }) {
                 interrupt.store(true, Ordering::Relaxed);
@@ -135,25 +145,29 @@ fn d_a_copied_store_resumes_elsewhere_to_the_identical_manifest() -> Result<()> 
             Engagement::Orchestrator,
             BinaryChange::Refuse
         )?,
-        RunOutcome::Interrupted { .. }
+        SearchOutcome::Interrupted { .. }
     ));
 
     // Copy the partial store elsewhere and resume there, with a different
-    // worker count — execution settings stay outside run identity.
+    // worker count — execution settings stay outside search identity.
     copy_tree(&config.store, &dir.path().join("store-copied"));
     let moved = loaded_with(dir.path(), "moved.toml", behaviors, 4, "./store-copied")?;
-    assert_eq!(moved.run.id(), run, "the copy answers the same run");
+    assert_eq!(
+        moved.search.id(),
+        search,
+        "the copy answers the same search"
+    );
     assert!(matches!(
         orchestrate(
             &moved,
-            &RunControl::detached(),
+            &SearchControl::detached(),
             Engagement::Orchestrator,
             BinaryChange::Refuse
         )?,
-        RunOutcome::Finalized { .. }
+        SearchOutcome::Finalized { .. }
     ));
 
-    // The reference: the same config run uninterrupted in a fresh store.
+    // The reference: the same config search uninterrupted in a fresh store.
     let reference = loaded_with(
         dir.path(),
         "reference.toml",
@@ -164,16 +178,18 @@ fn d_a_copied_store_resumes_elsewhere_to_the_identical_manifest() -> Result<()> 
     assert!(matches!(
         orchestrate(
             &reference,
-            &RunControl::detached(),
+            &SearchControl::detached(),
             Engagement::Orchestrator,
             BinaryChange::Refuse,
         )?,
-        RunOutcome::Finalized { .. }
+        SearchOutcome::Finalized { .. }
     ));
     assert_eq!(
-        Store::open(&moved.store)?.manifest(&run)?.expect("moved"),
+        Store::open(&moved.store)?
+            .manifest(&search)?
+            .expect("moved"),
         Store::open(&reference.store)?
-            .manifest(&run)?
+            .manifest(&search)?
             .expect("reference"),
     );
     Ok(())

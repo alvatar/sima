@@ -1,4 +1,4 @@
-//! [`report`]: each committed task's per-candidate stats, rendered from a run's
+//! [`report`]: each committed task's per-candidate stats, rendered from a search's
 //! journal.
 
 use std::collections::BTreeMap;
@@ -20,20 +20,20 @@ pub struct ReportRow {
     pub stats: String,
 }
 
-/// Renders each committed task's per-candidate stats for the run a loaded
+/// Renders each committed task's per-candidate stats for the search a loaded
 /// config describes, from its journal alone — the read-only reporting
 /// counterpart of [`orchestrate`](crate::orchestrate). Rows are sorted by task
 /// key.
 ///
 /// Each `Committed` event carries the executor's named scalars and the family
 /// blob's hex, rendered generically; a task commits at most once, so each
-/// contributes one row. A missing store, a run never started there, and an
+/// contributes one row. A missing store, a search never started there, and an
 /// unparseable line carry the errors every journal query reports.
 pub fn report(config: &LoadedConfig) -> Result<Vec<ReportRow>> {
     report_records(&journal::records(config)?)
 }
 
-/// Renders each committed task's stats from `records` — a run's lifecycle
+/// Renders each committed task's stats from `records` — a search's lifecycle
 /// events in append order. The merge half of [`report`], over records from any
 /// source.
 pub fn report_records(records: &[Record]) -> Result<Vec<ReportRow>> {
@@ -45,7 +45,7 @@ pub fn report_records(records: &[Record]) -> Result<Vec<ReportRow>> {
 
 /// Renders one committed task's stats from `records`, addressed by a prefix
 /// of its key, over records from any source: a journal read locally, or a
-/// stream from the host that drives the run.
+/// stream from the host that drives the search.
 pub fn report_task_records(records: &[Record], prefix: &str) -> Result<ReportRow> {
     let task = resolve_task_key(records, prefix)?;
     let (scalars, blob_hex) = committed_stats(records)
@@ -95,10 +95,10 @@ mod tests {
         Record { ts_ms: 0, event }
     }
 
-    /// A `RunStarted` line for the run.
-    fn started(run: &sima_model::SearchId, tasks: usize) -> Record {
-        rec(Event::RunStarted {
-            run: run.to_string(),
+    /// A `SearchStarted` line for the search.
+    fn started(search: &sima_model::SearchId, tasks: usize) -> Record {
+        rec(Event::SearchStarted {
+            search: search.to_string(),
             tasks,
             committed: 0,
         })
@@ -215,7 +215,7 @@ mod tests {
             matches!(reported, Err(Error::Validation(_))),
             "{reported:?}"
         );
-        // The merge runs over records from any source, local or streamed from
+        // The merge searches over records from any source, local or streamed from
         // another host, so its message states the fact and suggests no
         // command: a command naming a config path resolves on the machine that
         // reads it, which is where the records came from only half the time.

@@ -81,8 +81,8 @@ pub(crate) fn spend_entries(store: &Store, owner: &SearchId) -> Result<Vec<Spend
     store.spend_entries(&owner.to_string())
 }
 
-/// A run id to own acquisitions with, varying by `root_seed`.
-pub(crate) fn sample_run(root_seed: u64) -> SearchId {
+/// A search id to own acquisitions with, varying by `root_seed`.
+pub(crate) fn sample_search(root_seed: u64) -> SearchId {
     SearchConfig {
         root_seed,
         segments: None,
@@ -109,14 +109,14 @@ pub(crate) fn prompt_limits() -> AcquireLimits {
 /// Rents one machine over `provider` under constraints that disqualify
 /// nothing, ranked by the only objective.
 ///
-/// The run lock lives for the call alone, which is what a test needing only
+/// The search lock lives for the call alone, which is what a test needing only
 /// a guard requires; a test whose assertions depend on the lock still being
 /// held takes it itself and calls [`acquire`] directly.
 pub(crate) fn acquire_any<'a, P: Provider>(
     provider: &'a P,
     store: &'a Store,
 ) -> Result<InstanceGuard<'a, P>> {
-    let lock = store.acquire_search_lock(&sample_run(7))?;
+    let lock = store.acquire_search_lock(&sample_search(7))?;
     acquire(
         provider,
         store,

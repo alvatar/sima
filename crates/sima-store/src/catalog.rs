@@ -659,7 +659,7 @@ mod tests {
     }
 
     #[test]
-    fn manifest_of_an_unfinalized_run_is_none() -> Result<()> {
+    fn manifest_of_an_unfinalized_search_is_none() -> Result<()> {
         let (_dir, store) = temp_store();
         let (search, _keys) = committed_run(&store)?;
         assert!(store.manifest(&search)?.is_none());
@@ -743,7 +743,7 @@ mod tests {
     }
 
     #[test]
-    fn closure_of_an_unfinalized_run_is_validation_error() -> Result<()> {
+    fn closure_of_an_unfinalized_search_is_validation_error() -> Result<()> {
         let (_dir, store) = temp_store();
         let (search, _keys) = committed_run(&store)?;
         assert!(matches!(

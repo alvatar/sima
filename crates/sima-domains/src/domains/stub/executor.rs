@@ -694,7 +694,7 @@ mod tests {
     fn a_resume_checkpoint_in_range_is_adopted() -> Result<()> {
         // A saved state two steps in: the resumed attempt executes only the
         // remaining step, and the committed state is byte-identical to an
-        // uninterrupted run.
+        // uninterrupted search.
         let saved = fold(StubState { step: 0, acc: 42 }, 2);
         let handle = ScriptedCheckpoint::new(Some(saved.to_bytes()));
         let outcome = run_accumulate(3, 42, None, 1, &handle)?;
@@ -711,7 +711,7 @@ mod tests {
     fn a_stale_resume_checkpoint_is_ignored() -> Result<()> {
         // Out-of-range saved steps — before this segment's start and at or
         // past its end — and undecodable bytes are all ignored: the task
-        // runs fully and commits the reference state.
+        // searches fully and commits the reference state.
         let start = fold(StubState { step: 0, acc: 42 }, 2);
         let reference = run_accumulate(2, 42, Some(&start.to_bytes()), 0, &NoCheckpoint)?;
         let (reference_bytes, _, _) = state_and_stats(&reference);
@@ -724,7 +724,7 @@ mod tests {
             let handle = ScriptedCheckpoint::new(Some(bytes));
             let outcome = run_accumulate(2, 42, Some(&start.to_bytes()), 1, &handle)?;
             let (state_bytes, _, steps) = state_and_stats(&outcome);
-            assert_eq!(steps, 2, "a stale checkpoint must not shorten the run");
+            assert_eq!(steps, 2, "a stale checkpoint must not shorten the search");
             assert_eq!(state_bytes, reference_bytes);
         }
         Ok(())

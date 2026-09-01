@@ -31,7 +31,7 @@ fn offer(id: &str, price: u64) -> Offer {
     }
 }
 
-/// A run to own acquisitions with, varying by `root_seed`.
+/// A search to own acquisitions with, varying by `root_seed`.
 fn owner(root_seed: u64) -> SearchId {
     SearchConfig {
         root_seed,
@@ -63,25 +63,25 @@ fn contested_market() -> StubProvider {
         .gone_at_provision(OfferId("cheap".to_string()))
 }
 
-/// Rents one machine over `provider`, ranked by price, returning the run
+/// Rents one machine over `provider`, ranked by price, returning the search
 /// lock the rental was made under alongside the guard: a caller standing in
 /// for a killed process drops the lock to make the owner look gone.
 fn rent<'a, P: Provider>(
     provider: &'a P,
     store: &'a Store,
-    run: &SearchId,
+    search: &SearchId,
 ) -> Result<(sima_provider::InstanceGuard<'a, P>, SearchLock)> {
-    rent_within(provider, store, run, &Budget::default())
+    rent_within(provider, store, search, &Budget::default())
 }
 
 /// Rents one machine as [`rent`] does, under `budget`.
 fn rent_within<'a, P: Provider>(
     provider: &'a P,
     store: &'a Store,
-    run: &SearchId,
+    search: &SearchId,
     budget: &Budget,
 ) -> Result<(sima_provider::InstanceGuard<'a, P>, SearchLock)> {
-    let lock = store.acquire_search_lock(run)?;
+    let lock = store.acquire_search_lock(search)?;
     let guard = acquire(
         provider,
         store,
@@ -91,7 +91,7 @@ fn rent_within<'a, P: Provider>(
         Objective::CheapestPerHour,
         &limits(),
         budget,
-        // This lifecycle exercise runs an acquisition to completion; nothing
+        // This lifecycle exercise searches an acquisition to completion; nothing
         // cancels it.
         &sima_provider::Admission::new(),
         &std::sync::atomic::AtomicBool::new(false),
@@ -129,9 +129,9 @@ fn a_machine_a_dead_process_left_running_is_destroyed_by_reconciliation() -> Res
         let store = Store::open(dir.path())?;
         let (guard, lock) = rent(&provider, &store, &owner(11))?;
         let id = guard.id().clone();
-        // Standing in for a process killed outright: no destructor runs, so
+        // Standing in for a process killed outright: no destructor searches, so
         // the machine stays up and its ledger record stays behind, while the
-        // kernel frees the run lock the dead process held.
+        // kernel frees the search lock the dead process held.
         std::mem::forget(guard);
         drop(lock);
         id
@@ -167,7 +167,7 @@ fn acquiring_cleans_a_dead_runs_orphan_before_renting_a_new_machine() -> Result<
 
     let store = Store::open(dir.path())?;
     let (guard, _lock) = rent(&provider, &store, &owner(12))?;
-    // Acquisition reconciles first, so the orphan of the run whose lock is
+    // Acquisition reconciles first, so the orphan of the search whose lock is
     // free was down before the new machine came up.
     assert_eq!(provider.destroyed(), vec![leaked]);
     assert_eq!(provider.live(), vec![guard.id().clone()]);
@@ -192,14 +192,14 @@ fn a_runs_own_leftover_survives_its_next_acquisition_while_it_holds_the_lock() -
 
     let store = Store::open(dir.path())?;
     let (guard, lock) = rent(&provider, &store, &owner(11))?;
-    // A held run lock is the owner still running, so the leftover an earlier
-    // process of this same run wrote is kept: reconciliation cannot tell it
+    // A held search lock is the owner still running, so the leftover an earlier
+    // process of this same search wrote is kept: reconciliation cannot tell it
     // from a machine the live process is using.
     assert!(provider.destroyed().is_empty());
     assert_eq!(provider.live(), vec![leaked.clone(), guard.id().clone()]);
     assert_eq!(store.instance_records()?.len(), 2);
 
-    // Once the run's lock is free, the leftover is reaped like any orphan.
+    // Once the search's lock is free, the leftover is reaped like any orphan.
     std::mem::forget(guard);
     drop(lock);
     let report = reconcile(&provider, &store, ReconcileScope::Workers)?;
@@ -267,7 +267,7 @@ fn a_machine_a_dead_process_left_running_is_charged_by_reconciliation() -> Resul
     // The rate the machine was rented at is what it is charged: a rental
     // reaped by reconciliation is booked no differently from one released.
     assert_eq!(entries[0].price_micro_usd_hour, 100_000);
-    // The cost of a rental nobody gave back is still the run's to account
+    // The cost of a rental nobody gave back is still the search's to account
     // for.
     let report = spend_report(&store, &owner(11), entries[0].ended_ms)?;
     assert_eq!(report.total, Cost(entries[0].cost_micro_usd));
@@ -293,7 +293,7 @@ fn a_budget_an_earlier_rental_consumed_refuses_the_next_one() -> Result<()> {
     assert!(matches!(
         outcome,
         Err(Error::Provider(message))
-            if message.starts_with("the run's rental budget is exhausted: spent ")
+            if message.starts_with("the search's rental budget is exhausted: spent ")
     ));
     // Nothing was rented under the refusal: no second machine, no record.
     assert_eq!(provider.live().len(), 0);

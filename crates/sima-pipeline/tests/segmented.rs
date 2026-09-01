@@ -2,7 +2,7 @@
 //! a chain of segments equals one unsegmented task of equal length, the
 //! manifest is deterministic across fresh stores, an interrupted chain
 //! resumes to the reference manifest, a shared store reuses committed
-//! chain prefixes, a segmented run over a stateless domain is rejected
+//! chain prefixes, a segmented search over a stateless domain is rejected
 //! naming the state artifact, and the segment count is identity-bearing.
 
 mod common;
@@ -14,12 +14,13 @@ use common::{journal_events, loaded_text};
 use sima_core::{Error, Result};
 use sima_domains::StubState;
 use sima_pipeline::{
-    BinaryChange, Engagement, Event, LoadedConfig, Record, RunControl, RunOutcome, orchestrate,
+    BinaryChange, Engagement, Event, LoadedConfig, Record, SearchControl, SearchOutcome,
+    orchestrate,
 };
 use sima_store::Store;
 
 /// A segmented `accumulate` config: `chains` candidates, `k` steps per
-/// segment. `segments` renders the optional `[run]` key, `checkpoint` the
+/// segment. `segments` renders the optional `[search]` key, `checkpoint` the
 /// optional `[config]` key.
 fn accumulate_config(
     dir: &Path,
@@ -34,12 +35,12 @@ fn accumulate_config(
         checkpoint_ms.map_or(String::new(), |ms| format!("checkpoint_interval_ms = {ms}"));
     let text = format!(
         r#"
-        [run]
+        [search]
         root_seed = 7
         format = "stub.v1"
         {segments}
 
-        [run.generator]
+        [search.generator]
         id = "stub.v1"
         behaviors = ["accumulate:{k}"]
 
@@ -56,11 +57,11 @@ fn accumulate_config(
 }
 
 /// The chain's final continuation state: the committed `state` artifact
-/// with the highest absolute step across the run's manifest entries.
+/// with the highest absolute step across the search's manifest entries.
 fn final_state(config: &LoadedConfig) -> Result<Vec<u8>> {
     let store = Store::open(&config.store)?;
     let manifest = store
-        .manifest(&config.run.id())?
+        .manifest(&config.search.id())?
         .expect("a finalized manifest");
     let mut latest: Option<StubState> = None;
     for entry in &manifest.entries {
@@ -96,11 +97,11 @@ fn a_segmented_run_equals_an_unsegmented_run_of_equal_length() -> Result<()> {
         assert!(matches!(
             orchestrate(
                 config,
-                &RunControl::detached(),
+                &SearchControl::detached(),
                 Engagement::Orchestrator,
                 BinaryChange::Refuse
             )?,
-            RunOutcome::Finalized { .. }
+            SearchOutcome::Finalized { .. }
         ));
     }
     // Ten segments of 100 steps land on the same state bytes as one task
@@ -121,22 +122,26 @@ fn a_segmented_config_is_deterministic_across_fresh_stores() -> Result<()> {
         Some(5),
         None,
     )?;
-    assert_eq!(first.run.id(), second.run.id());
+    assert_eq!(first.search.id(), second.search.id());
     for config in [&first, &second] {
         assert!(matches!(
             orchestrate(
                 config,
-                &RunControl::detached(),
+                &SearchControl::detached(),
                 Engagement::Orchestrator,
                 BinaryChange::Refuse
             )?,
-            RunOutcome::Finalized { .. }
+            SearchOutcome::Finalized { .. }
         ));
     }
-    let run = first.run.id();
+    let search = first.search.id();
     assert_eq!(
-        Store::open(&first.store)?.manifest(&run)?.expect("first"),
-        Store::open(&second.store)?.manifest(&run)?.expect("second"),
+        Store::open(&first.store)?
+            .manifest(&search)?
+            .expect("first"),
+        Store::open(&second.store)?
+            .manifest(&search)?
+            .expect("second"),
     );
     Ok(())
 }
@@ -152,11 +157,11 @@ fn an_interrupted_chain_resumes_to_the_reference_manifest() -> Result<()> {
         Some(8),
         None,
     )?;
-    let run = config.run.id();
+    let search = config.search.id();
 
     // Interrupt after the first commit: mid-chain, segments remain.
     let interrupt = AtomicBool::new(false);
-    let control = RunControl {
+    let control = SearchControl {
         observer: &|record: &Record| {
             if matches!(record.event, Event::Committed { .. }) {
                 interrupt.store(true, Ordering::Relaxed);
@@ -172,22 +177,22 @@ fn an_interrupted_chain_resumes_to_the_reference_manifest() -> Result<()> {
             Engagement::Orchestrator,
             BinaryChange::Refuse
         )?,
-        RunOutcome::Interrupted { .. }
+        SearchOutcome::Interrupted { .. }
     ));
     assert!(
-        Store::open(&config.store)?.manifest(&run)?.is_none(),
-        "an interrupted run writes no manifest"
+        Store::open(&config.store)?.manifest(&search)?.is_none(),
+        "an interrupted search writes no manifest"
     );
 
     // Resume over the same store; reference in a fresh store.
     assert!(matches!(
         orchestrate(
             &config,
-            &RunControl::detached(),
+            &SearchControl::detached(),
             Engagement::Orchestrator,
             BinaryChange::Refuse
         )?,
-        RunOutcome::Finalized { .. }
+        SearchOutcome::Finalized { .. }
     ));
     let reference = accumulate_config(
         dir.path(),
@@ -200,18 +205,18 @@ fn an_interrupted_chain_resumes_to_the_reference_manifest() -> Result<()> {
     assert!(matches!(
         orchestrate(
             &reference,
-            &RunControl::detached(),
+            &SearchControl::detached(),
             Engagement::Orchestrator,
             BinaryChange::Refuse,
         )?,
-        RunOutcome::Finalized { .. }
+        SearchOutcome::Finalized { .. }
     ));
     assert_eq!(
         Store::open(&config.store)?
-            .manifest(&run)?
+            .manifest(&search)?
             .expect("resumed"),
         Store::open(&reference.store)?
-            .manifest(&run)?
+            .manifest(&search)?
             .expect("reference"),
     );
     Ok(())
@@ -225,30 +230,34 @@ fn a_longer_chain_reuses_the_shared_prefix_of_a_shorter_run() -> Result<()> {
     assert!(matches!(
         orchestrate(
             &five,
-            &RunControl::detached(),
+            &SearchControl::detached(),
             Engagement::Orchestrator,
             BinaryChange::Refuse
         )?,
-        RunOutcome::Finalized { .. }
+        SearchOutcome::Finalized { .. }
     ));
     // Ten segments over the same store: the first five keys are already
-    // answered, so only the second half runs.
+    // answered, so only the second half searches.
     let ten = accumulate_config(dir.path(), "ten.toml", "./store-shared", 10, Some(10), None)?;
-    assert_ne!(five.run.id(), ten.run.id(), "segments enters the run id");
+    assert_ne!(
+        five.search.id(),
+        ten.search.id(),
+        "segments enters the search id"
+    );
     assert!(matches!(
         orchestrate(
             &ten,
-            &RunControl::detached(),
+            &SearchControl::detached(),
             Engagement::Orchestrator,
             BinaryChange::Refuse
         )?,
-        RunOutcome::Finalized { .. }
+        SearchOutcome::Finalized { .. }
     ));
     let leases = journal_events(&ten)
         .iter()
         .filter(|e| matches!(e, Event::Leased { .. }))
         .count();
-    assert_eq!(leases, 5, "exactly the unanswered segments run");
+    assert_eq!(leases, 5, "exactly the unanswered segments search");
 
     // The shared-store manifest equals a fresh-store ten-segment manifest.
     let fresh = accumulate_config(
@@ -262,16 +271,18 @@ fn a_longer_chain_reuses_the_shared_prefix_of_a_shorter_run() -> Result<()> {
     assert!(matches!(
         orchestrate(
             &fresh,
-            &RunControl::detached(),
+            &SearchControl::detached(),
             Engagement::Orchestrator,
             BinaryChange::Refuse
         )?,
-        RunOutcome::Finalized { .. }
+        SearchOutcome::Finalized { .. }
     ));
-    let run = ten.run.id();
+    let search = ten.search.id();
     assert_eq!(
-        Store::open(&ten.store)?.manifest(&run)?.expect("shared"),
-        Store::open(&fresh.store)?.manifest(&run)?.expect("fresh"),
+        Store::open(&ten.store)?.manifest(&search)?.expect("shared"),
+        Store::open(&fresh.store)?
+            .manifest(&search)?
+            .expect("fresh"),
     );
     Ok(())
 }
@@ -280,12 +291,12 @@ fn a_longer_chain_reuses_the_shared_prefix_of_a_shorter_run() -> Result<()> {
 fn segments_over_a_stateless_behavior_fails_naming_the_state_artifact() -> Result<()> {
     let dir = tempfile::tempdir().expect("temp dir");
     let text = r#"
-        [run]
+        [search]
         root_seed = 7
         format = "stub.v1"
         segments = 3
 
-        [run.generator]
+        [search.generator]
         id = "stub.v1"
         behaviors = ["succeed"]
 
@@ -299,7 +310,7 @@ fn segments_over_a_stateless_behavior_fails_naming_the_state_artifact() -> Resul
     let config = loaded_text(dir.path(), "stateless.toml", text)?;
     match orchestrate(
         &config,
-        &RunControl::detached(),
+        &SearchControl::detached(),
         Engagement::Orchestrator,
         BinaryChange::Refuse,
     ) {
@@ -317,25 +328,25 @@ fn one_segment_matches_the_static_batch_keys_under_a_distinct_search_id() -> Res
     let one = accumulate_config(dir.path(), "one.toml", "./store-one", 25, Some(1), None)?;
     let batch = accumulate_config(dir.path(), "batch.toml", "./store-batch", 25, None, None)?;
     // The field is identity-bearing even at its degenerate value.
-    assert_ne!(one.run.id(), batch.run.id());
+    assert_ne!(one.search.id(), batch.search.id());
     for config in [&one, &batch] {
         assert!(matches!(
             orchestrate(
                 config,
-                &RunControl::detached(),
+                &SearchControl::detached(),
                 Engagement::Orchestrator,
                 BinaryChange::Refuse
             )?,
-            RunOutcome::Finalized { .. }
+            SearchOutcome::Finalized { .. }
         ));
     }
     // The task set is the same: segment 0 of a one-segment chain is the
     // static batch's stateless task.
     let one_manifest = Store::open(&one.store)?
-        .manifest(&one.run.id())?
+        .manifest(&one.search.id())?
         .expect("one-segment manifest");
     let batch_manifest = Store::open(&batch.store)?
-        .manifest(&batch.run.id())?
+        .manifest(&batch.search.id())?
         .expect("batch manifest");
     let one_keys: Vec<_> = one_manifest.entries.iter().map(|e| e.task).collect();
     let batch_keys: Vec<_> = batch_manifest.entries.iter().map(|e| e.task).collect();

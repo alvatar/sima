@@ -4,8 +4,8 @@
 //! Each backend ships its own transcription of the kernel — four compute passes
 //! dispatched in order over the same fixed partition topology — and
 //! [`CellularOps::REDUCE_SOURCE`] names it. [`ReduceKernels`] builds the four
-//! passes once per engine and [`reduce`] runs them over the two live ping-pong
-//! buffers a [`run`](super::run) left resident. The scalars are named as the
+//! passes once per engine and [`reduce`] searches them over the two live ping-pong
+//! buffers a [`search`](super::search) left resident. The scalars are named as the
 //! reporting layer expects: `c<i>.mean`, `c<i>.var`, `c<i>.min`, `c<i>.max` per
 //! channel, then `population` and `activity`.
 //!
@@ -182,7 +182,7 @@ pub fn scalar_names(channels: u32) -> Vec<String> {
 /// A readback whose length disagrees with the names is a fault, not a shorter
 /// answer: pairing them positionally would emit the metrics that happen to line
 /// up and drop the rest, so a snapshot predicate naming a missing scalar would
-/// read the run as having no such scalar rather than as having failed.
+/// read the search as having no such scalar rather than as having failed.
 fn name_scalars(channels: u32, values: &[f32]) -> Result<Vec<(String, f64)>> {
     let names = scalar_names(channels);
     if names.len() != values.len() {
@@ -259,7 +259,7 @@ mod tests {
     fn a_readback_of_the_wrong_length_is_rejected() {
         // The names and the values are paired positionally, so a readback that
         // is short emits fewer scalars than the reduction computed — and a
-        // predicate looking for one of the missing names would read the run as
+        // predicate looking for one of the missing names would read the search as
         // having no such scalar rather than as having failed. Two channels want
         // ten values.
         for values in [vec![0.0_f32; 9], vec![0.0_f32; 11]] {
@@ -303,13 +303,13 @@ mod tests {
 
     /// Reducing a grid dispatches the reduction passes, which needs a real
     /// device. The reduction is one implementation, so each case is written
-    /// once over the ops boundary and run against both backends.
+    /// once over the ops boundary and search against both backends.
     mod on_device {
         use std::collections::HashMap;
 
         use super::*;
         use crate::substrates::cellular::cuda::CudaOps;
-        use crate::substrates::cellular::harness::run;
+        use crate::substrates::cellular::harness::search;
         use crate::substrates::cellular::reference::{SMOKE_PTX, SMOKE_WGSL};
         use crate::substrates::cellular::wgsl::WgslOps;
         use crate::substrates::cellular::{Grid, ops::CellularOps};
@@ -499,7 +499,7 @@ mod tests {
 
         #[test]
         fn the_reduction_reads_the_harness_resident_pair() {
-            // The reduction runs over the two ping-pong buffers `run` leaves
+            // The reduction searches over the two ping-pong buffers `search` leaves
             // resident, not synthetic uploads, so `Trajectory::previous`
             // ($G_{N-1}$) is exercised end to end. A kernel that raises every
             // cell to its neighborhood max over a grid that is already a
@@ -512,7 +512,7 @@ mod tests {
                     .kernel(source, O::ENTRY, BLOCK_WIDTH)
                     .expect("build the smoke kernel");
                 let initial = Grid::new(4, 4, 1, vec![2.0; 16]).expect("grid");
-                let trajectory = run(ops, &kernel, &initial, 3, &[], None).expect("run");
+                let trajectory = search(ops, &kernel, &initial, 3, &[], None).expect("search");
                 let map: HashMap<String, f64> = reduce(
                     ops,
                     &kernels,

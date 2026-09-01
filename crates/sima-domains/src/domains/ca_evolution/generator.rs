@@ -1,5 +1,5 @@
-//! [`CaGenerator<M>`]: draws a run's candidate specs for the model `M`, and the
-//! shared half of the `[run.generator]` translation.
+//! [`CaGenerator<M>`]: draws a search's candidate specs for the model `M`, and the
+//! shared half of the `[search.generator]` translation.
 
 use std::collections::HashMap;
 use std::marker::PhantomData;
@@ -11,7 +11,7 @@ use sima_model::{FormatId, GeneratorId, Spec};
 use super::model::CaModel;
 use crate::domains::translate::{TomlConfig, required};
 
-/// Draws a run's candidate genomes for the model `M`. Candidate `i` is drawn by
+/// Draws a search's candidate genomes for the model `M`. Candidate `i` is drawn by
 /// `M::sample(cfg, root_seed, i)`, so a candidate depends only on
 /// `(root_seed, i, cfg)`: raising the count appends candidates and never changes
 /// existing ones, keeping their spec ids — and any cached results — valid.
@@ -54,7 +54,7 @@ impl<M: CaModel> Generator for CaGenerator<M> {
         // Content addressing: identical draws would collapse to one identity, so
         // a collision is surfaced as an error exposing the config mistake
         // (ranges admitting too few distinct values) instead of silently
-        // shrinking the run. Dedup is by the genome's canonical bytes, which are
+        // shrinking the search. Dedup is by the genome's canonical bytes, which are
         // exactly the bytes the spec carries.
         let mut first_drawn_at: HashMap<Vec<u8>, u64> = HashMap::with_capacity(count as usize);
         for i in 0..count {
@@ -79,7 +79,7 @@ impl<M: CaModel> Generator for CaGenerator<M> {
     }
 }
 
-/// Translates the `[run.generator]` table into the generator params blob: the
+/// Translates the `[search.generator]` table into the generator params blob: the
 /// shared `count` here, the model's sampling keys via its generator config's
 /// [`TomlConfig`] parser. The model receives the table with `count` stripped,
 /// so it rejects only keys outside its own set.
@@ -119,7 +119,7 @@ fn parse_count<M: CaModel>(table: &toml::Table) -> Result<u64> {
         // the first draw.
         toml::Value::Integer(n) if *n >= 1 => validated_count(*n as u64).map_err(|_| {
             Error::Validation(format!(
-                "generator {} count is {n}; a run draws at most {MAX_CANDIDATES} candidates",
+                "generator {} count is {n}; a search draws at most {MAX_CANDIDATES} candidates",
                 M::FORMAT_ID
             ))
         }),
@@ -135,18 +135,18 @@ fn parse_count<M: CaModel>(table: &toml::Table) -> Result<u64> {
     }
 }
 
-/// The most candidates one run draws.
+/// The most candidates one search draws.
 ///
 /// The bound exists because the count arrives as decoded bytes and is what
 /// sizes the draw's allocations: a blob claiming 2^60 candidates would ask for
 /// that much memory before a single genome is sampled. A million candidates is
-/// far past any search this substrate runs and small enough that reserving for
+/// far past any search this substrate searches and small enough that reserving for
 /// it is ordinary.
 pub(crate) const MAX_CANDIDATES: u64 = 1_000_000;
 
 /// Validates the candidate count: at least 1, at most [`MAX_CANDIDATES`].
 ///
-/// A zero-candidate run is meaningless, so a params blob encoding zero fails to
+/// A zero-candidate search is meaningless, so a params blob encoding zero fails to
 /// decode; a count past the cap is refused before it sizes an allocation,
 /// since the blob is decoded input and nothing upstream of here has to be
 /// trusted to have written a sane one.
@@ -156,7 +156,7 @@ fn validated_count(count: u64) -> Result<u64> {
             "generator count must be at least 1, got 0".to_string(),
         )),
         n if n > MAX_CANDIDATES => Err(Error::Validation(format!(
-            "generator count is {n}; a run draws at most {MAX_CANDIDATES} candidates"
+            "generator count is {n}; a search draws at most {MAX_CANDIDATES} candidates"
         ))),
         n => Ok(n),
     }
@@ -191,7 +191,7 @@ mod tests {
     #[test]
     fn the_cap_is_stated_at_load_as_well_as_at_decode() {
         // A config naming too many candidates fails where a person can act on
-        // it, rather than at the first draw of a run that already has a store.
+        // it, rather than at the first draw of a search that already has a store.
         let table: toml::Table = format!("count = {}\nlo = 0.0\nhi = 1.0", MAX_CANDIDATES + 1)
             .parse()
             .expect("a table");
@@ -203,7 +203,7 @@ mod tests {
 
     #[test]
     fn the_cap_itself_still_draws() {
-        // The bound is inclusive: a run at exactly the cap is a run, not an
+        // The bound is inclusive: a search at exactly the cap is a search, not an
         // off-by-one refusal.
         assert_eq!(
             validated_count(MAX_CANDIDATES).expect("the cap"),
@@ -281,7 +281,7 @@ mod tests {
         Ok(())
     }
 
-    /// The toy model's full `[run.generator]` grammar: the shared `count` plus
+    /// The toy model's full `[search.generator]` grammar: the shared `count` plus
     /// the toy model's single `value` range.
     fn gen_table(text: &str) -> toml::Table {
         text.parse().expect("parse test table")

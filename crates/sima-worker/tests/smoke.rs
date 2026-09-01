@@ -1,5 +1,5 @@
 //! Smoke tests over the built `sima-worker` binary: the handshake and one
-//! stub-format task driven directly over its pipes. The full run path over
+//! stub-format task driven directly over its pipes. The full search path over
 //! subprocess workers is exercised end-to-end in the CLI crate's suites.
 
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
@@ -143,7 +143,7 @@ fn the_worker_echoes_the_program_digest_its_environment_holds() {
 }
 
 /// Spawns one worker through a wrapper that exports `held` as the program
-/// digest before exec, under a run expecting `sent`, and answers the spawn's
+/// digest before exec, under a search expecting `sent`, and answers the spawn's
 /// result.
 ///
 /// The wrapper is the test's stand-in for a machine whose installed tree
@@ -180,7 +180,7 @@ fn spawn_expecting(sent: Option<&str>, held: &str) -> sima_core::Result<String> 
         .map(|outcome| outcome.into_link().program().to_string())
 }
 
-/// The digest a run in these tests sent, and the one a drifted machine holds.
+/// The digest a search in these tests sent, and the one a drifted machine holds.
 const SENT: &str = "1111111111111111111111111111111111111111111111111111111111111111";
 const HELD: &str = "2222222222222222222222222222222222222222222222222222222222222222";
 
@@ -196,11 +196,14 @@ fn a_worker_answering_the_digest_the_run_sent_binds() {
 #[test]
 fn a_worker_holding_another_program_fails_the_spawn_naming_both_digests() {
     // The drifted machine, through a real child and the real wire: what
-    // answered is a program, and it is not the one this run sent.
+    // answered is a program, and it is not the one this search sent.
     let error = spawn_expecting(Some(SENT), HELD).expect_err("a program disagreement");
     let message = format!("{error}");
     assert!(message.contains("program digest mismatch"), "{message}");
-    assert!(message.contains(SENT), "names what the run sent: {message}");
+    assert!(
+        message.contains(SENT),
+        "names what the search sent: {message}"
+    );
     assert!(
         message.contains(HELD),
         "names what the worker answered: {message}"
@@ -209,7 +212,7 @@ fn a_worker_holding_another_program_fails_the_spawn_naming_both_digests() {
 
 #[test]
 fn a_worker_naming_a_program_the_run_never_sent_fails_the_spawn() {
-    // The symmetric direction: a run answering for its format in process sent
+    // The symmetric direction: a search answering for its format in process sent
     // no program at all, so a worker that names one is not the one it spawned.
     let error = spawn_expecting(None, HELD).expect_err("a program disagreement");
     let message = format!("{error}");
@@ -222,7 +225,7 @@ fn a_command_vector_spawn_reaches_the_worker_through_a_wrapper() {
     // The generalized command vector: program `sh`, arguments that exec the
     // worker. This is the shape a container invocation takes — a wrapper
     // process that ultimately execs `sima-worker` — proven here over the
-    // `WorkerLink` API without a container, so the run path is exercised by the
+    // `WorkerLink` API without a container, so the search path is exercised by the
     // vector form the remote transport also spawns.
     use std::path::PathBuf;
     use std::time::Duration;
@@ -444,7 +447,7 @@ fn probe(format: &str) -> Vec<serde_json::Value> {
     let output = Command::new(env!("CARGO_BIN_EXE_sima-worker"))
         .args(["--enumerate-devices", format])
         .output()
-        .expect("run the probe");
+        .expect("search the probe");
     assert!(
         output.status.success(),
         "the probe exits zero: {}",
@@ -470,7 +473,7 @@ fn probe(format: &str) -> Vec<serde_json::Value> {
 
 #[test]
 fn the_enumerate_probe_answers_per_format_rather_than_per_machine() {
-    // A device list is a claim about what a program can run on. The stub
+    // A device list is a claim about what a program can search on. The stub
     // computes in the worker process and opens no device, so it enumerates
     // none however much hardware this machine has — and the orchestrator reads
     // that as a deviceless worker rather than as a bare host.
@@ -488,7 +491,7 @@ fn the_enumerate_probe_refuses_a_format_it_cannot_resolve() {
     let output = Command::new(env!("CARGO_BIN_EXE_sima-worker"))
         .args(["--enumerate-devices", "no-such-domain.v1"])
         .output()
-        .expect("run the probe");
+        .expect("search the probe");
     assert!(!output.status.success(), "the probe exits nonzero");
     assert!(
         String::from_utf8_lossy(&output.stderr).contains("no-such-domain.v1"),
@@ -502,7 +505,7 @@ fn probe_every_backend() -> Vec<serde_json::Value> {
     let output = Command::new(env!("CARGO_BIN_EXE_sima-worker"))
         .arg("--enumerate-devices")
         .output()
-        .expect("run the probe");
+        .expect("search the probe");
     assert!(
         output.status.success(),
         "the probe exits zero: {}",
@@ -517,7 +520,7 @@ fn probe_every_backend() -> Vec<serde_json::Value> {
 
 #[test]
 fn the_enumerate_probe_without_a_format_answers_for_every_backend() {
-    // The readiness probe for a run whose format this build does not carry:
+    // The readiness probe for a search whose format this build does not carry:
     // the machine is up and this is its layout. It names no format, so it
     // resolves none — and it answers with every backend's devices rather than
     // one backend's.
@@ -565,7 +568,7 @@ fn the_enumerate_probe_answers_when_the_backend_finds_no_driver() {
         .args(["--enumerate-devices", "ca_evolution.gray_scott.v1"])
         .env("VK_DRIVER_FILES", "/nonexistent/no_driver.json")
         .output()
-        .expect("run the probe");
+        .expect("search the probe");
     assert!(
         output.status.success(),
         "the probe exits zero: {}",
@@ -615,7 +618,7 @@ mod on_device {
     #[test]
     fn the_enumerate_probe_prints_one_json_line_per_device() {
         // The remote-resolution probe: `--enumerate-devices <format>` prints the devices
-        // that format's program can run on as JSON, one per line, and exits zero.
+        // that format's program can search on as JSON, one per line, and exits zero.
         assert!(
             !probe("ca_evolution.gray_scott.v1").is_empty(),
             "this machine has a Vulkan device"

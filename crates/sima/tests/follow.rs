@@ -2,11 +2,11 @@
 //!
 //! **Tier A — the whole mechanism, no ssh.** The near side spawns an `ssh`
 //! found on `PATH`; these tests put one there that drops the ssh arguments and
-//! runs the built binary on this machine. Every part of remote observation is
+//! searches the built binary on this machine. Every part of remote observation is
 //! exercised: the invocation, the far side loading the config and serving its
 //! journal, the frame stream, the near side folding records and rendering
 //! them. What is absent is the network hop, which the stream cannot
-//! distinguish from any other pipe carrier. These run everywhere.
+//! distinguish from any other pipe carrier. These search everywhere.
 //!
 //! **Tier B — a real ssh hop.** The same views across a real connection, gated
 //! on `SIMA_TEST_FOLLOW_HOST`: with no destination configured each prints why
@@ -33,7 +33,7 @@ use std::time::Duration;
 
 use common::{manifest_of, sima_command};
 
-/// The ssh destination Tier B runs against, or `None` to skip it.
+/// The ssh destination Tier B searches against, or `None` to skip it.
 fn follow_host() -> Option<String> {
     std::env::var("SIMA_TEST_FOLLOW_HOST")
         .ok()
@@ -55,9 +55,9 @@ fn stdout(output: &Output) -> String {
     String::from_utf8(output.stdout.clone()).expect("stdout is UTF-8")
 }
 
-/// Writes an `ssh` into `dir` that runs the far side on this machine: it
+/// Writes an `ssh` into `dir` that searches the far side on this machine: it
 /// drops everything up to the `--` that ends ssh's own options, drops the
-/// `sima` program name the near side asks for, and runs the built binary with
+/// `sima` program name the near side asks for, and searches the built binary with
 /// the rest. The result is the follow transport over a plain pipe.
 fn ssh_shim(dir: &Path) -> PathBuf {
     let path = dir.join("ssh");
@@ -122,7 +122,7 @@ fn a_remote_view_renders_exactly_what_the_local_one_renders() {
     let bin = ssh_shim(dir.path());
     let config = write_config(dir.path(), r#""succeed", "flaky:1", "succeed""#);
     let path = config.to_str().expect("utf-8 path");
-    assert_eq!(sima(&["run", path]).status.code(), Some(0));
+    assert_eq!(sima(&["search", path]).status.code(), Some(0));
 
     // The remote path streams records and folds them here; the local path
     // reads the same journal directly. One renderer, so one rendering.
@@ -141,7 +141,7 @@ fn a_remote_task_view_renders_exactly_what_the_local_one_renders() {
     let bin = ssh_shim(dir.path());
     let config = write_config(dir.path(), r#""succeed", "succeed""#);
     let path = config.to_str().expect("utf-8 path");
-    assert_eq!(sima(&["run", path]).status.code(), Some(0));
+    assert_eq!(sima(&["search", path]).status.code(), Some(0));
 
     // A task-addressed view resolves the prefix on this side, over records
     // that arrived from the other: the resolution is part of the fold.
@@ -170,12 +170,12 @@ fn a_remote_follow_streams_a_live_run_to_its_end() {
     let bin = ssh_shim(dir.path());
     let config = write_config(dir.path(), r#""sleep:800", "sleep:800", "sleep:800""#);
     let path = config.to_str().expect("utf-8 path");
-    let mut run = common::driving(&config);
+    let mut search = common::driving(&config);
 
     let output = sima_shimmed(&bin, &["follow", path, "--on", "gpubox"]);
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     assert!(stdout(&output).contains("finalized"), "{output:?}");
-    assert_eq!(run.wait().expect("wait for sima run").code(), Some(0));
+    assert_eq!(search.wait().expect("wait for sima search").code(), Some(0));
 }
 
 #[test]
@@ -184,7 +184,7 @@ fn a_remote_follow_carries_the_run_s_outcome_code() {
     let bin = ssh_shim(dir.path());
     let config = write_config(dir.path(), r#""succeed", "reject""#);
     let path = config.to_str().expect("utf-8 path");
-    assert_eq!(sima(&["run", path]).status.code(), Some(2));
+    assert_eq!(sima(&["search", path]).status.code(), Some(2));
 
     let output = sima_shimmed(&bin, &["follow", path, "--on", "gpubox"]);
     assert_eq!(output.status.code(), Some(2), "{output:?}");
@@ -217,9 +217,9 @@ fn a_remote_follow_over_an_abandoned_run_exits_0() {
     let path = config.to_str().expect("utf-8 path");
     common::abandon_run(&config);
 
-    // The far side reports a free lock over a journal that stopped mid-run,
+    // The far side reports a free lock over a journal that stopped mid-search,
     // and the near side ends on it the way the local follow does: a resumable
-    // run, rendered and left successfully.
+    // search, rendered and left successfully.
     let output = sima_shimmed(&bin, &["follow", path, "--on", "gpubox"]);
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let text = stdout(&output);
@@ -246,7 +246,7 @@ fn stalling_ssh_shim(dir: &Path, protocol: u32) -> PathBuf {
         &mut bytes,
         &sima_pipeline::FollowFrame::Hello {
             protocol,
-            run: sima_model::SearchId::from_hash(sima_core::hash_bytes(b"a stalling far side")),
+            search: sima_model::SearchId::from_hash(sima_core::hash_bytes(b"a stalling far side")),
             format: sima_model::FormatId::new("stub.v1").expect("format id"),
             workers: 1,
             holder: None,
@@ -294,31 +294,31 @@ fn a_far_side_at_another_protocol_version_is_refused_while_it_still_runs() {
 }
 
 #[test]
-fn a_followed_run_finalizes_to_the_manifest_an_unobserved_run_produces() {
+fn a_followed_run_finalizes_to_the_manifest_an_unobserved_search_produces() {
     // Observation is read-only by construction — the far side takes no lock
-    // and writes nothing — so a followed run and an unobserved one must reach
+    // and writes nothing — so a followed search and an unobserved one must reach
     // byte-identical manifests.
     let behaviors = r#""succeed", "flaky:1", "sleep:400", "succeed""#;
     let dir = tempfile::tempdir().expect("temp dir");
     let bin = ssh_shim(dir.path());
     let config = write_config(dir.path(), behaviors);
     let path = config.to_str().expect("utf-8 path");
-    let mut run = common::driving(&config);
+    let mut search = common::driving(&config);
     let followed = sima_shimmed(&bin, &["follow", path, "--on", "gpubox"]);
     assert_eq!(followed.status.code(), Some(0), "{followed:?}");
-    assert_eq!(run.wait().expect("wait for sima run").code(), Some(0));
+    assert_eq!(search.wait().expect("wait for sima search").code(), Some(0));
 
     let reference_dir = tempfile::tempdir().expect("reference temp dir");
     let reference = write_config(reference_dir.path(), behaviors);
     assert_eq!(
-        sima(&["run", reference.to_str().expect("utf-8 path")])
+        sima(&["search", reference.to_str().expect("utf-8 path")])
             .status
             .code(),
         Some(0)
     );
     assert_eq!(
-        manifest_of(&config).expect("the followed run's manifest"),
-        manifest_of(&reference).expect("the unobserved run's manifest"),
+        manifest_of(&config).expect("the followed search's manifest"),
+        manifest_of(&reference).expect("the unobserved search's manifest"),
     );
 }
 
@@ -330,7 +330,7 @@ fn a_remote_view_over_ssh_renders_exactly_what_the_local_one_renders() {
     let dir = tempfile::tempdir().expect("temp dir");
     let config = write_config(dir.path(), r#""succeed", "flaky:1", "succeed""#);
     let path = config.to_str().expect("utf-8 path");
-    assert_eq!(sima(&["run", path]).status.code(), Some(0));
+    assert_eq!(sima(&["search", path]).status.code(), Some(0));
 
     for view in views(path) {
         let local = sima(&view);
@@ -348,12 +348,12 @@ fn a_remote_follow_over_ssh_streams_a_live_run_to_its_end() {
     let dir = tempfile::tempdir().expect("temp dir");
     let config = write_config(dir.path(), r#""sleep:800", "sleep:800", "sleep:800""#);
     let path = config.to_str().expect("utf-8 path");
-    let mut run = common::driving(&config);
+    let mut search = common::driving(&config);
 
     let output = sima(&["follow", path, "--on", &host]);
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     assert!(stdout(&output).contains("finalized"), "{output:?}");
-    assert_eq!(run.wait().expect("wait for sima run").code(), Some(0));
+    assert_eq!(search.wait().expect("wait for sima search").code(), Some(0));
 }
 
 #[test]
@@ -365,22 +365,22 @@ fn a_followed_run_over_ssh_finalizes_to_the_unobserved_manifest() {
     let dir = tempfile::tempdir().expect("temp dir");
     let config = write_config(dir.path(), behaviors);
     let path = config.to_str().expect("utf-8 path");
-    let mut run = common::driving(&config);
+    let mut search = common::driving(&config);
     let followed = sima(&["follow", path, "--on", &host]);
     assert_eq!(followed.status.code(), Some(0), "{followed:?}");
-    assert_eq!(run.wait().expect("wait for sima run").code(), Some(0));
+    assert_eq!(search.wait().expect("wait for sima search").code(), Some(0));
 
     let reference_dir = tempfile::tempdir().expect("reference temp dir");
     let reference = write_config(reference_dir.path(), behaviors);
     assert_eq!(
-        sima(&["run", reference.to_str().expect("utf-8 path")])
+        sima(&["search", reference.to_str().expect("utf-8 path")])
             .status
             .code(),
         Some(0)
     );
     assert_eq!(
-        manifest_of(&config).expect("the followed run's manifest"),
-        manifest_of(&reference).expect("the unobserved run's manifest"),
+        manifest_of(&config).expect("the followed search's manifest"),
+        manifest_of(&reference).expect("the unobserved search's manifest"),
     );
 }
 
@@ -392,7 +392,7 @@ fn an_unreachable_host_fails_promptly_and_names_it() {
     let dir = tempfile::tempdir().expect("temp dir");
     let config = write_config(dir.path(), r#""succeed""#);
     let path = config.to_str().expect("utf-8 path");
-    assert_eq!(sima(&["run", path]).status.code(), Some(0));
+    assert_eq!(sima(&["search", path]).status.code(), Some(0));
 
     // BatchMode refuses rather than prompting, so an unresolvable destination
     // is a prompt refusal instead of a hang on a password prompt.

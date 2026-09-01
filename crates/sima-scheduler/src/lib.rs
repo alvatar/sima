@@ -1,4 +1,4 @@
-//! The scheduler: it runs a search from `(SearchConfig, store state)`.
+//! The scheduler: it searches a search from `(SearchConfig, store state)`.
 //!
 //! A task source derives the runnable frontier — the tasks the store does not
 //! yet answer — and the driver hands each to a pool of worker processes over
@@ -9,10 +9,10 @@
 //! values from its own process, and only the parent-side worker writes to
 //! the store.
 //!
-//! Determinism is the correctness criterion: the same config run twice into
+//! Determinism is the correctness criterion: the same config search twice into
 //! two fresh stores yields byte-identical manifests. Worker completion order
 //! never reaches identity — the manifest sorts by task key at finalize, and
-//! the journal, whose event order does vary between runs, is observational and
+//! the journal, whose event order does vary between searches, is observational and
 //! excluded from every equality criterion.
 
 mod config;
@@ -27,8 +27,8 @@ mod worker;
 mod worker_pool;
 
 pub use config::{DeviceEntry, ExecutionConfig};
-pub use control::RunControl;
-pub use driver::{RunOutcome, run, search_keys, worker_slots};
+pub use control::SearchControl;
+pub use driver::{SearchOutcome, run, search_keys, worker_slots};
 pub use segment_chain::SegmentChain;
 // The event vocabulary and journal line type are the trace facade's; the
 // scheduler is the layer that emits them, so it re-exports them and every

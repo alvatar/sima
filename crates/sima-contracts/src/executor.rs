@@ -16,7 +16,7 @@ use crate::checkpoint::Checkpoint;
 /// Artifact name under which a segmented executor commits its continuation
 /// state. The next segment's task carries this artifact's object hash as
 /// `input_state`, so the chain walks committed state hop by hop. A segmented
-/// run over an executor that never commits it is a misconfiguration the
+/// search over an executor that never commits it is a misconfiguration the
 /// scheduler reports as a validation error.
 pub const STATE_ARTIFACT: &str = "state";
 
@@ -33,7 +33,7 @@ pub struct WorkerId(pub u64);
 pub struct TaskInput<'a> {
     /// The candidate under evaluation (resolved bytes, not just its id).
     pub spec: &'a Spec,
-    /// The run parameters the evaluation runs under.
+    /// The search parameters the evaluation searches under.
     pub params: &'a Params,
     /// The task's deterministic seed.
     pub seed: u64,
@@ -69,7 +69,7 @@ pub struct Artifact {
     pub bytes: Vec<u8>,
 }
 
-/// Observational statistics destined for the run journal: named scalars plus
+/// Observational statistics destined for the search journal: named scalars plus
 /// an opaque family payload. Observational only — never enters a record, a
 /// manifest, or any identity criterion — and may reflect execution context.
 ///
@@ -87,7 +87,7 @@ pub struct Stats {
 
 impl Stats {
     /// Stats carrying nothing: no scalars, an empty blob. The degraded result
-    /// when even the reduction over a failed attempt could not run.
+    /// when even the reduction over a failed attempt could not search.
     pub fn empty() -> Stats {
         Stats {
             scalars: Vec::new(),
@@ -123,7 +123,7 @@ pub enum Outcome {
 /// touches the store.
 pub trait Executor {
     /// The format id this executor interprets. The pipeline dispatches
-    /// a run to the executor whose format matches the run config's format.
+    /// a search to the executor whose format matches the search config's format.
     fn format(&self) -> &FormatId;
 
     /// Evaluate one candidate. `Ok` carries the domain result — see

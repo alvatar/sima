@@ -6,7 +6,7 @@ use sima_contracts::DeviceBinding;
 use sima_core::{Error, Hash, Result};
 use sima_domains::devices::DeviceInfo;
 use sima_model::{FormatId, SearchId};
-use sima_scheduler::{ExecutionConfig, RunControl, RunOutcome, WorkerPool, worker_slots};
+use sima_scheduler::{ExecutionConfig, SearchControl, SearchOutcome, WorkerPool, worker_slots};
 use sima_store::Store;
 use sima_transport::DeviceProbe;
 use sima_transport::container::{ContainerRun, once_argv, probe_argv};
@@ -28,72 +28,72 @@ use crate::rental::{
     release_all, transport_mode,
 };
 
-/// Drives the run a loaded config describes: opens the store (creating it
-/// where missing), takes the run's orchestrator lock, dispatches the domain
-/// and the generator, locates the worker binary, and runs the scheduler over
+/// Drives the search a loaded config describes: opens the store (creating it
+/// where missing), takes the search's orchestrator lock, dispatches the domain
+/// and the generator, locates the worker binary, and searches the scheduler over
 /// subprocess workers. Resume and re-evaluation are this same call — the
-/// frontier re-derives from store state, so an interrupted or failed run
+/// frontier re-derives from store state, so an interrupted or failed search
 /// continues and a finalized one re-finalizes without touching an executor.
 /// The lock is held for the whole call and releases on return.
 ///
-/// `engagement` is the invocation's answer to which machines the run uses. Under
+/// `engagement` is the invocation's answer to which machines the search uses. Under
 /// [`Engagement::Orchestrator`] the fleet is never resolved, so no provider is
 /// constructed and no credential is read whatever the config declares.
 ///
 /// `accept` is the invocation's answer to a config-routed program whose build
-/// changed since this run last ran. A run whose format this build carries has
+/// changed since this search last ran. A search whose format this build carries has
 /// no program, so nothing is compared and the answer is inert.
 pub fn orchestrate(
     config: &LoadedConfig,
-    control: &RunControl,
+    control: &SearchControl,
     engagement: Engagement,
     accept: BinaryChange,
-) -> Result<RunOutcome> {
+) -> Result<SearchOutcome> {
     // Dispatch and discovery precede every store mutation: a config naming an
     // unknown format or generator, a build without the worker binary, or a
-    // rental whose provider cannot be reached, must not leave a store, a run
-    // directory, or a lock file behind for a run that can never execute.
-    let source = config.domains.source(&config.run.format);
-    let environment = source.environment(&config.run.format)?;
-    let generator = source.generator(&config.run.generator.id, &config.run.format)?;
+    // rental whose provider cannot be reached, must not leave a store, a search
+    // directory, or a lock file behind for a search that can never execute.
+    let source = config.domains.source(&config.search.format);
+    let environment = source.environment(&config.search.format)?;
+    let generator = source.generator(&config.search.generator.id, &config.search.format)?;
     let members = match engagement {
         Engagement::Orchestrator => Members::default(),
         Engagement::Fleet => members(config),
     };
-    // A run with nowhere to execute is a config error, not a run that starts
-    // and stalls. Without the flag the orchestrator is the whole run, so the
+    // A search with nowhere to execute is a config error, not a search that starts
+    // and stalls. Without the flag the orchestrator is the whole search, so the
     // error names the flag that would engage the rest.
     if config.orchestrator.pool.is_none() && members.is_empty() && !derives_workers(config) {
         return Err(match engagement {
             Engagement::Orchestrator => Error::Validation(
-                "the orchestrator declares no workers and no devices, so this run has nothing \
+                "the orchestrator declares no workers and no devices, so this search has nothing \
                  to execute on; give [orchestrator] a worker layout, or pass --fleet to engage \
                  the machines [fleet] names"
                     .to_string(),
             ),
             Engagement::Fleet => Error::Validation(
                 "the orchestrator declares no workers and no devices, and [fleet] names no \
-                 machine, so this run has nothing to execute on"
+                 machine, so this search has nothing to execute on"
                     .to_string(),
             ),
         });
     }
-    // Whether this run has to put its program on its machines before they can
+    // Whether this search has to put its program on its machines before they can
     // serve it: the fleet drew in machines, and the format is a program rather
     // than one this build carries. An entry that declares nothing to send is
     // refused here, before any machine is contacted — no machine's answer could
     // change it.
-    let delivers = !members.is_empty() && config.domains.routed(&config.run.format).is_some();
+    let delivers = !members.is_empty() && config.domains.routed(&config.search.format).is_some();
     if delivers {
         sendable(config)?;
     }
-    let run = config.run.id();
-    // A device selector names hardware, so it resolves here — where the run
+    let search = config.search.id();
+    // A device selector names hardware, so it resolves here — where the search
     // starts and the hardware is at hand — and not at load, which must work on
     // a machine with no device.
     let execution = resolve_devices(config, source)?;
     let program = WorkerProgram::of(config);
-    let local = local_pool(config, &run, &execution, source, &program)?;
+    let local = local_pool(config, &search, &execution, source, &program)?;
     // The fleet's control planes and the modes their machines are reached
     // through are built before the store: a vast rental without its key fails
     // here, before any store mutation.
@@ -106,9 +106,9 @@ pub fn orchestrate(
         .iter()
         .map(|provider| transport_mode(provider.as_ref()))
         .collect::<Result<Vec<_>>>()?;
-    // Machines of yours are verified at run start too, over each machine's own
+    // Machines of yours are verified at search start too, over each machine's own
     // hardware: the image is confirmed present here, before the store, so a
-    // machine that is unreachable or missing its image leaves no store, no run
+    // machine that is unreachable or missing its image leaves no store, no search
     // directory, and no lock behind.
     for machine in &members.owned {
         if let ImageCheck::Unreachable(error) =
@@ -117,38 +117,38 @@ pub fn orchestrate(
             return Err(error);
         }
     }
-    // A run whose format this build carries puts nothing on its machines that
+    // A search whose format this build carries puts nothing on its machines that
     // the image does not already hold, so its pools — the enumeration probe
     // that drives their device tables, and their transports — are built here,
-    // still before the store. A run that delivers a program builds them below
+    // still before the store. A search that delivers a program builds them below
     // instead, because a delivery reads the store the program is ingested into.
     let owned = if delivers {
         None
     } else {
         Some(owned_pools(
             &members.owned,
-            &run,
+            &search,
             &execution,
             &program,
             None,
         )?)
     };
     let store = Store::open(&config.store)?;
-    let lock = store.acquire_search_lock(&run)?;
-    // Registering the run gives it a journal before any machine is asked for,
-    // so what putting the run on its machines takes is journaled where the
+    let lock = store.acquire_search_lock(&search)?;
+    // Registering the search gives it a journal before any machine is asked for,
+    // so what putting the search on its machines takes is journaled where the
     // work will be. The driver performs the same registration, idempotently,
     // when it takes over.
-    store.create_search(&config.run)?;
+    store.create_search(&config.search)?;
     // The build serving a config-routed format is compared against the one the
-    // run was last driven by, and recorded, under the held lock: the journal
+    // search was last driven by, and recorded, under the held lock: the journal
     // read and the append race no other orchestrator. A format this build
     // carries has no program, so nothing is compared and nothing is recorded.
-    if let Some(routed) = config.domains.routed(&config.run.format) {
-        bind(&store, &config.run, &routed, accept)?;
+    if let Some(routed) = config.domains.routed(&config.search.format) {
+        bind(&store, &config.search, &routed, accept)?;
     }
-    // What this run puts on the machines it uses, ingested under the held lock:
-    // what a delivery sends is in the store that sends it. `None` for a run
+    // What this search puts on the machines it uses, ingested under the held lock:
+    // what a delivery sends is in the store that sends it. `None` for a search
     // whose format every machine's image answers for itself.
     //
     // The one thing this ordering softens: a machine that fails its install
@@ -160,14 +160,14 @@ pub fn orchestrate(
         None
     };
     // Rentals are acquired under the held lock — each machine behind a teardown
-    // guard held for the run's life. A strict-fill shortfall tears down whatever
-    // was acquired and fails here, before any task runs.
+    // guard held for the search's life. A strict-fill shortfall tears down whatever
+    // was acquired and fails here, before any task searches.
     //
-    // Putting the run on its machines happens under the run's own journal
+    // Putting the search on its machines happens under the search's own journal
     // boundary: it is minutes of delivery and spending with no worker yet
-    // bound, and what it is doing crosses the same boundary the run's records
+    // bound, and what it is doing crosses the same boundary the search's records
     // cross once it drives.
-    let built = under_collector(&store, &run, control.observer, |events| {
+    let built = under_collector(&store, &search, control.observer, |events| {
         // The program reaches every machine of yours before any pool of
         // one exists, so a pool is only ever built where a worker can
         // actually be served.
@@ -176,7 +176,7 @@ pub fn orchestrate(
             Some(pools) => pools,
             None => owned_pools(
                 &members.owned,
-                &run,
+                &search,
                 &execution,
                 &program,
                 delivery.as_ref(),
@@ -191,7 +191,7 @@ pub fn orchestrate(
                 &store,
                 &lock,
                 mode,
-                &config.run.format,
+                &config.search.format,
                 &execution,
                 delivery.as_ref(),
                 control.interrupt,
@@ -206,22 +206,22 @@ pub fn orchestrate(
         }
         Ok((owned, groups))
     });
-    // An interrupt reaching the run while its machines were still being
+    // An interrupt reaching the search while its machines were still being
     // acquired ends it here. The acquisition released every machine it held as
     // it unwound and nothing has executed, so the store stands exactly as it
-    // did and the run is resumable — which is what the run's own interrupted
+    // did and the search is resumable — which is what the search's own interrupted
     // outcome states, and is why one Ctrl-C during a placement is answered like
     // one during the work.
     let (owned, groups) = match built {
         Ok(built) => built,
         Err(_) if control.interrupt.load(std::sync::atomic::Ordering::Relaxed) => {
-            return Ok(RunOutcome::Interrupted { run });
+            return Ok(SearchOutcome::Interrupted { search });
         }
         Err(error) => return Err(error),
     };
     // The pools, the orchestrator's first: its own workers, then one container
     // pool per machine of yours, then one pool per rented machine. Worker ids
-    // run global and sequential across them. The pools borrow the transports
+    // search global and sequential across them. The pools borrow the transports
     // and guards, so they live in an inner scope that ends before teardown.
     let mut pools: Vec<WorkerPool<'_>> = Vec::new();
     if let Some(local) = &local {
@@ -239,13 +239,13 @@ pub fn orchestrate(
         });
     }
     // Every rented pool spawns through the stop signal: a worker that cannot
-    // spawn faults the run with nothing journaled to observe, and the
+    // spawn faults the search with nothing journaled to observe, and the
     // supervisor beside it has to wind down all the same.
     let stop = StopSignal::new();
     // Aborts a replacement acquisition in flight, so teardown never waits out
     // an offer walk. Set on a terminal event, on a spawn failure, and again
     // after the driver returns; distinct from the caller's interrupt, which the
-    // run owns.
+    // search owns.
     let cancel = std::sync::atomic::AtomicBool::new(false);
     let stopping: Vec<StopOnSpawnFailure<'_>> = groups
         .iter()
@@ -263,13 +263,13 @@ pub fn orchestrate(
             slots: host.slots.clone(),
         });
     }
-    // A run with rentals drives a supervisor thread alongside the scheduler: it
-    // keeps them within the run's budget and replaces lost machines while the
-    // run proceeds. Both live in one scope so the supervisor borrows the store,
-    // lock, and groups; the scheduler runs on this thread, and the stop signal
+    // A search with rentals drives a supervisor thread alongside the scheduler: it
+    // keeps them within the search's budget and replaces lost machines while the
+    // search proceeds. Both live in one scope so the supervisor borrows the store,
+    // lock, and groups; the scheduler searches on this thread, and the stop signal
     // winds the supervisor down when it returns.
     //
-    // The whole of it runs under the run's own wall-clock ceiling, so a run
+    // The whole of it searches under the search's own wall-clock ceiling, so a search
     // nobody is watching still ends: the flag the ceiling raises is the one
     // `SIGINT` raises, and every pool winds down on it.
     let (outcome, ceiling_fired) =
@@ -277,7 +277,7 @@ pub fn orchestrate(
             if groups.is_empty() {
                 sima_scheduler::run(
                     &store,
-                    &config.run,
+                    &config.search,
                     &environment,
                     generator.as_ref(),
                     &pools,
@@ -285,7 +285,7 @@ pub fn orchestrate(
                     control,
                 )
             } else {
-                // The run's emitter reaches the supervisor through the start hook,
+                // The search's emitter reaches the supervisor through the start hook,
                 // filled once the collector spawns; the supervisor emits rental events
                 // through it, so they cross the same journal boundary as the rest. No
                 // scheduler edge to the provider appears — the hook is an opaque
@@ -297,10 +297,10 @@ pub fn orchestrate(
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(e);
                 };
-                // Wrap the caller's observer to stop the supervisor the moment the run
+                // Wrap the caller's observer to stop the supervisor the moment the search
                 // reaches a terminal event: the supervisor then drops its emitter
-                // clone, so the run's collector — which joins only once every emitter
-                // is dropped — can shut down. A fault emits no run-level event, so
+                // clone, so the search's collector — which joins only once every emitter
+                // is dropped — can shut down. A fault emits no search-level event, so
                 // `Faulted` is a stop trigger too. The same event cancels a replacement
                 // still acquiring.
                 let caller_observer = control.observer;
@@ -308,16 +308,16 @@ pub fn orchestrate(
                     (caller_observer)(record);
                     if matches!(
                         record.event,
-                        sima_scheduler::Event::RunFinalized { .. }
-                            | sima_scheduler::Event::RunFailed { .. }
-                            | sima_scheduler::Event::RunInterrupted { .. }
+                        sima_scheduler::Event::SearchFinalized { .. }
+                            | sima_scheduler::Event::SearchFailed { .. }
+                            | sima_scheduler::Event::SearchInterrupted { .. }
                             | sima_scheduler::Event::Faulted { .. }
                     ) {
                         cancel.store(true, std::sync::atomic::Ordering::Relaxed);
                         stop.raise();
                     }
                 };
-                let control = RunControl {
+                let control = SearchControl {
                     observer: &stopper,
                     interrupt: control.interrupt,
                     on_start: Some(&on_start),
@@ -332,10 +332,10 @@ pub fn orchestrate(
                 )
                 .on_cancel(&cancel);
                 std::thread::scope(|scope| {
-                    let handle = scope.spawn(|| supervisor.run(&stop));
+                    let handle = scope.spawn(|| supervisor.search(&stop));
                     let outcome = sima_scheduler::run(
                         &store,
-                        &config.run,
+                        &config.search,
                         &environment,
                         generator.as_ref(),
                         &pools,
@@ -344,7 +344,7 @@ pub fn orchestrate(
                     );
                     // Cancel any replacement the supervisor is still acquiring before
                     // joining it: teardown must not wait out an offer walk for a
-                    // machine the finished run no longer needs.
+                    // machine the finished search no longer needs.
                     cancel.store(true, std::sync::atomic::Ordering::Relaxed);
                     stop.raise();
                     handle.join().expect("the supervisor thread joins");
@@ -355,18 +355,18 @@ pub fn orchestrate(
     // The pools' borrow of the rented transports and guards ends here, before
     // teardown.
     drop(pools);
-    // A ceiling that fired says so in the run's journal, so the operator reads
-    // why the run interrupted rather than inferring it from the outcome.
+    // A ceiling that fired says so in the search's journal, so the operator reads
+    // why the search interrupted rather than inferring it from the outcome.
     if let (true, Some(limit)) = (ceiling_fired, config.budget.max_wall_clock) {
-        report_ceiling(&store, &run, control.observer, limit)?;
+        report_ceiling(&store, &search, control.observer, limit)?;
     }
     // Guards release explicitly on the success path, surfacing a teardown
-    // failure — a machine still running is worth an operator's attention. A run
+    // failure — a machine still running is worth an operator's attention. A search
     // that already faulted keeps its fault; teardown is best-effort, and the
     // ledger record a failed teardown leaves is what reconcile acts on next.
     let released = release_all(groups);
     match outcome {
-        Ok(run_outcome) => released.map(|()| run_outcome),
+        Ok(search_outcome) => released.map(|()| search_outcome),
         Err(error) => Err(error),
     }
 }
@@ -378,7 +378,7 @@ struct LocalPool {
     slots: Vec<Option<DeviceBinding>>,
 }
 
-/// A resolved container pool on one machine: its transport, the machine it runs
+/// A resolved container pool on one machine: its transport, the machine it searches
 /// on, and its slots.
 struct ContainerPool {
     transport: ContainerTransport,
@@ -386,33 +386,33 @@ struct ContainerPool {
     slots: Vec<Option<DeviceBinding>>,
 }
 
-/// What every pool's workers are spawned to answer for: the run's format, and
-/// the program the run sent for it. The two travel together because one
-/// handshake states both, and every pool of one run states the same pair.
+/// What every pool's workers are spawned to answer for: the search's format, and
+/// the program the search sent for it. The two travel together because one
+/// handshake states both, and every pool of one search states the same pair.
 #[derive(Clone)]
 struct WorkerProgram {
     format: FormatId,
     /// `Some` exactly when the config entry resolved a `payload_digest` — the
-    /// program this run installed where it resolved. Every worker answers it
+    /// program this search installed where it resolved. Every worker answers it
     /// back; one that answers another digest, or none, fails its spawn, which
     /// is what a machine holding some other program looks like from here.
     digest: Option<String>,
 }
 
 impl WorkerProgram {
-    /// What `config`'s run spawns for on this machine: its format, and the
+    /// What `config`'s search spawns for on this machine: its format, and the
     /// digest of the program routed to that format where the entry stated one.
     fn of(config: &LoadedConfig) -> WorkerProgram {
         WorkerProgram {
-            format: config.run.format.clone(),
+            format: config.search.format.clone(),
             digest: config
                 .domains
-                .routed(&config.run.format)
+                .routed(&config.search.format)
                 .and_then(|routed| routed.payload_digest.map(Hash::to_string)),
         }
     }
 
-    /// The same run on a machine `delivery` reached: what that machine
+    /// The same search on a machine `delivery` reached: what that machine
     /// installed is what its workers answer, whatever this one holds.
     fn delivered(&self, delivery: &ProgramDelivery) -> WorkerProgram {
         WorkerProgram {
@@ -422,7 +422,7 @@ impl WorkerProgram {
     }
 }
 
-/// What a machine's containers run for this run.
+/// What a machine's containers search for this search.
 ///
 /// A format this build carries is answered by the image's own worker: nothing
 /// was delivered there, so nothing is mounted and no digest is expected back. A
@@ -430,7 +430,7 @@ impl WorkerProgram {
 /// the machine's own `root`, which is what its workers are spawned as and what
 /// they answer at the handshake.
 enum MachineProgram<'a> {
-    /// The image answers for the run's format itself.
+    /// The image answers for the search's format itself.
     Image,
     /// The program a delivery installed under `root` on that machine.
     Delivered {
@@ -440,7 +440,7 @@ enum MachineProgram<'a> {
 }
 
 impl MachineProgram<'_> {
-    /// What one worker's container runs there.
+    /// What one worker's container searches there.
     fn worker_run(&self) -> ContainerRun {
         match self {
             MachineProgram::Image => ContainerRun::worker(Vec::new()),
@@ -448,8 +448,8 @@ impl MachineProgram<'_> {
         }
     }
 
-    /// The devices this run's work can be placed on there, enumerated in a
-    /// throwaway container where the pool's own containers run — so the answer
+    /// The devices this search's work can be placed on there, enumerated in a
+    /// throwaway container where the pool's own containers search — so the answer
     /// covers the same hardware the workers will reach.
     ///
     /// The image's worker is asked about the format when the image carries it.
@@ -496,9 +496,9 @@ impl MachineProgram<'_> {
 ///
 /// A config states no `[orchestrator]` layout and routes its format through an
 /// entry carrying `payload_digest`. That is what a migration onto a rented
-/// machine writes: nothing on that machine could say where the run's work goes
+/// machine writes: nothing on that machine could say where the search's work goes
 /// until the program was installed there, so the answer is deferred to the far
-/// run, which takes it from the program's own enumeration at start.
+/// search, which takes it from the program's own enumeration at start.
 ///
 /// The digest is what scopes it. It is a key only a migration writes, so a
 /// hand-written config naming a program on this machine still states its own
@@ -507,21 +507,21 @@ fn derives_workers(config: &LoadedConfig) -> bool {
     config.orchestrator.pool.is_none()
         && config
             .domains
-            .routed(&config.run.format)
+            .routed(&config.search.format)
             .is_some_and(|routed| routed.payload_digest.is_some())
 }
 
 /// Builds the orchestrator's own pool, or `None` when it declares no worker
-/// layout and the fleet carries the run.
+/// layout and the fleet carries the search.
 ///
 /// Without an image the workers are plain subprocesses of the binary `source`
 /// names, and their device selectors resolve against this machine's own
-/// hardware. With one they run in a container here, so the image is verified
+/// hardware. With one they search in a container here, so the image is verified
 /// and the selectors resolve against what the enumeration probe reports from
 /// inside it — the same path a machine of yours follows, minus the ssh hop.
 fn local_pool(
     config: &LoadedConfig,
-    run: &SearchId,
+    search: &SearchId,
     execution: &ExecutionConfig,
     source: &dyn DomainSource,
     program: &WorkerProgram,
@@ -540,7 +540,7 @@ fn local_pool(
                 Vec::new(),
                 spawn_settings(source.spawn_policy(), execution, program),
             )),
-            slots: devices::derived_slots(&source.enumerate_devices(&config.run.format)?),
+            slots: devices::derived_slots(&source.enumerate_devices(&config.search.format)?),
         }));
     };
     match &config.orchestrator.container {
@@ -549,7 +549,7 @@ fn local_pool(
                 // The binary the format's tasks execute in: sima's own worker,
                 // or the program the config routed this format to.
                 source.worker_binary()?,
-                // A local worker runs the bare binary: no arguments.
+                // A local worker searches the bare binary: no arguments.
                 Vec::new(),
                 // Inherited for sima's own worker, explicit for a program a
                 // config routed this format to.
@@ -568,7 +568,7 @@ fn local_pool(
                 container,
                 pool,
                 0,
-                run,
+                search,
                 execution,
                 program,
                 &MachineProgram::Image,
@@ -585,12 +585,12 @@ fn local_pool(
 /// workers, or its device tables resolved against what that machine's own
 /// enumeration reports — and the transport its workers are spawned through.
 ///
-/// `delivery` is what was put on those machines, and `None` for a run whose
+/// `delivery` is what was put on those machines, and `None` for a search whose
 /// format the image answers for itself. It decides both what a worker there
-/// runs and what it is expected to answer.
+/// searches and what it is expected to answer.
 fn owned_pools(
     machines: &[OwnedMachine<'_>],
-    run: &SearchId,
+    search: &SearchId,
     execution: &ExecutionConfig,
     program: &WorkerProgram,
     delivery: Option<&ProgramDelivery>,
@@ -617,7 +617,7 @@ fn owned_pools(
                 // fleet's machines start after it and no two pools on one
                 // machine can collide on a container name.
                 index + 1,
-                run,
+                search,
                 execution,
                 &program,
                 &machine_program,
@@ -627,7 +627,7 @@ fn owned_pools(
 }
 
 /// Builds one container pool: derives the pool's slots, and constructs the
-/// transport under a container-name stem unique to this run and pool.
+/// transport under a container-name stem unique to this search and pool.
 ///
 /// The image is confirmed present by the caller, which is where the ordering
 /// against the store is decided.
@@ -637,7 +637,7 @@ fn container_pool(
     container: &Container,
     pool: &Pool,
     index: usize,
-    run: &SearchId,
+    search: &SearchId,
     execution: &ExecutionConfig,
     program: &WorkerProgram,
     machine: &MachineProgram<'_>,
@@ -659,10 +659,10 @@ fn container_pool(
             worker_slots(&exec)
         }
     };
-    // A deterministic per-run, per-pool container-name stem; the transport adds
-    // a spawn suffix. The run id prefix keeps names distinct across concurrent
-    // runs on one machine.
-    let stem = run.to_string();
+    // A deterministic per-search, per-pool container-name stem; the transport adds
+    // a spawn suffix. The search id prefix keeps names distinct across concurrent
+    // searches on one machine.
+    let stem = search.to_string();
     let prefix = format!("sima-w-{}-{index}", &stem[..stem.len().min(12)]);
     Ok(ContainerPool {
         transport: ContainerTransport::new(
@@ -684,9 +684,9 @@ fn container_pool(
     })
 }
 
-/// The run's execution settings with the orchestrator's device selectors
+/// The search's execution settings with the orchestrator's device selectors
 /// resolved against this machine's devices. An orchestrator naming no device
-/// passes through untouched, so a run that never asked about devices never
+/// passes through untouched, so a search that never asked about devices never
 /// enumerates them, and a containerized pool resolves inside its container
 /// instead.
 fn resolve_devices(config: &LoadedConfig, source: &dyn DomainSource) -> Result<ExecutionConfig> {
@@ -697,7 +697,7 @@ fn resolve_devices(config: &LoadedConfig, source: &dyn DomainSource) -> Result<E
     if selectors.is_empty() {
         return Ok(config.execution.clone());
     }
-    let entries = devices::resolve(selectors, &source.enumerate_devices(&config.run.format)?)?;
+    let entries = devices::resolve(selectors, &source.enumerate_devices(&config.search.format)?)?;
     ExecutionConfig::with_devices(
         entries,
         config.execution.max_attempts,
@@ -709,7 +709,7 @@ fn resolve_devices(config: &LoadedConfig, source: &dyn DomainSource) -> Result<E
 }
 
 /// The settings a pool's workers are spawned and greeted under: the policy the
-/// pool's binary calls for, plus the run's answer deadline and checkpoint
+/// pool's binary calls for, plus the search's answer deadline and checkpoint
 /// cadence.
 fn spawn_settings(
     policy: SpawnPolicy,

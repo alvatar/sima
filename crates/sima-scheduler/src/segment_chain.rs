@@ -21,7 +21,7 @@ use sima_store::Store;
 
 use crate::task_source::{RunnableTask, TaskSource, generate_specs};
 
-/// The run's task keys as materialized so far: insertion-ordered and
+/// The search's task keys as materialized so far: insertion-ordered and
 /// deduplicated, so convergent chains never hand `finalize_search` a duplicate.
 struct KeySet {
     ordered: Vec<TaskKey>,
@@ -88,8 +88,8 @@ impl Chain {
             let Some(record) = store.record(&key)? else {
                 break;
             };
-            // A committed segment without the state artifact means the run's
-            // domain carries no continuation state: a segmented run over a
+            // A committed segment without the state artifact means the search's
+            // domain carries no continuation state: a segmented search over a
             // stateless domain is a misconfiguration, reported as a
             // validation error.
             let state = record
@@ -99,7 +99,7 @@ impl Chain {
                 .ok_or_else(|| {
                     Error::Validation(format!(
                         "segmented task {key} committed no {STATE_ARTIFACT:?} artifact: \
-                         the run's domain carries no continuation state"
+                         the search's domain carries no continuation state"
                     ))
                 })?;
             self.committed += 1;
@@ -122,12 +122,12 @@ impl Chain {
     }
 }
 
-/// The task source over all of a run's chains, selected by the driver when
-/// the run config carries a segment count. Where a `Chain` is one
+/// The task source over all of a search's chains, selected by the driver when
+/// the search config carries a segment count. Where a `Chain` is one
 /// candidate's cursor through its segments, `SegmentChain` holds every
-/// chain and derives the run's frontier from their positions. It borrows
+/// chain and derives the search's frontier from their positions. It borrows
 /// the store because advancing a chain means reading its committed records:
-/// the frontier depends on store state for the run's whole life, where
+/// the frontier depends on store state for the search's whole life, where
 /// [`StaticBatch`](crate::StaticBatch) reads the store at construction
 /// only.
 pub struct SegmentChain<'a> {
@@ -139,7 +139,7 @@ pub struct SegmentChain<'a> {
     chains: Vec<Chain>,
     keys: KeySet,
     /// The chain each handed-out task key belongs to. A settled key is looked
-    /// up here so a poll re-probes that chain alone; a key from another run, or
+    /// up here so a poll re-probes that chain alone; a key from another search, or
     /// one already walked past, simply is not here.
     chain_of: HashMap<TaskKey, usize>,
     /// The segments the store already answered at construction, across every
@@ -148,7 +148,7 @@ pub struct SegmentChain<'a> {
 }
 
 impl<'a> SegmentChain<'a> {
-    /// Materializes the chains: generates and stores the run's specs, then
+    /// Materializes the chains: generates and stores the search's specs, then
     /// fast-forwards each chain against the store, walking past every
     /// already-committed segment so a resume starts at each chain's true
     /// frontier.
@@ -214,17 +214,17 @@ impl TaskSource for SegmentChain<'_> {
         // so those are the chains re-probed. Re-probing every handed-out chain
         // instead costs one store read per chain per poll, and with workers at
         // or above the chain count a poll follows nearly every settle — which
-        // is O(chains) reads per settle over the whole run.
+        // is O(chains) reads per settle over the whole search.
         //
-        // The first poll of a run settles nothing and hands out every chain's
+        // The first poll of a search settles nothing and hands out every chain's
         // segment 0, which the loop below reaches through the second arm.
         for key in settled {
             let Some(&i) = self.chain_of.get(key) else {
                 continue;
             };
-            // A handed-out frontier committed: re-run the fast-forward step,
+            // A handed-out frontier committed: re-search the fast-forward step,
             // which also skips any successors the store already answers (a
-            // fixed point or cross-run reuse).
+            // fixed point or cross-search reuse).
             self.chains[i].advance(
                 self.store,
                 self.params,
@@ -271,7 +271,7 @@ mod tests {
     use sima_domains::{StubBehavior, StubGenerator, StubGeneratorConfig};
     use sima_model::{ArtifactRef, GeneratorConfig, Params, TaskRecord};
 
-    /// A segmented run config over the given behaviors.
+    /// A segmented search config over the given behaviors.
     fn config(behaviors: Vec<StubBehavior>, segments: u64) -> Result<SearchConfig> {
         Ok(SearchConfig {
             root_seed: 7,
@@ -365,7 +365,7 @@ mod tests {
         // The cost this exists to bound: re-probing every handed-out chain
         // costs one store read per chain per poll, and with workers at or above
         // the chain count a poll follows nearly every settle — O(chains) reads
-        // per settle over the whole run. Only the chain a settled key belongs
+        // per settle over the whole search. Only the chain a settled key belongs
         // to can have gained a successor.
         let (_dir, store) = temp_store();
         let generator = StubGenerator::new()?;
@@ -388,7 +388,7 @@ mod tests {
         assert_eq!(next.len(), 1, "one chain settled, so one successor");
         assert_eq!(next[0].chain, settled.chain);
 
-        // A key from no chain of this source — another run's, or one already
+        // A key from no chain of this source — another search's, or one already
         // walked past — advances nothing rather than faulting.
         let stranger = handed[0].identity.key();
         assert!(source.poll(&[])?.is_empty());

@@ -1,5 +1,5 @@
 //! The collector: the single thread that funnels events into the journal
-//! and out to the run's observer.
+//! and out to the search's observer.
 //!
 //! Components that emit hold an [`Emitter`] — a cloneable channel handle —
 //! and the one collector thread drains the channel. For each event it stamps
@@ -67,8 +67,8 @@ impl From<Sender<Event>> for Emitter {
     }
 }
 
-/// A record consumer the collector thread calls: the run's observer, borrowed
-/// for the scope the collector runs in. `Sync` because the collector thread
+/// A record consumer the collector thread calls: the search's observer, borrowed
+/// for the scope the collector searches in. `Sync` because the collector thread
 /// calls it while the caller's thread holds the same reference.
 pub type Observer<'a> = &'a (dyn Fn(&Record) + Sync);
 
@@ -140,7 +140,7 @@ impl<'scope> Collector<'scope> {
 /// queued behind it, appends the batch, and only then walks the observer. The
 /// journal write for an event still happens before the observer sees it, which
 /// is the guarantee; what changes is that a burst of events costs one
-/// durability barrier instead of one per event, which is what caps a run's task
+/// durability barrier instead of one per event, which is what caps a search's task
 /// throughput at the sink's own rate.
 ///
 /// A crash mid-batch loses the events the sink had not made durable, which the
@@ -223,7 +223,7 @@ mod tests {
 
     #[test]
     fn queued_events_share_one_durability_barrier() {
-        // A run committing tasks faster than one fsync each is capped at the
+        // A search committing tasks faster than one fsync each is capped at the
         // disk's fsync rate however many workers it has. The collector takes
         // one blocking event and everything queued behind it, so a burst costs
         // one barrier rather than one per event.

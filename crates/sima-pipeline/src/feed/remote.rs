@@ -1,9 +1,9 @@
-//! [`RemoteFeed`] and [`remote_snapshot`]: a run followed on another host,
+//! [`RemoteFeed`] and [`remote_snapshot`]: a search followed on another host,
 //! over one SSH connection.
 //!
-//! The near side spawns `sima follow-serve` on the host the orchestrator runs
-//! on and reads the frames it writes. Nothing about the run is interpreted
-//! here beyond the journal lines the far side forwards: the run id, the store
+//! The near side spawns `sima follow-serve` on the host the orchestrator searches
+//! on and reads the frames it writes. Nothing about the search is interpreted
+//! here beyond the journal lines the far side forwards: the search id, the store
 //! path, and the lock all belong to that host, and this side renders.
 //!
 //! Failures are named where they are detectable. `BatchMode=yes` scopes
@@ -24,23 +24,23 @@ use sima_scheduler::Record;
 use sima_transport::SshDestination;
 
 use crate::feed::protocol::{FOLLOW_PROTOCOL_VERSION, FollowFrame};
-use crate::feed::{FeedInfo, RunFeed};
+use crate::feed::{FeedInfo, SearchFeed};
 
-/// Follows a run on another host: the frame stream its `follow-serve` writes,
+/// Follows a search on another host: the frame stream its `follow-serve` writes,
 /// with the metadata and lock state its frames carry.
 pub struct RemoteFeed {
     info: FeedInfo,
     /// The lock holder as the far side last reported it, from the opening
     /// `Hello` and every `Holder` frame since.
     holder: Option<String>,
-    /// The run's history, read at open and returned by the first poll — so a
-    /// feed opens already holding what the run has done, as a local one does.
+    /// The search's history, read at open and returned by the first poll — so a
+    /// feed opens already holding what the search has done, as a local one does.
     history: Vec<Record>,
     stream: Stream,
 }
 
 impl RemoteFeed {
-    /// Opens a live follow of the run `config` names on `host`. `config` is a
+    /// Opens a live follow of the search `config` names on `host`. `config` is a
     /// path on that host, passed through unresolved — the far side interprets
     /// it, which is the whole reason the stream exists.
     pub fn open(host: &str, config: &str) -> Result<RemoteFeed> {
@@ -52,7 +52,7 @@ impl RemoteFeed {
 
     /// Opens a live follow over an explicit invocation of `sima follow-serve`,
     /// for a destination the caller reaches its own way — a migration follows
-    /// the run it started, whose destination may be an ssh hop at an explicit
+    /// the search it started, whose destination may be an ssh hop at an explicit
     /// port or a `sima` on this machine. `label` names the destination in the
     /// errors that report it.
     pub(crate) fn open_over(argv: &[String], label: &str) -> Result<RemoteFeed> {
@@ -65,15 +65,17 @@ impl RemoteFeed {
         let (info, holder) = hello(&mut stream)?;
         // Waiting here is what makes a later empty poll mean the stream is
         // caught up rather than merely slow: without the history in hand, a
-        // poll that arrives before the first frame reads as a run that did
+        // poll that arrives before the first frame reads as a search that did
         // nothing, and a caller that ends on a drained feed would end at once.
         let history = match stream.next()? {
-            Some(FollowFrame::Records(lines)) => crate::journal::parse(&info.run, &lines)?,
+            Some(FollowFrame::Records(lines)) => crate::journal::parse(&info.search, &lines)?,
             Some(FollowFrame::Fault(message)) => return Err(Error::Reported(message)),
             Some(frame) => {
                 return Err(stream.failure(&format!("unexpected {frame:?} after the handshake")));
             }
-            None => return Err(stream.failure("the remote stream ended before the run's history")),
+            None => {
+                return Err(stream.failure("the remote stream ended before the search's history"));
+            }
         };
         Ok(RemoteFeed {
             info,
@@ -84,7 +86,7 @@ impl RemoteFeed {
     }
 }
 
-impl RunFeed for RemoteFeed {
+impl SearchFeed for RemoteFeed {
     fn info(&self) -> &FeedInfo {
         &self.info
     }
@@ -95,7 +97,7 @@ impl RunFeed for RemoteFeed {
             match self.stream.pending()? {
                 Pending::Empty => return Ok(records),
                 Pending::Frame(FollowFrame::Records(lines)) => {
-                    records.extend(crate::journal::parse(&self.info.run, &lines)?);
+                    records.extend(crate::journal::parse(&self.info.search, &lines)?);
                 }
                 Pending::Frame(FollowFrame::Holder(holder)) => self.holder = holder,
                 Pending::Frame(FollowFrame::Fault(message)) => {
@@ -104,9 +106,9 @@ impl RunFeed for RemoteFeed {
                 Pending::Frame(frame) => {
                     return Err(self
                         .stream
-                        .failure(&format!("unexpected {frame:?} while following the run")));
+                        .failure(&format!("unexpected {frame:?} while following the search")));
                 }
-                // The far side went away without ending the follow: the run's
+                // The far side went away without ending the follow: the search's
                 // observation is over, and saying so beats reporting silence.
                 Pending::Ended => {
                     return Err(self.stream.failure("the remote follow stream ended"));
@@ -120,15 +122,15 @@ impl RunFeed for RemoteFeed {
     }
 }
 
-/// Reads the run `config` names on `host` once: its metadata and every record
+/// Reads the search `config` names on `host` once: its metadata and every record
 /// its journal holds, for the one-shot views that render and exit.
 pub fn remote_snapshot(host: &str, config: &str) -> Result<(FeedInfo, Vec<Record>)> {
     snapshot_over(Stream::spawn(&follow_serve_argv(host, config, true), host)?)
 }
 
-/// Reads a run once over an explicit invocation of `sima follow-serve --once`,
+/// Reads a search once over an explicit invocation of `sima follow-serve --once`,
 /// for a destination the caller reaches its own way — the counterpart of
-/// [`RemoteFeed::open_over`], which a recall uses to read what the far run
+/// [`RemoteFeed::open_over`], which a recall uses to read what the far search
 /// ended as. `label` names the destination in the errors that report it.
 pub(crate) fn snapshot_over_argv(argv: &[String], label: &str) -> Result<(FeedInfo, Vec<Record>)> {
     snapshot_over(Stream::spawn(argv, label)?)
@@ -142,11 +144,11 @@ fn snapshot_over(mut stream: Stream) -> Result<(FeedInfo, Vec<Record>)> {
     loop {
         match stream.next()? {
             Some(FollowFrame::Records(lines)) => {
-                records.extend(crate::journal::parse(&info.run, &lines)?)
+                records.extend(crate::journal::parse(&info.search, &lines)?)
             }
             Some(FollowFrame::Complete) => return Ok((info, records)),
             // A holder update is meaningless to a snapshot, which reports what
-            // the run produced rather than whether it is running.
+            // the search produced rather than whether it is running.
             Some(FollowFrame::Holder(_)) => {}
             Some(FollowFrame::Fault(message)) => return Err(Error::Reported(message)),
             Some(frame) => {
@@ -159,7 +161,7 @@ fn snapshot_over(mut stream: Stream) -> Result<(FeedInfo, Vec<Record>)> {
     }
 }
 
-/// Reads the stream's opening frame and accepts it: the run metadata and the
+/// Reads the stream's opening frame and accepts it: the search metadata and the
 /// lock holder it carries. A version gap, a first frame that is not `Hello` —
 /// an older `sima` without the verb writes nothing parseable — and a stream
 /// that opens with nothing are each refused by name.
@@ -167,13 +169,13 @@ fn hello(stream: &mut Stream) -> Result<(FeedInfo, Option<String>)> {
     match stream.next()? {
         Some(FollowFrame::Hello {
             protocol,
-            run,
+            search,
             format,
             workers,
             holder,
         }) if protocol == FOLLOW_PROTOCOL_VERSION => Ok((
             FeedInfo {
-                run,
+                search,
                 format,
                 workers: workers as usize,
             },
@@ -181,7 +183,7 @@ fn hello(stream: &mut Stream) -> Result<(FeedInfo, Option<String>)> {
         )),
         Some(FollowFrame::Hello { protocol, .. }) => Err(stream.failure(&format!(
             "remote sima speaks follow protocol v{protocol}; this build expects \
-             v{FOLLOW_PROTOCOL_VERSION}; run matching builds on both machines"
+             v{FOLLOW_PROTOCOL_VERSION}; search matching builds on both machines"
         ))),
         Some(FollowFrame::Fault(message)) => Err(Error::Reported(message)),
         Some(frame) => Err(stream.failure(&format!(
@@ -191,7 +193,7 @@ fn hello(stream: &mut Stream) -> Result<(FeedInfo, Option<String>)> {
     }
 }
 
-/// The argv that serves a run's follow stream from `host`: the destination's
+/// The argv that serves a search's follow stream from `host`: the destination's
 /// own ssh invocation, then the far side's own `sima`. `config` is a path on
 /// the far side and travels unresolved.
 fn follow_serve_argv(host: &str, config: &str, once: bool) -> Vec<String> {
@@ -226,12 +228,12 @@ struct Stream {
     stderr: Option<JoinHandle<String>>,
     /// The ssh process, absent for an in-process stream under test.
     child: Option<Child>,
-    /// The host the stream runs on, for the errors that name it.
+    /// The host the stream searches on, for the errors that name it.
     host: String,
 }
 
 impl Stream {
-    /// Spawns the invocation that serves a run's follow stream and reads its
+    /// Spawns the invocation that serves a search's follow stream and reads its
     /// stdout as frames. `label` is what the errors name the far side by.
     fn spawn(argv: &[String], label: &str) -> Result<Stream> {
         let (program, args) = argv.split_first().expect("the argv names a program");
@@ -242,7 +244,7 @@ impl Stream {
             .stderr(Stdio::piped())
             .spawn()
             .map_err(|e| {
-                Error::Transport(format!("cannot run {program:?} to follow {label}: {e}"))
+                Error::Transport(format!("cannot search {program:?} to follow {label}: {e}"))
             })?;
         // The pipes exist iff the spawn configured them; taking them cannot
         // fail past a successful spawn.
@@ -305,7 +307,7 @@ impl Stream {
         let said = said.trim();
         let mut error = match self.host.as_str() {
             "" => message.to_string(),
-            host => format!("following the run on {host}: {message}"),
+            host => format!("following the search on {host}: {message}"),
         };
         if !said.is_empty() {
             error.push_str(&format!(": {said}"));
@@ -410,16 +412,16 @@ mod tests {
         sender.send(bytes).expect("the reader is alive");
     }
 
-    /// The run every test stream describes.
-    fn run() -> SearchId {
-        SearchId::from_hash(hash_bytes(b"a remotely followed run"))
+    /// The search every test stream describes.
+    fn search() -> SearchId {
+        SearchId::from_hash(hash_bytes(b"a remotely followed search"))
     }
 
-    /// A `Hello` frame at `protocol` for that run.
+    /// A `Hello` frame at `protocol` for that search.
     fn hello_at(protocol: u32) -> FollowFrame {
         FollowFrame::Hello {
             protocol,
-            run: run(),
+            search: search(),
             format: FormatId::new("stub.v1").expect("format id"),
             workers: 3,
             holder: Some("11 gpubox".to_string()),
@@ -452,7 +454,7 @@ mod tests {
         bytes
     }
 
-    /// Polls `feed` until it yields records or the wait runs out.
+    /// Polls `feed` until it yields records or the wait searches out.
     fn polled(feed: &mut RemoteFeed) -> Result<Vec<Record>> {
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
@@ -473,7 +475,7 @@ mod tests {
             FollowFrame::Complete,
         ]);
         let (info, records) = snapshot_over(Stream::over(std::io::Cursor::new(bytes)))?;
-        assert_eq!(info.run, run());
+        assert_eq!(info.search, search());
         assert_eq!(info.format, FormatId::new("stub.v1")?);
         assert_eq!(info.workers, 3);
         assert_eq!(records.len(), 2, "{records:?}");
@@ -481,15 +483,15 @@ mod tests {
     }
 
     #[test]
-    fn a_served_run_reads_back_as_the_records_and_metadata_of_its_journal() -> Result<()> {
+    fn a_served_search_reads_back_as_the_records_and_metadata_of_its_journal() -> Result<()> {
         // The two halves of the transport against each other, without ssh:
         // what the far side serves is exactly what the near side renders.
         let dir = tempfile::tempdir().expect("temp dir");
         let journaled = [
             Record {
                 ts_ms: 0,
-                event: Event::RunStarted {
-                    run: "00".repeat(32),
+                event: Event::SearchStarted {
+                    search: "00".repeat(32),
                     tasks: 2,
                     committed: 0,
                 },
@@ -504,13 +506,13 @@ mod tests {
                 },
             },
         ];
-        let (config, loaded) = crate::fixtures::served_run(dir.path(), &journaled)?;
+        let (config, loaded) = crate::fixtures::served_search(dir.path(), &journaled)?;
         let mut served = Vec::new();
         crate::feed::follow_serve(&config, true, &mut served)?;
 
         let (info, records) = snapshot_over(Stream::over(std::io::Cursor::new(served)))?;
-        assert_eq!(info.run, loaded.run.id());
-        assert_eq!(info.format, loaded.run.format);
+        assert_eq!(info.search, loaded.search.id());
+        assert_eq!(info.format, loaded.search.format);
         assert_eq!(info.workers, loaded.execution.workers);
         assert_eq!(records, journaled);
         Ok(())
@@ -627,10 +629,10 @@ mod tests {
 
     #[test]
     fn a_feed_opens_holding_the_run_s_history_however_late_it_arrives() -> Result<()> {
-        // A poll cannot tell a run that has done nothing from a first frame
+        // A poll cannot tell a search that has done nothing from a first frame
         // that has not arrived, so the open waits for the history frame. Were
         // it not to, a caller that ends on a drained feed — `sima follow` over
-        // a run nothing holds — would end before rendering anything.
+        // a search nothing holds — would end before rendering anything.
         let (sender, reader) = staged();
         send(&sender, &hello_at(FOLLOW_PROTOCOL_VERSION));
         let staging = std::thread::spawn(move || {
@@ -661,7 +663,7 @@ mod tests {
 
     #[test]
     fn a_fault_frame_becomes_the_call_s_error() {
-        let fault = FollowFrame::Fault("run was never started".to_string());
+        let fault = FollowFrame::Fault("search was never started".to_string());
         let opening = stream_of(std::slice::from_ref(&fault));
         let Err(error) = RemoteFeed::over(Stream::over(std::io::Cursor::new(opening))) else {
             panic!("expected the fault to fail the open");

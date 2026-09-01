@@ -1,14 +1,14 @@
 //! The far side's directory and the config written into it.
 //!
 //! Two things a migration needs before it can start anything on the
-//! destination: where the run lives there, and what the run reads when it does.
+//! destination: where the search lives there, and what the search reads when it does.
 //!
-//! **The directory is derived from the run id**, so a reattaching migration
-//! finds it without remembering anything and two runs on one machine never
+//! **The directory is derived from the search id**, so a reattaching migration
+//! finds it without remembering anything and two searches on one machine never
 //! collide.
 //!
-//! **The config is the local one with everything about here removed.** `[run]`
-//! travels verbatim, so the run id is preserved by construction — identity is
+//! **The config is the local one with everything about here removed.** `[search]`
+//! travels verbatim, so the search id is preserved by construction — identity is
 //! derived from the translated `SearchConfig`, not from the file text, and a
 //! round trip through the parser and serializer preserves every value.
 //! `[config]` travels with its store path rewritten to a relative one, which
@@ -19,8 +19,8 @@
 //! destination can reach.
 //!
 //! `[budget]` travels in one key and only to a machine of yours:
-//! `max_wall_clock_ms` bounds the run's own computing, and is worth keeping
-//! only where no bill runs against the time it bounds. `max_spend_usd` needs
+//! `max_wall_clock_ms` bounds the search's own computing, and is worth keeping
+//! only where no bill searches against the time it bounds. `max_spend_usd` needs
 //! the provider key that never travels.
 //!
 //! **The destination's form is what the synthesis takes**, so every decision
@@ -30,7 +30,7 @@
 //!
 //! The far side therefore declares no machine beyond itself. It rents nothing,
 //! whatever the local config declares — renting needs the provider key, and the
-//! key never leaves this machine — so a run drawing on four rented machines
+//! key never leaves this machine — so a search drawing on four rented machines
 //! while driven from here executes on the destination alone once moved.
 
 use std::collections::BTreeMap;
@@ -45,43 +45,43 @@ use crate::devices::usable;
 use crate::payload::relative_entry_point;
 use crate::sdk::Sdk;
 
-/// The default `sima.toml` name the far side's `sima run` is pointed at.
+/// The default `sima.toml` name the far side's `sima search` is pointed at.
 const CONFIG_FILE: &str = "sima.toml";
 /// The store path the synthesized config names, resolved by the load against
 /// the config file's own directory.
 const FAR_STORE: &str = "./store";
 
-/// Where a migrated run lives on its destination.
+/// Where a migrated search lives on its destination.
 ///
 /// ```text
-/// <root>/<64-hex run id>/
+/// <root>/<64-hex search id>/
 ///     sima.toml       the synthesized config
 ///     store/          the far side's store
-///     run.log         the far-side `sima run` stdout and stderr
-///     run.pid         the far-side `sima run` process id
+///     search.log         the far-side `sima search` stdout and stderr
+///     search.pid         the far-side `sima search` process id
 /// ```
 ///
 /// The paths are the destination's, not this machine's, so they are strings
-/// rather than `PathBuf`s: `root` defaults to `~/sima-runs`, whose tilde the
+/// rather than `PathBuf`s: `root` defaults to `~/sima`, whose tilde the
 /// far side's own shell expands.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct FarLayout {
-    /// The run's directory on the destination.
+    /// The search's directory on the destination.
     dir: String,
-    /// The run living there, which the far store is addressed by.
-    run: SearchId,
+    /// The search living there, which the far store is addressed by.
+    search: SearchId,
 }
 
 impl FarLayout {
-    /// The layout for `run` under a destination's `root`.
-    pub(crate) fn new(root: &str, run: &SearchId) -> FarLayout {
+    /// The layout for `search` under a destination's `root`.
+    pub(crate) fn new(root: &str, search: &SearchId) -> FarLayout {
         FarLayout {
-            dir: format!("{}/{run}", root.trim_end_matches('/')),
-            run: *run,
+            dir: format!("{}/{search}", root.trim_end_matches('/')),
+            search: *search,
         }
     }
 
-    /// The run's directory.
+    /// The search's directory.
     pub(crate) fn dir(&self) -> &str {
         &self.dir
     }
@@ -98,32 +98,32 @@ impl FarLayout {
         format!("{}/{}", self.dir, FAR_STORE.trim_start_matches("./"))
     }
 
-    /// The run the far side is driving, which addresses its store.
-    pub(crate) fn run(&self) -> &SearchId {
-        &self.run
+    /// The search the far side is driving, which addresses its store.
+    pub(crate) fn search(&self) -> &SearchId {
+        &self.search
     }
 
-    /// The far run's journal, inside the far store.
+    /// The far search's journal, inside the far store.
     ///
     /// Where a journal sits under a store root is the store's layout, so the
     /// path is derived through [`sima_store::journal_path`] rather than
     /// restated here. The join is textual: the far root is a path on the
     /// destination, which only the far shell resolves.
     pub(crate) fn journal(&self) -> String {
-        sima_store::journal_path(Path::new(&self.store()), &self.run)
+        sima_store::journal_path(Path::new(&self.store()), &self.search)
             .to_string_lossy()
             .into_owned()
     }
 
-    /// The far-side `sima run` process id, what a second invocation reads to
-    /// tell a run still going from one that ended.
+    /// The far-side `sima search` process id, what a second invocation reads to
+    /// tell a search still going from one that ended.
     pub(crate) fn pid(&self) -> String {
-        format!("{}/run.pid", self.dir)
+        format!("{}/search.pid", self.dir)
     }
 
-    /// The far-side `sima run` stdout and stderr.
+    /// The far-side `sima search` stdout and stderr.
     pub(crate) fn log(&self) -> String {
-        format!("{}/run.log", self.dir)
+        format!("{}/search.log", self.dir)
     }
 }
 
@@ -172,18 +172,18 @@ pub(crate) struct Registration {
     pub(crate) sdk: Option<Sdk>,
 }
 
-/// The config the far side runs, synthesized from the local config's own text.
+/// The config the far side searches, synthesized from the local config's own text.
 ///
 /// Working from the file text rather than the loaded value is what preserves
-/// `[run]` exactly: the section is carried across as a parsed value and never
-/// re-derived, so no translation this crate performs can perturb the run id.
+/// `[search]` exactly: the section is carried across as a parsed value and never
+/// re-derived, so no translation this crate performs can perturb the search id.
 ///
 /// `form` is the destination's, and decides both what the far
 /// `[orchestrator]` states and whether `[budget]` carries the wall-clock
 /// ceiling; `probed` is what the enumeration reported there, which only a
 /// rented destination's layout is built from.
 ///
-/// `registration` is present exactly when the run's format is served by a
+/// `registration` is present exactly when the search's format is served by a
 /// program this machine routes it to; a format this build answers carries
 /// none, and the far config then declares no `[domain.*]` table at all.
 pub(crate) fn far_config(
@@ -196,13 +196,12 @@ pub(crate) fn far_config(
         .map_err(|e| Error::Validation(format!("the local config no longer parses: {e}")))?;
 
     let mut far = toml::Table::new();
-    // `[run]` verbatim: the only hashed section, carried as a value so the far
-    // side's run is this run.
-    let run = local
-        .get("run")
-        .cloned()
-        .ok_or_else(|| Error::Validation("the local config names no [run] section".to_string()))?;
-    far.insert("run".to_string(), run);
+    // `[search]` verbatim: the only hashed section, carried as a value so the far
+    // side's search is this search.
+    let search = local.get("search").cloned().ok_or_else(|| {
+        Error::Validation("the local config names no [search] section".to_string())
+    })?;
+    far.insert("search".to_string(), search);
     far.insert(
         "config".to_string(),
         toml::Value::Table(far_settings(&local)?),
@@ -274,18 +273,18 @@ fn far_domain(registration: &Registration) -> toml::Table {
 /// for a rented destination or a local config that states no ceiling.
 ///
 /// A ceiling on spend never travels, because keeping it means destroying the
-/// machine the run is on, and that needs the provider key — which never leaves
+/// machine the search is on, and that needs the provider key — which never leaves
 /// this machine. The spend ceiling stays here, assessed by an attached
 /// migration.
 ///
 /// A ceiling on time travels to a machine of yours and stops at a rented one.
-/// **A rental bills by the hour rather than by use**, so a run that ends early
+/// **A rental bills by the hour rather than by use**, so a search that ends early
 /// on rented hardware saves nothing: the bill is identical whether the machine
 /// computes or idles, so a machine stopped and still billing costs what a
 /// computing one costs and returns nothing. The ceiling is worth keeping only
-/// where no bill runs against the time — a plain local run, and a machine of
+/// where no bill searches against the time — a plain local search, and a machine of
 /// yours. A
-/// detached run on rented hardware therefore computes until `sima recall` ends
+/// detached search on rented hardware therefore computes until `sima recall` ends
 /// it, which is also what takes the rental down.
 fn far_budget(local: &toml::Table, form: &HostForm) -> Option<toml::Table> {
     if matches!(form, HostForm::Rented(_)) {
@@ -301,13 +300,13 @@ fn far_budget(local: &toml::Table, form: &HostForm) -> Option<toml::Table> {
 }
 
 /// The far side's `[config]`: the store beside its own file, and every setting
-/// that describes the run rather than this machine.
+/// that describes the search rather than this machine.
 ///
 /// `store` is the one key that does not travel — the far side names its own —
 /// and every other key of the section is carried through verbatim rather than
 /// picked from a list. A hand-mirrored list is a second place to edit: a key
 /// added to the section and forgotten here would be silently dropped from
-/// every migrated run, and nothing would say so. The local section has already
+/// every migrated search, and nothing would say so. The local section has already
 /// been through the loader, which rejects a key the section does not declare,
 /// so what is copied here is exactly what the section admits.
 fn far_settings(local: &toml::Table) -> Result<toml::Table> {
@@ -333,12 +332,12 @@ fn far_settings(local: &toml::Table) -> Result<toml::Table> {
 /// The far side's `[orchestrator]`: the destination's own worker layout, in
 /// whichever of the two shapes its form calls for — or none at all.
 ///
-/// `registered` says the run's format is served by a program rather than by
+/// `registered` says the search's format is served by a program rather than by
 /// the destination's own build. A rented destination then states no layout:
 /// its probe named no format, because nothing there can resolve one that is not
 /// installed yet, so what it answered says the machine is up and nothing about
-/// where this run's work can go. Only the program knows, and only once the far
-/// load has installed it — so the far run derives its workers from the
+/// where this search's work can go. Only the program knows, and only once the far
+/// load has installed it — so the far search derives its workers from the
 /// program's own enumeration at start.
 ///
 /// A machine of yours states its layout either way: the operator wrote it down.
@@ -390,7 +389,7 @@ fn far_orchestrator(workers: FarWorkers<'_>, registered: bool) -> toml::Table {
         FarWorkers::Probed(devices) => {
             let classes = probed_classes(devices);
             if classes.is_empty() {
-                // A machine that reports no device this run can open still gets
+                // A machine that reports no device this search can open still gets
                 // a worker, bound to nothing.
                 table.insert("workers".to_string(), toml::Value::Integer(1));
             } else {
@@ -448,16 +447,16 @@ mod tests {
 
     /// The local config text every synthesis test starts from.
     const LOCAL: &str = r#"
-        [run]
+        [search]
         root_seed = 9
         format = "stub.v1"
         segments = 6
 
-        [run.generator]
+        [search.generator]
         id = "stub.v1"
         behaviors = ["succeed", "succeed"]
 
-        [run.params]
+        [search.params]
         hex = "0a0b"
 
         [config]
@@ -522,15 +521,15 @@ mod tests {
     /// A local config whose `[config]` section sets every key the section
     /// admits, so the completeness check below has every one to carry.
     const EVERY_SETTING: &str = r#"
-        [run]
+        [search]
         root_seed = 9
         format = "stub.v1"
 
-        [run.generator]
+        [search.generator]
         id = "stub.v1"
         behaviors = ["succeed"]
 
-        [run.params]
+        [search.params]
         hex = "0a"
 
         [config]
@@ -552,7 +551,7 @@ mod tests {
     #[test]
     fn every_setting_the_section_admits_travels() {
         // A key added to `[config]` and forgotten in the synthesis would be
-        // silently dropped from every migrated run. The fixture is held to the
+        // silently dropped from every migrated search. The fixture is held to the
         // section's schema and the far section to the fixture, so a new key
         // breaks this test rather than the migration.
         let local: toml::Table = EVERY_SETTING.parse().expect("the local config parses");
@@ -615,12 +614,12 @@ mod tests {
 
     #[test]
     fn the_layout_is_derived_from_the_search_id() {
-        let run = SearchId::from_hash(sima_core::hash_bytes(b"a run"));
-        let layout = FarLayout::new("~/sima-runs", &run);
-        assert_eq!(layout.dir(), format!("~/sima-runs/{run}"));
-        assert_eq!(layout.config(), format!("~/sima-runs/{run}/sima.toml"));
-        assert_eq!(layout.pid(), format!("~/sima-runs/{run}/run.pid"));
-        assert_eq!(layout.log(), format!("~/sima-runs/{run}/run.log"));
+        let search = SearchId::from_hash(sima_core::hash_bytes(b"a search"));
+        let layout = FarLayout::new("~/sima", &search);
+        assert_eq!(layout.dir(), format!("~/sima/{search}"));
+        assert_eq!(layout.config(), format!("~/sima/{search}/sima.toml"));
+        assert_eq!(layout.pid(), format!("~/sima/{search}/search.pid"));
+        assert_eq!(layout.log(), format!("~/sima/{search}/search.log"));
     }
 
     #[test]
@@ -629,24 +628,24 @@ mod tests {
         // to look where the far store actually keeps it, so the path is the
         // store's layout applied to the far root — never a second spelling of
         // it here.
-        let run = SearchId::from_hash(sima_core::hash_bytes(b"a run"));
-        let layout = FarLayout::new("~/sima-runs", &run);
+        let search = SearchId::from_hash(sima_core::hash_bytes(b"a search"));
+        let layout = FarLayout::new("~/sima", &search);
         assert_eq!(
             layout.journal(),
-            format!("{}/runs/{run}/journal", layout.store())
+            format!("{}/searches/{search}/journal", layout.store())
         );
         assert_eq!(
             layout.journal(),
-            format!("~/sima-runs/{run}/store/runs/{run}/journal")
+            format!("~/sima/{search}/store/searches/{search}/journal")
         );
     }
 
     #[test]
     fn a_trailing_separator_on_the_root_yields_no_double_separator() {
-        let run = SearchId::from_hash(sima_core::hash_bytes(b"a run"));
+        let search = SearchId::from_hash(sima_core::hash_bytes(b"a search"));
         assert_eq!(
-            FarLayout::new("/scratch/", &run).dir(),
-            FarLayout::new("/scratch", &run).dir()
+            FarLayout::new("/scratch/", &search).dir(),
+            FarLayout::new("/scratch", &search).dir()
         );
     }
 
@@ -655,8 +654,8 @@ mod tests {
         let first = SearchId::from_hash(sima_core::hash_bytes(b"first"));
         let second = SearchId::from_hash(sima_core::hash_bytes(b"second"));
         assert_ne!(
-            FarLayout::new("~/sima-runs", &first).dir(),
-            FarLayout::new("~/sima-runs", &second).dir()
+            FarLayout::new("~/sima", &first).dir(),
+            FarLayout::new("~/sima", &second).dir()
         );
     }
 
@@ -673,9 +672,9 @@ mod tests {
             ),
         ] {
             assert_eq!(
-                synthesized(host, probed).run.id(),
-                local.run.id(),
-                "the far side drives this run, not another"
+                synthesized(host, probed).search.id(),
+                local.search.id(),
+                "the far side drives this search, not another"
             );
         }
     }
@@ -709,7 +708,7 @@ mod tests {
         );
         assert_eq!(
             far.orchestrator.migrate, None,
-            "a run that has arrived does not migrate onward"
+            "a search that has arrived does not migrate onward"
         );
     }
 
@@ -726,7 +725,7 @@ mod tests {
     #[test]
     fn the_wall_clock_ceiling_travels_to_a_machine_of_yours() {
         // Nothing is billed for the time a machine of yours spends computing,
-        // so ending its run early is worth something and the ceiling is worth
+        // so ending its search early is worth something and the ceiling is worth
         // carrying. The spend ceiling still does not travel: keeping it means
         // destroying a machine, which needs the key that stays here.
         let (text, far) = under_a_ceiling(OWNED, 3_600_000);
@@ -743,10 +742,10 @@ mod tests {
 
     #[test]
     fn neither_ceiling_travels_to_a_rented_destination() {
-        // A rental bills by the hour rather than by use, so a run that stops
+        // A rental bills by the hour rather than by use, so a search that stops
         // early there saves nothing and leaves the worst state of all: a
         // machine still billing and no longer computing. What ends a rented
-        // run is `sima recall`, which takes the machine down with it.
+        // search is `sima recall`, which takes the machine down with it.
         let (text, far) = under_a_ceiling(RENTED, 3_600_000);
         assert!(
             !text.contains("max_wall_clock_ms"),
@@ -773,7 +772,7 @@ mod tests {
         assert_ne!(far.orchestrator.pool, local.orchestrator.pool);
     }
 
-    // ---- What answers for the run's format on the far side ----
+    // ---- What answers for the search's format on the far side ----
 
     /// The registration a `[domain.*]` entry with `env` synthesizes into.
     fn registration(env: &[&str]) -> Registration {
@@ -788,9 +787,9 @@ mod tests {
     #[test]
     fn a_rented_destination_serving_a_program_states_no_worker_layout() {
         // The probe named no format, so what it answered is that the machine is
-        // up and nothing about where this run's work can go: only the program
-        // knows, and it is not installed there until the far run loads. The
-        // layout is left out, and the far run derives it at start.
+        // up and nothing about where this search's work can go: only the program
+        // knows, and it is not installed there until the far search loads. The
+        // layout is left out, and the far search derives it at start.
         let registration = registration(&[]);
         let far = far_text(
             RENTED,
@@ -922,16 +921,16 @@ mod tests {
     }
 
     #[test]
-    fn the_registration_leaves_the_run_section_byte_for_byte() {
-        // The one hashed section: a run that carries its program is the same
-        // run as one that does not.
+    fn the_registration_leaves_the_search_section_byte_for_byte() {
+        // The one hashed section: a search that carries its program is the same
+        // search as one that does not.
         let with = far_text(OWNED, &[], Some(&registration(&["PATH"])))
             .parse::<toml::Table>()
-            .expect("parses")["run"]
+            .expect("parses")["search"]
             .clone();
         let without = far_text(OWNED, &[], None)
             .parse::<toml::Table>()
-            .expect("parses")["run"]
+            .expect("parses")["search"]
             .clone();
         assert_eq!(with, without);
     }
@@ -1065,7 +1064,7 @@ mod tests {
 
     #[test]
     fn a_machine_offering_only_a_rasterizer_still_gets_it() {
-        // With no card to prefer, the rasterizer is the only device this run's
+        // With no card to prefer, the rasterizer is the only device this search's
         // program can open and takes the entry.
         let far = synthesized(RENTED, &[device(0x10005, 0x0000, 0, DeviceType::Cpu)]);
         assert_eq!(

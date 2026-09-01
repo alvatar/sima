@@ -146,7 +146,7 @@ mod tests {
 
     #[test]
     fn enumeration_answers_on_a_machine_with_no_cuda_device() {
-        // The probe the worker runs must answer rather than fail on a host with
+        // The probe the worker searches must answer rather than fail on a host with
         // no NVIDIA driver, so the orchestrator reads "no device" instead of a
         // failed probe.
         CudaOps::enumerate_devices().expect("enumeration answers on any machine");

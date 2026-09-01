@@ -1,21 +1,21 @@
-//! [`recall`]: ending a migrated run and bringing its results home.
+//! [`recall`]: ending a migrated search and bringing its results home.
 //!
 //! The inverse of [`migrate`](crate::migrate): it places nothing, pushes
 //! nothing, and starts nothing. What it does is what a migration does after
-//! its follow — wind the far run down, pull, settle, and take the rented
-//! machine away — over a run this side may never have watched.
+//! its follow — wind the far search down, pull, settle, and take the rented
+//! machine away — over a search this side may never have watched.
 //!
 //! ```text
 //!  ┌────────────────────────────────────────────────────────────────────────┐
 //!  │  0  load config; require [orchestrator].migrate                        │
-//!  │  1  open the local store; acquire the run lock, held to the end        │
+//!  │  1  open the local store; acquire the search lock, held to the end        │
 //!  │  2  the machine, by the form the named host takes:                     │
 //!  │       yours    ──▶ that machine; no rental, no teardown                │
-//!  │       rented   ──▶ the rental hosting this run, adopted from the       │
+//!  │       rented   ──▶ the rental hosting this search, adopted from the       │
 //!  │                      ledger — never a fresh one                        │
-//!  │  3  is the run's directory there? no ──▶ refuse, naming what is missing│
+//!  │  3  is the search's directory there? no ──▶ refuse, naming what is missing│
 //!  │  4  is the far side driving? yes ──▶ WIND DOWN, bounded and escalating │
-//!  │  5  READ the far run's journal once: what it ended as                  │
+//!  │  5  READ the far search's journal once: what it ended as                  │
 //!  │  6  PULL: everything the far side's records reference                  │
 //!  │  7  settle over the store that came home, as what it ended as          │
 //!  │  8  TEARDOWN: destroy the rental                                       │
@@ -24,17 +24,17 @@
 //!
 //! **The far journal is read, never followed.** A definitive failure is written
 //! there and travels no other way, since journals do not sync, so a recall that
-//! did not read it would bring a run that cannot complete home as one with
-//! tasks still to run. The read is one `sima follow-serve --once` against the
+//! did not read it would bring a search that cannot complete home as one with
+//! tasks still to search. The read is one `sima follow-serve --once` against the
 //! far side and changes nothing there.
 //!
 //! **A rented machine that is already gone leaves nothing to contact.** Its
 //! ledger record was cleared when it was destroyed, so there is no endpoint to
-//! reach and no far store to pull from; the run settles over what the local
+//! reach and no far store to pull from; the search settles over what the local
 //! store already holds, which is the plain report that there is nothing to do.
 //!
 //! **No interrupt is registered.** A recall is short and every step of it is
-//! resumable — a signalled far run stays resumable, a sync is content-addressed
+//! resumable — a signalled far search stays resumable, a sync is content-addressed
 //! and picks up where it stopped — so a Ctrl-C during one takes the default
 //! death and a second recall carries on.
 
@@ -50,35 +50,35 @@ use crate::fleet::Rental;
 use crate::journal::under_collector;
 use crate::migrate::destination::destination_for;
 #[cfg(test)]
-use crate::migrate::far_run::Overrides;
-use crate::migrate::far_run::{FarRun, FollowEnd, MigrateOutcome, settle};
+use crate::migrate::far_search::Overrides;
+use crate::migrate::far_search::{FarSearch, FollowEnd, MigrateOutcome, settle};
 use crate::migrate::far_side::Remote;
 use crate::rental::provider_for_rental;
-use crate::status::RunState;
+use crate::status::SearchState;
 
-/// Ends the run `loaded` describes on the machine its `[orchestrator]` names,
+/// Ends the search `loaded` describes on the machine its `[orchestrator]` names,
 /// brings its results home, and takes that machine away.
 ///
 /// `observer` receives what this side journals while it waits, which is the
-/// wind-down's own report and nothing else: the far run's records do not travel
+/// wind-down's own report and nothing else: the far search's records do not travel
 /// without a follow, and a recall drives none.
 ///
-/// The local run lock is held for the whole call, so nothing else drives or
-/// reconciles this run while it is being wound back.
+/// The local search lock is held for the whole call, so nothing else drives or
+/// reconciles this search while it is being wound back.
 pub fn recall(loaded: &LoadedConfig, observer: Observer<'_>) -> Result<MigrateOutcome> {
     let destination = destination_for(loaded)?;
     let store = Store::open(&loaded.store)?;
-    // The same idempotent registration `sima run` and `sima migrate` perform:
-    // it is what gives the run a journal for the wind-down to report into.
-    let run = store.create_search(&loaded.run)?;
-    let lock = store.acquire_search_lock(&run)?;
+    // The same idempotent registration `sima search` and `sima migrate` perform:
+    // it is what gives the search a journal for the wind-down to report into.
+    let search = store.create_search(&loaded.search)?;
+    let lock = store.acquire_search_lock(&search)?;
 
     // One journal boundary around the whole recall, as a migration opens: the
     // wind-down's own report is what crosses it.
-    under_collector(&store, &run, observer, |events| match destination.form {
+    under_collector(&store, &search, observer, |events| match destination.form {
         HostForm::Owned(owned) => {
-            let far = Remote::owned(&destination, owned, &run);
-            FarRun {
+            let far = Remote::owned(&destination, owned, &search);
+            FarSearch {
                 far: &far,
                 store: &store,
                 config: loaded,
@@ -88,7 +88,7 @@ pub fn recall(loaded: &LoadedConfig, observer: Observer<'_>) -> Result<MigrateOu
                 #[cfg(test)]
                 overrides: Overrides::default(),
             }
-            .under_teardown(FarRun::wind_back)
+            .under_teardown(FarSearch::wind_back)
         }
         HostForm::Rented(spec) => {
             let rental = Rental {
@@ -105,19 +105,24 @@ pub fn recall(loaded: &LoadedConfig, observer: Observer<'_>) -> Result<MigrateOu
                 ready_poll: spec.ready_poll,
             };
             // Adoption only: a recall never rents. A machine that is not there
-            // to take back is one this run is already off, and what is left of
-            // the run is whatever the local store holds.
+            // to take back is one this search is already off, and what is left of
+            // the search is whatever the local store holds.
             let Some(guard) = adopt(provider.as_ref(), &store, &lock, &limits)? else {
-                return settle(&store, loaded, RunState::InProgress, FollowEnd::FarRun);
+                return settle(
+                    &store,
+                    loaded,
+                    SearchState::InProgress,
+                    FollowEnd::FarSearch,
+                );
             };
             let far = Remote::rented(
                 &destination,
                 provider.as_ref(),
                 guard.endpoint(),
-                &run,
+                &search,
                 None,
             )?;
-            FarRun {
+            FarSearch {
                 far: &far,
                 store: &store,
                 config: loaded,
@@ -127,7 +132,7 @@ pub fn recall(loaded: &LoadedConfig, observer: Observer<'_>) -> Result<MigrateOu
                 #[cfg(test)]
                 overrides: Overrides::default(),
             }
-            .under_teardown(FarRun::wind_back)
+            .under_teardown(FarSearch::wind_back)
         }
     })
 }
@@ -147,7 +152,7 @@ mod tests {
         far_store, finalized, hosting, local, marketplace, started,
     };
 
-    /// Winds one far run back, capturing what this side journaled while it did.
+    /// Winds one far search back, capturing what this side journaled while it did.
     fn recall_over(
         local: &Local,
         far: &dyn FarSide,
@@ -161,18 +166,23 @@ mod tests {
                 .push(record.clone());
         };
         let destination = destination_for(&local.config).expect("the host is declared");
-        let outcome = under_collector(&local.store, &local.config.run.id(), &observer, |events| {
-            FarRun {
-                far,
-                store: &local.store,
-                config: &local.config,
-                destination: &destination,
-                events,
-                rental,
-                overrides: Overrides::default(),
-            }
-            .under_teardown(FarRun::wind_back)
-        });
+        let outcome = under_collector(
+            &local.store,
+            &local.config.search.id(),
+            &observer,
+            |events| {
+                FarSearch {
+                    far,
+                    store: &local.store,
+                    config: &local.config,
+                    destination: &destination,
+                    events,
+                    rental,
+                    overrides: Overrides::default(),
+                }
+                .under_teardown(FarSearch::wind_back)
+            },
+        );
         let records = std::mem::take(&mut *captured.lock().expect("the capture lock"));
         (outcome, records)
     }
@@ -180,13 +190,13 @@ mod tests {
     #[test]
     fn a_recall_of_a_driving_run_winds_it_down_pulls_and_tears_the_rental_down() -> Result<()> {
         let local = local(RENTED, PROMPT, Some(3));
-        let run = local.config.run.id();
-        let lock = local.store.acquire_search_lock(&run)?;
+        let search = local.config.search.id();
+        let lock = local.store.acquire_search_lock(&search)?;
         let provider = marketplace();
         let guard = hosting(&provider, &local.store, &lock)?;
         let far = Scripted::new()
             .already_driving()
-            .delivering(vec![vec![started(&run), committed("aa")]]);
+            .delivering(vec![vec![started(&search), committed("aa")]]);
 
         let (outcome, _) = recall_over(&local, &far, Some(guard));
         assert!(matches!(outcome?, MigrateOutcome::Interrupted { .. }));
@@ -214,7 +224,7 @@ mod tests {
 
     #[test]
     fn a_recall_of_an_ended_run_collects_it_without_restarting_anything() -> Result<()> {
-        // The other way a run comes home: it finished while nothing was
+        // The other way a search comes home: it finished while nothing was
         // attached, so there is nothing to end and only results to fetch.
         let local = local(RENTED, PROMPT, Some(3));
         let (_far_dir, far_store) = far_store(&local.config, None);
@@ -224,7 +234,7 @@ mod tests {
         assert_eq!(
             outcome?,
             MigrateOutcome::Finalized {
-                run: local.config.run.id()
+                search: local.config.search.id()
             }
         );
         assert_eq!(
@@ -233,7 +243,7 @@ mod tests {
             "the read, the pull and the settlement alone"
         );
         assert!(
-            local.store.manifest(&local.config.run.id())?.is_some(),
+            local.store.manifest(&local.config.search.id())?.is_some(),
             "the manifest is written here, over the store the pull completed"
         );
         Ok(())
@@ -249,7 +259,7 @@ mod tests {
         assert_eq!(
             outcome?,
             MigrateOutcome::Outstanding {
-                run: local.config.run.id(),
+                search: local.config.search.id(),
                 remaining: 1,
             }
         );
@@ -257,16 +267,16 @@ mod tests {
     }
 
     #[test]
-    fn a_recall_of_a_far_run_that_failed_brings_the_failure_home() -> Result<()> {
-        // A definitive failure is written in the far run's journal and nowhere
+    fn a_recall_of_a_far_search_that_failed_brings_the_failure_home() -> Result<()> {
+        // A definitive failure is written in the far search's journal and nowhere
         // else, and a recall follows nothing: without reading that journal the
-        // run would come home resumable, counting the tasks the failure made
+        // search would come home resumable, counting the tasks the failure made
         // unreachable as work still to do.
         let local = local(RENTED, PROMPT, Some(3));
-        let run = local.config.run.id();
+        let search = local.config.search.id();
         let far = Scripted::new().over_an_existing_journal(vec![
-            started(&run),
-            failed(&run, "aa", "the kernel would not build"),
+            started(&search),
+            failed(&search, "aa", "the kernel would not build"),
         ]);
 
         let (outcome, _) = recall_over(&local, &far, None);
@@ -283,8 +293,8 @@ mod tests {
             "the failure is read from the far journal, and nothing is started"
         );
         assert!(
-            local.store.manifest(&local.config.run.id())?.is_none(),
-            "a run that failed seals nothing"
+            local.store.manifest(&local.config.search.id())?.is_none(),
+            "a search that failed seals nothing"
         );
         Ok(())
     }
@@ -293,8 +303,8 @@ mod tests {
     fn a_fault_reading_the_far_journal_fails_the_recall_naming_the_read() -> Result<()> {
         // Absence is a filesystem fact, never an inference from a fault: a far
         // side that holds a journal and could not serve it said nothing about
-        // what the run ended as, and reading that as an empty journal would
-        // bring a run that failed definitively home as one with work still to
+        // what the search ended as, and reading that as an empty journal would
+        // bring a search that failed definitively home as one with work still to
         // do.
         let local = local(RENTED, PROMPT, Some(3));
         let far = Scripted::new().faulting_on_the_journal_read("the store there will not open");
@@ -319,19 +329,19 @@ mod tests {
     }
 
     #[test]
-    fn a_recall_of_a_far_run_that_ended_well_settles_over_what_came_home() -> Result<()> {
+    fn a_recall_of_a_far_search_that_ended_well_settles_over_what_came_home() -> Result<()> {
         // The counterpart, and what the journal read must not disturb: a far
-        // run whose journal ends in its finalization comes home on the strength
+        // search whose journal ends in its finalization comes home on the strength
         // of the records the pull brought, not on the strength of that line.
         let local = local(RENTED, PROMPT, Some(3));
-        let run = local.config.run.id();
+        let search = local.config.search.id();
         let (_far_dir, far_store) = far_store(&local.config, None);
         let far = Scripted::new()
             .syncing_with(&far_store, &local.config)
-            .over_an_existing_journal(vec![started(&run), finalized(&run)]);
+            .over_an_existing_journal(vec![started(&search), finalized(&search)]);
 
         let (outcome, _) = recall_over(&local, &far, None);
-        assert_eq!(outcome?, MigrateOutcome::Finalized { run });
+        assert_eq!(outcome?, MigrateOutcome::Finalized { search });
         Ok(())
     }
 
@@ -346,8 +356,8 @@ mod tests {
             .to_string();
         assert!(text.contains("cloudbox"), "names the machine: {text}");
         assert!(
-            text.contains(&local.config.run.id().to_string()),
-            "names the run: {text}"
+            text.contains(&local.config.search.id().to_string()),
+            "names the search: {text}"
         );
         assert!(text.contains("nothing to recall"), "{text}");
         assert_eq!(
@@ -360,15 +370,16 @@ mod tests {
     }
 
     #[test]
-    fn a_recall_of_a_far_run_that_outlasts_the_wind_down_terminates_it_and_pulls() -> Result<()> {
-        // The escalation is the migration's, reached over a run this side
+    fn a_recall_of_a_far_search_that_outlasts_the_wind_down_terminates_it_and_pulls() -> Result<()>
+    {
+        // The escalation is the migration's, reached over a search this side
         // never followed.
         let local = local(RENTED, PROMPT, Some(3));
-        let run = local.config.run.id();
+        let search = local.config.search.id();
         let far = Scripted::new()
             .already_driving()
             .outlasting_the_wind_down()
-            .delivering(vec![vec![started(&run), finalized(&run)]]);
+            .delivering(vec![vec![started(&search), finalized(&search)]]);
 
         let (outcome, records) = recall_over(&local, &far, None);
         assert!(matches!(outcome?, MigrateOutcome::Interrupted { .. }));
@@ -383,7 +394,7 @@ mod tests {
         let steps = far.steps();
         assert!(
             steps.contains(&Step::Terminate(PID)),
-            "the far run was terminated: {steps:?}"
+            "the far search was terminated: {steps:?}"
         );
         assert_eq!(
             steps.last(),

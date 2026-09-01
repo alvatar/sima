@@ -29,14 +29,14 @@ signal-hook.workspace = true
 
 [dev-dependencies]
 sima-model = { path = "../sima-model" }
-# The acceptance suites derive a run's chains the way the scheduler's chain
+# The acceptance suites derive a search's chains the way the scheduler's chain
 # source does, to join each chain to the devices its work ran on. A test-only
 # edge: the binary itself reaches domains through the pipeline.
 sima-domains = { path = "../sima-domains" }
 libc.workspace = true
 tempfile.workspace = true
 
-# The crash harness runs only with the injection points compiled in.
+# The crash harness searches only with the injection points compiled in.
 [[test]]
 name = "crash"
 required-features = ["crash-injection"]

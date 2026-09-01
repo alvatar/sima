@@ -1,8 +1,8 @@
 //! Driver provenance across sessions: each spawn journals its child's driver
 //! in `WorkerBound`, and a session emits `DriverChanged` when a worker's
-//! reported driver differs from the one the run's journal last recorded for
+//! reported driver differs from the one the search's journal last recorded for
 //! the same host and device. The driver never enters identity — the warning
-//! is observational, and the run proceeds either way.
+//! is observational, and the search proceeds either way.
 
 mod common;
 
@@ -68,7 +68,7 @@ fn changes(store: &Store, cfg: &SearchConfig) -> Vec<(String, String, String, St
 }
 
 /// A session whose worker reports a driver other than the journaled one
-/// emits one `DriverChanged` naming both versions, and the run still
+/// emits one `DriverChanged` naming both versions, and the search still
 /// finalizes: the driver is provenance, never an admission gate.
 #[test]
 fn a_changed_driver_is_journaled_and_the_run_proceeds() -> Result<()> {
@@ -96,8 +96,8 @@ fn a_changed_driver_is_journaled_and_the_run_proceeds() -> Result<()> {
     assert!(
         events
             .iter()
-            .any(|e| matches!(e, Event::RunFinalized { .. })),
-        "the warning never blocks the run: {events:?}"
+            .any(|e| matches!(e, Event::SearchFinalized { .. })),
+        "the warning never blocks the search: {events:?}"
     );
     Ok(())
 }
@@ -120,7 +120,7 @@ fn the_journaled_driver_stays_silent() -> Result<()> {
     Ok(())
 }
 
-/// A fresh run has no journaled driver to differ from, so its first session
+/// A fresh search has no journaled driver to differ from, so its first session
 /// emits nothing whatever its workers report.
 #[test]
 fn a_fresh_run_emits_no_change() -> Result<()> {

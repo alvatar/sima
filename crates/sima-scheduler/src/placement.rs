@@ -1,9 +1,9 @@
-//! Chain placement: which device class a chain's work runs on.
+//! Chain placement: which device class a chain's work searches on.
 //!
 //! Placement is greedy and sticky. An unbound chain goes to whichever class
 //! pulls it first, so a faster device naturally takes more chains — no shares
 //! to tune, and a device that throttles simply pulls less. Once bound, every
-//! segment, retry, and resumed attempt of that chain runs on the same class,
+//! segment, retry, and resumed attempt of that chain searches on the same class,
 //! so a candidate's whole trajectory is internally coherent and a retried
 //! attempt reproduces what the failed attempt would have committed.
 //!
@@ -14,7 +14,7 @@
 //!
 //! Placement is derived operational state, never identity: the binding enters
 //! no task key, no record, and no manifest. The slot it persists to lives
-//! beside the run's checkpoints, and losing it costs coherence for one chain,
+//! beside the search's checkpoints, and losing it costs coherence for one chain,
 //! never correctness.
 
 use serde::{Deserialize, Serialize};
@@ -24,11 +24,11 @@ use sima_core::{Error, Result};
 /// What a worker of a given class may do with a queued task.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Eligibility {
-    /// The chain is already bound to this worker's class: run it.
+    /// The chain is already bound to this worker's class: search it.
     Run,
     /// The chain is unbound: this worker takes it and binds it.
     Bind,
-    /// The chain is bound to a class absent from the run's devices: this
+    /// The chain is bound to a class absent from the search's devices: this
     /// worker takes it and the binding moves.
     Rebind,
     /// The chain belongs to another class that is present: leave it be.
@@ -36,11 +36,11 @@ pub(crate) enum Eligibility {
 }
 
 /// What a worker of `class` may do with a task whose chain is bound to
-/// `bound`, given `present_classes`, the classes the run has.
+/// `bound`, given `present_classes`, the classes the search has.
 ///
 /// Pure over its inputs, so the rule is verifiable without threads, workers,
 /// or a device.
-/// Both classes arrive by reference: this runs once per queued task on every
+/// Both classes arrive by reference: this searches once per queued task on every
 /// task pull, so the scan compares in place rather than cloning a class.
 pub(crate) fn eligibility(
     bound: Option<&DeviceClass>,
@@ -66,11 +66,11 @@ pub(crate) fn eligibility(
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ChainPlacement {
     /// Nothing to record: the chain was already bound to the pulling class,
-    /// the task has no chain, or the run has one implicit class.
+    /// the task has no chain, or the search has one implicit class.
     Settled,
     /// The pull bound an unbound chain to the pulling worker's class.
     Bound { chain: u64, to: DeviceClass },
-    /// The pull moved a chain off a class absent from the run's devices.
+    /// The pull moved a chain off a class absent from the search's devices.
     Rebound {
         chain: u64,
         from: DeviceClass,
@@ -154,7 +154,7 @@ mod tests {
 
     #[test]
     fn a_chain_bound_to_an_absent_class_rebinds() {
-        // The card it ran on is gone: the run continues on what is here.
+        // The card it ran on is gone: the search continues on what is here.
         assert_eq!(
             eligibility(Some(&nvidia()), &intel(), &[intel()]),
             Eligibility::Rebind
@@ -164,7 +164,7 @@ mod tests {
     #[test]
     fn a_partitioned_cards_profiles_are_separate_classes() {
         // Two slices of one card report the same pair, so only the profile
-        // tells them apart. Work bound to the larger slice may not run on the
+        // tells them apart. Work bound to the larger slice may not search on the
         // smaller one, and eligibility follows the class it was given.
         let small = class("10de:2330:1g.10gb");
         let large = class("10de:2330:4g.40gb");

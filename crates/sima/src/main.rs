@@ -1,45 +1,45 @@
-//! `sima` command-line binary. `run` drives a config to its outcome with
-//! live progress and graceful Ctrl-C; the query commands read the run's
+//! `sima` command-line binary. `search` drives a config to its outcome with
+//! live progress and graceful Ctrl-C; the query commands read the search's
 //! journal along two axes — what the command reports, and how much of the
-//! run it covers:
+//! search it covers:
 //!
-//! - `status` reports execution: the run's state and counters, one task's
+//! - `status` reports execution: the search's state and counters, one task's
 //!   attempt timeline under `--task <key>`, or the tasks that did not commit
 //!   under `--failed`.
 //! - `report` reports results, efficiency, and cost: the committed stats,
 //!   grouped by default, one line per task under `--all`, or one task's under
-//!   `--task <key>`; the run's throughput, retry rates, and per-worker
+//!   `--task <key>`; the search's throughput, retry rates, and per-worker
 //!   utilization over a chart of commits and worker occupancy under
 //!   `--timeline`; the rental ledger under `--spend`; and machine reputation
 //!   under `--machines`. The view flags are mutually exclusive.
 //!
 //! A `<key>` is any prefix of a task key that names one task.
 //!
-//! A run executes on the machines the invocation asks for, never on every
-//! machine a config happens to declare: `run` and `tui` use `[orchestrator]`
+//! A search executes on the machines the invocation asks for, never on every
+//! machine a config happens to declare: `search` and `tui` use `[orchestrator]`
 //! alone, and `--fleet` adds every member of `[fleet]`. Without it no provider
 //! is constructed and no rental credential is read. `migrate` moves the whole
-//! run — its store and its orchestrator — onto the one machine
+//! search — its store and its orchestrator — onto the one machine
 //! `[orchestrator].migrate` names, and brings the results back.
 //!
-//! A run through a program a `[domain.*]` entry names stops when that
-//! program's build changed since the run last ran; `--accept-binary` is the
+//! A search through a program a `[domain.*]` entry names stops when that
+//! program's build changed since the search last ran; `--accept-binary` is the
 //! invocation stating that the changed build should drive it anyway.
 //!
-//! `run`, `migrate`, and `recall` render a run's stream as it happens, and
-//! `--quiet` narrows that to the run's own progress: what it is, what it
+//! `search`, `migrate`, and `recall` render a search's stream as it happens, and
+//! `--quiet` narrows that to the search's own progress: what it is, what it
 //! started, what it committed, how it ended, and anything gone wrong. The
 //! lines it drops say where a placement has got to, which is for an operator
 //! watching one rather than for whatever reads the output of a script.
 //!
 //! `sdk` writes the SDK this binary carries into a directory, which is how a
-//! program is developed against the package the runs that spawn it vend.
+//! program is developed against the package the searches that spawn it vend.
 //!
 //! All orchestration lives in `sima-pipeline` — this binary parses arguments,
 //! renders output, registers the interrupt flag, and maps outcomes to exit
 //! codes:
 //!
-//! - 0 — the run finalized (or `status` answered);
+//! - 0 — the search finalized (or `status` answered);
 //! - 2 — a definitive candidate failure;
 //! - 130 — interrupted by Ctrl-C, store resumable;
 //! - 1 — everything else: infrastructure fault, config error, usage error, and
@@ -61,8 +61,8 @@ use std::sync::atomic::AtomicBool;
 use sima_core::{Error, Hash, Result};
 use sima_pipeline::{
     BinaryChange, Engagement, FeedInfo, LoadedConfig, LocalFeed, Record, RemoteFeed, RemovalReport,
-    ReportRow, RunControl, RunFeed, RunOutcome, RunState, RunStatus, RunTimeline, Sdk, SearchId,
-    TaskHistory, failures_records, follow_serve, load, local_snapshot, orchestrate,
+    ReportRow, Sdk, SearchControl, SearchFeed, SearchId, SearchOutcome, SearchState, SearchStatus,
+    SearchTimeline, TaskHistory, failures_records, follow_serve, load, local_snapshot, orchestrate,
     receive_program, remote_snapshot, report_records, report_task_records, seeded_status,
     status_records, sync_serve, task_history_records, timeline_records,
 };
@@ -72,7 +72,7 @@ use crate::render::Narration;
 
 /// Exit code for a definitive candidate failure.
 pub(crate) const EXIT_FAILED: u8 = 2;
-/// Exit code for a run wound down by an interrupt, matching the shell
+/// Exit code for a search wound down by an interrupt, matching the shell
 /// convention for death by SIGINT.
 pub(crate) const EXIT_INTERRUPTED: u8 = 130;
 /// Exit code for everything else that is not success: infrastructure
@@ -87,7 +87,7 @@ const LOOSE_OBJECT_WARN_THRESHOLD: u64 = 100_000;
 /// The verbs that open a local store to read or to drive, and so are where
 /// a recommendation to pack it belongs. `tui` is excluded because its
 /// alternate screen swallows stderr, and `pack` because it is the answer.
-const STORE_OPENING_VERBS: [&str; 6] = ["run", "status", "report", "migrate", "recall", "rm"];
+const STORE_OPENING_VERBS: [&str; 6] = ["search", "status", "report", "migrate", "recall", "rm"];
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -103,16 +103,16 @@ fn main() -> ExitCode {
         warn_on_loose_objects(&resolve_config(config));
     }
     match args[..] {
-        // The write commands never observe: `run` drives a run, which happens
+        // The write commands never observe: `search` drives a search, which happens
         // where the hardware is, and `rm` and `reconcile` mutate a store. A
         // host on any of them falls through to the usage error.
-        ["run", config] if host.is_none() => run_command(
+        ["search", config] if host.is_none() => run_command(
             &resolve_config(config),
             Engagement::Orchestrator,
             accept,
             narration,
         ),
-        ["run", config, "--fleet"] if host.is_none() => run_command(
+        ["search", config, "--fleet"] if host.is_none() => run_command(
             &resolve_config(config),
             Engagement::Fleet,
             accept,
@@ -121,7 +121,7 @@ fn main() -> ExitCode {
         ["migrate", config] if host.is_none() => {
             migrate::migrate_command(&resolve_config(config), accept, narration)
         }
-        // The inverse of `migrate`, and the only thing that ends a far run. It
+        // The inverse of `migrate`, and the only thing that ends a far search. It
         // takes no `--accept-binary`: that answers a comparison only a start
         // makes, and a recall starts nothing, so the flag stays among the
         // arguments and falls to the usage error.
@@ -129,18 +129,18 @@ fn main() -> ExitCode {
             migrate::recall_command(&resolve_config(config), narration)
         }
         ["rm", config] if host.is_none() => rm_command(&resolve_config(config)),
-        // A store outlives the identity that filled it, so a run the config no
+        // A store outlives the identity that filled it, so a search the config no
         // longer names is addressed by its own id instead.
-        ["rm", config, "--run", prefix] if host.is_none() => {
+        ["rm", config, "--search", prefix] if host.is_none() => {
             rm_matching_command(&resolve_config(config), prefix)
         }
         // The one read command whose argument is a store directory: what a
-        // store holds is every run ever driven against it, and a config names
+        // store holds is every search ever driven against it, and a config names
         // one of them.
-        ["runs", store] if host.is_none() => runs_command(Path::new(store)),
+        ["searches", store] if host.is_none() => runs_command(Path::new(store)),
         // The only verb whose argument is a store directory rather than a
-        // config: packing needs no run knowledge, and a store defines every
-        // run it holds.
+        // config: packing needs no search knowledge, and a store defines every
+        // search it holds.
         ["pack", store] if host.is_none() => pack::pack_command(Path::new(store), false),
         ["pack", store, "--gc"] if host.is_none() => pack::pack_command(Path::new(store), true),
         ["reconcile", config] if host.is_none() => {
@@ -155,10 +155,10 @@ fn main() -> ExitCode {
         ["follow-serve", config, "--once"] if host.is_none() => serve_command(config, true),
         // The far half of a store sync, invoked over ssh by a migration. Not a
         // user-facing verb either.
-        ["sync-serve", store, "--run", run] if host.is_none() => {
-            sync_serve_command(Path::new(store), run)
+        ["sync-serve", store, "--search", search] if host.is_none() => {
+            sync_serve_command(Path::new(store), search)
         }
-        // The far half of a program delivery, invoked by a run putting work on
+        // The far half of a program delivery, invoked by a search putting work on
         // this machine. The same verb, because a delivery is a store sync plus
         // an install; the arguments are what tell the two forms apart.
         ["sync-serve", dir, "--payload", payload] if host.is_none() => {
@@ -168,7 +168,7 @@ fn main() -> ExitCode {
             receive_program_command(Path::new(dir), payload, Some(sdk))
         }
         // The SDK this binary carries, written out for developing a program
-        // outside a run. It opens no store and reads no config.
+        // outside a search. It opens no store and reads no config.
         ["sdk", language, "--out", out] if host.is_none() => sdk_command(language, Path::new(out)),
         ["status", config] => status_command(&Target::new(config, host)),
         ["status", config, "--failed"] => status_failed_command(&Target::new(config, host)),
@@ -194,37 +194,37 @@ fn main() -> ExitCode {
         ["follow", config] => follow::follow_command(&Target::new(config, host)),
         _ => {
             eprint!(
-                "usage: sima run <config>                  drive the run on this machine\n\
-                 \x20      sima run <config> --fleet          drive it on this machine and [fleet]\n\
-                 \x20      sima run <config> --accept-binary  continue through a changed program\n\
-                 \x20      sima run <config> --quiet          print the run's own progress and no more\n\
-                 \x20      sima status <config>               report the run's state\n\
+                "usage: sima search <config>                  drive the search on this machine\n\
+                 \x20      sima search <config> --fleet          drive it on this machine and [fleet]\n\
+                 \x20      sima search <config> --accept-binary  continue through a changed program\n\
+                 \x20      sima search <config> --quiet          print the search's own progress and no more\n\
+                 \x20      sima status <config>               report the search's state\n\
                  \x20      sima status <config> --task <key>  print one task's attempt timeline\n\
                  \x20      sima status <config> --failed      digest the tasks that did not commit\n\
                  \x20      sima report <config>               count committed tasks per distinct stats value\n\
                  \x20      sima report <config> --all         print each committed task's stats\n\
                  \x20      sima report <config> --task <key>  print one committed task's stats\n\
-                 \x20      sima report <config> --timeline    report the run's metrics and its timeline\n\
-                 \x20      sima report <config> --spend       report the run's rental spend\n\
+                 \x20      sima report <config> --timeline    report the search's metrics and its timeline\n\
+                 \x20      sima report <config> --spend       report the search's rental spend\n\
                  \x20      sima report <config> --machines    report machine reputation and blacklisting\n\
-                 \x20      sima migrate <config>              move the run onto the host [orchestrator] names\n\
+                 \x20      sima migrate <config>              move the search onto the host [orchestrator] names\n\
                  \x20      sima migrate <config> --accept-binary  … through a changed program\n\
-                 \x20      sima recall <config>               wind the migrated run down and bring it home\n\
-                 \x20      sima rm <config>                   delete the run and what only it references\n\
-                 \x20      sima rm <config> --run <id>        … delete that run of the same store instead\n\
-                 \x20      sima runs <store-dir>              list the runs the store holds\n\
+                 \x20      sima recall <config>               wind the migrated search down and bring it home\n\
+                 \x20      sima rm <config>                   delete the search and what only it references\n\
+                 \x20      sima rm <config> --search <id>        … delete that search of the same store instead\n\
+                 \x20      sima searches <store-dir>              list the searches the store holds\n\
                  \x20      sima sdk <language> --out <dir>    write the SDK this binary carries into <dir>\n\
                  \x20      sima pack <store-dir>              consolidate the store's loose objects into packs\n\
                  \x20      sima pack <store-dir> --gc         … and delete everything outside the finalized\n\
-                 \x20                                         runs' closures, unfinalized runs included, which\n\
-                 \x20                                         destroys the work of a run still going\n\
-                 \x20      sima reconcile <config>            destroy the machines a crashed run left running\n\
-                 \x20      sima reconcile <config> --hosted   destroy the machines hosting a migrated run too\n\
-                 \x20      sima tui <config> [--fleet]        drive the run in a full-screen terminal UI\n\
-                 \x20      sima follow <config>               stream the run's events until it ends\n\
+                 \x20                                         searches' closures, unfinalized searches included, which\n\
+                 \x20                                         destroys the work of a search still going\n\
+                 \x20      sima reconcile <config>            destroy the machines a crashed search left running\n\
+                 \x20      sima reconcile <config> --hosted   destroy the machines hosting a migrated search too\n\
+                 \x20      sima tui <config> [--fleet]        drive the search in a full-screen terminal UI\n\
+                 \x20      sima follow <config>               stream the search's events until it ends\n\
                  \x20      <config> is a sima.toml path; the .toml extension may be omitted\n\
                  \x20      <key> is any prefix of a task key that names one task\n\
-                 \x20      --on <host> observes a run on an ssh destination: status, report,\n\
+                 \x20      --on <host> observes a search on an ssh destination: status, report,\n\
                  \x20      tui, and follow accept it (report --spend and --machines stay\n\
                  \x20      local), and <config> is then a path on that host\n"
             );
@@ -259,19 +259,19 @@ fn split_target(args: &[String]) -> (Vec<&str>, Option<&str>) {
     (rest, host)
 }
 
-/// Splits `--accept-binary` out of a `run` or `migrate` invocation, wherever in
+/// Splits `--accept-binary` out of a `search` or `migrate` invocation, wherever in
 /// it the flag appears, returning the rest and the answer it states. Both
 /// commands match on the rest, so the flag composes with `--fleet` in either
 /// order rather than multiplying the command forms.
 ///
-/// `migrate` takes it because the comparison happens in the far `sima run`,
+/// `migrate` takes it because the comparison happens in the far `sima search`,
 /// which installed the program the far config names: the acceptance is the
-/// operator's, stated here, and travels to the run that acts on it.
+/// operator's, stated here, and travels to the search that acts on it.
 ///
 /// Every other command keeps the flag among its arguments, where it matches no
 /// form and falls to the usage error.
 fn split_binary_change<'a>(args: &[&'a str]) -> (Vec<&'a str>, BinaryChange) {
-    if !matches!(args.first(), Some(&"run") | Some(&"migrate")) {
+    if !matches!(args.first(), Some(&"search") | Some(&"migrate")) {
         return (args.to_vec(), BinaryChange::Refuse);
     }
     let mut accept = BinaryChange::Refuse;
@@ -289,18 +289,18 @@ fn split_binary_change<'a>(args: &[&'a str]) -> (Vec<&'a str>, BinaryChange) {
     (rest, accept)
 }
 
-/// Splits `--quiet` out of an invocation that renders a run's stream, wherever
+/// Splits `--quiet` out of an invocation that renders a search's stream, wherever
 /// in it the flag appears, returning the rest and how much of the stream to
 /// print. It composes with the other flags in either order, as
 /// [`split_binary_change`] does, rather than multiplying the command forms.
 ///
-/// The three verbs that render a live stream take it — `run`, `migrate`, and
+/// The three verbs that render a live stream take it — `search`, `migrate`, and
 /// `recall`. Every other command keeps the flag among its arguments, where it
 /// matches no form and falls to the usage error.
 fn split_quiet<'a>(args: &[&'a str]) -> (Vec<&'a str>, Narration) {
     if !matches!(
         args.first(),
-        Some(&"run") | Some(&"migrate") | Some(&"recall")
+        Some(&"search") | Some(&"migrate") | Some(&"recall")
     ) {
         return (args.to_vec(), Narration::Full);
     }
@@ -319,10 +319,10 @@ fn split_quiet<'a>(args: &[&'a str]) -> (Vec<&'a str>, Narration) {
     (rest, narration)
 }
 
-/// The run a read command addresses: one on this machine, or one on the host
-/// its orchestrator runs on.
+/// The search a read command addresses: one on this machine, or one on the host
+/// its orchestrator searches on.
 ///
-/// A run's identity is the hash of its config, and its store path resolves
+/// A search's identity is the hash of its config, and its store path resolves
 /// relative to the config file's directory, so a remote target carries the
 /// config argument unresolved: it names a path on the far side, and the far
 /// side is what interprets it.
@@ -351,17 +351,17 @@ impl Target {
     }
 }
 
-/// Opens a live feed over the target's run: the journal on this machine, or
-/// one follow stream from the host the orchestrator runs on. The views that
-/// tail a run consume the feed and never learn which it is.
-fn feed(target: &Target) -> Result<Box<dyn RunFeed>> {
+/// Opens a live feed over the target's search: the journal on this machine, or
+/// one follow stream from the host the orchestrator searches on. The views that
+/// tail a search consume the feed and never learn which it is.
+fn feed(target: &Target) -> Result<Box<dyn SearchFeed>> {
     match target {
         Target::Local(path) => Ok(Box::new(LocalFeed::open(&load(path)?)?)),
         Target::Remote { host, config } => Ok(Box::new(RemoteFeed::open(host, config)?)),
     }
 }
 
-/// Reads everything the target's run journaled, with the metadata the views
+/// Reads everything the target's search journaled, with the metadata the views
 /// render through: locally through the store, remotely over one follow
 /// stream. The fold that renders it is the same either way.
 fn snapshot(target: &Target) -> Result<(FeedInfo, Vec<Record>)> {
@@ -373,7 +373,7 @@ fn snapshot(target: &Target) -> Result<(FeedInfo, Vec<Record>)> {
 
 /// Resolves the config argument to a path: the argument as given when it
 /// names a file, otherwise the argument with `.toml` appended when that
-/// names one — so `sima run demo` finds `demo.toml`. When neither exists,
+/// names one — so `sima search demo` finds `demo.toml`. When neither exists,
 /// the argument passes through unchanged and loading reports the error
 /// against what the user typed.
 fn resolve_config(arg: &str) -> PathBuf {
@@ -387,11 +387,11 @@ fn resolve_config(arg: &str) -> PathBuf {
     path
 }
 
-/// `sima run <config.toml> [--fleet] [--accept-binary]`: loads, prints the run
+/// `sima search <config.toml> [--fleet] [--accept-binary]`: loads, prints the search
 /// id, orchestrates with progress rendering and the SIGINT flag installed, and
 /// maps the outcome to the exit code. `engagement` is what the invocation asked
 /// for: this machine alone, or this machine and the fleet. `accept` is what it
-/// asked for about a program whose build changed under the run.
+/// asked for about a program whose build changed under the search.
 fn run_command(
     config: &Path,
     engagement: Engagement,
@@ -404,21 +404,21 @@ fn run_command(
     }
 }
 
-/// Loads the config and drives its run.
+/// Loads the config and drives its search.
 fn drive(
     config: &Path,
     engagement: Engagement,
     accept: BinaryChange,
     narration: Narration,
-) -> Result<RunOutcome> {
+) -> Result<SearchOutcome> {
     let loaded = load(config)?;
     let interrupt = register_interrupt()?;
 
-    println!("run {}", loaded.run.id());
-    // The run's own `RunStarted` carries the prior commits, counted from the
-    // store, so a resumed run counts on from where it stopped.
+    println!("search {}", loaded.search.id());
+    // The search's own `SearchStarted` carries the prior commits, counted from the
+    // store, so a resumed search counts on from where it stopped.
     let progress = render::Progress::new(narration);
-    let control = RunControl {
+    let control = SearchControl {
         observer: &|record| progress.event(record),
         interrupt: &interrupt,
         on_start: None,
@@ -426,7 +426,7 @@ fn drive(
     orchestrate(&loaded, &control, engagement, accept)
 }
 
-/// `sima report <config.toml> --spend`: the run's rental ledger — closed
+/// `sima report <config.toml> --spend`: the search's rental ledger — closed
 /// rentals, open ones, and the total — read from the local store.
 fn spend_command(config: &Path) -> ExitCode {
     match load(config).and_then(|loaded| sima_pipeline::spend(&loaded)) {
@@ -441,7 +441,7 @@ fn spend_command(config: &Path) -> ExitCode {
 /// `sima report <config.toml> --machines`: the store's machine-reputation
 /// ledger — one line per machine with a recorded incident, its counts by kind,
 /// and its blacklist status — read from the local store. Store-scoped, so it
-/// answers whatever the store observed across every run, and exits 0 over a
+/// answers whatever the store observed across every search, and exits 0 over a
 /// store that recorded none.
 fn machines_command(config: &Path) -> ExitCode {
     match load(config).and_then(|loaded| sima_pipeline::machines(&loaded)) {
@@ -454,7 +454,7 @@ fn machines_command(config: &Path) -> ExitCode {
 }
 
 /// `sima status <config.toml>`: the config's execution section names the
-/// store, its identity section derives the run id.
+/// store, its identity section derives the search id.
 fn status_command(target: &Target) -> ExitCode {
     match read_status(target) {
         Ok(report) => {
@@ -465,15 +465,15 @@ fn status_command(target: &Target) -> ExitCode {
     }
 }
 
-/// Computes the target run's status from the records it journaled.
-fn read_status(target: &Target) -> Result<RunStatus> {
+/// Computes the target search's status from the records it journaled.
+fn read_status(target: &Target) -> Result<SearchStatus> {
     let (info, records) = snapshot(target)?;
-    Ok(status_records(info.run, &records))
+    Ok(status_records(info.search, &records))
 }
 
-/// `sima report <config.toml> --timeline`: the run's execution metrics and the
+/// `sima report <config.toml> --timeline`: the search's execution metrics and the
 /// temporal shape of the session behind them. The query answers whatever the
-/// run's own outcome was, so a report over a failed run still exits 0.
+/// search's own outcome was, so a report over a failed search still exits 0.
 fn timeline_command(target: &Target) -> ExitCode {
     match read_timeline(target) {
         Ok(timeline) => {
@@ -484,14 +484,14 @@ fn timeline_command(target: &Target) -> ExitCode {
     }
 }
 
-/// Computes the target run's metrics from the records it journaled.
-fn read_timeline(target: &Target) -> Result<RunTimeline> {
+/// Computes the target search's metrics from the records it journaled.
+fn read_timeline(target: &Target) -> Result<SearchTimeline> {
     let (info, records) = snapshot(target)?;
-    Ok(timeline_records(info.run, &records))
+    Ok(timeline_records(info.search, &records))
 }
 
 /// `sima status <config.toml> --task <key>`: one task's attempt timeline,
-/// addressed by a prefix of its key. The store and run id come from the
+/// addressed by a prefix of its key. The store and search id come from the
 /// config the same way the aggregate status derives them.
 fn status_task_command(target: &Target, prefix: &str) -> ExitCode {
     match read_task_history(target, prefix) {
@@ -503,54 +503,54 @@ fn status_task_command(target: &Target, prefix: &str) -> ExitCode {
     }
 }
 
-/// Projects one task's lifecycle from the records the target run journaled.
+/// Projects one task's lifecycle from the records the target search journaled.
 fn read_task_history(target: &Target, prefix: &str) -> Result<TaskHistory> {
     let (_info, records) = snapshot(target)?;
     task_history_records(&records, prefix)
 }
 
-/// `sima status <config.toml> --failed`: the tasks the run did not commit,
-/// one line each. The query answers whatever the run's own outcome was, so a
-/// digest over a failed run still exits 0.
+/// `sima status <config.toml> --failed`: the tasks the search did not commit,
+/// one line each. The query answers whatever the search's own outcome was, so a
+/// digest over a failed search still exits 0.
 fn status_failed_command(target: &Target) -> ExitCode {
     match read_failures(target) {
-        Ok((run, failures)) => {
-            println!("{}", render::failures_block(&run, &failures));
+        Ok((search, failures)) => {
+            println!("{}", render::failures_block(&search, &failures));
             ExitCode::SUCCESS
         }
         Err(e) => report(e),
     }
 }
 
-/// Projects the tasks the target run did not commit, with the run the digest
+/// Projects the tasks the target search did not commit, with the search the digest
 /// names.
 fn read_failures(target: &Target) -> Result<(SearchId, Vec<TaskHistory>)> {
     let (info, records) = snapshot(target)?;
-    Ok((info.run, failures_records(&records)))
+    Ok((info.search, failures_records(&records)))
 }
 
-/// Seeds the tui's display from any existing journal for `config`'s run,
+/// Seeds the tui's display from any existing journal for `config`'s search,
 /// replaying it through the same `apply` method `sima status` uses so a
-/// resumed run opens on its prior progress. This is the observational view:
+/// resumed search opens on its prior progress. This is the observational view:
 /// it reports what the journal says, which is the whole of what `sima status`
 /// answers too.
 ///
-/// A store that does not exist yet, or a run never driven, seeds a zeroed
+/// A store that does not exist yet, or a search never driven, seeds a zeroed
 /// status; a corrupt journal or an I/O fault is a real problem `sima status`
 /// reports, so it surfaces here rather than hiding behind wrong counts. The
-/// two are told apart by asking whether the run is journaled at all, not by
+/// two are told apart by asking whether the search is journaled at all, not by
 /// reading an error variant — which would put every future failure on the read
 /// path into the "nothing here yet" bucket.
-pub(crate) fn seed_status(config: &LoadedConfig) -> Result<RunStatus> {
+pub(crate) fn seed_status(config: &LoadedConfig) -> Result<SearchStatus> {
     let mut seeded = seeded_status(config)?;
     // The counters and last state are worth seeding, but a journal ending
-    // mid-run leaves leases no live worker holds; a fresh session starts with
+    // mid-search leaves leases no live worker holds; a fresh session starts with
     // every worker idle and repopulates occupancy from live `Leased` events.
     seeded.occupancy.clear();
     Ok(seeded)
 }
 
-/// How much of a run's committed stats `sima report` prints.
+/// How much of a search's committed stats `sima report` prints.
 enum Report {
     /// A total header, then one line per distinct rendered stats value with
     /// its count.
@@ -559,8 +559,8 @@ enum Report {
     All,
 }
 
-/// `sima report [--all] <config.toml>`: renders the run's committed stats,
-/// compactly by default. The store and run id come from the config the same
+/// `sima report [--all] <config.toml>`: renders the search's committed stats,
+/// compactly by default. The store and search id come from the config the same
 /// way `status` derives them.
 fn report_command(target: &Target, scope: Report) -> ExitCode {
     match read_report(target) {
@@ -653,21 +653,21 @@ fn group_stats(rows: &[ReportRow]) -> Vec<(usize, &str)> {
     groups
 }
 
-/// Renders each committed task's stats from the records the target run
+/// Renders each committed task's stats from the records the target search
 /// journaled.
 fn read_report(target: &Target) -> Result<Vec<ReportRow>> {
     let (_info, records) = snapshot(target)?;
     report_records(&records)
 }
 
-/// Renders one committed task's stats from the records the target run
+/// Renders one committed task's stats from the records the target search
 /// journaled.
 fn read_report_task(target: &Target, prefix: &str) -> Result<ReportRow> {
     let (_info, records) = snapshot(target)?;
     report_task_records(&records, prefix)
 }
 
-/// `sima follow-serve <config> [--once]`: writes the run's follow stream to
+/// `sima follow-serve <config> [--once]`: writes the search's follow stream to
 /// stdout, which carries frames and nothing else — every diagnostic goes to
 /// stderr, which ssh keeps on its own channel. The near half of the transport
 /// spawns this over ssh; it is not a user-facing verb and stays out of the
@@ -681,30 +681,30 @@ fn serve_command(config: &str, once: bool) -> ExitCode {
     }
 }
 
-/// `sima sync-serve <store-dir> --run <run-id>`: serves one store-sync session
+/// `sima sync-serve <store-dir> --search <search-id>`: serves one store-sync session
 /// over stdin and stdout, which carry protocol frames and nothing else — every
 /// diagnostic goes to stderr, which ssh keeps on its own channel. A migration
 /// spawns this over ssh; it is not a user-facing verb and stays out of the
 /// usage text.
 ///
-/// It addresses the store and the run rather than a config, because loading a
+/// It addresses the store and the search rather than a config, because loading a
 /// config resolves its `[domain.*]` entries — which installs and spawns the
 /// program that the very session being served may be delivering. The initiator
-/// knows both values: it derives the run id locally and the far store sits in
-/// the run's own directory.
+/// knows both values: it derives the search id locally and the far store sits in
+/// the search's own directory.
 ///
-/// It takes the run lock for the session, so a `sima run` driving this run on
+/// It takes the search lock for the session, so a `sima search` driving this search on
 /// this machine makes the sync fail cleanly on the lock rather than writing
 /// underneath it.
-fn sync_serve_command(store: &Path, run: &str) -> ExitCode {
-    let run = match SearchId::from_hex(run) {
-        Ok(run) => run,
+fn sync_serve_command(store: &Path, search: &str) -> ExitCode {
+    let search = match SearchId::from_hex(search) {
+        Ok(search) => search,
         Err(e) => return report(e),
     };
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
     let (mut input, mut output) = (stdin.lock(), stdout.lock());
-    match sync_serve(store, &run, &mut input, &mut output) {
+    match sync_serve(store, &search, &mut input, &mut output) {
         Ok(_) => ExitCode::SUCCESS,
         Err(e) => report(e),
     }
@@ -712,12 +712,12 @@ fn sync_serve_command(store: &Path, run: &str) -> ExitCode {
 
 /// `sima sync-serve <dir> --payload <digest> [--sdk <digest>]`: receives the
 /// objects those digests name into `<dir>/store` and installs both trees, over
-/// the same stdin and stdout the `--run` form uses. A run putting work on this
+/// the same stdin and stdout the `--search` form uses. A search putting work on this
 /// machine spawns it before constructing a pool there; it is not a user-facing
-/// verb and stays out of the usage text, as the `--run` form does.
+/// verb and stays out of the usage text, as the `--search` form does.
 ///
 /// It addresses a directory and two digests rather than a config, for the
-/// reason the `--run` form addresses a store and a run: loading a config
+/// reason the `--search` form addresses a store and a search: loading a config
 /// resolves its `[domain.*]` entries, which spawns the very program this
 /// session is delivering.
 fn receive_program_command(dir: &Path, payload: &str, sdk: Option<&str>) -> ExitCode {
@@ -737,11 +737,11 @@ fn receive_program_command(dir: &Path, payload: &str, sdk: Option<&str>) -> Exit
 }
 
 /// `sima sdk <language> --out <dir>`: writes the SDK this binary carries under
-/// `<dir>`, so a program can be developed against the package the runs that
+/// `<dir>`, so a program can be developed against the package the searches that
 /// spawn it will vend.
 ///
 /// It is the same write a config load performs beneath its stamp, addressed by
-/// hand: what a run puts on the program's module path is what lands here.
+/// hand: what a search puts on the program's module path is what lands here.
 fn sdk_command(language: &str, out: &Path) -> ExitCode {
     let Some(sdk) = Sdk::parse(language) else {
         return report(Error::Validation(format!(
@@ -758,14 +758,14 @@ fn sdk_command(language: &str, out: &Path) -> ExitCode {
     }
 }
 
-/// `sima rm <config.toml>`: deletes the run — and everything no surviving run
-/// references — under its run lock, and prints what was removed. The run id
+/// `sima rm <config.toml>`: deletes the search — and everything no surviving search
+/// references — under its search lock, and prints what was removed. The search id
 /// comes from the config's identity section, as `status` derives it.
 fn rm_command(config: &Path) -> ExitCode {
     match remove_search(config) {
         Ok(report) => {
             println!(
-                "removed run: {} objects, {} index entries",
+                "removed search: {} objects, {} index entries",
                 report.objects_removed, report.index_entries_removed
             );
             ExitCode::SUCCESS
@@ -774,20 +774,20 @@ fn rm_command(config: &Path) -> ExitCode {
     }
 }
 
-/// Loads the config and removes its run.
+/// Loads the config and removes its search.
 fn remove_search(config: &Path) -> Result<RemovalReport> {
     let loaded = load(config)?;
     sima_pipeline::remove(&loaded)
 }
 
-/// `sima rm <config.toml> --run <id-prefix>`: removes the run of that config's
+/// `sima rm <config.toml> --search <id-prefix>`: removes the search of that config's
 /// store whose id begins with the prefix, whether or not the config still
 /// names it.
 fn rm_matching_command(config: &Path, prefix: &str) -> ExitCode {
     match load(config).and_then(|loaded| sima_pipeline::remove_matching(&loaded, prefix)) {
         Ok(report) => {
             println!(
-                "removed run: {} objects, {} index entries",
+                "removed search: {} objects, {} index entries",
                 report.objects_removed, report.index_entries_removed
             );
             ExitCode::SUCCESS
@@ -796,10 +796,10 @@ fn rm_matching_command(config: &Path, prefix: &str) -> ExitCode {
     }
 }
 
-/// `sima runs <store-dir>`: one line per run the store holds, with its state
+/// `sima searches <store-dir>`: one line per search the store holds, with its state
 /// and its task ledger.
 fn runs_command(store: &Path) -> ExitCode {
-    match sima_pipeline::runs(store) {
+    match sima_pipeline::searches(store) {
         Ok(summaries) => {
             println!("{}", render::runs_block(&summaries));
             ExitCode::SUCCESS
@@ -829,7 +829,7 @@ fn warn_on_loose_objects(config: &Path) {
     };
     if estimate >= LOOSE_OBJECT_WARN_THRESHOLD {
         eprintln!(
-            "store holds ~{estimate} loose objects; run `sima pack {}` to consolidate",
+            "store holds ~{estimate} loose objects; search `sima pack {}` to consolidate",
             loaded.store.display()
         );
     }
@@ -842,34 +842,34 @@ pub(crate) fn report(error: Error) -> ExitCode {
 }
 
 /// Wraps a signal-registration failure: an OS-level refusal to install
-/// the handler, surfaced before the run starts.
+/// the handler, surfaced before the search starts.
 fn register_error(e: std::io::Error) -> Error {
     Error::System(format!("cannot register the SIGINT handler: {e}"))
 }
 
-/// The exit code a finished run maps to — the mapping `run` and `tui` share:
+/// The exit code a finished search maps to — the mapping `search` and `tui` share:
 /// success when finalized, the failure code for a definitive candidate
-/// failure, and the interrupt code for a wound-down run.
-pub(crate) fn outcome_exit_code(outcome: &RunOutcome) -> u8 {
+/// failure, and the interrupt code for a wound-down search.
+pub(crate) fn outcome_exit_code(outcome: &SearchOutcome) -> u8 {
     match outcome {
-        RunOutcome::Finalized { .. } => 0,
-        RunOutcome::Failed { .. } => EXIT_FAILED,
-        RunOutcome::Interrupted { .. } => EXIT_INTERRUPTED,
+        SearchOutcome::Finalized { .. } => 0,
+        SearchOutcome::Failed { .. } => EXIT_FAILED,
+        SearchOutcome::Interrupted { .. } => EXIT_INTERRUPTED,
     }
 }
 
-/// The exit code a run's state carries, over the state a journal projects
+/// The exit code a search's state carries, over the state a journal projects
 /// rather than the outcome an orchestrator returns.
 ///
-/// `run` returns an outcome and every observational command projects a state,
-/// so the two mappings exist; this is the one the observers share. A run still
+/// `search` returns an outcome and every observational command projects a state,
+/// so the two mappings exist; this is the one the observers share. A search still
 /// in progress when its stream drains is resumable, not failed, so it leaves
 /// successfully.
-pub(crate) fn state_exit_code(state: &RunState) -> u8 {
+pub(crate) fn state_exit_code(state: &SearchState) -> u8 {
     match state {
-        RunState::Finalized | RunState::InProgress => 0,
-        RunState::Failed { .. } => EXIT_FAILED,
-        RunState::Interrupted => EXIT_INTERRUPTED,
+        SearchState::Finalized | SearchState::InProgress => 0,
+        SearchState::Failed { .. } => EXIT_FAILED,
+        SearchState::Interrupted => EXIT_INTERRUPTED,
     }
 }
 
@@ -1023,24 +1023,24 @@ mod tests {
 
     #[test]
     fn the_binary_flag_leaves_every_run_form_intact() {
-        // `run` matches on the rest, so extracting the flag — from either
+        // `search` matches on the rest, so extracting the flag — from either
         // position — must leave exactly the argument list the arms match.
-        let (rest, accept) = split_change(&["run", "exp.toml", "--accept-binary"]);
-        assert_eq!(rest, ["run", "exp.toml"]);
+        let (rest, accept) = split_change(&["search", "exp.toml", "--accept-binary"]);
+        assert_eq!(rest, ["search", "exp.toml"]);
         assert_eq!(accept, BinaryChange::Accept);
 
-        let (rest, accept) = split_change(&["run", "exp.toml", "--fleet", "--accept-binary"]);
-        assert_eq!(rest, ["run", "exp.toml", "--fleet"]);
+        let (rest, accept) = split_change(&["search", "exp.toml", "--fleet", "--accept-binary"]);
+        assert_eq!(rest, ["search", "exp.toml", "--fleet"]);
         assert_eq!(accept, BinaryChange::Accept);
 
-        let (rest, accept) = split_change(&["run", "exp.toml", "--accept-binary", "--fleet"]);
-        assert_eq!(rest, ["run", "exp.toml", "--fleet"]);
+        let (rest, accept) = split_change(&["search", "exp.toml", "--accept-binary", "--fleet"]);
+        assert_eq!(rest, ["search", "exp.toml", "--fleet"]);
         assert_eq!(accept, BinaryChange::Accept);
     }
 
     #[test]
     fn the_binary_flag_leaves_the_migrate_form_intact() {
-        // A migration takes it because the far `sima run` is where the
+        // A migration takes it because the far `sima search` is where the
         // comparison happens: the acceptance is stated here and travels there.
         let (rest, accept) = split_change(&["migrate", "exp.toml", "--accept-binary"]);
         assert_eq!(rest, ["migrate", "exp.toml"]);
@@ -1053,8 +1053,8 @@ mod tests {
 
     #[test]
     fn a_run_without_the_binary_flag_refuses_a_changed_program() {
-        let (rest, accept) = split_change(&["run", "exp.toml", "--fleet"]);
-        assert_eq!(rest, ["run", "exp.toml", "--fleet"]);
+        let (rest, accept) = split_change(&["search", "exp.toml", "--fleet"]);
+        assert_eq!(rest, ["search", "exp.toml", "--fleet"]);
         assert_eq!(accept, BinaryChange::Refuse);
     }
 
@@ -1069,17 +1069,17 @@ mod tests {
 
     #[test]
     fn each_outcome_maps_to_its_exit_code() {
-        let run = SearchId::from_hash(hash_bytes(b"exit code run"));
-        assert_eq!(outcome_exit_code(&RunOutcome::Finalized { run }), 0);
+        let search = SearchId::from_hash(hash_bytes(b"exit code search"));
+        assert_eq!(outcome_exit_code(&SearchOutcome::Finalized { search }), 0);
         assert_eq!(
-            outcome_exit_code(&RunOutcome::Failed {
+            outcome_exit_code(&SearchOutcome::Failed {
                 task: TaskKey::from_hash(hash_bytes(b"a task")),
                 reason: "rejected".to_string(),
             }),
             EXIT_FAILED
         );
         assert_eq!(
-            outcome_exit_code(&RunOutcome::Interrupted { run }),
+            outcome_exit_code(&SearchOutcome::Interrupted { search }),
             EXIT_INTERRUPTED
         );
     }

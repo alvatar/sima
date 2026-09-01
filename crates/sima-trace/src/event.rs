@@ -1,13 +1,13 @@
 //! [`Event`]: the typed structured-event vocabulary.
 //!
 //! Each event serializes to one JSON line. Events are observational — the
-//! journal records what happened, never run identity — so ids and the stats
+//! journal records what happened, never search identity — so ids and the stats
 //! family blob render as lowercase hex strings, stats render as named
 //! scalars, and the event stream is excluded from every equality criterion.
 //! The events a task emits trace its
 //! lifecycle: queued, leased, then committed, or failed and retried, or
 //! rejected, or faulted on an infrastructure error; a lease expiry and the
-//! run-level start/finalize/fail frame the whole. Alongside the lifecycle,
+//! search-level start/finalize/fail frame the whole. Alongside the lifecycle,
 //! a [`Diagnostic`](Event::Diagnostic) carries observational text attributed
 //! to the component and work unit it came from.
 
@@ -54,19 +54,19 @@ fn deserialize_value<'de, D: Deserializer<'de>>(deserializer: D) -> Result<f64, 
     Ok(Option::<f64>::deserialize(deserializer)?.unwrap_or(f64::NAN))
 }
 
-/// One entry in the run journal. The `event` tag names the variant; every id
+/// One entry in the search journal. The `event` tag names the variant; every id
 /// renders as a lowercase-hex string, since the journal is text. `PartialEq`
 /// only: an outcome event's [`StatScalar`] values are `f64`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum Event {
-    /// The run began, over `tasks` keys: every task key of the run, those
-    /// already committed and those still to run. `committed` is how many of
+    /// The search began, over `tasks` keys: every task key of the search, those
+    /// already committed and those still to search. `committed` is how many of
     /// them the store already answered when the session started; it comes
     /// from the records, so it holds even against this journal, which a crash
     /// can leave short of the commits it describes.
-    RunStarted {
-        run: String,
+    SearchStarted {
+        search: String,
         tasks: usize,
         committed: usize,
     },
@@ -106,7 +106,7 @@ pub enum Event {
         stats_blob_hex: String,
     },
     /// An infrastructure fault hit this task's attempt: an executor error, a
-    /// commit failure, or an input-state load failure. The run terminates with
+    /// commit failure, or an input-state load failure. The search terminates with
     /// an error.
     Faulted {
         task: String,
@@ -133,9 +133,9 @@ pub enum Event {
     /// A worker's child reported the device it computes on, at every spawn and
     /// respawn. The device name and driver version are the child's own,
     /// verbatim; a domain that uses no device reports both empty. The host is
-    /// the parent's account of where the worker's pool runs — empty for a local
+    /// the parent's account of where the worker's pool searches — empty for a local
     /// slot, the configured destination for a remote one. The program is the
-    /// digest the child answered for the program it runs, verbatim like the
+    /// digest the child answered for the program it searches, verbatim like the
     /// device and driver beside it; absent for a format this build answers, to
     /// which no program travelled.
     WorkerBound {
@@ -151,13 +151,13 @@ pub enum Event {
     /// digest of that file's bytes as lowercase hex. Provenance, exactly as
     /// [`WorkerBound`](Event::WorkerBound) records device and driver: the
     /// digest identifies the build that produced the session's results and
-    /// enters no hash, so a run's identity stays what the program declares.
+    /// enters no hash, so a search's identity stays what the program declares.
     ProgramBound {
         format: String,
         binary: String,
         digest: String,
     },
-    /// A worker's child reported a driver other than the one this run's
+    /// A worker's child reported a driver other than the one this search's
     /// journal last recorded for the same host and device. The driver never
     /// enters identity, so results and checkpoints from the previous driver
     /// stay valid to the store; this event is the visible record that they
@@ -168,7 +168,7 @@ pub enum Event {
         from: String,
         to: String,
     },
-    /// A chain's device class was absent from the run's devices, so its work
+    /// A chain's device class was absent from the search's devices, so its work
     /// moved to a class that is present. Classes render `vendor:device`.
     ChainRebound {
         chain: u64,
@@ -176,17 +176,17 @@ pub enum Event {
         to: String,
     },
     /// Every task committed and the manifest was written.
-    RunFinalized { run: String, committed: usize },
-    /// A definitive failure terminated the run; no manifest was written.
-    RunFailed {
-        run: String,
+    SearchFinalized { search: String, committed: usize },
+    /// A definitive failure terminated the search; no manifest was written.
+    SearchFailed {
+        search: String,
         task: String,
         reason: String,
     },
-    /// The caller interrupted the run: the attempts in flight were abandoned
+    /// The caller interrupted the search: the attempts in flight were abandoned
     /// and no manifest was written, so the store is resumable — each abandoned
     /// attempt re-derives in the frontier, resuming from its checkpoint.
-    RunInterrupted { run: String },
+    SearchInterrupted { search: String },
     /// An offer was taken and a machine is being paid for, before it is up.
     /// `member` names the fleet member it was rented for, and is empty for a
     /// migration, which rents the one machine its destination names. A walk
@@ -208,21 +208,21 @@ pub enum Event {
     /// is empty for a migration. `timeout_ms` is what the entry describing it
     /// states the wait may take.
     AwaitingMachine { member: String, timeout_ms: u64 },
-    /// The run's objects are being sent to the machine that will drive it:
+    /// The search's objects are being sent to the machine that will drive it:
     /// the identity components, the frontier states, and the program when one
     /// travels. `member` names the fleet member receiving them, and is empty
     /// for a migration.
-    SendingRun { member: String, objects: usize },
-    /// The program the run's format is served by is being installed on the
-    /// machine. `member` names the machine installing it as the run addresses
+    SendingSearch { member: String, objects: usize },
+    /// The program the search's format is served by is being installed on the
+    /// machine. `member` names the machine installing it as the search addresses
     /// it — a fleet member by its entry and index, a machine of yours by its
     /// ssh destination — and is empty for a migration, whose destination
-    /// installs it as its run loads.
+    /// installs it as its search loads.
     InstallingProgram { member: String },
-    /// The far `sima run` is being started on the destination, which is what
+    /// The far `sima search` is being started on the destination, which is what
     /// the migration waits on until its first journal line arrives.
-    StartingRun,
-    /// The run was interrupted while its machines were still being acquired,
+    StartingSearch,
+    /// The search was interrupted while its machines were still being acquired,
     /// so no further member was rented and every machine the acquisition
     /// already held was released. `released` is how many that was.
     AcquisitionAbandoned { released: usize },
@@ -247,19 +247,19 @@ pub enum Event {
         from: String,
         to: String,
     },
-    /// The run's rental spend reached its cap; no further rental is made and
-    /// the run winds down.
+    /// The search's rental spend reached its cap; no further rental is made and
+    /// the search winds down.
     BudgetSpendExhausted {
         accrued_microusd: u64,
         cap_microusd: u64,
     },
-    /// The run's rental phase reached its wall-clock deadline; no further
-    /// rental is made and the run winds down.
+    /// The search's rental phase reached its wall-clock deadline; no further
+    /// rental is made and the search winds down.
     BudgetWallClockExhausted { deadline_ms: u64 },
     /// A correlated diagnostic line: observational text attributed to the
     /// component and work unit it came from. Context keys are optional
     /// because a diagnostic may precede any lease (worker startup) or
-    /// follow the run's end.
+    /// follow the search's end.
     Diagnostic {
         level: Level,
         source: String,
@@ -412,7 +412,7 @@ mod tests {
 
     #[test]
     fn a_worker_bound_event_naming_no_program_writes_no_key() {
-        // The shape every run of a format this build answers writes, and the
+        // The shape every search of a format this build answers writes, and the
         // shape a journal written before the field existed already holds: the
         // key is absent both ways, so one reader serves both.
         let event = Event::WorkerBound {

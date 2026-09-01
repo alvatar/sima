@@ -64,36 +64,36 @@ pub enum ToDomain {
         /// The format asked about.
         format: FormatId,
     },
-    /// What devices the format's work can run on.
+    /// What devices the format's work can search on.
     EnumerateDevices {
         /// The format asked about.
         format: FormatId,
     },
-    /// The `[run.params]` section, as text, to be translated into the format's
+    /// The `[search.params]` section, as text, to be translated into the format's
     /// canonical params bytes.
     TranslateConfig {
         /// The format whose translation is asked for.
         format: FormatId,
-        /// The section's TOML text; empty for a run that states no params.
+        /// The section's TOML text; empty for a search that states no params.
         toml: String,
-        /// Whether the run divides candidates into segments.
+        /// Whether the search divides candidates into segments.
         segmented: bool,
     },
-    /// The `[run.generator]` section minus `id`, as text, to be translated into
+    /// The `[search.generator]` section minus `id`, as text, to be translated into
     /// the generator's opaque params blob.
     TranslateGeneratorConfig {
         /// The generator whose translation is asked for.
         generator: GeneratorId,
-        /// The section's TOML text; empty for a run that states no settings.
+        /// The section's TOML text; empty for a search that states no settings.
         toml: String,
     },
-    /// The run's candidate specs.
+    /// The search's candidate specs.
     Generate {
         /// The generator producing them.
         generator: GeneratorId,
         /// The format stamped into every produced spec.
         format: FormatId,
-        /// The run's root seed.
+        /// The search's root seed.
         root_seed: u64,
         /// The generator's own settings blob.
         params: Vec<u8>,
@@ -116,7 +116,7 @@ pub enum FromDomain {
         /// The format's environment.
         environment: Environment,
     },
-    /// The devices the format's work can run on; empty for a format that opens
+    /// The devices the format's work can search on; empty for a format that opens
     /// none.
     EnumeratedDevices {
         /// The devices, as the program's execution backend enumerates them.
@@ -128,7 +128,7 @@ pub enum FromDomain {
         /// The opaque bytes the translation produced.
         bytes: Vec<u8>,
     },
-    /// The run's candidate specs, in the order the generator produced them.
+    /// The search's candidate specs, in the order the generator produced them.
     Generated {
         /// The specs.
         specs: Vec<Spec>,

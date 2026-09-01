@@ -10,22 +10,22 @@ use std::path::{Path, PathBuf};
 use common::{journal_events, journal_records, manifest_bytes, worker_binary, write_config};
 use sima_pipeline::{Event, Level};
 
-/// Runs `sima run` over `config`, with the worker pinned to `worker`.
+/// Runs `sima search` over `config`, with the worker pinned to `worker`.
 fn run_with_worker(config: &Path, worker: &Path) -> std::process::Output {
     let mut command = common::sima_command();
     command.env("SIMA_WORKER", worker);
     command
-        .args(["run", config.to_str().expect("utf-8 path")])
+        .args(["search", config.to_str().expect("utf-8 path")])
         .output()
-        .expect("run sima")
+        .expect("search sima")
 }
 
-/// Runs `sima run` over `config` with the plain worker binary.
-fn run(config: &Path) -> std::process::Output {
+/// Runs `sima search` over `config` with the plain worker binary.
+fn search(config: &Path) -> std::process::Output {
     run_with_worker(config, &worker_binary())
 }
 
-/// Writes an executable worker wrapper under `dir` that runs `prelude` in
+/// Writes an executable worker wrapper under `dir` that searches `prelude` in
 /// `sh` and then execs the real worker — the shape a container client
 /// takes, used here to make a worker print to stderr before serving.
 fn wrapper_worker(dir: &Path, prelude: &str) -> PathBuf {
@@ -89,10 +89,10 @@ fn every_journal_line_of_a_subprocess_run_is_a_stamped_record() {
         r#""succeed", "succeed""#,
         "./store",
     );
-    let output = run(&config);
+    let output = search(&config);
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let records = journal_records(&config);
-    assert!(!records.is_empty(), "the run journaled its lifecycle");
+    assert!(!records.is_empty(), "the search journaled its lifecycle");
     for record in &records {
         assert!(record.ts_ms > 0, "unstamped record: {record:?}");
     }
@@ -130,7 +130,7 @@ fn a_worker_stderr_line_lands_as_a_correlated_diagnostic() {
 fn an_executor_panic_lands_a_correlated_diagnostic_and_rejects_as_before() {
     let dir = tempfile::tempdir().expect("temp dir");
     let config = write_config(dir.path(), "sima.toml", r#""succeed", "panic""#, "./store");
-    let output = run(&config);
+    let output = search(&config);
     // The panic is a definitive candidate failure, exactly as before.
     assert_eq!(output.status.code(), Some(2), "{output:?}");
     let events = journal_events(&config);
@@ -167,7 +167,7 @@ fn an_executor_panic_lands_a_correlated_diagnostic_and_rejects_as_before() {
 
 #[test]
 fn diagnostics_leave_the_manifest_identical() {
-    // The same config into two fresh stores: one run's workers print to
+    // The same config into two fresh stores: one search's workers print to
     // stderr, the other's stay silent. The journals differ; the manifests
     // are byte-identical — journals are excluded from every equality
     // criterion.
@@ -178,7 +178,7 @@ fn diagnostics_leave_the_manifest_identical() {
         r#""succeed", "succeed""#,
         "./store",
     );
-    assert_eq!(run(&quiet_config).status.code(), Some(0));
+    assert_eq!(search(&quiet_config).status.code(), Some(0));
 
     let noisy = tempfile::tempdir().expect("temp dir");
     let noisy_config = write_config(
@@ -193,7 +193,7 @@ fn diagnostics_leave_the_manifest_identical() {
         Some(0)
     );
 
-    // The noisy run's journal holds diagnostics the quiet run's does not.
+    // The noisy search's journal holds diagnostics the quiet search's does not.
     let noisy_diagnostics = diagnostics(&journal_events(&noisy_config));
     assert!(
         noisy_diagnostics
@@ -203,7 +203,7 @@ fn diagnostics_leave_the_manifest_identical() {
     );
     // The manifests are byte-identical regardless.
     assert_eq!(
-        manifest_bytes(&quiet_config).expect("the quiet run finalized"),
-        manifest_bytes(&noisy_config).expect("the noisy run finalized"),
+        manifest_bytes(&quiet_config).expect("the quiet search finalized"),
+        manifest_bytes(&noisy_config).expect("the noisy search finalized"),
     );
 }

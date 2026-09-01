@@ -22,24 +22,24 @@ use super::machines::{
     Fleet, Host, HostClass, HostClassForm, HostForm, Orchestrator, resolve_host,
     resolve_host_class, resolve_orchestrator,
 };
-use super::run::resolve_run;
+use super::search::resolve_search;
 use super::settings::{optional_bound, resolve_budget, resolve_execution};
 use crate::domain_registry::{DomainEntry, DomainRegistry};
 use crate::payload::{PayloadSpec, ProgramTree, install};
 use crate::sdk::{Sdk, materialize};
 
 /// A `sima.toml`, loaded and translated: the identity-bearing [`SearchConfig`], the
-/// operational [`ExecutionConfig`], the machines the run may draw on, and the
+/// operational [`ExecutionConfig`], the machines the search may draw on, and the
 /// store path resolved relative to the config file.
 #[derive(Debug)]
 pub struct LoadedConfig {
-    /// The identity section, canonicalized; its id is the run id.
-    pub run: SearchConfig,
-    /// The parameters the run executes under, assembled from `[config]` and the
+    /// The identity section, canonicalized; its id is the search id.
+    pub search: SearchConfig,
+    /// The parameters the search executes under, assembled from `[config]` and the
     /// orchestrator's worker layout; never hashed. Its `workers` is the
     /// orchestrator's pool size — `0` for an orchestrator that declares none —
     /// and its device entries are empty here: a selector names real hardware, so
-    /// it resolves where the run starts.
+    /// it resolves where the search starts.
     pub execution: ExecutionConfig,
     /// This machine.
     pub orchestrator: Orchestrator,
@@ -47,13 +47,13 @@ pub struct LoadedConfig {
     pub hosts: BTreeMap<String, Host>,
     /// The declared host classes, by name.
     pub host_classes: BTreeMap<String, HostClass>,
-    /// The members a run may draw on, in the order they were listed.
+    /// The members a search may draw on, in the order they were listed.
     pub fleet: Fleet,
-    /// The spend and wall-clock ceilings over every rental in the run.
+    /// The spend and wall-clock ceilings over every rental in the search.
     pub budget: Budget,
     /// The store path, resolved against the config file's directory.
     pub store: PathBuf,
-    /// Where each of the run's format questions is answered from: this build,
+    /// Where each of the search's format questions is answered from: this build,
     /// or the program a `[domain.*]` entry routes the format to.
     pub domains: DomainRegistry,
 }
@@ -87,11 +87,11 @@ pub fn load(path: &Path) -> Result<LoadedConfig> {
         Some(stated) => base.join(stated),
         None => base.join(GENERATED_DIR).join(STORE_DIR),
     };
-    // The registry precedes the run's translation, which is answered through
+    // The registry precedes the search's translation, which is answered through
     // it: a program declared for a format is spawned and asked here, so an
-    // entry naming one that cannot answer fails before the run has a store.
+    // entry naming one that cannot answer fails before the search has a store.
     let domains = resolve_domains(path, file.domain, answer_timeout, &store)?;
-    let run = resolve_run(path, file.run, &domains)?;
+    let search = resolve_search(path, file.search, &domains)?;
     let orchestrator = resolve_orchestrator(path, file.orchestrator)?;
 
     let mut hosts = BTreeMap::new();
@@ -149,7 +149,7 @@ pub fn load(path: &Path) -> Result<LoadedConfig> {
     let execution = resolve_execution(path, &file.config, &orchestrator)?;
 
     Ok(LoadedConfig {
-        run,
+        search,
         execution,
         orchestrator,
         hosts,
@@ -170,7 +170,7 @@ fn resolve_domains(
     answer_timeout: Duration,
     store: &Path,
 ) -> Result<DomainRegistry> {
-    // Absolute, because a spawned program runs in a scratch working directory
+    // Absolute, because a spawned program searches in a scratch working directory
     // of its own: a path relative to this process would resolve against that
     // directory rather than against the config that named it.
     // A bare file name has an empty parent, which is this directory.
@@ -211,7 +211,7 @@ fn resolve_domains(
 
 /// Vends the SDK every entry declaring one needs, and records where, before any
 /// of their programs is spawned — so a program's `import` resolves the first
-/// time it runs.
+/// time it searches.
 ///
 /// One tree per SDK, however many entries declare it: what it holds is a
 /// property of this binary, not of any one program. An entry declaring none
@@ -278,7 +278,7 @@ fn install_payloads(
 /// `base`, the config file's own directory.
 ///
 /// The rules say the same thing four ways: an entry names exactly one source
-/// for the program that will run on the destination, and a source that needs a
+/// for the program that will search on the destination, and a source that needs a
 /// script says so.
 fn resolve_payload(
     path: &Path,
@@ -340,14 +340,14 @@ fn resolve_payload(
             })?;
             if !metadata.is_file() {
                 return Err(refuse(format!(
-                    "install {} is not a regular file; it is run as a shell script",
+                    "install {} is not a regular file; it is search as a shell script",
                     install.display()
                 )));
             }
             Some(install)
         }
         // A directory has no entry point by convention — which of its files
-        // runs is what the script decides — while a single file is the
+        // searches is what the script decides — while a single file is the
         // program, so the script would only put it where the convention
         // already puts it.
         None if metadata.is_dir() => {
@@ -419,9 +419,9 @@ fn resolve_domain_env(path: &Path, format: &str, env: Option<Vec<String>>) -> Re
 /// Rejects a fleet that would engage one machine twice.
 ///
 /// Two entries may name one ssh destination — alternative worker profiles for a
-/// box, picked by which one `members` names — but engaging both in one run puts
+/// box, picked by which one `members` names — but engaging both in one search puts
 /// two pools on one machine: it over-subscribes it, and both pools journal
-/// under the same host label, so the run's per-host attribution stops meaning
+/// under the same host label, so the search's per-host attribution stops meaning
 /// anything. A member listed twice is the same fault said differently.
 ///
 /// Only machines of yours are checked. A rented entry carries no destination
@@ -439,7 +439,7 @@ fn reject_repeated_machines(
     for member in &fleet.members {
         if !listed.insert(member.as_str()) {
             return Err(Error::Validation(format!(
-                "{}: fleet member {member:?} is listed twice; a run engages a machine once",
+                "{}: fleet member {member:?} is listed twice; a search engages a machine once",
                 path.display()
             )));
         }
@@ -450,13 +450,13 @@ fn reject_repeated_machines(
             return Err(Error::Validation(if first == member {
                 format!(
                     "{}: host_class {member:?} lists the ssh destination {destination:?} twice; \
-                     a run engages a machine once",
+                     a search engages a machine once",
                     path.display()
                 )
             } else {
                 format!(
                     "{}: fleet members {first:?} and {member:?} both engage the ssh destination \
-                     {destination:?}; a run puts one worker pool on a machine — name one of them",
+                     {destination:?}; a search puts one worker pool on a machine — name one of them",
                     path.display()
                 )
             }));
@@ -509,18 +509,18 @@ mod tests {
         path
     }
 
-    /// The reference schema instance from the module doc: a run driven on this
+    /// The reference schema instance from the module doc: a search driven on this
     /// machine alone.
     const BASE: &str = r#"
-        [run]
+        [search]
         root_seed = 42
         format = "stub.v1"
 
-        [run.generator]
+        [search.generator]
         id = "stub.v1"
         behaviors = ["succeed", "flaky:2", "sleep:50", "reject", "panic"]
 
-        [run.params]
+        [search.params]
         hex = "00ff"
 
         [config]
@@ -533,13 +533,13 @@ mod tests {
     "#;
 
     /// The reference schema with an orchestrator that executes nothing, for the
-    /// configs whose machines carry the run.
+    /// configs whose machines carry the search.
     const NO_POOL: &str = r#"
-        [run]
+        [search]
         root_seed = 42
         format = "stub.v1"
 
-        [run.generator]
+        [search.generator]
         id = "stub.v1"
         behaviors = ["succeed"]
 
@@ -554,9 +554,9 @@ mod tests {
         load(&write_config(dir.path(), "sima.toml", text))
     }
 
-    /// The run id `text` loads to.
+    /// The search id `text` loads to.
     fn id_of(text: &str) -> SearchId {
-        load_text(text).expect("config loads").run.id()
+        load_text(text).expect("config loads").search.id()
     }
 
     /// The validation message `text` is rejected with.
@@ -606,9 +606,9 @@ mod tests {
     #[test]
     fn the_reference_config_loads_into_the_expected_search_config() -> Result<()> {
         let loaded = load_text(BASE)?;
-        assert_eq!(loaded.run.root_seed, 42);
-        assert_eq!(loaded.run.format.as_str(), "stub.v1");
-        assert_eq!(loaded.run.generator.id.as_str(), "stub.v1");
+        assert_eq!(loaded.search.root_seed, 42);
+        assert_eq!(loaded.search.format.as_str(), "stub.v1");
+        assert_eq!(loaded.search.generator.id.as_str(), "stub.v1");
         // The behaviors list encodes through the stub generator's own codec.
         let expected = StubGeneratorConfig {
             behaviors: vec![
@@ -619,8 +619,8 @@ mod tests {
                 StubBehavior::Panic,
             ],
         };
-        assert_eq!(loaded.run.generator.params, expected.to_bytes());
-        assert_eq!(loaded.run.params.bytes, vec![0x00, 0xff]);
+        assert_eq!(loaded.search.generator.params, expected.to_bytes());
+        assert_eq!(loaded.search.params.bytes, vec![0x00, 0xff]);
         assert_eq!(loaded.execution.workers, 4);
         assert_eq!(loaded.execution.max_attempts, 3);
         assert_eq!(
@@ -634,21 +634,28 @@ mod tests {
     fn loading_the_same_file_twice_yields_the_same_search_id() -> Result<()> {
         let dir = tempfile::tempdir().expect("temp dir");
         let path = write_config(dir.path(), "sima.toml", BASE);
-        assert_eq!(load(&path)?.run.id(), load(&path)?.run.id());
+        assert_eq!(load(&path)?.search.id(), load(&path)?.search.id());
         Ok(())
+    }
+
+    #[test]
+    fn a_legacy_run_section_is_rejected_as_unknown() {
+        let legacy = BASE.replacen("[search]", "[run]", 1);
+        let message = rejection(&legacy);
+        assert!(message.contains("unknown field `run`"), "{message}");
     }
 
     #[test]
     fn a_generator_of_another_format_is_refused_at_load() {
         // Format and generator are separate keys, so a config can name a
-        // generator that draws for a different format. Minting a run id over
+        // generator that draws for a different format. Minting a search id over
         // that pairing would defer the failure to the first stored spec, on a
-        // run whose id is already fixed; the load refuses it instead, naming
+        // search whose id is already fixed; the load refuses it instead, naming
         // both ids because either could be the typo.
         let dir = tempfile::tempdir().expect("temp dir");
         let mismatched = BASE.replace(
-            "[run.generator]\n        id = \"stub.v1\"",
-            "[run.generator]\n        id = \"ca_evolution.nca.v1\"",
+            "[search.generator]\n        id = \"stub.v1\"",
+            "[search.generator]\n        id = \"ca_evolution.nca.v1\"",
         );
         let path = write_config(dir.path(), "sima.toml", &mismatched);
         let Err(Error::Validation(message)) = load(&path) else {
@@ -660,7 +667,7 @@ mod tests {
 
     #[test]
     fn every_identity_field_changes_the_search_id() {
-        // Every [run] field whose variation still names dispatchable ids: the
+        // Every [search] field whose variation still names dispatchable ids: the
         // format and generator ids admit one value in this build, and the
         // model's own tests pin that they enter the id. The remaining fields
         // flow through translation, which is what this pins.
@@ -671,7 +678,7 @@ mod tests {
             ("hex = \"00ff\"", "hex = \"00fe\""),
         ] {
             let varied = BASE.replace(from, to);
-            assert_ne!(base, id_of(&varied), "{to} must change the run id");
+            assert_ne!(base, id_of(&varied), "{to} must change the search id");
         }
     }
 
@@ -685,10 +692,10 @@ mod tests {
             ("attempt_timeout_ms = 5000", "attempt_timeout_ms = 1"),
         ] {
             let varied = BASE.replace(from, to);
-            assert_eq!(base, id_of(&varied), "{to} must not change the run id");
+            assert_eq!(base, id_of(&varied), "{to} must not change the search id");
         }
         // And dropping the store key entirely, which is the edit the shipped
-        // examples made when the default arrived: a run identity cannot turn
+        // examples made when the default arrived: a search identity cannot turn
         // on where its results are kept.
         let unstated = BASE.replace("        store = \"./store\"\n", "");
         assert_ne!(
@@ -698,7 +705,7 @@ mod tests {
         assert_eq!(
             base,
             id_of(&unstated),
-            "an unstated store must not change the run id"
+            "an unstated store must not change the search id"
         );
     }
 
@@ -740,8 +747,8 @@ mod tests {
     #[test]
     fn segments_loads_into_the_search_config() -> Result<()> {
         let text = BASE.replace("root_seed = 42", "root_seed = 42\nsegments = 10");
-        assert_eq!(load_text(&text)?.run.segments, NonZeroU64::new(10));
-        assert_eq!(load_text(BASE)?.run.segments, None);
+        assert_eq!(load_text(&text)?.search.segments, NonZeroU64::new(10));
+        assert_eq!(load_text(BASE)?.search.segments, None);
         Ok(())
     }
 
@@ -827,10 +834,10 @@ mod tests {
     fn unknown_keys_are_rejected_at_every_level() {
         for (section, addition) in [
             ("top level", "surprise = 1\n"),
-            ("[run]", "[run]\nsurprise = 1\n"),
+            ("[search]", "[search]\nsurprise = 1\n"),
             ("[config]", "[config]\nsurprise = 1\n"),
-            ("[run.params]", "[run.params]\nsurprise = 1\n"),
-            ("[run.generator]", "[run.generator]\nsurprise = 1\n"),
+            ("[search.params]", "[search.params]\nsurprise = 1\n"),
+            ("[search.generator]", "[search.generator]\nsurprise = 1\n"),
             ("[orchestrator]", "[orchestrator]\nsurprise = 1\n"),
             ("[fleet]", "[fleet]\nsurprise = 1\n"),
             ("[budget]", "[budget]\nsurprise = 1\n"),
@@ -877,7 +884,7 @@ mod tests {
     #[test]
     fn a_syntax_error_is_validation_naming_the_file() {
         let dir = tempfile::tempdir().expect("temp dir");
-        let path = write_config(dir.path(), "broken.toml", "run = [not toml");
+        let path = write_config(dir.path(), "broken.toml", "search = [not toml");
         match load(&path) {
             Err(Error::Validation(msg)) => {
                 assert!(msg.contains("broken.toml"), "names the file: {msg}");
@@ -941,7 +948,7 @@ mod tests {
                 },
             ]))
         );
-        // The pool is the entries' sum; the classes resolve at run start, so the
+        // The pool is the entries' sum; the classes resolve at search start, so the
         // loaded settings name no device yet.
         assert_eq!(loaded.execution.workers, 4);
         assert!(loaded.execution.devices.is_empty());
@@ -983,8 +990,8 @@ mod tests {
 
     #[test]
     fn orchestrator_container_keys_without_an_image_are_rejected_naming_the_key() {
-        // This machine runs bare unless it is asked for a container, so a
-        // runtime or a run flag here describes a container that does not exist.
+        // This machine searches bare unless it is asked for a container, so a
+        // runtime or a search flag here describes a container that does not exist.
         for key in ["runtime = \"podman\"", "run_args = [\"--gpus\", \"all\"]"] {
             let text = format!("{NO_POOL}\n[orchestrator]\nworkers = 2\n{key}\n");
             let message = rejection(&text);
@@ -996,8 +1003,8 @@ mod tests {
 
     #[test]
     fn a_machines_container_keys_stand_without_an_image() -> Result<()> {
-        // The other side of the asymmetry: a machine of yours always runs a
-        // container, its image defaulting, so the runtime and the run flags are
+        // The other side of the asymmetry: a machine of yours always searches a
+        // container, its image defaulting, so the runtime and the search flags are
         // meaningful whether or not the entry names one.
         let text = format!(
             "{BASE}\n[host.gpubox]\nworkers = 4\nruntime = \"podman\"\n\
@@ -1160,7 +1167,7 @@ mod tests {
         assert_eq!(owned.container.runtime, "docker");
         assert!(owned.container.run_args.is_empty());
         assert_eq!(owned.pool, Pool::Workers(4));
-        assert_eq!(host.root, "~/sima-runs");
+        assert_eq!(host.root, "~/sima");
         assert_eq!(host.binary, "sima");
     }
 
@@ -1385,7 +1392,7 @@ mod tests {
             members = ["lab", "gpubox"]
             "#
         ))?;
-        // In the order listed, which is the order the run engages them in.
+        // In the order listed, which is the order the search engages them in.
         assert_eq!(loaded.fleet.members, ["lab", "gpubox"]);
         Ok(())
     }
@@ -1420,7 +1427,7 @@ mod tests {
     #[test]
     fn two_engaged_entries_on_one_destination_are_rejected_naming_both() {
         // Two pools on one machine over-subscribe it and journal under one
-        // host label, so the run's per-host attribution stops meaning anything.
+        // host label, so the search's per-host attribution stops meaning anything.
         let text = format!(
             r#"{BASE}
             [host.gpubox]
@@ -1538,14 +1545,14 @@ mod tests {
     #[test]
     fn a_zero_wall_clock_ceiling_is_no_ceiling_at_all() -> Result<()> {
         // Zero states the absence rather than a deadline that has already
-        // passed: a run wound down before it computed anything is nothing to
+        // passed: a search wound down before it computed anything is nothing to
         // ask for, so the value that would express it says "no limit" instead.
         let loaded = load_text(&format!("{BASE}\n[budget]\nmax_wall_clock_ms = 0\n"))?;
         assert_eq!(loaded.budget.max_wall_clock, None);
         assert_eq!(
             loaded.budget,
             load_text(BASE)?.budget,
-            "stating zero and stating nothing are the same run"
+            "stating zero and stating nothing are the same search"
         );
         Ok(())
     }
@@ -1600,7 +1607,7 @@ mod tests {
         assert!(message.contains("host"), "{message}");
     }
 
-    // ---- The machine model never enters run identity ----
+    // ---- The machine model never enters search identity ----
 
     #[test]
     fn declaring_machines_never_changes_the_search_id() {
@@ -1628,9 +1635,9 @@ mod tests {
 
     #[test]
     fn a_format_routed_to_a_program_keeps_its_search_id() {
-        // The protocol carries the configuration, so the identity a run has is the
+        // The protocol carries the configuration, so the identity a search has is the
         // one it has by direct call: the same file with an entry and without it
-        // is the same run.
+        // is the same search.
         let entry = format!(
             r#"{BASE}
             [domain."stub.v1"]
@@ -1648,7 +1655,7 @@ mod tests {
     #[test]
     fn a_program_that_cannot_answer_for_its_format_fails_the_load() {
         // The entry is read where the config resolves, so a program that cannot
-        // answer fails there — and nothing of the run exists yet.
+        // answer fails there — and nothing of the search exists yet.
         let dir = tempfile::tempdir().expect("temp dir");
         let path = write_config(
             dir.path(),
@@ -1674,7 +1681,7 @@ mod tests {
     #[test]
     fn a_program_path_resolves_against_the_config_file() {
         // Paths in a config are the file's, never the working directory's, so a
-        // run and its program travel together.
+        // search and its program travel together.
         let dir = tempfile::tempdir().expect("temp dir");
         std::os::unix::fs::symlink(crate::fixtures::built_worker(), dir.path().join("program"))
             .expect("link the program beside the config");
@@ -1688,7 +1695,10 @@ mod tests {
                 "#
             ),
         );
-        assert_eq!(load(&path).expect("the config loads").run.id(), id_of(BASE));
+        assert_eq!(
+            load(&path).expect("the config loads").search.id(),
+            id_of(BASE)
+        );
     }
 
     #[test]
@@ -1847,7 +1857,7 @@ mod tests {
 
     #[test]
     fn an_absent_answer_deadline_leaves_every_protocol_wait_unbounded() {
-        // The key is optional and absent is the state every run had before
+        // The key is optional and absent is the state every search had before
         // one existed: a wait for as long as the peer lives.
         assert_eq!(
             load_text(BASE)
@@ -1942,7 +1952,7 @@ mod tests {
         assert!(message.contains("Ready"), "names the answer: {message}");
     }
 
-    // ---- What travels when the run moves: payload, install, payload_digest ----
+    // ---- What travels when the search moves: payload, install, payload_digest ----
 
     /// A `[domain."stub.v1"]` entry over the built worker, carrying `keys`.
     /// The directory the config sits in is handed to `keys` so a test can
@@ -2031,7 +2041,7 @@ mod tests {
 
     #[test]
     fn a_directory_payload_without_an_install_script_is_refused() {
-        // A tree has no entry point by convention: which of its files runs is
+        // A tree has no entry point by convention: which of its files searches is
         // what the script decides.
         let message =
             payload_rejection(|dir| format!("payload = {:?}", dir_payload(dir).display()));
@@ -2103,7 +2113,7 @@ mod tests {
 
     #[test]
     fn an_install_that_names_a_directory_is_refused() {
-        // It is run as a shell script, so it is one file.
+        // It is search as a shell script, so it is one file.
         let message = payload_rejection(|dir| {
             format!(
                 "payload = {:?}\ninstall = {:?}",
@@ -2158,7 +2168,7 @@ mod tests {
     #[test]
     fn neither_payload_key_touches_the_search_id() {
         // Both are operational: they decide how the program reaches another
-        // machine, never what the run computes.
+        // machine, never what the search computes.
         let dir = tempfile::tempdir().expect("temp dir");
         let entry = format!(
             r#"{BASE}
@@ -2174,11 +2184,11 @@ mod tests {
         );
         let plain = load(&write_config(dir.path(), "plain.toml", &entry))
             .expect("the config loads")
-            .run
+            .search
             .id();
         let carrying = load(&write_config(dir.path(), "carrying.toml", &with_payload))
             .expect("the config loads")
-            .run
+            .search
             .id();
         assert_eq!(plain, carrying, "what travels is operational");
         assert_eq!(plain, id_of(BASE), "and so is the entry itself");
@@ -2204,7 +2214,7 @@ mod tests {
             FarSide { dir, digest }
         }
 
-        /// Loads the config that installs this payload, as the far `sima run`
+        /// Loads the config that installs this payload, as the far `sima search`
         /// does.
         fn load(&self) -> Result<LoadedConfig> {
             self.load_digest(&self.digest)
@@ -2241,7 +2251,7 @@ mod tests {
                 .join(".sima/program/stub.v1/installed/program")
         }
 
-        /// How many times an install script that counts itself has run.
+        /// How many times an install script that counts itself has search.
         fn installs(&self) -> usize {
             std::fs::read_to_string(self.dir.path().join("installs"))
                 .map(|text| text.lines().count())
@@ -2273,7 +2283,7 @@ mod tests {
     }
 
     /// A directory payload of one wrapper, installed by a script that records
-    /// each run in `<dir>/installs` and puts the wrapper where the convention
+    /// each search in `<dir>/installs` and puts the wrapper where the convention
     /// says. `extra` is appended to the tree so two payloads can differ.
     fn counted_payload(dir: &Path, extra: &str) -> PayloadSpec {
         wrapper(&dir.join("src/wrapper.sh"));
@@ -2322,7 +2332,7 @@ mod tests {
             .permissions()
             .mode()
             & 0o777;
-        assert_eq!(mode, 0o755, "the entry point runs");
+        assert_eq!(mode, 0o755, "the entry point searches");
         // The load spawned it and it answered, which is what routing it proves.
         assert_eq!(
             loaded
@@ -2407,7 +2417,7 @@ mod tests {
     #[test]
     fn a_reinstall_leaves_nothing_of_the_tree_it_replaced() -> Result<()> {
         // The previous payload's files are not the new program's, and a
-        // wrapper that still found them would run a build nobody asked for.
+        // wrapper that still found them would search a build nobody asked for.
         let leaves = |dir: &Path, extra: &str| -> PayloadSpec {
             wrapper(&dir.join("src/wrapper.sh"));
             fs::write(dir.join("src/note"), extra).expect("write the note");
@@ -2506,7 +2516,7 @@ mod tests {
 
     #[test]
     fn two_concurrent_loads_build_one_tree_and_both_succeed() -> Result<()> {
-        // A `sima run` and a `sima status` can load one config at once. The
+        // A `sima search` and a `sima status` can load one config at once. The
         // lock is what makes the second wait for the tree rather than read a
         // half-built one.
         let far = FarSide::new(|dir| counted_payload(dir, "first"));

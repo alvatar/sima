@@ -88,7 +88,7 @@ impl VastClient {
         //
         // Both deadlines are here because a call with neither can hang for as
         // long as the far side holds the socket open, and every call on this
-        // path runs on a thread a run is waiting on: an acquisition before the
+        // path searches on a thread a search is waiting on: an acquisition before the
         // first task, a heartbeat between them, a teardown at the end. The
         // connect bound is short — a reachable service answers a handshake in
         // well under it — while the overall bound covers a listing the service

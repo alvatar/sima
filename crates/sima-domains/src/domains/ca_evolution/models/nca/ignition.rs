@@ -1,5 +1,5 @@
 //! [`NcaIgnition`]: the ignition configuration of the Neural CA's initial grid,
-//! and the model's `[run.params]` ignition keys.
+//! and the model's `[search.params]` ignition keys.
 
 use sima_core::{Codec, Dec, Enc, Error, Result};
 
@@ -99,7 +99,7 @@ impl Codec for NcaIgnition {
 }
 
 impl TomlConfig for NcaIgnition {
-    /// Reads the ignition keys from the `[run.params]` table (the shared keys are
+    /// Reads the ignition keys from the `[search.params]` table (the shared keys are
     /// already stripped), rejecting any key it does not define. All three keys
     /// are required, with no defaults.
     fn parse(table: &toml::Table, id: &str, section: &str) -> Result<NcaIgnition> {
@@ -233,7 +233,7 @@ mod tests {
         Ok(())
     }
 
-    /// The model's `[run.params]` keys (the shared width/height/steps/dt are
+    /// The model's `[search.params]` keys (the shared width/height/steps/dt are
     /// stripped before the model sees the table).
     const KEYS: &str = r#"
         seed_value = 1.0

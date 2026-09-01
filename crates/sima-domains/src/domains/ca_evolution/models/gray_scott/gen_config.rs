@@ -1,5 +1,5 @@
 //! [`GrayScottGenConfig`]: the Gray-Scott generator's sampling box, and the
-//! model's `[run.generator]` sampling keys.
+//! model's `[search.generator]` sampling keys.
 
 use sima_core::{Codec, Dec, Enc, Error, Result, prng};
 
@@ -11,7 +11,7 @@ use crate::domains::translate::{self, TomlConfig};
 /// `diffusion_v`. The candidate `count` is a shared generator key and lives
 /// outside this config.
 ///
-/// A degenerate range `[v, v]` fixes its parameter, so a Pearson-style run —
+/// A degenerate range `[v, v]` fixes its parameter, so a Pearson-style search —
 /// vary `feed` and `kill`, pin the classical diffusion pair — is a configuration
 /// of this one model, never a second one.
 ///
@@ -113,7 +113,7 @@ impl Codec for GrayScottGenConfig {
 }
 
 impl TomlConfig for GrayScottGenConfig {
-    /// Reads the sampling keys from the `[run.generator]` table (the shared
+    /// Reads the sampling keys from the `[search.generator]` table (the shared
     /// `count` is already stripped), rejecting any key it does not define. Each
     /// range is required, with no defaults — every value that determines candidate
     /// identity is visible in the config file.
@@ -306,7 +306,7 @@ mod tests {
         Ok(())
     }
 
-    /// The model's `[run.generator]` keys (the shared `count` is stripped before
+    /// The model's `[search.generator]` keys (the shared `count` is stripped before
     /// the model sees the table).
     const KEYS: &str = r#"
         feed = [0.01, 0.08]

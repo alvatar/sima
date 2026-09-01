@@ -1,24 +1,24 @@
 //! Remote-execution acceptance over the real binaries and the built worker
 //! image, in two tiers by carrier.
 //!
-//! Every scenario drives a real run of a GPU format, so all of them carry the
+//! Every scenario drives a real search of a GPU format, so all of them carry the
 //! `on_device` marker and stay on the device machine. What separates the tiers
 //! is the carrier, and each states its own environment requirement: a tier
 //! whose environment is absent prints why and passes, so the suite is clean on
 //! a device machine with no container runtime and no remote.
 //!
 //! **Tier A — a container pool on this machine, no ssh.** The acceptance
-//! scenarios run against the real sima image over a local container runtime:
+//! scenarios search against the real sima image over a local container runtime:
 //! an `[orchestrator]` naming an `image`, so the worker pool's transport is
-//! `podman run --rm -i --name <name> <run_args> <image> sima-worker` with no ssh
+//! `podman search --rm -i --name <name> <run_args> <image> sima-worker` with no ssh
 //! prefix — every layer of the container-worker mechanism except the ssh hop,
 //! which the transport cannot distinguish from any other pipe carrier. Gated on
 //! `SIMA_TEST_IMAGE`.
 //!
 //! **Tier B — a container pool across ssh.** The ssh-specific variants: a mixed
-//! run over this machine and a declared host, the two-stage kill through a
+//! search over this machine and a declared host, the two-stage kill through a
 //! second ssh connection, and the BatchMode refusal on an unreachable host. A
-//! declared host is engaged only under `--fleet`, so every Tier B run passes it.
+//! declared host is engaged only under `--fleet`, so every Tier B search passes it.
 //! Gated on a `SIMA_TEST_REMOTE` ssh destination as well as the image.
 //!
 //! ```text
@@ -30,7 +30,7 @@
 //!   cargo test -p sima --test remote
 //! ```
 //!
-//! The environment configures the container pool so one suite runs against a
+//! The environment configures the container pool so one suite searches against a
 //! local runtime, a provisioned localhost, or a real remote unchanged:
 //!
 //! - `SIMA_TEST_IMAGE` — the sima image; unset skips Tier A, and defaults to
@@ -38,7 +38,7 @@
 //! - `SIMA_TEST_REMOTE` — the ssh destination; unset skips Tier B.
 //! - `SIMA_TEST_RUNTIME` — `docker` or `podman`; defaults to `podman` locally,
 //!   `docker` across ssh.
-//! - `SIMA_TEST_RUN_ARGS` — space-separated container-run flags for GPU access;
+//! - `SIMA_TEST_RUN_ARGS` — space-separated container-search flags for GPU access;
 //!   defaults to `--device nvidia.com/gpu=all` locally, `--gpus all` across ssh.
 
 mod common;
@@ -54,13 +54,13 @@ use common::{
 };
 use sima_pipeline::Event;
 
-/// The candidates and segments every remote test runs. Sized like the device
+/// The candidates and segments every remote test searches. Sized like the device
 /// suite so several chains outnumber the workers and both pools pull work.
 const CANDIDATES: u32 = 12;
 const SEGMENTS: u64 = 3;
 
-/// The container pool the environment names: where its container runs, the
-/// image, the runtime, and its GPU-access run flags. `host` is `None` for a
+/// The container pool the environment names: where its container searches, the
+/// image, the runtime, and its GPU-access search flags. `host` is `None` for a
 /// local runtime (Tier A), where the pool is the orchestrator's own, and the ssh
 /// destination for a remote (Tier B), where it is a declared host.
 struct ContainerEnv {
@@ -141,7 +141,7 @@ impl ContainerEnv {
         )
     }
 
-    /// Whether a run over this pool must ask for the fleet: a declared host is
+    /// Whether a search over this pool must ask for the fleet: a declared host is
     /// engaged only under `--fleet`, and the orchestrator's own pool never
     /// needs it.
     fn engages_fleet(&self) -> bool {
@@ -149,7 +149,7 @@ impl ContainerEnv {
     }
 
     /// A command over the pool's runtime with `args`, ssh-wrapped when the pool
-    /// runs across a host — the same carrier the transport uses, so the test's
+    /// searches across a host — the same carrier the transport uses, so the test's
     /// second-channel kill reaches the same containers.
     fn runtime_command(&self, args: &[&str]) -> Command {
         match &self.host {
@@ -208,12 +208,12 @@ macro_rules! remote_or_skip {
 fn config_text(store: &str, count: u32, segments: u64, machines: &str) -> String {
     format!(
         r#"
-        [run]
+        [search]
         root_seed = 42
         format = "ca_evolution.gray_scott.v1"
         segments = {segments}
 
-        [run.generator]
+        [search.generator]
         id = "ca_evolution.gray_scott.v1"
         count = {count}
         feed = [0.050, 0.058]
@@ -221,7 +221,7 @@ fn config_text(store: &str, count: u32, segments: u64, machines: &str) -> String
         diffusion_u = [0.16, 0.16]
         diffusion_v = [0.08, 0.08]
 
-        [run.params]
+        [search.params]
         width = 128
         height = 128
         steps = 600
@@ -239,11 +239,11 @@ fn config_text(store: &str, count: u32, segments: u64, machines: &str) -> String
     )
 }
 
-/// The `sima run` argument vector over `config`, asking for the fleet when the
+/// The `sima search` argument vector over `config`, asking for the fleet when the
 /// config declares a machine beyond this one.
 fn run_argv(config: &Path, fleet: bool) -> Vec<String> {
     let mut argv = vec![
-        "run".to_string(),
+        "search".to_string(),
         config.to_str().expect("utf-8 path").to_string(),
     ];
     if fleet {
@@ -261,8 +261,8 @@ fn run_to_completion(config: &Path, fleet: bool) {
         .spawn()
         .expect("spawn sima")
         .wait()
-        .expect("wait for the run");
-    assert_eq!(status.code(), Some(0), "the run finalized");
+        .expect("wait for the search");
+    assert_eq!(status.code(), Some(0), "the search finalized");
 }
 
 /// The hosts the journal's `WorkerBound` events name.
@@ -286,7 +286,7 @@ fn assert_no_chain_split(events: &[Event]) {
 
 // ---------------------------------------------------------------------------
 
-/// Every scenario here drives a real run of a GPU format through a container
+/// Every scenario here drives a real search of a GPU format through a container
 /// pool, so each needs a device as well as the runtime that carries it. The
 /// marker is what keeps them on the device machine; the runtime and the ssh
 /// destination are the environment guards inside each tier.
@@ -297,7 +297,7 @@ mod on_device {
     // ---------------------------------------------------------------------------
 
     /// A container pool spread over two device classes commits from both, and no
-    /// chain splits across the class boundary. The pool runs on this machine, so the
+    /// chain splits across the class boundary. The pool searches on this machine, so the
     /// journal cannot tell its classes apart by host; commits on both prove both
     /// were scheduled onto.
     #[test]
@@ -326,14 +326,14 @@ mod on_device {
         assert_no_chain_split(&events);
         assert!(
             manifest_of(&config).is_some(),
-            "the two-class run finalized"
+            "the two-class search finalized"
         );
     }
 
-    /// The same single-class run on a bare pool and on a container pool commits a
+    /// The same single-class search on a bare pool and on a container pool commits a
     /// byte-identical manifest: both resolve to the NVIDIA class on this machine, so
     /// driver parity is exact and the transport carrying an attempt never reaches
-    /// run identity.
+    /// search identity.
     #[test]
     fn single_class_manifests_are_identical_bare_and_container() {
         let env = local_or_skip!();
@@ -362,15 +362,16 @@ mod on_device {
         run_to_completion(&bare, false);
         run_to_completion(&container, env.engages_fleet());
 
-        let bare_manifest = manifest_bytes(&bare).expect("the bare run finalized");
-        let container_manifest = manifest_bytes(&container).expect("the container run finalized");
+        let bare_manifest = manifest_bytes(&bare).expect("the bare search finalized");
+        let container_manifest =
+            manifest_bytes(&container).expect("the container search finalized");
         assert_eq!(
             bare_manifest, container_manifest,
             "one class, one manifest, whatever transport carried the attempts"
         );
     }
 
-    /// A container killed mid-lease is a transient failure: the run converges
+    /// A container killed mid-lease is a transient failure: the search converges
     /// through retry to a valid manifest, and the journal records it.
     #[test]
     fn a_killed_container_converges_through_retry() {
@@ -378,7 +379,7 @@ mod on_device {
         converges_after_a_mid_lease_kill(&env, "kill-local.toml");
     }
 
-    /// A run resumed without one of its container pool's device classes rebinds the
+    /// A search resumed without one of its container pool's device classes rebinds the
     /// chains bound to the absent class and converges — the rebind machinery
     /// composing with container pools.
     #[test]
@@ -438,7 +439,7 @@ mod on_device {
         );
         assert!(
             manifest_of(&one_class).is_some(),
-            "the resumed run finalized"
+            "the resumed search finalized"
         );
     }
 
@@ -446,7 +447,7 @@ mod on_device {
     // Tier B — a container pool across ssh.
     // ---------------------------------------------------------------------------
 
-    /// A mixed run over a local pool and a remote container pool across ssh commits
+    /// A mixed search over a local pool and a remote container pool across ssh commits
     /// from both, and no chain splits. Here the pools sit on different machines, so
     /// the journal names the local pool and the ssh host separately.
     #[test]
@@ -472,7 +473,7 @@ mod on_device {
             "both the local pool and {host} bound workers: {hosts:?}",
         );
         assert_no_chain_split(&events);
-        assert!(manifest_of(&config).is_some(), "the mixed run finalized");
+        assert!(manifest_of(&config).is_some(), "the mixed search finalized");
     }
 
     /// A remote container killed mid-lease over ssh converges through retry — the
@@ -483,7 +484,7 @@ mod on_device {
         converges_after_a_mid_lease_kill(&env, "kill-ssh.toml");
     }
 
-    /// A declared host that resolves nowhere fails cleanly at run start rather than
+    /// A declared host that resolves nowhere fails cleanly at search start rather than
     /// hanging: `BatchMode=yes` turns an unauthenticated or unreachable destination
     /// into a spawn error the image bootstrap surfaces.
     #[test]
@@ -514,11 +515,11 @@ mod on_device {
             .expect("spawn sima");
         assert!(
             !output.status.success(),
-            "an unreachable remote is a clean failure, not a finalized run"
+            "an unreachable remote is a clean failure, not a finalized search"
         );
         assert!(
             manifest_of(&config).is_none(),
-            "no manifest for a run that never spawned a worker"
+            "no manifest for a search that never spawned a worker"
         );
     }
 
@@ -527,7 +528,7 @@ mod on_device {
     // ---------------------------------------------------------------------------
 
     /// Runs a container-only NVIDIA pool, kills one of its containers mid-lease
-    /// through the pool's own carrier, and asserts the run converges through retry
+    /// through the pool's own carrier, and asserts the search converges through retry
     /// to a finalized manifest with the retry recorded.
     fn converges_after_a_mid_lease_kill(env: &ContainerEnv, config_name: &str) {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -553,15 +554,19 @@ mod on_device {
         let killed = poll_until(Duration::from_secs(120), || kill_one_container(env));
         assert!(killed, "a worker container was running to kill");
 
-        let status = child.wait().expect("wait for the run");
-        assert_eq!(status.code(), Some(0), "the run converged after the kill");
+        let status = child.wait().expect("wait for the search");
+        assert_eq!(
+            status.code(),
+            Some(0),
+            "the search converged after the kill"
+        );
 
         let events = journal_events(&config);
         let retried = events
             .iter()
             .any(|event| matches!(event, Event::Retried { .. }));
         assert!(retried, "the killed attempt was retried");
-        assert!(manifest_of(&config).is_some(), "the run finalized");
+        assert!(manifest_of(&config).is_some(), "the search finalized");
     }
 
     /// Kills one worker container whose name carries the pool's stem, best-effort,

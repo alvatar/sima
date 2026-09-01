@@ -2,8 +2,8 @@
 //! answers for it.
 //!
 //! Two callers need that resolution, and they need it for different reasons: a
-//! run acquiring machines for a rented class, and `sima reconcile` reaching the
-//! backend a ledger record names so it can destroy what a crashed run left
+//! search acquiring machines for a rented class, and `sima reconcile` reaching the
+//! backend a ledger record names so it can destroy what a crashed search left
 //! behind. Both go through here, so adding a backend is one arm in one match
 //! rather than one arm in each.
 //!
@@ -136,7 +136,7 @@ mod tests {
 
     #[test]
     fn a_provider_this_build_has_no_backend_for_is_rejected() {
-        // The ledger holds whatever id the run that wrote it used, so a build
+        // The ledger holds whatever id the search that wrote it used, so a build
         // that dropped a backend must say so rather than act on the record.
         let error = provider_for("no-such-cloud", &ProviderSettings::read_only())
             .err()

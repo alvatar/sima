@@ -2,7 +2,7 @@
 //! subprocess workers that host domain executors.
 //!
 //! The transport is operational machinery, never identity-bearing: nothing
-//! that crosses it is hashed, and a run's manifests are byte-identical
+//! that crosses it is hashed, and a search's manifests are byte-identical
 //! whatever transport carried its attempts.
 //!
 //! - [`protocol`] — the wire protocol: the message vocabulary both endpoints
@@ -34,7 +34,7 @@
 //!
 //! The two remote transports differ by **how a worker is launched**, which is
 //! what their names state: one nests the worker in a container the transport
-//! runs, the other hands the worker to ssh as the command to execute.
+//! searches, the other hands the worker to ssh as the command to execute.
 
 pub mod container;
 pub mod device_probe;

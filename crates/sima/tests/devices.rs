@@ -22,19 +22,19 @@ use common::{
 };
 use sima_pipeline::Event;
 
-/// The format every test here runs: the WGSL Gray-Scott model, whose devices
+/// The format every test here searches: the WGSL Gray-Scott model, whose devices
 /// the Vulkan loader enumerates.
 const FORMAT: &str = "ca_evolution.gray_scott.v1";
 
-/// The candidates and segments every multi-device test here runs.
+/// The candidates and segments every multi-device test here searches.
 ///
 /// Sized so both classes provably pull work: a device's first task waits on
 /// its worker's handshake, which initializes its GPU backend, so a class that
-/// initializes faster would take every chain of a run whose tasks are quicker
+/// initializes faster would take every chain of a search whose tasks are quicker
 /// than that startup gap. At 128×128 over 600 steps a segment costs far more
 /// than a handshake, so the slower class's workers are still handed chains
 /// long after both are up — and 12 chains outnumber the 4 workers, so no
-/// class can hold the whole run by taking one task each.
+/// class can hold the whole search by taking one task each.
 const CANDIDATES: u32 = 12;
 const SEGMENTS: u64 = 3;
 
@@ -44,12 +44,12 @@ const SEGMENTS: u64 = 3;
 fn config_text(store: &str, count: u32, segments: u64, orchestrator: &str) -> String {
     format!(
         r#"
-        [run]
+        [search]
         root_seed = 42
         format = "{FORMAT}"
         segments = {segments}
 
-        [run.generator]
+        [search.generator]
         id = "ca_evolution.gray_scott.v1"
         count = {count}
         feed = [0.050, 0.058]
@@ -57,7 +57,7 @@ fn config_text(store: &str, count: u32, segments: u64, orchestrator: &str) -> St
         diffusion_u = [0.16, 0.16]
         diffusion_v = [0.08, 0.08]
 
-        [run.params]
+        [search.params]
         width = 128
         height = 128
         steps = 600
@@ -93,10 +93,10 @@ const NVIDIA_ONLY: &str = r#"
         workers = 2
     "#;
 
-/// Spawns `sima run` over `config`, output discarded.
+/// Spawns `sima search` over `config`, output discarded.
 fn spawn_run(config: &Path) -> Child {
     sima_command()
-        .args(["run", config.to_str().expect("utf-8 path")])
+        .args(["search", config.to_str().expect("utf-8 path")])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
@@ -105,8 +105,8 @@ fn spawn_run(config: &Path) -> Child {
 
 /// Runs `config` to completion, asserting it finalized.
 fn run_to_completion(config: &Path) {
-    let status = spawn_run(config).wait().expect("wait for the run");
-    assert_eq!(status.code(), Some(0), "the run finalized");
+    let status = spawn_run(config).wait().expect("wait for the search");
+    assert_eq!(status.code(), Some(0), "the search finalized");
 }
 
 /// The devices a chain's segments ran on, from the journal.
@@ -129,7 +129,7 @@ fn assert_chains_never_split(config: &Path) -> Vec<(String, usize)> {
     for (chain, trail) in chain_trails(config).iter().enumerate() {
         let devices = chain_devices(trail, &ran_on);
         // A chain whose segments were all committed by an earlier session
-        // contributes no lease to this journal; one that ran must have run in
+        // contributes no lease to this journal; one that ran must have search in
         // one place.
         assert!(
             devices.len() <= 1,
@@ -145,7 +145,7 @@ fn assert_chains_never_split(config: &Path) -> Vec<(String, usize)> {
     per_device
 }
 
-/// A chain that has run on a device whose name contains `device`, and still
+/// A chain that has search on a device whose name contains `device`, and still
 /// has segments left — the state a rebind needs to have anything to move.
 fn chain_with_work_on(config: &Path, device: &str) -> Option<usize> {
     let events = journal_events(config);
@@ -189,16 +189,19 @@ mod on_device {
             "every chain ran"
         );
         // Greedy placement hands an unbound chain to whichever class is free, and
-        // at this workload's sizing neither class can absorb the run alone.
+        // at this workload's sizing neither class can absorb the search alone.
         assert_eq!(
             per_device.len(),
             2,
             "both classes took chains: {per_device:?}"
         );
-        assert!(manifest_of(&config).is_some(), "the run wrote a manifest");
+        assert!(
+            manifest_of(&config).is_some(),
+            "the search wrote a manifest"
+        );
     }
 
-    /// A run killed mid-flight and resumed keeps each chain on the class it
+    /// A search killed mid-flight and resumed keeps each chain on the class it
     /// started on: the binding is durable, so nothing rebinds.
     #[test]
     fn chains_keep_their_class_across_a_resume() {
@@ -210,7 +213,7 @@ mod on_device {
             &config_text("./store", CANDIDATES, SEGMENTS, BOTH_DEVICES),
         );
 
-        // Kill the orchestrator once the run is under way, so some chains are
+        // Kill the orchestrator once the search is under way, so some chains are
         // bound and partly walked while others are untouched.
         let mut child = spawn_run(&config);
         let bound = poll_until(Duration::from_secs(120), || {
@@ -220,11 +223,11 @@ mod on_device {
                 .count()
                 >= 2
         });
-        assert!(bound, "the run committed before the deadline");
+        assert!(bound, "the search committed before the deadline");
         child.kill().expect("kill the orchestrator");
         child.wait().expect("reap the orchestrator");
 
-        // The kill landed mid-run: work remains, so the second session is a real
+        // The kill landed mid-search: work remains, so the second session is a real
         // resume rather than a re-finalization that would satisfy every assertion
         // below without running anything.
         assert!(
@@ -248,11 +251,14 @@ mod on_device {
             "every class was still present, so nothing moved"
         );
         assert_chains_never_split(&config);
-        assert!(manifest_of(&config).is_some(), "the resumed run finalized");
+        assert!(
+            manifest_of(&config).is_some(),
+            "the resumed search finalized"
+        );
     }
 
     /// A chain bound to a class the config no longer names moves to one that is
-    /// present, loudly, and the run converges.
+    /// present, loudly, and the search converges.
     #[test]
     fn removing_a_device_rebinds_its_chains_and_the_run_converges() {
         require_devices(FORMAT, &["nvidia", "intel"]);
@@ -277,7 +283,7 @@ mod on_device {
         child.kill().expect("kill the orchestrator");
         child.wait().expect("reap the orchestrator");
 
-        // The same run, resumed over one class: the chain bound to the other has
+        // The same search, resumed over one class: the chain bound to the other has
         // nowhere to go but here.
         let one = common::write_config_text(
             dir.path(),
@@ -299,12 +305,12 @@ mod on_device {
         );
         // The manifest is valid; no equality is claimed against a single-class
         // reference, because mixed provenance is a legitimate outcome here.
-        assert!(manifest_of(&one).is_some(), "the run converged");
+        assert!(manifest_of(&one).is_some(), "the search converged");
     }
 
-    /// A run that names one device commits byte-for-byte what the same run
+    /// A search that names one device commits byte-for-byte what the same search
     /// commits under a plain worker count: placement is operational, so it reaches
-    /// nothing a run records.
+    /// nothing a search records.
     #[test]
     fn a_single_device_run_commits_the_same_manifest_as_a_plain_worker_count() {
         require_devices(FORMAT, &["nvidia"]);
@@ -323,7 +329,7 @@ mod on_device {
         );
         run_to_completion(&reference);
 
-        // The same run under the placement machinery: one named device, four
+        // The same search under the placement machinery: one named device, four
         // workers on it.
         let placed = common::write_config_text(
             dir.path(),
@@ -341,13 +347,13 @@ mod on_device {
         );
         run_to_completion(&placed);
 
-        // The manifest file itself, byte for byte: what a run commits is the
+        // The manifest file itself, byte for byte: what a search commits is the
         // claim, so the bytes on disk are the evidence.
         let reference = manifest_bytes(&reference).expect("the reference finalized");
-        let placed = manifest_bytes(&placed).expect("the placed run finalized");
+        let placed = manifest_bytes(&placed).expect("the placed search finalized");
         assert_eq!(
             reference, placed,
-            "placement is operational: it never touches what a run commits"
+            "placement is operational: it never touches what a search commits"
         );
     }
 }

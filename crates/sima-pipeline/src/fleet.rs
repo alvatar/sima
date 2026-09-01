@@ -6,14 +6,14 @@
 //! reached where it stands, and a rented one is acquired from a control plane
 //! first.
 //!
-//! Whether a run consults this at all is the invocation's answer, not the
+//! Whether a search consults this at all is the invocation's answer, not the
 //! config's — see [`Engagement`].
 
 use crate::config::{
     Container, FillPolicy, Host, HostClass, HostClassForm, HostForm, LoadedConfig, Pool, Rented,
 };
 
-/// Which machines a run executes on. A config declares what a run *may* use;
+/// Which machines a search executes on. A config declares what a search *may* use;
 /// the invocation decides what it *does* use, so renting is never a
 /// consequence of a config sitting on disk.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -29,12 +29,12 @@ pub(crate) struct OwnedMachine<'a> {
     /// The ssh destination it is reached at, which is also the label its
     /// workers are journaled under.
     pub(crate) ssh: &'a str,
-    /// The container its workers run in.
+    /// The container its workers search in.
     pub(crate) container: &'a Container,
     /// Its worker layout.
     pub(crate) pool: &'a Pool,
-    /// Where this machine keeps what a run puts there — a migrated run's
-    /// directory, and the programs a fleet run delivers.
+    /// Where this machine keeps what a search puts there — a migrated search's
+    /// directory, and the programs a fleet search delivers.
     pub(crate) root: &'a str,
 }
 
@@ -48,10 +48,10 @@ pub(crate) struct Rental<'a> {
     pub(crate) count: usize,
     /// What to do when the market cannot fill the count.
     pub(crate) fill: FillPolicy,
-    /// Where each machine keeps what a run puts there.
+    /// Where each machine keeps what a search puts there.
     pub(crate) root: &'a str,
-    /// The `sima` binary on each machine, which runs the far half of whatever
-    /// this run delivers to it.
+    /// The `sima` binary on each machine, which searches the far half of whatever
+    /// this search delivers to it.
     pub(crate) binary: &'a str,
 }
 
@@ -138,16 +138,16 @@ mod tests {
     use super::*;
     use crate::fixtures::load_str;
 
-    /// A config whose orchestrator runs two workers, plus whatever `machines`
+    /// A config whose orchestrator searches two workers, plus whatever `machines`
     /// declares.
     fn config(machines: &str) -> LoadedConfig {
         load_str(&format!(
             r#"
-            [run]
+            [search]
             root_seed = 1
             format = "stub.v1"
 
-            [run.generator]
+            [search.generator]
             id = "stub.v1"
             behaviors = ["succeed"]
 

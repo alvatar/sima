@@ -1,5 +1,5 @@
 //! The rented-hardware control plane: the provider-agnostic boundary between a
-//! run and the machines it rents.
+//! search and the machines it rents.
 //!
 //! A provider lists a marketplace of concrete offers, rents one, reports
 //! its state, and destroys it. Offers are normalized across providers, so
@@ -9,20 +9,20 @@
 //! Selection splits in two: hard [`Constraints`] disqualify offers, and one
 //! scalar [`Objective`] ranks whatever qualifies.
 //!
-//! A rented machine is money spent for as long as it runs, so teardown is
+//! A rented machine is money spent for as long as it searches, so teardown is
 //! guaranteed on three levels. [`InstanceGuard`] destroys the instance
 //! whenever it goes out of scope, covering success, failure, panic unwind,
 //! and the graceful wind-down an interrupt triggers. Behind it, every
 //! attempt writes a ledger record in the store before the provider is
 //! called, so a process killed outright still leaves the machine
-//! discoverable — and `reconcile`, which runs at the start of every
+//! discoverable — and `reconcile`, which searches at the start of every
 //! acquisition, destroys what an earlier process left behind.
 //!
 //! What those machines cost is counted the same way: every rental that ends
-//! leaves a durable spend entry behind, so a run's total spend outlives both
+//! leaves a durable spend entry behind, so a search's total spend outlives both
 //! its machines and the process that rented them. A [`Budget`] states the
 //! ceilings that total and the rental phase's wall-clock must stay under,
-//! [`assess`] answers where a run stands against them, and acquisition
+//! [`assess`] answers where a search stands against them, and acquisition
 //! refuses to rent once they are reached.
 
 mod acquire;

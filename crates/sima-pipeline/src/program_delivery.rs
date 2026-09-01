@@ -1,10 +1,10 @@
-//! Getting a registered program onto the machines a run puts work on, and
+//! Getting a registered program onto the machines a search puts work on, and
 //! spawning it there.
 //!
-//! A `[domain.*]` entry routes the run's format to a program on the
+//! A `[domain.*]` entry routes the search's format to a program on the
 //! orchestrator. A fleet machine has no such program, so before it can serve a
 //! worker the program has to be there — the payload's objects delivered, the
-//! install run, the tree stamped — and every process the run spawns on that
+//! install search, the tree stamped — and every process the search spawns on that
 //! machine is that installed tree's entry point rather than the image's own
 //! worker.
 //!
@@ -25,10 +25,10 @@
 //! ```
 //!
 //! Two properties make repeat delivery cheap rather than merely correct. The
-//! store under `<dir>` is shared across runs, so the sync's own have/want
+//! store under `<dir>` is shared across searches, so the sync's own have/want
 //! negotiation moves an unchanged program's bytes once, ever. And both trees
 //! are built through [`crate::stamped_tree`], so a machine that already holds a
-//! digest runs no install and several runs delivering at once build one tree
+//! digest searches no install and several searches delivering at once build one tree
 //! between them.
 //!
 //! The SDK ships from the orchestrator's build rather than from the machine's
@@ -39,9 +39,9 @@
 //!
 //! How the installed program is reached follows how the machine is:
 //!
-//! - a machine of yours runs it in the image its workers run in, with the
+//! - a machine of yours searches it in the image its workers search in, with the
 //!   delivery directory bind-mounted at the identical path on both sides;
-//! - a rented machine runs it over ssh, which already lands inside that
+//! - a rented machine searches it over ssh, which already lands inside that
 //!   machine's own container;
 //! - a machine reached without a hop is this one, so the program is spawned
 //!   directly under the explicit policy every configured program gets here.
@@ -72,7 +72,7 @@ use crate::sync_session::sync_against;
 ///
 /// A container gets a fresh filesystem, so its working directory is already
 /// nobody else's. A shell reached over ssh lands in a home directory the
-/// machine shares across everything run there, so it makes one — which is what
+/// machine shares across everything search there, so it makes one — which is what
 /// the local policy gives a configured program.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Scratch {
@@ -81,29 +81,29 @@ enum Scratch {
 }
 
 /// The `sima` binary inside a worker image, by its name on the `PATH` there.
-/// A delivery's far half runs there rather than on the machine itself, so the
-/// install builds in the environment the program will run in.
+/// A delivery's far half searches there rather than on the machine itself, so the
+/// install builds in the environment the program will search in.
 const IMAGE_BINARY: &str = "sima";
 /// The directory a machine's delivered programs hang off, under the `root` its
-/// entry names. Every run delivering to that machine shares it, which is what
+/// entry names. Every search delivering to that machine shares it, which is what
 /// makes an unchanged program cross the wire once.
 const PROGRAMS_DIR: &str = "programs";
 /// The store the delivered objects land in, under the delivery directory.
-/// Shared across every run that delivers to this machine.
+/// Shared across every search that delivers to this machine.
 const STORE_DIR: &str = "store";
 /// The directory the SDK trees hang off, keyed by SDK digest below it. A digest
 /// directory is 64 hex characters, so this name cannot collide with one.
 const SDK_DIR: &str = "sdk";
 
-/// What a run sends a machine so that machine can serve the run's format: the
+/// What a search sends a machine so that machine can serve the search's format: the
 /// program's payload, and the SDK the program imports when its entry declares
 /// one.
 ///
-/// Both are content addresses of objects in the run's own store, so what
+/// Both are content addresses of objects in the search's own store, so what
 /// crosses the wire is decided by what the machine already holds.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProgramDelivery {
-    /// The payload manifest: the digest every worker of this run answers at its
+    /// The payload manifest: the digest every worker of this search answers at its
     /// handshake.
     payload: Hash,
     /// The SDK the entry declared and the manifest it ingested to, for an entry
@@ -112,13 +112,13 @@ pub struct ProgramDelivery {
     /// variable that tree leads.
     sdk: Option<(Sdk, Hash)>,
     /// The variable names the entry declared. They cross as names alone — each
-    /// value is read on the machine the program runs on — so a credential never
+    /// value is read on the machine the program searches on — so a credential never
     /// reaches a command line or the wire.
     env: Vec<String>,
 }
 
 impl ProgramDelivery {
-    /// The payload digest this delivery installs, which is what the run expects
+    /// The payload digest this delivery installs, which is what the search expects
     /// back from every worker it spawns on a machine that received it.
     pub fn payload(&self) -> &Hash {
         &self.payload
@@ -147,13 +147,13 @@ impl ProgramDelivery {
     ///
     /// The key set is empty and the scope is [`ObjectScope::Named`] over the
     /// closure: no task record names a program, so the objects are advertised
-    /// by hand and nothing else about the run crosses.
+    /// by hand and nothing else about the search crosses.
     pub fn send(&self, store: &Store, argv: &[String]) -> Result<SyncReport> {
         let closure = self.closure(store)?;
         sync_against(store, &[], ObjectScope::Named(&closure), argv)
     }
 
-    /// What a container on a machine rooted at `root` runs to reach this
+    /// What a container on a machine rooted at `root` searches to reach this
     /// program, with `args` handed to it.
     ///
     /// Three things make the container's program the same program it would be
@@ -173,7 +173,7 @@ impl ProgramDelivery {
         )
     }
 
-    /// What an ssh command runs to reach this program on a machine rooted at
+    /// What an ssh command searches to reach this program on a machine rooted at
     /// `root`, with `args` handed to it.
     ///
     /// No mount and no forwarding: ssh lands inside the machine's own
@@ -228,13 +228,13 @@ impl ProgramDelivery {
     ///
     /// The digest is read from that machine's own stamp at exec time rather
     /// than written in, so what a worker answers at its handshake is that
-    /// disk's claim about what is installed there — and the run's comparison is
+    /// disk's claim about what is installed there — and the search's comparison is
     /// against a value it never wrote.
     ///
     /// What the shell sets is what the local `Explicit` policy would: the
     /// digest assigned, and the SDK's directory leading the interpreter's path
     /// rather than replacing it, so the vended package matching the protocol
-    /// this run speaks resolves first and whatever the machine already has
+    /// this search speaks resolves first and whatever the machine already has
     /// resolves behind it. What it does not do is scrub: ssh carries none of
     /// this process's environment, and a container's is its image's, so the
     /// environment there is already the machine's own — which is where the
@@ -285,7 +285,7 @@ impl ProgramDelivery {
     }
 }
 
-/// Where a machine whose entry names `root` keeps the programs runs deliver to
+/// Where a machine whose entry names `root` keeps the programs searches deliver to
 /// it.
 ///
 /// The path travels unresolved — a tilde is the receiving machine's shell's to
@@ -295,15 +295,15 @@ pub(crate) fn programs_dir(root: &str) -> String {
     format!("{}/{PROGRAMS_DIR}", root.trim_end_matches('/'))
 }
 
-/// Refuses a run whose format is a program that cannot travel.
+/// Refuses a search whose format is a program that cannot travel.
 ///
 /// Such an entry declares neither `payload` nor `payload_digest`, which is what
 /// says the program stays on the machine it is installed on. A fleet machine
-/// would never receive it and could serve no worker for the run, and no
-/// machine's answer could change that — so a run that engages one is refused
+/// would never receive it and could serve no worker for the search, and no
+/// machine's answer could change that — so a search that engages one is refused
 /// before any machine is contacted.
 pub(crate) fn sendable(config: &LoadedConfig) -> Result<()> {
-    let format = &config.run.format;
+    let format = &config.search.format;
     let Some(routed) = config.domains.routed(format) else {
         return Ok(());
     };
@@ -311,22 +311,22 @@ pub(crate) fn sendable(config: &LoadedConfig) -> Result<()> {
         return Err(Error::Validation(format!(
             "the program declared for format {:?} cannot reach another machine: its \
              [domain] entry names no `payload`, so a machine of the fleet never \
-             receives it and can serve no worker for this run",
+             receives it and can serve no worker for this search",
             format.as_str()
         )));
     }
     Ok(())
 }
 
-/// Ingests what `config`'s run sends its machines into `store`, and answers it.
+/// Ingests what `config`'s search sends its machines into `store`, and answers it.
 ///
-/// `None` for a run whose format this build carries: every machine's own worker
+/// `None` for a search whose format this build carries: every machine's own worker
 /// answers for it, so nothing travels.
 ///
 /// A routed format whose entry declares neither `payload` nor `payload_digest`
 /// is refused here, naming the format and the key. Such an entry says the
 /// program stays on the machine it is installed on, and a machine that never
-/// receives it cannot serve a worker for the run — so the refusal comes before
+/// receives it cannot serve a worker for the search — so the refusal comes before
 /// any machine is contacted.
 ///
 /// Ingesting is idempotent by content addressing: a config carrying
@@ -335,7 +335,7 @@ pub(crate) fn sendable(config: &LoadedConfig) -> Result<()> {
 /// store holds.
 pub fn ingest_program(config: &LoadedConfig, store: &Store) -> Result<Option<ProgramDelivery>> {
     sendable(config)?;
-    let Some(routed) = config.domains.routed(&config.run.format) else {
+    let Some(routed) = config.domains.routed(&config.search.format) else {
         return Ok(None);
     };
     let payload = match (routed.payload, routed.payload_digest) {
@@ -361,14 +361,14 @@ pub fn ingest_program(config: &LoadedConfig, store: &Store) -> Result<Option<Pro
 /// Delivers `delivery` to every machine of yours the fleet drew in, so each
 /// holds the program before its pool is constructed.
 ///
-/// The far half runs in the image the machine's workers run in, with the
+/// The far half searches in the image the machine's workers search in, with the
 /// delivery directory bind-mounted at the identical path on both sides. Both
 /// follow from what an install is: a script that builds the program has to
-/// build it in the environment the program will run in, and the stamp it writes
+/// build it in the environment the program will search in, and the stamp it writes
 /// has to name the same file to the spawn that reads it later.
 ///
-/// A machine that cannot be delivered to fails the run, naming it. It was
-/// declared as a place this run executes, and without the program it can serve
+/// A machine that cannot be delivered to fails the search, naming it. It was
+/// declared as a place this search executes, and without the program it can serve
 /// no worker.
 pub(crate) fn deliver_to_owned(
     machines: &[OwnedMachine<'_>],
@@ -376,14 +376,14 @@ pub(crate) fn deliver_to_owned(
     delivery: Option<&ProgramDelivery>,
     events: &Emitter,
 ) -> Result<()> {
-    // A run whose format every machine's image answers for itself sends
+    // A search whose format every machine's image answers for itself sends
     // nothing, so no machine is contacted here at all.
     let Some(delivery) = delivery else {
         return Ok(());
     };
     for machine in machines {
         // A delivery installs the program on the machine, which is the longest
-        // thing a fleet run does before its first worker binds.
+        // thing a fleet search does before its first worker binds.
         events.emit(Event::InstallingProgram {
             member: machine.ssh.to_string(),
         });
@@ -395,9 +395,9 @@ pub(crate) fn deliver_to_owned(
             &machine.container.runtime,
             &machine.container.image,
             &machine.container.run_args,
-            // The delivery itself forwards nothing: it runs sima's own verb,
+            // The delivery itself forwards nothing: it searches sima's own verb,
             // and what the program needs to see is stated where the program
-            // runs.
+            // searches.
             &ContainerRun::program(vec![format!("{programs}:{programs}")], Vec::new(), command),
         );
         delivery.send(store, &argv).map_err(|e| {
@@ -418,7 +418,7 @@ pub(crate) fn deliver_to_owned(
 /// every diagnostic goes to stderr, which ssh keeps on its own channel.
 ///
 /// It addresses a directory and two digests rather than a config, for the
-/// reason the `--run` form does: loading a config resolves its `[domain.*]`
+/// reason the `--search` form does: loading a config resolves its `[domain.*]`
 /// entries, which spawns the very program this session is delivering.
 pub fn receive_program(
     dir: &Path,
@@ -483,10 +483,10 @@ mod tests {
         let delivery = delivery(true, &[]);
         let (_, sdk) = delivery.sdk.expect("an SDK");
         assert_eq!(
-            delivery.args("~/sima-runs/programs"),
+            delivery.args("~/sima/programs"),
             [
                 "sync-serve",
-                "~/sima-runs/programs",
+                "~/sima/programs",
                 "--payload",
                 &delivery.payload.to_string(),
                 "--sdk",
@@ -525,22 +525,22 @@ mod tests {
 
     #[test]
     fn the_programs_directory_hangs_off_the_root_however_it_was_written() {
-        assert_eq!(programs_dir("~/sima-runs"), "~/sima-runs/programs");
+        assert_eq!(programs_dir("~/sima"), "~/sima/programs");
         assert_eq!(programs_dir("/srv/sima/"), "/srv/sima/programs");
     }
 
     #[test]
     fn a_worker_reads_the_machine_s_own_stamp_before_it_execs_the_program() {
-        // The digest is read where the program runs, not written in from here,
+        // The digest is read where the program searches, not written in from here,
         // so what the worker answers is that disk's claim about what is
         // installed on it.
         let delivery = delivery(false, &[]);
-        let run = delivery.container_run("~/sima-runs", &[]);
-        let tree = format!("~/sima-runs/programs/{}", delivery.payload);
+        let search = delivery.container_run("~/sima", &[]);
+        let tree = format!("~/sima/programs/{}", delivery.payload);
         assert_eq!(
-            run,
+            search,
             ContainerRun::program(
-                vec!["~/sima-runs/programs:~/sima-runs/programs".to_string()],
+                vec!["~/sima/programs:~/sima/programs".to_string()],
                 Vec::new(),
                 vec![
                     "sh".to_string(),
@@ -558,12 +558,12 @@ mod tests {
     #[test]
     fn an_entry_declaring_an_sdk_leads_the_module_path_with_it() {
         // Leading rather than replacing: the delivered package matches the
-        // protocol this run speaks, and whatever the machine already installed
+        // protocol this search speaks, and whatever the machine already installed
         // still resolves behind it.
         let delivery = delivery(true, &[]);
         let (_, sdk) = delivery.sdk.expect("an SDK");
-        let run = delivery.container_run("/srv", &[]);
-        let script = format!("{run:?}");
+        let search = delivery.container_run("/srv", &[]);
+        let script = format!("{search:?}");
         assert!(
             script.contains(&format!(
                 "PYTHONPATH=/srv/programs/sdk/{sdk}/installed${{PYTHONPATH:+:$PYTHONPATH}}"
@@ -579,9 +579,9 @@ mod tests {
     #[test]
     fn the_declared_variables_are_forwarded_by_name_and_the_arguments_reach_the_program() {
         let delivery = delivery(false, &["HF_TOKEN", "CACHE_DIR"]);
-        let run = delivery.container_run("/srv", &["--serve-domain", "stub.v1"]);
+        let search = delivery.container_run("/srv", &["--serve-domain", "stub.v1"]);
         assert_eq!(
-            run,
+            search,
             ContainerRun::program(
                 vec!["/srv/programs:/srv/programs".to_string()],
                 vec!["HF_TOKEN".to_string(), "CACHE_DIR".to_string()],

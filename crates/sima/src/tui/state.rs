@@ -1,10 +1,10 @@
 //! The tui state machine: [`TuiState`] handles a [`Msg`] and projects a
 //! [`ViewModel`] the view draws.
 //!
-//! `TuiState` owns a [`RunStatus`] and applies every journal record to it,
-//! so `sima status` and the tui update the same `RunStatus` type through the
+//! `TuiState` owns a [`SearchStatus`] and applies every journal record to it,
+//! so `sima status` and the tui update the same `SearchStatus` type through the
 //! same `apply` method and derive identical state from the same events. Only
-//! UI concerns live here: which run the session is driving, whether a start or
+//! UI concerns live here: which search the session is driving, whether a start or
 //! stop is pending for the runtime to act on, whether an exit is armed, and
 //! the session outcome that decides the exit code. No terminal types, no
 //! channels, no I/O.
@@ -12,7 +12,7 @@
 use std::collections::VecDeque;
 
 use sima_core::Result;
-use sima_pipeline::{Occupancy, Record, RunOutcome, RunState, RunStatus};
+use sima_pipeline::{Occupancy, Record, SearchOutcome, SearchState, SearchStatus};
 
 use crate::render::describe;
 
@@ -23,12 +23,12 @@ const LOG_CAPACITY: usize = 100;
 /// the state machine never names a crossterm type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeyAction {
-    /// Start the run, or restart it after a terminal state.
+    /// Start the search, or restart it after a terminal state.
     Start,
-    /// Wind the run down gracefully.
+    /// Wind the search down gracefully.
     Stop,
     /// Leave: immediately when idle or ended, else stop and leave once the
-    /// run returns.
+    /// search returns.
     Quit,
     /// Leave at once without draining.
     ForceQuit,
@@ -36,21 +36,21 @@ pub enum KeyAction {
     Help,
 }
 
-/// The observer session's view of the run's lock, set by the app loop after
+/// The observer session's view of the search's lock, set by the app loop after
 /// each probe. Liveness comes from the lock: a held lock is a live foreign
 /// orchestrator, a free one — while the journal still says in progress —
-/// is a dead or finished orchestrator whose run is resumable.
+/// is a dead or finished orchestrator whose search is resumable.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LockView {
-    /// Another process holds the run lock; the string is the holder line
+    /// Another process holds the search lock; the string is the holder line
     /// its locker recorded (pid, hostname).
     Held(String),
-    /// The lock is free: no orchestrator drives the run.
+    /// The lock is free: no orchestrator drives the search.
     Free,
 }
 
-/// A message handled by the UI state: a journal record from the run, a key
-/// press, or the run thread's terminal result.
+/// A message handled by the UI state: a journal record from the search, a key
+/// press, or the search thread's terminal result.
 #[derive(Debug)]
 pub enum Msg {
     /// One journal record from the observer stream.
@@ -58,83 +58,83 @@ pub enum Msg {
     /// A key press, already mapped to its action.
     Key(KeyAction),
     /// The orchestrate thread returned this outcome.
-    Finished(Result<RunOutcome>),
+    Finished(Result<SearchOutcome>),
 }
 
-/// What the session is doing, as the header reads it. The terminal run states
+/// What the session is doing, as the header reads it. The terminal search states
 /// (finalized, failed, interrupted) are projected from the session outcome
-/// once the run thread has returned.
+/// once the search thread has returned.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Activity {
-    /// No run driven yet, or a run finished and none is active.
+    /// No search driven yet, or a search finished and none is active.
     Idle,
     /// The orchestrate thread is running.
     Running,
-    /// An interrupt was requested; the run is draining.
+    /// An interrupt was requested; the search is draining.
     WindingDown,
-    /// The run thread returned; the outcome holds the terminal state.
+    /// The search thread returned; the outcome holds the terminal state.
     Ended,
 }
 
 /// The session's outcome, which decides the exit code. A tui session may
-/// drive several runs; the last terminal state decides.
+/// drive several searches; the last terminal state decides.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SessionOutcome {
-    /// No run reached a terminal state — fresh, or quit while idle.
+    /// No search reached a terminal state — fresh, or quit while idle.
     Clean,
-    /// The last run finalized.
+    /// The last search finalized.
     Finalized,
-    /// The last run failed definitively.
+    /// The last search failed definitively.
     Failed,
-    /// A run was interrupted, or force-quit while in flight.
+    /// A search was interrupted, or force-quit while in flight.
     Interrupted,
-    /// An infrastructure fault surfaced from a run.
+    /// An infrastructure fault surfaced from a search.
     Faulted,
 }
 
 impl SessionOutcome {
-    /// The outcome a returned run result carries, for the header label.
-    fn of(result: &Result<RunOutcome>) -> SessionOutcome {
+    /// The outcome a returned search result carries, for the header label.
+    fn of(result: &Result<SearchOutcome>) -> SessionOutcome {
         match result {
-            Ok(RunOutcome::Finalized { .. }) => SessionOutcome::Finalized,
-            Ok(RunOutcome::Failed { .. }) => SessionOutcome::Failed,
-            Ok(RunOutcome::Interrupted { .. }) => SessionOutcome::Interrupted,
+            Ok(SearchOutcome::Finalized { .. }) => SessionOutcome::Finalized,
+            Ok(SearchOutcome::Failed { .. }) => SessionOutcome::Failed,
+            Ok(SearchOutcome::Interrupted { .. }) => SessionOutcome::Interrupted,
             Err(_) => SessionOutcome::Faulted,
         }
     }
 }
 
-/// The UI state: the run status plus the session's own concerns.
+/// The UI state: the search status plus the session's own concerns.
 pub struct TuiState {
-    /// The run's observable state, built from the observer stream through the
+    /// The search's observable state, built from the observer stream through the
     /// same `apply` method `sima status` uses.
-    status: RunStatus,
+    status: SearchStatus,
     /// The configured worker count, for one panel row per worker.
     workers: usize,
     /// What the session is doing.
     activity: Activity,
     /// The session outcome, for the header's terminal-state label.
     outcome: SessionOutcome,
-    /// The exit code the session leaves with; 0 until a run — or a force
-    /// quit mid-run — decides otherwise.
+    /// The exit code the session leaves with; 0 until a search — or a force
+    /// quit mid-search — decides otherwise.
     exit_code: u8,
     /// A start is pending: the runtime should spawn the orchestrate thread.
     start_pending: bool,
     /// A stop is pending: the runtime should set the interrupt flag.
     stop_pending: bool,
-    /// Once the active run returns, leave the loop.
+    /// Once the active search returns, leave the loop.
     exit_on_finish: bool,
     /// Leave the loop now.
     exit: bool,
     /// Whether the help overlay is open, drawn over the frame.
     help_open: bool,
-    /// The lock state of a run another process drives, while this session
+    /// The lock state of a search another process drives, while this session
     /// observes it; `None` in the drive session. Governs the header label,
     /// the meaning of `s`, and the refusal of `x`.
     observation: Option<LockView>,
 
-    /// Whether this session may take a freed run over. A run is driven where
-    /// its hardware is, so a session watching another host's run never can.
+    /// Whether this session may take a freed search over. A search is driven where
+    /// its hardware is, so a session watching another host's search never can.
     takeover: bool,
 
     /// A transient status message — a refused key names the holder here.
@@ -158,10 +158,10 @@ pub struct WorkerRow {
 /// resolved, so the view only lays it out.
 #[derive(Debug)]
 pub struct ViewModel {
-    /// The run the session drives, as its id string.
-    pub run: String,
+    /// The search the session drives, as its id string.
+    pub search: String,
     /// The header state label: idle, running, winding down, a terminal
-    /// state, or the observation line naming the run's holder.
+    /// state, or the observation line naming the search's holder.
     pub state: String,
     /// A transient status message shown beside the state, or `None`.
     pub notice: Option<String>,
@@ -169,7 +169,7 @@ pub struct ViewModel {
     pub workers: Vec<WorkerRow>,
     /// Committed task count.
     pub committed: usize,
-    /// The run's task count.
+    /// The search's task count.
     pub tasks: usize,
     /// Retry count.
     pub retried: usize,
@@ -189,7 +189,7 @@ impl TuiState {
     /// An idle session over `status` with `workers` configured workers. The
     /// status seeds the display — zeroed for a fresh store, or replayed from
     /// an existing journal — and the live stream applies to it from here.
-    pub fn new(status: RunStatus, workers: usize) -> TuiState {
+    pub fn new(status: SearchStatus, workers: usize) -> TuiState {
         TuiState {
             status,
             workers,
@@ -217,8 +217,8 @@ impl TuiState {
         self.observation = Some(lock);
     }
 
-    /// Marks the session unable to take the run over, for an observation of a
-    /// run on another host: the take-over affordance is absent from the
+    /// Marks the session unable to take the search over, for an observation of a
+    /// search on another host: the take-over affordance is absent from the
     /// header, and `s` over a freed lock reports why instead of leaving.
     pub fn observe_only(&mut self) {
         self.takeover = false;
@@ -234,7 +234,7 @@ impl TuiState {
     }
 
     /// Applies one journal record to the status and appends its line to the
-    /// log, sharing the wording of `sima run` through [`describe`]. The
+    /// log, sharing the wording of `sima search` through [`describe`]. The
     /// commit count is read after the record is applied so a commit line
     /// shows the count that includes it.
     fn on_event(&mut self, record: Record) {
@@ -262,18 +262,18 @@ impl TuiState {
                 // There is no channel to control another process: while the
                 // foreign orchestrator lives, `s` is refused with a notice.
                 Some(LockView::Held(holder)) => {
-                    self.notice = Some(format!("run held by {holder}"));
+                    self.notice = Some(format!("search held by {holder}"));
                 }
                 // The lock is free: the observer loop reads this request as
                 // the take-over and leaves for the drive session — unless the
-                // run is on another host, where this session cannot drive.
+                // search is on another host, where this session cannot drive.
                 Some(LockView::Free) if self.takeover => self.start_pending = true,
                 Some(LockView::Free) => {
-                    self.notice = Some("cannot take over a run on another host".to_string());
+                    self.notice = Some("cannot take over a search on another host".to_string());
                 }
                 None => {
-                    // A run starts from idle or after a terminal state; while
-                    // one runs the key does nothing.
+                    // A search starts from idle or after a terminal state; while
+                    // one searches the key does nothing.
                     if matches!(self.activity, Activity::Idle | Activity::Ended) {
                         self.activity = Activity::Running;
                         self.start_pending = true;
@@ -283,9 +283,9 @@ impl TuiState {
             },
             KeyAction::Stop => match &self.observation {
                 Some(LockView::Held(holder)) => {
-                    self.notice = Some(format!("run held by {holder}"));
+                    self.notice = Some(format!("search held by {holder}"));
                 }
-                // No run of this session's is in flight: nothing to stop.
+                // No search of this session's is in flight: nothing to stop.
                 Some(LockView::Free) => {}
                 None => {
                     if matches!(self.activity, Activity::Running) {
@@ -295,7 +295,7 @@ impl TuiState {
                 }
             },
             KeyAction::Quit => match self.activity {
-                // Running: wind down and leave once the run returns.
+                // Running: wind down and leave once the search returns.
                 Activity::Running => {
                     self.activity = Activity::WindingDown;
                     self.stop_pending = true;
@@ -307,7 +307,7 @@ impl TuiState {
                 Activity::Idle | Activity::Ended => self.exit = true,
             },
             KeyAction::ForceQuit => {
-                // A run in flight is abandoned mid-run, which the shell reads
+                // A search in flight is abandoned mid-search, which the shell reads
                 // as an interrupt; the process exit releases its lock.
                 if matches!(self.activity, Activity::Running | Activity::WindingDown) {
                     self.outcome = SessionOutcome::Interrupted;
@@ -319,10 +319,10 @@ impl TuiState {
         }
     }
 
-    /// Handles the run thread's return: the session moves to its terminal
+    /// Handles the search thread's return: the session moves to its terminal
     /// state, records the outcome and the exit code it maps to — through the
-    /// mapping `sima run` shares — and leaves if an exit was armed.
-    fn on_finished(&mut self, result: &Result<RunOutcome>) {
+    /// mapping `sima search` shares — and leaves if an exit was armed.
+    fn on_finished(&mut self, result: &Result<SearchOutcome>) {
         self.activity = Activity::Ended;
         self.outcome = SessionOutcome::of(result);
         self.exit_code = match result {
@@ -360,9 +360,9 @@ impl TuiState {
     }
 
     /// The session's exit code. An observer session derives it from the
-    /// journal's run state — the drive-session mapping over what was
-    /// observed, with a run still in progress leaving clean — so quitting
-    /// after a watched run ended reports that ending, exactly as the drive
+    /// journal's search state — the drive-session mapping over what was
+    /// observed, with a search still in progress leaving clean — so quitting
+    /// after a watched search ended reports that ending, exactly as the drive
     /// session that produced it would.
     pub fn exit_code(&self) -> u8 {
         if self.observation.is_some() {
@@ -372,25 +372,25 @@ impl TuiState {
     }
 
     /// The header state label. The drive session labels its own activity; an
-    /// observer session follows the journal's run state — a terminal event
+    /// observer session follows the journal's search state — a terminal event
     /// ends the observation in the drive session's presentation — and, while
-    /// the run is in progress, the probed lock: held names the holder, free
-    /// means the orchestrator died without a terminal line and the run is
+    /// the search is in progress, the probed lock: held names the holder, free
+    /// means the orchestrator died without a terminal line and the search is
     /// resumable.
     fn state_label(&self) -> String {
         if let Some(lock) = &self.observation {
             return match (&self.status.state, lock) {
-                (RunState::Finalized, _) => "finalized".to_string(),
-                (RunState::Failed { .. }, _) => "failed".to_string(),
-                (RunState::Interrupted, _) => "interrupted".to_string(),
-                (RunState::InProgress, LockView::Held(holder)) => {
-                    format!("observing — run held by {holder}")
+                (SearchState::Finalized, _) => "finalized".to_string(),
+                (SearchState::Failed { .. }, _) => "failed".to_string(),
+                (SearchState::Interrupted, _) => "interrupted".to_string(),
+                (SearchState::InProgress, LockView::Held(holder)) => {
+                    format!("observing — search held by {holder}")
                 }
-                (RunState::InProgress, LockView::Free) if self.takeover => {
-                    "orchestrator gone — run resumable; press s to continue it".to_string()
+                (SearchState::InProgress, LockView::Free) if self.takeover => {
+                    "orchestrator gone — search resumable; press s to continue it".to_string()
                 }
-                (RunState::InProgress, LockView::Free) => {
-                    "orchestrator gone — run resumable".to_string()
+                (SearchState::InProgress, LockView::Free) => {
+                    "orchestrator gone — search resumable".to_string()
                 }
             };
         }
@@ -418,7 +418,7 @@ impl TuiState {
             })
             .collect();
         ViewModel {
-            run: self.status.run.to_string(),
+            search: self.status.search.to_string(),
             state: self.state_label(),
             notice: self.notice.clone(),
             workers,
@@ -442,11 +442,11 @@ mod tests {
     use sima_pipeline::Event;
 
     fn search_id() -> SearchId {
-        SearchId::from_hash(hash_bytes(b"tui state run"))
+        SearchId::from_hash(hash_bytes(b"tui state search"))
     }
 
     fn idle(workers: usize) -> TuiState {
-        TuiState::new(RunStatus::new(search_id()), workers)
+        TuiState::new(SearchStatus::new(search_id()), workers)
     }
 
     /// Wraps an event as a record the tests feed the state. The stamp is
@@ -456,8 +456,8 @@ mod tests {
     }
 
     fn started(tasks: usize) -> Record {
-        rec(Event::RunStarted {
-            run: "00".repeat(32),
+        rec(Event::SearchStarted {
+            search: "00".repeat(32),
             tasks,
             committed: 0,
         })
@@ -480,19 +480,23 @@ mod tests {
         })
     }
 
-    fn finalized() -> Result<RunOutcome> {
-        Ok(RunOutcome::Finalized { run: search_id() })
+    fn finalized() -> Result<SearchOutcome> {
+        Ok(SearchOutcome::Finalized {
+            search: search_id(),
+        })
     }
 
-    fn failed_outcome() -> Result<RunOutcome> {
-        Ok(RunOutcome::Failed {
+    fn failed_outcome() -> Result<SearchOutcome> {
+        Ok(SearchOutcome::Failed {
             task: TaskKey::from_hash(hash_bytes(b"a task")),
             reason: "rejected".to_string(),
         })
     }
 
-    fn interrupted() -> Result<RunOutcome> {
-        Ok(RunOutcome::Interrupted { run: search_id() })
+    fn interrupted() -> Result<SearchOutcome> {
+        Ok(SearchOutcome::Interrupted {
+            search: search_id(),
+        })
     }
 
     #[test]
@@ -561,7 +565,7 @@ mod tests {
         state.handle(Msg::Finished(finalized()));
         assert_eq!(state.view().state, "finalized");
         state.handle(Msg::Key(KeyAction::Start));
-        assert!(state.take_start(), "start restarts a finished run");
+        assert!(state.take_start(), "start restarts a finished search");
         assert_eq!(state.view().state, "running");
     }
 
@@ -581,7 +585,7 @@ mod tests {
         state.handle(Msg::Key(KeyAction::Quit));
         assert!(state.take_stop(), "quit while running stops");
         assert_eq!(state.view().state, "winding down");
-        assert!(!state.should_exit(), "it waits for the run to return");
+        assert!(!state.should_exit(), "it waits for the search to return");
 
         state.handle(Msg::Finished(interrupted()));
         assert!(state.should_exit(), "the return arms the exit");
@@ -595,7 +599,7 @@ mod tests {
         let _ = state.take_start();
         state.handle(Msg::Key(KeyAction::ForceQuit));
         assert!(state.should_exit());
-        assert_eq!(state.exit_code(), 130, "a force quit mid-run exits 130");
+        assert_eq!(state.exit_code(), 130, "a force quit mid-search exits 130");
     }
 
     #[test]
@@ -606,7 +610,7 @@ mod tests {
         assert_eq!(
             state.exit_code(),
             0,
-            "a force quit with no run in flight is clean"
+            "a force quit with no search in flight is clean"
         );
     }
 
@@ -622,7 +626,7 @@ mod tests {
             !state.take_stop(),
             "quit while winding down does not request a second stop"
         );
-        assert!(!state.should_exit(), "it waits for the run to return");
+        assert!(!state.should_exit(), "it waits for the search to return");
 
         state.handle(Msg::Finished(interrupted()));
         assert!(state.should_exit(), "the return arms the exit");
@@ -640,7 +644,7 @@ mod tests {
         // A bound key while the overlay is open closes it and does nothing.
         state.handle(Msg::Key(KeyAction::Start));
         assert!(!state.view().help, "a key press closes the overlay");
-        assert!(!state.take_start(), "the dismissing key starts no run");
+        assert!(!state.take_start(), "the dismissing key starts no search");
         assert_eq!(state.view().state, "idle");
 
         state.handle(Msg::Key(KeyAction::Help));
@@ -680,7 +684,7 @@ mod tests {
         assert!(!state.dismiss_help_if_open(), "a second dismiss is a no-op");
     }
 
-    /// A state observing a run another orchestrator holds, seeded zeroed as
+    /// A state observing a search another orchestrator holds, seeded zeroed as
     /// the observer session starts.
     fn observing(workers: usize) -> TuiState {
         let mut state = idle(workers);
@@ -688,16 +692,16 @@ mod tests {
         state
     }
 
-    fn run_finalized() -> Record {
-        rec(Event::RunFinalized {
-            run: "00".repeat(32),
+    fn search_finalized() -> Record {
+        rec(Event::SearchFinalized {
+            search: "00".repeat(32),
             committed: 1,
         })
     }
 
-    fn run_interrupted() -> Record {
-        rec(Event::RunInterrupted {
-            run: "00".repeat(32),
+    fn search_interrupted() -> Record {
+        rec(Event::SearchInterrupted {
+            search: "00".repeat(32),
         })
     }
 
@@ -722,21 +726,24 @@ mod tests {
     #[test]
     fn the_observer_header_names_the_holder() {
         let state = observing(1);
-        assert_eq!(state.view().state, "observing — run held by 4242 elsewhere");
+        assert_eq!(
+            state.view().state,
+            "observing — search held by 4242 elsewhere"
+        );
     }
 
     #[test]
     fn start_and_stop_while_held_set_the_notice_and_request_nothing() {
         let mut state = observing(1);
         state.handle(Msg::Key(KeyAction::Start));
-        assert!(!state.take_start(), "another process holds the run");
+        assert!(!state.take_start(), "another process holds the search");
         let notice = state.view().notice.expect("a refusal notice");
         assert!(
             notice.contains("4242 elsewhere"),
             "the notice names the holder: {notice}"
         );
         state.handle(Msg::Key(KeyAction::Stop));
-        assert!(!state.take_stop(), "there is no run of ours to stop");
+        assert!(!state.take_stop(), "there is no search of ours to stop");
         assert!(state.view().notice.is_some());
     }
 
@@ -747,7 +754,7 @@ mod tests {
         state.observe(LockView::Free);
         assert_eq!(
             state.view().state,
-            "orchestrator gone — run resumable; press s to continue it"
+            "orchestrator gone — search resumable; press s to continue it"
         );
     }
 
@@ -770,14 +777,14 @@ mod tests {
 
     #[test]
     fn an_observe_only_session_neither_offers_nor_performs_a_take_over() {
-        // A run is driven where its hardware is, so a session watching
-        // another host's run never takes it over: the affordance is absent
+        // A search is driven where its hardware is, so a session watching
+        // another host's search never takes it over: the affordance is absent
         // from the header and `s` over a freed lock says why.
         let mut state = observing(1);
         state.observe_only();
         state.handle(Msg::Event(started(2)));
         state.observe(LockView::Free);
-        assert_eq!(state.view().state, "orchestrator gone — run resumable");
+        assert_eq!(state.view().state, "orchestrator gone — search resumable");
 
         state.handle(Msg::Key(KeyAction::Start));
         assert!(!state.take_start(), "s takes over nothing from here");
@@ -795,14 +802,14 @@ mod tests {
     fn a_terminal_event_ends_observation_in_the_drive_presentation() {
         let mut finalized = observing(1);
         finalized.handle(Msg::Event(started(1)));
-        finalized.handle(Msg::Event(run_finalized()));
+        finalized.handle(Msg::Event(search_finalized()));
         assert_eq!(finalized.view().state, "finalized");
         assert_eq!(finalized.exit_code(), 0);
 
         let mut failed = observing(1);
         failed.handle(Msg::Event(started(1)));
-        failed.handle(Msg::Event(rec(Event::RunFailed {
-            run: "00".repeat(32),
+        failed.handle(Msg::Event(rec(Event::SearchFailed {
+            search: "00".repeat(32),
             task: "aa".to_string(),
             reason: "rejected".to_string(),
         })));
@@ -811,7 +818,7 @@ mod tests {
 
         let mut interrupted = observing(1);
         interrupted.handle(Msg::Event(started(1)));
-        interrupted.handle(Msg::Event(run_interrupted()));
+        interrupted.handle(Msg::Event(search_interrupted()));
         assert_eq!(interrupted.view().state, "interrupted");
         assert_eq!(interrupted.exit_code(), 130);
     }
@@ -819,13 +826,16 @@ mod tests {
     #[test]
     fn a_resume_segment_in_the_replay_returns_the_header_to_observing() {
         // A replayed history may end an old segment and start a new one; the
-        // header follows the journal's last run-level event, so the seed of a
-        // resumed run reads as in progress, never as its old interruption.
+        // header follows the journal's last search-level event, so the seed of a
+        // resumed search reads as in progress, never as its old interruption.
         let mut state = observing(1);
         state.handle(Msg::Event(started(2)));
-        state.handle(Msg::Event(run_interrupted()));
+        state.handle(Msg::Event(search_interrupted()));
         state.handle(Msg::Event(started(2)));
-        assert_eq!(state.view().state, "observing — run held by 4242 elsewhere");
+        assert_eq!(
+            state.view().state,
+            "observing — search held by 4242 elsewhere"
+        );
         assert_eq!(state.exit_code(), 0, "an in-progress observation is clean");
     }
 

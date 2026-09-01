@@ -60,7 +60,7 @@ impl DeviceBinding {
 ///
 /// Two identical cards are one class with two members. Members are
 /// interchangeable by declaration — that is what makes them one class — so a
-/// class carries no member: work bound to a class may run on any of them.
+/// class carries no member: work bound to a class may search on any of them.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String")]
 pub struct DeviceClass(String);
@@ -107,7 +107,7 @@ impl TryFrom<String> for DeviceClass {
 
 impl fmt::Display for DeviceClass {
     /// Renders the class as the backend minted it, the spelling that names a
-    /// device in configuration, diagnostics, and the run journal.
+    /// device in configuration, diagnostics, and the search journal.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.0)
     }
@@ -121,7 +121,7 @@ fn is_class_char(c: char) -> bool {
 /// A compute-capable device as enumerated: what it is, what it is called, and
 /// which one it is among the interchangeable members of its class.
 ///
-/// A domain answers with a list of these when asked what its work can run on,
+/// A domain answers with a list of these when asked what its work can search on,
 /// so the type is part of what a domain outside this workspace is written
 /// against.
 ///
@@ -153,7 +153,7 @@ impl DeviceType {
     /// Preference order across device types; lower ranks are preferred.
     ///
     /// This is the default pick's whole policy: real compute hardware before
-    /// software fallbacks, so a machine with both runs on the card.
+    /// software fallbacks, so a machine with both searches on the card.
     pub fn rank(self) -> u8 {
         match self {
             DeviceType::Discrete => 0,
@@ -182,7 +182,7 @@ pub fn class_of(vendor_id: u32, device_id: u32) -> DeviceClass {
 /// The member index of each candidate within its own class, in the order the
 /// backend enumerated them.
 ///
-/// Two identical cards are one class with two members, so the count runs per
+/// Two identical cards are one class with two members, so the count searches per
 /// class rather than over the whole list: the second card of a class is member
 /// 1 however many other devices sit between them.
 pub fn number_members(classes: &[DeviceClass]) -> Vec<u32> {
@@ -241,7 +241,7 @@ pub fn resolve_member(
 ///
 /// With `requested` set, the named index wins when it is compute-capable and
 /// fails otherwise; without it, the lowest `(type rank, index)` pair wins, so
-/// the pick is deterministic across runs on one machine.
+/// the pick is deterministic across searches on one machine.
 pub fn choose_device(
     candidates: &[(usize, DeviceType)],
     requested: Option<usize>,
@@ -324,7 +324,7 @@ mod tests {
     #[test]
     fn a_partition_profile_is_a_class_of_its_own() {
         // Two profiles of one card differ in memory by up to a factor of four,
-        // so work bound to one may not run on the other: they are two classes,
+        // so work bound to one may not search on the other: they are two classes,
         // and neither is the bare pair.
         let whole = class("10de:2330");
         let small = class("10de:2330:1g.10gb");
@@ -397,7 +397,7 @@ mod tests {
     #[test]
     fn type_rank_orders_real_hardware_first() {
         // The default pick reads this order alone, so a machine offering both a
-        // card and a software rasterizer runs on the card.
+        // card and a software rasterizer searches on the card.
         let ranks = [
             DeviceType::Discrete,
             DeviceType::Integrated,

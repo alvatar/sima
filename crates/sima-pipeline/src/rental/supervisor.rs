@@ -1,11 +1,11 @@
-//! The supervisor that keeps a run's rented machines within budget and
+//! The supervisor that keeps a search's rented machines within budget and
 //! replaces the ones that vanish.
 //!
-//! One thread per run, ticking on a heartbeat: it assesses the run's spend and
+//! One thread per search, ticking on a heartbeat: it assesses the search's spend and
 //! wall clock against the budget, then every machine's health. A machine the
 //! control plane has lost is replaced and its transport re-targeted; a
-//! replacement the budget cannot afford winds the run down instead of faulting
-//! it, because a run that has spent its ceiling has finished spending, not
+//! replacement the budget cannot afford winds the search down instead of faulting
+//! it, because a search that has spent its ceiling has finished spending, not
 //! broken.
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -28,13 +28,13 @@ use sima_contracts::DeviceBinding;
 use crate::config::FillPolicy;
 use crate::rental::acquire::{RentalGroup, RentedHost, budget_exhausted, endpoint_target};
 
-/// A rented pool's transport, wired to stop the run's supervisor when a spawn
+/// A rented pool's transport, wired to stop the search's supervisor when a spawn
 /// fails.
 ///
-/// A worker that cannot spawn its child holds no task, so it faults the run
-/// without journaling anything: there is no task event, and no run-level one
-/// either. The supervisor holds a clone of the run's emitter and drops it when
-/// it stops, and the run's collector joins only once every clone is gone —
+/// A worker that cannot spawn its child holds no task, so it faults the search
+/// without journaling anything: there is no task event, and no search-level one
+/// either. The supervisor holds a clone of the search's emitter and drops it when
+/// it stops, and the search's collector joins only once every clone is gone —
 /// so without a signal here the supervisor would hold its clone until the
 /// scheduler returned, and the scheduler would not return until the collector
 /// joined. The failing spawn therefore raises the stop on its way out.
@@ -47,7 +47,7 @@ pub(crate) struct StopOnSpawnFailure<'a> {
     /// Raised on a spawn failure, so the supervisor winds down.
     pub(crate) stop: &'a StopSignal,
     /// Set with it, so a replacement acquisition already in flight is abandoned
-    /// rather than finishing for a run that is over.
+    /// rather than finishing for a search that is over.
     pub(crate) cancel: &'a AtomicBool,
 }
 
@@ -110,10 +110,10 @@ impl StopSignal {
     }
 }
 
-/// The rental supervisor: one thread that, each heartbeat, assesses the run's
+/// The rental supervisor: one thread that, each heartbeat, assesses the search's
 /// budget once and polls the health of every rented machine.
 ///
-/// Budget exhaustion sets the interrupt flag SIGINT sets, so the run winds down
+/// Budget exhaustion sets the interrupt flag SIGINT sets, so the search winds down
 /// gracefully and the guards tear the rentals down. A machine polled `Gone` is
 /// replaced: its record is closed out, a replacement is acquired under its own
 /// group's constraints (raised to the slots in use), and the transport's target
@@ -121,12 +121,12 @@ impl StopSignal {
 /// replacement that cannot be made retires the transport — fatally under strict
 /// fill, a clean degradation under best-effort.
 ///
-/// The budget is the run's, not a group's, so it is assessed once per heartbeat
-/// however many groups the run draws on.
+/// The budget is the search's, not a group's, so it is assessed once per heartbeat
+/// however many groups the search draws on.
 pub(crate) struct Supervisor<'a, 'b> {
     store: &'a Store,
     lock: &'a SearchLock,
-    /// The run-global spend and wall-clock ceilings.
+    /// The search-global spend and wall-clock ceilings.
     budget: &'a Budget,
     /// The slice borrow is a lifetime of its own, shorter than the groups' own
     /// `'a`, so the caller can move the `Vec` for teardown once the supervisor
@@ -137,12 +137,12 @@ pub(crate) struct Supervisor<'a, 'b> {
     /// it freely. The supervisor reads it to stop starting replacements, and
     /// sets it on budget exhaustion; it never writes it on a clean exit.
     interrupt: &'b AtomicBool,
-    /// Aborts a replacement acquisition already in flight, so run teardown
-    /// never waits out an offer walk. The run's teardown sets it; the
+    /// Aborts a replacement acquisition already in flight, so search teardown
+    /// never waits out an offer walk. The search's teardown sets it; the
     /// supervisor only reads it. `None` for a caller that never cancels — the
     /// unit tests, which drive ticks to completion.
     cancel: Option<&'b AtomicBool>,
-    /// The run's emitter, delivered by the start hook once the collector spawns
+    /// The search's emitter, delivered by the start hook once the collector spawns
     /// and `None` until then. Rental events cross the same single-writer
     /// journal boundary every other event does.
     emitter: &'b Mutex<Option<Emitter>>,
@@ -175,7 +175,7 @@ impl<'a, 'b> Supervisor<'a, 'b> {
         }
     }
 
-    /// Sets the flag that aborts a replacement acquisition in flight, so run
+    /// Sets the flag that aborts a replacement acquisition in flight, so search
     /// teardown never waits out an offer walk. The orchestrator supplies it;
     /// the unit tests leave it unset.
     pub(crate) fn on_cancel(mut self, cancel: &'b AtomicBool) -> Supervisor<'a, 'b> {
@@ -184,19 +184,19 @@ impl<'a, 'b> Supervisor<'a, 'b> {
     }
 
     /// Runs the heartbeat loop until `stop` is raised. One drop guard owns
-    /// every supervisor exit duty: it clears the run's emitter clone on every
-    /// path — a clone held past the run would block the collector's shutdown —
+    /// every supervisor exit duty: it clears the search's emitter clone on every
+    /// path — a clone held past the search would block the collector's shutdown —
     /// and, on an unwinding stack alone, retires the transports as fatal so a
     /// worker blocked in `Replacing` never waits on a panicked supervisor. A
     /// clean return disarms the retirement; the emitter is cleared regardless.
-    pub(crate) fn run(&self, stop: &StopSignal) {
+    pub(crate) fn search(&self, stop: &StopSignal) {
         let guard = SupervisorExit::<'a, 'b> {
             groups: self.groups,
             emitter: self.emitter,
             armed: true,
         };
         while !stop.wait(HEARTBEAT) {
-            // A tick error is a provider or store failure; the run's own
+            // A tick error is a provider or store failure; the search's own
             // machinery surfaces failures, so the supervisor logs nothing and
             // simply tries again next heartbeat.
             let _ = self.tick(now_ms());
@@ -204,7 +204,7 @@ impl<'a, 'b> Supervisor<'a, 'b> {
         guard.disarm();
     }
 
-    /// Emits `event` through the run's journal, if the emitter has arrived.
+    /// Emits `event` through the search's journal, if the emitter has arrived.
     fn emit(&self, event: Event) {
         if let Some(emitter) = &*self
             .emitter
@@ -244,8 +244,8 @@ impl<'a, 'b> Supervisor<'a, 'b> {
         }
     }
 
-    /// Winds the run down for budget exhaustion: sets the interrupt flag SIGINT
-    /// sets, so the run winds down gracefully and the guards tear the rentals
+    /// Winds the search down for budget exhaustion: sets the interrupt flag SIGINT
+    /// sets, so the search winds down gracefully and the guards tear the rentals
     /// down, and announces the exhaustion once. Shared by the heartbeat's own
     /// budget check and a replacement refused for want of budget.
     fn wind_down_for_budget(&self, exhaustion: Exhaustion) {
@@ -256,19 +256,19 @@ impl<'a, 'b> Supervisor<'a, 'b> {
     }
 
     /// One heartbeat: observe the wind-down flag, announce the composition
-    /// once, assess the run's budget, then every machine's health. Budget
-    /// exhaustion short-circuits the health poll — the whole run is winding
+    /// once, assess the search's budget, then every machine's health. Budget
+    /// exhaustion short-circuits the health poll — the whole search is winding
     /// down. `now_ms` is a parameter so a test can drive exhaustion without
     /// waiting on the clock.
     fn tick(&self, now_ms: u64) -> Result<()> {
         // Once wind-down is requested — Ctrl-C or budget — the marketplace is
-        // off limits: rent no replacement while the run is ending. The flag is
+        // off limits: rent no replacement while the search is ending. The flag is
         // read first, before any provider call.
         if self.interrupt.load(Ordering::Relaxed) {
             return Ok(());
         }
         self.announce_composition();
-        // One assessment per heartbeat: the ceiling is the run's, so polling it
+        // One assessment per heartbeat: the ceiling is the search's, so polling it
         // per group would read the same ledger several times for one answer.
         if let Verdict::Exhausted(exhaustion) =
             assess(self.store, self.lock.search(), self.budget, now_ms)?
@@ -331,7 +331,7 @@ impl<'a, 'b> Supervisor<'a, 'b> {
                 tag: tag.clone(),
                 instance: id.clone(),
             });
-            // A live machine the supervisor found gone mid-run is an incident
+            // A live machine the supervisor found gone mid-search is an incident
             // against it; a machine with no identity records nothing.
             record_incident(
                 self.store,
@@ -366,10 +366,10 @@ impl<'a, 'b> Supervisor<'a, 'b> {
             &limits,
             self.budget,
             // Run teardown sets this to abort a replacement mid-flight, so a
-            // slow offer walk never delays the run's exit; a caller with no
+            // slow offer walk never delays the search's exit; a caller with no
             // cancellation (the unit tests) walks to completion.
             // Replacements are this one thread's, made one at a time and
-            // long after the run's own acquisition finished, so the take
+            // long after the search's own acquisition finished, so the take
             // contends with nothing.
             &Admission::new(),
             self.cancel.unwrap_or(never_cancelled()),
@@ -397,8 +397,8 @@ impl<'a, 'b> Supervisor<'a, 'b> {
                 // graceful wind-down, not a strict-fill fault: exhaustion is
                 // resumable, a fault is not. Re-assess, and on exhaustion take
                 // the interrupt path — the transport retires non-fatally as the
-                // run is ending. Any other failure retires per the fill policy:
-                // strict faults the run, best-effort runs on with one fewer
+                // search is ending. Any other failure retires per the fill policy:
+                // strict faults the search, best-effort searches on with one fewer
                 // pool.
                 match assess(self.store, self.lock.search(), self.budget, now_ms)? {
                     Verdict::Exhausted(exhaustion) => {
@@ -429,8 +429,8 @@ fn instance_online<P: Provider + ?Sized>(guard: &InstanceGuard<'_, P>, host: &st
     }
 }
 
-/// The supervisor's exit guard, run on every path out of [`Supervisor::run`]:
-/// it clears the run's emitter clone so the collector can join, and retires the
+/// The supervisor's exit guard, search on every path out of [`Supervisor::search`]:
+/// it clears the search's emitter clone so the collector can join, and retires the
 /// transports as fatal on an unwind so a worker blocked in `Replacing` never
 /// waits forever on a target the panicked supervisor will never swap. A clean
 /// return disarms the retirement; the emitter clearing is unconditional.
@@ -442,7 +442,7 @@ struct SupervisorExit<'a, 'b> {
 
 impl SupervisorExit<'_, '_> {
     /// Disarms the transport retirement: a clean return leaves the transports
-    /// alive for the run's own wind-down. The emitter is still cleared on drop.
+    /// alive for the search's own wind-down. The emitter is still cleared on drop.
     fn disarm(mut self) {
         self.armed = false;
     }
@@ -450,9 +450,9 @@ impl SupervisorExit<'_, '_> {
 
 impl Drop for SupervisorExit<'_, '_> {
     fn drop(&mut self) {
-        // The run's collector joins only once every emitter clone drops, so the
+        // The search's collector joins only once every emitter clone drops, so the
         // supervisor's clone must be released on every exit path — including
-        // the panic path the explicit clearing in `run` would skip.
+        // the panic path the explicit clearing in `search` would skip.
         *self
             .emitter
             .lock()
@@ -522,9 +522,9 @@ mod tests {
     #[test]
     fn budget_spend_exhaustion_sets_the_interrupt() -> Result<()> {
         // One rental admitted under a small spend cap; a heartbeat at a far
-        // future time sees its accrual cross the cap and winds the run down.
-        let (_dir, store, run) = acquisition_env();
-        let lock = store.acquire_search_lock(&run)?;
+        // future time sees its accrual cross the cap and winds the search down.
+        let (_dir, store, search) = acquisition_env();
+        let lock = store.acquire_search_lock(&search)?;
         let provider = StubProvider::new(vec![offer("a", 100_000)]);
         let format = FormatId::new("stub.v1")?;
         let spec = spec();
@@ -561,8 +561,8 @@ mod tests {
 
     #[test]
     fn wall_clock_exhaustion_sets_the_interrupt() -> Result<()> {
-        let (_dir, store, run) = acquisition_env();
-        let lock = store.acquire_search_lock(&run)?;
+        let (_dir, store, search) = acquisition_env();
+        let lock = store.acquire_search_lock(&search)?;
         let provider = StubProvider::new(vec![offer("a", 100_000)]);
         let format = FormatId::new("stub.v1")?;
         let spec = spec();
@@ -600,8 +600,8 @@ mod tests {
     fn a_healthy_rental_makes_no_teardown_or_replacement() -> Result<()> {
         // A heartbeat over healthy machines polls status and assesses budget,
         // and does nothing else: nothing destroyed, nothing replaced.
-        let (_dir, store, run) = acquisition_env();
-        let lock = store.acquire_search_lock(&run)?;
+        let (_dir, store, search) = acquisition_env();
+        let lock = store.acquire_search_lock(&search)?;
         let provider = StubProvider::new(vec![offer("a", 100_000)]);
         let format = FormatId::new("stub.v1")?;
         let spec = spec();
@@ -640,8 +640,8 @@ mod tests {
         // Two offers, one machine: the acquired machine is killed on the
         // provider side, and a heartbeat replaces it — the dead one torn down, a
         // new one acquired, and the transport target swapped to the new host.
-        let (_dir, store, run) = acquisition_env();
-        let lock = store.acquire_search_lock(&run)?;
+        let (_dir, store, search) = acquisition_env();
+        let lock = store.acquire_search_lock(&search)?;
         let provider = StubProvider::new(vec![offer("a", 100_000), offer("b", 200_000)]);
         let format = FormatId::new("stub.v1")?;
         let spec = spec();
@@ -692,7 +692,7 @@ mod tests {
         assert_eq!(
             provider.live().len(),
             1,
-            "exactly one machine runs after replacement"
+            "exactly one machine searches after replacement"
         );
         // The replacement's InstanceOnline reports the host it actually answers
         // on — the new endpoint's host — not the dead machine's original host.
@@ -726,8 +726,8 @@ mod tests {
     fn a_replacement_that_cannot_be_made_retires_the_transport() -> Result<()> {
         // One offer, one machine, killed on the provider side: no offer remains
         // for a replacement, so the transport retires and points at no host.
-        let (_dir, store, run) = acquisition_env();
-        let lock = store.acquire_search_lock(&run)?;
+        let (_dir, store, search) = acquisition_env();
+        let lock = store.acquire_search_lock(&search)?;
         let provider = StubProvider::new(vec![offer("a", 100_000)]);
         let format = FormatId::new("stub.v1")?;
         let spec = spec();
@@ -769,7 +769,7 @@ mod tests {
         Ok(())
     }
 
-    /// A closed rental of `owner` that cost `cost` micro-USD, anchoring a run's
+    /// A closed rental of `owner` that cost `cost` micro-USD, anchoring a search's
     /// spend at a fixed past window.
     fn closed_spend(owner: &SearchId, cost: u64) -> sima_store::SpendEntry {
         sima_store::SpendEntry {
@@ -787,9 +787,9 @@ mod tests {
     fn a_wind_down_tick_rents_no_replacement() -> Result<()> {
         // Two offers, one machine: a Gone machine is normally replaced from the
         // second offer. With the interrupt already set, the tick reads it first
-        // and does nothing — no paid replacement while the run winds down.
-        let (_dir, store, run) = acquisition_env();
-        let lock = store.acquire_search_lock(&run)?;
+        // and does nothing — no paid replacement while the search winds down.
+        let (_dir, store, search) = acquisition_env();
+        let lock = store.acquire_search_lock(&search)?;
         let provider = StubProvider::new(vec![offer("a", 100_000), offer("b", 200_000)]);
         let format = FormatId::new("stub.v1")?;
         let spec = spec();
@@ -843,8 +843,8 @@ mod tests {
     fn a_replacement_refused_for_budget_winds_down_rather_than_faulting() -> Result<()> {
         // A strict-fill rental whose replacement cannot be paid for: exhaustion
         // must surface as the resumable interrupt, not a strict-fill fault.
-        let (_dir, store, run) = acquisition_env();
-        let lock = store.acquire_search_lock(&run)?;
+        let (_dir, store, search) = acquisition_env();
+        let lock = store.acquire_search_lock(&search)?;
         let provider = StubProvider::new(vec![offer("a", 100_000), offer("b", 200_000)]);
         let format = FormatId::new("stub.v1")?;
         let spec = spec();
@@ -868,7 +868,7 @@ mod tests {
         let groups = one_group(&provider, &spec, FillPolicy::Strict, hosts);
         // A prior closed rental already past the cap, so any replacement
         // acquisition is refused for want of budget whatever the clock reads.
-        store.put_spend(&closed_spend(&run, 120_000))?;
+        store.put_spend(&closed_spend(&search, 120_000))?;
         let dead_id = groups[0].hosts[0]
             .guard
             .lock()
@@ -889,7 +889,7 @@ mod tests {
 
         assert!(
             interrupt.load(Ordering::Relaxed),
-            "a budget-refused replacement winds the run down"
+            "a budget-refused replacement winds the search down"
         );
         assert!(
             events
@@ -897,8 +897,8 @@ mod tests {
                 .any(|event| matches!(event, Event::BudgetSpendExhausted { .. })),
             "the exhaustion is announced to the journal"
         );
-        // The transport retired, and no run-level fault event was emitted: the
-        // run will resume as Interrupted, not fault under strict fill.
+        // The transport retired, and no search-level fault event was emitted: the
+        // search will resume as Interrupted, not fault under strict fill.
         assert!(groups[0].hosts[0].transport.live_host().is_none());
         release_all(groups)?;
         Ok(())
@@ -907,9 +907,9 @@ mod tests {
     #[test]
     fn every_group_is_supervised_under_the_runs_one_budget() -> Result<()> {
         // Two rented entries, each its own control plane and specification. One
-        // heartbeat polls both, and the ceiling that stops them is the run's.
-        let (_dir, store, run) = acquisition_env();
-        let lock = store.acquire_search_lock(&run)?;
+        // heartbeat polls both, and the ceiling that stops them is the search's.
+        let (_dir, store, search) = acquisition_env();
+        let lock = store.acquire_search_lock(&search)?;
         let first = StubProvider::new(vec![offer("a", 100_000)]);
         let second = StubProvider::new(vec![offer("b", 200_000)]);
         let format = FormatId::new("stub.v1")?;
@@ -947,9 +947,9 @@ mod tests {
         })?;
         assert!(
             interrupt.load(Ordering::Relaxed),
-            "the run's ceiling stops every group at once"
+            "the search's ceiling stops every group at once"
         );
-        // One exhaustion announcement for the run, not one per group.
+        // One exhaustion announcement for the search, not one per group.
         assert_eq!(
             events
                 .iter()
@@ -968,8 +968,8 @@ mod tests {
         // A tick that beats the start hook must not spend the announcement
         // latch: the initial composition would vanish from the journal. The
         // latch holds until the emitter arrives, then a later tick announces.
-        let (_dir, store, run) = acquisition_env();
-        let lock = store.acquire_search_lock(&run)?;
+        let (_dir, store, search) = acquisition_env();
+        let lock = store.acquire_search_lock(&search)?;
         let provider = StubProvider::new(vec![offer("a", 100_000)]);
         let format = FormatId::new("stub.v1")?;
         let spec = spec();
@@ -1031,8 +1031,8 @@ mod tests {
     {
         // The regression: with the emitter present from the first tick, the
         // announcement fires once, and a second tick does not repeat it.
-        let (_dir, store, run) = acquisition_env();
-        let lock = store.acquire_search_lock(&run)?;
+        let (_dir, store, search) = acquisition_env();
+        let lock = store.acquire_search_lock(&search)?;
         let provider = StubProvider::new(vec![offer("a", 100_000)]);
         let format = FormatId::new("stub.v1")?;
         let spec = spec();
@@ -1068,11 +1068,11 @@ mod tests {
 
     #[test]
     fn a_clean_supervisor_exit_clears_the_emitter_and_leaves_transports_alive() -> Result<()> {
-        // The run's own wind-down tears the rentals down, so a clean supervisor
+        // The search's own wind-down tears the rentals down, so a clean supervisor
         // exit must leave the transports alive — but it must still release the
         // emitter clone, or the collector never joins.
-        let (_dir, store, run) = acquisition_env();
-        let lock = store.acquire_search_lock(&run)?;
+        let (_dir, store, search) = acquisition_env();
+        let lock = store.acquire_search_lock(&search)?;
         let provider = StubProvider::new(vec![offer("a", 100_000)]);
         let format = FormatId::new("stub.v1")?;
         let spec = spec();
@@ -1109,7 +1109,7 @@ mod tests {
         })?;
         assert!(
             groups[0].hosts[0].transport.live_host().is_some(),
-            "a clean exit leaves the transports alive for the run's wind-down"
+            "a clean exit leaves the transports alive for the search's wind-down"
         );
         release_all(groups)?;
         Ok(())
@@ -1117,12 +1117,12 @@ mod tests {
 
     #[test]
     fn a_supervisor_panic_clears_the_emitter_and_retires_the_transports() -> Result<()> {
-        // A tick panic unwinds past the emitter-clearing line the old `run`
+        // A tick panic unwinds past the emitter-clearing line the old `search`
         // held; the collector would then wait forever on the leaked clone and
         // the rentals would never tear down. The exit guard clears the emitter
         // and retires the transports on the unwind alike.
-        let (_dir, store, run) = acquisition_env();
-        let lock = store.acquire_search_lock(&run)?;
+        let (_dir, store, search) = acquisition_env();
+        let lock = store.acquire_search_lock(&search)?;
         let provider = StubProvider::new(vec![offer("a", 100_000)]);
         let format = FormatId::new("stub.v1")?;
         let spec = spec();

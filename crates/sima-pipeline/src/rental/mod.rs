@@ -3,7 +3,7 @@
 //! them within budget and replaces the ones that vanish.
 //!
 //! The pipeline is where provider choice becomes concrete, so this is the one
-//! edge from configuration to a boxed [`Provider`]. A run whose fleet is not
+//! edge from configuration to a boxed [`Provider`]. A search whose fleet is not
 //! engaged never reaches here, so it constructs no provider and reads no
 //! `VAST_API_KEY`.
 

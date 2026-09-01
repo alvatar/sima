@@ -2,7 +2,7 @@
 //! receives.
 //!
 //! Two processes are spawned across the boundary a configured program owns:
-//! its domain service and its workers. Both run code sima does not build, so
+//! its domain service and its workers. Both search code sima does not build, so
 //! both start from an explicit surface rather than from whatever the
 //! orchestrator happens to hold: the baseline environment the platform needs
 //! plus the variables the program's config entry names, and an empty working
@@ -13,7 +13,7 @@
 //!
 //! Every sima-owned process — a builtin worker, a container runtime client,
 //! an ssh client — keeps the orchestrator's environment and working
-//! directory: they run in the orchestrator's own trust domain, and the
+//! directory: they search in the orchestrator's own trust domain, and the
 //! clients need the ambient environment to reach anything.
 
 use std::ffi::OsString;
@@ -65,7 +65,7 @@ pub enum SpawnPolicy {
 
 impl SpawnPolicy {
     /// Prepares `command` under this policy, drawing the parent's environment
-    /// from `vars`. Returns the scratch directory the child runs in, which the
+    /// from `vars`. Returns the scratch directory the child searches in, which the
     /// caller holds for exactly as long as the child: dropping it removes the
     /// directory.
     ///
@@ -204,7 +204,7 @@ pub(crate) mod fixture {
     /// fork, and every exec of the file is refused with `ETXTBSY` until that
     /// child has exec'd. Probing until one exec succeeds is what makes the
     /// fixture deterministic. Only a test writes the program it spawns; the
-    /// run path spawns programs that were already on disk.
+    /// search path spawns programs that were already on disk.
     fn await_runnable(path: &Path) {
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
@@ -379,7 +379,7 @@ mod tests {
     #[test]
     fn every_baseline_name_and_prefix_crosses() {
         // The whole list, checked as a list: a name dropped from it silently
-        // would leave a program without the platform it runs on.
+        // would leave a program without the platform it searches on.
         let names: Vec<String> = BASELINE_NAMES
             .iter()
             .map(|name| (*name).to_string())

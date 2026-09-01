@@ -1,12 +1,12 @@
-//! End-to-end acceptance of the distributed run over the stub provider: a
+//! End-to-end acceptance of the distributed search over the stub provider: a
 //! rented host class the fleet names drives the full spine — acquire, probe,
-//! run, teardown, ledger — with no GPU and no network. The stub domain carries
+//! search, teardown, ledger — with no GPU and no network. The stub domain carries
 //! the work, and the stub provider's machines are reached through the
 //! transport's local mode, spawning `sima-worker` directly.
 //!
 //! It exercises the renting path every layer above the transport shares with a
-//! real provider, so every run here is engaged with [`Engagement::Fleet`] — the
-//! answer `sima run --fleet` gives.
+//! real provider, so every search here is engaged with [`Engagement::Fleet`] — the
+//! answer `sima search --fleet` gives.
 
 mod common;
 
@@ -15,13 +15,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use common::{journal_events, loaded_text};
 use sima_core::Result;
 use sima_pipeline::{
-    BinaryChange, Engagement, Event, LoadedConfig, Record, RunControl, RunOutcome, orchestrate,
-    spend,
+    BinaryChange, Engagement, Event, LoadedConfig, Record, SearchControl, SearchOutcome,
+    orchestrate, spend,
 };
 use sima_store::Store;
 
 /// A config whose fleet is one rented class of `count` machines and whose
-/// orchestrator declares no workers, so the rentals carry the whole run;
+/// orchestrator declares no workers, so the rentals carry the whole search;
 /// `behaviors` programs the stub candidates.
 fn fleet_config(
     dir: &std::path::Path,
@@ -32,11 +32,11 @@ fn fleet_config(
 ) -> Result<LoadedConfig> {
     let text = format!(
         r#"
-        [run]
+        [search]
         root_seed = 3
         format = "stub.v1"
 
-        [run.generator]
+        [search.generator]
         id = "stub.v1"
         behaviors = [{behaviors}]
 
@@ -68,19 +68,19 @@ fn a_stub_fleet_run_finalizes_with_records_from_fleet_workers() -> Result<()> {
     assert!(matches!(
         orchestrate(
             &config,
-            &RunControl::detached(),
+            &SearchControl::detached(),
             Engagement::Fleet,
             BinaryChange::Refuse
         )?,
-        RunOutcome::Finalized { .. }
+        SearchOutcome::Finalized { .. }
     ));
 
     // Every candidate committed a record, and the workers that produced them
     // ran on the fleet instances — the journal attributes each `WorkerBound`
-    // to a stub host, since no local pool carried the run.
+    // to a stub host, since no local pool carried the search.
     let store = Store::open(&config.store)?;
     let manifest = store
-        .manifest(&config.run.id())?
+        .manifest(&config.search.id())?
         .expect("a finalized manifest");
     assert_eq!(manifest.entries.len(), 4);
     let events = journal_events(&config);
@@ -114,7 +114,7 @@ fn a_fleet_names_each_member_it_rents_before_that_machine_comes_up() -> Result<(
     )?;
     orchestrate(
         &config,
-        &RunControl::detached(),
+        &SearchControl::detached(),
         Engagement::Fleet,
         BinaryChange::Refuse,
     )?;
@@ -172,18 +172,18 @@ fn a_fleet_names_each_member_it_rents_before_that_machine_comes_up() -> Result<(
 
 #[test]
 fn a_run_that_dies_acquiring_is_in_the_store_with_what_it_said() -> Result<()> {
-    // The run is registered before any machine is asked for, so what putting it
+    // The search is registered before any machine is asked for, so what putting it
     // on its machines takes is journaled where the work will be. A fleet that
-    // cannot be brought up therefore leaves a run in the store: no task ran, so
+    // cannot be brought up therefore leaves a search in the store: no task ran, so
     // it stands at nothing committed, and its journal holds what it said about
     // the acquisition that failed.
     let dir = tempfile::tempdir().expect("temp dir");
     let text = r#"
-        [run]
+        [search]
         root_seed = 3
         format = "stub.v1"
 
-        [run.generator]
+        [search.generator]
         id = "stub.v1"
         behaviors = ["succeed", "succeed"]
 
@@ -204,7 +204,7 @@ fn a_run_that_dies_acquiring_is_in_the_store_with_what_it_said() -> Result<()> {
     let config = loaded_text(dir.path(), "fleet.toml", text)?;
     let error = orchestrate(
         &config,
-        &RunControl::detached(),
+        &SearchControl::detached(),
         Engagement::Fleet,
         BinaryChange::Refuse,
     )
@@ -214,12 +214,12 @@ fn a_run_that_dies_acquiring_is_in_the_store_with_what_it_said() -> Result<()> {
         "the market's own answer reaches the caller: {error}"
     );
 
-    // What the store holds: the run, listed, in progress with an empty ledger.
-    let summaries = sima_pipeline::runs(&config.store)?;
+    // What the store holds: the search, listed, in progress with an empty ledger.
+    let summaries = sima_pipeline::searches(&config.store)?;
     let [summary] = summaries.as_slice() else {
-        panic!("one run was registered: {summaries:?}");
+        panic!("one search was registered: {summaries:?}");
     };
-    assert_eq!(summary.run, config.run.id());
+    assert_eq!(summary.search, config.search.id());
     assert_eq!((summary.tasks, summary.committed), (0, 0));
     // And its journal holds the shortfall, so why there is nothing there is
     // readable after the fact rather than only on the terminal that watched.
@@ -248,11 +248,11 @@ fn the_ledger_holds_one_closed_entry_per_instance() -> Result<()> {
     assert!(matches!(
         orchestrate(
             &config,
-            &RunControl::detached(),
+            &SearchControl::detached(),
             Engagement::Fleet,
             BinaryChange::Refuse
         )?,
-        RunOutcome::Finalized { .. }
+        SearchOutcome::Finalized { .. }
     ));
 
     // Two instances acquired and torn down: two closed ledger entries, none
@@ -277,33 +277,33 @@ fn a_re_run_resumes_and_finalizes() -> Result<()> {
     assert!(matches!(
         orchestrate(
             &config,
-            &RunControl::detached(),
+            &SearchControl::detached(),
             Engagement::Fleet,
             BinaryChange::Refuse
         )?,
-        RunOutcome::Finalized { .. }
+        SearchOutcome::Finalized { .. }
     ));
-    // The same store, re-run: the frontier is empty, so the run re-finalizes
+    // The same store, re-search: the frontier is empty, so the search re-finalizes
     // without re-evaluating a candidate, and the fleet is acquired and torn
     // down again cleanly.
     assert!(matches!(
         orchestrate(
             &config,
-            &RunControl::detached(),
+            &SearchControl::detached(),
             Engagement::Fleet,
             BinaryChange::Refuse
         )?,
-        RunOutcome::Finalized { .. }
+        SearchOutcome::Finalized { .. }
     ));
     let store = Store::open(&config.store)?;
-    assert!(store.manifest(&config.run.id())?.is_some());
+    assert!(store.manifest(&config.search.id())?.is_some());
     Ok(())
 }
 
 #[test]
 fn an_interrupt_tears_the_fleet_down_and_leaves_the_ledger_closed() -> Result<()> {
     let dir = tempfile::tempdir().expect("temp dir");
-    // Sleeping candidates so the interrupt lands mid-run, after the first
+    // Sleeping candidates so the interrupt lands mid-search, after the first
     // commit.
     let config = fleet_config(
         dir.path(),
@@ -313,7 +313,7 @@ fn an_interrupt_tears_the_fleet_down_and_leaves_the_ledger_closed() -> Result<()
         1,
     )?;
     let interrupt = AtomicBool::new(false);
-    let control = RunControl {
+    let control = SearchControl {
         observer: &|record: &Record| {
             if matches!(record.event, Event::Committed { .. }) {
                 interrupt.store(true, Ordering::Relaxed);
@@ -324,13 +324,13 @@ fn an_interrupt_tears_the_fleet_down_and_leaves_the_ledger_closed() -> Result<()
     };
     assert!(matches!(
         orchestrate(&config, &control, Engagement::Fleet, BinaryChange::Refuse)?,
-        RunOutcome::Interrupted { .. }
+        SearchOutcome::Interrupted { .. }
     ));
 
     // The fleet was torn down on the interrupt: the ledger is closed, with no
     // rental left open, and no manifest was written — the store is resumable.
     let store = Store::open(&config.store)?;
-    assert!(store.manifest(&config.run.id())?.is_none());
+    assert!(store.manifest(&config.search.id())?.is_none());
     let report = spend(&config)?;
     assert!(report.open.is_empty(), "the interrupt tore the fleet down");
     assert!(
@@ -342,10 +342,10 @@ fn an_interrupt_tears_the_fleet_down_and_leaves_the_ledger_closed() -> Result<()
 
 #[test]
 fn an_interrupt_while_the_fleet_is_being_acquired_abandons_the_run() -> Result<()> {
-    // Acquisition is minutes of paid-for waiting before a single task runs,
+    // Acquisition is minutes of paid-for waiting before a single task searches,
     // and it is where an operator most often changes their mind. The flag is
-    // already up when the run starts, so the first member's walk is called off
-    // before any offer is taken: the run comes back interrupted rather than
+    // already up when the search starts, so the first member's walk is called off
+    // before any offer is taken: the search comes back interrupted rather than
     // failed, nothing was executed, and the store stands as it did.
     let dir = tempfile::tempdir().expect("temp dir");
     let config = fleet_config(
@@ -356,25 +356,25 @@ fn an_interrupt_while_the_fleet_is_being_acquired_abandons_the_run() -> Result<(
         2,
     )?;
     let interrupt = AtomicBool::new(true);
-    let control = RunControl {
+    let control = SearchControl {
         observer: &|_: &Record| {},
         interrupt: &interrupt,
         on_start: None,
     };
     assert!(matches!(
         orchestrate(&config, &control, Engagement::Fleet, BinaryChange::Refuse)?,
-        RunOutcome::Interrupted { .. }
+        SearchOutcome::Interrupted { .. }
     ));
 
-    // The run is registered and resumable: no manifest, and a ledger holding
+    // The search is registered and resumable: no manifest, and a ledger holding
     // nothing, because no offer was ever taken.
     let store = Store::open(&config.store)?;
-    assert!(store.manifest(&config.run.id())?.is_none());
+    assert!(store.manifest(&config.search.id())?.is_none());
     let report = spend(&config)?;
     assert!(report.open.is_empty(), "no rental is left open");
     assert!(report.entries.is_empty(), "no rental was ever made");
     // And the journal says why there is nothing there, which is the only place
-    // a run abandoned before it drove leaves an account of itself.
+    // a search abandoned before it drove leaves an account of itself.
     let events = journal_events(&config);
     assert!(
         events
@@ -386,15 +386,15 @@ fn an_interrupt_while_the_fleet_is_being_acquired_abandons_the_run() -> Result<(
 }
 
 /// A config declaring a rented class beside an orchestrator that can carry the
-/// run itself, so the invocation decides which machines are used.
+/// search itself, so the invocation decides which machines are used.
 fn opt_in_config(dir: &std::path::Path, name: &str, store: &str) -> Result<LoadedConfig> {
     let text = format!(
         r#"
-        [run]
+        [search]
         root_seed = 5
         format = "stub.v1"
 
-        [run.generator]
+        [search.generator]
         id = "stub.v1"
         behaviors = ["succeed", "succeed", "succeed", "succeed"]
 
@@ -430,19 +430,19 @@ fn bound_hosts(events: &[Event]) -> std::collections::HashSet<String> {
 
 #[test]
 fn without_the_flag_the_orchestrator_carries_the_run_and_nothing_is_rented() -> Result<()> {
-    // Declaring a rented class says a run *may* use it. This invocation does
+    // Declaring a rented class says a search *may* use it. This invocation does
     // not ask for it, so no provider is constructed, nothing is acquired, and
-    // the orchestrator's own worker finalizes the run alone.
+    // the orchestrator's own worker finalizes the search alone.
     let dir = tempfile::tempdir().expect("temp dir");
     let config = opt_in_config(dir.path(), "local.toml", "./store")?;
     assert!(matches!(
         orchestrate(
             &config,
-            &RunControl::detached(),
+            &SearchControl::detached(),
             Engagement::Orchestrator,
             BinaryChange::Refuse
         )?,
-        RunOutcome::Finalized { .. }
+        SearchOutcome::Finalized { .. }
     ));
 
     let report = spend(&config)?;
@@ -466,11 +466,11 @@ fn with_the_flag_the_declared_machines_join_the_orchestrator() -> Result<()> {
     assert!(matches!(
         orchestrate(
             &config,
-            &RunControl::detached(),
+            &SearchControl::detached(),
             Engagement::Fleet,
             BinaryChange::Refuse
         )?,
-        RunOutcome::Finalized { .. }
+        SearchOutcome::Finalized { .. }
     ));
 
     let report = spend(&config)?;

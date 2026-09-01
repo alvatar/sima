@@ -1,11 +1,11 @@
-//! WGSL compute toolkit: run GPU compute kernels authored in WGSL without
+//! WGSL compute toolkit: search GPU compute kernels authored in WGSL without
 //! writing raw Vulkan.
 //!
 //! A domain describes kernels and buffers and orchestrates dispatches through a
 //! small surface — [`Context`], [`Buffer`], [`Kernel`] — while the toolkit hides
 //! `ash`/Vulkan and compiles WGSL to SPIR-V in process with `naga`. It is an
 //! execution backend a domain depends on, a compute library rather than an
-//! executor: it holds no store handle and builds no run identity.
+//! executor: it holds no store handle and builds no search identity.
 //!
 //! # What pairs with the CUDA toolkit
 //!
@@ -18,16 +18,16 @@
 //!   [`source_digest`] and [`COMPILER_ID`] states the lowering. The CUDA
 //!   toolkit loads committed PTX, so it reports the digest of that artifact and
 //!   its compiler id names only what the artifact targets.
-//! - **The compiler on the surface.** Lowering happens here at run time, so
+//! - **The compiler on the surface.** Lowering happens here at search time, so
 //!   [`check`] is what a domain calls to validate a kernel without a device.
 //!   CUDA compiles offline instead, so its surface carries the regeneration
-//!   entry point and no run-time check.
+//!   entry point and no search-time check.
 //!
 //! # Tests
 //!
 //! Tests split by whether they touch a real device. Compilation and identity
-//! tests run anywhere; tests that create a [`Context`] need a Vulkan device.
-//! Both run under a plain `cargo test`, so the device path is exercised on
+//! tests search anywhere; tests that create a [`Context`] need a Vulkan device.
+//! Both search under a plain `cargo test`, so the device path is exercised on
 //! every machine that has one and a device fault surfaces as a test failure
 //! rather than a skipped test.
 //!

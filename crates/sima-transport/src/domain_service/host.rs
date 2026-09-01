@@ -1,7 +1,7 @@
 //! The child side of the domain service: [`serve`] answers what a format
 //! binds.
 //!
-//! `serve` is what a program runs for the life of a session: read the
+//! `serve` is what a program searches for the life of a session: read the
 //! [`ToDomain::Hello`], answer [`FromDomain::Ready`], then answer one question
 //! after another until the parent says goodbye or closes the pipe. The components
 //! are built before the session opens, so a program that loads assets or opens
@@ -409,7 +409,7 @@ mod tests {
     #[test]
     fn translate_config_carries_the_section_text_and_the_segment_flag() {
         // Both inputs reach the domain: the section as written, and whether the
-        // run divides candidates into segments.
+        // search divides candidates into segments.
         let (result, answers) = drive(
             false,
             &[

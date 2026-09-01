@@ -5,7 +5,7 @@
 //! sima draws candidates, schedules them over workers and machines, stores
 //! every result by its content, and records how each one was produced. A
 //! program supplies the problem itself: what a candidate is, how to evaluate
-//! one, what settings a run may state, and what hardware the work runs on.
+//! one, what settings a search may state, and what hardware the work searches on.
 //!
 //! This program evaluates a candidate of one byte by doubling it. Everything
 //! sima needs from a real program, it needs from this one too, which is why
@@ -18,18 +18,18 @@
 //!   [`DoublerExecutor`] it builds to evaluate each candidate.
 //!
 //! A program registers under a **format id** — here `example.doubler.v1`, 1 to
-//! 64 bytes of `[a-z0-9._-]`. It governs how candidate bytes and run params are
+//! 64 bytes of `[a-z0-9._-]`. It governs how candidate bytes and search params are
 //! read, so a format whose meaning changes is a new id. Several methods below
 //! exist solely to return it.
 //!
-//! # How a run reaches this program
+//! # How a search reaches this program
 //!
 //! ```toml
-//! [run]
+//! [search]
 //! root_seed = 7
 //! format = "example.doubler.v1"
 //!
-//! [run.generator]
+//! [search.generator]
 //! id = "example.doubler.v1"
 //! count = 8                          # step 3 translates this
 //!
@@ -41,7 +41,7 @@
 //! binary = "/path/to/sima-example-executor"
 //! ```
 //!
-//! sima runs the binary in two roles: once per configured format to ask what
+//! sima searches the binary in two roles: once per configured format to ask what
 //! the format binds, and once per worker slot to execute tasks. Both are the
 //! same program; [`sima_api::serve`] resolves which is being asked.
 //!
@@ -72,7 +72,7 @@ use sima_api::{
 /// The format this program serves, and the id its generator registers under.
 pub const FORMAT: &str = "example.doubler.v1";
 
-/// The device's reported name. A run's selector matches either this, as a
+/// The device's reported name. A search's selector matches either this, as a
 /// case-insensitive substring, or the class exactly.
 const DEVICE_NAME: &str = "example host processor";
 
@@ -80,20 +80,20 @@ const DEVICE_NAME: &str = "example host processor";
 const DRIVER: &str = "example.doubler v1";
 
 // ===========================================================================
-// The generator: which candidates the run tries.
+// The generator: which candidates the search tries.
 // ===========================================================================
 
-/// Draws one-byte specs from the run's root seed.
+/// Draws one-byte specs from the search's root seed.
 ///
 /// Separate from the domain because one format has one executor and many
-/// generators: a run names which one it wants by id.
+/// generators: a search names which one it wants by id.
 pub struct DoublerGenerator {
     id: GeneratorId,
     format: FormatId,
 }
 
 impl DoublerGenerator {
-    /// The generator a run reaches by id.
+    /// The generator a search reaches by id.
     pub fn new() -> Result<DoublerGenerator> {
         Ok(DoublerGenerator {
             id: GeneratorId::new(FORMAT)?,
@@ -113,13 +113,13 @@ impl Generator for DoublerGenerator {
 
     // 1. Produce the candidates.
     //
-    // Called in the orchestrator with the run's root seed and the blob step 3
-    // produced. The specs become the run's tasks and their bytes enter every
+    // Called in the orchestrator with the search's root seed and the blob step 3
+    // produced. The specs become the search's tasks and their bytes enter every
     // task key, so this must be deterministic: the same seed and params always
-    // yield the same specs, or a resumed run computes different work than it
+    // yield the same specs, or a resumed search computes different work than it
     // started.
     fn generate(&self, root_seed: u64, params: &[u8]) -> Result<Vec<Spec>> {
-        // The count is the whole settings blob: one byte, so a run asks for at
+        // The count is the whole settings blob: one byte, so a search asks for at
         // most 255 candidates and an absent blob asks for one.
         let count = u64::from(params.first().copied().unwrap_or(1));
         let mut stream = prng::Stream::new(root_seed);
@@ -131,9 +131,9 @@ impl Generator for DoublerGenerator {
             .collect())
     }
 
-    // 3. Translate `[run.generator]`, the section this component owns.
+    // 3. Translate `[search.generator]`, the section this component owns.
     //
-    // Text in, canonical bytes out — the bytes step 1 reads and the run id
+    // Text in, canonical bytes out — the bytes step 1 reads and the search id
     // covers. The text is parsed with a TOML crate of this program's choosing,
     // which is what keeps sima's off the surface. This one takes `count`, so
     // the blob is one byte.
@@ -141,7 +141,7 @@ impl Generator for DoublerGenerator {
         let table = section(toml)?;
         if let Some(key) = table.keys().find(|key| key.as_str() != "count") {
             return Err(Error::Validation(format!(
-                "[run.generator] carries {key:?}; {FORMAT} takes count alone"
+                "[search.generator] carries {key:?}; {FORMAT} takes count alone"
             )));
         }
         let Some(value) = table.get("count") else {
@@ -163,7 +163,7 @@ impl Generator for DoublerGenerator {
 
 /// Evaluates a one-byte spec: the result is that byte doubled.
 ///
-/// One executor is built per worker and runs every task that worker takes, so
+/// One executor is built per worker and searches every task that worker takes, so
 /// this is where a real program holds what is expensive to acquire: its device
 /// context, its compiled kernels, its loaded assets.
 pub struct DoublerExecutor {
@@ -174,7 +174,7 @@ pub struct DoublerExecutor {
 }
 
 impl DoublerExecutor {
-    /// Binds the executor to the format its specs carry and the device it runs
+    /// Binds the executor to the format its specs carry and the device it searches
     /// on.
     pub fn new(device: Option<DeviceBinding>) -> Result<DoublerExecutor> {
         Ok(DoublerExecutor {
@@ -192,7 +192,7 @@ impl Executor for DoublerExecutor {
     // 2. Evaluate one candidate. This is the work.
     //
     // Called once per task, in a worker process, with the candidate bytes, the
-    // run's translated params, and a per-task seed. What it returns is stored:
+    // search's translated params, and a per-task seed. What it returns is stored:
     //
     // - `Completed` — artifacts are stored by content under the task key;
     //   stats are observational numbers a report reads.
@@ -219,7 +219,7 @@ impl Executor for DoublerExecutor {
         let doubled = byte.wrapping_mul(2);
         let mut scalars = vec![("doubled".to_string(), f64::from(doubled))];
         // Stats enter no key and no environment, so reporting the device is
-        // free: a run's report shows which member produced each result.
+        // free: a search's report shows which member produced each result.
         if let Some(device) = &self.device {
             scalars.push(("device.member".to_string(), f64::from(device.member)));
         }
@@ -241,14 +241,14 @@ impl Executor for DoublerExecutor {
 // ===========================================================================
 
 /// What the format binds: its executor, the environment its results depend on,
-/// the devices it runs on, and the translation of `[run.params]`.
+/// the devices it searches on, and the translation of `[search.params]`.
 pub struct DoublerDomain {
     format: FormatId,
     environment: Environment,
 }
 
 impl DoublerDomain {
-    /// The domain a run reaches this program's format through.
+    /// The domain a search reaches this program's format through.
     pub fn new() -> Result<DoublerDomain> {
         Ok(DoublerDomain {
             format: FormatId::new(FORMAT)?,
@@ -265,17 +265,17 @@ impl Domain for DoublerDomain {
         &self.format
     }
 
-    // 3, again: `[run.params]` is this component's section, translated the
-    // same way. Its bytes are what step 2 reads, and they enter the run id.
+    // 3, again: `[search.params]` is this component's section, translated the
+    // same way. Its bytes are what step 2 reads, and they enter the search id.
     //
     // Rejecting an unread key protects that identity: a silently ignored
-    // setting gives the run an identity promising something the executor never
+    // setting gives the search an identity promising something the executor never
     // applied.
     fn translate_config(&self, toml: &str, _segmented: bool) -> Result<Params> {
         let table = section(toml)?;
         if let Some(key) = table.keys().next() {
             return Err(Error::Validation(format!(
-                "[run.params] carries {key:?}; {FORMAT} takes no params"
+                "[search.params] carries {key:?}; {FORMAT} takes no params"
             )));
         }
         Ok(Params { bytes: Vec::new() })
@@ -283,8 +283,8 @@ impl Domain for DoublerDomain {
 
     // 4. Declare what enters a result's identity.
     //
-    // sima addresses a result by a key hashed from the candidate, the run's
-    // params, and this environment. Two runs agree on a stored result only when
+    // sima addresses a result by a key hashed from the candidate, the search's
+    // params, and this environment. Two searches agree on a stored result only when
     // all three agree, so change the arithmetic in step 2 and bump this
     // version: every result stored by the old one keeps its old address.
     fn environment(&self) -> &Environment {
@@ -293,7 +293,7 @@ impl Domain for DoublerDomain {
 
     // 5. Declare the hardware. Three methods, one lifecycle.
     //
-    // `enumerate_devices` lists every device this program can compute on. A run
+    // `enumerate_devices` lists every device this program can compute on. A search
     // resolves its `[[orchestrator.device]]` selectors against the list and
     // spreads its workers over the members of the class each one names. A
     // **class** promises its members are interchangeable, so two identical
@@ -311,7 +311,7 @@ impl Domain for DoublerDomain {
     }
 
     // `executor` builds the executor on the device sima placed this worker on.
-    // A constructor rather than a stored object, because it runs in the worker
+    // A constructor rather than a stored object, because it searches in the worker
     // process where the device is finally known: a real program opens its
     // context, compiles its kernels, and loads its assets here, once.
     fn executor(&self, device: Option<&DeviceBinding>) -> Result<Box<dyn Executor + Sync>> {
@@ -330,7 +330,7 @@ impl Domain for DoublerDomain {
     }
 }
 
-/// Parses a configuration section, which crosses as the text the run declared.
+/// Parses a configuration section, which crosses as the text the search declared.
 /// Empty text is a section with no keys.
 fn section(toml: &str) -> Result<toml::Table> {
     toml.parse()

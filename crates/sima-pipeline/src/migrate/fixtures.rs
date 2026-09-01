@@ -20,14 +20,14 @@ use sima_provider::{
     AcquireLimits, Admission, Budget, Constraints, InstanceGuard, Objective, Provider, UNREPORTED,
     acquire,
 };
-use sima_scheduler::{Event, Record, RunOutcome};
+use sima_scheduler::{Event, Record, SearchOutcome};
 use sima_store::{ObjectScope, Rental as RentalRole, SearchLock, SpendEntry, Store, SyncReport};
 use sima_trace::Emitter;
 use tempfile::TempDir;
 
 use crate::config::LoadedConfig;
-use crate::feed::{FeedInfo, RunFeed};
-use crate::fixtures::{drive_run, sync_between};
+use crate::feed::{FeedInfo, SearchFeed};
+use crate::fixtures::{drive_search, sync_between};
 use crate::migrate::far_side::{Contact, FarSide};
 use crate::program_binding::BinaryChange;
 use crate::task_keys::task_keys;
@@ -56,7 +56,7 @@ pub(crate) enum Step {
     /// the whole of what makes one direction a push and the other a pull.
     Sync(Scope),
     Follow,
-    /// A one-shot read of the far run's journal, which is how a recall learns
+    /// A one-shot read of the far search's journal, which is how a recall learns
     /// what it ended as.
     Snapshot,
     LogTail,
@@ -87,11 +87,11 @@ pub(crate) enum FarJournal {
     Faulting(String),
 }
 
-/// What ends a scripted far run, which is what the wind-down's escalation
+/// What ends a scripted far search, which is what the wind-down's escalation
 /// is measured against.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Ending {
-    /// Winds down on the first signal it hears, as `sima run` does.
+    /// Winds down on the first signal it hears, as `sima search` does.
     OnInterrupt,
     /// Outlasts the wind-down and ends when it is terminated.
     OnTermination,
@@ -107,15 +107,15 @@ pub(crate) const PULL: Step = Step::Sync(Scope::Referenced);
 /// A far side that records what it was asked to do and answers from a
 /// script, so the choreography is driven with no machine at all.
 ///
-/// Its far run is alive from the start (or from a preset, for a reattach)
+/// Its far search is alive from the start (or from a preset, for a reattach)
 /// until the feed delivers a terminal record or the wind-down signals it —
-/// which is what a real `sima run` does — unless it is stubborn, in which
-/// case it never exits and the wind-down's wait runs out on it.
+/// which is what a real `sima search` does — unless it is stubborn, in which
+/// case it never exits and the wind-down's wait searches out on it.
 pub(crate) struct Scripted<'a> {
     devices: Vec<DeviceInfo>,
-    /// The far-side run's pid while it is alive.
+    /// The far-side search's pid while it is alive.
     pub(crate) alive: Arc<Mutex<Option<u32>>>,
-    /// What ends this far run.
+    /// What ends this far search.
     ending: Ending,
     /// How many times the first contact is refused before the machine
     /// answers: a freshly rented host's sshd can lag its provider's
@@ -124,43 +124,43 @@ pub(crate) struct Scripted<'a> {
     /// A machine that answers, without the worker image its pool needs —
     /// a failure no amount of waiting resolves.
     image_absent: bool,
-    /// A machine holding no directory for this run, which is what one that
+    /// A machine holding no directory for this search, which is what one that
     /// was never migrated to looks like.
     unplaced: bool,
-    /// How many signals the far run discards before it winds down: a run
+    /// How many signals the far search discards before it winds down: a search
     /// that has not yet installed its own handler is not signallable, and
     /// the disposition it inherited discards what it is sent.
     deaf: Mutex<usize>,
     /// The records the follow feed delivers, one batch per poll.
     pub(crate) polls: Arc<Mutex<VecDeque<Vec<Record>>>>,
     /// The journal the far store already holds: what a follow opened before
-    /// this run starts replays, and what a one-shot read of the far side
-    /// answers with. Absent for a destination no run has ever journaled on.
+    /// this search starts replays, and what a one-shot read of the far side
+    /// answers with. Absent for a destination no search has ever journaled on.
     journal: Mutex<FarJournal>,
-    /// The far side's own store and the run it holds, when a sync is to be
+    /// The far side's own store and the search it holds, when a sync is to be
     /// performed for real rather than recorded and skipped.
     far: Option<(&'a Store, &'a LoadedConfig)>,
     pub(crate) steps: Mutex<Vec<Step>>,
     pub(crate) placed: Mutex<Option<String>>,
-    /// What the far `sima run` was started with about a changed program.
+    /// What the far `sima search` was started with about a changed program.
     pub(crate) started_with: Mutex<Option<BinaryChange>>,
     /// The objects the push named, which is what a program has to be in.
     pub(crate) pushed: Mutex<Vec<sima_core::Hash>>,
-    /// What the far run's log holds, when it wrote one.
+    /// What the far search's log holds, when it wrote one.
     log: Option<String>,
-    /// Whether the far run exits the moment it is started, which is what a
+    /// Whether the far search exits the moment it is started, which is what a
     /// far-side load failure looks like from here.
     dies_at_start: bool,
-    /// The records a far run short enough to end inside the start window
+    /// The records a far search short enough to end inside the start window
     /// leaves in the far journal, its pid naming nothing by the time the
     /// attach asks.
     finishes_at_start: Option<Vec<Record>>,
-    /// Whether the far run goes away once its feed has delivered everything
-    /// it was scripted with: a run that died mid-flight, journaling nothing
+    /// Whether the far search goes away once its feed has delivered everything
+    /// it was scripted with: a search that died mid-flight, journaling nothing
     /// terminal.
     vanishing: bool,
-    /// How many times the follow is refused before it opens: a far run is
-    /// up before it journals, and `sima follow-serve` refuses a run that
+    /// How many times the follow is refused before it opens: a far search is
+    /// up before it journals, and `sima follow-serve` refuses a search that
     /// journaled nothing.
     follow_refusals: Mutex<usize>,
     /// How the follow's stream ends once it has delivered everything it was
@@ -218,19 +218,19 @@ impl<'a> Scripted<'a> {
         }
     }
 
-    /// A far side already driving this run, which is what a reattach finds.
+    /// A far side already driving this search, which is what a reattach finds.
     pub(crate) fn already_driving(self) -> Scripted<'a> {
         *self.alive.lock().expect("the pid lock") = Some(PID);
         self
     }
 
-    /// A far run that never exits, however it is asked to.
+    /// A far search that never exits, however it is asked to.
     pub(crate) fn stubborn(mut self) -> Scripted<'a> {
         self.ending = Ending::Never;
         self
     }
 
-    /// A far run that keeps going through the whole wind-down and ends only
+    /// A far search that keeps going through the whole wind-down and ends only
     /// when it is terminated.
     pub(crate) fn outlasting_the_wind_down(mut self) -> Scripted<'a> {
         self.ending = Ending::OnTermination;
@@ -238,7 +238,7 @@ impl<'a> Scripted<'a> {
     }
 
     /// A machine nothing was ever migrated to: it holds no directory for
-    /// this run.
+    /// this search.
     pub(crate) fn never_migrated_to(mut self) -> Scripted<'a> {
         self.unplaced = true;
         self
@@ -257,21 +257,21 @@ impl<'a> Scripted<'a> {
         self
     }
 
-    /// A far run that discards its first `signals` before it becomes
+    /// A far search that discards its first `signals` before it becomes
     /// signallable.
     pub(crate) fn deaf_for(self, signals: usize) -> Scripted<'a> {
         *self.deaf.lock().expect("the deafness lock") = signals;
         self
     }
 
-    /// A far run that is up but has not journaled yet, so the follow is
+    /// A far search that is up but has not journaled yet, so the follow is
     /// refused its first `attempts` times before it opens.
     pub(crate) fn refusing_the_follow(self, attempts: usize) -> Scripted<'a> {
         *self.follow_refusals.lock().expect("the follow lock") = attempts;
         self
     }
 
-    /// A far run that exits while loading its config, leaving `log` behind —
+    /// A far search that exits while loading its config, leaving `log` behind —
     /// what a migration finds when the far side fails to start.
     ///
     /// What the far store's journal holds is separate: nothing at all for a
@@ -307,24 +307,24 @@ impl<'a> Scripted<'a> {
         self
     }
 
-    /// A far run that is over by the time the follow attaches: starting it
+    /// A far search that is over by the time the follow attaches: starting it
     /// leaves `records` in the far journal and its pid naming nothing, which
-    /// is what a run short enough to end inside the start window looks like
+    /// is what a search short enough to end inside the start window looks like
     /// from here.
     pub(crate) fn finishing_at_the_start(mut self, records: Vec<Record>) -> Scripted<'a> {
         self.finishes_at_start = Some(records);
         self
     }
 
-    /// A far run that goes away once its feed has delivered everything it was
-    /// scripted with, journaling nothing terminal: a death mid-run.
+    /// A far search that goes away once its feed has delivered everything it was
+    /// scripted with, journaling nothing terminal: a death mid-search.
     pub(crate) fn vanishing_when_drained(mut self) -> Scripted<'a> {
         self.vanishing = true;
         self
     }
 
     /// The journal already in the far store: what a follow opened before this
-    /// run starts replays, what a run that ended on this destination left
+    /// search starts replays, what a search that ended on this destination left
     /// behind, and what a recall reads to learn how it ended.
     pub(crate) fn over_an_existing_journal(self, records: Vec<Record>) -> Scripted<'a> {
         *self.journal.lock().expect("the journal lock") = FarJournal::Holding(records);
@@ -354,7 +354,7 @@ impl<'a> Scripted<'a> {
         self
     }
 
-    /// The store a sync actually exchanges with, and the config whose run it
+    /// The store a sync actually exchanges with, and the config whose search it
     /// holds. Without it a sync is recorded and nothing moves.
     pub(crate) fn syncing_with(
         mut self,
@@ -418,12 +418,12 @@ impl FarSide for Scripted<'_> {
     fn start(&self, accept: BinaryChange) -> Result<u32> {
         self.record(Step::Start);
         *self.started_with.lock().expect("the acceptance lock") = Some(accept);
-        // A run short enough to end inside the start window journaled
+        // A search short enough to end inside the start window journaled
         // everything it had to say and is already gone.
         if let Some(records) = &self.finishes_at_start {
             *self.journal.lock().expect("the journal lock") = FarJournal::Holding(records.clone());
         } else if !self.dies_at_start {
-            // A run that dies while loading its config is gone by the time
+            // A search that dies while loading its config is gone by the time
             // anything asks, which is what leaves the pid naming nothing.
             *self.alive.lock().expect("the pid lock") = Some(PID);
         }
@@ -434,7 +434,7 @@ impl FarSide for Scripted<'_> {
         self.record(Step::Interrupt(pid));
         let mut deaf = self.deaf.lock().expect("the deafness lock");
         if *deaf > 0 {
-            // Sent into the window before the run's own handler replaced
+            // Sent into the window before the search's own handler replaced
             // the disposition it inherited: discarded, with no trace.
             *deaf -= 1;
             return Ok(());
@@ -447,7 +447,7 @@ impl FarSide for Scripted<'_> {
 
     fn terminate(&self, pid: u32) -> Result<()> {
         self.record(Step::Terminate(pid));
-        // A termination is not declinable, so only a far run scripted to
+        // A termination is not declinable, so only a far search scripted to
         // outlast everything survives it.
         if self.ending != Ending::Never {
             *self.alive.lock().expect("the pid lock") = None;
@@ -465,7 +465,7 @@ impl FarSide for Scripted<'_> {
         });
         match self.far {
             // The far side derives its own key set where it sits, as
-            // `sima sync-serve` does over the run's journal; no key list
+            // `sima sync-serve` does over the search's journal; no key list
             // crosses the wire. This double holds the config, so it
             // derives the same set the far side's journal would name.
             Some((far, config)) => {
@@ -493,24 +493,24 @@ impl FarSide for Scripted<'_> {
         Ok(self.log.clone().unwrap_or_default())
     }
 
-    fn follow(&self) -> Result<Box<dyn RunFeed>> {
+    fn follow(&self) -> Result<Box<dyn SearchFeed>> {
         self.record(Step::Follow);
-        // `sima follow-serve` refuses a run that journaled nothing, which is
+        // `sima follow-serve` refuses a search that journaled nothing, which is
         // the whole of what this side can learn from it. The far journal holds
-        // something when an earlier session left records or a run is there
-        // writing its own; a run that died while loading left neither.
+        // something when an earlier session left records or a search is there
+        // writing its own; a search that died while loading left neither.
         let existing = self.journaled_records();
         let unjournaled = existing.is_empty() && self.alive.lock().expect("the pid lock").is_none();
         let mut refusals = self.follow_refusals.lock().expect("the follow lock");
         if unjournaled || *refusals > 0 {
             *refusals = refusals.saturating_sub(1);
             return Err(Error::Validation(
-                "run 00 was never started in this store".to_string(),
+                "search 00 was never started in this store".to_string(),
             ));
         }
         Ok(Box::new(ScriptedFeed {
             info: FeedInfo {
-                run: SearchId::from_hash(sima_core::hash_bytes(b"scripted")),
+                search: SearchId::from_hash(sima_core::hash_bytes(b"scripted")),
                 format: sima_model::FormatId::new("stub.v1").expect("format id"),
                 workers: 1,
             },
@@ -525,7 +525,7 @@ impl FarSide for Scripted<'_> {
 }
 
 /// The feed a scripted far side hands out: one batch per poll, and the far
-/// run ends when a terminal record is delivered.
+/// search ends when a terminal record is delivered.
 pub(crate) struct ScriptedFeed {
     info: FeedInfo,
     polls: Arc<Mutex<VecDeque<Vec<Record>>>>,
@@ -535,14 +535,14 @@ pub(crate) struct ScriptedFeed {
     history: Option<Vec<Record>>,
     alive: Arc<Mutex<Option<u32>>>,
     ending: Ending,
-    /// Whether the far run goes away once every batch has been delivered.
+    /// Whether the far search goes away once every batch has been delivered.
     vanishing: bool,
     /// How the stream ends once every batch has been delivered: a transport
     /// that went away, or a fault the far side wrote.
     stream_ends: Option<StreamEnd>,
 }
 
-impl RunFeed for ScriptedFeed {
+impl SearchFeed for ScriptedFeed {
     fn info(&self) -> &FeedInfo {
         &self.info
     }
@@ -561,7 +561,7 @@ impl RunFeed for ScriptedFeed {
             .expect("the poll lock")
             .pop_front()
             .unwrap_or_default();
-        // A stream that ended answers no further poll, whatever the far run
+        // A stream that ended answers no further poll, whatever the far search
         // itself is doing. Which error it ends with is what separates the two
         // endings: a transport that went away is this side's own reading of a
         // stream it lost, and a fault frame carries the far side's words
@@ -575,24 +575,26 @@ impl RunFeed for ScriptedFeed {
         }
         if self.vanishing && batch.is_empty() {
             // Everything it was scripted with has been delivered, and the far
-            // run is gone without journaling anything terminal.
+            // search is gone without journaling anything terminal.
             *self.alive.lock().expect("the pid lock") = None;
         }
         let terminal = batch.iter().any(|record| {
             matches!(
                 record.event,
-                Event::RunFinalized { .. } | Event::RunFailed { .. } | Event::RunInterrupted { .. }
+                Event::SearchFinalized { .. }
+                    | Event::SearchFailed { .. }
+                    | Event::SearchInterrupted { .. }
             )
         });
         if terminal && self.ending != Ending::Never {
-            // A `sima run` that wrote its terminal event exits.
+            // A `sima search` that wrote its terminal event exits.
             *self.alive.lock().expect("the pid lock") = None;
         }
         Ok(batch)
     }
 
     fn holder(&self) -> Result<Option<String>> {
-        // The far side holds its run lock for as long as its run does.
+        // The far side holds its search lock for as long as its search does.
         Ok(self
             .alive
             .lock()
@@ -604,7 +606,7 @@ impl RunFeed for ScriptedFeed {
 // ---- The local side ----
 
 /// The local side of a migration: the config file's text, its loaded form,
-/// and the store the run lives in.
+/// and the store the search lives in.
 pub(crate) struct Local {
     _dir: TempDir,
     pub(crate) text: String,
@@ -612,21 +614,21 @@ pub(crate) struct Local {
     pub(crate) store: Store,
 }
 
-/// The run every session test moves: one candidate over twenty accumulating
+/// The search every session test moves: one candidate over twenty accumulating
 /// segments, so the chain has a frontier at every stage.
 pub(crate) fn config_text(machine: &str, root: &str, bounds: &str) -> String {
     format!(
         r#"
-        [run]
+        [search]
         root_seed = 5
         segments = 20
         format = "stub.v1"
 
-        [run.generator]
+        [search.generator]
         id = "stub.v1"
         behaviors = ["accumulate:2"]
 
-        [run.params]
+        [search.params]
         hex = "01"
 
         [config]
@@ -649,10 +651,10 @@ pub(crate) fn config_text(machine: &str, root: &str, bounds: &str) -> String {
     )
 }
 
-/// A local side whose store holds `committed` segments of the run, over a
+/// A local side whose store holds `committed` segments of the search, over a
 /// destination of the given form.
 ///
-/// The run-global ceiling is a dollar, which nothing here reaches unless the
+/// The search-global ceiling is a dollar, which nothing here reaches unless the
 /// test seeds spend against it.
 pub(crate) fn local(machine: &str, bounds: &str, committed: Option<usize>) -> Local {
     let dir = tempfile::tempdir().expect("temp dir");
@@ -664,8 +666,8 @@ pub(crate) fn local(machine: &str, bounds: &str, committed: Option<usize>) -> Lo
     let store = Store::open(&config.store).expect("open the store");
     if let Some(committed) = committed {
         assert!(matches!(
-            drive_run(&store, &config.run, Some(committed)),
-            RunOutcome::Interrupted { .. }
+            drive_search(&store, &config.search, Some(committed)),
+            SearchOutcome::Interrupted { .. }
         ));
     }
     Local {
@@ -680,15 +682,15 @@ pub(crate) fn local(machine: &str, bounds: &str, committed: Option<usize>) -> Lo
 pub(crate) const RENTED: &str = "provider = \"stub\"";
 /// The declaration of a machine of yours.
 pub(crate) const OWNED: &str = "workers = 1";
-/// Readiness bounds a wind-down runs through without sleeping.
+/// Readiness bounds a wind-down searches through without sleeping.
 pub(crate) const PROMPT: &str = "ready_timeout_ms = 200\nready_poll_ms = 1";
 
-/// A second store holding the same run, driven `committed` segments in —
+/// A second store holding the same search, driven `committed` segments in —
 /// the far side of a migration, as a real sync finds it.
 pub(crate) fn far_store(config: &LoadedConfig, committed: Option<usize>) -> (TempDir, Store) {
     let dir = tempfile::tempdir().expect("temp dir");
     let store = Store::open(dir.path()).expect("open the store");
-    drive_run(&store, &config.run, committed);
+    drive_search(&store, &config.search, committed);
     (dir, store)
 }
 
@@ -698,9 +700,9 @@ pub(crate) fn rec(event: Event) -> Record {
     Record { ts_ms: 0, event }
 }
 
-pub(crate) fn started(run: &SearchId) -> Record {
-    rec(Event::RunStarted {
-        run: run.to_string(),
+pub(crate) fn started(search: &SearchId) -> Record {
+    rec(Event::SearchStarted {
+        search: search.to_string(),
         tasks: 20,
         committed: 0,
     })
@@ -715,16 +717,16 @@ pub(crate) fn committed(task: &str) -> Record {
     })
 }
 
-pub(crate) fn finalized(run: &SearchId) -> Record {
-    rec(Event::RunFinalized {
-        run: run.to_string(),
+pub(crate) fn finalized(search: &SearchId) -> Record {
+    rec(Event::SearchFinalized {
+        search: search.to_string(),
         committed: 20,
     })
 }
 
-pub(crate) fn failed(run: &SearchId, task: &str, reason: &str) -> Record {
-    rec(Event::RunFailed {
-        run: run.to_string(),
+pub(crate) fn failed(search: &SearchId, task: &str, reason: &str) -> Record {
+    rec(Event::SearchFailed {
+        search: search.to_string(),
         task: task.to_string(),
         reason: reason.to_string(),
     })
@@ -757,7 +759,7 @@ pub(crate) fn limits() -> AcquireLimits {
     }
 }
 
-/// Spends this run past the ceiling its config declares, by booking a
+/// Spends this search past the ceiling its config declares, by booking a
 /// closed rental it already paid for.
 ///
 /// Budget exhaustion is what winds a migration down from this side, so it
@@ -766,7 +768,7 @@ pub(crate) fn over_budget(local: &Local) -> Result<()> {
     local.store.put_spend(&SpendEntry {
         tag: "sima-prior-0".to_string(),
         provider: "stub".to_string(),
-        owner: local.config.run.id().to_string(),
+        owner: local.config.search.id().to_string(),
         price_micro_usd_hour: 100_000,
         started_ms: 1_700_000_000_000,
         ended_ms: 1_700_000_003_600_000,
@@ -774,7 +776,7 @@ pub(crate) fn over_budget(local: &Local) -> Result<()> {
     })
 }
 
-/// Rents one machine to host the run, as `hold` does when there is nothing
+/// Rents one machine to host the search, as `hold` does when there is nothing
 /// to adopt.
 pub(crate) fn hosting<'a>(
     provider: &'a (dyn Provider + Sync),

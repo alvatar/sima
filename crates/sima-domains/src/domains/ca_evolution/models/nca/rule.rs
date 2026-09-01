@@ -129,8 +129,8 @@ mod tests {
     }
 
     /// Executor fixtures driving the real [`CaExecutor<Nca, WgslEngine>`]: the
-    /// `on_device` tests run the async kernel through the seed and step buffers
-    /// exactly as a live run does, and the device-free tests beside them
+    /// `on_device` tests search the async kernel through the seed and step buffers
+    /// exactly as a live search does, and the device-free tests beside them
     /// exercise the executor's validation of a stepped input state before any
     /// GPU work. Neither touches a store.
     #[cfg(test)]
@@ -162,7 +162,7 @@ mod tests {
             }
         }
 
-        /// Well-formed run params on a 32x32 grid over `steps`, noiseless ignition.
+        /// Well-formed search params on a 32x32 grid over `steps`, noiseless ignition.
         fn params(steps: u32) -> Params {
             Params {
                 bytes: encode_params::<Nca>(
@@ -195,7 +195,7 @@ mod tests {
         }
 
         /// Runs the executor and returns the committed `state` artifact bytes.
-        fn run_state(
+        fn search_state(
             exec: &CaExecutor<Nca, WgslEngine>,
             spec: &Spec,
             params: &Params,
@@ -244,7 +244,7 @@ mod tests {
 
         #[test]
         fn a_mismatched_stepped_state_is_an_error() {
-            // A well-framed state whose grid is 8x8x8 against 32x32 run params:
+            // A well-framed state whose grid is 8x8x8 against 32x32 search params:
             // the header decodes, the grid dimensions do not match, and the error
             // names both triples before any GPU work.
             let exec = CaExecutor::<Nca, WgslEngine>::new(None).expect("executor");
@@ -266,12 +266,12 @@ mod tests {
 
             #[test]
             fn repeated_runs_are_byte_identical() {
-                // The async mask is deterministic in (seed, cell, step), so two runs
+                // The async mask is deterministic in (seed, cell, step), so two searches
                 // of the same task commit byte-identical framed states.
                 let exec = CaExecutor::<Nca, WgslEngine>::new(None).expect("executor");
                 let (spec, params) = (spec(0.5), params(50));
-                let first = run_state(&exec, &spec, &params, None);
-                let second = run_state(&exec, &spec, &params, None);
+                let first = search_state(&exec, &spec, &params, None);
+                let second = search_state(&exec, &spec, &params, None);
                 assert_eq!(first, second);
             }
 
@@ -283,15 +283,15 @@ mod tests {
                 // changes nothing.
                 let exec = CaExecutor::<Nca, WgslEngine>::new(None).expect("executor");
                 let spec = spec(0.5);
-                let a = run_state(&exec, &spec, &params(50), None);
-                let b = run_state(&exec, &spec, &params(50), Some(&a));
-                let c = run_state(&exec, &spec, &params(100), None);
+                let a = search_state(&exec, &spec, &params(50), None);
+                let b = search_state(&exec, &spec, &params(50), Some(&a));
+                let c = search_state(&exec, &spec, &params(100), None);
                 assert_eq!(b, c, "segmented 50+50 must equal unsegmented 100");
                 // A reached step 50, C step 100, each over an 8-channel grid.
                 let (a_step, a_grid) = framed(&a);
                 let (c_step, c_grid) = framed(&c);
                 assert_eq!(a_step, 50, "segment A reached step 50");
-                assert_eq!(c_step, 100, "the whole run reached step 100");
+                assert_eq!(c_step, 100, "the whole search reached step 100");
                 assert_eq!(a_grid.channels(), 8);
                 assert_eq!(c_grid.channels(), 8);
             }
@@ -303,7 +303,7 @@ mod tests {
                 // count over an 8-channel grid.
                 let exec = CaExecutor::<Nca, WgslEngine>::new(None).expect("executor");
                 let steps = 8;
-                let bytes = run_state(&exec, &spec(0.02), &params(steps), None);
+                let bytes = search_state(&exec, &spec(0.02), &params(steps), None);
                 let (step, grid) = framed(&bytes);
                 assert_eq!(
                     step,

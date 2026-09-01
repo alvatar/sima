@@ -4,7 +4,7 @@
 //! [`CaExecutor<M>`](super::executor::CaExecutor) over a model that is not
 //! Gray-Scott, proving they depend on no concrete model. It is unregistered and
 //! has no WGSL kernel, so it is not runnable — a genericity lock, not a model a
-//! run can select.
+//! search can select.
 
 use sima_core::{Codec, Dec, Enc, Error, Result, prng};
 
@@ -167,7 +167,7 @@ impl CaModel for Toy {
     }
 }
 
-/// The genericity lock: the generic CA machinery runs end to end over the toy
+/// The genericity lock: the generic CA machinery searches end to end over the toy
 /// model, with no dependency on Gray-Scott. Together with the toy-driven tests
 /// in `params`, `generator`, and `executor`, this proves the domain is
 /// model-agnostic — a second model plugs in by implementing [`CaModel`] alone.
@@ -217,7 +217,7 @@ mod tests {
 
     #[test]
     fn the_spine_runs_over_a_non_gray_scott_model() -> Result<()> {
-        // Params translation: a full toy `[run.params]` table becomes a blob that
+        // Params translation: a full toy `[search.params]` table becomes a blob that
         // decodes back to the shared fields and the toy ignition.
         let params_table: toml::Table = "width = 8\nheight = 8\nsteps = 4\ndt = 1.0\nbase = 0.5"
             .parse()

@@ -1,4 +1,4 @@
-//! What compute devices a program can run on.
+//! What compute devices a program can search on.
 //!
 //! The domains layer is where the set of compiled-in execution backends is
 //! known, so it is where "what devices can be used" is answered for the layers
@@ -16,15 +16,15 @@
 //! [`enumerate_all_devices`] asks it about the machine instead, across every
 //! compiled backend. That answer states reachability and hardware, and is used
 //! where no format this build carries is in play: a fleet machine's readiness
-//! probe for a run whose format is a program outside this build. Placement for
-//! such a run comes from the program's own enumeration, never from this list.
+//! probe for a search whose format is a program outside this build. Placement for
+//! such a search comes from the program's own enumeration, never from this list.
 
 use sima_core::Result;
 use sima_model::FormatId;
 
 pub use sima_contracts::{DeviceInfo, DeviceType};
 
-/// Every device the program bound to `format` can run on.
+/// Every device the program bound to `format` can search on.
 ///
 /// Resolving the format is what selects the enumeration: a domain carries the
 /// one its own execution backend supplies, so nothing above this crate has to
@@ -36,7 +36,7 @@ pub fn enumerate_devices(format: &FormatId) -> Result<Vec<DeviceInfo>> {
 /// Every device every compiled backend reaches, asked about a machine rather
 /// than about a program.
 ///
-/// This is the answer for a run whose format is a program outside this build:
+/// This is the answer for a search whose format is a program outside this build:
 /// nothing here can resolve that format, and only the program itself knows
 /// which of these devices its backend opens. The list is therefore a statement
 /// about the machine — it is reachable, and this is its hardware — and never a
@@ -123,7 +123,7 @@ mod tests {
 
     #[test]
     fn enumeration_answers_on_a_machine_with_no_device_at_all() {
-        // No backend faults for want of a driver, so the probe the worker runs
+        // No backend faults for want of a driver, so the probe the worker searches
         // answers rather than failing, whichever program it is asked about.
         for name in [
             "stub.v1",

@@ -1,9 +1,9 @@
-//! The shipped examples load, and each yields the run id it always has.
+//! The shipped examples load, and each yields the search id it always has.
 //!
 //! An example is the surface a reader copies from, so it has to parse under the
-//! current schema. The pinned ids are the second half: `[run]` is the only
-//! hashed section, so an edit anywhere else must leave a run's identity
-//! untouched, and an edit to `[run]` must be a deliberate one that shows up
+//! current schema. The pinned ids are the second half: `[search]` is the only
+//! hashed section, so an edit anywhere else must leave a search's identity
+//! untouched, and an edit to `[search]` must be a deliberate one that shows up
 //! here rather than a store that quietly stops matching.
 
 use std::path::PathBuf;
@@ -16,9 +16,9 @@ fn examples() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples")
 }
 
-/// Loads the example named `file` and returns its run id, rendered.
+/// Loads the example named `file` and returns its search id, rendered.
 fn search_id(file: &str) -> Result<String> {
-    Ok(load(&examples().join(file))?.run.id().to_string())
+    Ok(load(&examples().join(file))?.search.id().to_string())
 }
 
 #[test]
@@ -52,8 +52,8 @@ fn the_two_examples_are_different_runs() -> Result<()> {
 
 #[test]
 fn every_example_carries_a_worker_layout_and_declares_no_machine_it_does_not_use() -> Result<()> {
-    // A reader who copies an example and runs it must get a run that executes:
-    // the orchestrator states a layout, so `sima run` needs no flag. Every
+    // A reader who copies an example and searches it must get a search that executes:
+    // the orchestrator states a layout, so `sima search` needs no flag. Every
     // machine beyond this one is commented out, so nothing is declared that the
     // example does not use.
     for file in ["gray-scott-search.toml", "gray-scott-cuda-search.toml"] {
@@ -79,7 +79,7 @@ fn every_example_carries_a_worker_layout_and_declares_no_machine_it_does_not_use
 fn the_stepper_example_declares_the_machines_the_tutorial_drives() -> Result<()> {
     // The stepper example ships with its machines active: the tutorial's
     // machine chapter migrates onto `cloudbox` and draws a fleet from `cheap`,
-    // both rented, neither engaged by a plain `sima run` — which is what keeps
+    // both rented, neither engaged by a plain `sima search` — which is what keeps
     // the example working out of the box with no key in the environment.
     let loaded = load(&examples().join("stepper-py/search.toml"))?;
     assert_eq!(loaded.orchestrator.migrate.as_deref(), Some("cloudbox"));
@@ -116,7 +116,7 @@ fn the_stepper_example_s_commented_machine_block_loads_when_uncommented() -> Res
 
     assert!(loaded.hosts.contains_key("gpubox"));
     assert_eq!(
-        loaded.run.id().to_string(),
+        loaded.search.id().to_string(),
         search_id("stepper-py/search.toml")?,
         "declaring a machine decides where, never what"
     );
@@ -131,7 +131,7 @@ fn the_stepper_example_loads_with_its_search_id() -> Result<()> {
     // the load vends the package the entry names before it spawns anything.
     //
     // The spawn is what makes this a load test and a path test at once: a
-    // program runs in a scratch working directory of its own, so a binary named
+    // program searches in a scratch working directory of its own, so a binary named
     // relative to this process would resolve against that directory and fail to
     // spawn at all.
     assert_eq!(

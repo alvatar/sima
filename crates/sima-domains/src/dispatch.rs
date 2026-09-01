@@ -1,11 +1,11 @@
 //! The static dispatches from config ids to code.
 //!
 //! A format id binds one [`Domain`]: the executor that evaluates specs of the
-//! format, the environment its results depend on, the devices its work runs on,
-//! and the translation of the `[run.params]` section it owns. Generators
+//! format, the environment its results depend on, the devices its work searches on,
+//! and the translation of the `[search.params]` section it owns. Generators
 //! dispatch separately, because one format has one executor but many
 //! generators, and a generator owns the translation of its own
-//! `[run.generator]` keys.
+//! `[search.generator]` keys.
 //!
 //! The in-tree formats are reached through exactly the contracts a program
 //! outside the workspace implements, so nothing here is a shape of its own:
@@ -34,10 +34,10 @@ pub fn domain_for(format: &FormatId) -> Result<Box<dyn Domain>> {
     })
 }
 
-/// The generator `id` names, checked against the format the run declares.
+/// The generator `id` names, checked against the format the search declares.
 ///
-/// A run states its format and its generator separately, and the two must
-/// agree: a generator producing specs of another format would mint a run id
+/// A search states its format and its generator separately, and the two must
+/// agree: a generator producing specs of another format would mint a search id
 /// over the mismatch and fail only when the first spec is stored. Resolving
 /// through the format catches it at load, before any store exists, and the
 /// refusal names both ids since either one could be the typo.
@@ -45,7 +45,7 @@ pub fn generator_for(format: &FormatId, id: &GeneratorId) -> Result<Box<dyn Gene
     let generator = resolve_generator(id)?;
     if generator.format() != format {
         return Err(Error::Validation(format!(
-            "generator {:?} produces specs of format {:?}, and the run declares format {:?}",
+            "generator {:?} produces specs of format {:?}, and the search declares format {:?}",
             id.as_str(),
             generator.format().as_str(),
             format.as_str()
@@ -134,9 +134,9 @@ mod tests {
 
     #[test]
     fn a_generator_of_another_format_is_rejected_naming_both() {
-        // The mismatch a run can write: the format and the generator are
+        // The mismatch a search can write: the format and the generator are
         // separate config keys, and a generator that draws for another format
-        // would produce specs the run's executor cannot read.
+        // would produce specs the search's executor cannot read.
         match generator_for(&format("stub.v1"), &generator("ca_evolution.nca.v1")).map(|_| ()) {
             Err(Error::Validation(msg)) => {
                 assert!(msg.contains("ca_evolution.nca.v1"), "{msg}");
@@ -151,7 +151,7 @@ mod tests {
         // Both dispatches are separate matches over the same ids, so a format
         // added to one and forgotten in the other resolves for some purposes
         // and not others. Resolving here also proves the dispatch is
-        // device-free: this test runs on a machine with no GPU at all.
+        // device-free: this test searches on a machine with no GPU at all.
         for name in FORMATS {
             let format = format(name);
             let domain = domain_for(&format)?;
@@ -203,7 +203,7 @@ mod tests {
         // A GPU domain's construction stays device-free whether or not a device
         // is named: the engine initializes lazily on the first execute, so this
         // test — and `orchestrate`, which builds domains before any store
-        // mutation — runs on a machine with no GPU at all. The binding names a
+        // mutation — searches on a machine with no GPU at all. The binding names a
         // class that need not exist here; nothing resolves it until execute.
         let binding = DeviceBinding {
             class: DeviceClass::new("dead:beef").expect("class id"),
@@ -226,7 +226,7 @@ mod tests {
             domain.translate_config("hex = \"00ff\"\n", false)?.bytes,
             vec![0x00, 0xff]
         );
-        // A run that states no params sends empty text, which is the table with
+        // A search that states no params sends empty text, which is the table with
         // no keys rather than a parse failure.
         assert!(domain.translate_config("", false)?.bytes.is_empty());
         Ok(())

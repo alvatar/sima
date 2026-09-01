@@ -1,4 +1,4 @@
-//! Loading a kernel from committed PTX, with the thread-block width it runs at.
+//! Loading a kernel from committed PTX, with the thread-block width it searches at.
 
 use cudarc::driver::CudaFunction;
 use cudarc::driver::sys;
@@ -67,7 +67,7 @@ impl Context {
     ///
     /// The driver's just-in-time compiler turns the PTX into machine code for
     /// this device as the module loads, so a PTX targeting an architecture the
-    /// device cannot run fails here rather than at the first launch.
+    /// device cannot search fails here rather than at the first launch.
     ///
     /// `block_width` is the thread count per block along x. CUDA takes the
     /// block dimensions at launch rather than from the compiled artifact, so
@@ -202,7 +202,7 @@ mod tests {
         fn a_block_width_the_kernel_does_not_declare_is_rejected() {
             // 32 is a width this device launches happily; what rejects it is
             // the `.maxntid` the artifact carries. A caller sizing its grid by
-            // 32 while the kernel runs 64-wide would cover half the elements,
+            // 32 while the kernel searches 64-wide would cover half the elements,
             // and no launch could tell.
             let context = Context::new().expect("create compute context");
             match context.kernel(SMOKE_PTX, "main_kernel", 32) {

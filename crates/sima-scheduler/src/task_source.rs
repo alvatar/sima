@@ -16,12 +16,12 @@ pub struct RunnableTask {
     /// The identity whose evaluation this task commits.
     pub identity: TaskIdentity,
     /// The chain this task belongs to, when a chain source derived it; the
-    /// worker keys the run's checkpoint slot by it. Stateless tasks carry
+    /// worker keys the search's checkpoint slot by it. Stateless tasks carry
     /// `None` and get no slot.
     pub chain: Option<u64>,
 }
 
-/// Derives the currently-runnable tasks of a run from `(config, store state)`.
+/// Derives the currently-runnable tasks of a search from `(config, store state)`.
 ///
 /// One interface covers both a static batch and a segment chain that derives
 /// successors as predecessors commit — which is why frontier derivation
@@ -29,7 +29,7 @@ pub struct RunnableTask {
 pub trait TaskSource {
     /// Return the tasks runnable now and not yet handed out. The driver calls
     /// this repeatedly, leases outstanding or not, and the source returns each
-    /// runnable task exactly once across the run: it tracks what it has handed
+    /// runnable task exactly once across the search: it tracks what it has handed
     /// out and watches the store for the commit. The static batch returns the
     /// full unanswered set on the first call and an empty vec thereafter; a
     /// chain source returns successors as their predecessors commit.
@@ -42,23 +42,23 @@ pub trait TaskSource {
     /// does, is still correct.
     fn poll(&mut self, settled: &[TaskKey]) -> Result<Vec<RunnableTask>>;
 
-    /// The task keys the run comprises, as materialized so far. The set is
+    /// The task keys the search comprises, as materialized so far. The set is
     /// complete once a poll has returned empty at an idle pool — the point at
     /// which the driver finalizes over exactly this set.
     fn all_keys(&self) -> &[TaskKey];
 
-    /// The planned task count of the whole run, known at construction. Feeds
-    /// the run-started report; unlike [`TaskSource::all_keys`], it never
+    /// The planned task count of the whole search, known at construction. Feeds
+    /// the search-started report; unlike [`TaskSource::all_keys`], it never
     /// grows.
     fn task_total(&self) -> usize;
 
-    /// How many of the run's tasks the store already answered when this
+    /// How many of the search's tasks the store already answered when this
     /// source derived its frontier: what earlier sessions committed. Feeds
-    /// the run-started report, whose display counts on from it.
+    /// the search-started report, whose display counts on from it.
     fn prior_committed(&self) -> usize;
 }
 
-/// The construction prologue every task source shares: runs `generator` under
+/// The construction prologue every task source shares: searches `generator` under
 /// `config` and stores each spec object, returning each spec paired with its
 /// id. The spec object is durable before any task referencing it can commit;
 /// its address is the spec id (both are the blake3 of the spec's canonical
@@ -72,12 +72,12 @@ pub(crate) fn generate_specs(
     specs
         .into_iter()
         .map(|spec| {
-            // A generator stamps its own format, so a run pairing one with a
+            // A generator stamps its own format, so a search pairing one with a
             // domain that reads another format is caught here rather than at
             // the first task, where the bytes would be read as the wrong thing.
             if spec.format != config.format {
                 return Err(Error::Validation(format!(
-                    "generator {:?} produced a spec of format {:?}, and the run is over {:?}",
+                    "generator {:?} produced a spec of format {:?}, and the search is over {:?}",
                     config.generator.id.as_str(),
                     spec.format.as_str(),
                     config.format.as_str()
@@ -98,7 +98,7 @@ mod tests {
     use super::*;
 
     /// A generator producing one spec of the format it is told to stamp, so a
-    /// test can present a run with a candidate of a format it never asked for
+    /// test can present a search with a candidate of a format it never asked for
     /// — what a program answering the generate question is free to return.
     struct StampingGenerator {
         id: GeneratorId,
@@ -126,7 +126,7 @@ mod tests {
         }
     }
 
-    /// A run over `format`, its generator named and its params empty.
+    /// A search over `format`, its generator named and its params empty.
     fn config(format: &str) -> SearchConfig {
         SearchConfig {
             root_seed: 42,
@@ -167,8 +167,8 @@ mod tests {
     #[test]
     fn a_spec_of_another_format_is_refused_naming_both_formats() -> Result<()> {
         // The candidate a generator returns is a value that crossed a wire
-        // when a program produced it, so what the run executes is checked
-        // against what the run is over — before the bytes are read as the
+        // when a program produced it, so what the search executes is checked
+        // against what the search is over — before the bytes are read as the
         // wrong thing, and before the spec object is stored.
         let dir = tempfile::tempdir().expect("temp dir");
         let store = Store::open(dir.path())?;
@@ -183,7 +183,7 @@ mod tests {
         );
         assert!(
             message.contains("stub.v1"),
-            "names the run's format: {message}"
+            "names the search's format: {message}"
         );
         assert!(
             message.contains("acme.gen.v1"),

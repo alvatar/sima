@@ -9,7 +9,7 @@
 use std::path::Path;
 
 use sima_core::{Error, Result};
-use sima_pipeline::{BinaryChange, Engagement, RunControl, load, orchestrate};
+use sima_pipeline::{BinaryChange, Engagement, SearchControl, load, orchestrate};
 
 #[test]
 fn a_vast_rental_reads_the_key_only_when_the_fleet_is_engaged() -> Result<()> {
@@ -23,14 +23,14 @@ fn a_vast_rental_reads_the_key_only_when_the_fleet_is_engaged() -> Result<()> {
 
     let dir = tempfile::tempdir().expect("temp dir");
     let config_path = dir.path().join("sima.toml");
-    // The rented machines carry the run, so the orchestrator declares no
+    // The rented machines carry the search, so the orchestrator declares no
     // workers. The store path is under the temp dir and must not be created.
     let text = r#"
-        [run]
+        [search]
         root_seed = 1
         format = "stub.v1"
 
-        [run.generator]
+        [search.generator]
         id = "stub.v1"
         behaviors = ["succeed"]
 
@@ -48,13 +48,13 @@ fn a_vast_rental_reads_the_key_only_when_the_fleet_is_engaged() -> Result<()> {
     let config = load(&config_path)?;
 
     // Without the flag the fleet is never resolved, so no provider is built and
-    // the key is never looked for. The run then has nothing to execute on,
+    // the key is never looked for. The search then has nothing to execute on,
     // which is a validation error naming the flag — the shape that proves the
     // marketplace was not touched, since an absent key would have surfaced as a
     // provider error instead.
     match orchestrate(
         &config,
-        &RunControl::detached(),
+        &SearchControl::detached(),
         Engagement::Orchestrator,
         BinaryChange::Refuse,
     ) {
@@ -70,7 +70,7 @@ fn a_vast_rental_reads_the_key_only_when_the_fleet_is_engaged() -> Result<()> {
     // With the flag the provider is constructed, and the absent key surfaces.
     match orchestrate(
         &config,
-        &RunControl::detached(),
+        &SearchControl::detached(),
         Engagement::Fleet,
         BinaryChange::Refuse,
     ) {

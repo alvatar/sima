@@ -172,7 +172,7 @@ mod tests {
     use std::path::Path;
 
     /// Creates the sample search, returning its id.
-    fn created_run(store: &crate::Store) -> Result<SearchId> {
+    fn created_search(store: &crate::Store) -> Result<SearchId> {
         store.create_search(&crate::testutil::sample_search_config(42))
     }
 
@@ -186,7 +186,7 @@ mod tests {
     #[test]
     fn appended_lines_read_back_in_order() -> Result<()> {
         let (_dir, store) = temp_store();
-        let search = created_run(&store)?;
+        let search = created_search(&store)?;
         let mut writer = store.journal_writer(&search)?;
         for line in ["first event", "second event", "third event"] {
             writer.append(line)?;
@@ -201,7 +201,7 @@ mod tests {
     #[test]
     fn framing_violations_are_validation_errors() -> Result<()> {
         let (_dir, store) = temp_store();
-        let search = created_run(&store)?;
+        let search = created_search(&store)?;
         let mut writer = store.journal_writer(&search)?;
         for payload in ["", "line\nbreak", "carriage\rreturn"] {
             assert!(matches!(writer.append(payload), Err(Error::Validation(_))));
@@ -214,7 +214,7 @@ mod tests {
     #[test]
     fn the_durable_sink_boundary_appends_like_the_writer() -> Result<()> {
         let (_dir, store) = temp_store();
-        let search = created_run(&store)?;
+        let search = created_search(&store)?;
         let mut writer = store.journal_writer(&search)?;
         let sink: &mut dyn sima_trace::DurableSink = &mut writer;
         sink.append_line("a collector record")?;
@@ -225,7 +225,7 @@ mod tests {
     #[test]
     fn a_run_with_no_journal_file_reads_empty() -> Result<()> {
         let (_dir, store) = temp_store();
-        let search = created_run(&store)?;
+        let search = created_search(&store)?;
         assert_eq!(store.journal(&search)?, Vec::<String>::new());
         Ok(())
     }
@@ -233,7 +233,7 @@ mod tests {
     #[test]
     fn a_torn_final_line_is_ignored() -> Result<()> {
         let (dir, store) = temp_store();
-        let search = created_run(&store)?;
+        let search = created_search(&store)?;
         let mut writer = store.journal_writer(&search)?;
         writer.append("complete line")?;
         writer.append("torn line")?;
@@ -248,7 +248,7 @@ mod tests {
     #[test]
     fn a_file_ending_at_a_newline_reads_every_line() -> Result<()> {
         let (_dir, store) = temp_store();
-        let search = created_run(&store)?;
+        let search = created_search(&store)?;
         let mut writer = store.journal_writer(&search)?;
         writer.append("only line")?;
         assert_eq!(store.journal(&search)?, ["only line"]);
@@ -258,7 +258,7 @@ mod tests {
     #[test]
     fn invalid_utf8_in_the_intact_region_is_corruption() -> Result<()> {
         let (dir, store) = temp_store();
-        let search = created_run(&store)?;
+        let search = created_search(&store)?;
         let path = journal_path(dir.path(), &search);
         fs::write(&path, b"valid line\n\xff\xfe garbage\n").expect("write journal");
         assert!(matches!(store.journal(&search), Err(Error::Corruption(_))));
@@ -268,7 +268,7 @@ mod tests {
     #[test]
     fn invalid_utf8_past_the_last_newline_is_torn_not_corrupt() -> Result<()> {
         let (dir, store) = temp_store();
-        let search = created_run(&store)?;
+        let search = created_search(&store)?;
         let path = journal_path(dir.path(), &search);
         // The garbage sits past the last newline: a torn write, ignored.
         fs::write(&path, b"valid line\n\xff\xfe").expect("write journal");
@@ -279,7 +279,7 @@ mod tests {
     #[test]
     fn a_journal_that_is_not_a_regular_file_is_refused() -> Result<()> {
         let (dir, store) = temp_store();
-        let search = created_run(&store)?;
+        let search = created_search(&store)?;
         let path = journal_path(dir.path(), &search);
         // /dev/full reads as an endless stream of zeros, so a special file in
         // the journal's place must be refused up front — a read to its end
@@ -303,7 +303,7 @@ mod tests {
     #[test]
     fn journal_from_returns_only_lines_past_the_offset() -> Result<()> {
         let (_dir, store) = temp_store();
-        let search = created_run(&store)?;
+        let search = created_search(&store)?;
         let mut writer = store.journal_writer(&search)?;
         writer.append("first")?;
         writer.append("second")?;
@@ -323,7 +323,7 @@ mod tests {
     #[test]
     fn journal_from_at_offset_zero_matches_journal() -> Result<()> {
         let (_dir, store) = temp_store();
-        let search = created_run(&store)?;
+        let search = created_search(&store)?;
         let mut writer = store.journal_writer(&search)?;
         writer.append("first")?;
         writer.append("second")?;
@@ -334,7 +334,7 @@ mod tests {
     #[test]
     fn journal_from_on_an_absent_file_is_empty_at_offset_zero() -> Result<()> {
         let (_dir, store) = temp_store();
-        let search = created_run(&store)?;
+        let search = created_search(&store)?;
         assert_eq!(store.journal_from(&search, 0)?, (Vec::new(), 0));
         Ok(())
     }
@@ -342,7 +342,7 @@ mod tests {
     #[test]
     fn journal_from_leaves_a_torn_final_write_unconsumed() -> Result<()> {
         let (dir, store) = temp_store();
-        let search = created_run(&store)?;
+        let search = created_search(&store)?;
         let mut writer = store.journal_writer(&search)?;
         writer.append("complete")?;
         let path = journal_path(dir.path(), &search);
@@ -365,7 +365,7 @@ mod tests {
     #[test]
     fn invalid_utf8_past_the_offset_is_corruption() -> Result<()> {
         let (dir, store) = temp_store();
-        let search = created_run(&store)?;
+        let search = created_search(&store)?;
         let mut writer = store.journal_writer(&search)?;
         writer.append("valid line")?;
         let (_, offset) = store.journal_from(&search, 0)?;
@@ -391,7 +391,7 @@ mod tests {
     #[test]
     fn two_writers_appending_alternately_produce_a_readable_journal() -> Result<()> {
         let (_dir, store) = temp_store();
-        let search = created_run(&store)?;
+        let search = created_search(&store)?;
         // The orchestrator lease enforces a single writer per search; the framing
         // must hold regardless of who writes.
         let mut a = store.journal_writer(&search)?;

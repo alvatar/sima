@@ -38,7 +38,7 @@ static BUILTINS_LIBRARY: OnceLock<Option<Library>> = OnceLock::new();
 pub(crate) fn preload_builtins() {
     BUILTINS_LIBRARY.get_or_init(|| {
         let path = directory()?.join(BUILTINS);
-        // SAFETY: opening a shared library runs its initializers. This one is
+        // SAFETY: opening a shared library searches its initializers. This one is
         // NVIDIA's compiler helper, which the process is about to load anyway
         // through NVRTC.
         unsafe { Library::open(Some(&path), RTLD_NOW | RTLD_GLOBAL) }.ok()

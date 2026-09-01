@@ -1,12 +1,12 @@
-//! Running the commands a run's setup depends on, and finding the binary its
+//! Running the commands a search's setup depends on, and finding the binary its
 //! workers are spawned from.
 //!
-//! Three parts of the pipeline reach outside the process before a run starts —
-//! orchestration, rental, and migration — and each needs the same things: run a
-//! command and read its exit status, run one and read its stdout, and confirm a
+//! Three parts of the pipeline reach outside the process before a search starts —
+//! orchestration, rental, and migration — and each needs the same things: search a
+//! command and read its exit status, search one and read its stdout, and confirm a
 //! machine holds the worker image. Holding them here is what keeps rental and
 //! migration from importing orchestration for helpers that have nothing to do
-//! with driving a run.
+//! with driving a search.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
@@ -32,7 +32,7 @@ pub(crate) enum ImageCheck {
 
 /// Verifies a pool's worker image is present, failing with the command that
 /// puts it there. A missing image must be a clean error, not a hanging
-/// handshake. The fix differs by where the container runs: build it locally, or
+/// handshake. The fix differs by where the container searches: build it locally, or
 /// ship the local build to the machine.
 ///
 /// A machine that could not be reached at all is [`ImageCheck::Unreachable`]
@@ -134,7 +134,7 @@ pub(crate) fn command_stdout(argv: &[String]) -> Result<String> {
 ///
 /// This is one of the two environment channels the pipeline reads. The other is
 /// `SIMA_STUB_SSH`, which points the stub backend at a machine that is really
-/// there so the ssh path runs against a throwaway server; it is read in
+/// there so the ssh path searches against a throwaway server; it is read in
 /// `providers` and nowhere else.
 pub(crate) fn worker_binary() -> Result<PathBuf> {
     if let Some(path) = std::env::var_os("SIMA_WORKER") {

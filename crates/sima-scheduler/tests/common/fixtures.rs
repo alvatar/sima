@@ -17,8 +17,8 @@ use sima_model::{
     Params, SearchConfig, SearchId, TaskKey,
 };
 use sima_scheduler::{
-    DeviceEntry, Event, ExecutionConfig, Record, RunControl, RunOutcome, StaticBatch, TaskSource,
-    WorkerPool, run, worker_slots,
+    DeviceEntry, Event, ExecutionConfig, Record, SearchControl, SearchOutcome, StaticBatch,
+    TaskSource, WorkerPool, run, worker_slots,
 };
 use sima_store::Store;
 use sima_transport::loopback::{LoopbackTransport, SharedResolver};
@@ -32,7 +32,7 @@ pub fn environment() -> Environment {
     .expect("environment")
 }
 
-/// A run config whose stub generator programs `behaviors`, under `root_seed`,
+/// A search config whose stub generator programs `behaviors`, under `root_seed`,
 /// dividing each candidate's evaluation into `segments` chained tasks.
 pub fn chained_config(root_seed: u64, behaviors: Vec<StubBehavior>, segments: u64) -> SearchConfig {
     SearchConfig {
@@ -41,7 +41,7 @@ pub fn chained_config(root_seed: u64, behaviors: Vec<StubBehavior>, segments: u6
     }
 }
 
-/// A run config whose stub generator programs `behaviors`, under `root_seed`.
+/// A search config whose stub generator programs `behaviors`, under `root_seed`.
 pub fn config(root_seed: u64, behaviors: Vec<StubBehavior>) -> SearchConfig {
     SearchConfig {
         root_seed,
@@ -155,7 +155,7 @@ pub fn named_class(device: &str) -> &str {
         .expect("split yields a first part")
 }
 
-/// The device each worker last reported, from the run's `WorkerBound` events.
+/// The device each worker last reported, from the search's `WorkerBound` events.
 pub fn worker_devices(events: &[Event]) -> HashMap<u64, String> {
     let mut devices = HashMap::new();
     for event in events {
@@ -187,7 +187,7 @@ pub fn task_classes(events: &[Event]) -> HashMap<String, Vec<String>> {
 
 /// A loopback transport hosting `resolver`'s executor for `cfg`'s format
 /// under `exec`'s checkpoint cadence: the real wire protocol and host loop
-/// over in-memory pipes, so these tests run the full scheduler without
+/// over in-memory pipes, so these tests search the full scheduler without
 /// processes.
 fn loopback(
     cfg: &SearchConfig,
@@ -203,7 +203,11 @@ fn loopback(
 }
 
 /// Runs `cfg` into `store` with the stub generator and executor.
-pub fn run_into(store: &Store, cfg: &SearchConfig, exec: &ExecutionConfig) -> Result<RunOutcome> {
+pub fn run_into(
+    store: &Store,
+    cfg: &SearchConfig,
+    exec: &ExecutionConfig,
+) -> Result<SearchOutcome> {
     run_with(store, cfg, exec, stub_resolver())
 }
 
@@ -215,7 +219,7 @@ pub fn run_with(
     cfg: &SearchConfig,
     exec: &ExecutionConfig,
     resolver: SharedResolver,
-) -> Result<RunOutcome> {
+) -> Result<SearchOutcome> {
     let generator = StubGenerator::new()?;
     let transport = loopback(cfg, exec, resolver);
     let pools = [WorkerPool {
@@ -230,19 +234,19 @@ pub fn run_with(
         &generator,
         &pools,
         exec,
-        &RunControl::detached(),
+        &SearchControl::detached(),
     )
 }
 
-/// Runs `cfg` into `store` under a caller-supplied [`RunControl`], with the
+/// Runs `cfg` into `store` under a caller-supplied [`SearchControl`], with the
 /// stub generator and executor, so a test can observe events or interrupt
-/// the run.
-pub fn run_controlled(
+/// the search.
+pub fn search_controlled(
     store: &Store,
     cfg: &SearchConfig,
     exec: &ExecutionConfig,
-    control: &RunControl,
-) -> Result<RunOutcome> {
+    control: &SearchControl,
+) -> Result<SearchOutcome> {
     let generator = StubGenerator::new()?;
     let transport = loopback(cfg, exec, stub_resolver());
     let pools = [WorkerPool {
@@ -262,13 +266,13 @@ pub fn run_controlled(
 }
 
 /// Runs `cfg` into `store` over caller-built pools, with the stub generator, so
-/// a test can spread one run across several transports on distinct hosts.
+/// a test can spread one search across several transports on distinct hosts.
 pub fn run_pools(
     store: &Store,
     cfg: &SearchConfig,
     exec: &ExecutionConfig,
     pools: &[WorkerPool<'_>],
-) -> Result<RunOutcome> {
+) -> Result<SearchOutcome> {
     let generator = StubGenerator::new()?;
     run(
         store,
@@ -277,11 +281,11 @@ pub fn run_pools(
         &generator,
         pools,
         exec,
-        &RunControl::detached(),
+        &SearchControl::detached(),
     )
 }
 
-/// The run id of `cfg` — the address of its config object, and the directory
+/// The search id of `cfg` — the address of its config object, and the directory
 /// its journal and manifest live under.
 pub fn search_id(cfg: &SearchConfig) -> SearchId {
     cfg.id()
@@ -298,10 +302,10 @@ pub fn task_keys(cfg: &SearchConfig) -> Vec<TaskKey> {
         .to_vec()
 }
 
-/// The run's journal, parsed into typed events.
-pub fn journal_events(store: &Store, run: &SearchId) -> Vec<Event> {
+/// The search's journal, parsed into typed events.
+pub fn journal_events(store: &Store, search: &SearchId) -> Vec<Event> {
     store
-        .journal(run)
+        .journal(search)
         .expect("read journal")
         .iter()
         .map(|line| Record::from_line(line).expect("parse journal line").event)

@@ -1,10 +1,10 @@
-//! [`FarRun`]: the run on the destination, and what a verb does to it once it
+//! [`FarSearch`]: the search on the destination, and what a verb does to it once it
 //! is done watching.
 //!
-//! Two verbs reach a machine that is already hosting a run. `sima migrate`
+//! Two verbs reach a machine that is already hosting a search. `sima migrate`
 //! reaches it after the follow it drove; `sima recall` reaches it over a far
-//! run it never followed. What either does from there is the same four steps —
-//! end the far run, pull what it produced, settle the run over the store that
+//! search it never followed. What either does from there is the same four steps —
+//! end the far search, pull what it produced, settle the search over the store that
 //! came home, and dispose of the machine — so they live here rather than in
 //! either verb.
 
@@ -23,48 +23,48 @@ use crate::config::{DEFAULT_READY_POLL_MS, DEFAULT_READY_TIMEOUT_MS};
 use crate::config::{HostForm, LoadedConfig};
 use crate::migrate::destination::Destination;
 use crate::migrate::far_side::FarSide;
-use crate::status::{RunState, status_records};
+use crate::status::{SearchState, status_records};
 use crate::task_keys::task_keys;
 
 /// What a migration came home with.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MigrateOutcome {
     /// Every task committed and the local manifest was written.
-    Finalized { run: SearchId },
-    /// The far run ended and the results came home, with tasks still to run.
-    /// The run is resumable, here or on another migration.
-    Outstanding { run: SearchId, remaining: usize },
+    Finalized { search: SearchId },
+    /// The far search ended and the results came home, with tasks still to search.
+    /// The search is resumable, here or on another migration.
+    Outstanding { search: SearchId, remaining: usize },
     /// A task failed definitively on the far side; no manifest was written.
     Failed { task: String, reason: String },
     /// The migration was wound down — out of budget, or asked to end by a
-    /// recall. The results were pulled and any rental destroyed, so the run is
+    /// recall. The results were pulled and any rental destroyed, so the search is
     /// resumable.
-    Interrupted { run: SearchId, remaining: usize },
-    /// This side let go: the far run keeps computing on `machine`, nothing was
-    /// pulled, and a rental is left standing. The run comes home on the next
+    Interrupted { search: SearchId, remaining: usize },
+    /// This side let go: the far search keeps computing on `machine`, nothing was
+    /// pulled, and a rental is left standing. The search comes home on the next
     /// migration that sees it end, or on a recall.
-    Detached { run: SearchId, machine: String },
-    /// The operator let go while the run was still being placed, so no far run
+    Detached { search: SearchId, machine: String },
+    /// The operator let go while the search was still being placed, so no far search
     /// was started: nothing computes on `machine`, a rental taken for it was
-    /// released, and the run is exactly as it was.
-    Abandoned { run: SearchId, machine: String },
+    /// released, and the search is exactly as it was.
+    Abandoned { search: SearchId, machine: String },
 }
 
-/// What ended the follow, which decides what happens to the far run after it.
+/// What ended the follow, which decides what happens to the far search after it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum FollowEnd {
-    /// The far run ended on its own: a terminal event, or a process that is
+    /// The far search ended on its own: a terminal event, or a process that is
     /// gone. Nothing is signalled; the results come home.
-    FarRun,
-    /// This side ended it, because the run's budget ran out. It is signalled,
+    FarSearch,
+    /// This side ended it, because the search's budget ran out. It is signalled,
     /// waited for, and its results come home.
     WoundDown,
-    /// This side let go, on the operator's interrupt. The far run is left
+    /// This side let go, on the operator's interrupt. The far search is left
     /// alone.
     Detached,
 }
 
-/// The test-only overrides a far run reads instead of the production bounds,
+/// The test-only overrides a far search reads instead of the production bounds,
 /// in one struct rather than scattered across its fields.
 #[cfg(test)]
 #[derive(Debug, Clone, Copy)]
@@ -73,9 +73,9 @@ pub(crate) struct Overrides {
     /// takes the same tolerance production takes — the attempts and what each
     /// records are what its tests fix — at a poll that costs no wall clock.
     pub(crate) stated_nowhere: (Duration, Duration),
-    /// How long the follow waits for the far run's first journal line. The
+    /// How long the follow waits for the far search's first journal line. The
     /// production bound covers a process start; what the suite fixes is which
-    /// failure a wait that ran out reports, so it runs the same path in a
+    /// failure a wait that ran out reports, so it searches the same path in a
     /// fraction of the time.
     pub(crate) attach_bound: Duration,
     /// How long the follow waits before polling again. What the suite fixes is
@@ -94,23 +94,23 @@ impl Default for Overrides {
     }
 }
 
-/// The run on the destination, and everything this side does to end it and
+/// The search on the destination, and everything this side does to end it and
 /// bring it home: steps 9 through 12 over a machine already in hand.
 ///
 /// Both verbs work through it. [`migrate`] reaches it after the follow it
-/// drove; [`recall`](crate::migrate::recall::recall) reaches it over a far run
+/// drove; [`recall`](crate::migrate::recall::recall) reaches it over a far search
 /// it never followed. The four steps are the same either way, which is why they
 /// live here rather than in either verb.
-pub(crate) struct FarRun<'a> {
+pub(crate) struct FarSearch<'a> {
     pub(crate) far: &'a dyn FarSide,
     pub(crate) store: &'a Store,
     pub(crate) config: &'a LoadedConfig,
     pub(crate) destination: &'a Destination<'a>,
-    /// The run's journal boundary, opened by the verb around everything it
+    /// The search's journal boundary, opened by the verb around everything it
     /// does, so a phase this side narrates and a record the far side produced
     /// cross the same one.
     pub(crate) events: &'a Emitter,
-    /// The rented machine hosting the run, disposed of on every path out;
+    /// The rented machine hosting the search, disposed of on every path out;
     /// `None` for a machine of yours, which is nothing to tear down.
     pub(crate) rental: Option<InstanceGuard<'a, dyn Provider + Sync + 'a>>,
     #[cfg(test)]
@@ -132,12 +132,12 @@ pub(crate) fn merged(
     }
 }
 
-impl<'a> FarRun<'a> {
-    /// Runs `body` over this far run and disposes of its machine afterwards, on
+impl<'a> FarSearch<'a> {
+    /// Runs `body` over this far search and disposes of its machine afterwards, on
     /// every path out — including the ones no call site can reach.
     pub(crate) fn under_teardown(
         mut self,
-        body: impl FnOnce(&FarRun<'a>) -> Result<MigrateOutcome>,
+        body: impl FnOnce(&FarSearch<'a>) -> Result<MigrateOutcome>,
     ) -> Result<MigrateOutcome> {
         let outcome = body(&self);
         let teardown = self.dispose(&outcome);
@@ -148,8 +148,8 @@ impl<'a> FarRun<'a> {
     /// came home with.
     ///
     /// A guard left alive is a machine still being paid for, so every path that
-    /// ended the far run destroys it. A detached migration is the one path that
-    /// does not: the run is still computing there, so the machine is kept and
+    /// ended the far search destroys it. A detached migration is the one path that
+    /// does not: the search is still computing there, so the machine is kept and
     /// its ledger record left standing for the next invocation to adopt. An
     /// abandoned placement started nothing, so its machine is released like any
     /// other that computes nothing. Nothing here applies to a machine of yours,
@@ -165,24 +165,24 @@ impl<'a> FarRun<'a> {
         guard.release()
     }
 
-    /// Steps 9 through 11 over a far run this side never followed: end it if it
+    /// Steps 9 through 11 over a far search this side never followed: end it if it
     /// is still going, read what it ended as, bring its results home, and
-    /// settle the run over the store they extended.
+    /// settle the search over the store they extended.
     ///
     /// Nothing here starts anything, and the journal read is a read. A
     /// destination that was never migrated to is refused before any of it,
-    /// since there is no run there to end and no store to pull from.
+    /// since there is no search there to end and no store to pull from.
     pub(crate) fn wind_back(&self) -> Result<MigrateOutcome> {
         if !self.far.placed()? {
             return Err(Error::Validation(format!(
-                "{:?} holds no directory for run {}: nothing was ever migrated there, so there \
-                 is nothing to recall. `sima migrate` is what puts a run on a machine.",
+                "{:?} holds no directory for search {}: nothing was ever migrated there, so there \
+                 is nothing to recall. `sima migrate` is what puts a search on a machine.",
                 self.destination.name,
-                self.config.run.id()
+                self.config.search.id()
             )));
         }
         let end = match self.far.driving()? {
-            // A run still going is ended the way an attached migration ends
+            // A search still going is ended the way an attached migration ends
             // one: signalled on every poll, waited for, terminated past the
             // bound.
             Some(pid) => {
@@ -190,9 +190,9 @@ impl<'a> FarRun<'a> {
                 FollowEnd::WoundDown
             }
             // One that already ended is only collected from.
-            None => FollowEnd::FarRun,
+            None => FollowEnd::FarSearch,
         };
-        // What the far run ended as, read once the far side is quiet, so what
+        // What the far search ended as, read once the far side is quiet, so what
         // it holds is final. Nothing was followed, so this read is the only
         // way a definitive failure — written in the far journal, which does
         // not sync — reaches this side at all.
@@ -201,30 +201,30 @@ impl<'a> FarRun<'a> {
         self.settle(state, end)
     }
 
-    /// The state the far run's own journal projects, over the records the far
+    /// The state the far search's own journal projects, over the records the far
     /// side serves in one read.
     ///
-    /// A far store holding no journal projects what an empty one does — a run
+    /// A far store holding no journal projects what an empty one does — a search
     /// still in progress — so what the store holds after the pull is then the
     /// whole of what decides the outcome. A read that faulted is not that: the
-    /// far side said nothing about how its run ended, and the failure names the
+    /// far side said nothing about how its search ended, and the failure names the
     /// machine and the read and carries the far side's own words.
-    fn far_state(&self) -> Result<RunState> {
+    fn far_state(&self) -> Result<SearchState> {
         let records = self.far.snapshot().map_err(|error| {
             Error::Validation(format!(
-                "the journal of the run on {:?} could not be read: {error}",
+                "the journal of the search on {:?} could not be read: {error}",
                 self.destination.name
             ))
         })?;
-        Ok(status_records(self.config.run.id(), &records.unwrap_or_default()).state)
+        Ok(status_records(self.config.search.id(), &records.unwrap_or_default()).state)
     }
 
     /// Step 10: everything the far side's records reference, which is what
     /// makes the store that comes home complete.
     ///
-    /// The far run has ended by now on every path that reaches here — of its
+    /// The far search has ended by now on every path that reaches here — of its
     /// own accord, on the wind-down's signal, or on the termination the
-    /// wind-down escalates to — so the far side's run lock is free for `sima
+    /// wind-down escalates to — so the far side's search lock is free for `sima
     /// sync-serve` to take.
     pub(crate) fn pull(&self) -> Result<()> {
         let keys = task_keys(self.config, self.store)?;
@@ -232,12 +232,12 @@ impl<'a> FarRun<'a> {
         Ok(())
     }
 
-    /// What a far run that is gone reports: the machine it was on, and the last
+    /// What a far search that is gone reports: the machine it was on, and the last
     /// words its log holds.
     ///
     /// Every far-side load failure looks the same from here — a program that
     /// cannot answer for its format, an install script that exited non-zero, a
-    /// store that will not open — so the far run's own words are what tell them
+    /// store that will not open — so the far search's own words are what tell them
     /// apart. `what` states what this side observed of the death.
     pub(crate) fn died(&self, what: &str) -> Error {
         let tail = match self.far.log_tail() {
@@ -246,28 +246,28 @@ impl<'a> FarRun<'a> {
             Err(error) => format!("(its log could not be read: {error})"),
         };
         Error::Validation(format!(
-            "the run on {:?} {what}. Its last words were:\n{tail}",
+            "the search on {:?} {what}. Its last words were:\n{tail}",
             self.destination.name
         ))
     }
 
-    /// Step 9: asks the far run to wind down when this side ended the follow,
+    /// Step 9: asks the far search to wind down when this side ended the follow,
     /// then waits for it to exit.
     ///
-    /// `sima sync-serve` takes the far side's run lock and the far `sima run`
-    /// holds it while running, so the pull cannot proceed until the far run is
-    /// gone. A wait that runs out is recorded and then escalated: the run is
+    /// `sima sync-serve` takes the far side's search lock and the far `sima search`
+    /// holds it while running, so the pull cannot proceed until the far search is
+    /// gone. A wait that searches out is recorded and then escalated: the search is
     /// ended outright, and one that survives even that fails the migration by
-    /// name. Either way the far run is gone before the pull in front of it.
+    /// name. Either way the far search is gone before the pull in front of it.
     ///
-    /// The signal is re-sent on every poll rather than once, because a far run
+    /// The signal is re-sent on every poll rather than once, because a far search
     /// is not signallable from the instant it starts. A shell starts an
     /// asynchronous command with `SIGINT` ignored and the disposition survives
-    /// the exec, so the far run becomes signallable only once its own handler
+    /// the exec, so the far search becomes signallable only once its own handler
     /// replaces the inherited ignore — which is after it has loaded its config.
     /// A wind-down that begins inside that window would otherwise signal into
     /// nothing and wait out the whole bound. Re-sending is idempotent against a
-    /// run already winding down and costs one signal per poll interval.
+    /// search already winding down and costs one signal per poll interval.
     pub(crate) fn wind_down(&self, pid: u32, signal: bool, events: &Emitter) -> Result<()> {
         let (bound, poll) = self.ready_bounds();
         let deadline = Instant::now() + bound;
@@ -283,7 +283,7 @@ impl<'a> FarRun<'a> {
                     level: Level::Warn,
                     source: "migrate".to_string(),
                     message: format!(
-                        "the run on {:?} did not exit within {}ms of the wind-down; \
+                        "the search on {:?} did not exit within {}ms of the wind-down; \
                          terminating it",
                         self.destination.name,
                         bound.as_millis()
@@ -293,9 +293,9 @@ impl<'a> FarRun<'a> {
                     task: None,
                 });
                 // Ending it outright is safe by the same invariant crash
-                // recovery rests on: a run that dies without winding down leaves
+                // recovery rests on: a search that dies without winding down leaves
                 // a resumable store. Abandoning it is what is not safe — an
-                // owned destination has no rental to destroy, so the run would
+                // owned destination has no rental to destroy, so the search would
                 // keep computing, and the pull it is left in front of cannot
                 // take a lock the survivor still holds.
                 self.far.terminate(pid)?;
@@ -304,7 +304,7 @@ impl<'a> FarRun<'a> {
                 sleep(poll);
                 if self.far.driving()?.is_some() {
                     return Err(Error::Validation(format!(
-                        "the run on {:?} is still there as pid {pid} after being terminated",
+                        "the search on {:?} is still there as pid {pid} after being terminated",
                         self.destination.name
                     )));
                 }
@@ -314,15 +314,15 @@ impl<'a> FarRun<'a> {
         }
     }
 
-    /// Step 11 over this far run's store and config.
-    pub(crate) fn settle(&self, state: RunState, end: FollowEnd) -> Result<MigrateOutcome> {
+    /// Step 11 over this far search's store and config.
+    pub(crate) fn settle(&self, state: SearchState, end: FollowEnd) -> Result<MigrateOutcome> {
         settle(self.store, self.config, state, end)
     }
 
     /// The destination's readiness bounds: how long to wait, and how often to
     /// look. A rented machine states its own; a machine of yours states none,
     /// so it takes the same defaults a rental would. The wind-down waits for
-    /// the far run to exit under them, and the first contact spaces its
+    /// the far search to exit under them, and the first contact spaces its
     /// attempts by the poll.
     pub(crate) fn ready_bounds(&self) -> (Duration, Duration) {
         match self.destination.form {
@@ -353,11 +353,11 @@ impl<'a> FarRun<'a> {
     }
 }
 
-/// Step 11: what the run comes home as, over the store a pull extended.
+/// Step 11: what the search comes home as, over the store a pull extended.
 ///
 /// A definitive far-side failure is the outcome whatever the store holds — the
-/// run cannot complete. Otherwise the key set is re-derived and every key
-/// checked: a complete run finalizes, a wound-down one stays resumable, and one
+/// search cannot complete. Otherwise the key set is re-derived and every key
+/// checked: a complete search finalizes, a wound-down one stays resumable, and one
 /// whose far side ended early reports what is left.
 ///
 /// It reads the local store and nothing else, so a verb with no machine left to
@@ -365,13 +365,13 @@ impl<'a> FarRun<'a> {
 pub(crate) fn settle(
     store: &Store,
     config: &LoadedConfig,
-    state: RunState,
+    state: SearchState,
     end: FollowEnd,
 ) -> Result<MigrateOutcome> {
-    if let RunState::Failed { task, reason } = state {
+    if let SearchState::Failed { task, reason } = state {
         return Ok(MigrateOutcome::Failed { task, reason });
     }
-    let run = config.run.id();
+    let search = config.search.id();
     let keys = task_keys(config, store)?;
     let mut remaining = 0;
     for key in &keys {
@@ -379,12 +379,12 @@ pub(crate) fn settle(
             remaining += 1;
         }
     }
-    if end == FollowEnd::WoundDown || matches!(state, RunState::Interrupted) {
-        return Ok(MigrateOutcome::Interrupted { run, remaining });
+    if end == FollowEnd::WoundDown || matches!(state, SearchState::Interrupted) {
+        return Ok(MigrateOutcome::Interrupted { search, remaining });
     }
     if remaining > 0 {
-        return Ok(MigrateOutcome::Outstanding { run, remaining });
+        return Ok(MigrateOutcome::Outstanding { search, remaining });
     }
-    store.finalize_search(&run, &keys)?;
-    Ok(MigrateOutcome::Finalized { run })
+    store.finalize_search(&search, &keys)?;
+    Ok(MigrateOutcome::Finalized { search })
 }

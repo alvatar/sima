@@ -24,18 +24,18 @@ pub enum StubBehavior {
     /// Sleep for the given milliseconds, then succeed.
     Sleep(u64),
     /// Reject definitively: the candidate cannot produce a result, so the
-    /// scheduler terminates the run without retrying. The deterministic model
+    /// scheduler terminates the search without retrying. The deterministic model
     /// of a candidate the executor cleanly judges non-viable.
     Reject,
     /// Fold the seed through the given number of accumulation steps and
-    /// commit the resulting state — the stateful behavior segmented runs
+    /// commit the resulting state — the stateful behavior segmented searches
     /// chain through. The argument is k, the steps one task performs.
     Accumulate(u64),
     /// [`Accumulate`](StubBehavior::Accumulate), paced: each of the `steps`
     /// sleeps `step_ms` before it lands, so a segmented chain occupies wall
     /// clock in proportion to its remaining steps. The trajectory and the
     /// committed bytes equal the unpaced behavior's — the pace is
-    /// operational. This is what an interrupt test paces a chain with: a run
+    /// operational. This is what an interrupt test paces a chain with: a search
     /// that cannot finish while a wind-down is deciding.
     PacedAccumulate { steps: u64, step_ms: u64 },
 }
@@ -95,7 +95,7 @@ pub struct StubProgram {
     /// What the executor does with this candidate.
     pub behavior: StubBehavior,
     /// A per-candidate value keeping specs distinct even when two candidates
-    /// program the same behavior. The generator seeds it from the run seed.
+    /// program the same behavior. The generator seeds it from the search seed.
     pub nonce: u64,
 }
 

@@ -1,13 +1,13 @@
 //! What a program supplies to bind a format id: [`Domain`].
 //!
 //! A domain is the declaration side of a format: its environment, the devices
-//! its work runs on, and the translation of the `[run.params]` section it owns.
+//! its work searches on, and the translation of the `[search.params]` section it owns.
 //! It also builds the [`Executor`] that does the work, because the executor is
-//! constructed in a worker process on a device chosen at run start.
+//! constructed in a worker process on a device chosen at search start.
 //!
 //! A trait rather than a struct of function pointers, because a domain holds
 //! state: a renderer keeps its device and its loaded assets for the life of the
-//! run.
+//! search.
 
 use sima_core::Result;
 use sima_model::{Environment, FormatId, Params};
@@ -17,12 +17,12 @@ use crate::{DeviceBinding, DeviceInfo, Executor};
 /// Everything a format id binds, as the program that owns the format supplies
 /// it.
 ///
-/// One object carries the format's executor, the devices it runs on, the
+/// One object carries the format's executor, the devices it searches on, the
 /// environment its results depend on, and the translation of its own
 /// configuration. Candidate production stays separate in [`crate::Generator`],
 /// because one format has one executor and many generators.
 pub trait Domain: Send + Sync {
-    /// The format this domain interprets. A run over any other format is a
+    /// The format this domain interprets. A search over any other format is a
     /// validation failure, so the id is what a host checks each request
     /// against.
     fn format(&self) -> &FormatId;
@@ -42,13 +42,13 @@ pub trait Domain: Send + Sync {
     /// device.
     fn device_desc(&self, device: Option<&DeviceBinding>) -> Result<(String, String)>;
 
-    /// Every device this format's work can run on, as its execution backend
+    /// Every device this format's work can search on, as its execution backend
     /// enumerates them. A format that opens no device answers with an empty
     /// list.
     fn enumerate_devices(&self) -> Result<Vec<DeviceInfo>>;
 
-    /// The `[run.params]` section as TOML text, translated to the canonical
-    /// params bytes the format's executor reads. `segmented` is whether the run
+    /// The `[search.params]` section as TOML text, translated to the canonical
+    /// params bytes the format's executor reads. `segmented` is whether the search
     /// divides candidates into segments, which a format may forbid a setting to
     /// coexist with.
     ///
@@ -59,7 +59,7 @@ pub trait Domain: Send + Sync {
 
 /// `Domain` is dyn-compatible: a host holds one behind a trait object for the
 /// life of a session. The auto-trait supertraits are part of the contract — a
-/// domain is reached from the threads a run drives its workers on.
+/// domain is reached from the threads a search drives its workers on.
 const _: fn() = || {
     fn _object_safe(_: &dyn Domain) {}
 };
@@ -157,7 +157,7 @@ mod tests {
     #[test]
     fn a_domain_answers_for_its_format_as_an_object() -> Result<()> {
         // What the host holds: the domain behind a trait object, answering the
-        // questions a run asks of a format.
+        // questions a search asks of a format.
         let (domain, _) = components()?;
         let domain: &dyn Domain = &domain;
         assert_eq!(domain.format().as_str(), "domain-test.v1");

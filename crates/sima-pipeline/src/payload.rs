@@ -1,11 +1,11 @@
-//! The program a run carries with it: what a config declares travels, the
+//! The program a search carries with it: what a config declares travels, the
 //! content-addressed form it travels as, and how a destination gets it back.
 //!
 //! A `[domain.*]` entry routes a format to a program on this machine. Moving
-//! that run onto another machine therefore has to move the program too, and
+//! that search onto another machine therefore has to move the program too, and
 //! the payload is how: the files the entry names become ordinary store
 //! objects, one manifest object names them, and the manifest's hash is the
-//! digest the far config states. The sync that already carries a run's closure
+//! digest the far config states. The sync that already carries a search's closure
 //! carries these objects with it, so nothing is published and no image is
 //! rebuilt.
 //!
@@ -74,12 +74,12 @@ pub(crate) struct PayloadSpec {
     /// One file or one directory. A single file is the program; a directory is
     /// whatever `install` makes of it.
     pub(crate) payload: PathBuf,
-    /// The shell script the destination runs over the materialized payload.
+    /// The shell script the destination searches over the materialized payload.
     /// `None` for a single-file payload, which is its own entry point.
     pub(crate) install: Option<PathBuf>,
 }
 
-/// One file of a payload: where it sits in the tree, whether it runs, and the
+/// One file of a payload: where it sits in the tree, whether it searches, and the
 /// object holding its bytes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct FileEntry {
@@ -352,7 +352,7 @@ pub(crate) fn materialize(store: &Store, digest: &Hash, dest: &Path) -> Result<M
 }
 
 /// Where the program answering for one format is installed on the machine
-/// that runs it.
+/// that searches it.
 ///
 /// ```text
 ///   <config-dir>/program/<format>/
@@ -366,7 +366,7 @@ pub(crate) fn materialize(store: &Store, digest: &Hash, dest: &Path) -> Result<M
 /// ```
 ///
 /// The tree hangs off the config file's own directory, which on a machine a
-/// run migrated onto is the run's directory — so two runs on one machine
+/// search migrated onto is the search's directory — so two searches on one machine
 /// install into two trees. It is keyed by format below that, so a config
 /// routing two formats to two programs installs two programs rather than
 /// overwriting one.
@@ -395,7 +395,7 @@ impl ProgramTree {
     ///
     /// A fleet machine keys its trees by payload digest rather than by format,
     /// because what lands there is one program per digest shared across every
-    /// run that sends it, so the root is handed in whole.
+    /// search that sends it, so the root is handed in whole.
     pub(crate) fn at(root: PathBuf) -> ProgramTree {
         ProgramTree { root }
     }
@@ -417,7 +417,7 @@ impl ProgramTree {
 
     /// The digest the tree was built from, as the machine holding it recorded
     /// it. A spawn on that machine reads this file to state which program it is
-    /// running, so what the run is answered is the disk's own claim.
+    /// running, so what the search is answered is the disk's own claim.
     pub(crate) fn stamp(&self) -> PathBuf {
         self.root.join(STAMP_FILE)
     }
@@ -452,7 +452,7 @@ pub(crate) fn install(store: &Store, digest: &Hash, tree: &ProgramTree) -> Resul
 }
 
 /// Fills the tree: the previous trees are removed, the payload is materialized,
-/// and the install runs, leaving the entry point the config's `binary` names.
+/// and the install searches, leaving the entry point the config's `binary` names.
 ///
 /// Called with the tree's lock held and its stamp already removed, so what a
 /// failure here leaves behind is a tree nothing claims.
@@ -488,9 +488,9 @@ fn build(store: &Store, digest: &Hash, tree: &ProgramTree) -> Result<()> {
     Ok(())
 }
 
-/// Writes the manifest's script out and runs it over the materialized payload.
+/// Writes the manifest's script out and searches it over the materialized payload.
 ///
-/// The script runs under this machine's own environment plus the two variables
+/// The script searches under this machine's own environment plus the two variables
 /// that tell it where to read from and where to leave what it builds. Nothing
 /// is forwarded from the machine that sent the payload: an installed program is
 /// built out of what the destination has.
@@ -606,7 +606,7 @@ mod tests {
     /// script and one plain asset.
     fn tree() -> (tempfile::TempDir, PayloadSpec) {
         let dir = tempfile::tempdir().expect("temp dir");
-        write(dir.path(), "payload/run.sh", b"#!/bin/sh\ntrue\n", 0o755);
+        write(dir.path(), "payload/search.sh", b"#!/bin/sh\ntrue\n", 0o755);
         write(dir.path(), "payload/assets/w.bin", b"weights", 0o644);
         let install = write(dir.path(), "install.sh", b"#!/bin/sh\nexit 0\n", 0o755);
         let spec = PayloadSpec {
@@ -648,7 +648,7 @@ mod tests {
         let built = Manifest::new(
             vec![
                 FileEntry {
-                    path: "run.sh".to_string(),
+                    path: "search.sh".to_string(),
                     executable: true,
                     object: hash_bytes(b"script"),
                 },
@@ -664,7 +664,7 @@ mod tests {
         // Sorted on construction, whatever order the caller offered.
         assert_eq!(
             built.entries.iter().map(|e| &e.path).collect::<Vec<_>>(),
-            ["assets/w.bin", "run.sh"]
+            ["assets/w.bin", "search.sh"]
         );
         Ok(())
     }

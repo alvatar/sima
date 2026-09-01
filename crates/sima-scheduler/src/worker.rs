@@ -30,18 +30,18 @@ use crate::coordinator::{Coordinator, Pending};
 use crate::placement::{self, ChainPlacement};
 use crate::task_source::RunnableTask;
 
-/// The run-wide context one worker borrows for its whole life: the shared
-/// coordination, the store it commits through, the run config, the transport
+/// The search-wide context one worker borrows for its whole life: the shared
+/// coordination, the store it commits through, the search config, the transport
 /// it spawns its child through, the execution settings, and its own event
 /// emitter.
 pub(crate) struct WorkerContext<'a> {
     pub(crate) coordinator: &'a Coordinator,
     pub(crate) store: &'a Store,
-    /// The run the worker commits under; keys the checkpoint slots.
-    pub(crate) run: SearchId,
+    /// The search the worker commits under; keys the checkpoint slots.
+    pub(crate) search: SearchId,
     pub(crate) config: &'a SearchConfig,
     pub(crate) transport: &'a dyn WorkerTransport,
-    /// The host this slot's pool runs on; empty for a local pool. Journaled
+    /// The host this slot's pool searches on; empty for a local pool. Journaled
     /// with each `WorkerBound` as the parent's account of where the work ran.
     pub(crate) host: String,
     pub(crate) exec: &'a ExecutionConfig,
@@ -49,7 +49,7 @@ pub(crate) struct WorkerContext<'a> {
     /// the backend's default selection, the single-class case.
     pub(crate) device: Option<DeviceBinding>,
     pub(crate) events: Emitter,
-    /// The driver each (host, device) last reported, seeded from the run's
+    /// The driver each (host, device) last reported, seeded from the search's
     /// journal and advanced with each spawn — the comparison state behind
     /// `DriverChanged`. Shared across the pool's workers so one transition
     /// is journaled once.
@@ -57,24 +57,24 @@ pub(crate) struct WorkerContext<'a> {
 }
 
 /// Runs the worker: spawn the child, then lease a task, drive it on the
-/// child, resolve the outcome, and repeat until the run winds down. The
+/// child, resolve the outcome, and repeat until the search winds down. The
 /// child lives as long as the worker; it is replaced only when it dies, and
 /// dropping the last link at exit is the graceful shutdown — stdin closes,
 /// the child exits on end-of-stream, and the parent reaps it.
 pub(crate) fn worker_loop(worker: WorkerId, ctx: WorkerContext<'_>) {
     // Records the worker's exit on every return path — finish, fault, or
     // retirement — so the coordinator's live-worker count stays accurate and
-    // the last worker leaving with work still pending faults the run.
+    // the last worker leaving with work still pending faults the search.
     let _exit = WorkerExit {
         coordinator: ctx.coordinator,
     };
-    // A worker that cannot spawn its child cannot take work: the run faults.
-    // A retired transport yields no child: the worker exits, faulting the run
+    // A worker that cannot spawn its child cannot take work: the search faults.
+    // A retired transport yields no child: the worker exits, faulting the search
     // only when the retirement is fatal.
     let mut link = match spawn_bound(&ctx, worker) {
         Ok(SpawnOutcome::Link(link)) => link,
         Ok(SpawnOutcome::Retired { fatal }) => return retire_worker(&ctx, worker, fatal),
-        Err(e) => return ctx.coordinator.fault_run(e),
+        Err(e) => return ctx.coordinator.fault_search(e),
     };
     while let Some(leased) = ctx
         .coordinator
@@ -82,7 +82,7 @@ pub(crate) fn worker_loop(worker: WorkerId, ctx: WorkerContext<'_>) {
     {
         // The pull's placement decision reaches the store and the journal
         // before the assignment goes out, so a chain's binding is durable
-        // before any work runs under it.
+        // before any work searches under it.
         if let Err(e) = record_placement(&ctx, &leased.placement) {
             ctx.coordinator.fault(leased.pending.key, e);
             break;
@@ -115,10 +115,10 @@ pub(crate) fn worker_loop(worker: WorkerId, ctx: WorkerContext<'_>) {
                     Ok(SpawnOutcome::Retired { fatal }) => {
                         return retire_worker(&ctx, worker, fatal);
                     }
-                    Err(e) => return ctx.coordinator.fault_run(e),
+                    Err(e) => return ctx.coordinator.fault_search(e),
                 };
             }
-            // The run is winding down; the child was killed and no
+            // The search is winding down; the child was killed and no
             // replacement is owed — next_task would return None.
             ChildState::WindingDown => break,
         }
@@ -145,7 +145,7 @@ fn spawn_bound(ctx: &WorkerContext<'_>, worker: WorkerId) -> Result<SpawnOutcome
             // The child's device and driver are its own; the host is the
             // parent's account of the pool — empty for a local slot.
             host: ctx.host.clone(),
-            // The program the child named, already agreed with what the run
+            // The program the child named, already agreed with what the search
             // sent: an empty answer is a format this build carries, which the
             // journal states by carrying no digest at all.
             program: Some(link.program().to_string()).filter(|p| !p.is_empty()),
@@ -173,23 +173,23 @@ fn spawn_bound(ctx: &WorkerContext<'_>, worker: WorkerId) -> Result<SpawnOutcome
 
 /// Winds a worker down when its transport retires, journaling the retirement
 /// so a degraded pool is visible rather than silently gone. A fatal retirement
-/// faults the run at once — the transport retires fatally whenever the run
+/// faults the search at once — the transport retires fatally whenever the search
 /// cannot proceed without it, whatever the fill policy: a strict-fill
 /// shortfall, or a supervisor unwind. A non-fatal one lets the worker thread
 /// exit cleanly, leaving the survivors to drain the queue; when no survivor
-/// remains, the worker's exit (through [`WorkerExit`]) is what faults the run.
+/// remains, the worker's exit (through [`WorkerExit`]) is what faults the search.
 fn retire_worker(ctx: &WorkerContext<'_>, worker: WorkerId, fatal: bool) {
     ctx.events.emit(Event::Diagnostic {
         level: Level::Warn,
         source: "scheduler".to_string(),
         message: if fatal {
             format!(
-                "worker {} retired; the run cannot continue without its transport",
+                "worker {} retired; the search cannot continue without its transport",
                 worker.0
             )
         } else {
             format!(
-                "worker {} retired; the run continues on its surviving workers",
+                "worker {} retired; the search continues on its surviving workers",
                 worker.0
             )
         },
@@ -199,8 +199,8 @@ fn retire_worker(ctx: &WorkerContext<'_>, worker: WorkerId, fatal: bool) {
         task: None,
     });
     if fatal {
-        ctx.coordinator.fault_run(Error::Transport(
-            "the worker's transport retired; the run cannot continue without it".to_string(),
+        ctx.coordinator.fault_search(Error::Transport(
+            "the worker's transport retired; the search cannot continue without it".to_string(),
         ));
     }
 }
@@ -219,7 +219,7 @@ impl Drop for WorkerExit<'_> {
 
 /// Persists and journals what a pull decided about its chain's placement.
 ///
-/// A failed slot write is a store fault: the run stops on it like any other.
+/// A failed slot write is a store fault: the search stops on it like any other.
 /// The binding is durable before the assignment goes out, so a chain that ran
 /// on a class resumes there.
 fn record_placement(ctx: &WorkerContext<'_>, placement: &ChainPlacement) -> Result<()> {
@@ -227,11 +227,11 @@ fn record_placement(ctx: &WorkerContext<'_>, placement: &ChainPlacement) -> Resu
         ChainPlacement::Settled => Ok(()),
         ChainPlacement::Bound { chain, to } => {
             ctx.store
-                .bind_chain(&ctx.run, *chain, &placement::encode_class(to)?)
+                .bind_chain(&ctx.search, *chain, &placement::encode_class(to)?)
         }
         ChainPlacement::Rebound { chain, from, to } => {
             ctx.store
-                .bind_chain(&ctx.run, *chain, &placement::encode_class(to)?)?;
+                .bind_chain(&ctx.search, *chain, &placement::encode_class(to)?)?;
             // The rebind is loud: the hardware changed under a running search,
             // and the journal is where that shows.
             ctx.events.emit(Event::ChainRebound {
@@ -251,7 +251,7 @@ enum ChildState {
     Alive,
     /// The child is dead; the worker replaces it before the next task.
     Dead,
-    /// The run is winding down; the in-flight attempt was abandoned, its
+    /// The search is winding down; the in-flight attempt was abandoned, its
     /// child killed, and the worker exits.
     WindingDown,
 }
@@ -309,7 +309,7 @@ fn checkpointing_enabled(exec: &ExecutionConfig) -> bool {
     exec.checkpoint_interval != Duration::MAX || exec.checkpoint_interval_steps.is_some()
 }
 
-/// How long one wait on the link lasts at most, so a run winding down is
+/// How long one wait on the link lasts at most, so a search winding down is
 /// observed within this bound and the in-flight attempt abandoned. The same
 /// cost trade as the driver's interrupt poll: about 20 uncontended lock
 /// acquisitions per second per worker.
@@ -372,7 +372,7 @@ fn process(
     });
     // A death here strands nothing: the lease is in-memory only, and the
     // kernel releases the orchestrator lock with the process, so a resumed
-    // run re-derives the task in its frontier.
+    // search re-derives the task in its frontier.
     sima_core::crashpoint("lease.held");
 
     // Resolve the input-state object the identity references: the key carries
@@ -389,7 +389,7 @@ fn process(
         None => None,
     };
 
-    // The run keeps one checkpoint slot per chain — mutable scratch storage
+    // The search keeps one checkpoint slot per chain — mutable scratch storage
     // for the continuation state a running segment offers. A chain task
     // under an enabled cadence resumes from whatever the slot holds for this
     // key — a slot that is missing, torn, or keyed to another segment loads
@@ -401,12 +401,12 @@ fn process(
         None
     };
     let resume = slot.and_then(|slot| {
-        match ctx.store.checkpoint(&ctx.run, slot, &key) {
+        match ctx.store.checkpoint(&ctx.search, slot, &key) {
             Ok(resume) => resume,
             Err(e) => {
                 // A checkpoint is disposable, so a load failure degrades to a
                 // fresh start — chosen over faulting the attempt: the resume
-                // is lost, the task still runs.
+                // is lost, the task still searches.
                 ctx.events.emit(Event::CheckpointDegraded {
                     task: task.clone(),
                     error: e.to_string(),
@@ -452,7 +452,7 @@ fn process(
     }
 
     // The conversation: saves persist as they arrive, one terminal frame
-    // settles the attempt. Every wait is bounded by WINDDOWN_POLL so a run
+    // settles the attempt. Every wait is bounded by WINDDOWN_POLL so a search
     // winding down abandons the attempt, and by the attempt deadline so an
     // overrunning child is preempted.
     loop {
@@ -483,7 +483,7 @@ fn process(
                 // unaffected. A save from a task that does not checkpoint is
                 // dropped: no slot was selected for it.
                 if let Some(slot) = slot {
-                    match ctx.store.save_checkpoint(&ctx.run, slot, &key, &payload) {
+                    match ctx.store.save_checkpoint(&ctx.search, slot, &key, &payload) {
                         Err(e) => ctx.events.emit(Event::CheckpointDegraded {
                             task: task.clone(),
                             error: e.to_string(),
@@ -565,7 +565,7 @@ fn process(
             LinkEvent::Fault(message) => {
                 // An infrastructure fault from the executor (e.g. a
                 // structurally invalid spec, a lost device) fails the whole
-                // run, distinct from a candidate that merely evaluated badly.
+                // search, distinct from a candidate that merely evaluated badly.
                 // The child already rendered its error's classification into
                 // the message via `Display`; the parent carries it verbatim as
                 // `Reported`, because the classification belongs to the machine
@@ -590,7 +590,7 @@ fn process(
             }
             LinkEvent::DeadlineExpired => {
                 if !ctx.coordinator.is_running() {
-                    // The run is winding down: kill the child and abandon the
+                    // The search is winding down: kill the child and abandon the
                     // attempt. The store's crash-safety makes the abandoned
                     // attempt free — resume re-derives it in the frontier.
                     link.kill();
@@ -678,7 +678,7 @@ fn fail_transiently(
 
 /// The retry policy shared by every transient failure: re-enqueue at the
 /// next attempt while attempts remain, otherwise the transient failure is
-/// definitive and terminates the run.
+/// definitive and terminates the search.
 fn retry_or_terminate(
     ctx: &WorkerContext<'_>,
     key: TaskKey,
@@ -714,7 +714,7 @@ fn commit(store: &Store, identity: TaskIdentity, artifacts: Vec<Artifact>) -> Re
 }
 
 /// Emits the task's `Faulted` event and records the infrastructure fault, so
-/// the run surfaces the error. One classification site for every fault: the
+/// the search surfaces the error. One classification site for every fault: the
 /// executor-fault path, the commit-error path, and the input-state load path.
 fn task_fault(ctx: &WorkerContext<'_>, task: String, attempt: u32, key: TaskKey, err: Error) {
     ctx.events.emit(Event::Faulted {
@@ -727,7 +727,7 @@ fn task_fault(ctx: &WorkerContext<'_>, task: String, attempt: u32, key: TaskKey,
 
 #[cfg(test)]
 mod tests {
-    use crate::coordinator::RunState;
+    use crate::coordinator::SearchState;
     use sima_core::Codec;
     use std::num::NonZeroU64;
     use std::sync::Arc;
@@ -790,7 +790,7 @@ mod tests {
 
     #[test]
     fn an_artifact_named_outside_the_rule_commits_nothing() {
-        // An artifact name enters the record, and the record is what the run's
+        // An artifact name enters the record, and the record is what the search's
         // identity is made of, so a name a program returned outside the rule
         // is refused where the record is built — and the task faults instead
         // of committing a record no reader could have produced.
@@ -852,10 +852,10 @@ mod tests {
             panic!("worker body panicked");
         }));
         assert!(result.is_err());
-        // The lease is released and the run winds down, so drive() can observe
+        // The lease is released and the search winds down, so drive() can observe
         // quiescence instead of blocking forever.
         assert!(!coordinator.holds_lease(&key));
-        assert!(coordinator.with_state(|state| matches!(state, RunState::Fault(_))));
+        assert!(coordinator.with_state(|state| matches!(state, SearchState::Fault(_))));
     }
 
     #[test]
@@ -886,7 +886,7 @@ mod tests {
         expected_artifact: Vec<u8>,
     }
 
-    /// Builds a task whose identity references `state` and runs `process` once
+    /// Builds a task whose identity references `state` and searches `process` once
     /// over a loopback worker. The state object is stored only when
     /// `store_state` is set, so a caller can exercise both the resolved-state
     /// and missing-state paths. Every other identity component is stored, so a
@@ -932,7 +932,7 @@ mod tests {
             },
             params,
         };
-        let run = store.create_search(&config)?;
+        let search = store.create_search(&config)?;
         let exec = ExecutionConfig::new(
             1,
             1,
@@ -973,7 +973,7 @@ mod tests {
             let ctx = WorkerContext {
                 coordinator: &coordinator,
                 store: &store,
-                run,
+                search,
                 config: &config,
                 transport: &transport,
                 host: String::new(),
@@ -1007,33 +1007,34 @@ mod tests {
 
     #[test]
     fn the_worker_resolves_input_state_and_commits_the_state_dependent_artifact() -> Result<()> {
-        let run = run_process(b"input state blob", true)?;
-        let record = run
+        let search = run_process(b"input state blob", true)?;
+        let record = search
             .store
-            .record(&run.identity.key())?
+            .record(&search.identity.key())?
             .expect("the task committed a record");
         assert_eq!(record.artifacts().len(), 1);
         let object = record.artifacts()[0].object();
         // The committed artifact is the digest that folds in the input-state
         // bytes the worker resolved and sent to the child.
-        assert_eq!(run.store.get(object)?, run.expected_artifact);
+        assert_eq!(search.store.get(object)?, search.expected_artifact);
         Ok(())
     }
 
     #[test]
     fn a_missing_input_state_object_is_a_fault() -> Result<()> {
-        let run = run_process(b"never stored", false)?;
-        assert!(run.store.record(&run.identity.key())?.is_none());
+        let search = run_process(b"never stored", false)?;
+        assert!(search.store.record(&search.identity.key())?.is_none());
         // A local (non-wire) fault keeps the store's own classification: the
         // absent object surfaces as `MissingObject`, never flattened to a
         // carried-verbatim `Reported`, which is reserved for the wire path.
-        run.coordinator.with_state(|state| match state {
-            RunState::Fault(Error::MissingObject(_)) => {}
-            RunState::Fault(e) => panic!("expected a MissingObject fault, got {e}"),
-            _ => panic!("expected the run to fault"),
+        search.coordinator.with_state(|state| match state {
+            SearchState::Fault(Error::MissingObject(_)) => {}
+            SearchState::Fault(e) => panic!("expected a MissingObject fault, got {e}"),
+            _ => panic!("expected the search to fault"),
         });
         assert!(
-            run.events
+            search
+                .events
                 .iter()
                 .any(|e| matches!(e, Event::Faulted { .. })),
             "the load failure emits a Faulted event"
@@ -1133,7 +1134,7 @@ mod tests {
             },
             params,
         };
-        let run = store.create_search(&config)?;
+        let search = store.create_search(&config)?;
         let exec = ExecutionConfig::new(
             1,
             1,
@@ -1150,7 +1151,7 @@ mod tests {
             let ctx = WorkerContext {
                 coordinator: &coordinator,
                 store: &store,
-                run,
+                search,
                 config: &config,
                 transport: &transport,
                 host: String::new(),
@@ -1225,7 +1226,7 @@ mod tests {
             },
             params,
         };
-        let run = store.create_search(&config)?;
+        let search = store.create_search(&config)?;
         let exec = ExecutionConfig::new(
             1,
             1,
@@ -1246,7 +1247,7 @@ mod tests {
             let ctx = WorkerContext {
                 coordinator: &coordinator,
                 store: &store,
-                run,
+                search,
                 config: &config,
                 transport: &transport,
                 host: String::new(),
@@ -1269,10 +1270,10 @@ mod tests {
             };
             process(&ctx, WorkerId(0), pending, &mut link);
         }
-        // The run faulted, and the fault renders exactly as the far side did.
+        // The search faulted, and the fault renders exactly as the far side did.
         coordinator.with_state(|state| match state {
-            RunState::Fault(e) => assert_eq!(e.to_string(), "backend error: device lost"),
-            _ => panic!("expected the run to fault"),
+            SearchState::Fault(e) => assert_eq!(e.to_string(), "backend error: device lost"),
+            _ => panic!("expected the search to fault"),
         });
         // The `Faulted` event carries the same verbatim rendering.
         let events: Vec<Event> = rx.into_iter().collect();
@@ -1287,12 +1288,12 @@ mod tests {
         Ok(())
     }
 
-    /// A one-task `accumulate:k` fixture: store, registered run, and the
-    /// segment-0 identity, ready for `process` runs with checkpoint knobs.
+    /// A one-task `accumulate:k` fixture: store, registered search, and the
+    /// segment-0 identity, ready for `process` searches with checkpoint knobs.
     struct AccumulateFixture {
         _dir: tempfile::TempDir,
         store: Store,
-        run: sima_model::SearchId,
+        search: sima_model::SearchId,
         config: SearchConfig,
         spec: Spec,
         identity: TaskIdentity,
@@ -1333,11 +1334,11 @@ mod tests {
                 },
                 params,
             };
-            let run = store.create_search(&config)?;
+            let search = store.create_search(&config)?;
             Ok(AccumulateFixture {
                 _dir: dir,
                 store,
-                run,
+                search,
                 config,
                 spec,
                 identity,
@@ -1378,7 +1379,7 @@ mod tests {
                 let ctx = WorkerContext {
                     coordinator: &coordinator,
                     store: &self.store,
-                    run: self.run,
+                    search: self.search,
                     config: &self.config,
                     transport: &transport,
                     host: String::new(),
@@ -1445,7 +1446,7 @@ mod tests {
         let fixture = AccumulateFixture::new(5)?;
         // A valid checkpoint three steps in, keyed to this task.
         fixture.store.save_checkpoint(
-            &fixture.run,
+            &fixture.search,
             0,
             &fixture.key(),
             &folded_state(42, 3).to_bytes(),
@@ -1467,11 +1468,14 @@ mod tests {
         // The stale previous-segment case: the slot holds valid-looking state
         // under a different task key.
         let other = TaskKey::from_hash(hash_bytes(b"the previous segment's key"));
-        fixture
-            .store
-            .save_checkpoint(&fixture.run, 0, &other, &folded_state(42, 3).to_bytes())?;
+        fixture.store.save_checkpoint(
+            &fixture.search,
+            0,
+            &other,
+            &folded_state(42, 3).to_bytes(),
+        )?;
         let events = fixture.process(Some(0), Duration::ZERO)?;
-        assert_eq!(committed_steps(&events), 5, "the task runs fully");
+        assert_eq!(committed_steps(&events), 5, "the task searches fully");
         assert_eq!(fixture.state_artifact()?, folded_state(42, 5).to_bytes());
         Ok(())
     }
@@ -1481,7 +1485,9 @@ mod tests {
         let fixture = AccumulateFixture::new(3)?;
         fixture.process(Some(0), Duration::MAX)?;
         assert_eq!(
-            fixture.store.checkpoint(&fixture.run, 0, &fixture.key())?,
+            fixture
+                .store
+                .checkpoint(&fixture.search, 0, &fixture.key())?,
             None
         );
         Ok(())
@@ -1495,7 +1501,7 @@ mod tests {
         fixture.process(Some(0), Duration::ZERO)?;
         let saved = fixture
             .store
-            .checkpoint(&fixture.run, 0, &fixture.key())?
+            .checkpoint(&fixture.search, 0, &fixture.key())?
             .expect("the slot was written");
         assert_eq!(saved, folded_state(42, 3).to_bytes());
         Ok(())
@@ -1509,8 +1515,8 @@ mod tests {
         let blocker = fixture
             ._dir
             .path()
-            .join("runs")
-            .join(fixture.run.to_string())
+            .join("searches")
+            .join(fixture.search.to_string())
             .join("checkpoint");
         std::fs::write(&blocker, b"not a directory").expect("write blocker");
         let events = fixture.process(Some(0), Duration::ZERO)?;
@@ -1528,14 +1534,14 @@ mod tests {
     #[test]
     fn the_step_axis_alone_saves_every_nth_offer() -> Result<()> {
         // Wall-clock disabled, step cadence 2, over 5 offers (one per step). The
-        // accumulate offer runs after each step, so saves land at offers 2 and 4;
+        // accumulate offer searches after each step, so saves land at offers 2 and 4;
         // offer 5 does not reach the third multiple. The slot holds step 4, not
         // the final step 5 — proving the step axis alone drives checkpointing.
         let fixture = AccumulateFixture::new(5)?;
         fixture.process_with(Some(0), Duration::MAX, NonZeroU64::new(2))?;
         let saved = fixture
             .store
-            .checkpoint(&fixture.run, 0, &fixture.key())?
+            .checkpoint(&fixture.search, 0, &fixture.key())?
             .expect("the step axis wrote the slot");
         assert_eq!(saved, folded_state(42, 4).to_bytes());
         Ok(())
@@ -1543,13 +1549,13 @@ mod tests {
 
     #[test]
     fn the_step_axis_fires_first_when_the_clock_is_far_off() -> Result<()> {
-        // Both axes set, but the wall-clock interval is far larger than the run
+        // Both axes set, but the wall-clock interval is far larger than the search
         // takes, so only the step axis fires: the union saves at the step cadence.
         let fixture = AccumulateFixture::new(5)?;
         fixture.process_with(Some(0), Duration::from_secs(3600), NonZeroU64::new(2))?;
         let saved = fixture
             .store
-            .checkpoint(&fixture.run, 0, &fixture.key())?
+            .checkpoint(&fixture.search, 0, &fixture.key())?
             .expect("the step axis wrote the slot");
         assert_eq!(saved, folded_state(42, 4).to_bytes());
         Ok(())
@@ -1557,14 +1563,14 @@ mod tests {
 
     #[test]
     fn the_clock_axis_fires_first_when_the_step_cadence_is_far_off() -> Result<()> {
-        // Both axes set, but the step cadence is larger than the run's offer
+        // Both axes set, but the step cadence is larger than the search's offer
         // count, so only the wall-clock axis fires: a zero interval saves every
         // offer, and the last save carries the final step.
         let fixture = AccumulateFixture::new(3)?;
         fixture.process_with(Some(0), Duration::ZERO, NonZeroU64::new(1000))?;
         let saved = fixture
             .store
-            .checkpoint(&fixture.run, 0, &fixture.key())?
+            .checkpoint(&fixture.search, 0, &fixture.key())?
             .expect("the clock axis wrote the slot");
         assert_eq!(saved, folded_state(42, 3).to_bytes());
         Ok(())
@@ -1577,7 +1583,9 @@ mod tests {
         let fixture = AccumulateFixture::new(3)?;
         fixture.process_with(Some(0), Duration::MAX, None)?;
         assert_eq!(
-            fixture.store.checkpoint(&fixture.run, 0, &fixture.key())?,
+            fixture
+                .store
+                .checkpoint(&fixture.search, 0, &fixture.key())?,
             None
         );
         Ok(())
@@ -1591,7 +1599,7 @@ mod tests {
         on.process(Some(0), Duration::ZERO)?;
         let resumed = AccumulateFixture::new(4)?;
         resumed.store.save_checkpoint(
-            &resumed.run,
+            &resumed.search,
             0,
             &resumed.key(),
             &folded_state(42, 2).to_bytes(),
