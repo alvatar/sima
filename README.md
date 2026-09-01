@@ -57,9 +57,10 @@ beyond it as an elastic, heterogeneous extension.
 - **Run one command on rented hardware.** An `[exec]` job names one opaque shell
   command, a payload, output globs, and one rented `[host.*]`. `sima exec`
   delivers the payload, streams the command's log, and fetches the declared
-  files plus the log on every exit. The machine stays available by default:
-  another invocation adopts it, `--attach` follows a detached command, and
-  `--end` fetches and releases it. `--one-shot` releases it after one command.
+  files plus the log whenever the command exits. The machine stays available
+  by default: another invocation adopts it, `--attach` follows a detached
+  command, and `--end` fetches and releases it. `--one-shot` releases it after
+  one command.
   The store is limited to rental accounting and payload objects for this
   contract; search state remains exclusive to a search.
 - **Watch it run, from anywhere.** `sima tui` drives a search in a full-screen
