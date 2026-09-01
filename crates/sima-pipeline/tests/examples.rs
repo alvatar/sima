@@ -17,23 +17,23 @@ fn examples() -> PathBuf {
 }
 
 /// Loads the example named `file` and returns its run id, rendered.
-fn run_id(file: &str) -> Result<String> {
+fn search_id(file: &str) -> Result<String> {
     Ok(load(&examples().join(file))?.run.id().to_string())
 }
 
 #[test]
-fn the_gray_scott_example_loads_with_its_run_id() -> Result<()> {
+fn the_gray_scott_example_loads_with_its_search_id() -> Result<()> {
     assert_eq!(
-        run_id("gray-scott-search.toml")?,
+        search_id("gray-scott-search.toml")?,
         "2d3d58eca2ec0a3dd9ab493b875ca03d6269295b65b6a9d1bd53036490fcff43"
     );
     Ok(())
 }
 
 #[test]
-fn the_gray_scott_cuda_example_loads_with_its_run_id() -> Result<()> {
+fn the_gray_scott_cuda_example_loads_with_its_search_id() -> Result<()> {
     assert_eq!(
-        run_id("gray-scott-cuda-search.toml")?,
+        search_id("gray-scott-cuda-search.toml")?,
         "47d714271ce0aa23f51fcc65ce0c85693572b1b120aed06e1671b598d94758fd"
     );
     Ok(())
@@ -44,8 +44,8 @@ fn the_two_examples_are_different_runs() -> Result<()> {
     // The same rule through two backends is two programs with two identities,
     // so neither reuses the other's stored results.
     assert_ne!(
-        run_id("gray-scott-search.toml")?,
-        run_id("gray-scott-cuda-search.toml")?
+        search_id("gray-scott-search.toml")?,
+        search_id("gray-scott-cuda-search.toml")?
     );
     Ok(())
 }
@@ -117,14 +117,14 @@ fn the_stepper_example_s_commented_machine_block_loads_when_uncommented() -> Res
     assert!(loaded.hosts.contains_key("gpubox"));
     assert_eq!(
         loaded.run.id().to_string(),
-        run_id("stepper-py/search.toml")?,
+        search_id("stepper-py/search.toml")?,
         "declaring a machine decides where, never what"
     );
     Ok(())
 }
 
 #[test]
-fn the_stepper_example_loads_with_its_run_id() -> Result<()> {
+fn the_stepper_example_loads_with_its_search_id() -> Result<()> {
     // The Python example routes its format to a program, so loading it spawns
     // that program to translate the two sections it owns. `import sima`
     // resolves in the child because the example declares `sdk = "python"`, and
@@ -135,7 +135,7 @@ fn the_stepper_example_loads_with_its_run_id() -> Result<()> {
     // relative to this process would resolve against that directory and fail to
     // spawn at all.
     assert_eq!(
-        run_id("stepper-py/search.toml")?,
+        search_id("stepper-py/search.toml")?,
         "7c19fe97eaf2a8870f110f3df80840b3785bf2bd57f6633006baac3e73b48b13"
     );
     Ok(())

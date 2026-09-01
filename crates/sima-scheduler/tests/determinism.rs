@@ -4,7 +4,7 @@
 
 mod common;
 
-use common::{config, exec, run_id, run_into, temp_store};
+use common::{config, exec, run_into, search_id, temp_store};
 use sima_core::Result;
 use sima_domains::StubBehavior;
 use sima_scheduler::RunOutcome;
@@ -33,7 +33,7 @@ fn same_config_in_two_fresh_stores_yields_identical_manifests() -> Result<()> {
         RunOutcome::Finalized { .. }
     ));
 
-    let run = run_id(&cfg);
+    let run = search_id(&cfg);
     let manifest_a = store_a.manifest(&run)?.expect("store A finalized");
     let manifest_b = store_b.manifest(&run)?.expect("store B finalized");
     assert_eq!(manifest_a, manifest_b);
@@ -59,7 +59,7 @@ fn manifest_is_independent_of_worker_count() -> Result<()> {
     run_into(&store_one, &cfg, &exec(1, 3, 1_000))?;
     run_into(&store_many, &cfg, &exec(8, 3, 1_000))?;
 
-    let run = run_id(&cfg);
+    let run = search_id(&cfg);
     assert_eq!(
         store_one.manifest(&run)?.expect("single-worker manifest"),
         store_many.manifest(&run)?.expect("many-worker manifest"),
@@ -88,7 +88,7 @@ fn manifests_match_though_journals_need_not() -> Result<()> {
     run_into(&store_a, &cfg, &exec)?;
     run_into(&store_b, &cfg, &exec)?;
 
-    let run = run_id(&cfg);
+    let run = search_id(&cfg);
     assert_eq!(
         store_a.manifest(&run)?.expect("manifest A"),
         store_b.manifest(&run)?.expect("manifest B"),

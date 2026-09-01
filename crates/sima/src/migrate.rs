@@ -140,12 +140,12 @@ fn exit_code(outcome: &MigrateOutcome) -> u8 {
 #[cfg(test)]
 mod tests {
     use sima_core::hash_bytes;
-    use sima_pipeline::RunId;
+    use sima_pipeline::SearchId;
 
     use super::*;
 
-    fn run() -> RunId {
-        RunId::from_hash(hash_bytes(b"a migrated run"))
+    fn run() -> SearchId {
+        SearchId::from_hash(hash_bytes(b"a migrated run"))
     }
 
     #[test]

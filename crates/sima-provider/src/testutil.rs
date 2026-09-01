@@ -2,7 +2,7 @@
 
 use std::time::{Duration, Instant};
 
-use sima_model::{FormatId, GeneratorConfig, GeneratorId, Params, RunConfig, RunId};
+use sima_model::{FormatId, GeneratorConfig, GeneratorId, Params, SearchConfig, SearchId};
 use sima_store::{InstanceRecord, InstanceRecordState, Rental, SpendEntry, Store};
 use tempfile::TempDir;
 
@@ -44,7 +44,7 @@ pub(crate) fn temp_store() -> (TempDir, Store) {
 pub(crate) fn instance_record(
     tag: &str,
     state: InstanceRecordState,
-    owner: RunId,
+    owner: SearchId,
 ) -> InstanceRecord {
     instance_record_as(tag, state, owner, Rental::Worker)
 }
@@ -54,7 +54,7 @@ pub(crate) fn instance_record(
 pub(crate) fn instance_record_as(
     tag: &str,
     state: InstanceRecordState,
-    owner: RunId,
+    owner: SearchId,
     role: Rental,
 ) -> InstanceRecord {
     InstanceRecord {
@@ -77,13 +77,13 @@ pub(crate) fn live_state(instance: &str) -> InstanceRecordState {
 }
 
 /// The spend entries `owner` has closed out, in file order.
-pub(crate) fn spend_entries(store: &Store, owner: &RunId) -> Result<Vec<SpendEntry>> {
+pub(crate) fn spend_entries(store: &Store, owner: &SearchId) -> Result<Vec<SpendEntry>> {
     store.spend_entries(&owner.to_string())
 }
 
 /// A run id to own acquisitions with, varying by `root_seed`.
-pub(crate) fn sample_run(root_seed: u64) -> RunId {
-    RunConfig {
+pub(crate) fn sample_run(root_seed: u64) -> SearchId {
+    SearchConfig {
         root_seed,
         segments: None,
         format: FormatId::new("stub.v1").expect("format id"),
@@ -116,7 +116,7 @@ pub(crate) fn acquire_any<'a, P: Provider>(
     provider: &'a P,
     store: &'a Store,
 ) -> Result<InstanceGuard<'a, P>> {
-    let lock = store.acquire_run_lock(&sample_run(7))?;
+    let lock = store.acquire_search_lock(&sample_run(7))?;
     acquire(
         provider,
         store,

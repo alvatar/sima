@@ -244,16 +244,16 @@ mod tests {
     /// scope into a fresh store — the shape a migration produces.
     mod over_a_real_chain {
         use sima_domains::{StubBehavior, StubGenerator, StubGeneratorConfig};
-        use sima_model::{GeneratorConfig, GeneratorId, RunConfig};
-        use sima_scheduler::{RunOutcome, run_keys};
+        use sima_model::{GeneratorConfig, GeneratorId, SearchConfig};
+        use sima_scheduler::{RunOutcome, search_keys};
         use sima_store::ObjectScope;
 
         use super::*;
         use crate::fixtures::{drive_run, stub_environment, sync_between};
 
         /// A run of one candidate over twenty accumulating segments.
-        fn chained_run() -> RunConfig {
-            RunConfig {
+        fn chained_run() -> SearchConfig {
+            SearchConfig {
                 root_seed: 5,
                 segments: std::num::NonZeroU64::new(20),
                 format: FormatId::new("stub.v1").expect("format id"),
@@ -288,7 +288,7 @@ mod tests {
             ));
 
             let generator = StubGenerator::new()?;
-            let keys = run_keys(&local, &config, &stub_environment(), &generator)?;
+            let keys = search_keys(&local, &config, &stub_environment(), &generator)?;
             let named = push_objects(&local, &keys)?;
             assert!(keys.len() > 2, "the chain got past its first segment");
 
@@ -301,7 +301,7 @@ mod tests {
             }
             // The frontier the far side derives is the one this side derives.
             assert_eq!(
-                run_keys(&far, &config, &stub_environment(), &generator)?,
+                search_keys(&far, &config, &stub_environment(), &generator)?,
                 keys,
                 "the gapped store derives the frontier the complete one does"
             );

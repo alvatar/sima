@@ -129,7 +129,7 @@ fn pack_with_gc_keeps_a_finalized_run_whole() {
     let loaded = load(&config).expect("load config");
     let opened = sima_store::Store::open(&loaded.store).expect("open store");
     opened
-        .run_closure(&loaded.run.id())
+        .search_closure(&loaded.run.id())
         .expect("the closure enumerates whole");
 }
 

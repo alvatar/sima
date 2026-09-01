@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, channel};
 use std::time::Duration;
 
-use sima_model::{FormatId, GeneratorConfig, GeneratorId, Params, RunConfig, RunId};
+use sima_model::{FormatId, GeneratorConfig, GeneratorId, Params, SearchConfig, SearchId};
 use sima_provider::{Constraints, Offer, OfferId, Price, Provider};
 use sima_scheduler::{Event, ExecutionConfig};
 use sima_store::Store;
@@ -128,10 +128,10 @@ pub(super) fn offer(id: &str, price: u64) -> Offer {
 }
 
 /// A store over a fresh temp directory and a run id to own acquisitions.
-pub(super) fn acquisition_env() -> (TempDir, Store, RunId) {
+pub(super) fn acquisition_env() -> (TempDir, Store, SearchId) {
     let dir = tempfile::tempdir().expect("temp dir");
     let store = Store::open(dir.path()).expect("open store");
-    let run = RunConfig {
+    let run = SearchConfig {
         root_seed: 1,
         segments: None,
         format: FormatId::new("stub.v1").expect("format id"),

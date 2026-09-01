@@ -7,7 +7,7 @@ mod common;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use common::{config, exec, journal_events, run_controlled, run_id, run_into, temp_store};
+use common::{config, exec, journal_events, run_controlled, run_into, search_id, temp_store};
 use sima_core::Result;
 use sima_domains::StubBehavior;
 use sima_scheduler::{Event, Record, RunControl, RunOutcome};
@@ -43,7 +43,7 @@ fn the_observer_mirrors_the_journal() -> Result<()> {
         RunOutcome::Finalized { .. }
     ));
 
-    let journal = journal_events(&store, &run_id(&cfg));
+    let journal = journal_events(&store, &search_id(&cfg));
     assert_eq!(*seen.lock().expect("observer mutex"), journal);
     Ok(())
 }
@@ -84,7 +84,7 @@ fn an_interrupt_mid_run_drains_and_stays_resumable() -> Result<()> {
         RunOutcome::Interrupted { .. }
     ));
 
-    let run = run_id(&cfg);
+    let run = search_id(&cfg);
     // No manifest: the interrupted run did not finalize.
     assert!(store.manifest(&run)?.is_none());
     let events = journal_events(&store, &run);
@@ -137,7 +137,7 @@ fn an_interrupt_before_any_task_starts_commits_nothing() -> Result<()> {
         RunOutcome::Interrupted { .. }
     ));
 
-    let run = run_id(&cfg);
+    let run = search_id(&cfg);
     assert!(store.manifest(&run)?.is_none());
     let events = journal_events(&store, &run);
     assert_eq!(

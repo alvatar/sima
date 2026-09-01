@@ -9,7 +9,7 @@ use tempfile::TempDir;
 use sima_core::{Codec, Hash};
 use sima_model::{
     ArtifactRef, Environment, EnvironmentComponent, EnvironmentValue, FormatId, GeneratorConfig,
-    GeneratorId, Params, RunConfig, Spec, TaskIdentity, TaskRecord,
+    GeneratorId, Params, SearchConfig, Spec, TaskIdentity, TaskRecord,
 };
 
 use crate::Store;
@@ -73,9 +73,9 @@ pub(crate) fn sample_environment() -> Environment {
     Environment::new(vec![component]).expect("environment")
 }
 
-/// The run-config fixture shared by run tests, varying by root seed.
-pub(crate) fn sample_run_config(root_seed: u64) -> RunConfig {
-    RunConfig {
+/// The search-config fixture shared by search tests, varying by root seed.
+pub(crate) fn sample_search_config(root_seed: u64) -> SearchConfig {
+    SearchConfig {
         root_seed,
         segments: None,
         format: FormatId::new("stub.v1").expect("format id"),

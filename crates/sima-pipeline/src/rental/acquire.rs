@@ -23,7 +23,7 @@ use sima_provider::{
 };
 use sima_scheduler::ExecutionConfig;
 use sima_scheduler::{Event, Level};
-use sima_store::{Rental as RentalRole, RunLock, Store};
+use sima_store::{Rental as RentalRole, SearchLock, Store};
 use sima_trace::Emitter;
 use sima_transport::{SpawnMode, SshDestination, SshTransport};
 
@@ -139,7 +139,7 @@ pub(crate) fn acquire_hosts<'a>(
     budget: &Budget,
     provider: &'a (dyn Provider + Sync),
     store: &'a Store,
-    lock: &RunLock,
+    lock: &SearchLock,
     mode: &SpawnMode,
     format: &FormatId,
     exec: &ExecutionConfig,
@@ -265,7 +265,7 @@ fn first_error(short: Vec<(&str, Error)>) -> Error {
 fn acquire_one<'a>(
     provider: &'a (dyn Provider + Sync),
     store: &'a Store,
-    lock: &RunLock,
+    lock: &SearchLock,
     spec: &Rented,
     budget: &Budget,
     mode: &SpawnMode,
@@ -665,7 +665,7 @@ mod tests {
         // One offer for two requested machines under strict fill: the run
         // fails, and the one machine that came up is torn down.
         let (_dir, store, run) = acquisition_env();
-        let lock = store.acquire_run_lock(&run)?;
+        let lock = store.acquire_search_lock(&run)?;
         let provider = StubProvider::new(vec![offer("a", 100_000)]);
         let format = FormatId::new("stub.v1")?;
         let spec = spec();
@@ -697,7 +697,7 @@ mod tests {
         // One offer for two requested machines under best-effort: the run
         // proceeds with the one machine, torn down on release.
         let (_dir, store, run) = acquisition_env();
-        let lock = store.acquire_run_lock(&run)?;
+        let lock = store.acquire_search_lock(&run)?;
         let provider = StubProvider::new(vec![offer("a", 100_000)]);
         let format = FormatId::new("stub.v1")?;
         let spec = spec();
@@ -752,7 +752,7 @@ mod tests {
         // machine short is otherwise invisible until the run's rate looks
         // wrong.
         let (_dir, store, run) = acquisition_env();
-        let lock = store.acquire_run_lock(&run)?;
+        let lock = store.acquire_search_lock(&run)?;
         let provider = StubProvider::new(vec![offer("a", 100_000)]);
         let format = FormatId::new("stub.v1")?;
         let spec = spec();
@@ -792,7 +792,7 @@ mod tests {
     #[test]
     fn a_best_effort_shortfall_names_the_member_and_says_the_run_goes_on() -> Result<()> {
         let (_dir, store, run) = acquisition_env();
-        let lock = store.acquire_run_lock(&run)?;
+        let lock = store.acquire_search_lock(&run)?;
         let provider = StubProvider::new(vec![offer("a", 100_000)]);
         let format = FormatId::new("stub.v1")?;
         let spec = spec();
@@ -838,7 +838,7 @@ mod tests {
         // image pull, and the run is paying through all of it. What is being
         // waited for is stated once per machine, right after what it costs.
         let (_dir, store, run) = acquisition_env();
-        let lock = store.acquire_run_lock(&run)?;
+        let lock = store.acquire_search_lock(&run)?;
         let provider = StubProvider::new(vec![offer("a", 100_000), offer("b", 200_000)]);
         let format = FormatId::new("stub.v1")?;
         let spec = spec();
@@ -895,7 +895,7 @@ mod tests {
         // Two offers for two machines: both acquire, each probed into a single
         // deviceless slot, all torn down on release.
         let (_dir, store, run) = acquisition_env();
-        let lock = store.acquire_run_lock(&run)?;
+        let lock = store.acquire_search_lock(&run)?;
         let provider = StubProvider::new(vec![offer("a", 100_000), offer("b", 200_000)]);
         let format = FormatId::new("stub.v1")?;
         let spec = spec();
@@ -934,7 +934,7 @@ mod tests {
         // held in a readiness wait of the same length: the whole acquisition
         // costs about one of them, and nothing like four.
         let (_dir, store, run) = acquisition_env();
-        let lock = store.acquire_run_lock(&run)?;
+        let lock = store.acquire_search_lock(&run)?;
         let provider = StubProvider::new(vec![
             offer("a", 100_000),
             offer("b", 200_000),
@@ -981,7 +981,7 @@ mod tests {
         // here, and that is as true of members asked for at once as of members
         // asked for in turn.
         let (_dir, store, run) = acquisition_env();
-        let lock = store.acquire_run_lock(&run)?;
+        let lock = store.acquire_search_lock(&run)?;
         // A rental of this run, closed out, that already cost more than the cap.
         store.put_spend(&SpendEntry {
             tag: "sima-deadbeefdeadbeef-1-aabbccdd-0".to_string(),
@@ -1032,7 +1032,7 @@ mod tests {
         // The machine acquires but its probe never runs: it is torn down rather
         // than left running with no slots.
         let (_dir, store, run) = acquisition_env();
-        let lock = store.acquire_run_lock(&run)?;
+        let lock = store.acquire_search_lock(&run)?;
         let provider = StubProvider::new(vec![offer("a", 100_000)]);
         let format = FormatId::new("stub.v1")?;
         let spec = spec();
@@ -1069,7 +1069,7 @@ mod tests {
         // run, and does not rent the refusing machine again: both offers are
         // tried, each torn down, each carrying its own incident.
         let (_dir, store, run) = acquisition_env();
-        let lock = store.acquire_run_lock(&run)?;
+        let lock = store.acquire_search_lock(&run)?;
         let provider = StubProvider::new(vec![offer("a", 100_000), offer("b", 200_000)]);
         let format = FormatId::new("stub.v1")?;
         let spec = spec();
@@ -1106,7 +1106,7 @@ mod tests {
         // second offer is never rented, and the probe retry does not hand the
         // member another window on top of the one it was given.
         let (_dir, store, run) = acquisition_env();
-        let lock = store.acquire_run_lock(&run)?;
+        let lock = store.acquire_search_lock(&run)?;
         let provider = StubProvider::new(vec![offer("a", 100_000), offer("b", 200_000)])
             .never_ready(OfferId("a".to_string()));
         let format = FormatId::new("stub.v1")?;
@@ -1251,7 +1251,7 @@ mod tests {
         // running: the machine is torn down and nothing is held against it,
         // since it was never given its time to answer.
         let (_dir, store, run) = acquisition_env();
-        let lock = store.acquire_run_lock(&run)?;
+        let lock = store.acquire_search_lock(&run)?;
         let provider =
             StubProvider::new(vec![offer("a", 100_000)]).never_ready(OfferId("a".to_string()));
         let format = FormatId::new("stub.v1")?;
@@ -1323,7 +1323,7 @@ mod tests {
     /// them a host the acquisition is holding.
     fn abandons_under(fill: FillPolicy) -> Result<()> {
         let (dir, store, run) = acquisition_env();
-        let lock = store.acquire_run_lock(&run)?;
+        let lock = store.acquire_search_lock(&run)?;
         let provider = StubProvider::new(vec![offer("a", 100_000), offer("b", 200_000)])
             .never_ready(OfferId("b".to_string()));
         let format = FormatId::new("stub.v1")?;
@@ -1431,7 +1431,7 @@ mod tests {
         // — it would otherwise be excluded from the retries and, at two across
         // runs, blacklisted — and no second machine is rented in its place.
         let (dir, store, run) = acquisition_env();
-        let lock = store.acquire_run_lock(&run)?;
+        let lock = store.acquire_search_lock(&run)?;
         let provider = StubProvider::new(vec![offer("a", 100_000), offer("b", 200_000)]);
         let format = FormatId::new("stub.v1")?;
         let spec = waiting_spec();

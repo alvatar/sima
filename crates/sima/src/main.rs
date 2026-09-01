@@ -61,7 +61,7 @@ use std::sync::atomic::AtomicBool;
 use sima_core::{Error, Hash, Result};
 use sima_pipeline::{
     BinaryChange, Engagement, FeedInfo, LoadedConfig, LocalFeed, Record, RemoteFeed, RemovalReport,
-    ReportRow, RunControl, RunFeed, RunId, RunOutcome, RunState, RunStatus, RunTimeline, Sdk,
+    ReportRow, RunControl, RunFeed, RunOutcome, RunState, RunStatus, RunTimeline, Sdk, SearchId,
     TaskHistory, failures_records, follow_serve, load, local_snapshot, orchestrate,
     receive_program, remote_snapshot, report_records, report_task_records, seeded_status,
     status_records, sync_serve, task_history_records, timeline_records,
@@ -524,7 +524,7 @@ fn status_failed_command(target: &Target) -> ExitCode {
 
 /// Projects the tasks the target run did not commit, with the run the digest
 /// names.
-fn read_failures(target: &Target) -> Result<(RunId, Vec<TaskHistory>)> {
+fn read_failures(target: &Target) -> Result<(SearchId, Vec<TaskHistory>)> {
     let (info, records) = snapshot(target)?;
     Ok((info.run, failures_records(&records)))
 }
@@ -697,7 +697,7 @@ fn serve_command(config: &str, once: bool) -> ExitCode {
 /// this machine makes the sync fail cleanly on the lock rather than writing
 /// underneath it.
 fn sync_serve_command(store: &Path, run: &str) -> ExitCode {
-    let run = match RunId::from_hex(run) {
+    let run = match SearchId::from_hex(run) {
         Ok(run) => run,
         Err(e) => return report(e),
     };
@@ -762,7 +762,7 @@ fn sdk_command(language: &str, out: &Path) -> ExitCode {
 /// references — under its run lock, and prints what was removed. The run id
 /// comes from the config's identity section, as `status` derives it.
 fn rm_command(config: &Path) -> ExitCode {
-    match remove_run(config) {
+    match remove_search(config) {
         Ok(report) => {
             println!(
                 "removed run: {} objects, {} index entries",
@@ -775,7 +775,7 @@ fn rm_command(config: &Path) -> ExitCode {
 }
 
 /// Loads the config and removes its run.
-fn remove_run(config: &Path) -> Result<RemovalReport> {
+fn remove_search(config: &Path) -> Result<RemovalReport> {
     let loaded = load(config)?;
     sima_pipeline::remove(&loaded)
 }
@@ -894,7 +894,7 @@ pub(crate) fn register_interrupt() -> Result<Arc<AtomicBool>> {
 mod tests {
     use super::*;
     use sima_core::hash_bytes;
-    use sima_model::{RunId, TaskKey};
+    use sima_model::{SearchId, TaskKey};
 
     /// A writer that fails every write with a fixed error kind, to drive
     /// `write_report`'s error handling without a real pipe.
@@ -1069,7 +1069,7 @@ mod tests {
 
     #[test]
     fn each_outcome_maps_to_its_exit_code() {
-        let run = RunId::from_hash(hash_bytes(b"exit code run"));
+        let run = SearchId::from_hash(hash_bytes(b"exit code run"));
         assert_eq!(outcome_exit_code(&RunOutcome::Finalized { run }), 0);
         assert_eq!(
             outcome_exit_code(&RunOutcome::Failed {

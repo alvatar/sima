@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 
 use sima_contracts::{Artifact, DeviceBinding, Outcome, Stats, WorkerId};
 use sima_core::{Error, Hash, Result, to_hex};
-use sima_model::{ArtifactRef, RunConfig, RunId, TaskIdentity, TaskKey, TaskRecord};
+use sima_model::{ArtifactRef, SearchConfig, SearchId, TaskIdentity, TaskKey, TaskRecord};
 use sima_store::Store;
 use sima_trace::{Emitter, Event, Level, StatScalar};
 use sima_transport::protocol::Assignment;
@@ -38,8 +38,8 @@ pub(crate) struct WorkerContext<'a> {
     pub(crate) coordinator: &'a Coordinator,
     pub(crate) store: &'a Store,
     /// The run the worker commits under; keys the checkpoint slots.
-    pub(crate) run: RunId,
-    pub(crate) config: &'a RunConfig,
+    pub(crate) run: SearchId,
+    pub(crate) config: &'a SearchConfig,
     pub(crate) transport: &'a dyn WorkerTransport,
     /// The host this slot's pool runs on; empty for a local pool. Journaled
     /// with each `WorkerBound` as the parent's account of where the work ran.
@@ -922,7 +922,7 @@ mod tests {
             input_state: Some(hash_bytes(state)),
         };
 
-        let config = RunConfig {
+        let config = SearchConfig {
             root_seed: 0,
             segments: None,
             format: FormatId::new("stub.v1")?,
@@ -932,7 +932,7 @@ mod tests {
             },
             params,
         };
-        let run = store.create_run(&config)?;
+        let run = store.create_search(&config)?;
         let exec = ExecutionConfig::new(
             1,
             1,
@@ -1123,7 +1123,7 @@ mod tests {
         let store = Store::open(dir.path()).expect("open store");
         let params = Params { bytes: vec![9] };
         store.put(&params.to_bytes())?;
-        let config = RunConfig {
+        let config = SearchConfig {
             root_seed: 0,
             segments: None,
             format: FormatId::new("stub.v1")?,
@@ -1133,7 +1133,7 @@ mod tests {
             },
             params,
         };
-        let run = store.create_run(&config)?;
+        let run = store.create_search(&config)?;
         let exec = ExecutionConfig::new(
             1,
             1,
@@ -1215,7 +1215,7 @@ mod tests {
             environment,
             input_state: None,
         };
-        let config = RunConfig {
+        let config = SearchConfig {
             root_seed: 0,
             segments: None,
             format: FormatId::new("stub.v1")?,
@@ -1225,7 +1225,7 @@ mod tests {
             },
             params,
         };
-        let run = store.create_run(&config)?;
+        let run = store.create_search(&config)?;
         let exec = ExecutionConfig::new(
             1,
             1,
@@ -1292,8 +1292,8 @@ mod tests {
     struct AccumulateFixture {
         _dir: tempfile::TempDir,
         store: Store,
-        run: sima_model::RunId,
-        config: RunConfig,
+        run: sima_model::SearchId,
+        config: SearchConfig,
         spec: Spec,
         identity: TaskIdentity,
     }
@@ -1323,7 +1323,7 @@ mod tests {
                 environment,
                 input_state: None,
             };
-            let config = RunConfig {
+            let config = SearchConfig {
                 root_seed: 0,
                 segments: std::num::NonZeroU64::new(1),
                 format: FormatId::new("stub.v1")?,
@@ -1333,7 +1333,7 @@ mod tests {
                 },
                 params,
             };
-            let run = store.create_run(&config)?;
+            let run = store.create_search(&config)?;
             Ok(AccumulateFixture {
                 _dir: dir,
                 store,

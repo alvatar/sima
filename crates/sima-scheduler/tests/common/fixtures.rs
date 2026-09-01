@@ -14,7 +14,7 @@ use sima_core::Result;
 use sima_domains::{StubBehavior, StubExecutor, StubGenerator, StubGeneratorConfig};
 use sima_model::{
     Environment, EnvironmentComponent, EnvironmentValue, FormatId, GeneratorConfig, GeneratorId,
-    Params, RunConfig, RunId, TaskKey,
+    Params, SearchConfig, SearchId, TaskKey,
 };
 use sima_scheduler::{
     DeviceEntry, Event, ExecutionConfig, Record, RunControl, RunOutcome, StaticBatch, TaskSource,
@@ -34,16 +34,16 @@ pub fn environment() -> Environment {
 
 /// A run config whose stub generator programs `behaviors`, under `root_seed`,
 /// dividing each candidate's evaluation into `segments` chained tasks.
-pub fn chained_config(root_seed: u64, behaviors: Vec<StubBehavior>, segments: u64) -> RunConfig {
-    RunConfig {
+pub fn chained_config(root_seed: u64, behaviors: Vec<StubBehavior>, segments: u64) -> SearchConfig {
+    SearchConfig {
         segments: NonZeroU64::new(segments),
         ..config(root_seed, behaviors)
     }
 }
 
 /// A run config whose stub generator programs `behaviors`, under `root_seed`.
-pub fn config(root_seed: u64, behaviors: Vec<StubBehavior>) -> RunConfig {
-    RunConfig {
+pub fn config(root_seed: u64, behaviors: Vec<StubBehavior>) -> SearchConfig {
+    SearchConfig {
         root_seed,
         segments: None,
         format: FormatId::new("stub.v1").expect("format id"),
@@ -190,7 +190,7 @@ pub fn task_classes(events: &[Event]) -> HashMap<String, Vec<String>> {
 /// over in-memory pipes, so these tests run the full scheduler without
 /// processes.
 fn loopback(
-    cfg: &RunConfig,
+    cfg: &SearchConfig,
     exec: &ExecutionConfig,
     resolver: SharedResolver,
 ) -> LoopbackTransport {
@@ -203,7 +203,7 @@ fn loopback(
 }
 
 /// Runs `cfg` into `store` with the stub generator and executor.
-pub fn run_into(store: &Store, cfg: &RunConfig, exec: &ExecutionConfig) -> Result<RunOutcome> {
+pub fn run_into(store: &Store, cfg: &SearchConfig, exec: &ExecutionConfig) -> Result<RunOutcome> {
     run_with(store, cfg, exec, stub_resolver())
 }
 
@@ -212,7 +212,7 @@ pub fn run_into(store: &Store, cfg: &RunConfig, exec: &ExecutionConfig) -> Resul
 /// not model.
 pub fn run_with(
     store: &Store,
-    cfg: &RunConfig,
+    cfg: &SearchConfig,
     exec: &ExecutionConfig,
     resolver: SharedResolver,
 ) -> Result<RunOutcome> {
@@ -239,7 +239,7 @@ pub fn run_with(
 /// the run.
 pub fn run_controlled(
     store: &Store,
-    cfg: &RunConfig,
+    cfg: &SearchConfig,
     exec: &ExecutionConfig,
     control: &RunControl,
 ) -> Result<RunOutcome> {
@@ -265,7 +265,7 @@ pub fn run_controlled(
 /// a test can spread one run across several transports on distinct hosts.
 pub fn run_pools(
     store: &Store,
-    cfg: &RunConfig,
+    cfg: &SearchConfig,
     exec: &ExecutionConfig,
     pools: &[WorkerPool<'_>],
 ) -> Result<RunOutcome> {
@@ -283,13 +283,13 @@ pub fn run_pools(
 
 /// The run id of `cfg` — the address of its config object, and the directory
 /// its journal and manifest live under.
-pub fn run_id(cfg: &RunConfig) -> RunId {
+pub fn search_id(cfg: &SearchConfig) -> SearchId {
     cfg.id()
 }
 
 /// The task keys `cfg` comprises, in generator order, derived on a throwaway
 /// store so a test can name a task without running it.
-pub fn task_keys(cfg: &RunConfig) -> Vec<TaskKey> {
+pub fn task_keys(cfg: &SearchConfig) -> Vec<TaskKey> {
     let (_dir, store) = temp_store();
     let generator = StubGenerator::new().expect("stub generator");
     StaticBatch::new(&generator, cfg, &environment(), &store)
@@ -299,7 +299,7 @@ pub fn task_keys(cfg: &RunConfig) -> Vec<TaskKey> {
 }
 
 /// The run's journal, parsed into typed events.
-pub fn journal_events(store: &Store, run: &RunId) -> Vec<Event> {
+pub fn journal_events(store: &Store, run: &SearchId) -> Vec<Event> {
     store
         .journal(run)
         .expect("read journal")

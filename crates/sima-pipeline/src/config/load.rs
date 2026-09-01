@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use sima_core::{Error, Hash, Result};
-use sima_model::{FormatId, RunConfig};
+use sima_model::{FormatId, SearchConfig};
 use sima_provider::Budget;
 use sima_scheduler::ExecutionConfig;
 use sima_store::Store;
@@ -28,13 +28,13 @@ use crate::domain_registry::{DomainEntry, DomainRegistry};
 use crate::payload::{PayloadSpec, ProgramTree, install};
 use crate::sdk::{Sdk, materialize};
 
-/// A `sima.toml`, loaded and translated: the identity-bearing [`RunConfig`], the
+/// A `sima.toml`, loaded and translated: the identity-bearing [`SearchConfig`], the
 /// operational [`ExecutionConfig`], the machines the run may draw on, and the
 /// store path resolved relative to the config file.
 #[derive(Debug)]
 pub struct LoadedConfig {
     /// The identity section, canonicalized; its id is the run id.
-    pub run: RunConfig,
+    pub run: SearchConfig,
     /// The parameters the run executes under, assembled from `[config]` and the
     /// orchestrator's worker layout; never hashed. Its `workers` is the
     /// orchestrator's pool size — `0` for an orchestrator that declares none —
@@ -497,7 +497,7 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
 
     use sima_domains::{StubBehavior, StubGeneratorConfig};
-    use sima_model::RunId;
+    use sima_model::SearchId;
     use sima_transport::SpawnPolicy;
 
     use super::*;
@@ -555,7 +555,7 @@ mod tests {
     }
 
     /// The run id `text` loads to.
-    fn id_of(text: &str) -> RunId {
+    fn id_of(text: &str) -> SearchId {
         load_text(text).expect("config loads").run.id()
     }
 
@@ -604,7 +604,7 @@ mod tests {
     // ---- The identity and global sections, unchanged by the machine model ----
 
     #[test]
-    fn the_reference_config_loads_into_the_expected_run_config() -> Result<()> {
+    fn the_reference_config_loads_into_the_expected_search_config() -> Result<()> {
         let loaded = load_text(BASE)?;
         assert_eq!(loaded.run.root_seed, 42);
         assert_eq!(loaded.run.format.as_str(), "stub.v1");
@@ -631,7 +631,7 @@ mod tests {
     }
 
     #[test]
-    fn loading_the_same_file_twice_yields_the_same_run_id() -> Result<()> {
+    fn loading_the_same_file_twice_yields_the_same_search_id() -> Result<()> {
         let dir = tempfile::tempdir().expect("temp dir");
         let path = write_config(dir.path(), "sima.toml", BASE);
         assert_eq!(load(&path)?.run.id(), load(&path)?.run.id());
@@ -659,7 +659,7 @@ mod tests {
     }
 
     #[test]
-    fn every_identity_field_changes_the_run_id() {
+    fn every_identity_field_changes_the_search_id() {
         // Every [run] field whose variation still names dispatchable ids: the
         // format and generator ids admit one value in this build, and the
         // model's own tests pin that they enter the id. The remaining fields
@@ -676,7 +676,7 @@ mod tests {
     }
 
     #[test]
-    fn operational_values_never_touch_the_run_id() {
+    fn operational_values_never_touch_the_search_id() {
         let base = id_of(BASE);
         for (from, to) in [
             ("store = \"./store\"", "store = \"./elsewhere\""),
@@ -738,7 +738,7 @@ mod tests {
     }
 
     #[test]
-    fn segments_loads_into_the_run_config() -> Result<()> {
+    fn segments_loads_into_the_search_config() -> Result<()> {
         let text = BASE.replace("root_seed = 42", "root_seed = 42\nsegments = 10");
         assert_eq!(load_text(&text)?.run.segments, NonZeroU64::new(10));
         assert_eq!(load_text(BASE)?.run.segments, None);
@@ -754,7 +754,7 @@ mod tests {
     }
 
     #[test]
-    fn segments_changes_the_run_id() {
+    fn segments_changes_the_search_id() {
         let base = id_of(BASE);
         let segmented = BASE.replace("root_seed = 42", "root_seed = 42\nsegments = 10");
         assert_ne!(base, id_of(&segmented));
@@ -796,7 +796,7 @@ mod tests {
     }
 
     #[test]
-    fn neither_cadence_touches_the_run_id() {
+    fn neither_cadence_touches_the_search_id() {
         let base = id_of(BASE);
         for addition in [
             "checkpoint_interval_ms = 1",
@@ -1603,7 +1603,7 @@ mod tests {
     // ---- The machine model never enters run identity ----
 
     #[test]
-    fn declaring_machines_never_changes_the_run_id() {
+    fn declaring_machines_never_changes_the_search_id() {
         let base = id_of(BASE);
         let declared = id_of(&format!(
             r#"{BASE}
@@ -1627,7 +1627,7 @@ mod tests {
     // ---- Where a format is answered from ----
 
     #[test]
-    fn a_format_routed_to_a_program_keeps_its_run_id() {
+    fn a_format_routed_to_a_program_keeps_its_search_id() {
         // The protocol carries the configuration, so the identity a run has is the
         // one it has by direct call: the same file with an entry and without it
         // is the same run.
@@ -2156,7 +2156,7 @@ mod tests {
     }
 
     #[test]
-    fn neither_payload_key_touches_the_run_id() {
+    fn neither_payload_key_touches_the_search_id() {
         // Both are operational: they decide how the program reaches another
         // machine, never what the run computes.
         let dir = tempfile::tempdir().expect("temp dir");

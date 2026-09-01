@@ -3,7 +3,7 @@
 //! An instance record lives only as long as its machine: clearing it is the
 //! last step of teardown, and with it the rate and lifetime of that rental
 //! would be gone. The spend ledger is where the rental's cost survives that
-//! removal, so a run's total spend stays readable across every machine it
+//! removal, so a search's total spend stays readable across every machine it
 //! ever rented, and across the process boundary a crash draws.
 //!
 //! Entries are operational and serde-serialized, like instance records, and
@@ -21,7 +21,7 @@ use crate::layout;
 use crate::ledger;
 use crate::store::Store;
 
-/// Characters an owner directory name is made of: the run id's hex form.
+/// Characters an owner directory name is made of: the search id's hex form.
 const OWNER_HEX_LEN: usize = 64;
 
 /// One closed rental: what a machine cost from its acquisition attempt's
@@ -36,7 +36,7 @@ pub struct SpendEntry {
     pub tag: String,
     /// The provider the machine was rented from.
     pub provider: String,
-    /// The owning run, full 64-character hex.
+    /// The owning search, full 64-character hex.
     pub owner: String,
     /// The rate the record carried at close.
     pub price_micro_usd_hour: u64,
@@ -104,7 +104,7 @@ fn entry_bytes(entry: &SpendEntry) -> Vec<u8> {
     text.into_bytes()
 }
 
-/// Accepts an owner in the run id's hex form, which becomes a directory
+/// Accepts an owner in the search id's hex form, which becomes a directory
 /// name under the spend ledger.
 fn validate_owner(owner: &str) -> Result<()> {
     if owner.len() == OWNER_HEX_LEN && owner.bytes().all(|b| b.is_ascii_hexdigit()) {
@@ -122,14 +122,14 @@ mod tests {
     use sima_core::{Error, Result};
 
     use crate::spend::SpendEntry;
-    use crate::testutil::{sample_run_config, temp_store};
+    use crate::testutil::{sample_search_config, temp_store};
 
     /// The owner for `root_seed`, in the hex form the ledger keys on.
     fn owner(root_seed: u64) -> String {
-        sample_run_config(root_seed).id().to_string()
+        sample_search_config(root_seed).id().to_string()
     }
 
-    /// An entry for `tag` started at `started_ms`, owned by the run for
+    /// An entry for `tag` started at `started_ms`, owned by the search for
     /// `root_seed`.
     fn entry(tag: &str, started_ms: u64, root_seed: u64) -> SpendEntry {
         SpendEntry {
@@ -273,7 +273,13 @@ mod tests {
     fn an_owner_outside_the_hex_form_is_rejected_by_put_and_list() -> Result<()> {
         let (_dir, store) = temp_store();
         // The owner becomes a directory name, so its form is enforced too.
-        for name in ["..", "", "not-a-run-id", &"a".repeat(63), &"g".repeat(64)] {
+        for name in [
+            "..",
+            "",
+            "not-a-search-id",
+            &"a".repeat(63),
+            &"g".repeat(64),
+        ] {
             let mut entry = entry("sima-tag-0", 1_700_000_000_000, 7);
             entry.owner = name.to_string();
             assert!(

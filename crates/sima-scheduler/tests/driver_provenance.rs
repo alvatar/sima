@@ -8,11 +8,11 @@ mod common;
 
 use std::sync::Arc;
 
-use common::{config, exec, journal_events, run_id, run_with, temp_store};
+use common::{config, exec, journal_events, run_with, search_id, temp_store};
 use sima_contracts::Executor;
 use sima_core::Result;
 use sima_domains::{StubBehavior, StubExecutor};
-use sima_model::RunConfig;
+use sima_model::SearchConfig;
 use sima_store::Store;
 use sima_trace::{Event, Record};
 use sima_transport::loopback::SharedResolver;
@@ -32,13 +32,13 @@ fn reporting_resolver(device: &str, driver: &str) -> SharedResolver {
 /// session whose child on (`host`, `device`) reported `driver`.
 fn seed_bound(
     store: &Store,
-    cfg: &RunConfig,
+    cfg: &SearchConfig,
     host: &str,
     device: &str,
     driver: &str,
 ) -> Result<()> {
-    store.create_run(cfg)?;
-    let mut writer = store.journal_writer(&run_id(cfg))?;
+    store.create_search(cfg)?;
+    let mut writer = store.journal_writer(&search_id(cfg))?;
     writer.append(
         &Record::stamped(Event::WorkerBound {
             worker: 0,
@@ -52,8 +52,8 @@ fn seed_bound(
 }
 
 /// The `DriverChanged` events in `cfg`'s journal, as (host, device, from, to).
-fn changes(store: &Store, cfg: &RunConfig) -> Vec<(String, String, String, String)> {
-    journal_events(store, &run_id(cfg))
+fn changes(store: &Store, cfg: &SearchConfig) -> Vec<(String, String, String, String)> {
+    journal_events(store, &search_id(cfg))
         .into_iter()
         .filter_map(|event| match event {
             Event::DriverChanged {
@@ -92,7 +92,7 @@ fn a_changed_driver_is_journaled_and_the_run_proceeds() -> Result<()> {
             "580.65.6".to_string(),
         )]
     );
-    let events = journal_events(&store, &run_id(&cfg));
+    let events = journal_events(&store, &search_id(&cfg));
     assert!(
         events
             .iter()

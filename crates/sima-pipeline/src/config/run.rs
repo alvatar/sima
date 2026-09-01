@@ -1,4 +1,4 @@
-//! The identity translation: `[run]` into the [`RunConfig`] whose hash is the
+//! The identity translation: `[run]` into the [`SearchConfig`] whose hash is the
 //! run id.
 //!
 //! This is the only section that enters a run's identity, so it is the only one
@@ -10,19 +10,19 @@ use std::num::NonZeroU64;
 use std::path::Path;
 
 use sima_core::{Error, Result};
-use sima_model::{FormatId, GeneratorConfig, GeneratorId, RunConfig};
+use sima_model::{FormatId, GeneratorConfig, GeneratorId, SearchConfig};
 
 use super::file::RunSection;
 use crate::domain_registry::{DomainRegistry, section_text};
 
-/// Translates the `[run]` section into the canonical [`RunConfig`] whose hash is
+/// Translates the `[run]` section into the canonical [`SearchConfig`] whose hash is
 /// the run id, dispatching the generator and domain translations that own the
 /// opaque tables.
 pub(super) fn resolve_run(
     path: &Path,
     section: RunSection,
     domains: &DomainRegistry,
-) -> Result<RunConfig> {
+) -> Result<SearchConfig> {
     let root_seed = u64::try_from(section.root_seed).map_err(|_| {
         Error::Validation(format!(
             "{}: root_seed must be non-negative, got {}",
@@ -56,7 +56,7 @@ pub(super) fn resolve_run(
         .translate_config(&section_text(&section.generator.rest)?)?;
     let params =
         source.translate_config(&format, &section_text(&section.params)?, segments.is_some())?;
-    Ok(RunConfig {
+    Ok(SearchConfig {
         root_seed,
         segments,
         format,

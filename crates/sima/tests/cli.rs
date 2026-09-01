@@ -37,9 +37,12 @@ fn run_finalizes_a_succeeding_config_and_writes_the_manifest() {
     let output = sima(&["run", config.to_str().expect("utf-8 path")]);
     assert_eq!(output.status.code(), Some(0), "{output:?}");
 
-    let run_id = load(&config).expect("load config").run.id().to_string();
+    let search_id = load(&config).expect("load config").run.id().to_string();
     let text = stdout(&output);
-    assert!(text.contains(&run_id[..12]), "stdout names the run: {text}");
+    assert!(
+        text.contains(&search_id[..12]),
+        "stdout names the run: {text}"
+    );
     assert!(text.contains("finalized"), "stdout reports the end: {text}");
     assert!(manifest_of(&config).is_some(), "the manifest exists");
 }
@@ -683,7 +686,7 @@ fn rm_removes_an_unfinalized_run() {
 }
 
 #[test]
-fn a_second_rm_reports_run_not_found_and_leaves_no_run_dir() {
+fn a_second_rm_reports_run_not_found_and_leaves_no_search_dir() {
     let dir = tempfile::tempdir().expect("temp dir");
     let config = write_config(dir.path(), r#""succeed", "succeed""#);
     let path = config.to_str().expect("utf-8 path");
@@ -700,8 +703,8 @@ fn a_second_rm_reports_run_not_found_and_leaves_no_run_dir() {
     );
     // The failed rm mutated nothing: no ghost run directory survives.
     let runs = dir.path().join("store").join("runs");
-    let run_dirs = std::fs::read_dir(&runs).expect("read runs dir").count();
-    assert_eq!(run_dirs, 0, "a failed rm left a ghost run directory");
+    let search_dirs = std::fs::read_dir(&runs).expect("read runs dir").count();
+    assert_eq!(search_dirs, 0, "a failed rm left a ghost run directory");
 }
 
 #[test]

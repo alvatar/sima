@@ -2,7 +2,7 @@
 
 use sima_contracts::Generator;
 use sima_core::{Result, prng};
-use sima_model::{Environment, RunConfig, TaskIdentity, TaskKey};
+use sima_model::{Environment, SearchConfig, TaskIdentity, TaskKey};
 use sima_store::Store;
 
 use crate::task_source::{RunnableTask, TaskSource, generate_specs};
@@ -33,7 +33,7 @@ impl StaticBatch {
     /// unfinished work.
     pub fn new(
         generator: &dyn Generator,
-        config: &RunConfig,
+        config: &SearchConfig,
         environment: &Environment,
         store: &Store,
     ) -> Result<StaticBatch> {
@@ -105,8 +105,8 @@ mod tests {
     use sima_model::{GeneratorConfig, Params};
 
     /// A run config whose generator programs the given behaviors.
-    fn config(behaviors: Vec<StubBehavior>) -> Result<RunConfig> {
-        Ok(RunConfig {
+    fn config(behaviors: Vec<StubBehavior>) -> Result<SearchConfig> {
+        Ok(SearchConfig {
             root_seed: 7,
             segments: None,
             format: sima_model::FormatId::new("stub.v1")?,

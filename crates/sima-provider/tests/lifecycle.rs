@@ -5,13 +5,13 @@
 use std::time::{Duration, Instant};
 
 use sima_core::{Error, Result};
-use sima_model::{FormatId, GeneratorConfig, GeneratorId, Params, RunConfig, RunId};
+use sima_model::{FormatId, GeneratorConfig, GeneratorId, Params, SearchConfig, SearchId};
 use sima_provider::stub::StubProvider;
 use sima_provider::{
     AcquireLimits, Budget, Constraints, Cost, InstanceId, Objective, Offer, OfferId, Price,
     Provider, ReconcileScope, UNREPORTED, Verdict, acquire, assess, reconcile, spend_report,
 };
-use sima_store::{Rental, RunLock, Store};
+use sima_store::{Rental, SearchLock, Store};
 
 /// An offer at `price` micro-USD per hour, ample enough for constraints
 /// that disqualify nothing.
@@ -32,8 +32,8 @@ fn offer(id: &str, price: u64) -> Offer {
 }
 
 /// A run to own acquisitions with, varying by `root_seed`.
-fn owner(root_seed: u64) -> RunId {
-    RunConfig {
+fn owner(root_seed: u64) -> SearchId {
+    SearchConfig {
         root_seed,
         segments: None,
         format: FormatId::new("stub.v1").expect("format id"),
@@ -69,8 +69,8 @@ fn contested_market() -> StubProvider {
 fn rent<'a, P: Provider>(
     provider: &'a P,
     store: &'a Store,
-    run: &RunId,
-) -> Result<(sima_provider::InstanceGuard<'a, P>, RunLock)> {
+    run: &SearchId,
+) -> Result<(sima_provider::InstanceGuard<'a, P>, SearchLock)> {
     rent_within(provider, store, run, &Budget::default())
 }
 
@@ -78,10 +78,10 @@ fn rent<'a, P: Provider>(
 fn rent_within<'a, P: Provider>(
     provider: &'a P,
     store: &'a Store,
-    run: &RunId,
+    run: &SearchId,
     budget: &Budget,
-) -> Result<(sima_provider::InstanceGuard<'a, P>, RunLock)> {
-    let lock = store.acquire_run_lock(run)?;
+) -> Result<(sima_provider::InstanceGuard<'a, P>, SearchLock)> {
+    let lock = store.acquire_search_lock(run)?;
     let guard = acquire(
         provider,
         store,

@@ -8,13 +8,13 @@ use std::time::Duration;
 
 use common::{
     committed_count, config, exec, exec_with_timeout, failed_count, faulted_count, journal_events,
-    lease_expired_count, leased_count, rejected_count, retried_count, run_id, run_into, run_with,
-    task_keys, temp_store,
+    lease_expired_count, leased_count, rejected_count, retried_count, run_into, run_with,
+    search_id, task_keys, temp_store,
 };
 use sima_contracts::{Checkpoint, ExecutionContext, Executor, Outcome, TaskInput};
 use sima_core::{Error, Result};
 use sima_domains::{StubBehavior, StubExecutor, StubProgram};
-use sima_model::{FormatId, RunConfig};
+use sima_model::{FormatId, SearchConfig};
 use sima_scheduler::{Event, RunOutcome};
 use sima_store::Store;
 use sima_transport::loopback::SharedResolver;
@@ -34,7 +34,7 @@ fn flaky_task_retries_then_commits() -> Result<()> {
         RunOutcome::Finalized { .. }
     ));
 
-    let run = run_id(&cfg);
+    let run = search_id(&cfg);
     let events = journal_events(&store, &run);
     // Two failed attempts, each re-enqueued, then one commit; never rejected.
     assert_eq!(failed_count(&events, &key), 2);
@@ -67,7 +67,7 @@ fn exhausted_retries_fail_the_run_and_leave_the_store_resumable() -> Result<()> 
         other => panic!("expected Failed, got {other:?}"),
     }
 
-    let run = run_id(&cfg);
+    let run = search_id(&cfg);
     // No manifest: the run did not finalize.
     assert!(store.manifest(&run)?.is_none());
     // The sibling that committed remains committed — resumable progress.
@@ -87,7 +87,7 @@ fn a_rejected_candidate_terminates_without_retry() -> Result<()> {
         other => panic!("expected Failed, got {other:?}"),
     }
 
-    let run = run_id(&cfg);
+    let run = search_id(&cfg);
     let events = journal_events(&store, &run);
     // Exactly one rejection, at the first attempt, and never retried or failed.
     assert_eq!(rejected_count(&events, &key), 1);
@@ -113,7 +113,7 @@ fn a_panic_is_isolated_and_classified_as_a_rejection() -> Result<()> {
         other => panic!("expected Failed, got {other:?}"),
     }
 
-    let run = run_id(&cfg);
+    let run = search_id(&cfg);
     let events = journal_events(&store, &run);
     assert_eq!(rejected_count(&events, &panic_key), 1);
     // The rejection reason preserves the panic payload.
@@ -167,7 +167,7 @@ fn resume_reruns_only_the_unfinished_work() -> Result<()> {
         RunOutcome::Finalized { .. }
     ));
 
-    let fixed_run = run_id(&fixed);
+    let fixed_run = search_id(&fixed);
     let events = journal_events(&store, &fixed_run);
     // X was already committed, so the fixed run never leases it; only the
     // fixed Y runs.
@@ -201,7 +201,7 @@ fn a_run_reports_the_commits_its_store_already_holds() -> Result<()> {
     ));
 
     // Both sessions appended to one journal, in order.
-    let started: Vec<(usize, usize)> = journal_events(&store, &run_id(&cfg))
+    let started: Vec<(usize, usize)> = journal_events(&store, &search_id(&cfg))
         .iter()
         .filter_map(|e| match e {
             Event::RunStarted {
@@ -233,7 +233,7 @@ fn an_overrunning_task_is_preempted_and_exhausts_its_attempts() -> Result<()> {
         other => panic!("expected Failed, got {other:?}"),
     }
 
-    let run = run_id(&cfg);
+    let run = search_id(&cfg);
     let events = journal_events(&store, &run);
     // Every attempt expired and failed transiently; the first was retried,
     // the second exhausted the cap; nothing committed.
@@ -259,7 +259,7 @@ fn an_unbounded_timeout_finalizes_without_expiry_reports() -> Result<()> {
         RunOutcome::Finalized { .. }
     ));
 
-    let run = run_id(&cfg);
+    let run = search_id(&cfg);
     let events = journal_events(&store, &run);
     assert_eq!(lease_expired_count(&events, &key), 0);
     Ok(())
@@ -281,7 +281,7 @@ fn queued_is_journaled_before_the_first_lease() -> Result<()> {
             run_into(&store, &cfg, &exec(8, 1, 1_000))?,
             RunOutcome::Finalized { .. }
         ));
-        let events = journal_events(&store, &run_id(&cfg));
+        let events = journal_events(&store, &search_id(&cfg));
         for key in &keys {
             let task = key.to_string();
             let queued = events
@@ -311,7 +311,7 @@ fn every_journal_line_carries_a_timestamp() -> Result<()> {
         run_into(&store, &cfg, &exec(2, 3, 1_000))?,
         RunOutcome::Finalized { .. }
     ));
-    for line in store.journal(&run_id(&cfg))? {
+    for line in store.journal(&search_id(&cfg))? {
         let record = sima_trace::Record::from_line(&line)?;
         assert!(record.ts_ms > 0, "unstamped line: {line}");
     }
@@ -403,9 +403,9 @@ fn an_executor_fault_fails_the_run_with_an_error() -> Result<()> {
         Ok(_) => panic!("expected an infrastructure fault, got a run outcome"),
     }
     // No manifest: the faulted run did not finalize.
-    assert!(store.manifest(&run_id(&cfg))?.is_none());
+    assert!(store.manifest(&search_id(&cfg))?.is_none());
     // The fault is journaled once, so it is not hidden behind the run error.
-    let events = journal_events(&store, &run_id(&cfg));
+    let events = journal_events(&store, &search_id(&cfg));
     assert_eq!(faulted_count(&events, &key), 1);
     Ok(())
 }
@@ -427,7 +427,7 @@ fn a_fault_preserves_already_committed_siblings() -> Result<()> {
         Ok(_) => panic!("expected an infrastructure fault, got a run outcome"),
     }
 
-    assert!(store.manifest(&run_id(&cfg))?.is_none());
+    assert!(store.manifest(&search_id(&cfg))?.is_none());
     // The sibling committed before the fault remains committed.
     assert!(store.record(&succeed_key)?.is_some());
     // The faulting candidate never committed.
@@ -438,14 +438,14 @@ fn a_fault_preserves_already_committed_siblings() -> Result<()> {
 /// A fresh store whose journal for `cfg` is a symlink to `/dev/full`: the
 /// writer opens it, but every append fails with `ENOSPC`, so the journal sink
 /// holds an error from the first event. The run directory is created first so
-/// `run()`'s own `create_run` is a reopen.
-fn store_with_a_dead_journal(cfg: &RunConfig) -> Result<(tempfile::TempDir, Store)> {
+/// `run()`'s own `create_search` is a reopen.
+fn store_with_a_dead_journal(cfg: &SearchConfig) -> Result<(tempfile::TempDir, Store)> {
     let (dir, store) = temp_store();
-    store.create_run(cfg)?;
+    store.create_search(cfg)?;
     let journal = dir
         .path()
         .join("runs")
-        .join(run_id(cfg).to_string())
+        .join(search_id(cfg).to_string())
         .join("journal");
     std::os::unix::fs::symlink("/dev/full", &journal).expect("symlink journal to /dev/full");
     Ok((dir, store))
@@ -479,6 +479,6 @@ fn a_finalized_run_surfaces_the_journal_fault() -> Result<()> {
         Ok(_) => panic!("expected the journal fault to surface"),
     }
     // The finalize completed before the journal fault surfaced.
-    assert!(store.manifest(&run_id(&cfg))?.is_some());
+    assert!(store.manifest(&search_id(&cfg))?.is_some());
     Ok(())
 }

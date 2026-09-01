@@ -246,7 +246,7 @@ fn stalling_ssh_shim(dir: &Path, protocol: u32) -> PathBuf {
         &mut bytes,
         &sima_pipeline::FollowFrame::Hello {
             protocol,
-            run: sima_model::RunId::from_hash(sima_core::hash_bytes(b"a stalling far side")),
+            run: sima_model::SearchId::from_hash(sima_core::hash_bytes(b"a stalling far side")),
             format: sima_model::FormatId::new("stub.v1").expect("format id"),
             workers: 1,
             holder: None,

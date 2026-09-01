@@ -5,7 +5,7 @@ use std::time::Duration;
 use sima_contracts::DeviceBinding;
 use sima_core::{Error, Hash, Result};
 use sima_domains::devices::DeviceInfo;
-use sima_model::{FormatId, RunId};
+use sima_model::{FormatId, SearchId};
 use sima_scheduler::{ExecutionConfig, RunControl, RunOutcome, WorkerPool, worker_slots};
 use sima_store::Store;
 use sima_transport::DeviceProbe;
@@ -134,12 +134,12 @@ pub fn orchestrate(
         )?)
     };
     let store = Store::open(&config.store)?;
-    let lock = store.acquire_run_lock(&run)?;
+    let lock = store.acquire_search_lock(&run)?;
     // Registering the run gives it a journal before any machine is asked for,
     // so what putting the run on its machines takes is journaled where the
     // work will be. The driver performs the same registration, idempotently,
     // when it takes over.
-    store.create_run(&config.run)?;
+    store.create_search(&config.run)?;
     // The build serving a config-routed format is compared against the one the
     // run was last driven by, and recorded, under the held lock: the journal
     // read and the append race no other orchestrator. A format this build
@@ -521,7 +521,7 @@ fn derives_workers(config: &LoadedConfig) -> bool {
 /// inside it — the same path a machine of yours follows, minus the ssh hop.
 fn local_pool(
     config: &LoadedConfig,
-    run: &RunId,
+    run: &SearchId,
     execution: &ExecutionConfig,
     source: &dyn DomainSource,
     program: &WorkerProgram,
@@ -590,7 +590,7 @@ fn local_pool(
 /// runs and what it is expected to answer.
 fn owned_pools(
     machines: &[OwnedMachine<'_>],
-    run: &RunId,
+    run: &SearchId,
     execution: &ExecutionConfig,
     program: &WorkerProgram,
     delivery: Option<&ProgramDelivery>,
@@ -637,7 +637,7 @@ fn container_pool(
     container: &Container,
     pool: &Pool,
     index: usize,
-    run: &RunId,
+    run: &SearchId,
     execution: &ExecutionConfig,
     program: &WorkerProgram,
     machine: &MachineProgram<'_>,

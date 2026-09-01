@@ -47,7 +47,7 @@
 //! records are left untouched and unreported.
 
 use sima_core::{Error, Result};
-use sima_model::RunId;
+use sima_model::SearchId;
 use sima_store::{InstanceRecord, InstanceRecordState, Rental, Store};
 
 use crate::guard::{close_out, teardown};
@@ -206,7 +206,7 @@ fn reaping<P: Provider + ?Sized>(
 /// answers on the machine holding it, which is the machine acquisition and
 /// reconciliation both run on.
 fn owner_alive(store: &Store, record: &InstanceRecord) -> Result<bool> {
-    let owner = RunId::from_hex(&record.owner).map_err(|_| {
+    let owner = SearchId::from_hex(&record.owner).map_err(|_| {
         Error::Corruption(format!(
             "instance record {} names a malformed owner {:?}",
             record.tag, record.owner
@@ -451,7 +451,7 @@ mod tests {
         store.put_instance(&record("sima-tag-0", live_state("i-1")))?;
         // The owner holds its orchestrator lock for the length of the pass,
         // which is what a running run looks like.
-        let _lock = store.acquire_run_lock(&sample_run(7))?;
+        let _lock = store.acquire_search_lock(&sample_run(7))?;
         let report = reconcile(&stub, &store, ReconcileScope::Workers)?;
         assert!(report.destroyed.is_empty());
         assert!(report.cleared.is_empty());
@@ -509,7 +509,7 @@ mod tests {
         let stub = StubProvider::new(Vec::new())
             .with_instance(InstanceId("i-4".to_string()), "sima-tag-0");
         store.put_instance(&record("sima-tag-0", InstanceRecordState::Intent))?;
-        let _lock = store.acquire_run_lock(&sample_run(7))?;
+        let _lock = store.acquire_search_lock(&sample_run(7))?;
         let report = reconcile(&stub, &store, ReconcileScope::Workers)?;
         assert!(report.destroyed.is_empty());
         assert!(report.cleared.is_empty());

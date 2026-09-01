@@ -3,7 +3,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use sima_model::RunId;
+use sima_model::SearchId;
 use sima_scheduler::{Event, Record};
 
 use crate::task_history::worker_bindings;
@@ -22,7 +22,7 @@ use crate::task_history::worker_bindings;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunTimeline {
     /// The run the metrics describe.
-    pub run: RunId,
+    pub run: SearchId,
     /// The session's task count, from its `RunStarted` — the denominator of
     /// the retry rates.
     pub tasks: usize,
@@ -111,7 +111,7 @@ struct WorkerAccumulator {
 /// metrics of `run`, over records from any source: a journal read locally,
 /// or a stream from the host that drives the run. Every figure is an infrastructure fact the journal states, so no
 /// domain is consulted and the merge cannot fail.
-pub fn timeline_records(run: RunId, records: &[Record]) -> RunTimeline {
+pub fn timeline_records(run: SearchId, records: &[Record]) -> RunTimeline {
     let bindings = worker_bindings(records);
     let committed = records
         .iter()
@@ -310,8 +310,8 @@ mod tests {
 
     use crate::fixtures::{journal_with, stub_config};
 
-    fn run_id() -> RunId {
-        RunId::from_hash(hash_bytes(b"timeline test run"))
+    fn search_id() -> SearchId {
+        SearchId::from_hash(hash_bytes(b"timeline test run"))
     }
 
     /// Wraps an event as a record stamped `ts_ms`.
@@ -415,7 +415,7 @@ mod tests {
 
     /// The metrics `records` merge to.
     fn merged(records: &[Record]) -> RunTimeline {
-        timeline_records(run_id(), records)
+        timeline_records(search_id(), records)
     }
 
     /// The metrics of the worker `id`, which the merge must have named.

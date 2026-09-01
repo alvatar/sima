@@ -96,7 +96,7 @@ mod tests {
     }
 
     /// A `RunStarted` line for the run.
-    fn started(run: &sima_model::RunId, tasks: usize) -> Record {
+    fn started(run: &sima_model::SearchId, tasks: usize) -> Record {
         rec(Event::RunStarted {
             run: run.to_string(),
             tasks,

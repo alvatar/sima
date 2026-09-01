@@ -101,7 +101,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let store = Store::open(dir.path())?;
         let run = stub_config()?;
-        store.create_run(&run)?;
+        store.create_search(&run)?;
         let mut writer = store.journal_writer(&run.id())?;
         writer.append(&committed("aa").to_line()?)?;
         let config = loaded(dir.path().to_path_buf())?;
@@ -115,7 +115,7 @@ mod tests {
         assert_eq!(feed.poll()?, [committed("aa")]);
         assert_eq!(feed.poll()?, Vec::<Record>::new());
         assert_eq!(feed.holder()?, None);
-        let lock = store.acquire_run_lock(&run.id())?;
+        let lock = store.acquire_search_lock(&run.id())?;
         assert!(feed.holder()?.is_some(), "the taken lock has a holder");
         drop(lock);
         Ok(())

@@ -16,7 +16,7 @@ use std::collections::HashSet;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use sima_core::Result;
-use sima_model::RunId;
+use sima_model::SearchId;
 use sima_store::{SpendEntry, Store};
 
 use crate::offer::Price;
@@ -120,7 +120,7 @@ pub struct OpenSpend {
 /// A record whose rental already has an entry is the entry's own, pending
 /// removal, and is left out — the entry is what that rental cost. Records
 /// of every provider count: the budget is one pool of money per run.
-pub fn spend_report(store: &Store, owner: &RunId, now_ms: u64) -> Result<SpendReport> {
+pub fn spend_report(store: &Store, owner: &SearchId, now_ms: u64) -> Result<SpendReport> {
     let owner = owner.to_string();
     let entries = store.spend_entries(&owner)?;
     let closed: HashSet<(&str, u64)> = entries
@@ -162,7 +162,7 @@ pub fn spend_report(store: &Store, owner: &RunId, now_ms: u64) -> Result<SpendRe
 /// deadline, so a budget exactly consumed admits nothing further. A run
 /// that has rented nothing has no anchor and therefore no deadline. When
 /// both limits are reached, the spend is the one reported.
-pub fn assess(store: &Store, owner: &RunId, budget: &Budget, now_ms: u64) -> Result<Verdict> {
+pub fn assess(store: &Store, owner: &SearchId, budget: &Budget, now_ms: u64) -> Result<Verdict> {
     let report = spend_report(store, owner, now_ms)?;
     if let Some(cap) = budget.max_spend
         && report.total >= cap
@@ -220,7 +220,7 @@ mod tests {
     use std::time::Duration;
 
     use sima_core::Result;
-    use sima_model::RunId;
+    use sima_model::SearchId;
     use sima_store::{InstanceRecord, InstanceRecordState, Rental, SpendEntry, Store};
 
     use super::{Budget, Cost, Exhaustion, Verdict, assess, spend_report};
@@ -232,7 +232,7 @@ mod tests {
 
     /// A live record for `tag` owned by `owner`, charged at `rate` from
     /// `created_ms`.
-    fn record(tag: &str, owner: &RunId, rate: u64, created_ms: u64) -> InstanceRecord {
+    fn record(tag: &str, owner: &SearchId, rate: u64, created_ms: u64) -> InstanceRecord {
         InstanceRecord {
             tag: tag.to_string(),
             provider: "stub".to_string(),
@@ -247,7 +247,7 @@ mod tests {
 
     /// A closed rental for `tag` owned by `owner`, started at `started_ms`
     /// and costing `cost`.
-    fn entry(tag: &str, owner: &RunId, started_ms: u64, cost: u64) -> SpendEntry {
+    fn entry(tag: &str, owner: &SearchId, started_ms: u64, cost: u64) -> SpendEntry {
         SpendEntry {
             tag: tag.to_string(),
             provider: "stub".to_string(),
@@ -260,7 +260,7 @@ mod tests {
     }
 
     /// The total `owner` has spent as of `now_ms`.
-    fn total(store: &Store, owner: &RunId, now_ms: u64) -> Result<Cost> {
+    fn total(store: &Store, owner: &SearchId, now_ms: u64) -> Result<Cost> {
         Ok(spend_report(store, owner, now_ms)?.total)
     }
 

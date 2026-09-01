@@ -2,7 +2,7 @@
 //!
 //! [`task_keys`] is the pipeline half of the scheduler's own derivation: it
 //! reads the run's environment and generator from the source that answers for
-//! its format, and hands them to [`sima_scheduler::run_keys`]. It is what a
+//! its format, and hands them to [`sima_scheduler::search_keys`]. It is what a
 //! side of a sync that holds the config derives — no key list crosses the
 //! wire, so the sync protocol stays as it is.
 //!
@@ -15,7 +15,7 @@
 use std::collections::BTreeSet;
 
 use sima_core::Result;
-use sima_model::{RunId, TaskKey};
+use sima_model::{SearchId, TaskKey};
 use sima_scheduler::Record;
 use sima_store::Store;
 
@@ -34,7 +34,7 @@ pub fn task_keys(config: &LoadedConfig, store: &Store) -> Result<Vec<TaskKey>> {
     let source = config.domains.source(&config.run.format);
     let environment = source.environment(&config.run.format)?;
     let generator = source.generator(&config.run.generator.id, &config.run.format)?;
-    sima_scheduler::run_keys(store, &config.run, &environment, generator.as_ref())
+    sima_scheduler::search_keys(store, &config.run, &environment, generator.as_ref())
 }
 
 /// The task keys `run`'s journal names in `store`: every key a lifecycle event
@@ -52,7 +52,7 @@ pub fn task_keys(config: &LoadedConfig, store: &Store) -> Result<Vec<TaskKey>> {
 /// tasks ran. A task field that is not a key is skipped for the same reason —
 /// what it cost is one key not advertised, which leaves the run resumable,
 /// while refusing would fail a whole transfer over one damaged line.
-pub(crate) fn journaled_keys(store: &Store, run: &RunId) -> Result<Vec<TaskKey>> {
+pub(crate) fn journaled_keys(store: &Store, run: &SearchId) -> Result<Vec<TaskKey>> {
     let mut keys = BTreeSet::new();
     for line in store.journal(run)? {
         let Ok(record) = Record::from_line(&line) else {
@@ -109,7 +109,7 @@ mod tests {
         let generator = StubGenerator::new()?;
         assert_eq!(
             task_keys(&loaded, &store)?,
-            sima_scheduler::run_keys(
+            sima_scheduler::search_keys(
                 &store,
                 &loaded.run,
                 &crate::fixtures::stub_environment(),
@@ -257,7 +257,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let store = Store::open(dir.path())?;
         let loaded = load_str(&config(None));
-        store.create_run(&loaded.run)?;
+        store.create_search(&loaded.run)?;
         store.journal_writer(&loaded.run.id())?.append(
             &sima_scheduler::Record::stamped(sima_scheduler::Event::Queued {
                 task: "not a key".to_string(),
@@ -275,7 +275,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let store = Store::open(dir.path())?;
         let loaded = load_str(&config(None));
-        store.create_run(&loaded.run)?;
+        store.create_search(&loaded.run)?;
         let mut writer = store.journal_writer(&loaded.run.id())?;
         for event in [
             sima_scheduler::Event::RunStarted {

@@ -9,7 +9,7 @@
 //!
 //! **The config is the local one with everything about here removed.** `[run]`
 //! travels verbatim, so the run id is preserved by construction — identity is
-//! derived from the translated `RunConfig`, not from the file text, and a
+//! derived from the translated `SearchConfig`, not from the file text, and a
 //! round trip through the parser and serializer preserves every value.
 //! `[config]` travels with its store path rewritten to a relative one, which
 //! the load resolves against the config file's own directory. Everything
@@ -38,7 +38,7 @@ use std::path::Path;
 
 use sima_core::{Error, Hash, Result};
 use sima_domains::devices::DeviceInfo;
-use sima_model::RunId;
+use sima_model::SearchId;
 
 use crate::config::{HostForm, OwnedHost, Pool};
 use crate::devices::usable;
@@ -69,12 +69,12 @@ pub(crate) struct FarLayout {
     /// The run's directory on the destination.
     dir: String,
     /// The run living there, which the far store is addressed by.
-    run: RunId,
+    run: SearchId,
 }
 
 impl FarLayout {
     /// The layout for `run` under a destination's `root`.
-    pub(crate) fn new(root: &str, run: &RunId) -> FarLayout {
+    pub(crate) fn new(root: &str, run: &SearchId) -> FarLayout {
         FarLayout {
             dir: format!("{}/{run}", root.trim_end_matches('/')),
             run: *run,
@@ -99,7 +99,7 @@ impl FarLayout {
     }
 
     /// The run the far side is driving, which addresses its store.
-    pub(crate) fn run(&self) -> &RunId {
+    pub(crate) fn run(&self) -> &SearchId {
         &self.run
     }
 
@@ -437,7 +437,7 @@ fn probed_classes(devices: &[DeviceInfo]) -> Vec<(String, i64)> {
 mod tests {
     use sima_contracts::DeviceClass;
     use sima_domains::devices::DeviceType;
-    use sima_model::RunId;
+    use sima_model::SearchId;
 
     use std::collections::BTreeSet;
 
@@ -614,8 +614,8 @@ mod tests {
     // ---- The directory ----
 
     #[test]
-    fn the_layout_is_derived_from_the_run_id() {
-        let run = RunId::from_hash(sima_core::hash_bytes(b"a run"));
+    fn the_layout_is_derived_from_the_search_id() {
+        let run = SearchId::from_hash(sima_core::hash_bytes(b"a run"));
         let layout = FarLayout::new("~/sima-runs", &run);
         assert_eq!(layout.dir(), format!("~/sima-runs/{run}"));
         assert_eq!(layout.config(), format!("~/sima-runs/{run}/sima.toml"));
@@ -629,7 +629,7 @@ mod tests {
         // to look where the far store actually keeps it, so the path is the
         // store's layout applied to the far root — never a second spelling of
         // it here.
-        let run = RunId::from_hash(sima_core::hash_bytes(b"a run"));
+        let run = SearchId::from_hash(sima_core::hash_bytes(b"a run"));
         let layout = FarLayout::new("~/sima-runs", &run);
         assert_eq!(
             layout.journal(),
@@ -643,7 +643,7 @@ mod tests {
 
     #[test]
     fn a_trailing_separator_on_the_root_yields_no_double_separator() {
-        let run = RunId::from_hash(sima_core::hash_bytes(b"a run"));
+        let run = SearchId::from_hash(sima_core::hash_bytes(b"a run"));
         assert_eq!(
             FarLayout::new("/scratch/", &run).dir(),
             FarLayout::new("/scratch", &run).dir()
@@ -652,8 +652,8 @@ mod tests {
 
     #[test]
     fn two_runs_under_one_root_never_collide() {
-        let first = RunId::from_hash(sima_core::hash_bytes(b"first"));
-        let second = RunId::from_hash(sima_core::hash_bytes(b"second"));
+        let first = SearchId::from_hash(sima_core::hash_bytes(b"first"));
+        let second = SearchId::from_hash(sima_core::hash_bytes(b"second"));
         assert_ne!(
             FarLayout::new("~/sima-runs", &first).dir(),
             FarLayout::new("~/sima-runs", &second).dir()

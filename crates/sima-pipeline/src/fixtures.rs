@@ -14,7 +14,9 @@ use std::time::Duration;
 use sima_contracts::Executor;
 use sima_core::Result;
 use sima_domains::{StubExecutor, StubGenerator};
-use sima_model::{Environment, FormatId, GeneratorConfig, GeneratorId, Params, RunConfig, TaskKey};
+use sima_model::{
+    Environment, FormatId, GeneratorConfig, GeneratorId, Params, SearchConfig, TaskKey,
+};
 use sima_provider::Budget;
 use sima_scheduler::{
     Event, ExecutionConfig, Record, RunControl, RunOutcome, WorkerPool, run, worker_slots,
@@ -48,8 +50,8 @@ pub(crate) fn file_payload() -> (tempfile::TempDir, PayloadSpec) {
 }
 
 /// A minimal stub run config; its id addresses the test's run.
-pub(crate) fn stub_config() -> Result<RunConfig> {
-    Ok(RunConfig {
+pub(crate) fn stub_config() -> Result<SearchConfig> {
+    Ok(SearchConfig {
         root_seed: 1,
         segments: None,
         format: FormatId::new("stub.v1")?,
@@ -156,7 +158,7 @@ pub(crate) fn served_run(
     let path = served_config(dir);
     let loaded = crate::config::load(&path)?;
     let store = Store::open(&loaded.store)?;
-    store.create_run(&loaded.run)?;
+    store.create_search(&loaded.run)?;
     let mut writer = store.journal_writer(&loaded.run.id())?;
     for record in records {
         writer.append(&record.to_line()?)?;
@@ -225,7 +227,7 @@ impl Executor for ParkedTail {
 /// machine's load.
 pub(crate) fn drive_run(
     store: &Store,
-    config: &RunConfig,
+    config: &SearchConfig,
     stop_after: Option<usize>,
 ) -> RunOutcome {
     let exec = ExecutionConfig::new(1, 1, Duration::MAX, Duration::MAX, Duration::MAX, None)
@@ -319,7 +321,7 @@ pub(crate) fn journal_with(records: &[Record]) -> Result<(tempfile::TempDir, Loa
     let dir = tempfile::tempdir().expect("temp dir");
     let store = Store::open(dir.path())?;
     let config = stub_config()?;
-    store.create_run(&config)?;
+    store.create_search(&config)?;
     let mut writer = store.journal_writer(&config.id())?;
     for record in records {
         writer.append(&record.to_line()?)?;

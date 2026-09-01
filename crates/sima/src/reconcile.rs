@@ -105,7 +105,7 @@ mod tests {
     use std::cell::Cell;
 
     use sima_core::Result;
-    use sima_model::{FormatId, GeneratorConfig, GeneratorId, Params, RunConfig, RunId};
+    use sima_model::{FormatId, GeneratorConfig, GeneratorId, Params, SearchConfig, SearchId};
     use sima_provider::ReconcileScope;
     use sima_provider::stub::StubProvider;
     use sima_provider::{InstanceId, Provider};
@@ -122,8 +122,8 @@ mod tests {
 
     /// The run a seeded record is owned by. It holds no lock, which is what
     /// a run whose process died looks like.
-    fn owner() -> RunId {
-        RunConfig {
+    fn owner() -> SearchId {
+        SearchConfig {
             root_seed: 7,
             segments: None,
             format: FormatId::new("stub.v1").expect("format id"),
@@ -197,7 +197,7 @@ mod tests {
         store.put_instance(&record("sima-tag-0", "stub", "i-1"))?;
         // The owning run holds its orchestrator lock, which is what a live
         // run looks like to the pass.
-        let _lock = store.acquire_run_lock(&owner())?;
+        let _lock = store.acquire_search_lock(&owner())?;
         let report = clean(
             &store,
             |_| {

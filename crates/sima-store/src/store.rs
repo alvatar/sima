@@ -33,7 +33,7 @@ pub struct Store {
 
 impl Store {
     /// Creates or opens the store at `root`, building the directory
-    /// skeleton (`objects/`, `packs/`, `tmp/`, `tasks/`, `runs/`,
+    /// skeleton (`objects/`, `packs/`, `tmp/`, `tasks/`, `searches/`,
     /// `instances/`, `spend/`, `machines/`) durably where
     /// absent. A fresh root and an existing store open identically —
     /// resume is a reopen.
@@ -61,7 +61,7 @@ impl Store {
             layout::packs_dir(&root),
             layout::tmp_dir(&root),
             layout::tasks_dir(&root),
-            layout::runs_dir(&root),
+            layout::searches_dir(&root),
             layout::instances_dir(&root),
             layout::spend_ledger_dir(&root),
             layout::machines_ledger_dir(&root),
@@ -141,7 +141,7 @@ mod tests {
             "packs",
             "tmp",
             "tasks",
-            "runs",
+            "searches",
             "instances",
             "spend",
             "machines",
@@ -168,7 +168,7 @@ mod tests {
     fn open_settles_the_marker_on_a_store_that_lacks_it() -> Result<()> {
         let dir = tempfile::tempdir().expect("create temp dir");
         // A store laid out before the marker existed: the skeleton alone.
-        for sub in ["objects", "tmp", "tasks", "runs"] {
+        for sub in ["objects", "tmp", "tasks", "searches"] {
             fs::create_dir_all(dir.path().join(sub)).expect("create skeleton dir");
         }
         Store::open(dir.path())?;

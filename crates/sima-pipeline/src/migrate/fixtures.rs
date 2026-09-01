@@ -14,14 +14,14 @@ use std::time::{Duration, Instant};
 use sima_contracts::DeviceClass;
 use sima_core::{Error, Result};
 use sima_domains::devices::{DeviceInfo, DeviceType};
-use sima_model::{RunId, TaskKey};
+use sima_model::{SearchId, TaskKey};
 use sima_provider::stub::StubProvider;
 use sima_provider::{
     AcquireLimits, Admission, Budget, Constraints, InstanceGuard, Objective, Provider, UNREPORTED,
     acquire,
 };
 use sima_scheduler::{Event, Record, RunOutcome};
-use sima_store::{ObjectScope, Rental as RentalRole, RunLock, SpendEntry, Store, SyncReport};
+use sima_store::{ObjectScope, Rental as RentalRole, SearchLock, SpendEntry, Store, SyncReport};
 use sima_trace::Emitter;
 use tempfile::TempDir;
 
@@ -510,7 +510,7 @@ impl FarSide for Scripted<'_> {
         }
         Ok(Box::new(ScriptedFeed {
             info: FeedInfo {
-                run: RunId::from_hash(sima_core::hash_bytes(b"scripted")),
+                run: SearchId::from_hash(sima_core::hash_bytes(b"scripted")),
                 format: sima_model::FormatId::new("stub.v1").expect("format id"),
                 workers: 1,
             },
@@ -698,7 +698,7 @@ pub(crate) fn rec(event: Event) -> Record {
     Record { ts_ms: 0, event }
 }
 
-pub(crate) fn started(run: &RunId) -> Record {
+pub(crate) fn started(run: &SearchId) -> Record {
     rec(Event::RunStarted {
         run: run.to_string(),
         tasks: 20,
@@ -715,14 +715,14 @@ pub(crate) fn committed(task: &str) -> Record {
     })
 }
 
-pub(crate) fn finalized(run: &RunId) -> Record {
+pub(crate) fn finalized(run: &SearchId) -> Record {
     rec(Event::RunFinalized {
         run: run.to_string(),
         committed: 20,
     })
 }
 
-pub(crate) fn failed(run: &RunId, task: &str, reason: &str) -> Record {
+pub(crate) fn failed(run: &SearchId, task: &str, reason: &str) -> Record {
     rec(Event::RunFailed {
         run: run.to_string(),
         task: task.to_string(),
@@ -779,7 +779,7 @@ pub(crate) fn over_budget(local: &Local) -> Result<()> {
 pub(crate) fn hosting<'a>(
     provider: &'a (dyn Provider + Sync),
     store: &'a Store,
-    lock: &RunLock,
+    lock: &SearchLock,
 ) -> Result<InstanceGuard<'a, dyn Provider + Sync + 'a>> {
     acquire(
         provider,

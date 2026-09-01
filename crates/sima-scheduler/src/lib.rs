@@ -1,4 +1,4 @@
-//! The scheduler: it runs a search from `(RunConfig, store state)`.
+//! The scheduler: it runs a search from `(SearchConfig, store state)`.
 //!
 //! A task source derives the runnable frontier — the tasks the store does not
 //! yet answer — and the driver hands each to a pool of worker processes over
@@ -28,7 +28,7 @@ mod worker_pool;
 
 pub use config::{DeviceEntry, ExecutionConfig};
 pub use control::RunControl;
-pub use driver::{RunOutcome, run, run_keys, worker_slots};
+pub use driver::{RunOutcome, run, search_keys, worker_slots};
 pub use segment_chain::SegmentChain;
 // The event vocabulary and journal line type are the trace facade's; the
 // scheduler is the layer that emits them, so it re-exports them and every

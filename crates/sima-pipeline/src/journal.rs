@@ -4,7 +4,7 @@
 use std::thread;
 
 use sima_core::{Error, Result};
-use sima_model::RunId;
+use sima_model::SearchId;
 use sima_scheduler::Record;
 use sima_store::Store;
 use sima_trace::{Collector, Emitter, Observer};
@@ -21,7 +21,7 @@ use crate::config::LoadedConfig;
 /// only way a far run's records land here at all, since journals do not sync.
 pub(crate) fn under_collector<T>(
     store: &Store,
-    run: &RunId,
+    run: &SearchId,
     observer: Observer<'_>,
     body: impl FnOnce(&Emitter) -> Result<T>,
 ) -> Result<T> {
@@ -55,7 +55,7 @@ pub(crate) fn records(config: &LoadedConfig) -> Result<Vec<Record>> {
 /// Every reader of a journal goes through here — the one-shot queries, the
 /// live observer, and the feed that forwards a far side's lines — so a line
 /// that does not parse reads as the same corruption whichever of them met it.
-pub(crate) fn parse(run: &RunId, lines: &[String]) -> Result<Vec<Record>> {
+pub(crate) fn parse(run: &SearchId, lines: &[String]) -> Result<Vec<Record>> {
     lines
         .iter()
         .map(|line| {
@@ -98,7 +98,7 @@ pub(crate) fn journaled(config: &LoadedConfig) -> Result<Option<Vec<Record>>> {
 
 /// The journal lines of the run a loaded config describes, with the run they
 /// belong to, under the guards every read-only query applies.
-fn lines(config: &LoadedConfig) -> Result<(RunId, Vec<String>)> {
+fn lines(config: &LoadedConfig) -> Result<(SearchId, Vec<String>)> {
     if !config.store.is_dir() {
         return Err(Error::Validation(format!(
             "store {} does not exist: no run was ever driven there",

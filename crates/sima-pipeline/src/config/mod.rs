@@ -267,7 +267,7 @@
 //!
 //! ## Identity and cadence
 //!
-//! The `[run]` section is canonicalized into [`RunConfig`], so its fields define
+//! The `[run]` section is canonicalized into [`SearchConfig`], so its fields define
 //! the run id; every other section is operational and never hashed — a run
 //! resumed with different parallelism, a different store path, or a different
 //! set of machines keeps its id. The structural keys are strict: an unknown key

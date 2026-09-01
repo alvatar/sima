@@ -362,7 +362,7 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use sima_core::{Error, hash_bytes, write_frame};
-    use sima_model::{FormatId, RunId};
+    use sima_model::{FormatId, SearchId};
     use sima_scheduler::{Event, StatScalar};
 
     use crate::feed::FOLLOW_PROTOCOL_VERSION;
@@ -411,8 +411,8 @@ mod tests {
     }
 
     /// The run every test stream describes.
-    fn run() -> RunId {
-        RunId::from_hash(hash_bytes(b"a remotely followed run"))
+    fn run() -> SearchId {
+        SearchId::from_hash(hash_bytes(b"a remotely followed run"))
     }
 
     /// A `Hello` frame at `protocol` for that run.

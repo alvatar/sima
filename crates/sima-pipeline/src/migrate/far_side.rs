@@ -22,7 +22,7 @@ use std::process::{Command, Stdio};
 
 use sima_core::{Error, Result, own_process_group};
 use sima_domains::devices::DeviceInfo;
-use sima_model::{FormatId, RunId, TaskKey};
+use sima_model::{FormatId, SearchId, TaskKey};
 use sima_provider::{Provider, SshEndpoint};
 use sima_scheduler::Record;
 use sima_store::{ObjectScope, Store, SyncReport};
@@ -173,7 +173,11 @@ pub(crate) struct Remote {
 impl Remote {
     /// The far side of a machine of yours, reached at the ssh destination its
     /// entry names.
-    pub(crate) fn owned(destination: &Destination<'_>, owned: &OwnedHost, run: &RunId) -> Remote {
+    pub(crate) fn owned(
+        destination: &Destination<'_>,
+        owned: &OwnedHost,
+        run: &SearchId,
+    ) -> Remote {
         let target = SshDestination::known(&owned.ssh);
         Remote {
             reach: Reach::new(&SpawnMode::Ssh, &target, destination.binary),
@@ -197,7 +201,7 @@ impl Remote {
         destination: &Destination<'_>,
         provider: &(dyn Provider + Sync),
         endpoint: &SshEndpoint,
-        run: &RunId,
+        run: &SearchId,
         format: Option<&FormatId>,
     ) -> Result<Remote> {
         let mode = transport_mode(provider)?;
@@ -459,8 +463,8 @@ mod tests {
     use crate::migrate::destination::destination_for;
 
     /// The run every fixture places on its far side.
-    fn run() -> RunId {
-        RunId::from_hash(sima_core::hash_bytes(b"a migrated run"))
+    fn run() -> SearchId {
+        SearchId::from_hash(sima_core::hash_bytes(b"a migrated run"))
     }
 
     /// A far side reached without a hop, rooted at `root` and driving `binary`.

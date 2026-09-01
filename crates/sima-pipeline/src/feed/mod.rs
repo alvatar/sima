@@ -17,7 +17,7 @@ pub use remote::{RemoteFeed, remote_snapshot};
 pub use serve::follow_serve;
 
 use sima_core::Result;
-use sima_model::{FormatId, RunId};
+use sima_model::{FormatId, SearchId};
 use sima_scheduler::Record;
 
 /// The run metadata a view renders through and cannot derive from records
@@ -26,7 +26,7 @@ use sima_scheduler::Record;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FeedInfo {
     /// The run the feed follows.
-    pub run: RunId,
+    pub run: SearchId,
     /// The run's format id; the domain that renders stats resolves from it.
     pub format: FormatId,
     /// The configured worker count, for the occupancy view.

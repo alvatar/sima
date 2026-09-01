@@ -19,7 +19,7 @@ use std::time::Duration;
 
 use sima_contracts::{DeviceBinding, DeviceClass, Generator, WorkerId};
 use sima_core::{Codec, Error, Result};
-use sima_model::{Environment, RunConfig, RunId, TaskKey};
+use sima_model::{Environment, SearchConfig, SearchId, TaskKey};
 use sima_store::Store;
 use sima_trace::{Collector, Emitter, Event};
 
@@ -39,7 +39,7 @@ pub enum RunOutcome {
     /// Every task committed; the manifest is written.
     Finalized {
         /// The finalized run.
-        run: RunId,
+        run: SearchId,
     },
     /// A task failed definitively; no manifest was written and the store is
     /// left clean and resumable.
@@ -54,7 +54,7 @@ pub enum RunOutcome {
     /// so the store is resumable.
     Interrupted {
         /// The interrupted run.
-        run: RunId,
+        run: SearchId,
     },
 }
 
@@ -68,7 +68,7 @@ pub enum RunOutcome {
 /// content under the same key and materializes the same frontier.
 fn task_source<'a>(
     store: &'a Store,
-    config: &RunConfig,
+    config: &SearchConfig,
     environment: &Environment,
     generator: &dyn Generator,
 ) -> Result<Box<dyn TaskSource + 'a>> {
@@ -93,9 +93,9 @@ fn task_source<'a>(
 /// constructing a source generates them. The write is idempotent and the
 /// derivation is otherwise read-only: no run is registered, no record is
 /// committed, and no journal line is appended.
-pub fn run_keys(
+pub fn search_keys(
     store: &Store,
-    config: &RunConfig,
+    config: &SearchConfig,
     environment: &Environment,
     generator: &dyn Generator,
 ) -> Result<Vec<TaskKey>> {
@@ -120,7 +120,7 @@ pub fn run_keys(
 /// journal order.
 pub fn run(
     store: &Store,
-    config: &RunConfig,
+    config: &SearchConfig,
     environment: &Environment,
     generator: &dyn Generator,
     pools: &[WorkerPool<'_>],
@@ -136,7 +136,7 @@ pub fn run(
         ));
     }
     // Register the run; its id is the config object's address.
-    let run = store.create_run(config)?;
+    let run = store.create_search(config)?;
     // Every committed record references the params and environment objects, so
     // they must be durable before any commit; the spec objects are stored as
     // the frontier materializes.
@@ -221,13 +221,15 @@ pub fn run(
         // Whatever the pool returned, decide the outcome, then always flush
         // and join the journal.
         let outcome = match drive_result {
-            Ok(DriveOutcome::Finalize) => store.finalize_run(&run, source.all_keys()).map(|()| {
-                events.emit(Event::RunFinalized {
-                    run: run.to_string(),
-                    committed: source.all_keys().len(),
-                });
-                RunOutcome::Finalized { run }
-            }),
+            Ok(DriveOutcome::Finalize) => {
+                store.finalize_search(&run, source.all_keys()).map(|()| {
+                    events.emit(Event::RunFinalized {
+                        run: run.to_string(),
+                        committed: source.all_keys().len(),
+                    });
+                    RunOutcome::Finalized { run }
+                })
+            }
             Ok(DriveOutcome::Fail(failure)) => {
                 events.emit(Event::RunFailed {
                     run: run.to_string(),
@@ -294,7 +296,7 @@ pub fn worker_slots(exec: &ExecutionConfig) -> Vec<Option<DeviceBinding>> {
 /// a journal that cannot be read seeds nothing: the journal is observational
 /// — a crash can tear its final write, and a degraded journal must fail the
 /// run through its own write path, never through this baseline read.
-fn prior_drivers(store: &Store, run: &RunId) -> HashMap<(String, String), String> {
+fn prior_drivers(store: &Store, run: &SearchId) -> HashMap<(String, String), String> {
     let mut drivers = HashMap::new();
     for line in store.journal(run).unwrap_or_default() {
         if let Ok(record) = sima_trace::Record::from_line(&line)

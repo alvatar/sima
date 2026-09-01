@@ -8,12 +8,12 @@ use std::path::Path;
 use sima_core::{Codec, Result};
 use sima_model::{
     ArtifactRef, Environment, EnvironmentComponent, EnvironmentValue, FormatId, GeneratorConfig,
-    GeneratorId, Params, RunConfig, RunId, Spec, TaskIdentity, TaskKey, TaskRecord,
+    GeneratorId, Params, SearchConfig, SearchId, Spec, TaskIdentity, TaskKey, TaskRecord,
 };
 use sima_store::Store;
 use tempfile::TempDir;
 
-/// The run fixture: one spec/params/environment shared by every task.
+/// The search fixture: one spec/params/environment shared by every task.
 fn spec() -> Spec {
     Spec {
         format: FormatId::new("stub.v1").expect("format id"),
@@ -34,8 +34,8 @@ fn environment() -> Environment {
     Environment::new(vec![component]).expect("environment")
 }
 
-fn config() -> RunConfig {
-    RunConfig {
+fn config() -> SearchConfig {
+    SearchConfig {
         root_seed: 42,
         segments: None,
         format: FormatId::new("stub.v1").expect("format id"),
@@ -69,29 +69,29 @@ fn commit_task(store: &Store, seed: u64) -> Result<TaskKey> {
 }
 
 /// Runs the whole lifecycle in a fresh store — commit `seeds` in the
-/// order given, create the run, journal, finalize — and returns the
-/// store's guard, handle, and run id.
-fn run_lifecycle(seeds: &[u64], journal_lines: &[&str]) -> Result<(TempDir, Store, RunId)> {
+/// order given, create the search, journal, finalize — and returns the
+/// store's guard, handle, and search id.
+fn search_lifecycle(seeds: &[u64], journal_lines: &[&str]) -> Result<(TempDir, Store, SearchId)> {
     let dir = tempfile::tempdir().expect("create temp dir");
     let store = Store::open(dir.path())?;
     let mut keys = Vec::new();
     for &seed in seeds {
         keys.push(commit_task(&store, seed)?);
     }
-    let run = store.create_run(&config())?;
-    let mut journal = store.journal_writer(&run)?;
+    let search = store.create_search(&config())?;
+    let mut journal = store.journal_writer(&search)?;
     for line in journal_lines {
         journal.append(line)?;
     }
-    store.finalize_run(&run, &keys)?;
-    Ok((dir, store, run))
+    store.finalize_search(&search, &keys)?;
+    Ok((dir, store, search))
 }
 
-/// The manifest bytes of `run` under `root`.
-fn manifest_bytes(root: &Path, run: &RunId) -> Vec<u8> {
+/// The manifest bytes of `search` under `root`.
+fn manifest_bytes(root: &Path, search: &SearchId) -> Vec<u8> {
     fs::read(
-        root.join("runs")
-            .join(run.to_string())
+        root.join("searches")
+            .join(search.to_string())
             .join("manifest.json"),
     )
     .expect("read manifest file")
@@ -100,11 +100,11 @@ fn manifest_bytes(root: &Path, run: &RunId) -> Vec<u8> {
 #[test]
 fn permuted_commit_orders_produce_byte_identical_manifests() -> Result<()> {
     // Two fresh stores, permuted commit order and different journals:
-    // the manifests must still agree byte for byte — run identity is
+    // the manifests must still agree byte for byte — search identity is
     // independent of worker completion order, and journals are
     // observational.
-    let (dir_a, _store_a, run_a) = run_lifecycle(&[1, 2, 3], &["started", "finished"])?;
-    let (dir_b, _store_b, run_b) = run_lifecycle(&[3, 1, 2], &["resumed after a crash"])?;
+    let (dir_a, _store_a, run_a) = search_lifecycle(&[1, 2, 3], &["started", "finished"])?;
+    let (dir_b, _store_b, run_b) = search_lifecycle(&[3, 1, 2], &["resumed after a crash"])?;
     assert_eq!(run_a, run_b);
     assert_eq!(
         manifest_bytes(dir_a.path(), &run_a),
@@ -129,27 +129,27 @@ fn copy_dir(from: &Path, to: &Path) {
 
 #[test]
 fn a_copied_store_is_fully_portable() -> Result<()> {
-    let (dir, store, run) = run_lifecycle(&[1, 2], &["one line"])?;
+    let (dir, store, search) = search_lifecycle(&[1, 2], &["one line"])?;
     let copy = tempfile::tempdir().expect("create copy dir");
     let copy_root = copy.path().join("store");
     copy_dir(dir.path(), &copy_root);
     // The copy opens as-is, reads the equal manifest, holds the full
     // closure, and every object in it get-verifies.
     let copied = Store::open(&copy_root)?;
-    assert_eq!(copied.manifest(&run)?, store.manifest(&run)?);
-    let closure = copied.run_closure(&run)?;
-    assert_eq!(closure, store.run_closure(&run)?);
+    assert_eq!(copied.manifest(&search)?, store.manifest(&search)?);
+    let closure = copied.search_closure(&search)?;
+    assert_eq!(closure, store.search_closure(&search)?);
     for object in &closure {
         copied.get(object)?;
     }
-    assert_eq!(copied.journal(&run)?, ["one line"]);
+    assert_eq!(copied.journal(&search)?, ["one line"]);
     Ok(())
 }
 
 #[test]
 fn concurrent_workers_converge_on_the_single_threaded_manifest() -> Result<()> {
     let seeds: Vec<u64> = (0..16).collect();
-    let (reference_dir, _store, reference_run) = run_lifecycle(&seeds, &[])?;
+    let (reference_dir, _store, reference_run) = search_lifecycle(&seeds, &[])?;
     let dir = tempfile::tempdir().expect("create temp dir");
     let store = Store::open(dir.path())?;
     // Four workers commit disjoint task ranges concurrently.
@@ -172,11 +172,11 @@ fn concurrent_workers_converge_on_the_single_threaded_manifest() -> Result<()> {
         }
         Ok::<Vec<TaskKey>, sima_core::Error>(keys)
     })?;
-    let run = store.create_run(&config())?;
-    store.finalize_run(&run, &keys)?;
-    assert_eq!(run, reference_run);
+    let search = store.create_search(&config())?;
+    store.finalize_search(&search, &keys)?;
+    assert_eq!(search, reference_run);
     assert_eq!(
-        manifest_bytes(dir.path(), &run),
+        manifest_bytes(dir.path(), &search),
         manifest_bytes(reference_dir.path(), &reference_run)
     );
     Ok(())

@@ -13,7 +13,7 @@ use std::collections::HashSet;
 
 use common::{
     chained_config, class, class_slot, device, device_naming_resolver, exec_over, journal_events,
-    named_class, run_id, run_with, task_classes, temp_store, worker_devices,
+    named_class, run_with, search_id, task_classes, temp_store, worker_devices,
 };
 use sima_contracts::DeviceClass;
 use sima_core::Result;
@@ -25,7 +25,7 @@ const INTEL: u32 = 0x8086;
 const NVIDIA: u32 = 0x10de;
 
 /// The class a chain's placement slot binds it to, as the scheduler wrote it.
-fn slot_class(store: &sima_store::Store, run: &sima_model::RunId, chain: u64) -> Option<String> {
+fn slot_class(store: &sima_store::Store, run: &sima_model::SearchId, chain: u64) -> Option<String> {
     let payload = store
         .chain_bindings(run)
         .expect("read bindings")
@@ -55,10 +55,10 @@ fn a_chains_segments_agree_with_the_class_its_slot_records() -> Result<()> {
     let outcome = run_with(&store, &config, &exec, device_naming_resolver())?;
     assert!(matches!(outcome, RunOutcome::Finalized { .. }));
 
-    let events = journal_events(&store, &run_id(&config));
+    let events = journal_events(&store, &search_id(&config));
     let classes = task_classes(&events);
     assert_eq!(classes.len(), 4, "four segments ran");
-    let bound = slot_class(&store, &run_id(&config), 0).expect("the chain bound");
+    let bound = slot_class(&store, &search_id(&config), 0).expect("the chain bound");
     for (task, ran_on) in &classes {
         assert_eq!(ran_on, &vec![bound.clone()], "segment {task}");
     }
@@ -77,7 +77,7 @@ fn every_chain_binds_to_a_class_the_run_has() -> Result<()> {
     let outcome = run_with(&store, &config, &exec, device_naming_resolver())?;
     assert!(matches!(outcome, RunOutcome::Finalized { .. }));
 
-    let run = run_id(&config);
+    let run = search_id(&config);
     let bindings = store.chain_bindings(&run)?;
     assert_eq!(bindings.len(), 8, "every chain bound");
     let present: HashSet<String> = [
@@ -102,9 +102,9 @@ fn a_chain_whose_class_is_gone_rebinds_and_the_run_completes() -> Result<()> {
     // moves to a class that is present, and the journal says so.
     let (_dir, store) = temp_store();
     let config = chained_config(11, vec![StubBehavior::Accumulate(2)], 2);
-    let run = run_id(&config);
+    let run = search_id(&config);
     // The run directory must exist before a slot can be written into it.
-    store.create_run(&config)?;
+    store.create_search(&config)?;
     let absent = class_slot(&DeviceClass::new("1002:0001").expect("class id"));
     store.bind_chain(&run, 0, &absent)?;
 
@@ -137,8 +137,8 @@ fn a_chain_resumed_from_its_slot_stays_on_its_class() -> Result<()> {
     // there, with no rebind, whatever else the pool is doing.
     let (_dir, store) = temp_store();
     let config = chained_config(13, vec![StubBehavior::Accumulate(2)], 3);
-    let run = run_id(&config);
-    store.create_run(&config)?;
+    let run = search_id(&config);
+    store.create_search(&config)?;
     store.bind_chain(&run, 0, &class_slot(&class(INTEL)))?;
 
     // The Intel class carries one worker against NVIDIA's three, so a chain
@@ -164,8 +164,8 @@ fn a_chain_whose_slot_cannot_be_read_binds_again() -> Result<()> {
     // costs coherence for that chain rather than the whole resume.
     let (_dir, store) = temp_store();
     let config = chained_config(29, vec![StubBehavior::Accumulate(2)], 2);
-    let run = run_id(&config);
-    store.create_run(&config)?;
+    let run = search_id(&config);
+    store.create_search(&config)?;
     store.bind_chain(&run, 0, b"not a placement slot")?;
 
     let exec = exec_over(vec![device(NVIDIA, 2)], 1);
@@ -194,7 +194,7 @@ fn a_stateless_tasks_retries_stay_on_one_class() -> Result<()> {
     let outcome = run_with(&store, &config, &exec, device_naming_resolver())?;
     assert!(matches!(outcome, RunOutcome::Finalized { .. }));
 
-    let run = run_id(&config);
+    let run = search_id(&config);
     let events = journal_events(&store, &run);
     let classes = task_classes(&events);
     let (task, attempts) = classes.iter().next().expect("the run had one task");
@@ -215,7 +215,7 @@ fn every_worker_reports_the_device_it_computes_on() -> Result<()> {
     let exec = exec_over(vec![device(NVIDIA, 2), device(INTEL, 1)], 1);
     run_with(&store, &config, &exec, device_naming_resolver())?;
 
-    let devices = worker_devices(&journal_events(&store, &run_id(&config)));
+    let devices = worker_devices(&journal_events(&store, &search_id(&config)));
     assert_eq!(devices.len(), 3, "every worker of the pool reported");
     // The slots carry the pool's shape: two NVIDIA workers, one Intel.
     let mut named: Vec<&str> = devices.values().map(|d| named_class(d)).collect();

@@ -1,4 +1,4 @@
-//! `run_keys`: the task keys a run comprises, derived from `(config, store
+//! `search_keys`: the task keys a run comprises, derived from `(config, store
 //! state)` without driving anything.
 //!
 //! The derivation is the frontier's own, so it answers whatever the store
@@ -16,14 +16,14 @@ use common::{chained_config, config, environment, exec, run_controlled, run_into
 use sima_core::Result;
 use sima_domains::{StubBehavior, StubGenerator};
 use sima_model::TaskKey;
-use sima_scheduler::{Event, Record, RunControl, RunOutcome, run_keys};
+use sima_scheduler::{Event, Record, RunControl, RunOutcome, search_keys};
 use sima_store::Store;
 
 /// The keys `cfg` comprises over `store`, as its current state materializes
 /// them.
-fn keys(store: &Store, cfg: &sima_model::RunConfig) -> Result<Vec<TaskKey>> {
+fn keys(store: &Store, cfg: &sima_model::SearchConfig) -> Result<Vec<TaskKey>> {
     let generator = StubGenerator::new()?;
-    run_keys(store, cfg, &environment(), &generator)
+    search_keys(store, cfg, &environment(), &generator)
 }
 
 #[test]

@@ -293,7 +293,7 @@ fn a_pack_death_converges_on_re_run() {
         // is readable throughout.
         let opened = Store::open(&store).expect("open store");
         let run = load(&config).expect("load config").run.id();
-        opened.run_closure(&run).expect("the closure enumerates");
+        opened.search_closure(&run).expect("the closure enumerates");
 
         assert_eq!(
             sima_pack(&store, None).code(),
@@ -315,7 +315,7 @@ fn a_pack_death_converges_on_re_run() {
         assert_eq!(manifest_of(&config), Some(reference), "{arming}");
         Store::open(&store)
             .expect("reopen store")
-            .run_closure(&run)
+            .search_closure(&run)
             .expect("the closure still enumerates whole");
         converged.push(common::pack_files(&store));
     }
@@ -625,7 +625,7 @@ fn every_crashpoint_death_resumes_to_the_reference_manifest() {
         let store = Store::open(&loaded.store).expect("open store");
         drop(
             store
-                .acquire_run_lock(&loaded.run.id())
+                .acquire_search_lock(&loaded.run.id())
                 .unwrap_or_else(|e| panic!("{arming}: the lock must be free after death: {e}")),
         );
 

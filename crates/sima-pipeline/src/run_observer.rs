@@ -2,7 +2,7 @@
 //! drives it.
 
 use sima_core::{Error, Result};
-use sima_model::RunId;
+use sima_model::SearchId;
 use sima_scheduler::Record;
 use sima_store::Store;
 
@@ -19,7 +19,7 @@ use crate::config::LoadedConfig;
 /// cadence, and the observer runs no thread of its own.
 pub struct RunObserver {
     store: Store,
-    run: RunId,
+    run: SearchId,
     /// Journal bytes consumed so far; [`Store::journal_from`] resumes here.
     offset: u64,
 }
@@ -82,12 +82,12 @@ mod tests {
 
     /// A fresh store with the stub run created, and the loaded config over
     /// it. The temp dir keeps the store alive for the caller.
-    fn created_store() -> Result<(tempfile::TempDir, Store, RunId, LoadedConfig)> {
+    fn created_store() -> Result<(tempfile::TempDir, Store, SearchId, LoadedConfig)> {
         let dir = tempfile::tempdir().expect("temp dir");
         let store = Store::open(dir.path())?;
         let config = stub_config()?;
         let run = config.id();
-        store.create_run(&config)?;
+        store.create_search(&config)?;
         let loaded = loaded(dir.path().to_path_buf())?;
         Ok((dir, store, run, loaded))
     }
@@ -99,7 +99,7 @@ mod tests {
     }
 
     /// A `RunStarted` record for `run`.
-    fn started(run: &RunId, tasks: usize) -> Record {
+    fn started(run: &SearchId, tasks: usize) -> Record {
         rec(sima_scheduler::Event::RunStarted {
             run: run.to_string(),
             tasks,
@@ -119,7 +119,7 @@ mod tests {
 
     /// Appends `records` to the run's journal, as the driving orchestrator
     /// would.
-    fn append(store: &Store, run: &RunId, records: &[Record]) -> Result<()> {
+    fn append(store: &Store, run: &SearchId, records: &[Record]) -> Result<()> {
         let mut writer = store.journal_writer(run)?;
         for record in records {
             writer.append(&record.to_line()?)?;
@@ -176,11 +176,11 @@ mod tests {
     }
 
     #[test]
-    fn holder_reflects_the_run_lock_across_acquire_and_release() -> Result<()> {
+    fn holder_reflects_the_search_lock_across_acquire_and_release() -> Result<()> {
         let (_dir, store, run, loaded) = created_store()?;
         let observer = RunObserver::new(&loaded)?;
         assert_eq!(observer.holder()?, None);
-        let lock = store.acquire_run_lock(&run)?;
+        let lock = store.acquire_search_lock(&run)?;
         let holder = observer.holder()?.expect("a holder while locked");
         let pid = std::process::id().to_string();
         assert_eq!(holder.split_whitespace().next(), Some(pid.as_str()));

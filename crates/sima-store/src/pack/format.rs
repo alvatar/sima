@@ -20,7 +20,7 @@
 //! The index is sorted strictly ascending by hash, which gives binary search
 //! and makes the file a pure function of its object set: a fixed set writes
 //! byte-identical bytes, hence an identical name, which is what makes an
-//! interrupted maintenance run converge by re-running it.
+//! interrupted maintenance search converge by re-running it.
 //!
 //! Every object is compressed on its own, so reading one object decompresses
 //! one object. Identity is the address of the *uncompressed* bytes, and a

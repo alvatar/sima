@@ -1,6 +1,6 @@
 //! The read walk every operational ledger shares.
 //!
-//! Three ledgers sit beside the run data — the instances a rental holds, the
+//! Three ledgers sit beside the search data — the instances a rental holds, the
 //! spend those rentals accrued, and the incidents machines were blamed for —
 //! and each is a directory of one JSON file per entry. They differ in what an
 //! entry is and in what its file name must agree with; they do not differ in

@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 
 use sima_core::Result;
-use sima_model::RunId;
+use sima_model::SearchId;
 use sima_scheduler::{Event, Record};
 
 use crate::config::LoadedConfig;
@@ -17,7 +17,7 @@ use crate::journal;
 #[derive(Debug, PartialEq, Eq)]
 pub struct RunStatus {
     /// The run the status describes.
-    pub run: RunId,
+    pub run: SearchId,
     /// The run's task count, from the latest `RunStarted` — resume appends
     /// a fresh segment per orchestration, and each restates the count.
     pub tasks: usize,
@@ -93,7 +93,7 @@ impl RunStatus {
     /// A zeroed status for `run`: no events applied, `InProgress`, no leases
     /// held. Applying a journal or a live event stream through
     /// [`apply`](RunStatus::apply) drives it to the run's observable state.
-    pub fn new(run: RunId) -> RunStatus {
+    pub fn new(run: SearchId) -> RunStatus {
         RunStatus {
             run,
             tasks: 0,
@@ -294,7 +294,7 @@ pub fn seeded_status(config: &LoadedConfig) -> Result<RunStatus> {
 /// source: a journal read locally, or a stream from the host that drives the
 /// run. It renders nothing through a domain, so it needs no format and cannot
 /// fail.
-pub fn status_records(run: RunId, records: &[Record]) -> RunStatus {
+pub fn status_records(run: SearchId, records: &[Record]) -> RunStatus {
     let mut status = RunStatus::new(run);
     for record in records {
         status.apply(record);
@@ -311,8 +311,8 @@ mod tests {
 
     use crate::fixtures::{journal_with, stub_config};
 
-    fn run_id() -> RunId {
-        RunId::from_hash(hash_bytes(b"status test run"))
+    fn search_id() -> SearchId {
+        SearchId::from_hash(hash_bytes(b"status test run"))
     }
 
     /// Wraps an event as a record the tests apply. The stamp is irrelevant
@@ -372,7 +372,7 @@ mod tests {
 
     /// The status a fresh run reaches by applying `records` in order.
     fn folded(records: Vec<Record>) -> RunStatus {
-        let mut status = RunStatus::new(run_id());
+        let mut status = RunStatus::new(search_id());
         for record in &records {
             status.apply(record);
         }
@@ -457,7 +457,7 @@ mod tests {
 
     #[test]
     fn leased_fills_occupancy_and_committed_clears_it_and_counts() {
-        let mut status = RunStatus::new(run_id());
+        let mut status = RunStatus::new(search_id());
         status.apply(&started(2));
         status.apply(&leased("aa", 0, 0));
         assert_eq!(status.occupancy.get(&0), Some(&occupancy("aa", 0)));
@@ -468,7 +468,7 @@ mod tests {
 
     #[test]
     fn failed_frees_the_worker_and_retried_counts() {
-        let mut status = RunStatus::new(run_id());
+        let mut status = RunStatus::new(search_id());
         status.apply(&started(1));
         status.apply(&leased("aa", 0, 0));
         status.apply(&failed("aa", 0));
@@ -482,7 +482,7 @@ mod tests {
 
     #[test]
     fn rejected_and_faulted_clear_occupancy_and_count() {
-        let mut status = RunStatus::new(run_id());
+        let mut status = RunStatus::new(search_id());
         status.apply(&started(2));
         status.apply(&leased("aa", 0, 0));
         status.apply(&rejected("aa", 0));
@@ -496,7 +496,7 @@ mod tests {
 
     #[test]
     fn checkpoint_degradation_counts_and_keeps_the_lease() {
-        let mut status = RunStatus::new(run_id());
+        let mut status = RunStatus::new(search_id());
         status.apply(&started(1));
         status.apply(&leased("aa", 0, 0));
         status.apply(&rec(Event::CheckpointDegraded {
@@ -511,7 +511,7 @@ mod tests {
 
     #[test]
     fn lease_expiry_counts_and_keeps_the_lease() {
-        let mut status = RunStatus::new(run_id());
+        let mut status = RunStatus::new(search_id());
         status.apply(&started(1));
         status.apply(&leased("aa", 0, 0));
         status.apply(&rec(Event::LeaseExpired {
@@ -528,7 +528,7 @@ mod tests {
 
     #[test]
     fn a_resume_segment_restates_tasks_and_resets_occupancy() {
-        let mut status = RunStatus::new(run_id());
+        let mut status = RunStatus::new(search_id());
         status.apply(&started(2));
         status.apply(&leased("aa", 0, 0));
         status.apply(&started(5));
@@ -539,14 +539,14 @@ mod tests {
 
     #[test]
     fn run_level_events_set_the_terminal_state() {
-        let mut finalized = RunStatus::new(run_id());
+        let mut finalized = RunStatus::new(search_id());
         finalized.apply(&rec(Event::RunFinalized {
             run: "00".repeat(32),
             committed: 3,
         }));
         assert_eq!(finalized.state, RunState::Finalized);
 
-        let mut failed = RunStatus::new(run_id());
+        let mut failed = RunStatus::new(search_id());
         failed.apply(&rec(Event::RunFailed {
             run: "00".repeat(32),
             task: "aa".to_string(),
@@ -560,7 +560,7 @@ mod tests {
             }
         );
 
-        let mut interrupted = RunStatus::new(run_id());
+        let mut interrupted = RunStatus::new(search_id());
         interrupted.apply(&rec(Event::RunInterrupted {
             run: "00".repeat(32),
         }));

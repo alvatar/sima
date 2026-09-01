@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use common::{journal_events, loaded};
 use sima_core::{Error, Result};
-use sima_model::{FormatId, GeneratorConfig, GeneratorId, Params, RunConfig};
+use sima_model::{FormatId, GeneratorConfig, GeneratorId, Params, SearchConfig};
 use sima_pipeline::{
     BinaryChange, Engagement, Event, Fleet, LoadedConfig, Orchestrator, Pool, Record, RunControl,
     RunOutcome, RunState, orchestrate, status,
@@ -150,7 +150,7 @@ fn a_held_lock_keeps_a_second_orchestrator_out() -> Result<()> {
     let config = loaded(dir.path(), r#""succeed""#, 1)?;
 
     let store = Store::open(&config.store)?;
-    let _lock = store.acquire_run_lock(&config.run.id())?;
+    let _lock = store.acquire_search_lock(&config.run.id())?;
     assert!(matches!(
         orchestrate(
             &config,
@@ -229,7 +229,7 @@ fn an_undispatchable_config_orchestrates_to_validation_without_touching_the_stor
         host_classes: BTreeMap::new(),
         fleet: Fleet::default(),
         budget: Budget::default(),
-        run: RunConfig {
+        run: SearchConfig {
             root_seed: 1,
             segments: None,
             format: FormatId::new("no-such-domain.v1")?,

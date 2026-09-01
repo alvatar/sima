@@ -2,7 +2,7 @@
 //! [`remove_matching`]: delete a run of that store the config no longer names.
 
 use sima_core::{Error, Result};
-use sima_model::RunId;
+use sima_model::SearchId;
 use sima_store::{RemovalReport, Store};
 
 use crate::config::LoadedConfig;
@@ -11,7 +11,7 @@ use crate::runs::resolve_run;
 /// Removes the run a loaded config describes: validates the store and the run
 /// exist, acquires the run's orchestrator lock so a live orchestrator on that
 /// run is excluded, then deletes the run and everything no surviving run
-/// references through [`Store::remove_run`]. The run id comes from the
+/// references through [`Store::remove_search`]. The run id comes from the
 /// config's identity section, as [`status`](crate::status) derives it.
 ///
 /// Validation precedes any mutation, matching [`status`](crate::status) and
@@ -26,7 +26,7 @@ use crate::runs::resolve_run;
 pub fn remove(config: &LoadedConfig) -> Result<RemovalReport> {
     let store = opened(config)?;
     let run = config.run.id();
-    if !store.runs()?.contains(&run) {
+    if !store.searches()?.contains(&run) {
         return Err(Error::Validation(format!(
             "cannot remove run {run}: run not found"
         )));
@@ -62,7 +62,7 @@ fn opened(config: &LoadedConfig) -> Result<Store> {
 
 /// Deletes `run` under its own orchestrator lock, which is what excludes a
 /// live orchestrator on it.
-fn removed(store: &Store, run: RunId) -> Result<RemovalReport> {
-    let _lock = store.acquire_run_lock(&run)?;
-    store.remove_run(&run)
+fn removed(store: &Store, run: SearchId) -> Result<RemovalReport> {
+    let _lock = store.acquire_search_lock(&run)?;
+    store.remove_search(&run)
 }

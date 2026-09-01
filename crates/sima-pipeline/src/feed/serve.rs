@@ -190,11 +190,11 @@ mod tests {
     }
 
     #[test]
-    fn the_opening_frame_carries_the_run_lock_holder() -> Result<()> {
+    fn the_opening_frame_carries_the_search_lock_holder() -> Result<()> {
         let dir = tempfile::tempdir().expect("temp dir");
         let (config, loaded) = served_run(dir.path(), &[committed("aa")])?;
         let store = Store::open(&loaded.store)?;
-        let lock = store.acquire_run_lock(&loaded.run.id())?;
+        let lock = store.acquire_search_lock(&loaded.run.id())?;
         let served = snapshot(&config)?;
         assert!(
             matches!(

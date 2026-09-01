@@ -37,9 +37,9 @@ pub(crate) const TAG_ENVIRONMENT: &str = "sima.environment.v1";
 pub(crate) const TAG_TASK: &str = "sima.task.v1";
 /// Domain tag opening a canonical [`crate::TaskRecord`] encoding.
 pub(crate) const TAG_TASK_RECORD: &str = "sima.task-record.v1";
-/// Domain tag opening a canonical [`crate::RunConfig`] encoding — the
-/// run-id preimage.
-pub(crate) const TAG_RUN_CONFIG: &str = "sima.run-config.v1";
+/// Domain tag opening a canonical [`crate::SearchConfig`] encoding — the
+/// search-id preimage.
+pub(crate) const TAG_SEARCH_CONFIG: &str = "sima.run-config.v1";
 
 /// Reads the domain tag opening a canonical encoding and requires it to be
 /// `tag`, so a hash routed to the wrong decoder fails immediately.
@@ -178,7 +178,7 @@ mod tests {
         assert_codec::<crate::Spec>();
         assert_codec::<crate::Params>();
         assert_codec::<crate::Environment>();
-        assert_codec::<crate::RunConfig>();
+        assert_codec::<crate::SearchConfig>();
         assert_codec::<crate::TaskIdentity>();
         assert_codec::<crate::TaskRecord>();
     };
@@ -189,7 +189,7 @@ mod tests {
         TAG_ENVIRONMENT,
         TAG_TASK,
         TAG_TASK_RECORD,
-        TAG_RUN_CONFIG,
+        TAG_SEARCH_CONFIG,
     ];
 
     #[test]

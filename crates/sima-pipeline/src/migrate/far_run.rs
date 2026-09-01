@@ -12,7 +12,7 @@ use std::thread::sleep;
 use std::time::{Duration, Instant};
 
 use sima_core::{Error, Result};
-use sima_model::RunId;
+use sima_model::SearchId;
 use sima_provider::{InstanceGuard, Provider};
 use sima_scheduler::{Event, Level};
 use sima_store::{ObjectScope, Store};
@@ -30,24 +30,24 @@ use crate::task_keys::task_keys;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MigrateOutcome {
     /// Every task committed and the local manifest was written.
-    Finalized { run: RunId },
+    Finalized { run: SearchId },
     /// The far run ended and the results came home, with tasks still to run.
     /// The run is resumable, here or on another migration.
-    Outstanding { run: RunId, remaining: usize },
+    Outstanding { run: SearchId, remaining: usize },
     /// A task failed definitively on the far side; no manifest was written.
     Failed { task: String, reason: String },
     /// The migration was wound down — out of budget, or asked to end by a
     /// recall. The results were pulled and any rental destroyed, so the run is
     /// resumable.
-    Interrupted { run: RunId, remaining: usize },
+    Interrupted { run: SearchId, remaining: usize },
     /// This side let go: the far run keeps computing on `machine`, nothing was
     /// pulled, and a rental is left standing. The run comes home on the next
     /// migration that sees it end, or on a recall.
-    Detached { run: RunId, machine: String },
+    Detached { run: SearchId, machine: String },
     /// The operator let go while the run was still being placed, so no far run
     /// was started: nothing computes on `machine`, a rental taken for it was
     /// released, and the run is exactly as it was.
-    Abandoned { run: RunId, machine: String },
+    Abandoned { run: SearchId, machine: String },
 }
 
 /// What ended the follow, which decides what happens to the far run after it.
@@ -385,6 +385,6 @@ pub(crate) fn settle(
     if remaining > 0 {
         return Ok(MigrateOutcome::Outstanding { run, remaining });
     }
-    store.finalize_run(&run, &keys)?;
+    store.finalize_search(&run, &keys)?;
     Ok(MigrateOutcome::Finalized { run })
 }

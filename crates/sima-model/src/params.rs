@@ -67,7 +67,7 @@ mod tests {
     /// Python blake3 (pip package `blake3`):
     /// `blake3.blake3(bytes.fromhex(PINNED_EMPTY_HEX)).hexdigest()`.
     /// Pinned on its own because the empty-params id recurs wherever a
-    /// domain needs no run parameters.
+    /// domain needs no search parameters.
     const PINNED_EMPTY_ID_HEX: &str =
         "f4dceb2cab41bf105e41382f26f55d3d053b6141d75509bbd16b3d24913e11c6";
 

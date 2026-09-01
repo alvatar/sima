@@ -13,7 +13,7 @@
 //! closes the pipe or — in snapshot mode — [`FollowFrame::Complete`] ends it.
 
 use sima_core::{Dec, Enc, Error, Result};
-use sima_model::{FormatId, RunId};
+use sima_model::{FormatId, SearchId};
 
 /// Version of the follow protocol; the near side refuses a mismatch rather
 /// than interpreting foreign bytes.
@@ -42,7 +42,7 @@ pub enum FollowFrame {
         protocol: u32,
         /// The run being followed, as the far side computed it from the
         /// config on its own disk.
-        run: RunId,
+        run: SearchId,
         /// The run's format id; the near side resolves the domain that
         /// renders stats from it.
         format: FormatId,
@@ -109,7 +109,7 @@ impl FollowFrame {
         let frame = match dec.u8()? {
             TAG_HELLO => {
                 let protocol = dec.u32()?;
-                let run = RunId::from_hash(dec.hash()?);
+                let run = SearchId::from_hash(dec.hash()?);
                 let format = FormatId::new(dec.str()?)?;
                 let workers = dec.u32()?;
                 let holder = decode_opt_str(&mut dec)?;
@@ -171,21 +171,21 @@ fn decode_opt_str(dec: &mut Dec<'_>) -> Result<Option<String>> {
 mod tests {
     use super::*;
     use sima_core::{Error, Result, hash_bytes, read_frame, write_frame};
-    use sima_model::{FormatId, RunId};
+    use sima_model::{FormatId, SearchId};
 
     /// One frame of each variant, covering the fields the wire carries.
     fn every_variant() -> Result<Vec<FollowFrame>> {
         Ok(vec![
             FollowFrame::Hello {
                 protocol: FOLLOW_PROTOCOL_VERSION,
-                run: RunId::from_hash(hash_bytes(b"a followed run")),
+                run: SearchId::from_hash(hash_bytes(b"a followed run")),
                 format: FormatId::new("stub.v1")?,
                 workers: 4,
                 holder: Some("4242 gpubox".to_string()),
             },
             FollowFrame::Hello {
                 protocol: FOLLOW_PROTOCOL_VERSION,
-                run: RunId::from_hash(hash_bytes(b"an idle run")),
+                run: SearchId::from_hash(hash_bytes(b"an idle run")),
                 format: FormatId::new("stub.v1")?,
                 workers: 1,
                 holder: None,

@@ -1,4 +1,4 @@
-//! The catalog: the task index and the run registry.
+//! The catalog: the task index and the search registry.
 //!
 //! Workers commit results here, and task sources derive the runnable
 //! frontier from what is committed. The write-ordering discipline makes
@@ -12,7 +12,7 @@ use std::io::ErrorKind;
 use std::str;
 
 use sima_core::{Codec, Error, Hash, Result, hash_bytes};
-use sima_model::{RunConfig, RunId, TaskKey, TaskRecord};
+use sima_model::{SearchConfig, SearchId, TaskKey, TaskRecord};
 
 use crate::atomic::{self, io_error};
 use crate::layout;
@@ -43,12 +43,12 @@ impl Store {
     /// store that took a partial object set therefore holds records whose
     /// artifacts it does not have, which is a shape retention already produces:
     /// retention drops objects under disk pressure while the records stay. It
-    /// costs that store the ability to answer `run_closure` or to serve those
+    /// costs that store the ability to answer `search_closure` or to serve those
     /// objects onward, and nothing else — a chain is located from the records
     /// alone.
     ///
     /// [`Store::commit`] keeps its rule that every referenced object must be
-    /// durable, so a record a run produced is never written this way.
+    /// durable, so a record a search produced is never written this way.
     pub fn replicate(&self, record: &TaskRecord) -> Result<Hash> {
         let identity = &record.identity;
         for component in [
@@ -82,7 +82,7 @@ impl Store {
         }
         self.put(&bytes)?;
         // A death here leaves the record object durable but unindexed —
-        // unreferenced content a resumed run rewrites identically.
+        // unreferenced content a resumed search rewrites identically.
         sima_core::crashpoint("commit.after-object");
         // The index-entry pre-check above can go stale: another writer may
         // commit this key in the gap between that read and this write.
@@ -127,20 +127,20 @@ impl Store {
         path.try_exists().map_err(|e| io_error(&path, e))
     }
 
-    /// Enumerates the closed object set of a finalized run: the config
-    /// object (equal to the run id), every record object, and per record
+    /// Enumerates the closed object set of a finalized search: the config
+    /// object (equal to the search id), every record object, and per record
     /// its spec, params, environment, input state, and artifacts.
     /// Deduplicated and sorted, so the result is deterministic — the
-    /// have/want basis of store sync and the unit of run portability.
+    /// have/want basis of store sync and the unit of search portability.
     /// Record objects load through verified reads; leaf objects are
     /// existence-checked, and a hole is [`Error::MissingObject`].
-    pub fn run_closure(&self, run: &RunId) -> Result<Vec<Hash>> {
-        let Some(manifest) = self.manifest(run)? else {
+    pub fn search_closure(&self, search: &SearchId) -> Result<Vec<Hash>> {
+        let Some(manifest) = self.manifest(search)? else {
             return Err(Error::Validation(format!(
-                "cannot enumerate the closure of run {run}: the run is not finalized"
+                "cannot enumerate the closure of search {search}: the search is not finalized"
             )));
         };
-        let mut objects = BTreeSet::from([*run.as_hash()]);
+        let mut objects = BTreeSet::from([*search.as_hash()]);
         for entry in &manifest.entries {
             objects.insert(entry.record);
             let record = decode_record(&self.get(&entry.record)?, &entry.record, &entry.task)?;
@@ -154,33 +154,33 @@ impl Store {
         Ok(objects.into_iter().collect())
     }
 
-    /// Registers a run: puts the config's canonical bytes — the object
-    /// address equals the run id by construction, both being blake3 of
-    /// the same bytes — and creates `runs/<run-id>/`. Idempotent: an
-    /// existing run directory is a reopen, the resume path.
-    pub fn create_run(&self, config: &RunConfig) -> Result<RunId> {
-        let run = RunId::from_hash(self.put(&config.to_bytes())?);
-        atomic::create_dir_durable(&layout::run_dir(self.root(), &run))?;
-        Ok(run)
+    /// Registers a search: puts the config's canonical bytes — the object
+    /// address equals the search id by construction, both being blake3 of
+    /// the same bytes — and creates `searches/<search-id>/`. Idempotent: an
+    /// existing search directory is a reopen, the resume path.
+    pub fn create_search(&self, config: &SearchConfig) -> Result<SearchId> {
+        let search = SearchId::from_hash(self.put(&config.to_bytes())?);
+        atomic::create_dir_durable(&layout::search_dir(self.root(), &search))?;
+        Ok(search)
     }
 
-    /// Finalizing seals which tasks a run comprises. Before it a run is
+    /// Finalizing seals which tasks a search comprises. Before it a search is
     /// *open*: its task set is whatever has accrued in the index. Finalizing
     /// writes the manifest — the fixed, sorted `(task, record)` list — which
-    /// marks the run answered and is what acceptance and [`Self::run_closure`]
+    /// marks the search answered and is what acceptance and [`Self::search_closure`]
     /// read from. After finalization the set does not change.
     ///
-    /// Finalizes a run over exactly `keys`: every key must be committed
+    /// Finalizes a search over exactly `keys`: every key must be committed
     /// ([`Error::Validation`] naming the first that is not), and the
     /// manifest is written atomically with entries sorted by task key, so
     /// its bytes are independent of the order workers completed in.
     /// Idempotent: re-finalizing with the same keys leaves the byte-equal
     /// file in place — the resume-through-finalization path; different
     /// keys are [`Error::Corruption`].
-    pub fn finalize_run(&self, run: &RunId, keys: &[TaskKey]) -> Result<()> {
-        if !layout::run_dir(self.root(), run).is_dir() {
+    pub fn finalize_search(&self, search: &SearchId, keys: &[TaskKey]) -> Result<()> {
+        if !layout::search_dir(self.root(), search).is_dir() {
             return Err(Error::Validation(format!(
-                "cannot finalize run {run}: the run was never created"
+                "cannot finalize search {search}: the search was never created"
             )));
         }
         let mut sorted = keys.to_vec();
@@ -195,28 +195,31 @@ impl Store {
         for key in &sorted {
             let Some(record) = self.index_entry(key)? else {
                 return Err(Error::Validation(format!(
-                    "cannot finalize run {run}: task {key} is not committed"
+                    "cannot finalize search {search}: task {key} is not committed"
                 )));
             };
             entries.push(ManifestEntry { task: *key, record });
         }
-        let bytes = manifest::to_json_bytes(&Manifest { run: *run, entries });
+        let bytes = manifest::to_json_bytes(&Manifest {
+            search: *search,
+            entries,
+        });
         // A death here — every task committed, manifest assembled but not
-        // yet written — leaves the run unfinalized; a resumed run re-derives
+        // yet written — leaves the search unfinalized; a resumed search re-derives
         // an empty frontier and finalizes to the identical bytes.
         sima_core::crashpoint("finalize.pre-write");
-        let path = layout::manifest_path(self.root(), run);
+        let path = layout::manifest_path(self.root(), search);
         // The race window is between this read returning NotFound and the
         // write_exclusive below: two finalizers can both see no manifest and both
         // proceed. This read is not the guard — it only lets the common case
-        // carry a message that names the run. The guard is write_exclusive's hard
+        // carry a message that names the search. The guard is write_exclusive's hard
         // link, which fails when the manifest already exists: the loser then
         // reads the existing manifest and compares — equal is an idempotent Ok,
         // different is Corruption.
         match fs::read(&path) {
             Ok(existing) if existing == bytes => Ok(()),
             Ok(_) => Err(Error::Corruption(format!(
-                "run {run} is already finalized with a different manifest"
+                "search {search} is already finalized with a different manifest"
             ))),
             Err(e) if e.kind() == ErrorKind::NotFound => {
                 atomic::write_exclusive(self.root(), &path, &bytes)
@@ -225,16 +228,16 @@ impl Store {
         }
     }
 
-    /// Reads a run's manifest: `None` while the run is unfinalized; a
+    /// Reads a search's manifest: `None` while the search is unfinalized; a
     /// file that fails parsing or validation is [`Error::Corruption`].
-    pub fn manifest(&self, run: &RunId) -> Result<Option<Manifest>> {
-        let path = layout::manifest_path(self.root(), run);
+    pub fn manifest(&self, search: &SearchId) -> Result<Option<Manifest>> {
+        let path = layout::manifest_path(self.root(), search);
         let bytes = match fs::read(&path) {
             Ok(bytes) => bytes,
             Err(e) if e.kind() == ErrorKind::NotFound => return Ok(None),
             Err(e) => return Err(io_error(&path, e)),
         };
-        manifest::from_json_bytes(&bytes, run).map(Some)
+        manifest::from_json_bytes(&bytes, search).map(Some)
     }
 
     /// Reads the index entry for `key`: the record hash it names, `None`
@@ -489,19 +492,19 @@ mod tests {
         Ok(())
     }
 
-    use crate::testutil::sample_run_config;
-    use sima_model::RunId;
+    use crate::testutil::sample_search_config;
+    use sima_model::SearchId;
 
-    /// The manifest `finalize_run` must produce for `sample_run_config(42)`
+    /// The manifest `finalize_search` must produce for `sample_search_config(42)`
     /// over the seed-1 and seed-2 sample tasks, hand-written. Every digest
     /// is derived independently with Python blake3 (pip package `blake3`)
     /// over the hand-assembled canonical bytes of the fixture objects:
-    /// run id = blake3(config bytes) — the value pinned in `sima-model`'s
-    /// run-config tests; task keys = blake3(identity bytes); records =
+    /// search id = blake3(config bytes) — the value pinned in `sima-model`'s
+    /// search-config tests; task keys = blake3(identity bytes); records =
     /// blake3(record bytes). Key 42.. sorts before key 7a.., so the seed-1
     /// entry comes first regardless of finalization order.
     const PINNED_MANIFEST: &str = r#"{
-  "run": "18ad1dd30bc36b634e749b10755626411a367ba066c579e3c299a3eda98d4c7b",
+  "search": "18ad1dd30bc36b634e749b10755626411a367ba066c579e3c299a3eda98d4c7b",
   "entries": [
     {
       "task": "420b9fda1a25806fa8be45d75081d6b26f6f7bbe2925d17d44c4c0aada6f2836",
@@ -516,8 +519,8 @@ mod tests {
 "#;
 
     /// Commits the seed-1 and seed-2 sample tasks and creates the sample
-    /// run, returning the run id and the two task keys.
-    fn committed_run(store: &crate::Store) -> Result<(RunId, Vec<sima_model::TaskKey>)> {
+    /// search, returning the search id and the two task keys.
+    fn committed_run(store: &crate::Store) -> Result<(SearchId, Vec<sima_model::TaskKey>)> {
         store_identity_components(store);
         let mut keys = Vec::new();
         for seed in [1, 2] {
@@ -525,28 +528,33 @@ mod tests {
             store.commit(&record)?;
             keys.push(record.identity.key());
         }
-        let run = store.create_run(&sample_run_config(42))?;
-        Ok((run, keys))
+        let search = store.create_search(&sample_search_config(42))?;
+        Ok((search, keys))
     }
 
     #[test]
-    fn create_run_stores_the_config_at_the_run_id_address() -> Result<()> {
+    fn create_search_stores_the_config_at_the_search_id_address() -> Result<()> {
         let (dir, store) = temp_store();
-        let config = sample_run_config(42);
-        let run = store.create_run(&config)?;
-        // RunId = config object address by construction: both are blake3
+        let config = sample_search_config(42);
+        let search = store.create_search(&config)?;
+        // SearchId = config object address by construction: both are blake3
         // of the same canonical bytes.
-        assert_eq!(run, config.id());
-        assert_eq!(store.get(run.as_hash())?, config.to_bytes());
-        assert!(dir.path().join("runs").join(run.to_string()).is_dir());
+        assert_eq!(search, config.id());
+        assert_eq!(store.get(search.as_hash())?, config.to_bytes());
+        assert!(
+            dir.path()
+                .join("searches")
+                .join(search.to_string())
+                .is_dir()
+        );
         Ok(())
     }
 
     #[test]
-    fn create_run_twice_is_a_reopen() -> Result<()> {
+    fn create_search_twice_is_a_reopen() -> Result<()> {
         let (_dir, store) = temp_store();
-        let config = sample_run_config(42);
-        assert_eq!(store.create_run(&config)?, store.create_run(&config)?);
+        let config = sample_search_config(42);
+        assert_eq!(store.create_search(&config)?, store.create_search(&config)?);
         Ok(())
     }
 
@@ -556,12 +564,12 @@ mod tests {
         // both equal to the hand-written pin.
         for order in [[0, 1], [1, 0]] {
             let (dir, store) = temp_store();
-            let (run, keys) = committed_run(&store)?;
-            store.finalize_run(&run, &[keys[order[0]], keys[order[1]]])?;
+            let (search, keys) = committed_run(&store)?;
+            store.finalize_search(&search, &[keys[order[0]], keys[order[1]]])?;
             let path = dir
                 .path()
-                .join("runs")
-                .join(run.to_string())
+                .join("searches")
+                .join(search.to_string())
                 .join("manifest.json");
             let written = fs::read_to_string(path).expect("read manifest");
             assert_eq!(written, PINNED_MANIFEST);
@@ -570,11 +578,11 @@ mod tests {
     }
 
     #[test]
-    fn finalize_before_create_run_is_validation_error() -> Result<()> {
+    fn finalize_before_create_search_is_validation_error() -> Result<()> {
         let (_dir, store) = temp_store();
-        let run = sample_run_config(42).id();
+        let search = sample_search_config(42).id();
         assert!(matches!(
-            store.finalize_run(&run, &[]),
+            store.finalize_search(&search, &[]),
             Err(Error::Validation(_))
         ));
         Ok(())
@@ -583,10 +591,10 @@ mod tests {
     #[test]
     fn finalize_with_an_uncommitted_key_is_validation_error_naming_it() -> Result<()> {
         let (_dir, store) = temp_store();
-        let (run, mut keys) = committed_run(&store)?;
+        let (search, mut keys) = committed_run(&store)?;
         let uncommitted = sample_identity(3).key();
         keys.push(uncommitted);
-        match store.finalize_run(&run, &keys) {
+        match store.finalize_search(&search, &keys) {
             Err(Error::Validation(msg)) => {
                 assert!(msg.contains(&uncommitted.to_string()), "{msg}")
             }
@@ -598,9 +606,9 @@ mod tests {
     #[test]
     fn finalize_with_duplicate_keys_is_validation_error() -> Result<()> {
         let (_dir, store) = temp_store();
-        let (run, keys) = committed_run(&store)?;
+        let (search, keys) = committed_run(&store)?;
         assert!(matches!(
-            store.finalize_run(&run, &[keys[0], keys[1], keys[0]]),
+            store.finalize_search(&search, &[keys[0], keys[1], keys[0]]),
             Err(Error::Validation(_))
         ));
         Ok(())
@@ -609,17 +617,17 @@ mod tests {
     #[test]
     fn refinalize_with_the_same_keys_is_a_no_op() -> Result<()> {
         let (dir, store) = temp_store();
-        let (run, keys) = committed_run(&store)?;
-        store.finalize_run(&run, &keys)?;
+        let (search, keys) = committed_run(&store)?;
+        store.finalize_search(&search, &keys)?;
         let path = dir
             .path()
-            .join("runs")
-            .join(run.to_string())
+            .join("searches")
+            .join(search.to_string())
             .join("manifest.json");
         let before = fs::read(&path).expect("read manifest");
         // Resume through finalization: the shuffled recall converges on
         // the same bytes and leaves the file untouched.
-        store.finalize_run(&run, &[keys[1], keys[0]])?;
+        store.finalize_search(&search, &[keys[1], keys[0]])?;
         assert_eq!(fs::read(&path).expect("read manifest"), before);
         Ok(())
     }
@@ -627,10 +635,10 @@ mod tests {
     #[test]
     fn refinalize_with_different_keys_is_corruption() -> Result<()> {
         let (_dir, store) = temp_store();
-        let (run, keys) = committed_run(&store)?;
-        store.finalize_run(&run, &keys)?;
+        let (search, keys) = committed_run(&store)?;
+        store.finalize_search(&search, &keys)?;
         assert!(matches!(
-            store.finalize_run(&run, &keys[..1]),
+            store.finalize_search(&search, &keys[..1]),
             Err(Error::Corruption(_))
         ));
         Ok(())
@@ -639,10 +647,10 @@ mod tests {
     #[test]
     fn manifest_round_trips_typed_data() -> Result<()> {
         let (_dir, store) = temp_store();
-        let (run, keys) = committed_run(&store)?;
-        store.finalize_run(&run, &keys)?;
-        let manifest = store.manifest(&run)?.expect("finalized manifest");
-        assert_eq!(manifest.run, run);
+        let (search, keys) = committed_run(&store)?;
+        store.finalize_search(&search, &keys)?;
+        let manifest = store.manifest(&search)?.expect("finalized manifest");
+        assert_eq!(manifest.search, search);
         let tasks: Vec<_> = manifest.entries.iter().map(|e| e.task).collect();
         let mut sorted = keys.clone();
         sorted.sort();
@@ -653,24 +661,24 @@ mod tests {
     #[test]
     fn manifest_of_an_unfinalized_run_is_none() -> Result<()> {
         let (_dir, store) = temp_store();
-        let (run, _keys) = committed_run(&store)?;
-        assert!(store.manifest(&run)?.is_none());
+        let (search, _keys) = committed_run(&store)?;
+        assert!(store.manifest(&search)?.is_none());
         Ok(())
     }
 
     #[test]
-    fn a_manifest_copied_into_another_run_directory_is_corruption() -> Result<()> {
+    fn a_manifest_copied_into_another_search_directory_is_corruption() -> Result<()> {
         let (dir, store) = temp_store();
-        let (run, keys) = committed_run(&store)?;
-        store.finalize_run(&run, &keys)?;
-        let other = store.create_run(&sample_run_config(43))?;
-        let manifest_of = |run: &RunId| {
+        let (search, keys) = committed_run(&store)?;
+        store.finalize_search(&search, &keys)?;
+        let other = store.create_search(&sample_search_config(43))?;
+        let manifest_of = |search: &SearchId| {
             dir.path()
-                .join("runs")
-                .join(run.to_string())
+                .join("searches")
+                .join(search.to_string())
                 .join("manifest.json")
         };
-        fs::copy(manifest_of(&run), manifest_of(&other)).expect("copy manifest");
+        fs::copy(manifest_of(&search), manifest_of(&other)).expect("copy manifest");
         assert!(matches!(store.manifest(&other), Err(Error::Corruption(_))));
         Ok(())
     }
@@ -678,15 +686,15 @@ mod tests {
     #[test]
     fn a_hand_corrupted_manifest_file_is_corruption() -> Result<()> {
         let (dir, store) = temp_store();
-        let (run, keys) = committed_run(&store)?;
-        store.finalize_run(&run, &keys)?;
+        let (search, keys) = committed_run(&store)?;
+        store.finalize_search(&search, &keys)?;
         let path = dir
             .path()
-            .join("runs")
-            .join(run.to_string())
+            .join("searches")
+            .join(search.to_string())
             .join("manifest.json");
         fs::write(&path, b"{ definitely not a manifest").expect("corrupt manifest");
-        assert!(matches!(store.manifest(&run), Err(Error::Corruption(_))));
+        assert!(matches!(store.manifest(&search), Err(Error::Corruption(_))));
         Ok(())
     }
 
@@ -695,13 +703,13 @@ mod tests {
     #[test]
     fn closure_equals_the_hand_assembled_object_set() -> Result<()> {
         let (_dir, store) = temp_store();
-        let (run, keys) = committed_run(&store)?;
-        store.finalize_run(&run, &keys)?;
-        // The closure, assembled by hand: the config object (= run id),
+        let (search, keys) = committed_run(&store)?;
+        store.finalize_search(&search, &keys)?;
+        // The closure, assembled by hand: the config object (= search id),
         // both record objects, the shared spec/params/environment (once
         // each), and both artifacts. Sorted, deduplicated.
         let mut expected = vec![
-            *run.as_hash(),
+            *search.as_hash(),
             *sample_spec().id().as_hash(),
             *sample_params().id().as_hash(),
             *sample_environment().id().as_hash(),
@@ -713,7 +721,7 @@ mod tests {
         }
         expected.sort();
         expected.dedup();
-        assert_eq!(store.run_closure(&run)?, expected);
+        assert_eq!(store.search_closure(&search)?, expected);
         Ok(())
     }
 
@@ -728,30 +736,33 @@ mod tests {
         };
         let record = record_with_stored_artifact(&store, identity);
         store.commit(&record)?;
-        let run = store.create_run(&sample_run_config(44))?;
-        store.finalize_run(&run, &[identity.key()])?;
-        assert!(store.run_closure(&run)?.contains(&input_state));
+        let search = store.create_search(&sample_search_config(44))?;
+        store.finalize_search(&search, &[identity.key()])?;
+        assert!(store.search_closure(&search)?.contains(&input_state));
         Ok(())
     }
 
     #[test]
     fn closure_of_an_unfinalized_run_is_validation_error() -> Result<()> {
         let (_dir, store) = temp_store();
-        let (run, _keys) = committed_run(&store)?;
-        assert!(matches!(store.run_closure(&run), Err(Error::Validation(_))));
+        let (search, _keys) = committed_run(&store)?;
+        assert!(matches!(
+            store.search_closure(&search),
+            Err(Error::Validation(_))
+        ));
         Ok(())
     }
 
     #[test]
     fn closure_over_a_deleted_artifact_is_missing_object_naming_it() -> Result<()> {
         let (dir, store) = temp_store();
-        let (run, keys) = committed_run(&store)?;
-        store.finalize_run(&run, &keys)?;
+        let (search, keys) = committed_run(&store)?;
+        store.finalize_search(&search, &keys)?;
         let artifact = hash_bytes(&1u64.to_le_bytes());
         let hex = artifact.to_string();
         fs::remove_file(dir.path().join("objects").join(&hex[..2]).join(&hex))
             .expect("delete artifact object");
-        match store.run_closure(&run) {
+        match store.search_closure(&search) {
             Err(Error::MissingObject(h)) => assert_eq!(h, artifact),
             other => panic!("expected MissingObject, got {other:?}"),
         }
@@ -761,9 +772,12 @@ mod tests {
     #[test]
     fn closure_order_is_deterministic_across_calls() -> Result<()> {
         let (_dir, store) = temp_store();
-        let (run, keys) = committed_run(&store)?;
-        store.finalize_run(&run, &keys)?;
-        assert_eq!(store.run_closure(&run)?, store.run_closure(&run)?);
+        let (search, keys) = committed_run(&store)?;
+        store.finalize_search(&search, &keys)?;
+        assert_eq!(
+            store.search_closure(&search)?,
+            store.search_closure(&search)?
+        );
         Ok(())
     }
 
@@ -822,7 +836,7 @@ mod tests {
 
     #[test]
     fn commit_still_requires_every_referenced_object() {
-        // The rule a run's own commits keep: a record this store produced
+        // The rule a search's own commits keep: a record this store produced
         // references bytes this store holds.
         let (_dir, store) = temp_store();
         store_identity_components(&store);

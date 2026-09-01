@@ -15,14 +15,14 @@ use std::collections::HashSet;
 use sima_contracts::{Generator, STATE_ARTIFACT};
 use sima_core::{Error, Result, prng};
 use sima_model::{
-    Environment, EnvironmentId, ParamsId, RunConfig, Spec, SpecId, TaskIdentity, TaskKey,
+    Environment, EnvironmentId, ParamsId, SearchConfig, Spec, SpecId, TaskIdentity, TaskKey,
 };
 use sima_store::Store;
 
 use crate::task_source::{RunnableTask, TaskSource, generate_specs};
 
 /// The run's task keys as materialized so far: insertion-ordered and
-/// deduplicated, so convergent chains never hand `finalize_run` a duplicate.
+/// deduplicated, so convergent chains never hand `finalize_search` a duplicate.
 struct KeySet {
     ordered: Vec<TaskKey>,
     seen: HashSet<TaskKey>,
@@ -134,7 +134,7 @@ pub struct SegmentChain<'a> {
     store: &'a Store,
     params: ParamsId,
     environment: EnvironmentId,
-    /// Tasks per chain, from `RunConfig.segments`.
+    /// Tasks per chain, from `SearchConfig.segments`.
     segments: u64,
     chains: Vec<Chain>,
     keys: KeySet,
@@ -154,7 +154,7 @@ impl<'a> SegmentChain<'a> {
     /// frontier.
     pub fn new(
         generator: &dyn Generator,
-        config: &RunConfig,
+        config: &SearchConfig,
         environment: &Environment,
         store: &'a Store,
     ) -> Result<SegmentChain<'a>> {
@@ -272,8 +272,8 @@ mod tests {
     use sima_model::{ArtifactRef, GeneratorConfig, Params, TaskRecord};
 
     /// A segmented run config over the given behaviors.
-    fn config(behaviors: Vec<StubBehavior>, segments: u64) -> Result<RunConfig> {
-        Ok(RunConfig {
+    fn config(behaviors: Vec<StubBehavior>, segments: u64) -> Result<SearchConfig> {
+        Ok(SearchConfig {
             root_seed: 7,
             segments: std::num::NonZeroU64::new(segments),
             format: sima_model::FormatId::new("stub.v1")?,
@@ -327,7 +327,7 @@ mod tests {
 
     /// Stores the referenced objects a committed record needs and builds a
     /// chain source over one `accumulate:1` candidate.
-    fn one_chain(store: &Store, segments: u64) -> Result<(RunConfig, SegmentChain<'_>)> {
+    fn one_chain(store: &Store, segments: u64) -> Result<(SearchConfig, SegmentChain<'_>)> {
         let generator = StubGenerator::new()?;
         let config = config(vec![StubBehavior::Accumulate(1)], segments)?;
         let env = environment()?;

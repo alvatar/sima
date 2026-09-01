@@ -23,7 +23,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use sima_core::Result;
-use sima_model::RunId;
+use sima_model::SearchId;
 use sima_scheduler::{Event, Level};
 use sima_store::Store;
 use sima_trace::{Collector, Observer};
@@ -78,7 +78,7 @@ pub(crate) fn under_ceiling<T>(
 /// operator's view sees it too.
 pub(crate) fn report_ceiling(
     store: &Store,
-    run: &RunId,
+    run: &SearchId,
     observer: Observer<'_>,
     limit: Duration,
 ) -> Result<()> {

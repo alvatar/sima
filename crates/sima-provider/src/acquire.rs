@@ -18,8 +18,8 @@ use std::sync::{LazyLock, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use sima_core::{Error, Result};
-use sima_model::RunId;
-use sima_store::{InstanceRecord, InstanceRecordState, Rental, RunLock, Store};
+use sima_model::SearchId;
+use sima_store::{InstanceRecord, InstanceRecordState, Rental, SearchLock, Store};
 
 use crate::budget::{Budget, Exhaustion, Verdict, assess, now_ms};
 use crate::guard::{InstanceGuard, teardown};
@@ -145,7 +145,7 @@ static NONCE: LazyLock<String> = LazyLock::new(|| {
 pub fn acquire<'a, P: Provider + ?Sized>(
     provider: &'a P,
     store: &'a Store,
-    lock: &RunLock,
+    lock: &SearchLock,
     role: Rental,
     constraints: &Constraints,
     objective: Objective,
@@ -155,7 +155,7 @@ pub fn acquire<'a, P: Provider + ?Sized>(
     cancel: &AtomicBool,
     taken: &dyn Fn(&Offer),
 ) -> Result<InstanceGuard<'a, P>> {
-    let owner = lock.run();
+    let owner = lock.search();
     let mut constraints = constraints.clone();
     let ranked = {
         // Reaping, reading the budget, and reading the incident ledger all
@@ -308,7 +308,7 @@ enum Took {
 fn take<P: Provider + ?Sized>(
     provider: &P,
     store: &Store,
-    owner: &RunId,
+    owner: &SearchId,
     role: Rental,
     budget: &Budget,
     offer: &Offer,
@@ -379,7 +379,7 @@ fn take<P: Provider + ?Sized>(
 /// admitted will run is unknowable here, so nothing is projected. Bounding
 /// how far a running fleet may overshoot is the work of the caller that
 /// polls [`assess`] while the fleet runs.
-fn admit(store: &Store, owner: &RunId, budget: &Budget) -> Result<()> {
+fn admit(store: &Store, owner: &SearchId, budget: &Budget) -> Result<()> {
     match assess(store, owner, budget, now_ms())? {
         Verdict::Within { .. } => Ok(()),
         Verdict::Exhausted(Exhaustion::Spend { accrued, cap }) => Err(Error::Provider(format!(
@@ -445,7 +445,7 @@ fn wait_ready<P: Provider + ?Sized>(
 fn record(
     tag: &str,
     provider: &str,
-    owner: &RunId,
+    owner: &SearchId,
     offer: &Offer,
     instance: Option<&Instance>,
     created_ms: u64,
@@ -485,7 +485,7 @@ fn record(
 /// A spend entry is keyed by the pair (tag, start stamp), so two rentals
 /// share a key only where a reproduced tag meets a coinciding stamp — the
 /// tag alone keeps that pair apart whatever the clock reads.
-fn attempt_tag(owner: &RunId) -> String {
+fn attempt_tag(owner: &SearchId) -> String {
     let owner = owner.to_string();
     format!(
         "sima-{}-{}-{}-{}",
@@ -504,7 +504,7 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use sima_core::{Error, Result};
-    use sima_model::RunId;
+    use sima_model::SearchId;
     use sima_store::{
         IncidentKind, InstanceRecord, InstanceRecordState, MachineIncident, Rental, SpendEntry,
         Store,
@@ -649,7 +649,7 @@ mod tests {
             stub_offer("cheap", 100_000),
             stub_offer("dear", 200_000),
         ]);
-        let lock = store.acquire_run_lock(&sample_run(7))?;
+        let lock = store.acquire_search_lock(&sample_run(7))?;
         let admission = Admission::new();
         let guards: Vec<InstanceGuard<'_, StubProvider>> = std::thread::scope(|scope| {
             let handles: Vec<_> = (0..2)
@@ -763,7 +763,7 @@ mod tests {
         store: &'a Store,
         limits: &AcquireLimits,
     ) -> Result<InstanceGuard<'a, P>> {
-        let lock = store.acquire_run_lock(&sample_run(7))?;
+        let lock = store.acquire_search_lock(&sample_run(7))?;
         acquire(
             provider,
             store,
@@ -1083,7 +1083,7 @@ mod tests {
         store: &'a Store,
         budget: &Budget,
     ) -> Result<InstanceGuard<'a, P>> {
-        let lock = store.acquire_run_lock(&sample_run(7))?;
+        let lock = store.acquire_search_lock(&sample_run(7))?;
         acquire(
             provider,
             store,
@@ -1100,7 +1100,7 @@ mod tests {
     }
 
     /// A closed rental of `owner` costing `cost`, started at `started_ms`.
-    fn spent(owner: &RunId, started_ms: u64, cost: u64) -> SpendEntry {
+    fn spent(owner: &SearchId, started_ms: u64, cost: u64) -> SpendEntry {
         SpendEntry {
             tag: "sima-spent-0".to_string(),
             provider: "stub".to_string(),
@@ -1167,7 +1167,7 @@ mod tests {
             // A rate that consumes the cap within a millisecond of running.
             .charging_instances_at(Price(u64::MAX / 2));
         let watching = WatchingProvider::new(stub, dir.path().to_path_buf());
-        let lock = store.acquire_run_lock(&sample_run(7))?;
+        let lock = store.acquire_search_lock(&sample_run(7))?;
         let budget = Budget {
             max_spend: Some(Cost(1)),
             ..Budget::default()
@@ -1242,7 +1242,7 @@ mod tests {
             min_vram_mb: Some(1_000_000),
             ..Constraints::default()
         };
-        let lock = store.acquire_run_lock(&sample_run(7))?;
+        let lock = store.acquire_search_lock(&sample_run(7))?;
         let outcome = acquire(
             &stub,
             &store,
@@ -1346,7 +1346,7 @@ mod tests {
         ))?;
         // The lock the acquisition runs under is the acquiring run's, so its
         // own earlier record reads as owned by a running orchestrator.
-        let lock = store.acquire_run_lock(&sample_run(7))?;
+        let lock = store.acquire_search_lock(&sample_run(7))?;
         let guard = acquire(
             &stub,
             &store,
@@ -1443,7 +1443,7 @@ mod tests {
         let (_dir, store) = temp_store();
         let stub = StubProvider::new(vec![stub_offer("cheap", 100_000)]);
         let cancel = AtomicBool::new(true);
-        let lock = store.acquire_run_lock(&sample_run(7))?;
+        let lock = store.acquire_search_lock(&sample_run(7))?;
         let outcome = acquire(
             &stub,
             &store,
@@ -1472,7 +1472,7 @@ mod tests {
         let (_dir, store) = temp_store();
         let stub = StubProvider::new(vec![stub_offer("cheap", 100_000)]);
         let cancel = AtomicBool::new(true);
-        let lock = store.acquire_run_lock(&sample_run(7))?;
+        let lock = store.acquire_search_lock(&sample_run(7))?;
         let outcome = acquire(
             &stub,
             &store,
@@ -1511,7 +1511,7 @@ mod tests {
             inner,
             cancel: &cancel,
         };
-        let lock = store.acquire_run_lock(&sample_run(7))?;
+        let lock = store.acquire_search_lock(&sample_run(7))?;
         let outcome = acquire(
             &provider,
             &store,

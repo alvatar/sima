@@ -238,7 +238,7 @@ fn workers_die_with_their_parent_and_the_run_resumes() {
     let store = Store::open(&loaded.store).expect("open store");
     drop(
         store
-            .acquire_run_lock(&loaded.run.id())
+            .acquire_search_lock(&loaded.run.id())
             .expect("the lock is free after the death"),
     );
 

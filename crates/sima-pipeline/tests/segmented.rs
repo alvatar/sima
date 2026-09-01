@@ -312,7 +312,7 @@ fn segments_over_a_stateless_behavior_fails_naming_the_state_artifact() -> Resul
 }
 
 #[test]
-fn one_segment_matches_the_static_batch_keys_under_a_distinct_run_id() -> Result<()> {
+fn one_segment_matches_the_static_batch_keys_under_a_distinct_search_id() -> Result<()> {
     let dir = tempfile::tempdir().expect("temp dir");
     let one = accumulate_config(dir.path(), "one.toml", "./store-one", 25, Some(1), None)?;
     let batch = accumulate_config(dir.path(), "batch.toml", "./store-batch", 25, None, None)?;

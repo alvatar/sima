@@ -1,7 +1,7 @@
 //! Pipeline layer: the human-facing configuration in, a driven run out.
 //!
 //! A `sima.toml` is loaded and translated into the identity-bearing
-//! [`sima_model::RunConfig`] plus the operational execution settings. The
+//! [`sima_model::SearchConfig`] plus the operational execution settings. The
 //! format id resolves through the [`DomainRegistry`] to what answers for it —
 //! [`sima_domains`] for the formats this build carries, or the program a
 //! `[domain.*]` entry names — which supplies the executor that evaluates the
@@ -79,7 +79,7 @@ pub use sima_store::SpendEntry;
 // The run identity a query names, re-exported with the rest of the surface a
 // caller reads a run through.
 pub use runs::{RunSummary, runs};
-pub use sima_model::RunId;
+pub use sima_model::SearchId;
 pub use sima_store::RemovalReport;
 // The scheduler types a caller drives and observes runs through, re-exported
 // so the CLI consumes one coherent surface.

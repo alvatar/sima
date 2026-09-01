@@ -3,7 +3,7 @@
 
 use sima_contracts::Generator;
 use sima_core::{Codec, Error, Result};
-use sima_model::{RunConfig, Spec, SpecId, TaskIdentity, TaskKey};
+use sima_model::{SearchConfig, Spec, SpecId, TaskIdentity, TaskKey};
 use sima_store::Store;
 
 /// A runnable task: the resolved candidate and its identity. The spec bytes
@@ -65,7 +65,7 @@ pub trait TaskSource {
 /// bytes).
 pub(crate) fn generate_specs(
     generator: &dyn Generator,
-    config: &RunConfig,
+    config: &SearchConfig,
     store: &Store,
 ) -> Result<Vec<(Spec, SpecId)>> {
     let specs = generator.generate(config.root_seed, &config.generator.params)?;
@@ -127,8 +127,8 @@ mod tests {
     }
 
     /// A run over `format`, its generator named and its params empty.
-    fn config(format: &str) -> RunConfig {
-        RunConfig {
+    fn config(format: &str) -> SearchConfig {
+        SearchConfig {
             root_seed: 42,
             segments: None::<NonZeroU64>,
             format: FormatId::new(format).expect("format id"),

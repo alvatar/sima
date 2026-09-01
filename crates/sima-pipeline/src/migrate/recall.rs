@@ -70,8 +70,8 @@ pub fn recall(loaded: &LoadedConfig, observer: Observer<'_>) -> Result<MigrateOu
     let store = Store::open(&loaded.store)?;
     // The same idempotent registration `sima run` and `sima migrate` perform:
     // it is what gives the run a journal for the wind-down to report into.
-    let run = store.create_run(&loaded.run)?;
-    let lock = store.acquire_run_lock(&run)?;
+    let run = store.create_search(&loaded.run)?;
+    let lock = store.acquire_search_lock(&run)?;
 
     // One journal boundary around the whole recall, as a migration opens: the
     // wind-down's own report is what crosses it.
@@ -181,7 +181,7 @@ mod tests {
     fn a_recall_of_a_driving_run_winds_it_down_pulls_and_tears_the_rental_down() -> Result<()> {
         let local = local(RENTED, PROMPT, Some(3));
         let run = local.config.run.id();
-        let lock = local.store.acquire_run_lock(&run)?;
+        let lock = local.store.acquire_search_lock(&run)?;
         let provider = marketplace();
         let guard = hosting(&provider, &local.store, &lock)?;
         let far = Scripted::new()

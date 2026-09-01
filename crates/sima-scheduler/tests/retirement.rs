@@ -6,7 +6,7 @@ mod common;
 
 use std::time::Duration;
 
-use common::{config, exec, journal_events, run_id, run_pools, stub_resolver, temp_store};
+use common::{config, exec, journal_events, run_pools, search_id, stub_resolver, temp_store};
 use sima_contracts::DeviceBinding;
 use sima_core::{Error, Result};
 use sima_domains::StubBehavior;
@@ -78,7 +78,7 @@ fn a_fatal_retirement_faults_the_run() -> Result<()> {
         other => panic!("expected a transport retirement fault, got {other:?}"),
     }
     // A faulted run writes no manifest.
-    assert!(store.manifest(&run_id(&cfg))?.is_none());
+    assert!(store.manifest(&search_id(&cfg))?.is_none());
     Ok(())
 }
 
@@ -106,7 +106,7 @@ fn a_retirement_is_journaled_as_a_diagnostic() -> Result<()> {
         },
     ];
     run_pools(&store, &cfg, &exec, &pools)?;
-    let events = journal_events(&store, &run_id(&cfg));
+    let events = journal_events(&store, &search_id(&cfg));
     assert!(
         events.iter().any(|event| matches!(
             event,
@@ -145,7 +145,7 @@ fn a_non_fatal_retirement_lets_a_survivor_finish_the_run() -> Result<()> {
     ));
     // Every candidate committed through the survivor.
     let manifest = store
-        .manifest(&run_id(&cfg))?
+        .manifest(&search_id(&cfg))?
         .expect("a finalized manifest");
     assert_eq!(manifest.entries.len(), 2);
     Ok(())
@@ -173,7 +173,7 @@ fn the_last_worker_retiring_faults_rather_than_hangs() -> Result<()> {
         }
         other => panic!("expected an every-worker-retired fault, got {other:?}"),
     }
-    assert!(store.manifest(&run_id(&cfg))?.is_none());
+    assert!(store.manifest(&search_id(&cfg))?.is_none());
     Ok(())
 }
 
@@ -199,6 +199,6 @@ fn a_spawn_failure_still_faults_the_run() -> Result<()> {
         }
         other => panic!("expected a transport fault, got {other:?}"),
     }
-    assert!(store.manifest(&run_id(&cfg))?.is_none());
+    assert!(store.manifest(&search_id(&cfg))?.is_none());
     Ok(())
 }

@@ -9,7 +9,7 @@
 use std::path::Path;
 
 use sima_core::{Error, Result};
-use sima_model::RunId;
+use sima_model::SearchId;
 use sima_store::Store;
 
 use crate::journal::parse;
@@ -19,7 +19,7 @@ use crate::status::{RunState, status_records};
 /// and its task ledger.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunSummary {
-    pub run: RunId,
+    pub run: SearchId,
     /// What the run's journal projects, by the same fold `sima status` uses.
     pub state: RunState,
     /// The run's task count, as its latest session stated it.
@@ -47,7 +47,7 @@ pub fn runs(root: &Path) -> Result<Vec<RunSummary>> {
     }
     let store = Store::open(root)?;
     store
-        .runs()?
+        .searches()?
         .into_iter()
         .map(|run| {
             let records = parse(&run, &store.journal(&run)?)?;
@@ -69,7 +69,7 @@ pub fn runs(root: &Path) -> Result<Vec<RunSummary>> {
 /// type more of one of them. The empty prefix is refused before that: it
 /// begins every run, so in a store holding one it would address that run
 /// while naming nothing.
-pub(crate) fn resolve_run(store: &Store, prefix: &str) -> Result<RunId> {
+pub(crate) fn resolve_run(store: &Store, prefix: &str) -> Result<SearchId> {
     if prefix.is_empty() {
         return Err(Error::Validation(
             "--run takes a run id or a leading part of one, and was given nothing. Every run \
@@ -78,8 +78,8 @@ pub(crate) fn resolve_run(store: &Store, prefix: &str) -> Result<RunId> {
                 .to_string(),
         ));
     }
-    let matched: Vec<RunId> = store
-        .runs()?
+    let matched: Vec<SearchId> = store
+        .searches()?
         .into_iter()
         .filter(|run| run.to_string().starts_with(prefix))
         .collect();
@@ -91,7 +91,7 @@ pub(crate) fn resolve_run(store: &Store, prefix: &str) -> Result<RunId> {
         many => Err(Error::Validation(format!(
             "prefix {prefix} is ambiguous: it matches {}",
             many.iter()
-                .map(RunId::to_string)
+                .map(SearchId::to_string)
                 .collect::<Vec<String>>()
                 .join(", ")
         ))),
@@ -152,7 +152,7 @@ mod tests {
     }
 
     /// A store holding two runs of different identities, and their ids.
-    fn two_runs(dir: &Path) -> Result<(Store, RunId, RunId)> {
+    fn two_runs(dir: &Path) -> Result<(Store, SearchId, SearchId)> {
         let root = dir.join("store");
         let store = Store::open(&root)?;
         let (first, second) = sharing_a_leading_character(&root);
@@ -179,7 +179,7 @@ mod tests {
                 "a finalized run committed all of them: {summary:?}"
             );
         }
-        let ids: Vec<RunId> = listed.iter().map(|summary| summary.run).collect();
+        let ids: Vec<SearchId> = listed.iter().map(|summary| summary.run).collect();
         assert!(ids.contains(&first) && ids.contains(&second), "{ids:?}");
         Ok(())
     }
@@ -231,7 +231,7 @@ mod tests {
         let text = error.to_string();
         assert!(text.contains("--run"), "names the flag: {text}");
         assert_eq!(
-            store.runs()?,
+            store.searches()?,
             vec![only.run.id()],
             "and nothing was touched"
         );

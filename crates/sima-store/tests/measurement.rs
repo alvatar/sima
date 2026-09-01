@@ -1,7 +1,7 @@
 //! Manual CAS cost measurements at the search workload shape: 1000 objects
 //! of 128 KiB and 100 of 2 MiB.
 //!
-//! Two `#[ignore]` benchmarks that print timings and always pass, run on the
+//! Two `#[ignore]` benchmarks that print timings and always pass, search on the
 //! dev machine with:
 //!
 //! ```text

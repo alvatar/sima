@@ -34,7 +34,7 @@
 //! The omissions are the surface's shape, not gaps in it. Each names a
 //! responsibility that belongs to sima's side of the boundary:
 //!
-//! - **run-level configuration** (`RunConfig`, `RunId`, `GeneratorConfig`) is
+//! - **run-level configuration** (`SearchConfig`, `SearchId`, `GeneratorConfig`) is
 //!   the orchestrator's, never an executor's;
 //! - **identity and commitment** (`TaskKey`, `TaskIdentity`, `TaskRecord`,
 //!   `ArtifactRef`) are the worker's side: an executor receives loaded bytes

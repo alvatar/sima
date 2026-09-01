@@ -14,7 +14,7 @@ use std::thread::sleep;
 use std::time::Instant;
 
 use sima_core::{Error, Result};
-use sima_store::{InstanceRecord, Rental, RunLock, Store};
+use sima_store::{InstanceRecord, Rental, SearchLock, Store};
 
 use crate::acquire::AcquireLimits;
 use crate::guard::InstanceGuard;
@@ -43,10 +43,10 @@ use crate::provider::{InstanceId, InstanceStatus, Provider};
 pub fn adopt<'a, P: Provider + ?Sized>(
     provider: &'a P,
     store: &'a Store,
-    lock: &RunLock,
+    lock: &SearchLock,
     limits: &AcquireLimits,
 ) -> Result<Option<InstanceGuard<'a, P>>> {
-    let owner = lock.run().to_string();
+    let owner = lock.search().to_string();
     let Some(record) = store.instance_records()?.into_iter().find(|record| {
         record.provider == provider.id()
             && record.owner == owner
@@ -147,7 +147,7 @@ mod tests {
     fn a_live_hosting_rental_comes_back_as_a_guard() -> Result<()> {
         let (_dir, store) = temp_store();
         let run = sample_run(3);
-        let lock = store.acquire_run_lock(&run)?;
+        let lock = store.acquire_search_lock(&run)?;
         let stub = StubProvider::new(vec![stub_offer("a", 100_000)]);
         let id = provisioned(&stub, 0, "sima-tag-0");
         let record = instance_record_as("sima-tag-0", live_state(&id.0), run, Rental::Orchestrator);
@@ -170,7 +170,7 @@ mod tests {
     fn a_rental_the_provider_no_longer_holds_clears_its_record() -> Result<()> {
         let (_dir, store) = temp_store();
         let run = sample_run(3);
-        let lock = store.acquire_run_lock(&run)?;
+        let lock = store.acquire_search_lock(&run)?;
         let stub = StubProvider::new(vec![stub_offer("a", 100_000)]);
         let id = provisioned(&stub, 0, "sima-tag-0");
         store.put_instance(&instance_record_as(
@@ -194,7 +194,7 @@ mod tests {
         // Destroying a machine that may be coming up is a guess about money.
         let (_dir, store) = temp_store();
         let run = sample_run(3);
-        let lock = store.acquire_run_lock(&run)?;
+        let lock = store.acquire_search_lock(&run)?;
         let stub = StubProvider::new(vec![stub_offer("a", 100_000)]).ready_after(5);
         let id = provisioned(&stub, 0, "sima-tag-0");
         store.put_instance(&instance_record_as(
@@ -224,7 +224,7 @@ mod tests {
     fn a_worker_rental_and_another_run_s_rental_are_not_this_caller_s() -> Result<()> {
         let (_dir, store) = temp_store();
         let run = sample_run(3);
-        let lock = store.acquire_run_lock(&run)?;
+        let lock = store.acquire_search_lock(&run)?;
         let stub = StubProvider::new(vec![stub_offer("a", 100_000), stub_offer("b", 200_000)]);
         let mine = provisioned(&stub, 0, "sima-tag-0");
         let theirs = provisioned(&stub, 1, "sima-tag-1");
@@ -259,7 +259,7 @@ mod tests {
         // reconciliation is what clears it.
         let (_dir, store) = temp_store();
         let run = sample_run(3);
-        let lock = store.acquire_run_lock(&run)?;
+        let lock = store.acquire_search_lock(&run)?;
         let stub = StubProvider::new(vec![stub_offer("a", 100_000)]);
         store.put_instance(&instance_record_as(
             "sima-tag-0",

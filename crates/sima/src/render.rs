@@ -5,8 +5,8 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use sima_pipeline::{
-    Attempt, AttemptResult, Event, MachineReport, Record, RetryStats, RunId, RunState, RunStatus,
-    RunSummary, RunTimeline, SpendReport, TaskHistory, TaskOutcome, WorkerMetrics,
+    Attempt, AttemptResult, Event, MachineReport, Record, RetryStats, RunState, RunStatus,
+    RunSummary, RunTimeline, SearchId, SpendReport, TaskHistory, TaskOutcome, WorkerMetrics,
 };
 
 /// How many hex characters of an id a progress line shows.
@@ -355,7 +355,7 @@ const FAILURE_COLUMNS: [&str; 5] = ["task", "final", "attempts", "worker", "reas
 /// Renders the failure digest: a header counting the tasks the run did not
 /// commit, then one row each naming how the task ended and why. An empty
 /// digest is the header alone.
-pub fn failures_block(run: &RunId, failures: &[TaskHistory]) -> String {
+pub fn failures_block(run: &SearchId, failures: &[TaskHistory]) -> String {
     let tasks = if failures.len() == 1 { "task" } else { "tasks" };
     let header = format!(
         "run {}   {} {tasks} did not commit",
@@ -1474,8 +1474,8 @@ mod tests {
     }
 
     /// The run the digest tests render against.
-    fn a_run() -> RunId {
-        RunId::from_hash(sima_core::hash_bytes(b"a run to render"))
+    fn a_run() -> SearchId {
+        SearchId::from_hash(sima_core::hash_bytes(b"a run to render"))
     }
 
     /// One task the run ended on a rejection.

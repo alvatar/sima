@@ -30,7 +30,7 @@
 use std::path::Path;
 
 use sima_core::Result;
-use sima_model::RunId;
+use sima_model::SearchId;
 use sima_store::{ObjectScope, Store, SyncReport, SyncRole};
 use sima_transport::{SpawnMode, SshDestination};
 
@@ -63,12 +63,12 @@ use crate::task_keys::journaled_keys;
 /// side advertises what it holds and holds only what it was sent.
 pub fn sync_serve(
     store: &Path,
-    run: &RunId,
+    run: &SearchId,
     input: &mut dyn std::io::Read,
     output: &mut dyn std::io::Write,
 ) -> Result<SyncReport> {
     let store = Store::open(store)?;
-    let _lock = store.acquire_run_lock(run)?;
+    let _lock = store.acquire_search_lock(run)?;
     let keys = journaled_keys(&store, run)?;
     store.sync(
         &keys,
@@ -92,7 +92,7 @@ pub(crate) fn sync_over(
     scope: ObjectScope<'_>,
     reach: &Reach,
     far_store: &str,
-    far_run: &RunId,
+    far_run: &SearchId,
 ) -> Result<SyncReport> {
     sync_against(
         store,
@@ -140,7 +140,7 @@ impl Reach {
     ///
     /// The verb addresses the store rather than a config: loading the config
     /// on the far side would spawn the program the session exists to deliver.
-    pub(crate) fn sync_serve_argv(&self, far_store: &str, far_run: &RunId) -> Vec<String> {
+    pub(crate) fn sync_serve_argv(&self, far_store: &str, far_run: &SearchId) -> Vec<String> {
         self.verb_argv(&["sync-serve", far_store, "--run", &far_run.to_string()])
     }
 
@@ -215,8 +215,8 @@ mod tests {
     use super::*;
 
     /// The run every argv test addresses.
-    fn run() -> RunId {
-        RunId::from_hash(sima_core::hash_bytes(b"a migrated run"))
+    fn run() -> SearchId {
+        SearchId::from_hash(sima_core::hash_bytes(b"a migrated run"))
     }
 
     #[test]

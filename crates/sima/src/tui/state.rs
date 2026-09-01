@@ -438,15 +438,15 @@ impl TuiState {
 mod tests {
     use super::*;
     use sima_core::{Error, hash_bytes};
-    use sima_model::{RunId, TaskKey};
+    use sima_model::{SearchId, TaskKey};
     use sima_pipeline::Event;
 
-    fn run_id() -> RunId {
-        RunId::from_hash(hash_bytes(b"tui state run"))
+    fn search_id() -> SearchId {
+        SearchId::from_hash(hash_bytes(b"tui state run"))
     }
 
     fn idle(workers: usize) -> TuiState {
-        TuiState::new(RunStatus::new(run_id()), workers)
+        TuiState::new(RunStatus::new(search_id()), workers)
     }
 
     /// Wraps an event as a record the tests feed the state. The stamp is
@@ -481,7 +481,7 @@ mod tests {
     }
 
     fn finalized() -> Result<RunOutcome> {
-        Ok(RunOutcome::Finalized { run: run_id() })
+        Ok(RunOutcome::Finalized { run: search_id() })
     }
 
     fn failed_outcome() -> Result<RunOutcome> {
@@ -492,7 +492,7 @@ mod tests {
     }
 
     fn interrupted() -> Result<RunOutcome> {
-        Ok(RunOutcome::Interrupted { run: run_id() })
+        Ok(RunOutcome::Interrupted { run: search_id() })
     }
 
     #[test]

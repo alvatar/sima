@@ -165,7 +165,7 @@ fn a_second_session_over_converged_stores_transfers_nothing() -> Result<()> {
 }
 
 #[test]
-fn a_far_side_whose_run_lock_is_held_fails_cleanly_rather_than_hanging() -> Result<()> {
+fn a_far_side_whose_search_lock_is_held_fails_cleanly_rather_than_hanging() -> Result<()> {
     // `sync-serve` takes the run lock for the session, so a run driving that
     // store on that machine makes the sync fail on the lock. The failure is the
     // safe one: nothing is written underneath a live orchestrator.
@@ -177,7 +177,7 @@ fn a_far_side_whose_run_lock_is_held_fails_cleanly_rather_than_hanging() -> Resu
     // Hold the far store's run lock from this process, as a live run would.
     let far_loaded = load(&far)?;
     let far_store = Store::open(&far_loaded.store)?;
-    let _held = far_store.acquire_run_lock(&far_loaded.run.id())?;
+    let _held = far_store.acquire_search_lock(&far_loaded.run.id())?;
 
     assert!(
         sync_against(&near, &far, ObjectScope::Referenced).is_err(),
@@ -187,7 +187,7 @@ fn a_far_side_whose_run_lock_is_held_fails_cleanly_rather_than_hanging() -> Resu
 }
 
 #[test]
-fn a_run_id_that_is_not_one_surfaces_as_a_failure() {
+fn a_search_id_that_is_not_one_surfaces_as_a_failure() {
     // The verb takes a content address, so an argument that is not one fails
     // before a store is touched.
     let dir = tempfile::tempdir().expect("temp dir");

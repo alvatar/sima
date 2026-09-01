@@ -31,7 +31,7 @@ pub enum ObjectScope<'a> {
     /// records in full — a chain is traversable forward only, so without the
     /// prefix records the far side cannot locate the frontier at all — while
     /// sending only the state bytes the far side will actually read, plus
-    /// whatever else the run needs there: the program a config-routed format
+    /// whatever else the search needs there: the program a config-routed format
     /// is served by travels this way, and no task record names it.
     Named(&'a [Hash]),
 }
@@ -79,7 +79,7 @@ impl Store {
     /// Synchronizes this store with a peer over a byte pipe, transferring the
     /// task records within `keys` and the objects they reference so both sides
     /// end holding the union. `reader`/`writer` are the pipe halves to the
-    /// peer, which runs `sync` with the opposite [`SyncRole`].
+    /// peer, which searches `sync` with the opposite [`SyncRole`].
     ///
     /// Only records and objects move — checkpoints, placement, journals, and
     /// manifests stay with their orchestrator. Every arriving object and record
@@ -94,7 +94,7 @@ impl Store {
     /// twice over identical stores it transfers nothing.
     ///
     /// The task-key set comes from the caller: the store cannot enumerate a
-    /// run's tasks without the generator and config, which live above it.
+    /// search's tasks without the generator and config, which live above it.
     pub fn sync(
         &self,
         keys: &[TaskKey],
@@ -139,7 +139,7 @@ impl Store {
         // "Mine" is what this store **holds**, not what it advertised. The two
         // differ: advertising is bounded by the caller's key set, while a store
         // may hold a record or an object outside it — one it was sent under a
-        // wider set in an earlier session. Asking for those back would re-run
+        // wider set in an earlier session. Asking for those back would re-search
         // every earlier transfer at each session. So a peer-advertised item
         // this side does not advertise is looked up before it is wanted.
         //
@@ -235,7 +235,7 @@ impl Store {
         let offered: BTreeSet<Hash> = match scope {
             ObjectScope::Referenced => referenced,
             // Exactly what the caller named. Not every object a side needs to
-            // offer is one a record references: a run whose format is served
+            // offer is one a record references: a search whose format is served
             // by a program of its own carries that program as objects too, and
             // no task record names them.
             ObjectScope::Named(named) => named.iter().copied().collect(),
@@ -552,7 +552,7 @@ mod tests {
     };
 
     /// Drives `store` as a responder against a hand-built peer whose every
-    /// frame is precomputed, so the session runs synchronously against a byte
+    /// frame is precomputed, so the session searches synchronously against a byte
     /// slice with no peer thread. The responder holds no key set of its own, so
     /// it advertises nothing and the peer's `Have` alone decides its want.
     fn responder_reads(
@@ -597,9 +597,9 @@ mod tests {
     #[test]
     fn an_inventory_larger_than_one_chunk_travels_whole() {
         // The chunking is what makes an inventory of any size syncable: one
-        // frame capped a run at about 1.3M tasks, past which sync was
+        // frame capped a search at about 1.3M tasks, past which sync was
         // impossible rather than slow. The bound is a parameter here so the
-        // case runs on a handful of entries instead of a quarter of a gigabyte.
+        // case searches on a handful of entries instead of a quarter of a gigabyte.
         let records: Vec<(TaskKey, Hash)> = (0..7u8)
             .map(|i| (TaskKey::from_hash(hash_bytes(&[i])), hash_bytes(&[i, 1])))
             .collect();
@@ -612,7 +612,7 @@ mod tests {
         })
         .expect("the split succeeds");
 
-        // Seven records at three per chunk is three chunks; the objects run out
+        // Seven records at three per chunk is three chunks; the objects search out
         // first and their chunks empty rather than pacing the records.
         assert_eq!(chunks, vec![(3, 3, true), (3, 2, true), (1, 0, false)]);
     }
@@ -858,7 +858,7 @@ mod tests {
     fn what_this_side_holds_outside_its_key_set_is_never_asked_for() {
         // Advertising is bounded by the caller's key set; holding is not. A
         // store sent a record under a wider set in an earlier session must not
-        // ask for it back, or every session would re-run every earlier one.
+        // ask for it back, or every session would re-search every earlier one.
         // The key set here is empty, so this side advertises none of what it
         // holds, which is exactly the case.
         let (_dir, store) = temp_store();

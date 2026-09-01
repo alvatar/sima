@@ -13,7 +13,7 @@
 //! the run stops until the invocation states an answer.
 
 use sima_core::{Error, Result};
-use sima_model::{RunConfig, RunId};
+use sima_model::{SearchConfig, SearchId};
 use sima_scheduler::{Event, Record};
 use sima_store::Store;
 
@@ -45,7 +45,7 @@ pub enum BinaryChange {
 /// sessions.
 pub(crate) fn bind(
     store: &Store,
-    run: &RunConfig,
+    run: &SearchConfig,
     routed: &RoutedProgram<'_>,
     accept: BinaryChange,
 ) -> Result<()> {
@@ -68,7 +68,7 @@ pub(crate) fn bind(
     // The run directory must exist for the journal writer, and this append
     // precedes the collector, so the registration the scheduler would perform
     // later happens here. It is idempotent, so a resume re-registers nothing.
-    store.create_run(run)?;
+    store.create_search(run)?;
     let mut writer = store.journal_writer(&id)?;
     writer.append(
         &Record::stamped(Event::ProgramBound {
@@ -87,7 +87,7 @@ pub(crate) fn bind(
 /// A line that does not parse is skipped: the journal is observational, and a
 /// crash can tear its final write, so a torn or foreign line states nothing
 /// about which build drove the run.
-fn last_digest(store: &Store, run: &RunId) -> Result<Option<String>> {
+fn last_digest(store: &Store, run: &SearchId) -> Result<Option<String>> {
     Ok(store
         .journal(run)?
         .iter()
@@ -128,7 +128,7 @@ mod tests {
     }
 
     /// The program-binding digests the run's journal carries, in append order.
-    fn bound_digests(store: &Store, run: &RunId) -> Result<Vec<String>> {
+    fn bound_digests(store: &Store, run: &SearchId) -> Result<Vec<String>> {
         Ok(store
             .journal(run)?
             .iter()

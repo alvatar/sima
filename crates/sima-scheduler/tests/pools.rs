@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use common::{
     chained_config, class, class_slot, device, device_naming_resolver, exec_over, journal_events,
-    named_class, run_id, run_pools, task_classes, temp_store,
+    named_class, run_pools, search_id, task_classes, temp_store,
 };
 use sima_core::Result;
 use sima_domains::StubBehavior;
@@ -29,10 +29,10 @@ const NVIDIA: u32 = 0x10de;
 fn a_run_spreads_across_two_pools_and_places_by_class() -> Result<()> {
     let (_dir, store) = temp_store();
     let config = chained_config(101, vec![StubBehavior::Accumulate(2); 4], 3);
-    let run = run_id(&config);
+    let run = search_id(&config);
     // Seed one chain onto each class, so both pools run real work and the
     // cross-pool binding is concrete rather than a placement race.
-    store.create_run(&config)?;
+    store.create_search(&config)?;
     store.bind_chain(&run, 0, &class_slot(&class(INTEL)))?;
     store.bind_chain(&run, 1, &class_slot(&class(NVIDIA)))?;
 

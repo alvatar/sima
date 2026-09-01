@@ -77,13 +77,13 @@ use std::time::{Duration, Instant};
 
 use sima_core::{Error, Result};
 use sima_domains::devices::DeviceInfo;
-use sima_model::RunId;
+use sima_model::SearchId;
 use sima_provider::{
     AcquireLimits, Admission, Budget, InstanceGuard, Objective, Provider, Verdict, acquire, adopt,
     assess, now_ms,
 };
 use sima_scheduler::Event;
-use sima_store::{ObjectScope, Rental as RentalRole, RunLock, Store};
+use sima_store::{ObjectScope, Rental as RentalRole, SearchLock, Store};
 use sima_trace::{Emitter, Observer};
 
 use crate::config::{FillPolicy, HostForm, LoadedConfig, Rented};
@@ -182,8 +182,8 @@ pub fn migrate(
     };
     // Registering the run is what gives it a journal to forward into, and it is
     // the same idempotent registration a local `sima run` performs.
-    let run = store.create_run(&loaded.run)?;
-    let lock = store.acquire_run_lock(&run)?;
+    let run = store.create_search(&loaded.run)?;
+    let lock = store.acquire_search_lock(&run)?;
 
     // One journal boundary around the whole migration: the phases of placing
     // the run cross it before there is a far run, and the far run's own records
@@ -338,7 +338,7 @@ fn carried(loaded: &LoadedConfig) -> Result<Option<Carried>> {
 fn hold<'a>(
     provider: &'a (dyn Provider + Sync),
     store: &'a Store,
-    lock: &RunLock,
+    lock: &SearchLock,
     spec: &Rented,
     usable_by: Instant,
     budget: &Budget,
@@ -517,7 +517,7 @@ impl Session<'_> {
     /// rental's budget runs out, forwarding each record into the run's journal.
     fn follow(
         &self,
-        run: &RunId,
+        run: &SearchId,
         reattached: bool,
         opened: Option<Box<dyn RunFeed>>,
         events: &Emitter,
@@ -1413,7 +1413,7 @@ mod tests {
         // billing behind a `sima migrate` that already exited.
         let local = local(RENTED, PROMPT, Some(3));
         let run = local.config.run.id();
-        let lock = local.store.acquire_run_lock(&run)?;
+        let lock = local.store.acquire_search_lock(&run)?;
         let provider = marketplace();
         let guard = hosting(&provider, &local.store, &lock)?;
         let interrupt = Arc::new(AtomicBool::new(false));
@@ -1475,7 +1475,7 @@ mod tests {
         // machine it computes on is kept.
         let local = local(RENTED, PROMPT, Some(3));
         let run = local.config.run.id();
-        let lock = local.store.acquire_run_lock(&run)?;
+        let lock = local.store.acquire_search_lock(&run)?;
         let provider = marketplace();
         let guard = hosting(&provider, &local.store, &lock)?;
         // Raised as the far run is started, which is the first moment there is
@@ -1647,7 +1647,7 @@ mod tests {
         // offer walk and leave nothing rented.
         let local = local(RENTED, PROMPT, Some(3));
         let run = local.config.run.id();
-        let lock = local.store.acquire_run_lock(&run)?;
+        let lock = local.store.acquire_search_lock(&run)?;
         let provider = marketplace();
         let HostForm::Rented(spec) = &local.config.hosts["cloudbox"].form else {
             panic!("the fixture declares a rented machine");
@@ -1701,7 +1701,7 @@ mod tests {
     fn an_exhausted_budget_winds_the_far_run_down_and_reports_the_exhaustion() -> Result<()> {
         let local = local(RENTED, PROMPT, Some(3));
         let run = local.config.run.id();
-        let lock = local.store.acquire_run_lock(&run)?;
+        let lock = local.store.acquire_search_lock(&run)?;
         let provider = marketplace();
         let guard = hosting(&provider, &local.store, &lock)?;
         // A closed rental this run already paid for, well past the ceiling the
@@ -1739,7 +1739,7 @@ mod tests {
         // is not wound down, so the assessment decides rather than its presence.
         let local = local(RENTED, PROMPT, Some(3));
         let run = local.config.run.id();
-        let lock = local.store.acquire_run_lock(&run)?;
+        let lock = local.store.acquire_search_lock(&run)?;
         let provider = marketplace();
         let guard = hosting(&provider, &local.store, &lock)?;
         let far = Scripted::new().delivering(vec![vec![started(&run), finalized(&run)]]);
@@ -1957,7 +1957,7 @@ mod tests {
             if exhausted {
                 over_budget(&local)?;
             }
-            let lock = local.store.acquire_run_lock(&local.config.run.id())?;
+            let lock = local.store.acquire_search_lock(&local.config.run.id())?;
             let provider = marketplace();
             let guard = hosting(&provider, &local.store, &lock)?;
             let _ = session_over(&local, far, Some(guard), &AtomicBool::new(false));
@@ -2080,7 +2080,7 @@ mod tests {
     {
         let local = local(RENTED, PROMPT, Some(3));
         let run = local.config.run.id();
-        let lock = local.store.acquire_run_lock(&run)?;
+        let lock = local.store.acquire_search_lock(&run)?;
         let provider = marketplace();
         // The ledger as an earlier invocation left it: a live rental of this
         // run's orchestrator.
