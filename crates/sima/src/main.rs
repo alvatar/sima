@@ -547,7 +547,7 @@ fn exec_command(
                     ExecAction::End => unreachable!("end never completes a command"),
                 }
             }
-            ExitCode::from(u8::try_from(code).unwrap_or(EXIT_ERROR))
+            ExitCode::from(exec_exit_code(code))
         }
         Ok(ExecOutcome::Detached) => {
             if narration == Narration::Full {
@@ -599,6 +599,12 @@ fn exec_command(
         }
         Err(error) => report(error),
     }
+}
+
+/// Converts the shell's command status to the process exit-code range. A
+/// malformed remote status is an orchestration fault.
+fn exec_exit_code(code: i32) -> u8 {
+    u8::try_from(code).unwrap_or(EXIT_ERROR)
 }
 
 /// Loads the config and drives its search.
@@ -1326,6 +1332,15 @@ mod tests {
         ] {
             assert_eq!(exec_form(args), None, "{args:?}");
         }
+    }
+
+    #[test]
+    fn exec_preserves_every_shell_exit_code() {
+        for code in 0..=u8::MAX {
+            assert_eq!(exec_exit_code(i32::from(code)), code);
+        }
+        assert_eq!(exec_exit_code(-1), EXIT_ERROR);
+        assert_eq!(exec_exit_code(256), EXIT_ERROR);
     }
 
     #[test]

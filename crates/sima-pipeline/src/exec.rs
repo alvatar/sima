@@ -144,6 +144,9 @@ fn run(
             }
             ExecAction::End => return Ok(ExecOutcome::NoInstance),
             ExecAction::Start { one_shot } => {
+                if interrupt.load(Ordering::Relaxed) {
+                    return Ok(ExecOutcome::Abandoned { kept: false });
+                }
                 let cancel = if one_shot {
                     interrupt
                 } else {
@@ -348,7 +351,10 @@ fn end(
     observer.narration("fetching outputs");
     match far.fetch(&config.outputs, fetch_to) {
         Ok(()) => Ok(SessionOutcome::Release(ExecOutcome::Ended)),
-        Err(error) => Ok(SessionOutcome::KeepError(error)),
+        Err(error) => {
+            observer.narration("fetch failed; instance kept with outputs remote");
+            Ok(SessionOutcome::KeepError(error))
+        }
     }
 }
 
@@ -368,7 +374,11 @@ fn follow_to_outcome(
         observer,
     ) {
         Ok(followed) => followed,
-        Err(error) => return Ok(SessionOutcome::KeepError(error)),
+        Err(error) => {
+            observer
+                .narration("log stream failed; instance kept and the command may still be running");
+            return Ok(SessionOutcome::KeepError(error));
+        }
     };
     match followed {
         Followed::Detached => Ok(SessionOutcome::Keep(ExecOutcome::Detached)),
@@ -385,14 +395,20 @@ fn follow_to_outcome(
                 Ok(()) => Ok(SessionOutcome::Release(ExecOutcome::BudgetExhausted(
                     exhaustion,
                 ))),
-                Err(error) => Ok(SessionOutcome::ReleaseError(error)),
+                Err(error) => {
+                    observer.narration("budget exhausted; instance release remains mandatory");
+                    Ok(SessionOutcome::ReleaseError(error))
+                }
             }
         }
         Followed::Completed(code) => {
             observer.narration("fetching outputs");
             match far.fetch(&config.outputs, fetch_to) {
                 Ok(()) => Ok(SessionOutcome::Keep(ExecOutcome::Completed(code))),
-                Err(error) => Ok(SessionOutcome::KeepError(error)),
+                Err(error) => {
+                    observer.narration("fetch failed; instance kept with outputs remote");
+                    Ok(SessionOutcome::KeepError(error))
+                }
             }
         }
     }
@@ -413,6 +429,20 @@ enum Followed {
     Completed(i32),
     Detached,
     Exhausted(Exhaustion),
+}
+
+/// Ends and reaps the local log transport while leaving the detached remote
+/// command untouched. The reader owns the transport's stdout, so closing the
+/// process precedes joining it.
+fn stop_log_stream(
+    child: &mut std::process::Child,
+    receive: mpsc::Receiver<std::io::Result<String>>,
+    reader: std::thread::JoinHandle<()>,
+) {
+    let _ = child.kill();
+    let _ = child.wait();
+    drop(receive);
+    let _ = reader.join();
 }
 
 struct RemoteExec {
@@ -625,25 +655,27 @@ impl RemoteExec {
         let mut assessed = Instant::now() - Duration::from_secs(10);
         loop {
             if interrupt.load(Ordering::Relaxed) {
-                let _ = child.kill();
-                let _ = child.wait();
-                drop(receive);
-                let _ = reader.join();
+                stop_log_stream(&mut child, receive, reader);
                 return Ok(Followed::Detached);
             }
             if assessed.elapsed() >= Duration::from_secs(10) {
                 assessed = Instant::now();
-                if let Verdict::Exhausted(exhaustion) = assess(store, &owner, budget, now_ms())? {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    drop(receive);
-                    let _ = reader.join();
-                    return Ok(Followed::Exhausted(exhaustion));
+                match assess(store, &owner, budget, now_ms()) {
+                    Ok(Verdict::Exhausted(exhaustion)) => {
+                        stop_log_stream(&mut child, receive, reader);
+                        return Ok(Followed::Exhausted(exhaustion));
+                    }
+                    Ok(Verdict::Within { .. }) => {}
+                    Err(error) => {
+                        stop_log_stream(&mut child, receive, reader);
+                        return Err(error);
+                    }
                 }
             }
             match receive.recv_timeout(Duration::from_millis(100)) {
                 Ok(Ok(line)) => observer.command(&line),
                 Ok(Err(error)) => {
+                    stop_log_stream(&mut child, receive, reader);
                     return Err(Error::Transport(format!(
                         "remote exec log is unreadable: {error}"
                     )));
@@ -898,43 +930,26 @@ mod tests {
     }
 
     #[test]
-    fn interrupt_before_acquisition_cancels_one_shot_and_default_keeps_after_acquiring()
-    -> Result<()> {
-        let one_shot_dir = tempfile::tempdir().expect("one-shot job");
-        let one_shot = job_config(one_shot_dir.path(), "echo must-not-run");
-        let mut recording = Recording::default();
-        assert_eq!(
-            exec(
-                &one_shot,
-                &ExecOptions {
-                    action: ExecAction::Start { one_shot: true },
-                    fetch_to: None,
-                },
-                &AtomicBool::new(true),
-                &mut recording,
-            )?,
-            ExecOutcome::Abandoned { kept: false }
-        );
-        let store = Store::open(one_shot_dir.path().join(".sima/store"))?;
-        assert!(store.instance_records()?.is_empty());
-
-        let kept_dir = tempfile::tempdir().expect("kept job");
-        let kept = job_config(kept_dir.path(), "echo must-not-run");
-        recording = Recording::default();
-        assert_eq!(
-            exec(
-                &kept,
-                &ExecOptions {
-                    action: ExecAction::Start { one_shot: false },
-                    fetch_to: None,
-                },
-                &AtomicBool::new(true),
-                &mut recording,
-            )?,
-            ExecOutcome::Abandoned { kept: true }
-        );
-        let store = Store::open(kept_dir.path().join(".sima/store"))?;
-        assert_eq!(store.instance_records()?.len(), 1);
+    fn interrupt_before_acquisition_rents_nothing_in_either_mode() -> Result<()> {
+        for one_shot in [false, true] {
+            let dir = tempfile::tempdir().expect("job");
+            let config = job_config(dir.path(), "echo must-not-run");
+            let mut recording = Recording::default();
+            assert_eq!(
+                exec(
+                    &config,
+                    &ExecOptions {
+                        action: ExecAction::Start { one_shot },
+                        fetch_to: None,
+                    },
+                    &AtomicBool::new(true),
+                    &mut recording,
+                )?,
+                ExecOutcome::Abandoned { kept: false }
+            );
+            let store = Store::open(dir.path().join(".sima/store"))?;
+            assert!(store.instance_records()?.is_empty());
+        }
         Ok(())
     }
 
