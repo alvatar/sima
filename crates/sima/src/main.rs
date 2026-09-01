@@ -106,13 +106,13 @@ fn main() -> ExitCode {
         // The write commands never observe: `search` drives a search, which happens
         // where the hardware is, and `rm` and `reconcile` mutate a store. A
         // host on any of them falls through to the usage error.
-        ["search", config] if host.is_none() => run_command(
+        ["search", config] if host.is_none() => search_command(
             &resolve_config(config),
             Engagement::Orchestrator,
             accept,
             narration,
         ),
-        ["search", config, "--fleet"] if host.is_none() => run_command(
+        ["search", config, "--fleet"] if host.is_none() => search_command(
             &resolve_config(config),
             Engagement::Fleet,
             accept,
@@ -194,34 +194,34 @@ fn main() -> ExitCode {
         ["follow", config] => follow::follow_command(&Target::new(config, host)),
         _ => {
             eprint!(
-                "usage: sima search <config>                  drive the search on this machine\n\
-                 \x20      sima search <config> --fleet          drive it on this machine and [fleet]\n\
-                 \x20      sima search <config> --accept-binary  continue through a changed program\n\
-                 \x20      sima search <config> --quiet          print the search's own progress and no more\n\
-                 \x20      sima status <config>               report the search's state\n\
-                 \x20      sima status <config> --task <key>  print one task's attempt timeline\n\
-                 \x20      sima status <config> --failed      digest the tasks that did not commit\n\
-                 \x20      sima report <config>               count committed tasks per distinct stats value\n\
-                 \x20      sima report <config> --all         print each committed task's stats\n\
-                 \x20      sima report <config> --task <key>  print one committed task's stats\n\
-                 \x20      sima report <config> --timeline    report the search's metrics and its timeline\n\
-                 \x20      sima report <config> --spend       report the search's rental spend\n\
-                 \x20      sima report <config> --machines    report machine reputation and blacklisting\n\
-                 \x20      sima migrate <config>              move the search onto the host [orchestrator] names\n\
+                "usage: sima search <config>                   drive the search on this machine\n\
+                 \x20      sima search <config> --fleet           drive it on this machine and [fleet]\n\
+                 \x20      sima search <config> --accept-binary   continue through a changed program\n\
+                 \x20      sima search <config> --quiet           print the search's own progress and no more\n\
+                 \x20      sima status <config>                   report the search's state\n\
+                 \x20      sima status <config> --task <key>      print one task's attempt timeline\n\
+                 \x20      sima status <config> --failed          digest the tasks that did not commit\n\
+                 \x20      sima report <config>                   count committed tasks per distinct stats value\n\
+                 \x20      sima report <config> --all             print each committed task's stats\n\
+                 \x20      sima report <config> --task <key>      print one committed task's stats\n\
+                 \x20      sima report <config> --timeline        report the search's metrics and its timeline\n\
+                 \x20      sima report <config> --spend           report the search's rental spend\n\
+                 \x20      sima report <config> --machines        report machine reputation and blacklisting\n\
+                 \x20      sima migrate <config>                  move the search onto the host [orchestrator] names\n\
                  \x20      sima migrate <config> --accept-binary  … through a changed program\n\
-                 \x20      sima recall <config>               wind the migrated search down and bring it home\n\
-                 \x20      sima rm <config>                   delete the search and what only it references\n\
-                 \x20      sima rm <config> --search <id>        … delete that search of the same store instead\n\
+                 \x20      sima recall <config>                   wind the migrated search down and bring it home\n\
+                 \x20      sima rm <config>                       delete the search and what only it references\n\
+                 \x20      sima rm <config> --search <id>         … delete that search of the same store instead\n\
                  \x20      sima searches <store-dir>              list the searches the store holds\n\
-                 \x20      sima sdk <language> --out <dir>    write the SDK this binary carries into <dir>\n\
-                 \x20      sima pack <store-dir>              consolidate the store's loose objects into packs\n\
-                 \x20      sima pack <store-dir> --gc         … and delete everything outside the finalized\n\
-                 \x20                                         searches' closures, unfinalized searches included, which\n\
-                 \x20                                         destroys the work of a search still going\n\
-                 \x20      sima reconcile <config>            destroy the machines a crashed search left running\n\
-                 \x20      sima reconcile <config> --hosted   destroy the machines hosting a migrated search too\n\
-                 \x20      sima tui <config> [--fleet]        drive the search in a full-screen terminal UI\n\
-                 \x20      sima follow <config>               stream the search's events until it ends\n\
+                 \x20      sima sdk <language> --out <dir>        write the SDK this binary carries into <dir>\n\
+                 \x20      sima pack <store-dir>                  consolidate the store's loose objects into packs\n\
+                 \x20      sima pack <store-dir> --gc             … and delete everything outside the finalized\n\
+                 \x20                                             searches' closures, unfinalized searches included, which\n\
+                 \x20                                             destroys the work of a search still going\n\
+                 \x20      sima reconcile <config>                destroy the machines a crashed search left running\n\
+                 \x20      sima reconcile <config> --hosted       destroy the machines hosting a migrated search too\n\
+                 \x20      sima tui <config> [--fleet]            drive the search in a full-screen terminal UI\n\
+                 \x20      sima follow <config>                   stream the search's events until it ends\n\
                  \x20      <config> is a sima.toml path; the .toml extension may be omitted\n\
                  \x20      <key> is any prefix of a task key that names one task\n\
                  \x20      --on <host> observes a search on an ssh destination: status, report,\n\
@@ -392,7 +392,7 @@ fn resolve_config(arg: &str) -> PathBuf {
 /// maps the outcome to the exit code. `engagement` is what the invocation asked
 /// for: this machine alone, or this machine and the fleet. `accept` is what it
 /// asked for about a program whose build changed under the search.
-fn run_command(
+fn search_command(
     config: &Path,
     engagement: Engagement,
     accept: BinaryChange,
