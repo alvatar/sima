@@ -122,7 +122,7 @@ fn run(
         usable_by: Instant::now() + spec.ready_timeout,
         ready_poll: spec.ready_poll,
     };
-    let had_record = store.instance_records()?.into_iter().any(|record| {
+    let prior_record = store.instance_records()?.into_iter().find(|record| {
         record.owner == owner.to_string()
             && record.provider == provider.id()
             && record.role == Rental::Exec
@@ -133,14 +133,17 @@ fn run(
     if held.is_none() {
         match options.action {
             ExecAction::Attach => {
-                return Err(Error::Provider(
-                    if had_record {
-                        "the ledger machine is gone or was destroyed"
-                    } else {
-                        "there is no standing instance for this job"
-                    }
-                    .to_string(),
-                ));
+                return Err(Error::Provider(if let Some(record) = prior_record {
+                    format!(
+                        "the live ledger record for machine {:?}, instance {:?}, is gone or was destroyed",
+                        record.machine,
+                        record
+                            .instance()
+                            .expect("the matched record names an instance")
+                    )
+                } else {
+                    "there is no standing instance for this job".to_string()
+                }));
             }
             ExecAction::End => return Ok(ExecOutcome::NoInstance),
             ExecAction::Start { one_shot } => {
@@ -762,6 +765,7 @@ mod tests {
     use std::sync::{Mutex, PoisonError};
 
     use super::*;
+    use sima_store::{InstanceRecord, InstanceRecordState};
 
     #[derive(Default)]
     struct Recording {
@@ -782,6 +786,7 @@ mod tests {
     struct ChoreographyDouble {
         calls: RefCell<Vec<&'static str>>,
         state: Cell<RemoteState>,
+        binary_present: bool,
     }
 
     impl ChoreographyDouble {
@@ -789,6 +794,7 @@ mod tests {
             ChoreographyDouble {
                 calls: RefCell::new(Vec::new()),
                 state: Cell::new(RemoteState::Idle),
+                binary_present: true,
             }
         }
     }
@@ -801,7 +807,7 @@ mod tests {
 
         fn binary_present(&self) -> Result<bool> {
             self.calls.borrow_mut().push("binary_present");
-            Ok(true)
+            Ok(self.binary_present)
         }
 
         fn bootstrap_sima(&self) -> Result<()> {
@@ -954,6 +960,32 @@ mod tests {
                 "fetch",
             ]
         );
+        Ok(())
+    }
+
+    #[test]
+    fn a_missing_remote_binary_requires_the_explicit_bootstrap_key() -> Result<()> {
+        let dir = tempfile::tempdir().expect("job");
+        let path = job_config(dir.path(), "opaque command");
+        let config = load_exec(&path)?;
+        let store = Store::open(&config.store)?;
+        let far = ChoreographyDouble {
+            binary_present: false,
+            ..ChoreographyDouble::idle()
+        };
+        let mut recording = Recording::default();
+        let error = start(
+            &far,
+            &store,
+            &config,
+            &config.fetch_to,
+            false,
+            &AtomicBool::new(false),
+            &mut recording,
+        )
+        .expect_err("bootstrap is explicit");
+        assert!(error.to_string().contains("bootstrap_sima"), "{error}");
+        assert_eq!(*far.calls.borrow(), ["state", "binary_present"]);
         Ok(())
     }
 
@@ -1124,6 +1156,49 @@ mod tests {
     }
 
     #[test]
+    fn a_finished_machine_runs_a_fresh_cycle_without_reinstalling_the_same_payload() -> Result<()> {
+        let dir = tempfile::tempdir().expect("job");
+        let path = job_config(
+            dir.path(),
+            "count=$(cat cycles 2>/dev/null || echo 0); expr $count + 1 > cycles; mkdir -p reports; cp cycles reports/out.txt",
+        );
+        fs::write(dir.path().join("install.sh"), "printf x >> install-count\n")
+            .expect("count installs");
+        let config = load_exec(&path)?;
+        let far = RemoteExec::new(
+            Reach::Here(crate::fixtures::built_sima()),
+            &config.host.root,
+            &owner_id("bench"),
+        );
+        let store = Store::open(&config.store)?;
+        let mut recording = Recording::default();
+        for _ in 0..2 {
+            assert!(matches!(
+                start(
+                    &far,
+                    &store,
+                    &config,
+                    &config.fetch_to,
+                    false,
+                    &AtomicBool::new(false),
+                    &mut recording,
+                )?,
+                SessionOutcome::Keep(ExecOutcome::Completed(0))
+            ));
+        }
+        let payload = Path::new(&far.root).join("payload");
+        assert_eq!(
+            fs::read_to_string(payload.join("cycles")).expect("cycle count"),
+            "2\n"
+        );
+        assert_eq!(
+            fs::read_to_string(payload.join("install-count")).expect("install count"),
+            "x"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn attach_and_end_without_a_standing_instance_are_disjoint() -> Result<()> {
         let dir = tempfile::tempdir().expect("job");
         let config = job_config(dir.path(), "true");
@@ -1154,6 +1229,46 @@ mod tests {
             )?,
             ExecOutcome::NoInstance
         );
+        Ok(())
+    }
+
+    #[test]
+    fn attach_reports_a_ledger_machine_the_provider_no_longer_holds() -> Result<()> {
+        let dir = tempfile::tempdir().expect("job");
+        let config = job_config(dir.path(), "true");
+        let store = Store::open(dir.path().join(".sima/store"))?;
+        store.put_instance(&InstanceRecord {
+            role: Rental::Exec,
+            tag: "sima-exec-gone".to_string(),
+            provider: "stub".to_string(),
+            machine: "stub-machine-gone".to_string(),
+            owner: owner_id("bench").to_string(),
+            state: InstanceRecordState::Live {
+                instance: "stub-instance-gone".to_string(),
+            },
+            price_micro_usd_hour: 100_000,
+            created_ms: 1_700_000_000_000,
+        })?;
+        let mut recording = Recording::default();
+        let error = exec(
+            &config,
+            &ExecOptions {
+                action: ExecAction::Attach,
+                fetch_to: None,
+            },
+            &AtomicBool::new(false),
+            &mut recording,
+        )
+        .expect_err("gone machine");
+        let message = error.to_string();
+        assert!(message.contains("live ledger record"), "{message}");
+        assert!(
+            message.contains("gone") || message.contains("destroyed"),
+            "{message}"
+        );
+        assert!(message.contains("stub-machine-gone"), "{message}");
+        assert!(message.contains("stub-instance-gone"), "{message}");
+        assert!(store.instance_records()?.is_empty());
         Ok(())
     }
 
@@ -1205,6 +1320,36 @@ mod tests {
     }
 
     #[test]
+    fn end_kills_a_running_command_fetches_and_requests_release() -> Result<()> {
+        let dir = tempfile::tempdir().expect("job");
+        let path = job_config(dir.path(), "sleep 30");
+        let config = load_exec(&path)?;
+        let far = local_far(&PathBuf::from(&config.host.root));
+        far.start("mkdir -p reports; echo partial > reports/out.txt; sleep 30")?;
+        let remote_output = Path::new(&far.root).join("payload/reports/out.txt");
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !remote_output.is_file() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            remote_output.is_file(),
+            "the command produced its partial output"
+        );
+        let mut recording = Recording::default();
+        assert!(matches!(
+            end(&far, &config, &config.fetch_to, &mut recording)?,
+            SessionOutcome::Release(ExecOutcome::Ended)
+        ));
+        assert!(!matches!(far.state()?, RemoteState::Running(_)));
+        assert_eq!(
+            fs::read_to_string(config.fetch_to.join("reports/out.txt")).expect("fetched output"),
+            "partial\n"
+        );
+        assert!(config.fetch_to.join("exec.log").is_file());
+        Ok(())
+    }
+
+    #[test]
     fn plain_start_refuses_a_running_command_and_interrupt_detaches() -> Result<()> {
         let dir = tempfile::tempdir().expect("job");
         let path = job_config(dir.path(), "sleep 30");
@@ -1228,7 +1373,7 @@ mod tests {
             message.contains("--attach") && message.contains("--end"),
             "{message}"
         );
-        let outcome = follow_to_outcome(
+        let outcome = attach(
             &far,
             &store,
             &config,
