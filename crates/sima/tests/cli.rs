@@ -39,6 +39,7 @@ fn exec_argv_forms_dispatch_and_malformed_forms_report_usage() {
     for args in [
         vec!["exec", path],
         vec!["exec", path, "--attach"],
+        vec!["exec", path, "--attach", "--fetch-to", "results"],
         vec!["exec", path, "--one-shot"],
         vec!["exec", path, "--end"],
         vec!["exec", path, "--fetch-to", "results"],
@@ -58,7 +59,6 @@ fn exec_argv_forms_dispatch_and_malformed_forms_report_usage() {
 
     for args in [
         vec!["exec", path, "--attach", "--end"],
-        vec!["exec", path, "--attach", "--fetch-to", "results"],
         vec!["exec", path, "--fetch-to"],
     ] {
         let output = sima(&args);

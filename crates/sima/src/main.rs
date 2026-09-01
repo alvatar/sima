@@ -69,9 +69,10 @@ use sima_pipeline::{
     BinaryChange, Engagement, ExecAction, ExecObserver, ExecOptions, ExecOutcome, FeedInfo,
     LoadedConfig, LocalFeed, Record, RemoteFeed, RemovalReport, ReportRow, Sdk, SearchControl,
     SearchFeed, SearchId, SearchOutcome, SearchState, SearchStatus, SearchTimeline, TaskHistory,
-    exec, failures_records, follow_serve, load, load_exec, local_snapshot, orchestrate,
-    receive_exec_payload, receive_program, remote_snapshot, report_records, report_task_records,
-    seeded_status, status_records, sync_serve, task_history_records, timeline_records,
+    exec, exec_instance_line, failures_records, follow_serve, load, load_exec, local_snapshot,
+    orchestrate, receive_exec_payload, receive_program, remote_snapshot, report_records,
+    report_task_records, seeded_status, status_records, sync_serve, task_history_records,
+    timeline_records,
 };
 use sima_provider::ReconcileScope;
 
@@ -224,7 +225,7 @@ fn main() -> ExitCode {
                  \x20      sima exec <config> --attach            replay and follow its running command\n\
                  \x20      sima exec <config> --one-shot          run, fetch, and destroy the instance\n\
                  \x20      sima exec <config> --end               stop, fetch, and destroy the instance\n\
-                 \x20      sima exec <config> --fetch-to <dir>    override the local output directory\n\
+                 \x20      sima exec <config> --fetch-to <dir>    fetch into a directory relative to the current directory\n\
                  \x20      sima exec <config> --quiet             print only the remote command's output\n\
                  \x20      sima status <config>                   report the search's state\n\
                  \x20      sima status <config> --task <key>      print one task's attempt timeline\n\
@@ -348,8 +349,8 @@ fn split_quiet<'a>(args: &[&'a str]) -> (Vec<&'a str>, Narration) {
 }
 
 /// Parses one user-facing `sima exec` form. Lifecycle flags are mutually
-/// exclusive, while `--fetch-to` composes with start, one-shot, and end in
-/// either order. Attach takes no other exec option.
+/// exclusive, while `--fetch-to` composes with every action that can fetch in
+/// either order.
 fn exec_form<'a>(args: &[&'a str]) -> Option<(&'a str, ExecAction, Option<&'a str>)> {
     let ["exec", config, rest @ ..] = args else {
         return None;
@@ -379,7 +380,7 @@ fn exec_form<'a>(args: &[&'a str]) -> Option<(&'a str, ExecAction, Option<&'a st
     let action = match (attach, one_shot, end) {
         (false, false, false) => ExecAction::Start { one_shot: false },
         (false, true, false) => ExecAction::Start { one_shot: true },
-        (true, false, false) if fetch_to.is_none() => ExecAction::Attach,
+        (true, false, false) => ExecAction::Attach,
         (false, false, true) => ExecAction::End,
         _ => return None,
     };
@@ -491,11 +492,7 @@ impl ExecObserver for ExecProgress {
 
     fn instance(&mut self, id: &str, rate_microusd_hour: u64, adopted: bool) {
         self.machine = Some((id.to_string(), rate_microusd_hour));
-        self.narration(&format!(
-            "{} instance {id} at ${:.6}/hr",
-            if adopted { "adopted" } else { "acquired" },
-            rate_microusd_hour as f64 / 1_000_000.0
-        ));
+        self.narration(&exec_instance_line(id, rate_microusd_hour, adopted));
     }
 }
 
@@ -524,7 +521,7 @@ fn exec_command(
         Ok(interrupt) => interrupt,
         Err(error) => return report(error),
     };
-    let fetch_to = fetch_to.map(|path| config.parent().unwrap_or_else(|| Path::new("")).join(path));
+    let fetch_to = fetch_to.map(Path::to_path_buf);
     let options = ExecOptions { action, fetch_to };
     let mut progress = ExecProgress {
         narration,
@@ -1306,6 +1303,10 @@ mod tests {
             Some(("job.toml", ExecAction::Attach, None))
         );
         assert_eq!(
+            exec_form(&["exec", "job.toml", "--attach", "--fetch-to", "results"]),
+            Some(("job.toml", ExecAction::Attach, Some("results")))
+        );
+        assert_eq!(
             exec_form(&["exec", "job.toml", "--fetch-to", "results", "--one-shot",]),
             Some((
                 "job.toml",
@@ -1324,7 +1325,6 @@ mod tests {
         for args in [
             &["exec"][..],
             &["exec", "job.toml", "--attach", "--one-shot"],
-            &["exec", "job.toml", "--attach", "--fetch-to", "results"],
             &["exec", "job.toml", "--end", "--one-shot"],
             &["exec", "job.toml", "--fetch-to"],
             &["exec", "job.toml", "--fetch-to", "--one-shot"],

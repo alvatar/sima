@@ -3260,7 +3260,9 @@ command form keeps its shape whether or not a host is named:
   adoption after completion. `--one-shot` releases after fetch; `--attach`
   follows the command already running there; `--end` kills when needed,
   fetches, and releases. `--fetch-to <dir>` overrides the configured local
-  destination for start, one-shot, and end. See [Exec](#exec).
+  destination for start, attach, one-shot, and end. The command-line path is
+  relative to the current directory; `[exec].fetch_to` is relative to the
+  config file. See [Exec](#exec).
 - **`sima migrate <config.toml>`** — moves the search onto the machine
   `[orchestrator].migrate` names, follows it there through the same renderer
   `search` uses, and brings the results home; see
