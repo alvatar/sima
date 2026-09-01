@@ -137,7 +137,7 @@ fn main() -> ExitCode {
         // The one read command whose argument is a store directory: what a
         // store holds is every search ever driven against it, and a config names
         // one of them.
-        ["searches", store] if host.is_none() => runs_command(Path::new(store)),
+        ["searches", store] if host.is_none() => searches_command(Path::new(store)),
         // The only verb whose argument is a store directory rather than a
         // config: packing needs no search knowledge, and a store defines every
         // search it holds.
@@ -320,7 +320,7 @@ fn split_quiet<'a>(args: &[&'a str]) -> (Vec<&'a str>, Narration) {
 }
 
 /// The search a read command addresses: one on this machine, or one on the host
-/// its orchestrator searches on.
+/// its orchestrator runs on.
 ///
 /// A search's identity is the hash of its config, and its store path resolves
 /// relative to the config file's directory, so a remote target carries the
@@ -352,7 +352,7 @@ impl Target {
 }
 
 /// Opens a live feed over the target's search: the journal on this machine, or
-/// one follow stream from the host the orchestrator searches on. The views that
+/// one follow stream from the host the orchestrator runs on. The views that
 /// tail a search consume the feed and never learn which it is.
 fn feed(target: &Target) -> Result<Box<dyn SearchFeed>> {
     match target {
@@ -798,10 +798,10 @@ fn rm_matching_command(config: &Path, prefix: &str) -> ExitCode {
 
 /// `sima searches <store-dir>`: one line per search the store holds, with its state
 /// and its task ledger.
-fn runs_command(store: &Path) -> ExitCode {
+fn searches_command(store: &Path) -> ExitCode {
     match sima_pipeline::searches(store) {
         Ok(summaries) => {
-            println!("{}", render::runs_block(&summaries));
+            println!("{}", render::searches_block(&summaries));
             ExitCode::SUCCESS
         }
         Err(e) => report(e),
@@ -1022,7 +1022,7 @@ mod tests {
     }
 
     #[test]
-    fn the_binary_flag_leaves_every_run_form_intact() {
+    fn the_binary_flag_leaves_every_search_form_intact() {
         // `search` matches on the rest, so extracting the flag — from either
         // position — must leave exactly the argument list the arms match.
         let (rest, accept) = split_change(&["search", "exp.toml", "--accept-binary"]);
@@ -1052,7 +1052,7 @@ mod tests {
     }
 
     #[test]
-    fn a_run_without_the_binary_flag_refuses_a_changed_program() {
+    fn a_search_without_the_binary_flag_refuses_a_changed_program() {
         let (rest, accept) = split_change(&["search", "exp.toml", "--fleet"]);
         assert_eq!(rest, ["search", "exp.toml", "--fleet"]);
         assert_eq!(accept, BinaryChange::Refuse);

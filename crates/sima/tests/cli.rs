@@ -30,7 +30,7 @@ fn stdout(output: &Output) -> String {
 }
 
 #[test]
-fn run_finalizes_a_succeeding_config_and_writes_the_manifest() {
+fn search_finalizes_a_succeeding_config_and_writes_the_manifest() {
     let dir = tempfile::tempdir().expect("temp dir");
     let config = write_config(dir.path(), r#""succeed", "succeed""#);
 
@@ -51,7 +51,7 @@ fn run_finalizes_a_succeeding_config_and_writes_the_manifest() {
 /// search, `sima-worker` children of the search process are visible in the
 /// process table.
 #[test]
-fn run_executes_tasks_in_worker_subprocesses() {
+fn search_executes_tasks_in_worker_subprocesses() {
     let dir = tempfile::tempdir().expect("temp dir");
     let config = write_config(dir.path(), r#""sleep:3000", "sleep:3000""#);
     let mut child = sima_command()
@@ -83,7 +83,7 @@ fn run_executes_tasks_in_worker_subprocesses() {
 }
 
 #[test]
-fn run_exits_2_on_a_definitive_failure_and_prints_the_reason() {
+fn search_exits_2_on_a_definitive_failure_and_prints_the_reason() {
     let dir = tempfile::tempdir().expect("temp dir");
     let config = write_config(dir.path(), r#""succeed", "reject""#);
 
@@ -98,7 +98,7 @@ fn run_exits_2_on_a_definitive_failure_and_prints_the_reason() {
 }
 
 #[test]
-fn a_second_run_over_the_same_store_re_evaluates_to_success() {
+fn a_second_search_over_the_same_store_re_evaluates_to_success() {
     let dir = tempfile::tempdir().expect("temp dir");
     let config = write_config(dir.path(), r#""succeed", "succeed""#);
     let path = config.to_str().expect("utf-8 path");
@@ -110,7 +110,7 @@ fn a_second_run_over_the_same_store_re_evaluates_to_success() {
 }
 
 #[test]
-fn status_before_any_run_exits_1_and_after_reports_the_counts() {
+fn status_before_any_search_exits_1_and_after_reports_the_counts() {
     let dir = tempfile::tempdir().expect("temp dir");
     let config = write_config(dir.path(), r#""succeed", "succeed", "flaky:1""#);
     let path = config.to_str().expect("utf-8 path");
@@ -130,7 +130,7 @@ fn status_before_any_run_exits_1_and_after_reports_the_counts() {
 }
 
 #[test]
-fn report_timeline_reports_the_throughput_utilization_and_temporal_shape_of_a_run() {
+fn report_timeline_reports_the_throughput_utilization_and_temporal_shape_of_a_search() {
     let dir = tempfile::tempdir().expect("temp dir");
     // Tasks that occupy their worker for a measurable span, so the utilization
     // figures and the occupancy bars have something to draw.
@@ -176,7 +176,7 @@ fn report_timeline_reports_the_throughput_utilization_and_temporal_shape_of_a_ru
 }
 
 #[test]
-fn report_timeline_over_a_local_run_names_no_host_and_no_device() {
+fn report_timeline_over_a_local_search_names_no_host_and_no_device() {
     let dir = tempfile::tempdir().expect("temp dir");
     let config = write_config(dir.path(), r#""succeed", "succeed""#);
     let path = config.to_str().expect("utf-8 path");
@@ -214,7 +214,7 @@ fn worker_row(text: &str, worker: &str) -> Vec<String> {
 }
 
 #[test]
-fn report_timeline_over_a_failed_run_answers_and_exits_0() {
+fn report_timeline_over_a_failed_search_answers_and_exits_0() {
     let dir = tempfile::tempdir().expect("temp dir");
     let config = write_config(dir.path(), r#""succeed", "reject""#);
     let path = config.to_str().expect("utf-8 path");
@@ -328,7 +328,7 @@ fn status_task_rejects_an_ambiguous_or_unmatched_prefix() {
 }
 
 #[test]
-fn status_failed_names_the_tasks_a_failed_run_did_not_commit() {
+fn status_failed_names_the_tasks_a_failed_search_did_not_commit() {
     let dir = tempfile::tempdir().expect("temp dir");
     let config = write_config(dir.path(), r#""succeed", "reject""#);
     let path = config.to_str().expect("utf-8 path");
@@ -346,7 +346,7 @@ fn status_failed_names_the_tasks_a_failed_run_did_not_commit() {
 }
 
 #[test]
-fn status_failed_over_an_all_committed_run_names_no_task() {
+fn status_failed_over_an_all_committed_search_names_no_task() {
     let dir = tempfile::tempdir().expect("temp dir");
     let config = write_config(dir.path(), r#""succeed", "flaky:1""#);
     let path = config.to_str().expect("utf-8 path");
@@ -596,17 +596,17 @@ fn report_spend_refuses_a_remote_host() {
 }
 
 #[test]
-fn a_rerun_of_a_finalized_search_reports_prior_commits() {
+fn running_a_finalized_search_again_reports_prior_commits() {
     let dir = tempfile::tempdir().expect("temp dir");
     let config = write_config(dir.path(), r#""succeed", "succeed""#);
     let path = config.to_str().expect("utf-8 path");
 
     assert_eq!(sima(&["search", path]).status.code(), Some(0));
-    // The rerun re-derives an empty frontier: no task executes, and the
+    // Running again re-derives an empty frontier: no task executes, and the
     // progress must say so instead of reading as a restart from zero.
-    let rerun = sima(&["search", path]);
-    assert_eq!(rerun.status.code(), Some(0), "{rerun:?}");
-    let text = stdout(&rerun);
+    let resumed = sima(&["search", path]);
+    assert_eq!(resumed.status.code(), Some(0), "{resumed:?}");
+    let text = stdout(&resumed);
     assert!(
         text.contains("resuming: 2/2 committed, 0 outstanding"),
         "the start line states the ledger it resumes: {text}"
@@ -618,7 +618,7 @@ fn a_rerun_of_a_finalized_search_reports_prior_commits() {
 }
 
 #[test]
-fn report_before_any_run_exits_1() {
+fn report_before_any_search_exits_1() {
     let dir = tempfile::tempdir().expect("temp dir");
     let config = write_config(dir.path(), r#""succeed""#);
     let output = sima(&["report", config.to_str().expect("utf-8 path")]);
@@ -626,7 +626,7 @@ fn report_before_any_run_exits_1() {
 }
 
 #[test]
-fn rm_removes_the_only_run_and_a_second_rm_fails_cleanly() {
+fn rm_removes_the_only_search_and_a_second_rm_fails_cleanly() {
     let dir = tempfile::tempdir().expect("temp dir");
     let config = write_config(dir.path(), r#""succeed", "succeed""#);
     let path = config.to_str().expect("utf-8 path");
@@ -656,7 +656,7 @@ fn rm_removes_the_only_run_and_a_second_rm_fails_cleanly() {
 }
 
 #[test]
-fn rm_before_any_run_exits_1() {
+fn rm_before_any_search_exits_1() {
     let dir = tempfile::tempdir().expect("temp dir");
     let config = write_config(dir.path(), r#""succeed""#);
     let output = sima(&["rm", config.to_str().expect("utf-8 path")]);
@@ -686,7 +686,7 @@ fn rm_removes_an_unfinalized_search() {
 }
 
 #[test]
-fn a_second_rm_reports_run_not_found_and_leaves_no_search_dir() {
+fn a_second_rm_reports_search_not_found_and_leaves_no_search_dir() {
     let dir = tempfile::tempdir().expect("temp dir");
     let config = write_config(dir.path(), r#""succeed", "succeed""#);
     let path = config.to_str().expect("utf-8 path");
@@ -724,7 +724,7 @@ fn rm_on_a_missing_store_exits_1_and_creates_nothing() {
 }
 
 #[test]
-fn a_failed_second_rm_does_not_block_removing_another_run() {
+fn a_failed_second_rm_does_not_block_removing_another_search() {
     let dir = tempfile::tempdir().expect("temp dir");
     // Two searches sharing one store: different behaviors give distinct search ids.
     let config_a = common::write_config(dir.path(), "a.toml", r#""succeed""#, "./store");
@@ -801,7 +801,7 @@ fn migrate_parses_and_reaches_the_pipeline() {
 }
 
 #[test]
-fn migrate_refuses_a_host_because_it_drives_a_run() {
+fn migrate_refuses_a_host_because_it_drives_a_search() {
     // `--on` observes a search on another machine; a migration drives one, and
     // where it drives is the config's to say.
     let dir = tempfile::tempdir().expect("temp dir");
@@ -818,7 +818,7 @@ fn migrate_refuses_a_host_because_it_drives_a_run() {
 }
 
 #[test]
-fn a_run_under_a_wall_clock_ceiling_winds_itself_down_and_says_why() {
+fn a_search_under_a_wall_clock_ceiling_winds_itself_down_and_says_why() {
     // The ceiling is the search's own and is enforced wherever the search executes,
     // so a plain local search keeps it: nothing else is watching this one.
     let dir = tempfile::tempdir().expect("temp dir");
@@ -858,7 +858,7 @@ fn a_run_under_a_wall_clock_ceiling_winds_itself_down_and_says_why() {
 }
 
 #[test]
-fn a_run_declaring_no_ceiling_is_never_wound_down_by_one() {
+fn a_search_declaring_no_ceiling_is_never_wound_down_by_one() {
     // The counterpart: the deadline exists only where a config states one.
     let dir = tempfile::tempdir().expect("temp dir");
     let config = write_config(dir.path(), r#""sleep:200", "sleep:200""#);
@@ -868,7 +868,7 @@ fn a_run_declaring_no_ceiling_is_never_wound_down_by_one() {
 }
 
 #[test]
-fn a_run_declaring_a_zero_ceiling_is_never_wound_down_by_one() {
+fn a_search_declaring_a_zero_ceiling_is_never_wound_down_by_one() {
     // Zero is the written form of stating none, so the search finishes exactly as
     // one that omitted the key does — rather than ending before it computes.
     let dir = tempfile::tempdir().expect("temp dir");
@@ -929,7 +929,7 @@ fn recall_refuses_a_host_and_the_binary_flag() {
 }
 
 #[test]
-fn run_accepts_the_binary_flag_beside_the_fleet_flag_in_either_order() {
+fn search_accepts_the_binary_flag_beside_the_fleet_flag_in_either_order() {
     // The two flags answer different questions — which machines, and what a
     // changed program does — so a search states them in whatever order it likes.
     // A config this build carries answers itself, so the flag is inert here
@@ -956,7 +956,7 @@ fn run_accepts_the_binary_flag_beside_the_fleet_flag_in_either_order() {
 }
 
 #[test]
-fn the_binary_flag_belongs_to_the_commands_that_drive_a_run() {
+fn the_binary_flag_belongs_to_the_commands_that_drive_a_search() {
     // Every other command keeps the flag in its arguments, where it matches no
     // form and falls to the usage error: a query has no program to accept.
     let dir = tempfile::tempdir().expect("temp dir");
@@ -982,6 +982,8 @@ fn the_binary_flag_belongs_to_the_commands_that_drive_a_run() {
 fn an_unknown_subcommand_exits_1_with_usage_on_stderr() {
     for args in [
         vec!["frobnicate"],
+        vec!["run", "missing.toml"],
+        vec!["runs", "missing-store"],
         vec![],
         vec!["search"],
         vec!["status"],
@@ -1071,7 +1073,7 @@ fn tui_without_a_terminal_exits_1_and_names_the_requirement() {
 }
 
 #[test]
-fn an_observer_follows_a_live_run_to_its_end() {
+fn an_observer_follows_a_live_search_to_its_end() {
     let dir = tempfile::tempdir().expect("temp dir");
     // The sleeps keep the child alive long enough that the observer sees the
     // lock held mid-search: four tasks over two workers span about a second.
@@ -1149,7 +1151,7 @@ fn an_observer_follows_a_live_run_to_its_end() {
 }
 
 #[test]
-fn sigint_interrupts_gracefully_and_a_rerun_matches_an_uninterrupted_store() {
+fn sigint_interrupts_gracefully_and_running_again_matches_an_uninterrupted_store() {
     let dir = tempfile::tempdir().expect("temp dir");
     let behaviors = r#""sleep:1500", "sleep:1500", "sleep:1500", "sleep:1500""#;
     let config = write_config(dir.path(), behaviors);
@@ -1175,9 +1177,9 @@ fn sigint_interrupts_gracefully_and_a_rerun_matches_an_uninterrupted_store() {
     assert_eq!(status.code(), Some(130), "graceful interrupt exits 130");
     assert!(manifest_of(&config).is_none(), "no manifest yet");
 
-    // A clean re-search completes the abandoned work.
-    let rerun = sima(&["search", path]);
-    assert_eq!(rerun.status.code(), Some(0), "{rerun:?}");
+    // A clean repeated invocation completes the abandoned work.
+    let resumed = sima(&["search", path]);
+    assert_eq!(resumed.status.code(), Some(0), "{resumed:?}");
 
     // The resumed store's manifest equals an uninterrupted reference search's.
     let reference_dir = tempfile::tempdir().expect("reference temp dir");
@@ -1195,7 +1197,7 @@ fn sigint_interrupts_gracefully_and_a_rerun_matches_an_uninterrupted_store() {
 }
 
 #[test]
-fn a_terminal_interrupt_winds_the_run_down_without_killing_its_workers() {
+fn a_terminal_interrupt_winds_the_search_down_without_killing_its_workers() {
     // A terminal delivers Ctrl-C to every process in the foreground group, so
     // a worker left in the orchestrator's group is signalled directly and dies
     // mid-attempt — a death the search reads as a transient failure and retries
@@ -1377,7 +1379,7 @@ fn a_resumed_search_states_its_ledger_and_counts_on_from_it() {
 }
 
 #[test]
-fn a_quiet_run_still_prints_the_run_its_start_its_commits_and_its_outcome() {
+fn a_quiet_search_still_prints_the_search_its_start_its_commits_and_its_outcome() {
     // The minimal stream `--quiet` leaves: what the search is, what it started,
     // what it committed, and how it ended.
     let dir = tempfile::tempdir().expect("temp dir");
@@ -1393,7 +1395,7 @@ fn a_quiet_run_still_prints_the_run_its_start_its_commits_and_its_outcome() {
 }
 
 #[test]
-fn a_quiet_run_prints_neither_the_attempts_nor_their_signs_of_life() {
+fn a_quiet_search_prints_neither_the_attempts_nor_their_signs_of_life() {
     // The other half of what `--quiet` states, over a search that produces both:
     // four attempts, each checkpointing as it computes. What a script reads is
     // the search's ledger, and none of the lines that exist to fill a silence.
@@ -1445,7 +1447,7 @@ fn seeded_config(dir: &Path, name: &str, seed: u64) -> PathBuf {
 }
 
 #[test]
-fn runs_lists_every_run_the_store_holds_with_its_state_and_ledger() {
+fn searches_lists_every_search_the_store_holds_with_its_state_and_ledger() {
     // A store accumulates the searches of every identity driven against it, and a
     // config names one of them; this is what says what else is in there.
     let dir = tempfile::tempdir().expect("temp dir");
@@ -1488,7 +1490,7 @@ fn runs_lists_every_run_the_store_holds_with_its_state_and_ledger() {
 /// Two configs in `dir` whose search ids begin with the same character, so a
 /// store holding both holds a prefix that names neither in particular.
 ///
-/// Run ids are hashes, so which seeds collide is fixed by the configs rather
+/// Search ids are hashes, so which seeds collide is fixed by the configs rather
 /// than chosen: the search walks them in order and takes the first pair that
 /// does, which makes the same two every time.
 fn sharing_a_leading_character(dir: &Path) -> (PathBuf, PathBuf) {
@@ -1515,7 +1517,7 @@ fn sharing_a_leading_character(dir: &Path) -> (PathBuf, PathBuf) {
 }
 
 #[test]
-fn rm_by_run_prefix_deletes_that_run_and_refuses_an_ambiguous_one() {
+fn rm_by_search_prefix_deletes_that_search_and_refuses_an_ambiguous_one() {
     // The search a config no longer names is reachable by its own id, and a
     // prefix that names more than one is refused with the candidates, since
     // typing more of one of them is the answer.
@@ -1532,6 +1534,14 @@ fn rm_by_run_prefix_deletes_that_run_and_refuses_an_ambiguous_one() {
     let doomed = load(&first).expect("load config").search.id().to_string();
     let kept = load(&second).expect("load config").search.id().to_string();
     let path = second.to_str().expect("utf-8 path");
+
+    let legacy = sima(&["rm", path, "--run", &doomed[..12]]);
+    assert_eq!(legacy.status.code(), Some(1), "{legacy:?}");
+    assert!(
+        String::from_utf8(legacy.stderr)
+            .expect("stderr is UTF-8")
+            .contains("usage: sima")
+    );
 
     // Nothing typed at all names no search, and says which flag wants one.
     let empty = sima(&["rm", path, "--search", ""]);
@@ -1632,7 +1642,7 @@ fn follow_serve_writes_a_frame_stream_opening_with_a_handshake() {
 }
 
 #[test]
-fn follow_prints_a_finished_run_s_events_and_exits_on_its_outcome() {
+fn follow_prints_a_finished_search_s_events_and_exits_on_its_outcome() {
     let dir = tempfile::tempdir().expect("temp dir");
     let config = write_config(dir.path(), r#""succeed", "succeed""#);
     let path = config.to_str().expect("utf-8 path");
@@ -1655,11 +1665,11 @@ fn follow_prints_a_finished_run_s_events_and_exits_on_its_outcome() {
 }
 
 #[test]
-fn follow_over_an_abandoned_run_prints_its_history_and_exits_0() {
+fn follow_over_an_abandoned_search_prints_its_history_and_exits_0() {
     let dir = tempfile::tempdir().expect("temp dir");
     let config = write_config(dir.path(), r#""sleep:4000", "sleep:4000""#);
     let path = config.to_str().expect("utf-8 path");
-    common::abandon_run(&config);
+    common::abandon_search(&config);
 
     // The journal stops mid-search and nothing holds the lock: such a search is
     // resumable, so the follow renders what was recorded and leaves
@@ -1672,7 +1682,7 @@ fn follow_over_an_abandoned_run_prints_its_history_and_exits_0() {
 }
 
 #[test]
-fn follow_over_a_failed_run_exits_2() {
+fn follow_over_a_failed_search_exits_2() {
     let dir = tempfile::tempdir().expect("temp dir");
     let config = write_config(dir.path(), r#""succeed", "reject""#);
     let path = config.to_str().expect("utf-8 path");
@@ -1684,7 +1694,7 @@ fn follow_over_a_failed_run_exits_2() {
 }
 
 #[test]
-fn follow_over_an_interrupted_run_exits_130() {
+fn follow_over_an_interrupted_search_exits_130() {
     let dir = tempfile::tempdir().expect("temp dir");
     let config = write_config(dir.path(), r#""sleep:1500", "sleep:1500", "sleep:1500""#);
     let path = config.to_str().expect("utf-8 path");
@@ -1712,7 +1722,7 @@ fn follow_over_an_interrupted_run_exits_130() {
 }
 
 #[test]
-fn follow_before_any_run_reports_what_status_reports() {
+fn follow_before_any_search_reports_what_status_reports() {
     let dir = tempfile::tempdir().expect("temp dir");
     let config = write_config(dir.path(), r#""succeed""#);
     let path = config.to_str().expect("utf-8 path");
@@ -1773,7 +1783,7 @@ fn follow_ends_successfully_when_its_reader_closes_the_pipe() {
 }
 
 #[test]
-fn follow_streams_a_live_run_to_its_end() {
+fn follow_streams_a_live_search_to_its_end() {
     let dir = tempfile::tempdir().expect("temp dir");
     let config = write_config(dir.path(), r#""sleep:800", "sleep:800", "sleep:800""#);
     let path = config.to_str().expect("utf-8 path");

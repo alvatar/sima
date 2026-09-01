@@ -75,7 +75,7 @@ pub fn describe(event: &Event, committed: usize, tasks: usize) -> Option<String>
             format!("search failed on {}: {reason}", short(task))
         }
         Event::SearchInterrupted { .. } => {
-            "interrupted: store resumable, re-search to continue".to_string()
+            "interrupted: store resumable, run the search again to continue".to_string()
         }
         // A rebind means the hardware changed under the search: the chain's
         // device is gone and its work moved. Loud by design.
@@ -135,7 +135,7 @@ pub fn describe(event: &Event, committed: usize, tasks: usize) -> Option<String>
             "acquisition abandoned: {released} machine(s) released, none of them left running"
         ),
         // A rented machine came online: reported at supervisor start and for
-        // each replacement, naming where the work will search.
+        // each replacement, naming where the work will run.
         Event::InstanceOnline {
             instance,
             gpu_model,
@@ -310,7 +310,7 @@ impl Progress {
 /// The searches a store holds, one line each: id, state, and task ledger. A store
 /// holding none is a line saying so, since an empty answer to a question about
 /// a store is still an answer.
-pub fn runs_block(summaries: &[SearchSummary]) -> String {
+pub fn searches_block(summaries: &[SearchSummary]) -> String {
     if summaries.is_empty() {
         return "this store holds no search".to_string();
     }
@@ -963,7 +963,7 @@ mod tests {
     }
 
     #[test]
-    fn a_minimal_narration_drops_the_placement_lines_and_keeps_the_run_s_own() {
+    fn a_minimal_narration_drops_the_placement_lines_and_keeps_the_search_s_own() {
         // What `--quiet` leaves: the search's own progress, and anything gone
         // wrong. The placement lines are for watching a placement happen.
         for event in [
@@ -1236,7 +1236,7 @@ mod tests {
 
     /// A zeroed status for a throwaway search; tests set the fields they assert.
     fn a_status() -> SearchStatus {
-        SearchStatus::new(a_run())
+        SearchStatus::new(a_search())
     }
 
     #[test]
@@ -1263,7 +1263,7 @@ mod tests {
     }
 
     #[test]
-    fn the_status_block_reports_the_run_s_device_composition() {
+    fn the_status_block_reports_the_search_s_device_composition() {
         let mut status = a_status();
         status.committed = 1000;
         status.devices = [
@@ -1303,7 +1303,7 @@ mod tests {
     }
 
     #[test]
-    fn a_run_that_moved_no_chain_reports_no_rebinds() {
+    fn a_search_that_moved_no_chain_reports_no_rebinds() {
         let mut status = a_status();
         status.devices = [("Intel Arc 140T".to_string(), 4)].into_iter().collect();
         let block = status_block(&status);
@@ -1475,7 +1475,7 @@ mod tests {
     }
 
     /// The search the digest tests render against.
-    fn a_run() -> SearchId {
+    fn a_search() -> SearchId {
         SearchId::from_hash(sima_core::hash_bytes(b"a search to render"))
     }
 
@@ -1501,7 +1501,7 @@ mod tests {
 
     #[test]
     fn the_failure_digest_names_each_task_its_outcome_and_its_reason() {
-        let block = failures_block(&a_run(), &[a_rejected_history()]);
+        let block = failures_block(&a_search(), &[a_rejected_history()]);
         let squeezed = squeezed(&block);
         assert!(squeezed.contains("1 task did not commit"), "{block}");
         assert!(
@@ -1532,14 +1532,14 @@ mod tests {
                 error: "executor died".to_string(),
             },
         };
-        let block = squeezed(&failures_block(&a_run(), &[history]));
+        let block = squeezed(&failures_block(&a_search(), &[history]));
         assert!(block.contains("faulted"), "{block}");
         assert!(block.contains("executor died"), "{block}");
     }
 
     #[test]
     fn a_digest_of_no_failures_is_the_header_alone() {
-        let block = failures_block(&a_run(), &[]);
+        let block = failures_block(&a_search(), &[]);
         assert!(block.contains("0 tasks did not commit"), "{block}");
         assert!(!block.contains("reason"), "no table: {block}");
         assert_eq!(block.lines().count(), 1, "{block}");
@@ -1549,13 +1549,13 @@ mod tests {
     fn the_digest_header_pluralizes_its_count() {
         let two = [a_rejected_history(), a_rejected_history()];
         assert!(
-            failures_block(&a_run(), &two).contains("2 tasks did not commit"),
+            failures_block(&a_search(), &two).contains("2 tasks did not commit"),
             "two failures read as tasks"
         );
     }
 
     #[test]
-    fn a_run_that_names_no_device_renders_no_device_line() {
+    fn a_search_that_names_no_device_renders_no_device_line() {
         // A journal carrying no WorkerBound events, as a search whose domain uses
         // no device writes: there is nothing truthful to print.
         let block = status_block(&a_status());
@@ -1588,7 +1588,7 @@ mod tests {
     /// from the start, one that took forty seconds to provision.
     fn a_timeline() -> SearchTimeline {
         SearchTimeline {
-            search: a_run(),
+            search: a_search(),
             tasks: 1_000,
             committed: 1_000,
             session_committed: 1_000,
@@ -1609,10 +1609,10 @@ mod tests {
     }
 
     #[test]
-    fn the_timeline_block_names_the_run_its_wall_clock_and_its_throughput() {
+    fn the_timeline_block_names_the_search_its_wall_clock_and_its_throughput() {
         let squeezed = squeezed(&timeline_block(&a_timeline()));
         assert!(
-            squeezed.contains(&format!("search {}", a_run())),
+            squeezed.contains(&format!("search {}", a_search())),
             "{squeezed}"
         );
         assert!(squeezed.contains("wall-clock 2m14s"), "{squeezed}");
@@ -1823,7 +1823,7 @@ mod tests {
         // A search that journaled its start and nothing since: there is no axis to
         // bucket, and no rate to take over a zero denominator.
         let timeline = SearchTimeline {
-            search: a_run(),
+            search: a_search(),
             tasks: 4,
             committed: 0,
             session_committed: 0,
