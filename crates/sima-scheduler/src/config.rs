@@ -1,4 +1,4 @@
-//! [`ExecutionConfig`]: the operational settings a run executes under.
+//! [`ExecutionConfig`]: the operational settings a search executes under.
 
 use std::num::NonZeroU64;
 use std::time::Duration;
@@ -6,13 +6,13 @@ use std::time::Duration;
 use sima_contracts::DeviceClass;
 use sima_core::{Error, Result};
 
-/// One device class a run spreads its workers over, resolved: the class, the
+/// One device class a search spreads its workers over, resolved: the class, the
 /// name the backend reports for it, how many workers it carries, and how many
 /// physical cards it has.
 ///
 /// The resolved form of one configured device selector. Selectors name devices
 /// by substring or id and resolve against real hardware, so resolution happens
-/// where a run starts, never where a config is read.
+/// where a search starts, never where a config is read.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeviceEntry {
     /// The class these workers compute on.
@@ -25,13 +25,13 @@ pub struct DeviceEntry {
     pub members: u32,
 }
 
-/// Operational run settings. Never hashed; not part of run identity — a run
-/// resumed with different parallelism or a different timeout keeps its run id.
-/// The file form is the execution section of the run configuration in higher
+/// Operational search settings. Never hashed; not part of search identity — a search
+/// resumed with different parallelism or a different timeout keeps its search id.
+/// The file form is the execution section of the search configuration in higher
 /// layers.
 #[derive(Debug, Clone)]
 pub struct ExecutionConfig {
-    /// Number of local worker processes. `0` is a run whose workers come from
+    /// Number of local worker processes. `0` is a search whose workers come from
     /// another machine. With device entries present it is their sum, and each
     /// entry carries at least one worker.
     pub workers: usize,
@@ -45,7 +45,7 @@ pub struct ExecutionConfig {
     /// enforcement.
     pub attempt_timeout: Duration,
     /// Enforced deadline on a protocol answer: the worker handshake, and each
-    /// question the run asks a program about its format except generation. On
+    /// question the search asks a program about its format except generation. On
     /// expiry the process is killed and reaped and the wait fails naming the
     /// binary and the answer it owed. [`Duration::MAX`] disables enforcement.
     pub answer_timeout: Duration,
@@ -67,9 +67,9 @@ pub struct ExecutionConfig {
 
 impl ExecutionConfig {
     /// Validates the settings and wraps them, over the backend's default
-    /// device selection. `workers` is the local pool size; `0` is a run with
+    /// device selection. `workers` is the local pool size; `0` is a search with
     /// no local pool, valid only when a pool on another machine carries the
-    /// work — the "at least one worker" requirement is a whole-run property
+    /// work — the "at least one worker" requirement is a whole-search property
     /// the pool assembly enforces, not a per-config one. `max_attempts` must
     /// be at least 1 ([`Error::Validation`] otherwise).
     pub fn new(
@@ -162,7 +162,7 @@ mod tests {
 
     #[test]
     fn new_accepts_zero_local_workers() -> Result<()> {
-        // A run with no local pool: the workers come from another machine,
+        // A search with no local pool: the workers come from another machine,
         // so the "at least one worker" requirement is enforced across pools,
         // not here.
         let config = ExecutionConfig::new(

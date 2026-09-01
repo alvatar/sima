@@ -1,7 +1,7 @@
 //! [`SshTransport`]: a worker launched as the ssh command itself, whose
 //! destination the orchestrator can swap under a running pool.
 //!
-//! The worker is the command ssh executes, with no container-run wrapper: on a
+//! The worker is the command ssh executes, with no container-search wrapper: on a
 //! rented machine ssh already lands inside the machine's own container, so
 //! nesting a second one would have nothing to add. The framed stdio protocol
 //! flows through ssh into the worker unchanged, so the spawn, handshake, and
@@ -15,7 +15,7 @@
 //!   worker thread waits out an instance replacement instead of spawning
 //!   against a dead host.
 //! - `Retired { fatal }` — spawn reports retirement rather than a worker.
-//!   `fatal` distinguishes strict fill, where the run must fault, from
+//!   `fatal` distinguishes strict fill, where the search must fault, from
 //!   best-effort degradation, where the worker thread exits cleanly.
 //!
 //! A spawn resolves to one of three outcomes, not two: a live [`WorkerLink`],
@@ -23,12 +23,12 @@
 //! bridges the window between an instance dying and the supervisor swapping a
 //! replacement in. A worker's child dies with its instance and the worker loop
 //! respawns at once, up to a heartbeat before the supervisor notices; without
-//! the retry the respawn's ssh to the dead host would fail and fault the run.
+//! the retry the respawn's ssh to the dead host would fail and fault the search.
 //! An ssh spawn failure therefore waits — bounded by the readiness timeout the
 //! machine was acquired under, paced by its poll — retrying the same target until
 //! the supervisor swaps a replacement in (which restarts the attempt on the new
 //! host with a fresh bound) or retires the transport. A target that stays dead
-//! past the bound faults the run, the same outcome as failing fast, delayed by
+//! past the bound faults the search, the same outcome as failing fast, delayed by
 //! the bound. Local mode never retries: a local spawn failure is the worker's
 //! own, with no supervisor swapping a replacement behind it.
 //!
@@ -108,7 +108,7 @@ impl SshDestination {
         }
     }
 
-    /// A machine rented for the run, reached at an explicit port as an explicit
+    /// A machine rented for the search, reached at an explicit port as an explicit
     /// user, whose key is accepted on first contact.
     pub fn rented(host: impl Into<String>, port: u16, user: impl Into<String>) -> SshDestination {
         SshDestination {
@@ -133,14 +133,14 @@ impl SshDestination {
     /// `BatchMode=yes` never prompts, so an unauthenticated or unreachable
     /// destination is a clean spawn error rather than a hang.
     ///
-    /// A fresh destination — a machine rented for this run — adds three more.
+    /// A fresh destination — a machine rented for this search — adds three more.
     /// `StrictHostKeyChecking=accept-new` accepts its key on first contact
     /// without prompting, the trust model for a machine never present in
     /// `known_hosts`. `UserKnownHostsFile=/dev/null` keeps that key out of the
     /// operator's file: a rental's key lives as long as the rental, so
     /// remembering it accumulates entries nothing ever removes, and a later
     /// rental at a reused address with a key of its own would then be refused
-    /// and fail the run. What is given up is detecting a key change within one
+    /// and fail the search. What is given up is detecting a key change within one
     /// rental, which `accept-new` against an empty file could never have caught
     /// on first contact either. `ConnectTimeout` bounds a host that drops
     /// packets, which would otherwise stall for the kernel's TCP timeout instead
@@ -189,8 +189,8 @@ pub enum SpawnMode {
 
 /// What an ssh spawn runs at the far end.
 ///
-/// A run whose format the far machine's image carries runs that image's own
-/// worker. A run whose format is a program delivered there runs whatever the
+/// A search whose format the far machine's image carries runs that image's own
+/// worker. A search whose format is a program delivered there runs whatever the
 /// caller states — in practice a shell that sets the program's environment on
 /// that machine and execs it, since sima's process here is only the ssh client
 /// and its own environment never crosses.
@@ -233,7 +233,7 @@ enum TargetState {
     Replacing,
     /// The transport has retired: `spawn` reports it rather than a worker.
     Retired {
-        /// Whether the retirement must fault the run.
+        /// Whether the retirement must fault the search.
         fatal: bool,
     },
 }
@@ -273,7 +273,7 @@ pub struct SshTransport {
     settled: Condvar,
     settings: SpawnSettings,
     /// How long an ssh spawn keeps retrying a failing target before it gives
-    /// up and faults the run — the readiness bound the machine was acquired
+    /// up and faults the search — the readiness bound the machine was acquired
     /// under, so a broken host faults only after the same wait a fresh one is
     /// given to come up. A swap restarts this bound on the new host.
     ready_timeout: Duration,
@@ -283,7 +283,7 @@ pub struct SshTransport {
 }
 
 impl SshTransport {
-    /// A transport spawning workers on `initial` under `mode`, for a run over
+    /// A transport spawning workers on `initial` under `mode`, for a search over
     /// `format` with the given checkpoint cadence ([`Duration::MAX`] and `None`
     /// disable an axis). `ready_timeout` and `ready_poll` bound and pace an
     /// ssh spawn's wait for a replacement, matching the readiness bounds the
@@ -446,7 +446,7 @@ impl SshTransport {
                         // A target change — the supervisor swapping a
                         // replacement in, or retiring — breaks out to re-read
                         // the new target. Otherwise the same host is retried
-                        // until the bound, then the failure faults the run.
+                        // until the bound, then the failure faults the search.
                         if self.await_target_change(generation, self.ready_poll) {
                             break;
                         }
@@ -816,7 +816,7 @@ mod tests {
     fn the_probe_argv_names_the_format_it_is_asked_about() {
         // The instance answers for one backend, so the probe carries which
         // program is asking rather than assuming every device on the host is a
-        // place this run can put a worker.
+        // place this search can put a worker.
         let format = FormatId::new("ca_evolution.gray_scott.v1").expect("format id");
         for mode in [
             SpawnMode::Ssh,
@@ -951,7 +951,7 @@ mod tests {
     fn a_failed_ssh_spawn_waits_for_a_swap_and_lands_on_the_new_target() {
         // The respawn race: the first attempt fails against the dead host, the
         // supervisor swaps a replacement in, and the retry lands on the new
-        // target instead of faulting the run.
+        // target instead of faulting the search.
         let transport = a_transport(SpawnMode::Ssh);
         let replacement = SshDestination::rented("198.51.100.9", 50022, "root");
         let attempts = AtomicUsize::new(0);
@@ -998,7 +998,7 @@ mod tests {
     fn a_persistently_failing_ssh_spawn_faults_after_the_bound() {
         // A genuinely broken host the supervisor never replaces: the retry loop
         // gives up after ready_timeout and the failure propagates, faulting the
-        // run — the same outcome as failing fast, delayed by the bound.
+        // search — the same outcome as failing fast, delayed by the bound.
         let transport = bounded_transport(
             SpawnMode::Ssh,
             Duration::from_millis(60),

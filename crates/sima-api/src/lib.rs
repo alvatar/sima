@@ -9,7 +9,7 @@
 //!
 //! - the two components a program supplies — [`Domain`] and [`Generator`] —
 //!   with [`serve`], the call that hosts them: a program outside the workspace
-//!   implements the two traits and hands them to `serve`, which answers a run's
+//!   implements the two traits and hands them to `serve`, which answers a search's
 //!   two conversations with it;
 //! - the [`Executor`] a domain builds, with the vocabulary it exchanges:
 //!   [`TaskInput`], [`ExecutionContext`], [`Outcome`], [`Artifact`], [`Stats`],
@@ -34,7 +34,7 @@
 //! The omissions are the surface's shape, not gaps in it. Each names a
 //! responsibility that belongs to sima's side of the boundary:
 //!
-//! - **run-level configuration** (`RunConfig`, `RunId`, `GeneratorConfig`) is
+//! - **search-level configuration** (`SearchConfig`, `SearchId`, `GeneratorConfig`) is
 //!   the orchestrator's, never an executor's;
 //! - **identity and commitment** (`TaskKey`, `TaskIdentity`, `TaskRecord`,
 //!   `ArtifactRef`) are the worker's side: an executor receives loaded bytes

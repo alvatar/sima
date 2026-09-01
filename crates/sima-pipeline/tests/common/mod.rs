@@ -19,11 +19,11 @@ pub fn loaded_with(
 ) -> Result<LoadedConfig> {
     let text = format!(
         r#"
-        [run]
+        [search]
         root_seed = 7
         format = "stub.v1"
 
-        [run.generator]
+        [search.generator]
         id = "stub.v1"
         behaviors = [{behaviors}]
 
@@ -55,11 +55,11 @@ pub fn loaded_text(dir: &Path, name: &str, text: &str) -> Result<LoadedConfig> {
     load(&path)
 }
 
-/// The typed journal of `config`'s run in its store.
+/// The typed journal of `config`'s search in its store.
 pub fn journal_events(config: &LoadedConfig) -> Vec<Event> {
     let store = Store::open(&config.store).expect("open store");
     store
-        .journal(&config.run.id())
+        .journal(&config.search.id())
         .expect("read journal")
         .iter()
         .map(|line| Record::from_line(line).expect("parse journal line").event)

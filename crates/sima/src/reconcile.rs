@@ -2,7 +2,7 @@
 //!
 //! Acquisition reconciles before it rents, so a machine left running by a
 //! process that died without tearing it down stops costing money when the
-//! next run starts. After a hard crash nothing starts on its own, and this
+//! next search starts. After a hard crash nothing starts on its own, and this
 //! command is that same pass reached directly — from a shell, or from
 //! whatever schedules periodic maintenance.
 //!
@@ -10,10 +10,10 @@
 //! a store holding no record reaches no provider API and needs no
 //! credentials.
 //!
-//! A rental hosting a migrated run's orchestrator is spared by default. It has
+//! A rental hosting a migrated search's orchestrator is spared by default. It has
 //! exactly the shape a pass reaps — nothing local holds its owner's lock,
 //! because a migration detaches the far side deliberately — and destroying one
-//! would kill a run that is working and paid for. `--hosted` includes them, for
+//! would kill a search that is working and paid for. `--hosted` includes them, for
 //! an operator who knows no migration is running.
 
 use std::collections::BTreeSet;
@@ -30,7 +30,7 @@ use crate::report;
 /// `sima reconcile <config.toml> [--hosted]`: destroys the machines the
 /// config's store still holds records for, and prints what the pass did. The
 /// store comes from the config's `[config]` section, as the query commands
-/// derive it. Without `--hosted` a rental hosting a migrated run is spared.
+/// derive it. Without `--hosted` a rental hosting a migrated search is spared.
 pub(crate) fn reconcile_command(config: &Path, scope: ReconcileScope) -> ExitCode {
     match clean_store(config, scope) {
         Ok(report) => {
@@ -73,8 +73,8 @@ where
 }
 
 /// The backend a ledger record's provider id names, through the one registry a
-/// run resolves its own providers with — so a build that carries a backend for
-/// a run carries it here too.
+/// search resolves its own providers with — so a build that carries a backend for
+/// a search carries it here too.
 ///
 /// The settings are the read-only ones: the image and disk a rental would boot
 /// enter a request only when an instance is created, which no path from here
@@ -105,7 +105,7 @@ mod tests {
     use std::cell::Cell;
 
     use sima_core::Result;
-    use sima_model::{FormatId, GeneratorConfig, GeneratorId, Params, RunConfig, RunId};
+    use sima_model::{FormatId, GeneratorConfig, GeneratorId, Params, SearchConfig, SearchId};
     use sima_provider::ReconcileScope;
     use sima_provider::stub::StubProvider;
     use sima_provider::{InstanceId, Provider};
@@ -120,10 +120,10 @@ mod tests {
         (dir, store)
     }
 
-    /// The run a seeded record is owned by. It holds no lock, which is what
-    /// a run whose process died looks like.
-    fn owner() -> RunId {
-        RunConfig {
+    /// The search a seeded record is owned by. It holds no lock, which is what
+    /// a search whose process died looks like.
+    fn owner() -> SearchId {
+        SearchConfig {
             root_seed: 7,
             segments: None,
             format: FormatId::new("stub.v1").expect("format id"),
@@ -171,7 +171,7 @@ mod tests {
     }
 
     #[test]
-    fn an_orphan_of_a_dead_run_is_destroyed_and_its_record_cleared() -> Result<()> {
+    fn an_orphan_of_a_dead_search_is_destroyed_and_its_record_cleared() -> Result<()> {
         let (_dir, store) = temp_store();
         store.put_instance(&record("sima-tag-0", "stub", "i-1"))?;
         let report = clean(
@@ -192,12 +192,12 @@ mod tests {
     }
 
     #[test]
-    fn a_record_of_a_live_run_is_left_to_the_run_that_owns_it() -> Result<()> {
+    fn a_record_of_a_live_search_is_left_to_the_search_that_owns_it() -> Result<()> {
         let (_dir, store) = temp_store();
         store.put_instance(&record("sima-tag-0", "stub", "i-1"))?;
-        // The owning run holds its orchestrator lock, which is what a live
-        // run looks like to the pass.
-        let _lock = store.acquire_run_lock(&owner())?;
+        // The owning search holds its orchestrator lock, which is what a live
+        // search looks like to the pass.
+        let _lock = store.acquire_search_lock(&owner())?;
         let report = clean(
             &store,
             |_| {

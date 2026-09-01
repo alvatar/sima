@@ -20,9 +20,9 @@ pub(crate) trait CaModel: 'static {
     /// The model's evolvable parameters (the spec payload). Sampled by the
     /// generator, never authored, so it needs a byte codec but no TOML parser.
     type Genome: Codec;
-    /// The model's ignition configuration (its slice of `[run.params]`).
+    /// The model's ignition configuration (its slice of `[search.params]`).
     type Ignition: Codec + TomlConfig;
-    /// The model's generator sampling configuration (its `[run.generator]` keys
+    /// The model's generator sampling configuration (its `[search.generator]` keys
     /// beyond the shared `count`).
     type GenConfig: Codec + TomlConfig;
 

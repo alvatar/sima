@@ -1,12 +1,12 @@
-[run]
+[search]
 root_seed = 1
 format = "ca_evolution.gray_scott_cuda.v1"
-# Split the run into a chain of segments executed in sequence, each continuing
+# Split the search into a chain of segments executed in sequence, each continuing
 # the previous one's state. It is identity-bearing, so changing it changes every
 # task key, and it is exclusive with the snapshot predicate below.
 # segments = 10
 
-[run.generator]
+[search.generator]
 id = "ca_evolution.gray_scott_cuda.v1"
 count = 1000
 feed = [0.010, 0.110]
@@ -14,7 +14,7 @@ kill = [0.045, 0.070]
 diffusion_u = [0.16, 0.16]
 diffusion_v = [0.08, 0.08]
 
-[run.params]
+[search.params]
 width = 128
 height = 128
 steps = 2000
@@ -26,7 +26,7 @@ noise_width = 0.02
 # Commit the final-grid snapshot only when a stat clears a threshold; absent,
 # every candidate's snapshot is committed. The scalar names one the reduction
 # emits — population, activity, or c<i>.{mean,var,min,max}. Requires an
-# unsegmented run. Across mixed device classes a threshold adjacent to a float
+# unsegmented search. Across mixed device classes a threshold adjacent to a float
 # scalar's rounding envelope can decide differently per class; a population
 # threshold set away from an exact cell-count boundary is robust.
 # snapshot_when = { scalar = "activity", min = 1e-4 }
@@ -34,10 +34,10 @@ noise_width = 0.02
 # The same Gray-Scott rule as `gray-scott-search.toml`, evaluated through CUDA
 # instead of Vulkan. It is a separate program with its own identity: the two
 # agree numerically to a tolerance rather than bit for bit, so neither reuses
-# the other's stored results, and a run of this config schedules only onto
+# the other's stored results, and a search of this config schedules only onto
 # NVIDIA devices — the enumeration a worker answers with follows the format id.
 #
-# A migration must keep the backend the same on both ends. Moving a run from a
+# A migration must keep the backend the same on both ends. Moving a search from a
 # Vulkan config onto a machine that runs it under CUDA changes every task key,
 # so the far side restarts from segment 0 rather than continuing the chain.
 
@@ -49,7 +49,7 @@ max_attempts = 3
 # checkpointing is on as soon as either is present.
 # attempt_timeout_ms        = 300000      # per-attempt deadline
 # answer_timeout_ms         = 120000      # per-answer deadline: the worker
-                                          # handshake and each question the run
+                                          # handshake and each question the search
                                           # asks a program about its format
 # checkpoint_interval_ms    = 30000       # wall-clock checkpoint cadence
 # checkpoint_interval_steps = 500         # step-count cadence, >= 1
@@ -58,7 +58,7 @@ max_attempts = 3
 # in which case they run in a container here.
 [orchestrator]
 workers = 2
-# migrate  = "cloudbox"                  # the host `sima migrate` moves the run onto
+# migrate  = "cloudbox"                  # the host `sima migrate` moves the search onto
 # image    = "localhost/sima:latest"      # run this machine's workers in a container
 # runtime  = "podman"                     # docker | podman; default docker, needs an image
 # run_args = ["--gpus", "all"]            # verbatim container-run flags, needs an image
@@ -78,7 +78,7 @@ workers = 2
 # image    = "localhost/sima:latest"      # default as shown
 # runtime  = "podman"                     # docker | podman; default docker
 # run_args = ["--gpus", "all"]            # verbatim container-run flags
-# root     = "~/sima-runs"                # where a migrated run lives here; default as shown
+# root     = "~/sima"                # where a migrated search lives here; default as shown
 # binary   = "sima"                       # the sima binary here; default as shown
 
 # That machine's workers placed per device class instead of by plain count.
@@ -99,8 +99,8 @@ workers = 2
 # ssh     = ["fermi", "pauli", "dirac"]
 # workers = 4
 
-# One machine rented for the run. Naming a provider makes an entry rented: it
-# then takes no ssh and no worker layout, since it does not exist until the run
+# One machine rented for the search. Naming a provider makes an entry rented: it
+# then takes no ssh and no worker layout, since it does not exist until the search
 # asks for it and its devices come from the enumeration probe. The provider's
 # API key is read from the environment (VAST_API_KEY), never from config, which
 # is content-addressed.
@@ -121,7 +121,7 @@ workers = 2
 # min_bandwidth_mbps = 100
 
 # Several machines rented to one specification. `fill` decides what a partial
-# acquisition means: strict fails the run unless the full count is acquired,
+# acquisition means: strict fails the search unless the full count is acquired,
 # best-effort runs on whatever came up.
 # [host_class.rtx4090]
 # provider = "vast"
@@ -138,17 +138,17 @@ workers = 2
 # min_disk_gb        = 32
 # min_bandwidth_mbps = 100
 
-# The machines a run may draw on. `sima run` uses the orchestrator alone;
-# `sima run --fleet` adds every member listed here. Without the flag no provider
+# The machines a search may draw on. `sima search` uses the orchestrator alone;
+# `sima search --fleet` adds every member listed here. Without the flag no provider
 # is constructed and no rental credential is read, so a declared rented class
-# never makes a later run spend money by itself.
+# never makes a later search spend money by itself.
 # [fleet]
 # members = ["gpubox", "lab", "rtx4090"]
 
-# The ceilings over the run; either arm is optional.
+# The ceilings over the search; either arm is optional.
 # [budget]
 # max_spend_usd     = 5.0
-# max_wall_clock_ms = 0        # 0 = no limit; the deadline for a local run or a
+# max_wall_clock_ms = 0        # 0 = no limit; the deadline for a local search or a
 #                              # machine of yours, and never sent to a rental
 
 # A format answered by a program of its own rather than by this build. sima

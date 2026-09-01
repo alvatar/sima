@@ -8,7 +8,7 @@
 //!
 //! The operation is safe to interrupt at any point, because it never
 //! removes the last copy of anything: a loose file goes only once a pack
-//! holding that object is durable. A killed run therefore leaves a store
+//! holding that object is durable. A killed search therefore leaves a store
 //! where some objects are readable twice, and re-running the operation
 //! converges — the completed packs are seen as packs, and the loose files
 //! they absorbed are deleted without writing anything.
@@ -51,7 +51,7 @@ pub(crate) struct MaintenanceLock {
 
 impl Drop for MaintenanceLock {
     /// Frees the lock the moment the guard goes, for the reason
-    /// [`crate::RunLock`]'s drop does.
+    /// [`crate::SearchLock`]'s drop does.
     fn drop(&mut self) {
         let _ = self.file.unlock();
     }
@@ -317,7 +317,7 @@ mod tests {
     }
 
     #[test]
-    fn a_death_between_pack_writes_converges_on_re_run() -> Result<()> {
+    fn a_death_between_pack_writes_converges_when_repeated() -> Result<()> {
         let (dir, store) = temp_store();
         let objects = put_objects(&store, 6);
         // The state a death inside the write phase leaves: one pack durable,
@@ -333,14 +333,14 @@ mod tests {
         assert_eq!(report.loose_removed, 6);
         readable(&store, &objects);
         assert!(loose_objects(dir.path()).is_empty());
-        // The partition differs from an uninterrupted run's, which is a fact
+        // The partition differs from an uninterrupted search's, which is a fact
         // about the store's shape and not about what it holds.
         assert_eq!(pack_names(dir.path()).len(), 2);
         Ok(())
     }
 
     #[test]
-    fn a_death_mid_loose_delete_converges_on_re_run() -> Result<()> {
+    fn a_death_mid_loose_delete_converges_when_repeated() -> Result<()> {
         let (dir, store) = temp_store();
         let objects = put_objects(&store, 4);
         // The state a death inside the deletion phase leaves: the pack is

@@ -1,18 +1,18 @@
 //! Driver provenance across sessions: each spawn journals its child's driver
 //! in `WorkerBound`, and a session emits `DriverChanged` when a worker's
-//! reported driver differs from the one the run's journal last recorded for
+//! reported driver differs from the one the search's journal last recorded for
 //! the same host and device. The driver never enters identity — the warning
-//! is observational, and the run proceeds either way.
+//! is observational, and the search proceeds either way.
 
 mod common;
 
 use std::sync::Arc;
 
-use common::{config, exec, journal_events, run_id, run_with, temp_store};
+use common::{config, exec, journal_events, run_with, search_id, temp_store};
 use sima_contracts::Executor;
 use sima_core::Result;
 use sima_domains::{StubBehavior, StubExecutor};
-use sima_model::RunConfig;
+use sima_model::SearchConfig;
 use sima_store::Store;
 use sima_trace::{Event, Record};
 use sima_transport::loopback::SharedResolver;
@@ -32,13 +32,13 @@ fn reporting_resolver(device: &str, driver: &str) -> SharedResolver {
 /// session whose child on (`host`, `device`) reported `driver`.
 fn seed_bound(
     store: &Store,
-    cfg: &RunConfig,
+    cfg: &SearchConfig,
     host: &str,
     device: &str,
     driver: &str,
 ) -> Result<()> {
-    store.create_run(cfg)?;
-    let mut writer = store.journal_writer(&run_id(cfg))?;
+    store.create_search(cfg)?;
+    let mut writer = store.journal_writer(&search_id(cfg))?;
     writer.append(
         &Record::stamped(Event::WorkerBound {
             worker: 0,
@@ -52,8 +52,8 @@ fn seed_bound(
 }
 
 /// The `DriverChanged` events in `cfg`'s journal, as (host, device, from, to).
-fn changes(store: &Store, cfg: &RunConfig) -> Vec<(String, String, String, String)> {
-    journal_events(store, &run_id(cfg))
+fn changes(store: &Store, cfg: &SearchConfig) -> Vec<(String, String, String, String)> {
+    journal_events(store, &search_id(cfg))
         .into_iter()
         .filter_map(|event| match event {
             Event::DriverChanged {
@@ -68,10 +68,10 @@ fn changes(store: &Store, cfg: &RunConfig) -> Vec<(String, String, String, Strin
 }
 
 /// A session whose worker reports a driver other than the journaled one
-/// emits one `DriverChanged` naming both versions, and the run still
+/// emits one `DriverChanged` naming both versions, and the search still
 /// finalizes: the driver is provenance, never an admission gate.
 #[test]
-fn a_changed_driver_is_journaled_and_the_run_proceeds() -> Result<()> {
+fn a_changed_driver_is_journaled_and_the_search_proceeds() -> Result<()> {
     let (_dir, store) = temp_store();
     let cfg = config(7, vec![StubBehavior::Succeed]);
     seed_bound(&store, &cfg, "", "stub gpu", "570.86.15")?;
@@ -92,12 +92,12 @@ fn a_changed_driver_is_journaled_and_the_run_proceeds() -> Result<()> {
             "580.65.6".to_string(),
         )]
     );
-    let events = journal_events(&store, &run_id(&cfg));
+    let events = journal_events(&store, &search_id(&cfg));
     assert!(
         events
             .iter()
-            .any(|e| matches!(e, Event::RunFinalized { .. })),
-        "the warning never blocks the run: {events:?}"
+            .any(|e| matches!(e, Event::SearchFinalized { .. })),
+        "the warning never blocks the search: {events:?}"
     );
     Ok(())
 }
@@ -120,10 +120,10 @@ fn the_journaled_driver_stays_silent() -> Result<()> {
     Ok(())
 }
 
-/// A fresh run has no journaled driver to differ from, so its first session
+/// A fresh search has no journaled driver to differ from, so its first session
 /// emits nothing whatever its workers report.
 #[test]
-fn a_fresh_run_emits_no_change() -> Result<()> {
+fn a_fresh_search_emits_no_change() -> Result<()> {
     let (_dir, store) = temp_store();
     let cfg = config(7, vec![StubBehavior::Succeed]);
 

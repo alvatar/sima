@@ -37,10 +37,10 @@ pub struct InstanceRecord {
     /// none. Stamped from the offer at intent and carried unchanged by the
     /// live upgrade.
     pub machine: String,
-    /// The owning run, full 64-character hex. Its orchestrator lock answers
+    /// The owning search, full 64-character hex. Its orchestrator lock answers
     /// whether the owner is still alive.
     pub owner: String,
-    /// What the rental carries for the run that rented it.
+    /// What the rental carries for the search that rented it.
     pub role: Rental,
     /// How far the attempt got, and the instance once there is one.
     pub state: InstanceRecordState,
@@ -69,7 +69,7 @@ impl InstanceRecord {
     }
 }
 
-/// What a rented instance carries for the run that rented it.
+/// What a rented instance carries for the search that rented it.
 ///
 /// The store records the role and nothing about what follows from it: which
 /// roles a reconciliation pass reaps is the control plane's policy, stated at
@@ -79,7 +79,7 @@ impl InstanceRecord {
 pub enum Rental {
     /// Workers the local orchestrator drives.
     Worker,
-    /// The run's orchestrator itself, on a machine a migration moved it onto.
+    /// The search's orchestrator itself, on a machine a migration moved it onto.
     Orchestrator,
 }
 
@@ -202,16 +202,16 @@ mod tests {
 
     use sima_core::{Error, Result};
 
-    use crate::testutil::{sample_run_config, temp_store};
+    use crate::testutil::{sample_search_config, temp_store};
     use crate::{InstanceRecord, InstanceRecordState, Rental, Store};
 
-    /// An intent record under `tag`, owned by the run for `root_seed`.
+    /// An intent record under `tag`, owned by the search for `root_seed`.
     fn intent(tag: &str, root_seed: u64) -> InstanceRecord {
         InstanceRecord {
             tag: tag.to_string(),
             provider: "stub".to_string(),
             machine: "m-0".to_string(),
-            owner: sample_run_config(root_seed).id().to_string(),
+            owner: sample_search_config(root_seed).id().to_string(),
             role: Rental::Worker,
             state: InstanceRecordState::Intent,
             price_micro_usd_hour: 82_400,
@@ -429,7 +429,7 @@ mod tests {
     }
 
     #[test]
-    fn records_of_several_runs_and_providers_coexist() -> Result<()> {
+    fn records_of_several_searches_and_providers_coexist() -> Result<()> {
         let (_dir, store) = temp_store();
         let mut written = Vec::new();
         for (index, provider) in ["stub", "vastai"].iter().enumerate() {

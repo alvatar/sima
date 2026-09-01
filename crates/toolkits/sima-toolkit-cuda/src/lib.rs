@@ -1,11 +1,11 @@
-//! CUDA compute toolkit: run GPU compute kernels authored in CUDA C without
+//! CUDA compute toolkit: search GPU compute kernels authored in CUDA C without
 //! writing raw driver-API calls.
 //!
 //! A domain describes kernels and buffers and orchestrates dispatches through a
 //! small surface — [`Context`], [`Buffer`], [`Kernel`] — while the toolkit hides
 //! the CUDA driver API behind `cudarc`. It is an execution backend a domain
 //! depends on, a compute library rather than an executor: it holds no store
-//! handle and builds no run identity.
+//! handle and builds no search identity.
 //!
 //! # Kernels ship as PTX
 //!
@@ -13,7 +13,7 @@
 //! [`PTX_OPTIONS`], and the PTX is committed beside its source.
 //! [`Context::kernel`] takes that PTX text and the driver's just-in-time
 //! compiler turns it into machine code for the card it is loaded on. Nothing
-//! compiles CUDA C while a run executes, so no worker needs the CUDA toolkit —
+//! compiles CUDA C while a search executes, so no worker needs the CUDA toolkit —
 //! only the driver, which arrives with the card.
 //!
 //! Regenerating a committed PTX needs `libnvrtc`, and only that: it is a
@@ -28,7 +28,7 @@
 //! `compile-ptx` example is the regeneration step:
 //!
 //! ```text
-//! cargo run -p sima-toolkit-cuda --example compile-ptx \
+//! cargo search -p sima-toolkit-cuda --example compile-ptx \
 //!   -- path/to/kernel.cu > path/to/kernel.ptx
 //! ```
 //!
@@ -51,7 +51,7 @@
 //!   digest and its compiler id states the lowering.
 //! - **The compiler on the surface.** Compilation happens offline here, so
 //!   [`compile`] is the regeneration entry point a developer machine calls and
-//!   nothing on the execution path does. WGSL lowers at run time instead, so
+//!   nothing on the execution path does. WGSL lowers at search time instead, so
 //!   its surface carries a device-free validity check and no compiler of its
 //!   own.
 //!
@@ -79,7 +79,7 @@
 //! cargo test -p sima-toolkit-cuda
 //! ```
 //!
-//! `cudarc` opens the CUDA libraries at run time, so the crate builds with no
+//! `cudarc` opens the CUDA libraries at search time, so the crate builds with no
 //! CUDA toolkit and no driver present.
 
 mod buffer;

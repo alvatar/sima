@@ -123,7 +123,7 @@ impl<'a, P: Provider + ?Sized> InstanceGuard<'a, P> {
     ///
     /// This is what a caller that is done watching a machine still doing work
     /// asks for. The record left behind is what the next invocation adopts,
-    /// and what `sima reconcile` reads; nothing is billed to the run until one
+    /// and what `sima reconcile` reads; nothing is billed to the search until one
     /// of them takes the machine down.
     pub fn keep(mut self) {
         self.released = true;
@@ -199,7 +199,7 @@ pub(crate) fn close_out(
         cost_micro_usd: Cost::accrued(rate, elapsed_ms).0,
     })?;
     // A death here leaves the entry written and the record uncleared: the
-    // re-run's close-out overwrites the entry under the same (tag, stamp) key
+    // repeated search's close-out overwrites the entry under the same (tag, stamp) key
     // rather than adding a second, so the ledger still holds exactly one.
     sima_core::crashpoint("provider.entry-written");
     store.remove_instance(&record.tag)
@@ -220,7 +220,8 @@ mod tests {
     use crate::provider::{InstanceId, InstanceStatus, Provider, Provision, TaggedInstance};
     use crate::stub::StubProvider;
     use crate::testutil::{
-        acquire_any, instance_record, live_state, sample_run, spend_entries, stub_offer, temp_store,
+        acquire_any, instance_record, live_state, sample_search, spend_entries, stub_offer,
+        temp_store,
     };
 
     /// A stub listing the one offer these tests rent.
@@ -254,11 +255,11 @@ mod tests {
         let tag = guard.tag().to_string();
         let record = store.instance_record(&tag)?.expect("the rental's record");
         guard.release()?;
-        let entries = spend_entries(&store, &sample_run(7))?;
+        let entries = spend_entries(&store, &sample_search(7))?;
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].tag, tag);
         assert_eq!(entries[0].provider, "stub");
-        assert_eq!(entries[0].owner, sample_run(7).to_string());
+        assert_eq!(entries[0].owner, sample_search(7).to_string());
         assert_charges(&entries[0], 250_000, record.created_ms);
         Ok(())
     }
@@ -279,7 +280,7 @@ mod tests {
             "its record stands for the next invocation"
         );
         assert!(
-            spend_entries(&store, &sample_run(7))?.is_empty(),
+            spend_entries(&store, &sample_search(7))?.is_empty(),
             "and the rental is not closed out"
         );
         Ok(())
@@ -293,7 +294,7 @@ mod tests {
             let guard = acquire_any(&stub, &store)?;
             guard.tag().to_string()
         };
-        let entries = spend_entries(&store, &sample_run(7))?;
+        let entries = spend_entries(&store, &sample_search(7))?;
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].tag, tag);
         assert_charges(&entries[0], 100_000, entries[0].started_ms);
@@ -311,7 +312,7 @@ mod tests {
         store.remove_instance(guard.tag())?;
         guard.release()?;
         assert_eq!(stub.destroyed(), vec![id]);
-        assert!(spend_entries(&store, &sample_run(7))?.is_empty());
+        assert!(spend_entries(&store, &sample_search(7))?.is_empty());
         Ok(())
     }
 
@@ -339,7 +340,7 @@ mod tests {
     #[test]
     fn a_teardown_a_provider_refuses_keeps_the_record_and_writes_no_entry() -> Result<()> {
         let (_dir, store) = temp_store();
-        let record = instance_record("sima-tag-0", live_state("i-1"), sample_run(7));
+        let record = instance_record("sima-tag-0", live_state("i-1"), sample_search(7));
         store.put_instance(&record)?;
         // The destroy is the first fallible step: a machine still running
         // keeps its record, so it stays discoverable, and its rental is not
@@ -353,7 +354,7 @@ mod tests {
         );
         assert!(matches!(outcome, Err(Error::Provider(_))));
         assert_eq!(store.instance_record("sima-tag-0")?, Some(record));
-        assert!(spend_entries(&store, &sample_run(7))?.is_empty());
+        assert!(spend_entries(&store, &sample_search(7))?.is_empty());
         Ok(())
     }
 

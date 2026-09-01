@@ -275,7 +275,7 @@ class TaskInput:
     """The identity-bearing inputs of one evaluation.
 
     Every field here determines the task's key and its committed artifacts:
-    the candidate, the run's params bytes, the seed, the environment id this
+    the candidate, the search's params bytes, the seed, the environment id this
     task runs under, and — for a segment — the loaded bytes of the state the
     previous segment committed.
     """
@@ -369,8 +369,8 @@ class Domain(ABC):
 
     @abstractmethod
     def translate_config(self, toml: str, segmented: bool) -> bytes:
-        """Translates the run's ``[run.params]`` section into canonical params
-        bytes. ``segmented`` says whether the run divides each candidate's
+        """Translates the search's ``[search.params]`` section into canonical params
+        bytes. ``segmented`` says whether the search divides each candidate's
         evaluation into a chain, so a domain can refuse a combination it does
         not support. Raising refuses the configuration, naming what is wrong.
         """
@@ -393,7 +393,7 @@ class Generator(ABC):
 
     @abstractmethod
     def id(self) -> str:
-        """The generator id, which a run names in ``[run.generator]``."""
+        """The generator id, which a search names in ``[search.generator]``."""
 
     @abstractmethod
     def format(self) -> str:
@@ -401,10 +401,10 @@ class Generator(ABC):
 
     @abstractmethod
     def translate_config(self, toml: str) -> bytes:
-        """Translates the ``[run.generator]`` section, minus its ``id`` key,
+        """Translates the ``[search.generator]`` section, minus its ``id`` key,
         into this generator's opaque params blob."""
 
     @abstractmethod
     def generate(self, root_seed: int, params: bytes) -> list[Spec]:
-        """The run's candidates. One root seed always yields the same specs, in
+        """The search's candidates. One root seed always yields the same specs, in
         the same order."""

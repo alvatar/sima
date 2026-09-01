@@ -4,7 +4,7 @@
 //! the machine is routinely gone while the machine is still working and still
 //! being paid for. Re-invoking the migration must take that machine back rather
 //! than rent a second one, and the ledger is what makes it findable: a live
-//! record of role [`Rental::Orchestrator`] owned by this run names it.
+//! record of role [`Rental::Orchestrator`] owned by this search names it.
 //!
 //! Adoption never rewrites the record. The rental's charged window opens at the
 //! record's `created_ms` and closes when its spend entry is written, so a
@@ -14,18 +14,18 @@ use std::thread::sleep;
 use std::time::Instant;
 
 use sima_core::{Error, Result};
-use sima_store::{InstanceRecord, Rental, RunLock, Store};
+use sima_store::{InstanceRecord, Rental, SearchLock, Store};
 
 use crate::acquire::AcquireLimits;
 use crate::guard::InstanceGuard;
 use crate::offer::Price;
 use crate::provider::{InstanceId, InstanceStatus, Provider};
 
-/// Rebuilds a guard over the rental hosting this run's orchestrator, or `None`
+/// Rebuilds a guard over the rental hosting this search's orchestrator, or `None`
 /// when there is none to take back.
 ///
 /// The ledger is searched for a live record of role [`Rental::Orchestrator`]
-/// owned by `lock`'s run and belonging to `provider`. What happens then follows
+/// owned by `lock`'s search and belonging to `provider`. What happens then follows
 /// the provider's answer:
 ///
 /// - **Ready** — the guard is rebuilt from the record's tag, machine, and rate
@@ -38,15 +38,15 @@ use crate::provider::{InstanceId, InstanceStatus, Provider};
 /// - **Gone** — the record is removed and `None` returned; the caller rents
 ///   fresh.
 ///
-/// A record owned by a different run, or in any other role, is not this
+/// A record owned by a different search, or in any other role, is not this
 /// caller's to take and is ignored.
 pub fn adopt<'a, P: Provider + ?Sized>(
     provider: &'a P,
     store: &'a Store,
-    lock: &RunLock,
+    lock: &SearchLock,
     limits: &AcquireLimits,
 ) -> Result<Option<InstanceGuard<'a, P>>> {
-    let owner = lock.run().to_string();
+    let owner = lock.search().to_string();
     let Some(record) = store.instance_records()?.into_iter().find(|record| {
         record.provider == provider.id()
             && record.owner == owner
@@ -102,7 +102,7 @@ pub fn adopt<'a, P: Provider + ?Sized>(
 /// side.
 fn provisioning_past_the_bound(record: &InstanceRecord) -> Error {
     Error::Provider(format!(
-        "the rental hosting this run is still provisioning past the readiness bound: \
+        "the rental hosting this search is still provisioning past the readiness bound: \
          instance {:?} under tag {:?}",
         record.instance().unwrap_or_default(),
         record.tag
@@ -117,7 +117,7 @@ mod tests {
 
     use super::*;
     use crate::stub::StubProvider;
-    use crate::testutil::{instance_record_as, live_state, sample_run, stub_offer, temp_store};
+    use crate::testutil::{instance_record_as, live_state, sample_search, stub_offer, temp_store};
 
     /// Bounds that never wait: a provisioning rental fails at once.
     fn limits() -> AcquireLimits {
@@ -146,11 +146,16 @@ mod tests {
     #[test]
     fn a_live_hosting_rental_comes_back_as_a_guard() -> Result<()> {
         let (_dir, store) = temp_store();
-        let run = sample_run(3);
-        let lock = store.acquire_run_lock(&run)?;
+        let search = sample_search(3);
+        let lock = store.acquire_search_lock(&search)?;
         let stub = StubProvider::new(vec![stub_offer("a", 100_000)]);
         let id = provisioned(&stub, 0, "sima-tag-0");
-        let record = instance_record_as("sima-tag-0", live_state(&id.0), run, Rental::Orchestrator);
+        let record = instance_record_as(
+            "sima-tag-0",
+            live_state(&id.0),
+            search,
+            Rental::Orchestrator,
+        );
         store.put_instance(&record)?;
 
         let guard = adopt(&stub, &store, &lock, &limits())?.expect("the rental is adopted");
@@ -169,14 +174,14 @@ mod tests {
     #[test]
     fn a_rental_the_provider_no_longer_holds_clears_its_record() -> Result<()> {
         let (_dir, store) = temp_store();
-        let run = sample_run(3);
-        let lock = store.acquire_run_lock(&run)?;
+        let search = sample_search(3);
+        let lock = store.acquire_search_lock(&search)?;
         let stub = StubProvider::new(vec![stub_offer("a", 100_000)]);
         let id = provisioned(&stub, 0, "sima-tag-0");
         store.put_instance(&instance_record_as(
             "sima-tag-0",
             live_state(&id.0),
-            run,
+            search,
             Rental::Orchestrator,
         ))?;
         stub.destroy(&id)?;
@@ -193,14 +198,14 @@ mod tests {
     fn a_rental_still_provisioning_past_the_bound_is_named_not_destroyed() -> Result<()> {
         // Destroying a machine that may be coming up is a guess about money.
         let (_dir, store) = temp_store();
-        let run = sample_run(3);
-        let lock = store.acquire_run_lock(&run)?;
+        let search = sample_search(3);
+        let lock = store.acquire_search_lock(&search)?;
         let stub = StubProvider::new(vec![stub_offer("a", 100_000)]).ready_after(5);
         let id = provisioned(&stub, 0, "sima-tag-0");
         store.put_instance(&instance_record_as(
             "sima-tag-0",
             live_state(&id.0),
-            run,
+            search,
             Rental::Orchestrator,
         ))?;
 
@@ -221,10 +226,10 @@ mod tests {
     }
 
     #[test]
-    fn a_worker_rental_and_another_run_s_rental_are_not_this_caller_s() -> Result<()> {
+    fn a_worker_rental_and_another_search_s_rental_are_not_this_caller_s() -> Result<()> {
         let (_dir, store) = temp_store();
-        let run = sample_run(3);
-        let lock = store.acquire_run_lock(&run)?;
+        let search = sample_search(3);
+        let lock = store.acquire_search_lock(&search)?;
         let stub = StubProvider::new(vec![stub_offer("a", 100_000), stub_offer("b", 200_000)]);
         let mine = provisioned(&stub, 0, "sima-tag-0");
         let theirs = provisioned(&stub, 1, "sima-tag-1");
@@ -233,14 +238,14 @@ mod tests {
         store.put_instance(&instance_record_as(
             "sima-tag-0",
             live_state(&mine.0),
-            run,
+            search,
             Rental::Worker,
         ))?;
-        // Hosting, but another run's.
+        // Hosting, but another search's.
         store.put_instance(&instance_record_as(
             "sima-tag-1",
             live_state(&theirs.0),
-            sample_run(4),
+            sample_search(4),
             Rental::Orchestrator,
         ))?;
 
@@ -258,13 +263,13 @@ mod tests {
         // An attempt that never reached a machine has nothing to take back;
         // reconciliation is what clears it.
         let (_dir, store) = temp_store();
-        let run = sample_run(3);
-        let lock = store.acquire_run_lock(&run)?;
+        let search = sample_search(3);
+        let lock = store.acquire_search_lock(&search)?;
         let stub = StubProvider::new(vec![stub_offer("a", 100_000)]);
         store.put_instance(&instance_record_as(
             "sima-tag-0",
             InstanceRecordState::Intent,
-            run,
+            search,
             Rental::Orchestrator,
         ))?;
         assert!(adopt(&stub, &store, &lock, &limits())?.is_none());

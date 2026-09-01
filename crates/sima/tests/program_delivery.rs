@@ -2,7 +2,7 @@
 //! sync-serve <dir> --payload <D> [--sdk <S>]` as the far half, the pipeline's
 //! own near half driving it.
 //!
-//! This is what a fleet machine receives before it can serve a worker for a run
+//! This is what a fleet machine receives before it can serve a worker for a search
 //! whose format is a program rather than a build-in format. Every test here
 //! runs in the ordinary gate: the far half is a subprocess on this machine,
 //! with no ssh hop, no container, and no network.
@@ -65,12 +65,12 @@ fn config(dir: &Path, installs: &Path, sdk: bool) -> PathBuf {
         "sima.toml",
         &format!(
             r#"
-        [run]
+        [search]
         root_seed = 21
         segments = 2
         format = "stub.v1"
 
-        [run.generator]
+        [search.generator]
         id = "stub.v1"
         behaviors = ["accumulate:2"]
 
@@ -139,7 +139,7 @@ fn a_delivery_installs_the_program_and_stamps_it() -> Result<()> {
         delivery.payload().to_string()
     );
     assert_eq!(installs(&log), 1);
-    // The store the objects landed in is shared across runs, so it sits beside
+    // The store the objects landed in is shared across searches, so it sits beside
     // the trees rather than inside one.
     assert!(far.path().join("store").is_dir());
     Ok(())
@@ -280,7 +280,7 @@ fn a_delivery_whose_objects_never_arrived_fails_naming_the_digest() {
 
 #[test]
 fn concurrent_deliveries_into_one_directory_install_once() -> Result<()> {
-    // Several runs putting work on one machine at once: the trees are built
+    // Several searches putting work on one machine at once: the trees are built
     // through the same lock-and-stamp choreography a load uses, so they build
     // one tree between them rather than one each.
     let near = tempfile::tempdir().expect("temp dir");
@@ -313,11 +313,11 @@ fn a_format_this_build_carries_sends_nothing() -> Result<()> {
         dir.path(),
         "sima.toml",
         r#"
-        [run]
+        [search]
         root_seed = 21
         format = "stub.v1"
 
-        [run.generator]
+        [search.generator]
         id = "stub.v1"
         behaviors = ["accumulate:2"]
 
@@ -338,7 +338,7 @@ fn a_format_this_build_carries_sends_nothing() -> Result<()> {
 #[test]
 fn an_entry_that_names_no_payload_is_refused_before_any_machine_is_contacted() -> Result<()> {
     // Such an entry says the program stays where it is installed. A machine
-    // that never receives it cannot serve a worker for the run, so the refusal
+    // that never receives it cannot serve a worker for the search, so the refusal
     // comes from the ingest rather than from a failed handshake later.
     let dir = tempfile::tempdir().expect("temp dir");
     executable(
@@ -349,11 +349,11 @@ fn an_entry_that_names_no_payload_is_refused_before_any_machine_is_contacted() -
         dir.path(),
         "sima.toml",
         r#"
-        [run]
+        [search]
         root_seed = 21
         format = "stub.v1"
 
-        [run.generator]
+        [search.generator]
         id = "stub.v1"
         behaviors = ["accumulate:2"]
 

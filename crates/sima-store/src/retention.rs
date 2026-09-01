@@ -1,29 +1,29 @@
-//! Reference-guarded deletion: [`Store::remove_run`] deletes one run and
-//! everything no surviving run references; [`Store::gc`] deletes everything
-//! outside the finalized runs' closures. Both are guarded the same way — no
-//! object a live run references is ever removed — and both delete through
+//! Reference-guarded deletion: [`Store::remove_search`] deletes one search and
+//! everything no surviving search references; [`Store::gc`] deletes everything
+//! outside the finalized searches' closures. Both are guarded the same way — no
+//! object a live search references is ever removed — and both delete through
 //! one primitive, so an object goes whichever representation holds it.
 //!
-//! The removal unit is the run. A single task's artifacts are never removed
-//! alone, because the run's manifest would then reference missing objects. No
+//! The removal unit is the search. A single task's artifacts are never removed
+//! alone, because the search's manifest would then reference missing objects. No
 //! public single-object delete exists; the guard is the primitive.
 //!
 //! The plan is computed from the survivors, never from the target: the
 //! removal set is every object the store holds — loose and packed alike —
-//! outside the union of every other finalized run's
-//! [`run_closure`](Store::run_closure), and every task-index entry
+//! outside the union of every other finalized search's
+//! [`search_closure`](Store::search_closure), and every task-index entry
 //! naming a record in that set. The target's own manifest is not consulted,
-//! so an unfinalized run — interrupted or abandoned — is removable, and
+//! so an unfinalized search — interrupted or abandoned — is removable, and
 //! orphaned objects from crashed pre-commit writes are collected in the same
 //! sweep. Removal deletes references strictly before their referents —
-//! task-index entries before the record objects they name, and the run
+//! task-index entries before the record objects they name, and the search
 //! directory last — so at no point does a surviving reference point at a
 //! missing object.
 //!
 //! Removal is durable and resumable. The plan is written to a `remove-intent`
 //! file before any deletion; a crash leaves either a manifest that can still be
 //! enumerated (before the intent) or a resumable intent (after it), and
-//! re-running `remove_run` converges on the same end state. Deleting a file that
+//! re-running `remove_search` converges on the same end state. Deleting a file that
 //! is already gone is success.
 
 use std::collections::BTreeSet;
@@ -32,7 +32,7 @@ use std::io::ErrorKind;
 use std::str;
 
 use sima_core::{Error, Hash, Result};
-use sima_model::{RunId, TaskKey};
+use sima_model::{SearchId, TaskKey};
 
 use crate::atomic::{self, io_error};
 use crate::layout;
@@ -41,7 +41,7 @@ use crate::store::Store;
 /// The first line of a removal-intent file, identifying its format.
 const INTENT_TAG: &str = "sima.remove-intent.v1";
 
-/// What a [`Store::remove_run`] call deleted.
+/// What a [`Store::remove_search`] call deleted.
 #[derive(Debug, PartialEq, Eq)]
 pub struct RemovalReport {
     /// Objects deleted from the CAS.
@@ -60,13 +60,13 @@ pub struct GcReport {
     /// Packs whose contents changed: replaced by the pack of their
     /// survivors, or deleted outright when every object in them was doomed.
     pub packs_rewritten: usize,
-    /// Unfinalized run directories deleted, whole.
-    pub runs_removed: usize,
+    /// Unfinalized search directories deleted, whole.
+    pub searches_removed: usize,
     /// Leftover `tmp/` files swept.
     pub tmp_files_removed: usize,
 }
 
-/// A run's removal plan: the objects to delete and the task-index entries to
+/// A search's removal plan: the objects to delete and the task-index entries to
 /// drop, in deletion order (index entries before their record objects). It is
 /// machine-read recovery state written to the intent file, never
 /// identity-bearing.
@@ -76,48 +76,49 @@ struct RemovalPlan {
 }
 
 impl Store {
-    /// Every run registered in the store, sorted by id. A `runs/` entry whose
-    /// name is not a run-id hex string is [`Error::Corruption`]. Retention and
-    /// the CLI's run removal both enumerate runs this way.
-    pub fn runs(&self) -> Result<Vec<RunId>> {
-        let dir = layout::runs_dir(self.root());
-        let mut runs = Vec::new();
+    /// Every search registered in the store, sorted by id. A `searches/` entry whose
+    /// name is not a search-id hex string is [`Error::Corruption`]. Retention and
+    /// the CLI's search removal both enumerate searches this way.
+    pub fn searches(&self) -> Result<Vec<SearchId>> {
+        let dir = layout::searches_dir(self.root());
+        let mut searches = Vec::new();
         for entry in fs::read_dir(&dir).map_err(|e| io_error(&dir, e))? {
             let entry = entry.map_err(|e| io_error(&dir, e))?;
             let name = entry.file_name();
             let name = name.to_str().ok_or_else(|| {
                 Error::Corruption(format!(
-                    "runs/ holds a non-UTF-8 entry {:?}",
+                    "searches/ holds a non-UTF-8 entry {:?}",
                     entry.file_name()
                 ))
             })?;
-            let run = RunId::from_hex(name)
-                .map_err(|_| Error::Corruption(format!("runs/ holds a non-run entry {name:?}")))?;
-            runs.push(run);
+            let search = SearchId::from_hex(name).map_err(|_| {
+                Error::Corruption(format!("searches/ holds a non-search entry {name:?}"))
+            })?;
+            searches.push(search);
         }
-        runs.sort();
-        Ok(runs)
+        searches.sort();
+        Ok(searches)
     }
 
-    /// Removes a run and every object no other finalized run references.
+    /// Removes a search and every object no other finalized search references.
     /// Returns what was removed.
     ///
     /// The target itself need not be finalized — the plan never consults its
-    /// manifest, so an interrupted or abandoned run is removable. Every other
-    /// run in the store must be finalized, since an unfinalized survivor's
+    /// manifest, so an interrupted or abandoned search is removable. Every other
+    /// search in the store must be finalized, since an unfinalized survivor's
     /// committed work is reachable through no manifest and the sweep would
-    /// collect it; that violation is [`Error::Validation`] naming the run. A
-    /// missing run directory is [`Error::Validation`] ("run not found").
+    /// collect it; that violation is [`Error::Validation`] naming the search. A
+    /// missing search directory is [`Error::Validation`] ("search not found").
     ///
-    /// The plan is written to `runs/<run>/remove-intent` before any deletion,
-    /// then index entries, then objects, then the run directory are removed. A
+    /// The plan is written to `searches/<search>/remove-intent` before any deletion,
+    /// then index entries, then objects, then the search directory are removed. A
     /// crash at any point leaves the removal resumable: re-running converges on
     /// the same end state.
-    pub fn remove_run(&self, run: &RunId) -> Result<RemovalReport> {
-        let run_dir = layout::run_dir(self.root(), run);
-        if !run_dir.is_dir() {
+    pub fn remove_search(&self, search: &SearchId) -> Result<RemovalReport> {
+        let search_dir = layout::search_dir(self.root(), search);
+        if !search_dir.is_dir() {
             return Err(Error::Validation(format!(
-                "cannot remove run {run}: run not found"
+                "cannot remove search {search}: search not found"
             )));
         }
         // Deleting an object reshapes the packs that hold it, so the
@@ -128,11 +129,11 @@ impl Store {
         // A present intent is an interrupted removal: resume it without
         // recomputing, so the plan is fixed across the crash. Otherwise compute
         // the plan under the preconditions and record it durably first.
-        let plan = match self.read_remove_intent(run)? {
+        let plan = match self.read_remove_intent(search)? {
             Some(plan) => plan,
             None => {
-                let plan = self.compute_removal(run)?;
-                self.write_remove_intent(run, &plan)?;
+                let plan = self.compute_removal(search)?;
+                self.write_remove_intent(search, &plan)?;
                 plan
             }
         };
@@ -143,35 +144,35 @@ impl Store {
             atomic::remove_file_idempotent(&layout::task_path(self.root(), task))?;
         }
         self.delete_objects(&plan.objects, &lock)?;
-        // The run directory last: manifest, journal, checkpoints, and the intent
+        // The search directory last: manifest, journal, checkpoints, and the intent
         // itself. Empty object fan-out directories are left in place — removing
         // them would race concurrent puts.
-        fs::remove_dir_all(&run_dir).map_err(|e| io_error(&run_dir, e))?;
+        fs::remove_dir_all(&search_dir).map_err(|e| io_error(&search_dir, e))?;
         Ok(RemovalReport {
             objects_removed: plan.objects.len(),
             index_entries_removed: plan.tasks.len(),
         })
     }
 
-    /// Deletes everything the finalized runs do not reference: objects in
+    /// Deletes everything the finalized searches do not reference: objects in
     /// either representation, the task-index entries naming them, every
-    /// unfinalized run directory, and the leftovers in `tmp/`.
+    /// unfinalized search directory, and the leftovers in `tmp/`.
     ///
-    /// The store remembers finalized runs only afterwards. An unfinalized
-    /// run's committed work is reachable through no manifest, so it is
-    /// swept with its run directory, and its in-flight `tmp/` writes are
-    /// swept from under it — an active run's work included. That is what
+    /// The store remembers finalized searches only afterwards. An unfinalized
+    /// search's committed work is reachable through no manifest, so it is
+    /// swept with its search directory, and its in-flight `tmp/` writes are
+    /// swept from under it — an active search's work included. That is what
     /// asking for this operation means, and the operator owns the decision.
     pub fn gc(&self) -> Result<GcReport> {
         let lock = self.acquire_maintenance_lock()?;
-        // The live set: the closure of every finalized run. A run without a
+        // The live set: the closure of every finalized search. A search without a
         // manifest enumerates nothing, so it is doomed rather than live.
         let mut live: BTreeSet<Hash> = BTreeSet::new();
         let mut unfinalized = Vec::new();
-        for run in self.runs()? {
-            match self.manifest(&run)? {
-                Some(_) => live.extend(self.run_closure(&run)?),
-                None => unfinalized.push(run),
+        for search in self.searches()? {
+            match self.manifest(&search)? {
+                Some(_) => live.extend(self.search_closure(&search)?),
+                None => unfinalized.push(search),
             }
         }
 
@@ -190,15 +191,15 @@ impl Store {
             atomic::remove_file_idempotent(&layout::task_path(self.root(), task))?;
         }
         let packs_rewritten = self.delete_objects(&doomed, &lock)?;
-        for run in &unfinalized {
-            let dir = layout::run_dir(self.root(), run);
+        for search in &unfinalized {
+            let dir = layout::search_dir(self.root(), search);
             fs::remove_dir_all(&dir).map_err(|e| io_error(&dir, e))?;
         }
         Ok(GcReport {
             objects_removed: doomed.len(),
             index_entries_removed: tasks.len(),
             packs_rewritten,
-            runs_removed: unfinalized.len(),
+            searches_removed: unfinalized.len(),
             tmp_files_removed: self.sweep_tmp()?,
         })
     }
@@ -218,21 +219,25 @@ impl Store {
     }
 
     /// Computes the removal plan from the survivors: every CAS object outside
-    /// the union of every other run's closure, and every task-index entry
-    /// naming a record in that set. Every other run must be finalized; the
+    /// the union of every other search's closure, and every task-index entry
+    /// naming a record in that set. Every other search must be finalized; the
     /// target's manifest is never consulted.
-    fn compute_removal(&self, run: &RunId) -> Result<RemovalPlan> {
-        let others: Vec<RunId> = self.runs()?.into_iter().filter(|r| r != run).collect();
+    fn compute_removal(&self, search: &SearchId) -> Result<RemovalPlan> {
+        let others: Vec<SearchId> = self
+            .searches()?
+            .into_iter()
+            .filter(|r| r != search)
+            .collect();
         for other in &others {
             if self.manifest(other)?.is_none() {
                 return Err(Error::Validation(format!(
-                    "cannot remove run {run}: run {other} is not finalized, so its objects are not enumerable"
+                    "cannot remove search {search}: search {other} is not finalized, so its objects are not enumerable"
                 )));
             }
         }
         let mut kept: BTreeSet<Hash> = BTreeSet::new();
         for other in &others {
-            kept.extend(self.run_closure(other)?);
+            kept.extend(self.search_closure(other)?);
         }
         // Both walks return sorted entries and the filters keep their order,
         // so the plan is deterministic.
@@ -310,17 +315,17 @@ impl Store {
         Ok(entries)
     }
 
-    /// Writes the removal plan to the run's intent file through the store's
+    /// Writes the removal plan to the search's intent file through the store's
     /// atomic-write primitive.
-    fn write_remove_intent(&self, run: &RunId, plan: &RemovalPlan) -> Result<()> {
-        let path = layout::remove_intent_path(self.root(), run);
+    fn write_remove_intent(&self, search: &SearchId, plan: &RemovalPlan) -> Result<()> {
+        let path = layout::remove_intent_path(self.root(), search);
         atomic::write_atomic(self.root(), &path, &intent_bytes(plan))
     }
 
-    /// Reads the run's intent file, `None` when absent. A malformed intent is
+    /// Reads the search's intent file, `None` when absent. A malformed intent is
     /// [`Error::Corruption`].
-    fn read_remove_intent(&self, run: &RunId) -> Result<Option<RemovalPlan>> {
-        let path = layout::remove_intent_path(self.root(), run);
+    fn read_remove_intent(&self, search: &SearchId) -> Result<Option<RemovalPlan>> {
+        let path = layout::remove_intent_path(self.root(), search);
         match fs::read(&path) {
             Ok(bytes) => parse_intent(&bytes).map(Some),
             Err(e) if e.kind() == ErrorKind::NotFound => Ok(None),
@@ -377,15 +382,15 @@ mod tests {
 
     use super::*;
     use crate::testutil::{
-        pack_names, record_with_stored_artifact, sample_identity, sample_run_config,
+        pack_names, record_with_stored_artifact, sample_identity, sample_search_config,
         store_identity_components, temp_store,
     };
     use sima_core::hash_bytes;
 
-    /// Commits `seeds` and finalizes a run over them under `root_seed`,
-    /// returning its id. Committing a seed shared with another run is idempotent
+    /// Commits `seeds` and finalizes a search over them under `root_seed`,
+    /// returning its id. Committing a seed shared with another search is idempotent
     /// — the record is identical — so shared objects arise naturally.
-    fn finalized_run(store: &Store, root_seed: u64, seeds: &[u64]) -> Result<RunId> {
+    fn finalized_search(store: &Store, root_seed: u64, seeds: &[u64]) -> Result<SearchId> {
         store_identity_components(store);
         let mut keys = Vec::new();
         for &seed in seeds {
@@ -393,9 +398,9 @@ mod tests {
             store.commit(&record)?;
             keys.push(record.identity.key());
         }
-        let run = store.create_run(&sample_run_config(root_seed))?;
-        store.finalize_run(&run, &keys)?;
-        Ok(run)
+        let search = store.create_search(&sample_search_config(root_seed))?;
+        store.finalize_search(&search, &keys)?;
+        Ok(search)
     }
 
     /// The number of object files under `objects/`, recursively — the fan-out
@@ -413,38 +418,39 @@ mod tests {
     }
 
     #[test]
-    fn runs_lists_every_registered_run_sorted() -> Result<()> {
+    fn searches_lists_every_registered_search_sorted() -> Result<()> {
         let (_dir, store) = temp_store();
-        let a = finalized_run(&store, 42, &[1])?;
-        let b = finalized_run(&store, 43, &[2])?;
+        let a = finalized_search(&store, 42, &[1])?;
+        let b = finalized_search(&store, 43, &[2])?;
         let mut expected = vec![a, b];
         expected.sort();
-        assert_eq!(store.runs()?, expected);
+        assert_eq!(store.searches()?, expected);
         Ok(())
     }
 
     #[test]
-    fn runs_rejects_a_non_run_entry_as_corruption() -> Result<()> {
+    fn searches_rejects_a_non_search_entry_as_corruption() -> Result<()> {
         let (dir, store) = temp_store();
-        finalized_run(&store, 42, &[1])?;
-        fs::write(dir.path().join("runs").join("not-a-run-id"), b"").expect("write stray entry");
-        assert!(matches!(store.runs(), Err(Error::Corruption(_))));
+        finalized_search(&store, 42, &[1])?;
+        fs::write(dir.path().join("searches").join("not-a-search-id"), b"")
+            .expect("write stray entry");
+        assert!(matches!(store.searches(), Err(Error::Corruption(_))));
         Ok(())
     }
 
     #[test]
-    fn removing_a_run_keeps_objects_shared_with_another_finalized_run() -> Result<()> {
+    fn removing_a_search_keeps_objects_shared_with_another_finalized_search() -> Result<()> {
         let (dir, store) = temp_store();
-        // Run A over seeds {1, 2}, run B over {2, 3}: seed 2's record, artifact,
-        // and index entry are shared; each run's config and its own seed's
+        // Search A over seeds {1, 2}, search B over {2, 3}: seed 2's record, artifact,
+        // and index entry are shared; each search's config and its own seed's
         // objects are exclusive.
-        let a = finalized_run(&store, 42, &[1, 2])?;
-        let b = finalized_run(&store, 43, &[2, 3])?;
-        let b_closure = store.run_closure(&b)?;
+        let a = finalized_search(&store, 42, &[1, 2])?;
+        let b = finalized_search(&store, 43, &[2, 3])?;
+        let b_closure = store.search_closure(&b)?;
 
         // A-exclusive: config(42), seed-1 record, seed-1 artifact — three
         // objects; and one index entry, tasks/<key 1>.
-        let report = store.remove_run(&a)?;
+        let report = store.remove_search(&a)?;
         assert_eq!(
             report,
             RemovalReport {
@@ -454,8 +460,8 @@ mod tests {
         );
 
         // B is untouched: its closure still enumerates whole.
-        assert_eq!(store.run_closure(&b)?, b_closure);
-        assert!(!dir.path().join("runs").join(a.to_string()).exists());
+        assert_eq!(store.search_closure(&b)?, b_closure);
+        assert!(!dir.path().join("searches").join(a.to_string()).exists());
 
         // The shared seed-2 objects and index entry survive.
         assert!(store.has_record(&sample_identity(2).key())?);
@@ -468,14 +474,14 @@ mod tests {
     }
 
     #[test]
-    fn a_second_removal_is_run_not_found() -> Result<()> {
+    fn a_second_removal_is_search_not_found() -> Result<()> {
         let (_dir, store) = temp_store();
-        let a = finalized_run(&store, 42, &[1])?;
-        finalized_run(&store, 43, &[2])?;
-        store.remove_run(&a)?;
-        match store.remove_run(&a) {
+        let a = finalized_search(&store, 42, &[1])?;
+        finalized_search(&store, 43, &[2])?;
+        store.remove_search(&a)?;
+        match store.remove_search(&a) {
             Err(Error::Validation(msg)) => {
-                assert!(msg.contains("run not found"), "{msg}")
+                assert!(msg.contains("search not found"), "{msg}")
             }
             other => panic!("expected Validation, got {other:?}"),
         }
@@ -484,7 +490,7 @@ mod tests {
 
     #[test]
     fn removing_an_unfinalized_target_deletes_its_committed_work() -> Result<()> {
-        // An interrupted or abandoned run: records committed, no manifest. The
+        // An interrupted or abandoned search: records committed, no manifest. The
         // plan comes from the surviving manifests alone, so the target's
         // missing manifest is no obstacle — its committed work, identity
         // components, and config are all swept.
@@ -492,8 +498,8 @@ mod tests {
         store_identity_components(&store);
         let record = record_with_stored_artifact(&store, sample_identity(1));
         store.commit(&record)?;
-        let a = store.create_run(&sample_run_config(42))?;
-        let report = store.remove_run(&a)?;
+        let a = store.create_search(&sample_search_config(42))?;
+        let report = store.remove_search(&a)?;
         // Spec, params, environment, record, artifact, config — six objects
         // and the one index entry.
         assert_eq!(
@@ -504,26 +510,26 @@ mod tests {
             }
         );
         assert_eq!(object_file_count(dir.path()), 0);
-        assert!(!dir.path().join("runs").join(a.to_string()).exists());
+        assert!(!dir.path().join("searches").join(a.to_string()).exists());
         Ok(())
     }
 
     #[test]
-    fn removing_an_unfinalized_target_keeps_objects_a_finalized_run_references() -> Result<()> {
+    fn removing_an_unfinalized_target_keeps_objects_a_finalized_search_references() -> Result<()> {
         let (_dir, store) = temp_store();
-        let b = finalized_run(&store, 43, &[2, 3])?;
+        let b = finalized_search(&store, 43, &[2, 3])?;
         // The unfinalized target committed seeds {1, 2}: seed 2's objects and
         // index entry are shared with B, seed 1's and the config are its own.
         for seed in [1, 2] {
             let record = record_with_stored_artifact(&store, sample_identity(seed));
             store.commit(&record)?;
         }
-        let a = store.create_run(&sample_run_config(42))?;
-        let b_closure = store.run_closure(&b)?;
+        let a = store.create_search(&sample_search_config(42))?;
+        let b_closure = store.search_closure(&b)?;
 
         // A-exclusive: config(42), seed-1 record, seed-1 artifact — three
         // objects and one index entry.
-        let report = store.remove_run(&a)?;
+        let report = store.remove_search(&a)?;
         assert_eq!(
             report,
             RemovalReport {
@@ -531,7 +537,7 @@ mod tests {
                 index_entries_removed: 1,
             }
         );
-        assert_eq!(store.run_closure(&b)?, b_closure);
+        assert_eq!(store.search_closure(&b)?, b_closure);
         assert!(store.has_record(&sample_identity(2).key())?);
         assert!(!store.has_record(&sample_identity(1).key())?);
         Ok(())
@@ -540,13 +546,13 @@ mod tests {
     #[test]
     fn removal_sweeps_objects_no_surviving_manifest_reaches() -> Result<()> {
         let (_dir, store) = temp_store();
-        let a = finalized_run(&store, 42, &[1])?;
-        finalized_run(&store, 43, &[2])?;
+        let a = finalized_search(&store, 42, &[1])?;
+        finalized_search(&store, 43, &[2])?;
         // An orphan from a crashed pre-commit write: present in the CAS,
-        // referenced by nothing. Removing any run collects it alongside the
-        // run's own objects.
+        // referenced by nothing. Removing any search collects it alongside the
+        // search's own objects.
         let stray = store.put(b"orphaned bytes")?;
-        let report = store.remove_run(&a)?;
+        let report = store.remove_search(&a)?;
         // Config(42), seed-1 record, seed-1 artifact, and the stray.
         assert_eq!(report.objects_removed, 4);
         assert!(!store.has(&stray)?);
@@ -554,14 +560,14 @@ mod tests {
     }
 
     #[test]
-    fn removing_with_another_run_unfinalized_is_validation() -> Result<()> {
+    fn removing_with_another_search_unfinalized_is_validation() -> Result<()> {
         let (_dir, store) = temp_store();
-        let a = finalized_run(&store, 42, &[1])?;
-        // A second run committed but never finalized.
+        let a = finalized_search(&store, 42, &[1])?;
+        // A second search committed but never finalized.
         let record = record_with_stored_artifact(&store, sample_identity(2));
         store.commit(&record)?;
-        store.create_run(&sample_run_config(43))?;
-        match store.remove_run(&a) {
+        store.create_search(&sample_search_config(43))?;
+        match store.remove_search(&a) {
             Err(Error::Validation(msg)) => assert!(msg.contains("not finalized"), "{msg}"),
             other => panic!("expected Validation, got {other:?}"),
         }
@@ -569,12 +575,12 @@ mod tests {
     }
 
     #[test]
-    fn removing_the_only_run_empties_to_the_skeleton() -> Result<()> {
+    fn removing_the_only_search_empties_to_the_skeleton() -> Result<()> {
         let (dir, store) = temp_store();
-        let a = finalized_run(&store, 42, &[1, 2])?;
+        let a = finalized_search(&store, 42, &[1, 2])?;
         // Every object is exclusive: config, spec, params, environment, two
         // records, two artifacts — eight objects and two index entries.
-        let report = store.remove_run(&a)?;
+        let report = store.remove_search(&a)?;
         assert_eq!(
             report,
             RemovalReport {
@@ -591,11 +597,11 @@ mod tests {
             "the task index is empty"
         );
         assert_eq!(
-            fs::read_dir(dir.path().join("runs"))
-                .expect("read runs")
+            fs::read_dir(dir.path().join("searches"))
+                .expect("read searches")
                 .count(),
             0,
-            "no run directories remain"
+            "no search directories remain"
         );
         Ok(())
     }
@@ -605,11 +611,11 @@ mod tests {
         // A store with the target A and a reference store removed uninterrupted,
         // to compare the end state against.
         let (_ref_dir, ref_store) = temp_store();
-        let ref_a = finalized_run(&ref_store, 42, &[1, 2])?;
-        let reference = ref_store.remove_run(&ref_a)?;
+        let ref_a = finalized_search(&ref_store, 42, &[1, 2])?;
+        let reference = ref_store.remove_search(&ref_a)?;
 
         let (dir, store) = temp_store();
-        let a = finalized_run(&store, 42, &[1, 2])?;
+        let a = finalized_search(&store, 42, &[1, 2])?;
         // Reconstruct a mid-removal state by hand: the intent naming the full
         // plan is present, and one planned object plus one index entry are
         // already deleted, as a crash between the two deletion phases would
@@ -621,23 +627,23 @@ mod tests {
 
         // Resuming reads the intent, re-applies the deletions idempotently, and
         // converges on the reference end state.
-        let report = store.remove_run(&a)?;
+        let report = store.remove_search(&a)?;
         assert_eq!(report, reference);
         assert_eq!(object_file_count(dir.path()), 0);
-        assert!(!dir.path().join("runs").join(a.to_string()).exists());
+        assert!(!dir.path().join("searches").join(a.to_string()).exists());
         Ok(())
     }
 
     #[test]
-    fn removing_a_run_rewrites_the_pack_holding_its_objects() -> Result<()> {
+    fn removing_a_search_rewrites_the_pack_holding_its_objects() -> Result<()> {
         let (dir, store) = temp_store();
-        let a = finalized_run(&store, 42, &[1, 2])?;
-        let b = finalized_run(&store, 43, &[2, 3])?;
+        let a = finalized_search(&store, 42, &[1, 2])?;
+        let b = finalized_search(&store, 43, &[2, 3])?;
         store.pack()?;
         let before = pack_names(dir.path());
-        let b_closure = store.run_closure(&b)?;
+        let b_closure = store.search_closure(&b)?;
 
-        let report = store.remove_run(&a)?;
+        let report = store.remove_search(&a)?;
         assert_eq!(
             report,
             RemovalReport {
@@ -645,21 +651,21 @@ mod tests {
                 index_entries_removed: 1,
             }
         );
-        // The pack that held both runs' objects is replaced by one holding
+        // The pack that held both searches' objects is replaced by one holding
         // the survivors, so B's closure still enumerates whole.
         assert_ne!(pack_names(dir.path()), before);
-        assert_eq!(store.run_closure(&b)?, b_closure);
+        assert_eq!(store.search_closure(&b)?, b_closure);
         assert!(!store.has(a.as_hash())?);
         assert!(store.has(&hash_bytes(&2u64.to_le_bytes()))?);
         Ok(())
     }
 
     #[test]
-    fn removing_the_only_run_leaves_neither_objects_nor_packs() -> Result<()> {
+    fn removing_the_only_search_leaves_neither_objects_nor_packs() -> Result<()> {
         let (dir, store) = temp_store();
-        let a = finalized_run(&store, 42, &[1, 2])?;
+        let a = finalized_search(&store, 42, &[1, 2])?;
         store.pack()?;
-        store.remove_run(&a)?;
+        store.remove_search(&a)?;
         assert_eq!(object_file_count(dir.path()), 0, "no loose objects remain");
         assert!(pack_names(dir.path()).is_empty(), "no packs remain");
         Ok(())
@@ -668,14 +674,14 @@ mod tests {
     #[test]
     fn an_interrupted_removal_over_packs_resumes_from_its_intent() -> Result<()> {
         let (_ref_dir, ref_store) = temp_store();
-        let ref_a = finalized_run(&ref_store, 42, &[1, 2])?;
-        finalized_run(&ref_store, 43, &[2, 3])?;
+        let ref_a = finalized_search(&ref_store, 42, &[1, 2])?;
+        finalized_search(&ref_store, 43, &[2, 3])?;
         ref_store.pack()?;
-        let reference = ref_store.remove_run(&ref_a)?;
+        let reference = ref_store.remove_search(&ref_a)?;
 
         let (dir, store) = temp_store();
-        let a = finalized_run(&store, 42, &[1, 2])?;
-        let b = finalized_run(&store, 43, &[2, 3])?;
+        let a = finalized_search(&store, 42, &[1, 2])?;
+        let b = finalized_search(&store, 43, &[2, 3])?;
         store.pack()?;
         // A crash after the intent was written and after the replacement
         // pack was placed, before the doomed one was deleted: both packs
@@ -683,25 +689,25 @@ mod tests {
         let plan = store.compute_removal(&a)?;
         store.write_remove_intent(&a, &plan)?;
         let survivors: Vec<Hash> = store
-            .run_closure(&b)?
+            .search_closure(&b)?
             .into_iter()
             .filter(|hash| !plan.objects.contains(hash))
             .collect();
         crate::pack::format::write_pack(store.root(), &survivors, &|hash| store.get(hash))?;
 
-        let report = store.remove_run(&a)?;
+        let report = store.remove_search(&a)?;
         assert_eq!(report, reference);
-        assert_eq!(store.run_closure(&b)?, ref_store.run_closure(&b)?);
+        assert_eq!(store.search_closure(&b)?, ref_store.search_closure(&b)?);
         assert!(!store.has(a.as_hash())?);
         assert_eq!(object_file_count(dir.path()), 0);
         Ok(())
     }
 
     #[test]
-    fn gc_keeps_every_finalized_run_and_sweeps_the_rest() -> Result<()> {
+    fn gc_keeps_every_finalized_search_and_sweeps_the_rest() -> Result<()> {
         let (dir, store) = temp_store();
-        let a = finalized_run(&store, 42, &[1])?;
-        let closure = store.run_closure(&a)?;
+        let a = finalized_search(&store, 42, &[1])?;
+        let closure = store.search_closure(&a)?;
         let stray = store.put(b"orphaned bytes")?;
         store.pack()?;
         // A second stray, left loose after the packing, so the sweep is
@@ -711,18 +717,18 @@ mod tests {
         let report = store.gc()?;
         assert_eq!(report.objects_removed, 2);
         assert_eq!(report.packs_rewritten, 1);
-        assert_eq!(report.runs_removed, 0);
+        assert_eq!(report.searches_removed, 0);
         assert!(!store.has(&stray)?);
         assert!(!store.has(&loose_stray)?);
-        assert_eq!(store.run_closure(&a)?, closure);
-        assert!(dir.path().join("runs").join(a.to_string()).is_dir());
+        assert_eq!(store.search_closure(&a)?, closure);
+        assert!(dir.path().join("searches").join(a.to_string()).is_dir());
         Ok(())
     }
 
     #[test]
     fn gc_deletes_a_pack_whose_every_object_is_doomed() -> Result<()> {
         let (dir, store) = temp_store();
-        // No run at all: every object in the store is an orphan.
+        // No search at all: every object in the store is an orphan.
         let stray = store.put(b"orphaned bytes")?;
         store.pack()?;
         let report = store.gc()?;
@@ -736,8 +742,8 @@ mod tests {
     #[test]
     fn gc_deletes_the_index_entries_of_the_records_it_removes() -> Result<()> {
         let (_dir, store) = temp_store();
-        let a = finalized_run(&store, 42, &[1])?;
-        // A record committed outside any finalized run: its object and the
+        let a = finalized_search(&store, 42, &[1])?;
+        // A record committed outside any finalized search: its object and the
         // index entry naming it both go.
         let orphan = record_with_stored_artifact(&store, sample_identity(9));
         store.commit(&orphan)?;
@@ -745,34 +751,34 @@ mod tests {
         assert_eq!(report.index_entries_removed, 1);
         assert!(!store.has_record(&sample_identity(9).key())?);
         assert!(store.has_record(&sample_identity(1).key())?);
-        assert_eq!(store.runs()?, vec![a]);
+        assert_eq!(store.searches()?, vec![a]);
         Ok(())
     }
 
     #[test]
-    fn gc_deletes_unfinalized_runs_whole() -> Result<()> {
+    fn gc_deletes_unfinalized_searchs_whole() -> Result<()> {
         let (dir, store) = temp_store();
-        let a = finalized_run(&store, 42, &[1])?;
-        let closure = store.run_closure(&a)?;
-        // An unfinalized run: a directory, a committed record, a config.
+        let a = finalized_search(&store, 42, &[1])?;
+        let closure = store.search_closure(&a)?;
+        // An unfinalized search: a directory, a committed record, a config.
         let record = record_with_stored_artifact(&store, sample_identity(2));
         store.commit(&record)?;
-        let b = store.create_run(&sample_run_config(43))?;
+        let b = store.create_search(&sample_search_config(43))?;
 
         let report = store.gc()?;
-        assert_eq!(report.runs_removed, 1);
-        assert!(!dir.path().join("runs").join(b.to_string()).exists());
-        assert!(dir.path().join("runs").join(a.to_string()).is_dir());
+        assert_eq!(report.searches_removed, 1);
+        assert!(!dir.path().join("searches").join(b.to_string()).exists());
+        assert!(dir.path().join("searches").join(a.to_string()).is_dir());
         assert!(!store.has(b.as_hash())?, "its config object goes too");
         assert!(!store.has_record(&sample_identity(2).key())?);
-        assert_eq!(store.run_closure(&a)?, closure);
+        assert_eq!(store.search_closure(&a)?, closure);
         Ok(())
     }
 
     #[test]
     fn gc_sweeps_the_leftovers_of_crashed_writes() -> Result<()> {
         let (dir, store) = temp_store();
-        finalized_run(&store, 42, &[1])?;
+        finalized_search(&store, 42, &[1])?;
         fs::write(dir.path().join("tmp").join("1234-0"), b"a torn write").expect("write leftover");
         let report = store.gc()?;
         assert_eq!(report.tmp_files_removed, 1);
@@ -788,9 +794,9 @@ mod tests {
     #[test]
     fn gc_on_a_live_store_removes_nothing() -> Result<()> {
         let (_dir, store) = temp_store();
-        let a = finalized_run(&store, 42, &[1, 2])?;
+        let a = finalized_search(&store, 42, &[1, 2])?;
         store.pack()?;
-        let closure = store.run_closure(&a)?;
+        let closure = store.search_closure(&a)?;
         let report = store.gc()?;
         assert_eq!(
             report,
@@ -798,28 +804,28 @@ mod tests {
                 objects_removed: 0,
                 index_entries_removed: 0,
                 packs_rewritten: 0,
-                runs_removed: 0,
+                searches_removed: 0,
                 tmp_files_removed: 0,
             }
         );
-        assert_eq!(store.run_closure(&a)?, closure);
+        assert_eq!(store.search_closure(&a)?, closure);
         // And a second call says the same, over a store it just left.
         assert_eq!(store.gc()?.objects_removed, 0);
         Ok(())
     }
 
     #[test]
-    fn an_interrupted_gc_converges_on_re_run() -> Result<()> {
+    fn an_interrupted_gc_converges_when_repeated() -> Result<()> {
         // A reference store, swept uninterrupted, to compare against.
         let (ref_dir, ref_store) = temp_store();
-        let ref_a = finalized_run(&ref_store, 42, &[1])?;
+        let ref_a = finalized_search(&ref_store, 42, &[1])?;
         let orphan = record_with_stored_artifact(&ref_store, sample_identity(9));
         ref_store.commit(&orphan)?;
         ref_store.pack()?;
         ref_store.gc()?;
 
         let (dir, store) = temp_store();
-        let a = finalized_run(&store, 42, &[1])?;
+        let a = finalized_search(&store, 42, &[1])?;
         let orphan = record_with_stored_artifact(&store, sample_identity(9));
         store.commit(&orphan)?;
         store.pack()?;
@@ -832,7 +838,7 @@ mod tests {
         ))?;
 
         store.gc()?;
-        assert_eq!(store.run_closure(&a)?, ref_store.run_closure(&ref_a)?);
+        assert_eq!(store.search_closure(&a)?, ref_store.search_closure(&ref_a)?);
         assert_eq!(pack_names(dir.path()), pack_names(ref_dir.path()));
         assert_eq!(object_file_count(dir.path()), 0);
         Ok(())
@@ -841,10 +847,10 @@ mod tests {
     #[test]
     fn a_malformed_intent_is_corruption() -> Result<()> {
         let (_dir, store) = temp_store();
-        let a = finalized_run(&store, 42, &[1])?;
+        let a = finalized_search(&store, 42, &[1])?;
         let path = layout::remove_intent_path(store.root(), &a);
         fs::write(&path, b"not a remove intent").expect("write bad intent");
-        assert!(matches!(store.remove_run(&a), Err(Error::Corruption(_))));
+        assert!(matches!(store.remove_search(&a), Err(Error::Corruption(_))));
         Ok(())
     }
 

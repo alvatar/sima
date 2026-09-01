@@ -4,8 +4,8 @@
 //! What is proven here is that `docs/protocol.md` is the whole requirement. The
 //! program under test shares no code with this workspace — it speaks the wire
 //! from the SDK written against that document, which the configuration declares
-//! and the binary vends — so every message the run needs must cross correctly
-//! or a run fails here.
+//! and the binary vends — so every message the search needs must cross correctly
+//! or a search fails here.
 //!
 //! One search covers the ordinary path: both roles, every domain-service
 //! question, a chain of segments hopping on committed state, and the artifacts
@@ -28,7 +28,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use common::{journal_events, loaded_text};
 use sima_core::{Result, prng};
 use sima_pipeline::{
-    BinaryChange, Engagement, Event, LoadedConfig, Record, RunControl, RunOutcome, Sdk, load,
+    BinaryChange, Engagement, Event, LoadedConfig, Record, Sdk, SearchControl, SearchOutcome, load,
     orchestrate, task_keys,
 };
 use sima_store::Store;
@@ -77,7 +77,7 @@ fn require_python3() {
 /// returns it.
 ///
 /// The wrapper exists to arm a failure path: the variables it exports are the
-/// run's arming, so the configuration carries none of it and an armed run keeps
+/// search's arming, so the configuration carries none of it and an armed search keeps
 /// the identity of an unarmed one. `import sima` needs nothing from it — every
 /// configuration here declares `sdk = "python"`, and the package the binary
 /// vends is what the interpreter reads.
@@ -128,7 +128,7 @@ struct Search {
     count: u64,
     /// Steps one task executes.
     steps: u64,
-    /// The byte every candidate carries, when the run fixes it.
+    /// The byte every candidate carries, when the search fixes it.
     value: Option<u64>,
     /// Whether every checkpoint offer saves.
     checkpointing: bool,
@@ -178,15 +178,15 @@ impl Search {
         };
         format!(
             r#"
-[run]
+[search]
 root_seed = {ROOT_SEED}
 format = "{FORMAT}"
 {segments}
-[run.generator]
+[search.generator]
 id = "{GENERATOR}"
 count = {}
 {value}
-[run.params]
+[search.params]
 steps = {}
 
 [config]
@@ -208,7 +208,7 @@ sdk = "python"
     /// The state each candidate's chain ends on: the total step count, and the
     /// accumulator that many increments past the task's seed.
     ///
-    /// Computed here from the run's own inputs rather than read back from the
+    /// Computed here from the search's own inputs rather than read back from the
     /// program, so the assertion states what the arithmetic must produce.
     fn expected_states(&self) -> Vec<(u64, u64)> {
         (0..self.count)
@@ -223,29 +223,29 @@ sdk = "python"
 }
 
 /// Drives `config` to its outcome with no observer.
-fn run(config: &LoadedConfig) -> Result<RunOutcome> {
+fn run(config: &LoadedConfig) -> Result<SearchOutcome> {
     orchestrate(
         config,
-        &RunControl::detached(),
+        &SearchControl::detached(),
         Engagement::Orchestrator,
         BinaryChange::Refuse,
     )
 }
 
-/// Asserts the run finalized, naming what it did instead.
-fn finalized(outcome: &RunOutcome) {
+/// Asserts the search finalized, naming what it did instead.
+fn finalized(outcome: &SearchOutcome) {
     assert!(
-        matches!(outcome, RunOutcome::Finalized { .. }),
-        "the run finalized: {outcome:?}"
+        matches!(outcome, SearchOutcome::Finalized { .. }),
+        "the search finalized: {outcome:?}"
     );
 }
 
-/// Every state artifact the finalized run committed, decoded into its step and
+/// Every state artifact the finalized search committed, decoded into its step and
 /// accumulator, in manifest order.
 fn committed_states(config: &LoadedConfig) -> Result<Vec<(u64, u64)>> {
     let store = Store::open(&config.store)?;
     let manifest = store
-        .manifest(&config.run.id())?
+        .manifest(&config.search.id())?
         .expect("a finalized manifest");
     manifest
         .entries
@@ -272,7 +272,7 @@ fn committed_states(config: &LoadedConfig) -> Result<Vec<(u64, u64)>> {
         .collect()
 }
 
-/// The states the run's chains ended on: the committed states at the final
+/// The states the search's chains ended on: the committed states at the final
 /// step, sorted, so the assertion does not depend on commit order.
 fn final_states(config: &LoadedConfig, total_steps: u64) -> Result<Vec<(u64, u64)>> {
     let mut states: Vec<(u64, u64)> = committed_states(config)?
@@ -311,14 +311,14 @@ fn a_terminal_interrupt_leaves_the_interpreter_no_signal_to_print_about() -> Res
     let path = dir.path().join("sima.toml");
 
     let child = std::process::Command::new(common::built_binary("sima"))
-        .args(["run", path.to_str().expect("utf-8 path")])
+        .args(["search", path.to_str().expect("utf-8 path")])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())
-        // A group of its own, so the signal below reaches the run and its
+        // A group of its own, so the signal below reaches the search and its
         // children the way a terminal's does, and nothing of the suite's.
         .process_group(0)
         .spawn()
-        .expect("spawn sima run");
+        .expect("spawn sima search");
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
     while !journal_events(&config)
         .iter()
@@ -326,7 +326,7 @@ fn a_terminal_interrupt_leaves_the_interpreter_no_signal_to_print_about() -> Res
     {
         assert!(
             std::time::Instant::now() < deadline,
-            "the run leased a task before the interrupt"
+            "the search leased a task before the interrupt"
         );
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
@@ -334,13 +334,13 @@ fn a_terminal_interrupt_leaves_the_interpreter_no_signal_to_print_about() -> Res
     assert_eq!(
         unsafe { libc::kill(-(child.id() as libc::pid_t), libc::SIGINT) },
         0,
-        "the run's process group was signalled"
+        "the search's process group was signalled"
     );
-    let output = child.wait_with_output().expect("wait for sima run");
+    let output = child.wait_with_output().expect("wait for sima search");
     assert_eq!(
         output.status.code(),
         Some(130),
-        "the run wound itself down: {}",
+        "the search wound itself down: {}",
         String::from_utf8_lossy(&output.stderr)
     );
 
@@ -370,7 +370,7 @@ fn a_terminal_interrupt_leaves_the_interpreter_no_signal_to_print_about() -> Res
 fn a_python_program_answers_the_domain_service_and_runs_a_search() -> Result<()> {
     // The ordinary path end to end. Loading the configuration asks the program
     // every domain-service question — its environment, its devices, both
-    // translations, and the run's specs — and driving it hands each segment an
+    // translations, and the search's specs — and driving it hands each segment an
     // Assign and takes back a Done, with the chain hopping on the state each
     // segment committed.
     let dir = tempfile::tempdir().expect("temp dir");
@@ -380,7 +380,7 @@ fn a_python_program_answers_the_domain_service_and_runs_a_search() -> Result<()>
 
     finalized(&run(&config)?);
 
-    // A chain's successor exists once its predecessor commits, so the run's
+    // A chain's successor exists once its predecessor commits, so the search's
     // full key set is what the walked store answers: one task per segment of
     // every candidate.
     let store = Store::open(&config.store)?;
@@ -401,7 +401,7 @@ fn a_python_program_answers_the_domain_service_and_runs_a_search() -> Result<()>
 }
 
 #[test]
-fn a_python_run_interrupted_between_segments_resumes_to_completion() -> Result<()> {
+fn a_python_search_interrupted_between_segments_resumes_to_completion() -> Result<()> {
     // A chain is resumable at every hop: the first orchestration is stopped
     // partway, and a second over the same store walks the chains from where
     // their committed state left them to the same end.
@@ -409,7 +409,7 @@ fn a_python_run_interrupted_between_segments_resumes_to_completion() -> Result<(
     let program = wrapper(dir.path(), &[]);
     let search = Search {
         // Long enough that the interrupt lands while tasks are still queued,
-        // rather than racing a run that is already over.
+        // rather than racing a search that is already over.
         count: 8,
         steps: 20_000,
         ..Search::new()
@@ -428,7 +428,7 @@ fn a_python_run_interrupted_between_segments_resumes_to_completion() -> Result<(
     };
     let outcome = orchestrate(
         &config,
-        &RunControl {
+        &SearchControl {
             observer: &observer,
             interrupt: &interrupt,
             on_start: None,
@@ -437,8 +437,8 @@ fn a_python_run_interrupted_between_segments_resumes_to_completion() -> Result<(
         BinaryChange::Refuse,
     )?;
     assert!(
-        matches!(outcome, RunOutcome::Interrupted { .. }),
-        "the run stopped partway: {outcome:?}"
+        matches!(outcome, SearchOutcome::Interrupted { .. }),
+        "the search stopped partway: {outcome:?}"
     );
 
     let resumed = loaded_text(dir.path(), "sima.toml", &text)?;
@@ -446,7 +446,7 @@ fn a_python_run_interrupted_between_segments_resumes_to_completion() -> Result<(
     assert_eq!(
         final_states(&resumed, search.total_steps())?,
         expected_final(&search),
-        "the resumed run lands on the states the whole run would have"
+        "the resumed search lands on the states the whole search would have"
     );
     Ok(())
 }
@@ -457,7 +457,7 @@ fn a_worker_death_mid_segment_resumes_from_the_checkpoint() -> Result<()> {
     // boundary, dies without a terminal frame, and the retry inside the same
     // session picks the saved state up. The proof it was used is the steps the
     // successful attempt executed, and the proof it changed nothing is that the
-    // committed bytes equal an unarmed run's.
+    // committed bytes equal an unarmed search's.
     let dir = tempfile::tempdir().expect("temp dir");
     let search = Search {
         segments: Some(1),
@@ -477,7 +477,7 @@ fn a_worker_death_mid_segment_resumes_from_the_checkpoint() -> Result<()> {
     finalized(&run(&unarmed)?);
 
     let armed_dir = dir.path().join("armed");
-    std::fs::create_dir(&armed_dir).expect("the armed run's directory");
+    std::fs::create_dir(&armed_dir).expect("the armed search's directory");
     let program = wrapper(&armed_dir, &[("STEPPER_EXIT_AT_STEP", "2")]);
     let config = loaded_text(&armed_dir, "sima.toml", &search.text("./store", &program))?;
     finalized(&run(&config)?);
@@ -493,15 +493,15 @@ fn a_worker_death_mid_segment_resumes_from_the_checkpoint() -> Result<()> {
     assert_eq!(
         committed_states(&config)?,
         committed_states(&unarmed)?,
-        "the resumed attempt commits what an unarmed run commits"
+        "the resumed attempt commits what an unarmed search commits"
     );
     Ok(())
 }
 
 #[test]
-fn a_transient_failure_is_retried_and_the_run_completes() -> Result<()> {
+fn a_transient_failure_is_retried_and_the_search_completes() -> Result<()> {
     // A `Done` carrying the failed arm: the parent journals the program's own
-    // reason and retries the task, and the run reaches the same end.
+    // reason and retries the task, and the search reaches the same end.
     let dir = tempfile::tempdir().expect("temp dir");
     let program = wrapper(dir.path(), &[("STEPPER_FAIL_ONCE", "1")]);
     let search = Search {
@@ -546,8 +546,8 @@ fn a_python_exception_crosses_as_a_diagnostic_and_rejects_the_task() -> Result<(
     let config = loaded_text(dir.path(), "sima.toml", &search.text("./store", &program))?;
 
     let outcome = run(&config)?;
-    let RunOutcome::Failed { reason, .. } = &outcome else {
-        panic!("a raised evaluation ends the run definitively: {outcome:?}");
+    let SearchOutcome::Failed { reason, .. } = &outcome else {
+        panic!("a raised evaluation ends the search definitively: {outcome:?}");
     };
     assert!(reason.contains("armed panic"), "{reason}");
 
@@ -581,7 +581,7 @@ fn a_python_exception_crosses_as_a_diagnostic_and_rejects_the_task() -> Result<(
 fn a_zero_increment_candidate_is_rejected_naming_the_reason() -> Result<()> {
     // The rejected arm of `Done`: the program judges the candidate unable to
     // produce a result, and its reason crosses verbatim into the journal and
-    // into the run's outcome.
+    // into the search's outcome.
     let dir = tempfile::tempdir().expect("temp dir");
     let program = wrapper(dir.path(), &[]);
     let search = Search {
@@ -593,8 +593,8 @@ fn a_zero_increment_candidate_is_rejected_naming_the_reason() -> Result<()> {
     let config = loaded_text(dir.path(), "sima.toml", &search.text("./store", &program))?;
 
     let outcome = run(&config)?;
-    let RunOutcome::Failed { reason, .. } = &outcome else {
-        panic!("a rejected candidate ends the run definitively: {outcome:?}");
+    let SearchOutcome::Failed { reason, .. } = &outcome else {
+        panic!("a rejected candidate ends the search definitively: {outcome:?}");
     };
     assert_eq!(reason, "zero increment");
     assert!(
@@ -610,7 +610,7 @@ fn a_zero_increment_candidate_is_rejected_naming_the_reason() -> Result<()> {
 #[test]
 fn a_bad_params_key_fails_the_load_naming_the_programs_message() {
     // The domain service's failure path: a translation the program refuses is
-    // surfaced as the program wrote it, at load, before any run exists.
+    // surfaced as the program wrote it, at load, before any search exists.
     let dir = tempfile::tempdir().expect("temp dir");
     let program = wrapper(dir.path(), &[]);
     let search = Search::new();
@@ -633,7 +633,7 @@ fn a_bad_params_key_fails_the_load_naming_the_programs_message() {
 }
 
 /// The steps each committed attempt executed, from the `steps` scalar of every
-/// `Committed` event in the run's journal.
+/// `Committed` event in the search's journal.
 fn committed_steps(config: &LoadedConfig) -> Vec<u64> {
     journal_events(config)
         .into_iter()

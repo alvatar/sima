@@ -30,7 +30,7 @@
 use std::path::Path;
 
 use sima_core::Result;
-use sima_model::RunId;
+use sima_model::SearchId;
 use sima_store::{ObjectScope, Store, SyncReport, SyncRole};
 use sima_transport::{SpawnMode, SshDestination};
 
@@ -38,21 +38,21 @@ use crate::sync_session::sync_against;
 use crate::task_keys::journaled_keys;
 
 /// The far half: serves one sync session over `input` and `output`, against
-/// the store at `store` and the run `run`.
+/// the store at `store` and the search `search`.
 ///
-/// **It addresses the store and the run directly, never a config.** A config
+/// **It addresses the store and the search directly, never a config.** A config
 /// load resolves the `[domain.*]` entries, which installs and spawns the
-/// program the run is served by — and on the destination of a migration that
+/// program the search is served by — and on the destination of a migration that
 /// program is what this very session is delivering. So the two values a config
 /// would have given are passed instead: the initiator knows both, deriving the
-/// run id locally and the store path from the run's own directory.
+/// search id locally and the store path from the search's own directory.
 ///
-/// The key set therefore comes from the run's journal rather than from the
+/// The key set therefore comes from the search's journal rather than from the
 /// scheduler's derivation. It is the same set for this purpose: a record or a
-/// checkpoint exists only for a task the run journaled, so every key with
+/// checkpoint exists only for a task the search journaled, so every key with
 /// state here is named there.
 ///
-/// The run lock is held for the session's duration — a sync writes records and
+/// The search lock is held for the session's duration — a sync writes records and
 /// objects, and the store admits one writer.
 ///
 /// Nothing but protocol frames may reach `output`: the caller wires it to
@@ -63,13 +63,13 @@ use crate::task_keys::journaled_keys;
 /// side advertises what it holds and holds only what it was sent.
 pub fn sync_serve(
     store: &Path,
-    run: &RunId,
+    search: &SearchId,
     input: &mut dyn std::io::Read,
     output: &mut dyn std::io::Write,
 ) -> Result<SyncReport> {
     let store = Store::open(store)?;
-    let _lock = store.acquire_run_lock(run)?;
-    let keys = journaled_keys(&store, run)?;
+    let _lock = store.acquire_search_lock(search)?;
+    let keys = journaled_keys(&store, search)?;
     store.sync(
         &keys,
         ObjectScope::Referenced,
@@ -92,13 +92,13 @@ pub(crate) fn sync_over(
     scope: ObjectScope<'_>,
     reach: &Reach,
     far_store: &str,
-    far_run: &RunId,
+    far_search: &SearchId,
 ) -> Result<SyncReport> {
     sync_against(
         store,
         keys,
         scope,
-        &reach.sync_serve_argv(far_store, far_run),
+        &reach.sync_serve_argv(far_store, far_search),
     )
 }
 
@@ -136,22 +136,22 @@ impl Reach {
     }
 
     /// The argv that serves one sync session over the far side's `store` — a
-    /// path there, travelling unresolved — and the run it holds.
+    /// path there, travelling unresolved — and the search it holds.
     ///
     /// The verb addresses the store rather than a config: loading the config
     /// on the far side would spawn the program the session exists to deliver.
-    pub(crate) fn sync_serve_argv(&self, far_store: &str, far_run: &RunId) -> Vec<String> {
-        self.verb_argv(&["sync-serve", far_store, "--run", &far_run.to_string()])
+    pub(crate) fn sync_serve_argv(&self, far_store: &str, far_search: &SearchId) -> Vec<String> {
+        self.verb_argv(&["sync-serve", far_store, "--search", &far_search.to_string()])
     }
 
-    /// The argv that serves the live follow stream of the run `far_config`
+    /// The argv that serves the live follow stream of the search `far_config`
     /// names.
     pub(crate) fn follow_serve_argv(&self, far_config: &str) -> Vec<String> {
         self.verb_argv(&["follow-serve", far_config])
     }
 
-    /// The argv that reads the journal of the run `far_config` names once and
-    /// exits, for a caller that wants what the far run ended as rather than a
+    /// The argv that reads the journal of the search `far_config` names once and
+    /// exits, for a caller that wants what the far search ended as rather than a
     /// stream of what it is doing.
     pub(crate) fn follow_serve_once_argv(&self, far_config: &str) -> Vec<String> {
         self.verb_argv(&["follow-serve", far_config, "--once"])
@@ -175,7 +175,7 @@ impl Reach {
         }
     }
 
-    /// The `sima` binary that drives the run on the far side.
+    /// The `sima` binary that drives the search on the far side.
     pub(crate) fn binary(&self) -> String {
         match self {
             Reach::Ssh { binary, .. } => binary.clone(),
@@ -214,9 +214,9 @@ impl Reach {
 mod tests {
     use super::*;
 
-    /// The run every argv test addresses.
-    fn run() -> RunId {
-        RunId::from_hash(sima_core::hash_bytes(b"a migrated run"))
+    /// The search every argv test addresses.
+    fn search() -> SearchId {
+        SearchId::from_hash(sima_core::hash_bytes(b"a migrated search"))
     }
 
     #[test]
@@ -227,13 +227,13 @@ mod tests {
             "/build/sima",
         );
         assert_eq!(
-            reach.sync_serve_argv("far/store", &run()),
+            reach.sync_serve_argv("far/store", &search()),
             [
                 "/build/sima",
                 "sync-serve",
                 "far/store",
-                "--run",
-                &run().to_string(),
+                "--search",
+                &search().to_string(),
             ]
         );
     }
@@ -246,7 +246,7 @@ mod tests {
             "sima",
         );
         assert_eq!(
-            reach.sync_serve_argv("~/sima-runs/abc/store", &run()),
+            reach.sync_serve_argv("~/sima/abc/store", &search()),
             [
                 "ssh",
                 "-o",
@@ -265,9 +265,9 @@ mod tests {
                 "--",
                 "sima",
                 "sync-serve",
-                "~/sima-runs/abc/store",
-                "--run",
-                &run().to_string(),
+                "~/sima/abc/store",
+                "--search",
+                &search().to_string(),
             ]
         );
     }
@@ -277,20 +277,17 @@ mod tests {
         // It names a path on the far side, and the far side is what interprets
         // it: a tilde is the far shell's to expand.
         let reach = Reach::new(&SpawnMode::Ssh, &SshDestination::known("gpubox"), "sima");
-        let argv = reach.sync_serve_argv("~/sima-runs/abc/store", &run());
-        assert!(
-            argv.contains(&"~/sima-runs/abc/store".to_string()),
-            "{argv:?}"
-        );
+        let argv = reach.sync_serve_argv("~/sima/abc/store", &search());
+        assert!(argv.contains(&"~/sima/abc/store".to_string()), "{argv:?}");
     }
 
     #[test]
-    fn the_sync_verb_addresses_a_store_and_a_run_rather_than_a_config() {
+    fn the_sync_verb_addresses_a_store_and_a_search_rather_than_a_config() {
         // Loading a config on the far side resolves its `[domain.*]` entries,
         // which spawns the program a session may be there to deliver. The two
         // values a config would have given travel instead.
         let reach = Reach::new(&SpawnMode::Ssh, &SshDestination::known("gpubox"), "sima");
-        let argv = reach.sync_serve_argv("~/sima-runs/abc/store", &run());
+        let argv = reach.sync_serve_argv("~/sima/abc/store", &search());
         let verb = argv
             .iter()
             .position(|arg| arg == "sync-serve")
@@ -299,9 +296,9 @@ mod tests {
             &argv[verb..],
             [
                 "sync-serve",
-                "~/sima-runs/abc/store",
-                "--run",
-                &run().to_string(),
+                "~/sima/abc/store",
+                "--search",
+                &search().to_string(),
             ]
         );
         assert!(
@@ -345,39 +342,34 @@ mod tests {
     }
 
     #[test]
-    fn a_follow_argv_serves_the_run_the_far_config_names() {
+    fn a_follow_argv_serves_the_search_the_far_config_names() {
         let reach = Reach::new(&SpawnMode::Ssh, &SshDestination::known("gpubox"), "sima");
-        let argv = reach.follow_serve_argv("~/sima-runs/abc/sima.toml");
+        let argv = reach.follow_serve_argv("~/sima/abc/sima.toml");
         let binary = argv.iter().position(|a| a == "sima").expect("the binary");
         assert_eq!(
             &argv[binary..],
-            ["sima", "follow-serve", "~/sima-runs/abc/sima.toml"]
+            ["sima", "follow-serve", "~/sima/abc/sima.toml"]
         );
     }
 
     #[test]
     fn a_one_shot_follow_argv_asks_the_far_side_for_the_journal_and_an_exit() {
-        // What a recall reads the far run's final state over: the same verb the
+        // What a recall reads the far search's final state over: the same verb the
         // live follow uses, told to write the journal once and stop.
         let reach = Reach::new(&SpawnMode::Ssh, &SshDestination::known("gpubox"), "sima");
-        let argv = reach.follow_serve_once_argv("~/sima-runs/abc/sima.toml");
+        let argv = reach.follow_serve_once_argv("~/sima/abc/sima.toml");
         let binary = argv.iter().position(|a| a == "sima").expect("the binary");
         assert_eq!(
             &argv[binary..],
-            [
-                "sima",
-                "follow-serve",
-                "~/sima-runs/abc/sima.toml",
-                "--once"
-            ]
+            ["sima", "follow-serve", "~/sima/abc/sima.toml", "--once"]
         );
     }
 
     #[test]
     fn a_verb_argv_carries_every_argument_after_the_binary() {
         let reach = Reach::new(&SpawnMode::Ssh, &SshDestination::known("gpubox"), "sima");
-        let argv = reach.verb_argv(&["run", "sima.toml"]);
+        let argv = reach.verb_argv(&["search", "sima.toml"]);
         let binary = argv.iter().position(|a| a == "sima").expect("the binary");
-        assert_eq!(&argv[binary..], ["sima", "run", "sima.toml"]);
+        assert_eq!(&argv[binary..], ["sima", "search", "sima.toml"]);
     }
 }

@@ -1,15 +1,15 @@
-//! [`WorkerPool`]: one transport's worker slots within a run.
+//! [`WorkerPool`]: one transport's worker slots within a search.
 
 use sima_contracts::DeviceBinding;
 use sima_transport::WorkerTransport;
 
-/// One worker pool of a run: a transport, the host its workers run on, and the
+/// One worker pool of a search: a transport, the host its workers run on, and the
 /// device slots to spawn against it.
 ///
-/// A run's pools are this machine's first, then one per other machine in
+/// A search's pools are this machine's first, then one per other machine in
 /// order; worker ids stay global and sequential across them. Placement does not
 /// know hosts — a class is global (present on any pool means present in the
-/// run) — so a chain bound to a class runs on whichever pool holds it.
+/// search) — so a chain bound to a class runs on whichever pool holds it.
 pub struct WorkerPool<'a> {
     /// The transport this pool's workers spawn through.
     pub transport: &'a dyn WorkerTransport,

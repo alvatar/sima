@@ -3,7 +3,7 @@
 //! phase, with the update mask keyed on the absolute step the harness supplies.
 //!
 //! [`NcaGenome`] is the spec payload (the flat network weight vector),
-//! [`NcaIgnition`] the model's slice of `[run.params]` (the centered seeded
+//! [`NcaIgnition`] the model's slice of `[search.params]` (the centered seeded
 //! patch), and [`NcaGenConfig`] the sampling box. The model binds them to the
 //! generic machinery through [`CaModel`](super::super::model::CaModel), with the
 //! asynchronous update kernel co-located in `nca.wgsl` and composed on top of the

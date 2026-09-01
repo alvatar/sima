@@ -1,7 +1,7 @@
-//! The feed: a run's records and lock state, from the host that drives it.
+//! The feed: a search's records and lock state, from the host that drives it.
 //!
-//! Every live view of a run — the tui and `follow` — consumes one
-//! [`RunFeed`]. [`LocalFeed`] follows a run on this machine; the remote
+//! Every live view of a search — the tui and `follow` — consumes one
+//! [`SearchFeed`]. [`LocalFeed`] follows a search on this machine; the remote
 //! implementation follows one on the host its orchestrator runs on, over the
 //! stream [`protocol`] defines. The view loop is the same either way.
 
@@ -17,34 +17,34 @@ pub use remote::{RemoteFeed, remote_snapshot};
 pub use serve::follow_serve;
 
 use sima_core::Result;
-use sima_model::{FormatId, RunId};
+use sima_model::{FormatId, SearchId};
 use sima_scheduler::Record;
 
-/// The run metadata a view renders through and cannot derive from records
+/// The search metadata a view renders through and cannot derive from records
 /// alone: it lives in the config, which is read on the host that drives the
-/// run.
+/// search.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FeedInfo {
-    /// The run the feed follows.
-    pub run: RunId,
-    /// The run's format id; the domain that renders stats resolves from it.
+    /// The search the feed follows.
+    pub search: SearchId,
+    /// The search's format id; the domain that renders stats resolves from it.
     pub format: FormatId,
     /// The configured worker count, for the occupancy view.
     pub workers: usize,
 }
 
-/// A live source of one run's observations: the records its journal gains and
+/// A live source of one search's observations: the records its journal gains and
 /// the state of its orchestrator lock. Polling is the contract — the caller
 /// decides the cadence — matching the observer a local feed wraps.
-pub trait RunFeed {
-    /// The run metadata the view renders through, fixed for the feed's life.
+pub trait SearchFeed {
+    /// The search metadata the view renders through, fixed for the feed's life.
     fn info(&self) -> &FeedInfo;
 
     /// The records appended since the previous poll, in append order; the
-    /// first poll returns the run's history.
+    /// first poll returns the search's history.
     fn poll(&mut self) -> Result<Vec<Record>>;
 
-    /// Who holds the run's orchestrator lock, or `None` while it is free.
+    /// Who holds the search's orchestrator lock, or `None` while it is free.
     ///
     /// How fresh the answer is follows from where the lock is. A local feed
     /// probes it directly, so the answer holds as of the call. A remote feed

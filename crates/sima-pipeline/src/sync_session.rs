@@ -5,7 +5,7 @@
 //! command whose stdin and stdout are the two halves — and where the far side's
 //! exit is reconciled with this side's session outcome.
 //!
-//! Two callers reach it. A migration syncs a run's records and objects with the
+//! Two callers reach it. A migration syncs a search's records and objects with the
 //! store on its destination; a fleet delivery sends a program's objects to a
 //! machine that is about to run it. Both spawn a far `sima`, both drive
 //! [`Store::sync`] as the initiator, and both need the same reaping.
@@ -44,8 +44,8 @@ pub(crate) fn sync_against(
     };
     let mut writer = BufWriter::new(stdin);
     let mut reader = BufReader::new(stdout);
-    // A session error still reaps the child: a far half left holding the run
-    // lock would fail the next session on this run.
+    // A session error still reaps the child: a far half left holding the search
+    // lock would fail the next session on this search.
     let report = store.sync(keys, scope, &mut reader, &mut writer, SyncRole::Initiator);
     drop(writer);
     let status = child

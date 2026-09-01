@@ -17,11 +17,11 @@ can be exercised without a second program. Each is inert when unset:
 
 - ``STEPPER_EXIT_AT_STEP=N`` — die without a frame right after the checkpoint
   offer at absolute step ``N``. The restarted attempt resumes past ``N``, so the
-  condition never fires twice and the run converges.
+  condition never fires twice and the search converges.
 - ``STEPPER_FAIL_ONCE=1`` — the first attempt of every task returns a transient
   failure, which sima retries.
 - ``STEPPER_RAISE_ONCE=1`` — every task raises, once: the exception crosses as
-  a diagnostic and a panic, sima rejects the task definitively, and the run
+  a diagnostic and a panic, sima rejects the task definitively, and the search
   ends failed.
 """
 
@@ -46,7 +46,7 @@ DRIVER = "example.stepper v1"
 WRAP = 2**64
 #: A state is a `u64` step and a `u64` accumulator, little-endian.
 STATE_LEN = 16
-#: Widest candidate count a run may ask for.
+#: Widest candidate count a search may ask for.
 MAX_COUNT = 32
 
 
@@ -143,15 +143,15 @@ class StepperDomain(sima.Domain):
         ]
 
     def translate_config(self, toml, segmented):
-        """``[run.params]`` in, canonical params bytes out.
+        """``[search.params]`` in, canonical params bytes out.
 
-        An unread key is refused: a silently ignored setting would give the run
+        An unread key is refused: a silently ignored setting would give the search
         an identity promising something the executor never applied.
         """
-        table = parse_section(toml, "[run.params]")
+        table = parse_section(toml, "[search.params]")
         for key in table:
             if key != "steps":
-                raise ValueError(f"[run.params] carries {key!r}; {FORMAT} takes steps alone")
+                raise ValueError(f"[search.params] carries {key!r}; {FORMAT} takes steps alone")
         steps = table.get("steps")
         if not isinstance(steps, int) or isinstance(steps, bool) or steps < 1:
             raise ValueError(f"steps is an integer of at least 1, got {steps!r}")
@@ -165,7 +165,7 @@ class StepperDomain(sima.Domain):
 
 
 class StepperCandidates(sima.Generator):
-    """Draws one-byte candidates from the run's root seed."""
+    """Draws one-byte candidates from the search's root seed."""
 
     def id(self):
         return GENERATOR
@@ -174,12 +174,12 @@ class StepperCandidates(sima.Generator):
         return FORMAT
 
     def translate_config(self, toml):
-        """``[run.generator]`` minus its ``id`` in, the generator's blob out."""
-        table = parse_section(toml, "[run.generator]")
+        """``[search.generator]`` minus its ``id`` in, the generator's blob out."""
+        table = parse_section(toml, "[search.generator]")
         for key in table:
             if key not in ("count", "value"):
                 raise ValueError(
-                    f"[run.generator] carries {key!r}; {GENERATOR} takes count and value"
+                    f"[search.generator] carries {key!r}; {GENERATOR} takes count and value"
                 )
         count = table.get("count", 1)
         if not isinstance(count, int) or isinstance(count, bool) or not 1 <= count <= MAX_COUNT:
@@ -192,7 +192,7 @@ class StepperCandidates(sima.Generator):
         return sima.Enc().u64(count).opt_u64(value).finish()
 
     def generate(self, root_seed, params):
-        """The run's candidates: one byte each, drawn from the root seed unless
+        """The search's candidates: one byte each, drawn from the root seed unless
         ``value`` fixes them. One root seed always yields the same specs."""
         dec = sima.Dec(params)
         count, value = dec.u64(), dec.opt_u64()

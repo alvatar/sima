@@ -1,5 +1,5 @@
-//! RunControl acceptance: the observer mirrors the journal, and the
-//! interrupt flag winds a run down gracefully, leaving the store
+//! SearchControl acceptance: the observer mirrors the journal, and the
+//! interrupt flag winds a search down gracefully, leaving the store
 //! resumable.
 
 mod common;
@@ -7,10 +7,10 @@ mod common;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use common::{config, exec, journal_events, run_controlled, run_id, run_into, temp_store};
+use common::{config, exec, journal_events, run_into, search_controlled, search_id, temp_store};
 use sima_core::Result;
 use sima_domains::StubBehavior;
-use sima_scheduler::{Event, Record, RunControl, RunOutcome};
+use sima_scheduler::{Event, Record, SearchControl, SearchOutcome};
 
 /// The observer receives every record, typed, in exactly the order the
 /// journal records: the collector thread appends each line and then invokes
@@ -27,7 +27,7 @@ fn the_observer_mirrors_the_journal() -> Result<()> {
     );
     let seen: Mutex<Vec<Event>> = Mutex::new(Vec::new());
     let interrupt = AtomicBool::new(false);
-    let control = RunControl {
+    let control = SearchControl {
         observer: &|record: &Record| {
             seen.lock()
                 .expect("observer mutex")
@@ -39,21 +39,21 @@ fn the_observer_mirrors_the_journal() -> Result<()> {
 
     let (_dir, store) = temp_store();
     assert!(matches!(
-        run_controlled(&store, &cfg, &exec(4, 3, 1_000), &control)?,
-        RunOutcome::Finalized { .. }
+        search_controlled(&store, &cfg, &exec(4, 3, 1_000), &control)?,
+        SearchOutcome::Finalized { .. }
     ));
 
-    let journal = journal_events(&store, &run_id(&cfg));
+    let journal = journal_events(&store, &search_id(&cfg));
     assert_eq!(*seen.lock().expect("observer mutex"), journal);
     Ok(())
 }
 
-/// An interrupt landing mid-run drains gracefully: in-flight attempts
+/// An interrupt landing mid-search drains gracefully: in-flight attempts
 /// finish and commit, queued tasks are abandoned, no manifest is written,
-/// and the journal closes with `run_interrupted`. A following clean run
-/// finalizes to a manifest identical to an uninterrupted reference run's.
+/// and the journal closes with `search_interrupted`. A following clean search
+/// finalizes to a manifest identical to an uninterrupted reference search's.
 #[test]
-fn an_interrupt_mid_run_drains_and_stays_resumable() -> Result<()> {
+fn an_interrupt_mid_search_drains_and_stays_resumable() -> Result<()> {
     // The sleeps keep several tasks in flight when the first commit lands,
     // and outlast the driver's interrupt-poll interval so the flag is
     // observed while work is still leased.
@@ -67,7 +67,7 @@ fn an_interrupt_mid_run_drains_and_stays_resumable() -> Result<()> {
         ],
     );
     let interrupt = AtomicBool::new(false);
-    let control = RunControl {
+    let control = SearchControl {
         observer: &|record: &Record| {
             if matches!(record.event, Event::Committed { .. }) {
                 interrupt.store(true, Ordering::Relaxed);
@@ -80,17 +80,17 @@ fn an_interrupt_mid_run_drains_and_stays_resumable() -> Result<()> {
     let (_dir, store) = temp_store();
     let exec_cfg = exec(2, 3, 10_000);
     assert!(matches!(
-        run_controlled(&store, &cfg, &exec_cfg, &control)?,
-        RunOutcome::Interrupted { .. }
+        search_controlled(&store, &cfg, &exec_cfg, &control)?,
+        SearchOutcome::Interrupted { .. }
     ));
 
-    let run = run_id(&cfg);
-    // No manifest: the interrupted run did not finalize.
-    assert!(store.manifest(&run)?.is_none());
-    let events = journal_events(&store, &run);
+    let search = search_id(&cfg);
+    // No manifest: the interrupted search did not finalize.
+    assert!(store.manifest(&search)?.is_none());
+    let events = journal_events(&store, &search);
     assert!(
-        matches!(events.last(), Some(Event::RunInterrupted { .. })),
-        "the journal closes with run_interrupted"
+        matches!(events.last(), Some(Event::SearchInterrupted { .. })),
+        "the journal closes with search_interrupted"
     );
     // In-flight attempts finished and committed; their records survive.
     let committed = events
@@ -99,32 +99,32 @@ fn an_interrupt_mid_run_drains_and_stays_resumable() -> Result<()> {
         .count();
     assert!(committed >= 1, "at least the first commit survives");
 
-    // A clean second run completes the abandoned work; its manifest equals
-    // an uninterrupted reference run's.
+    // A clean second search completes the abandoned work; its manifest equals
+    // an uninterrupted reference search's.
     assert!(matches!(
         run_into(&store, &cfg, &exec_cfg)?,
-        RunOutcome::Finalized { .. }
+        SearchOutcome::Finalized { .. }
     ));
     let (_reference_dir, reference) = temp_store();
     assert!(matches!(
         run_into(&reference, &cfg, &exec_cfg)?,
-        RunOutcome::Finalized { .. }
+        SearchOutcome::Finalized { .. }
     ));
     assert_eq!(
-        store.manifest(&run)?.expect("resumed manifest"),
-        reference.manifest(&run)?.expect("reference manifest"),
+        store.manifest(&search)?.expect("resumed manifest"),
+        reference.manifest(&search)?.expect("reference manifest"),
     );
     Ok(())
 }
 
-/// An interrupt set before the run starts commits nothing: the driver
+/// An interrupt set before the search starts commits nothing: the driver
 /// observes the flag on its first iteration, never polls the source, and
-/// the store stays clean for a later clean run.
+/// the store stays clean for a later clean search.
 #[test]
 fn an_interrupt_before_any_task_starts_commits_nothing() -> Result<()> {
     let cfg = config(22, vec![StubBehavior::Succeed, StubBehavior::Succeed]);
     let interrupt = AtomicBool::new(true);
-    let control = RunControl {
+    let control = SearchControl {
         observer: &|_: &Record| {},
         interrupt: &interrupt,
         on_start: None,
@@ -133,13 +133,13 @@ fn an_interrupt_before_any_task_starts_commits_nothing() -> Result<()> {
     let (_dir, store) = temp_store();
     let exec_cfg = exec(2, 3, 1_000);
     assert!(matches!(
-        run_controlled(&store, &cfg, &exec_cfg, &control)?,
-        RunOutcome::Interrupted { .. }
+        search_controlled(&store, &cfg, &exec_cfg, &control)?,
+        SearchOutcome::Interrupted { .. }
     ));
 
-    let run = run_id(&cfg);
-    assert!(store.manifest(&run)?.is_none());
-    let events = journal_events(&store, &run);
+    let search = search_id(&cfg);
+    assert!(store.manifest(&search)?.is_none());
+    let events = journal_events(&store, &search);
     assert_eq!(
         events
             .iter()
@@ -149,10 +149,10 @@ fn an_interrupt_before_any_task_starts_commits_nothing() -> Result<()> {
         "nothing ran, so nothing committed"
     );
 
-    // Resumable: a clean run over the same store finalizes.
+    // Resumable: a clean search over the same store finalizes.
     assert!(matches!(
         run_into(&store, &cfg, &exec_cfg)?,
-        RunOutcome::Finalized { .. }
+        SearchOutcome::Finalized { .. }
     ));
     Ok(())
 }

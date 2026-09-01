@@ -1,4 +1,4 @@
-//! The run manifest: typed data plus its serde JSON mirror.
+//! The search manifest: typed data plus its serde JSON mirror.
 //!
 //! The manifest is the object every equality-based acceptance criterion
 //! compares, so its bytes are canonicalized: pretty-printed 2-space JSON,
@@ -9,17 +9,17 @@
 
 use serde::{Deserialize, Serialize};
 use sima_core::{Error, Hash, Result};
-use sima_model::{RunId, TaskKey};
+use sima_model::{SearchId, TaskKey};
 
-/// A finalized run's manifest: the run it belongs to and one entry per
+/// A finalized search's manifest: the search it belongs to and one entry per
 /// committed task, strictly ascending by task key.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Manifest {
-    /// The run this manifest finalizes. Because a run id is the hash of
-    /// the run's canonical config bytes, this field simultaneously
+    /// The search this manifest finalizes. Because a search id is the hash of
+    /// the search's canonical config bytes, this field simultaneously
     /// addresses the stored config object.
-    pub run: RunId,
-    /// The run's committed tasks, strictly ascending by task key.
+    pub search: SearchId,
+    /// The search's committed tasks, strictly ascending by task key.
     pub entries: Vec<ManifestEntry>,
 }
 
@@ -36,7 +36,7 @@ pub struct ManifestEntry {
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ManifestJson {
-    run: String,
+    search: String,
     entries: Vec<EntryJson>,
 }
 
@@ -52,7 +52,7 @@ struct EntryJson {
 /// a trailing newline.
 pub(crate) fn to_json_bytes(manifest: &Manifest) -> Vec<u8> {
     let mirror = ManifestJson {
-        run: manifest.run.to_string(),
+        search: manifest.search.to_string(),
         entries: manifest
             .entries
             .iter()
@@ -68,36 +68,38 @@ pub(crate) fn to_json_bytes(manifest: &Manifest) -> Vec<u8> {
     text.into_bytes()
 }
 
-/// Parses and validates manifest bytes read from `dir_run`'s directory.
-/// Malformed JSON, bad hex, unsorted or duplicate entries, and a `run`
+/// Parses and validates manifest bytes read from `dir_search`'s directory.
+/// Malformed JSON, bad hex, unsorted or duplicate entries, and a `search`
 /// field disagreeing with the directory are all [`Error::Corruption`] —
 /// the file contradicts what the store wrote.
-pub(crate) fn from_json_bytes(bytes: &[u8], dir_run: &RunId) -> Result<Manifest> {
+pub(crate) fn from_json_bytes(bytes: &[u8], dir_search: &SearchId) -> Result<Manifest> {
     let mirror: ManifestJson = serde_json::from_slice(bytes).map_err(|e| {
-        Error::Corruption(format!("manifest for run {dir_run} does not parse: {e}"))
-    })?;
-    let run = RunId::from_hex(&mirror.run).map_err(|_| {
         Error::Corruption(format!(
-            "manifest for run {dir_run} names a malformed run id {:?}",
-            mirror.run
+            "manifest for search {dir_search} does not parse: {e}"
         ))
     })?;
-    if run != *dir_run {
+    let search = SearchId::from_hex(&mirror.search).map_err(|_| {
+        Error::Corruption(format!(
+            "manifest for search {dir_search} names a malformed search id {:?}",
+            mirror.search
+        ))
+    })?;
+    if search != *dir_search {
         return Err(Error::Corruption(format!(
-            "manifest under run {dir_run} names run {run}"
+            "manifest under search {dir_search} names search {search}"
         )));
     }
     let mut entries = Vec::with_capacity(mirror.entries.len());
     for entry in &mirror.entries {
         let task = TaskKey::from_hex(&entry.task).map_err(|_| {
             Error::Corruption(format!(
-                "manifest for run {dir_run} holds a malformed task key {:?}",
+                "manifest for search {dir_search} holds a malformed task key {:?}",
                 entry.task
             ))
         })?;
         let record = Hash::from_hex(&entry.record).map_err(|_| {
             Error::Corruption(format!(
-                "manifest for run {dir_run} holds a malformed record hash {:?}",
+                "manifest for search {dir_search} holds a malformed record hash {:?}",
                 entry.record
             ))
         })?;
@@ -105,25 +107,25 @@ pub(crate) fn from_json_bytes(bytes: &[u8], dir_run: &RunId) -> Result<Manifest>
             && prev >= task
         {
             return Err(Error::Corruption(format!(
-                "manifest for run {dir_run} entries out of order: {prev} then {task}"
+                "manifest for search {dir_search} entries out of order: {prev} then {task}"
             )));
         }
         entries.push(ManifestEntry { task, record });
     }
-    Ok(Manifest { run, entries })
+    Ok(Manifest { search, entries })
 }
 
 #[cfg(test)]
 mod tests {
     use super::{Manifest, ManifestEntry, from_json_bytes, to_json_bytes};
     use sima_core::{Error, Result, hash_bytes};
-    use sima_model::{RunId, TaskKey};
+    use sima_model::{SearchId, TaskKey};
 
-    /// A manifest over placeholder digests: run 32x0a, entries under keys
+    /// A manifest over placeholder digests: search 32x0a, entries under keys
     /// 32x11 < 32x22, records 32xaa and 32xbb.
     fn sample_manifest() -> Result<Manifest> {
         Ok(Manifest {
-            run: RunId::from_hex(&"0a".repeat(32))?,
+            search: SearchId::from_hex(&"0a".repeat(32))?,
             entries: vec![
                 ManifestEntry {
                     task: TaskKey::from_hex(&"11".repeat(32))?,
@@ -141,7 +143,7 @@ mod tests {
     fn json_bytes_round_trip() -> Result<()> {
         let manifest = sample_manifest()?;
         let bytes = to_json_bytes(&manifest);
-        assert_eq!(from_json_bytes(&bytes, &manifest.run)?, manifest);
+        assert_eq!(from_json_bytes(&bytes, &manifest.search)?, manifest);
         Ok(())
     }
 
@@ -153,10 +155,10 @@ mod tests {
     }
 
     #[test]
-    fn a_run_field_disagreeing_with_the_directory_is_corruption() -> Result<()> {
+    fn a_search_field_disagreeing_with_the_directory_is_corruption() -> Result<()> {
         let manifest = sample_manifest()?;
         let bytes = to_json_bytes(&manifest);
-        let other = RunId::from_hash(hash_bytes(b"a different run"));
+        let other = SearchId::from_hash(hash_bytes(b"a different search"));
         assert!(matches!(
             from_json_bytes(&bytes, &other),
             Err(Error::Corruption(_))
@@ -165,12 +167,12 @@ mod tests {
     }
 
     /// Asserts that `json` is rejected as corruption when read for the
-    /// sample run.
+    /// sample search.
     fn assert_corrupt(json: &str) {
-        let run = RunId::from_hex(&"0a".repeat(32)).expect("run id");
+        let search = SearchId::from_hex(&"0a".repeat(32)).expect("search id");
         assert!(
             matches!(
-                from_json_bytes(json.as_bytes(), &run),
+                from_json_bytes(json.as_bytes(), &search),
                 Err(Error::Corruption(_))
             ),
             "must reject: {json}"
@@ -181,26 +183,26 @@ mod tests {
     fn malformed_json_is_corruption() {
         assert_corrupt("not json at all");
         assert_corrupt("{}");
-        assert_corrupt("{\"run\": 7, \"entries\": []}");
+        assert_corrupt("{\"search\": 7, \"entries\": []}");
     }
 
     #[test]
     fn bad_hex_is_corruption() {
-        let run = "0a".repeat(32);
+        let search = "0a".repeat(32);
         assert_corrupt(&format!(
-            "{{\"run\": \"{run}\", \"entries\": [{{\"task\": \"zz\", \"record\": \"{}\"}}]}}",
+            "{{\"search\": \"{search}\", \"entries\": [{{\"task\": \"zz\", \"record\": \"{}\"}}]}}",
             "aa".repeat(32)
         ));
-        assert_corrupt("{\"run\": \"UPPER\", \"entries\": []}");
+        assert_corrupt("{\"search\": \"UPPER\", \"entries\": []}");
     }
 
     #[test]
     fn unsorted_entries_are_corruption() {
-        let run = "0a".repeat(32);
+        let search = "0a".repeat(32);
         let (k1, k2) = ("11".repeat(32), "22".repeat(32));
         let rec = "aa".repeat(32);
         assert_corrupt(&format!(
-            "{{\"run\": \"{run}\", \"entries\": [\
+            "{{\"search\": \"{search}\", \"entries\": [\
              {{\"task\": \"{k2}\", \"record\": \"{rec}\"}}, \
              {{\"task\": \"{k1}\", \"record\": \"{rec}\"}}]}}"
         ));
@@ -208,11 +210,11 @@ mod tests {
 
     #[test]
     fn duplicate_task_keys_are_corruption() {
-        let run = "0a".repeat(32);
+        let search = "0a".repeat(32);
         let k1 = "11".repeat(32);
         let rec = "aa".repeat(32);
         assert_corrupt(&format!(
-            "{{\"run\": \"{run}\", \"entries\": [\
+            "{{\"search\": \"{search}\", \"entries\": [\
              {{\"task\": \"{k1}\", \"record\": \"{rec}\"}}, \
              {{\"task\": \"{k1}\", \"record\": \"{rec}\"}}]}}"
         ));
@@ -220,9 +222,9 @@ mod tests {
 
     #[test]
     fn unknown_fields_are_corruption() {
-        let run = "0a".repeat(32);
+        let search = "0a".repeat(32);
         assert_corrupt(&format!(
-            "{{\"run\": \"{run}\", \"entries\": [], \"extra\": 1}}"
+            "{{\"search\": \"{search}\", \"entries\": [], \"extra\": 1}}"
         ));
     }
 }

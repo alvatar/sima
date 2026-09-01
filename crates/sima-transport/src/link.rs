@@ -29,16 +29,16 @@ use sima_trace::Emitter;
 
 use crate::protocol::Assignment;
 
-/// Spawns workers. One transport serves a whole run; each worker slot holds
+/// Spawns workers. One transport serves a whole search; each worker slot holds
 /// one [`WorkerLink`] at a time and replaces it when the child dies.
 pub trait WorkerTransport: Sync {
     /// Spawns one worker as slot `worker`, bound to `device` — or, for
     /// `None`, to the execution backend's default selection — and performs
     /// the handshake; the worker id travels in the `Hello` so the child can
-    /// attribute events. `events` is the run's emitter: the spawn's reader
+    /// attribute events. `events` is the search's emitter: the spawn's reader
     /// threads emit the child's structured events and captured stderr
     /// through it, and drop their clones when the child dies, so the
-    /// collector's channel closes when the run's last worker does.
+    /// collector's channel closes when the search's last worker does.
     ///
     /// A successful spawn yields [`SpawnOutcome::Link`]; an ssh transport
     /// whose instances are gone yields [`SpawnOutcome::Retired`] instead of a
@@ -57,12 +57,12 @@ pub enum SpawnOutcome {
     /// A live worker to converse with.
     Link(Box<dyn WorkerLink>),
     /// The slot's transport retired: no worker was spawned, and none will be.
-    /// `fatal` marks a retirement the run must fault on — a strict-fill rental
+    /// `fatal` marks a retirement the search must fault on — a strict-fill rental
     /// that lost the instances it depends on; a non-fatal retirement lets the
     /// worker thread exit cleanly, the best-effort degradation of a rental that
     /// runs on whatever instances remain.
     Retired {
-        /// Whether the retirement must fault the run.
+        /// Whether the retirement must fault the search.
         fatal: bool,
     },
 }
@@ -99,7 +99,7 @@ pub trait WorkerLink: Send {
     fn driver(&self) -> &str;
 
     /// The digest of the program the worker reported running at the handshake;
-    /// empty when no program travelled to its machine. Agreed with what the run
+    /// empty when no program travelled to its machine. Agreed with what the search
     /// sent before the spawn returned, so what this carries is a fact about the
     /// machine the journal can record.
     fn program(&self) -> &str;

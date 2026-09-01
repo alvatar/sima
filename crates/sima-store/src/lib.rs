@@ -1,4 +1,4 @@
-//! Durability layer: content-addressed objects, the task index, per-run
+//! Durability layer: content-addressed objects, the task index, per-search
 //! manifests and journals, under one fixed disk layout.
 //!
 //! The store is the only durable state in sima. One [`Store`] handle owns a
@@ -14,12 +14,12 @@
 //! <root>/instances/<tag>           one rented instance's ledger record
 //! <root>/spend/<owner-hex>/<tag>-<started-ms>   one closed rental's cost
 //! <root>/machines/<provider>-<machine>/<tag>-<occurred-ms>   one incident
-//! <root>/runs/<run-id-hex>/manifest.json
-//! <root>/runs/<run-id-hex>/journal
-//! <root>/runs/<run-id-hex>/orchestrator.lock
-//! <root>/runs/<run-id-hex>/checkpoint/<slot>   mutable resume scratch
-//! <root>/runs/<run-id-hex>/placement/<chain>   mutable chain device binding
-//! <root>/runs/<run-id-hex>/remove-intent       resumable removal plan
+//! <root>/searches/<search-id-hex>/manifest.json
+//! <root>/searches/<search-id-hex>/journal
+//! <root>/searches/<search-id-hex>/orchestrator.lock
+//! <root>/searches/<search-id-hex>/checkpoint/<slot>   mutable resume scratch
+//! <root>/searches/<search-id-hex>/placement/<chain>   mutable chain device binding
+//! <root>/searches/<search-id-hex>/remove-intent       resumable removal plan
 //! ```
 //!
 //! Every durable file is placed atomically — full content to `tmp/`,
@@ -35,7 +35,7 @@
 //! which is a fact about the store's shape and never about the object: it is
 //! addressed by the hash of its bytes either way, and every read re-hashes
 //! what it decoded. Writes always land loose; consolidating them is the
-//! maintenance operation [`Store::pack`], and deleting what no finalized run
+//! maintenance operation [`Store::pack`], and deleting what no finalized search
 //! references is [`Store::gc`]. Deletion never removes the last copy of an
 //! object — a loose file goes only once a pack holds it, a pack only once
 //! its replacement is durable — so a maintenance operation killed part-way
@@ -64,7 +64,7 @@ mod testutil;
 pub use instances::{InstanceRecord, InstanceRecordState, Rental};
 pub use journal::JournalWriter;
 pub use layout::journal_path;
-pub use lock::RunLock;
+pub use lock::SearchLock;
 pub use machines::{IncidentKind, MachineIncident};
 pub use manifest::{Manifest, ManifestEntry};
 pub use pack::PackReport;

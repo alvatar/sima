@@ -2,7 +2,7 @@
 //!
 //! The committed PTX is regenerated and compared byte for byte by the
 //! known-answer tests, so the comparison holds only when the NVRTC that
-//! compiles it is the pinned one. `cudarc` opens NVRTC at run time by trying
+//! compiles it is the pinned one. `cudarc` opens NVRTC at search time by trying
 //! sonames, the first of which is the bare `libnvrtc.so`, and a bare name
 //! resolves through `LD_LIBRARY_PATH`, then the binary's `RUNPATH`, then
 //! `ld.so.cache`. A CUDA toolkit installed on the machine registers itself in
@@ -61,7 +61,7 @@ fn main() {
         }
         Err(reason) => {
             // A machine without the archive still builds: the workspace opens
-            // CUDA at run time, so only the tests that compile kernels need it.
+            // CUDA at search time, so only the tests that compile kernels need it.
             println!(
                 "cargo:warning=the pinned NVRTC {VERSION} is absent ({reason}). \
                  Kernel compilation will use whichever NVRTC the machine offers, \
@@ -97,7 +97,7 @@ fn vendor_release(vendor: &Path) -> Result<(), String> {
     fs::create_dir_all(&staging).map_err(|e| e.to_string())?;
     let archive = staging.join("nvrtc.tar.xz");
 
-    run(Command::new("curl").args([
+    search(Command::new("curl").args([
         "--silent",
         "--show-error",
         "--location",
@@ -109,7 +109,7 @@ fn vendor_release(vendor: &Path) -> Result<(), String> {
         URL,
     ]))?;
     verify(&archive)?;
-    run(Command::new("tar").args([
+    search(Command::new("tar").args([
         "--extract",
         "--xz",
         "--strip-components=2",
@@ -118,7 +118,7 @@ fn vendor_release(vendor: &Path) -> Result<(), String> {
         "--directory",
         &staging.to_string_lossy(),
         // The stubs directory holds link-time placeholders that resolve no
-        // symbol at run time, so only the real libraries are taken.
+        // symbol at search time, so only the real libraries are taken.
         "--exclude=*/stubs/*",
         "--wildcards",
         "*/lib/*",
@@ -155,7 +155,7 @@ fn verify(archive: &Path) -> Result<(), String> {
     let output = Command::new("sha256sum")
         .arg(archive)
         .output()
-        .map_err(|e| format!("run sha256sum: {e}"))?;
+        .map_err(|e| format!("search sha256sum: {e}"))?;
     let text = String::from_utf8_lossy(&output.stdout);
     let digest = text.split_whitespace().next().unwrap_or_default();
     if digest == SHA256 {
@@ -167,10 +167,10 @@ fn verify(archive: &Path) -> Result<(), String> {
 }
 
 /// Runs `command`, turning a nonzero exit into its stderr.
-fn run(command: &mut Command) -> Result<(), String> {
+fn search(command: &mut Command) -> Result<(), String> {
     let output = command
         .output()
-        .map_err(|e| format!("run {:?}: {e}", command.get_program()))?;
+        .map_err(|e| format!("search {:?}: {e}", command.get_program()))?;
     if output.status.success() {
         return Ok(());
     }

@@ -4,10 +4,10 @@
 
 mod common;
 
-use common::{config, exec, run_id, run_into, temp_store};
+use common::{config, exec, run_into, search_id, temp_store};
 use sima_core::Result;
 use sima_domains::StubBehavior;
-use sima_scheduler::RunOutcome;
+use sima_scheduler::SearchOutcome;
 
 /// One config run into two fresh stores yields byte-identical manifests.
 #[test]
@@ -26,16 +26,16 @@ fn same_config_in_two_fresh_stores_yields_identical_manifests() -> Result<()> {
     let (_b, store_b) = temp_store();
     assert!(matches!(
         run_into(&store_a, &cfg, &exec)?,
-        RunOutcome::Finalized { .. }
+        SearchOutcome::Finalized { .. }
     ));
     assert!(matches!(
         run_into(&store_b, &cfg, &exec)?,
-        RunOutcome::Finalized { .. }
+        SearchOutcome::Finalized { .. }
     ));
 
-    let run = run_id(&cfg);
-    let manifest_a = store_a.manifest(&run)?.expect("store A finalized");
-    let manifest_b = store_b.manifest(&run)?.expect("store B finalized");
+    let search = search_id(&cfg);
+    let manifest_a = store_a.manifest(&search)?.expect("store A finalized");
+    let manifest_b = store_b.manifest(&search)?.expect("store B finalized");
     assert_eq!(manifest_a, manifest_b);
     Ok(())
 }
@@ -59,15 +59,17 @@ fn manifest_is_independent_of_worker_count() -> Result<()> {
     run_into(&store_one, &cfg, &exec(1, 3, 1_000))?;
     run_into(&store_many, &cfg, &exec(8, 3, 1_000))?;
 
-    let run = run_id(&cfg);
+    let search = search_id(&cfg);
     assert_eq!(
-        store_one.manifest(&run)?.expect("single-worker manifest"),
-        store_many.manifest(&run)?.expect("many-worker manifest"),
+        store_one
+            .manifest(&search)?
+            .expect("single-worker manifest"),
+        store_many.manifest(&search)?.expect("many-worker manifest"),
     );
     Ok(())
 }
 
-/// The journal is observational: two identical runs may record events in
+/// The journal is observational: two identical searches may record events in
 /// different orders yet still finalize to the same manifest. The test asserts
 /// the manifests match without asserting anything about journal equality.
 #[test]
@@ -88,10 +90,10 @@ fn manifests_match_though_journals_need_not() -> Result<()> {
     run_into(&store_a, &cfg, &exec)?;
     run_into(&store_b, &cfg, &exec)?;
 
-    let run = run_id(&cfg);
+    let search = search_id(&cfg);
     assert_eq!(
-        store_a.manifest(&run)?.expect("manifest A"),
-        store_b.manifest(&run)?.expect("manifest B"),
+        store_a.manifest(&search)?.expect("manifest A"),
+        store_b.manifest(&search)?.expect("manifest B"),
     );
     Ok(())
 }

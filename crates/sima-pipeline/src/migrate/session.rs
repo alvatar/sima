@@ -1,30 +1,30 @@
-//! [`migrate`]: the choreography that moves a run's orchestrator onto another
+//! [`migrate`]: the choreography that moves a search's orchestrator onto another
 //! machine and brings the results home.
 //!
 //! ```text
 //!  ┌────────────────────────────────────────────────────────────────────────┐
 //!  │  0  load config; require [orchestrator].migrate, a declared host       │
-//!  │  1  open the local store; acquire the run lock, held to the end        │
+//!  │  1  open the local store; acquire the search lock, held to the end        │
 //!  │  2  destination, by the form the named host takes:                     │
 //!  │       yours    ──▶ that machine; no rental, no teardown                │
-//!  │       rented   ──▶ adopt the rental already hosting this run, or       │
+//!  │       rented   ──▶ adopt the rental already hosting this search, or       │
 //!  │                      acquire one per the host entry                    │
 //!  │  3  reach the destination: a machine of yours answers an image check,  │
 //!  │       a rented one answers its enumeration probe, which also gives     │
 //!  │       its device layout                                                │
 //!  │  4  create the far-side directory; write the synthesized config        │
-//!  │  5  is the far side already driving this run?                          │
+//!  │  5  is the far side already driving this search?                          │
 //!  │       ├─ yes ──▶ skip to 7; this invocation is a reattach              │
-//!  │       └─ no  ──▶ PUSH the run's closure; open the FOLLOW, whose first  │
+//!  │       └─ no  ──▶ PUSH the search's closure; open the FOLLOW, whose first  │
 //!  │                    poll is then the journal as it already stood, then  │
-//!  │  6  START: setsid the far `sima run`, capture its pid into run.pid     │
+//!  │  6  START: setsid the far `sima search`, capture its pid into search.pid     │
 //!  │  7  FOLLOW: render each record and forward it into the local journal;  │
 //!  │       poll the budget verdict when this is a rental                    │
-//!  │  8  end on: a terminal run event | local interrupt | budget exhaustion │
-//!  │       ├─ interrupt ──▶ DETACH: leave the far run and its machine as    │
+//!  │  8  end on: a terminal search event | local interrupt | budget exhaustion │
+//!  │       ├─ interrupt ──▶ DETACH: leave the far search and its machine as    │
 //!  │       │                  they are; the migration is over here          │
 //!  │       └─ otherwise ──▶                                                 │
-//!  │  9  WIND DOWN: signal the far run, wait for it to exit (bounded)       │
+//!  │  9  WIND DOWN: signal the far search, wait for it to exit (bounded)       │
 //!  │ 10  PULL: everything the far side's records reference                  │
 //!  │ 11  re-derive the key set; finalize when every key is committed,       │
 //!  │       otherwise report the rest                                        │
@@ -32,20 +32,20 @@
 //!  └────────────────────────────────────────────────────────────────────────┘
 //! ```
 //!
-//! **The far run is detached.** It is started with `setsid` and its pid
+//! **The far search is detached.** It is started with `setsid` and its pid
 //! recorded, so a laptop that sleeps, a network that drops, a `sima migrate`
 //! that is killed, and a Ctrl-C all leave the destination computing. Re-running
 //! reattaches: a rented machine is found through the instance ledger, a machine
-//! of yours through `run.pid`, and either way the push and the start are
-//! skipped. The far run outlives everything except a terminal event and its
+//! of yours through `search.pid`, and either way the push and the start are
+//! skipped. The far search outlives everything except a terminal event and its
 //! own ceiling.
 //!
 //! **An interrupt before the start abandons the placement.** Steps 3 through 6
 //! reach a machine, write a config on it, and send it a store, and an operator
-//! who lets go inside that window asked for the migration to stop: no far run
+//! who lets go inside that window asked for the migration to stop: no far search
 //! is started, a rental taken for it is released with everything else the
-//! teardown releases, and the run is left as it was. Detaching is what the same
-//! flag means from the start on, because only then is there a far run to leave
+//! teardown releases, and the search is left as it was. Detaching is what the same
+//! flag means from the start on, because only then is there a far search to leave
 //! computing.
 //!
 //! **Journals do not sync**, so each record the follow delivers is forwarded
@@ -57,18 +57,18 @@
 //! **The follow's first poll is the journal as it already stood**, and what
 //! that is depends on when the follow opened:
 //!
-//! - A migration that starts the far run opens the follow **before** the start,
-//!   so the first poll is an earlier session's journal — a run that once
+//! - A migration that starts the far search opens the follow **before** the start,
+//!   so the first poll is an earlier session's journal — a search that once
 //!   finished on this destination leaves one ending in its finalization. Those
-//!   records are neither forwarded nor allowed to decide this run's outcome,
+//!   records are neither forwarded nor allowed to decide this search's outcome,
 //!   and a far process that dies before writing any of its own is reported as
 //!   the death it is rather than as that stale ending.
-//! - A reattach opens the follow on a run already going, so the first poll is
-//!   that run's own history: it decides the state, and is not re-emitted,
+//! - A reattach opens the follow on a search already going, so the first poll is
+//!   that search's own history: it decides the state, and is not re-emitted,
 //!   having been produced while nothing was attached to journal it.
 //! - A destination whose journal is empty cannot be followed at all until the
-//!   run writes its first line, so the follow opens after the start and its
-//!   first poll is this run's.
+//!   search writes its first line, so the follow opens after the start and its
+//!   first poll is this search's.
 
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -77,33 +77,33 @@ use std::time::{Duration, Instant};
 
 use sima_core::{Error, Result};
 use sima_domains::devices::DeviceInfo;
-use sima_model::RunId;
+use sima_model::SearchId;
 use sima_provider::{
     AcquireLimits, Admission, Budget, InstanceGuard, Objective, Provider, Verdict, acquire, adopt,
     assess, now_ms,
 };
 use sima_scheduler::Event;
-use sima_store::{ObjectScope, Rental as RentalRole, RunLock, Store};
+use sima_store::{ObjectScope, Rental as RentalRole, SearchLock, Store};
 use sima_trace::{Emitter, Observer};
 
 use crate::config::{FillPolicy, HostForm, LoadedConfig, Rented};
 // The readiness defaults are what a destination stating none falls back on,
 // which under test comes from the session's test overrides instead.
-use crate::feed::RunFeed;
+use crate::feed::SearchFeed;
 use crate::fleet::Rental;
 use crate::journal::under_collector;
 use crate::migrate::destination::destination_for;
 use crate::migrate::far_config::{Registration, far_config};
 #[cfg(test)]
-use crate::migrate::far_run::Overrides;
-use crate::migrate::far_run::{FarRun, FollowEnd, MigrateOutcome};
+use crate::migrate::far_search::Overrides;
+use crate::migrate::far_search::{FarSearch, FollowEnd, MigrateOutcome};
 use crate::migrate::far_side::{Contact, Remote};
 use crate::migrate::objects::push_objects;
 use crate::payload::{PayloadSpec, closure, ingest};
 use crate::program_binding::BinaryChange;
 use crate::rental::{budget_exhausted, provider_for_rental, taken};
 use crate::sdk::Sdk;
-use crate::status::{RunState, RunStatus};
+use crate::status::{SearchState, SearchStatus};
 use crate::task_keys::task_keys;
 
 /// How long the follow waits before polling again when nothing has arrived.
@@ -114,38 +114,38 @@ use crate::task_keys::task_keys;
 const TICK: Duration = Duration::from_millis(100);
 
 /// How often a rental's budget is assessed while the follow runs. The ceiling
-/// is the run's and moves only with the clock and the rental's rate, so
+/// is the search's and moves only with the clock and the rental's rate, so
 /// assessing it on every record poll would read the spend ledger ten times a
 /// second for an answer that changes on the scale of minutes.
 const BUDGET_INTERVAL: Duration = Duration::from_secs(10);
 
-/// How long the follow waits for the far run to journal its first line before
+/// How long the follow waits for the far search to journal its first line before
 /// reporting why it could not attach.
 ///
-/// `sima follow-serve` refuses a run that has journaled nothing — the right
-/// answer for a view of a run nobody drove — and the far `sima run` journals
+/// `sima follow-serve` refuses a search that has journaled nothing — the right
+/// answer for a view of a search nobody drove — and the far `sima search` journals
 /// only once it has loaded its config, opened its store, and taken its lock. The
 /// bound therefore covers a process start rather than a machine coming up, and
-/// a far run that has exited ends the wait at once whatever is left of it.
+/// a far search that has exited ends the wait at once whatever is left of it.
 ///
 /// The suite reads it from a test override instead, so it fixes which failure a
 /// wait that ran out reports without spending the wait.
 #[cfg(not(test))]
 const ATTACH_BOUND: Duration = Duration::from_secs(30);
 
-/// Moves the run `config` describes onto the machine its `[orchestrator]`
+/// Moves the search `config` describes onto the machine its `[orchestrator]`
 /// names, follows it there, and brings the results home.
 ///
-/// `observer` receives every record the far run produced, in journal order,
+/// `observer` receives every record the far search produced, in journal order,
 /// through the same collector that appends them locally. `interrupt` is the
 /// level-triggered request `SIGINT` sets, and it means two different things by
-/// when it arrives: before the far run is started — through the acquisition and
-/// the placement — it abandons the migration, since there is no far run yet to
+/// when it arrives: before the far search is started — through the acquisition and
+/// the placement — it abandons the migration, since there is no far search yet to
 /// leave behind and nothing it took is worth keeping; from the start on it
-/// detaches, leaving the far run computing and its machine standing.
+/// detaches, leaving the far search computing and its machine standing.
 ///
-/// The local run lock is held for the whole call, so nothing else drives or
-/// reconciles this run while it is away.
+/// The local search lock is held for the whole call, so nothing else drives or
+/// reconciles this search while it is away.
 pub fn migrate(
     config: &Path,
     loaded: &LoadedConfig,
@@ -153,9 +153,9 @@ pub fn migrate(
     interrupt: &AtomicBool,
     accept: BinaryChange,
 ) -> Result<MigrateOutcome> {
-    // The file's own text is what travels: `[run]` is carried across as a
+    // The file's own text is what travels: `[search]` is carried across as a
     // parsed value rather than re-derived, so no translation here can perturb
-    // the run id. The caller hands over what it already loaded, since a second
+    // the search id. The caller hands over what it already loaded, since a second
     // translation of one file is a second chance for the two to disagree.
     let local_text = std::fs::read_to_string(config).map_err(|source| Error::Io {
         path: config.to_path_buf(),
@@ -174,26 +174,26 @@ pub fn migrate(
     let registration = match carried {
         None => None,
         Some(carried) => Some(Registration {
-            format: loaded.run.format.as_str().to_string(),
+            format: loaded.search.format.as_str().to_string(),
             payload_digest: ingest(&store, &carried.payload)?,
             env: carried.env,
             sdk: carried.sdk,
         }),
     };
-    // Registering the run is what gives it a journal to forward into, and it is
-    // the same idempotent registration a local `sima run` performs.
-    let run = store.create_run(&loaded.run)?;
-    let lock = store.acquire_run_lock(&run)?;
+    // Registering the search is what gives it a journal to forward into, and it is
+    // the same idempotent registration a local `sima search` performs.
+    let search = store.create_search(&loaded.search)?;
+    let lock = store.acquire_search_lock(&search)?;
 
     // One journal boundary around the whole migration: the phases of placing
-    // the run cross it before there is a far run, and the far run's own records
+    // the search cross it before there is a far search, and the far search's own records
     // cross it after.
-    under_collector(&store, &run, observer, |events| match destination.form {
+    under_collector(&store, &search, observer, |events| match destination.form {
         // A machine of yours is reached as it stands: nothing is rented, so no
         // provider is constructed and no credential is read.
         HostForm::Owned(owned) => {
-            let far = Remote::owned(&destination, owned, &run);
-            FarRun {
+            let far = Remote::owned(&destination, owned, &search);
+            FarSearch {
                 far: &far,
                 store: &store,
                 config: loaded,
@@ -203,9 +203,9 @@ pub fn migrate(
                 #[cfg(test)]
                 overrides: Overrides::default(),
             }
-            .under_teardown(|far_run| {
+            .under_teardown(|far_search| {
                 Session {
-                    far_run,
+                    far_search,
                     local_text: &local_text,
                     registration: registration.as_ref(),
                     accept,
@@ -244,18 +244,18 @@ pub fn migrate(
                 interrupt,
                 events,
             )?;
-            // A run whose format is a program asks the machine about no
+            // A search whose format is a program asks the machine about no
             // format: nothing there can resolve one it has not been given, and
-            // the program's own enumeration is what the far run derives its
+            // the program's own enumeration is what the far search derives its
             // layout from once the load has installed it.
             let far = Remote::rented(
                 &destination,
                 provider.as_ref(),
                 guard.endpoint(),
-                &run,
-                registration.is_none().then_some(&loaded.run.format),
+                &search,
+                registration.is_none().then_some(&loaded.search.format),
             )?;
-            FarRun {
+            FarSearch {
                 far: &far,
                 store: &store,
                 config: loaded,
@@ -265,9 +265,9 @@ pub fn migrate(
                 #[cfg(test)]
                 overrides: Overrides::default(),
             }
-            .under_teardown(|far_run| {
+            .under_teardown(|far_search| {
                 Session {
-                    far_run,
+                    far_search,
                     local_text: &local_text,
                     registration: registration.as_ref(),
                     accept,
@@ -280,8 +280,8 @@ pub fn migrate(
     })
 }
 
-/// What a migration of this run has to carry to the destination beyond the
-/// run's own closure: the program its format is served by, as the `[domain.*]`
+/// What a migration of this search has to carry to the destination beyond the
+/// search's own closure: the program its format is served by, as the `[domain.*]`
 /// entry declares it travels.
 struct Carried {
     payload: PayloadSpec,
@@ -293,25 +293,25 @@ struct Carried {
     sdk: Option<Sdk>,
 }
 
-/// What `loaded` must carry, and `None` for a run whose format this build
+/// What `loaded` must carry, and `None` for a search whose format this build
 /// answers — there is no program, so nothing travels.
 ///
 /// A routed format whose entry states no payload is a program this machine
 /// holds and no other, and that is refused here: naming the format, the
 /// program, and the key that would make it travel.
 fn carried(loaded: &LoadedConfig) -> Result<Option<Carried>> {
-    let Some(routed) = loaded.domains.routed(&loaded.run.format) else {
+    let Some(routed) = loaded.domains.routed(&loaded.search.format) else {
         return Ok(None);
     };
     let Some(payload) = routed.payload else {
         return Err(Error::Validation(format!(
-            "the run's format {format:?} is served by the program {}, and the \
+            "the search's format {format:?} is served by the program {}, and the \
              [domain.{format:?}] entry states no payload: a migration carries the program to \
              the destination as objects, so the entry names what travels. Add a payload key \
-             naming the file or directory that is the program, or drive this run on the \
+             naming the file or directory that is the program, or drive this search on the \
              machine the program is installed on.",
             routed.binary.display(),
-            format = loaded.run.format.as_str(),
+            format = loaded.search.format.as_str(),
         )));
     };
     Ok(Some(Carried {
@@ -321,14 +321,14 @@ fn carried(loaded: &LoadedConfig) -> Result<Option<Carried>> {
     }))
 }
 
-/// The rented machine hosting this run: the one already hosting it, or a fresh
+/// The rented machine hosting this search: the one already hosting it, or a fresh
 /// one under the host entry's specification.
 ///
 /// Adoption comes first because a migration detaches the far side deliberately,
 /// so a machine already working and already being paid for is the common case
 /// on a second invocation. `interrupt` aborts an offer walk in flight, so a
 /// `SIGINT` during acquisition is not waited out — and that is all it can mean
-/// here: detaching exists only once a far run is driving, and nothing is yet.
+/// here: detaching exists only once a far search is driving, and nothing is yet.
 ///
 /// `events` carries what the acquisition is doing: an offer taken says what is
 /// now being paid for, before the wait for that machine to come up. An adopted
@@ -338,7 +338,7 @@ fn carried(loaded: &LoadedConfig) -> Result<Option<Carried>> {
 fn hold<'a>(
     provider: &'a (dyn Provider + Sync),
     store: &'a Store,
-    lock: &RunLock,
+    lock: &SearchLock,
     spec: &Rented,
     usable_by: Instant,
     budget: &Budget,
@@ -372,20 +372,20 @@ fn hold<'a>(
 }
 
 /// One migration, past the destination's resolution: steps 3 through 8 over the
-/// far run it starts or attaches to.
+/// far search it starts or attaches to.
 ///
 /// Split from [`migrate`] so the choreography is driven against a recording
 /// [`FarSide`] with no machine at all.
 struct Session<'a> {
-    far_run: &'a FarRun<'a>,
+    far_search: &'a FarSearch<'a>,
     /// The local config's own file text, which is what travels.
     local_text: &'a str,
-    /// How the far side answers for this run's format, when a `[domain.*]`
+    /// How the far side answers for this search's format, when a `[domain.*]`
     /// entry routes it to a program of this machine's. `None` for a format
     /// this build answers, whose far config declares no `[domain.*]` table.
     registration: Option<&'a Registration>,
     /// What the invocation stated about a program whose build changed under
-    /// the run — carried to the far `sima run`, whose own binding guard is
+    /// the search — carried to the far `sima search`, whose own binding guard is
     /// what compares the two.
     accept: BinaryChange,
     interrupt: &'a AtomicBool,
@@ -397,11 +397,11 @@ struct Session<'a> {
 }
 
 impl Session<'_> {
-    /// Steps 3 through 11: reach the machine, place the run on it, push, start,
+    /// Steps 3 through 11: reach the machine, place the search on it, push, start,
     /// follow, wind down, pull, and settle.
     fn run_to_end(&self) -> Result<MigrateOutcome> {
-        let far_run = self.far_run;
-        // Placing a run is reaching a machine, sending it a store, and starting
+        let far_search = self.far_search;
+        // Placing a search is reaching a machine, sending it a store, and starting
         // a process there, and through all of it the interrupt keeps the
         // meaning it has during the acquisition: stop, and leave nothing
         // behind. Detaching is what it comes to mean once the start below
@@ -414,141 +414,141 @@ impl Session<'_> {
         };
         let far_text = far_config(
             self.local_text,
-            far_run.destination.form,
+            far_search.destination.form,
             &probed,
             self.registration,
         )?;
-        far_run.far.place(&far_text)?;
+        far_search.far.place(&far_text)?;
 
-        // A far side already driving this run is a reattach: it holds the
+        // A far side already driving this search is a reattach: it holds the
         // closure it was sent and its own progress since, so pushing would send
         // what it already has, and starting would run a second orchestrator
         // against a store whose lock the first one holds.
-        let reattached = far_run.far.driving()?;
+        let reattached = far_search.far.driving()?;
         let (pid, opened) = match reattached {
             Some(pid) => (pid, None),
             None => {
-                let keys = task_keys(far_run.config, far_run.store)?;
-                let mut objects = push_objects(far_run.store, &keys)?;
-                // The program travels with the run it serves: the manifest and
+                let keys = task_keys(far_search.config, far_search.store)?;
+                let mut objects = push_objects(far_search.store, &keys)?;
+                // The program travels with the search it serves: the manifest and
                 // its files ride the same push, and the sync's negotiation is
                 // what skips the bytes the destination already holds.
                 if let Some(registration) = self.registration {
-                    objects.extend(closure(far_run.store, &registration.payload_digest)?);
+                    objects.extend(closure(far_search.store, &registration.payload_digest)?);
                 }
                 if self.let_go() {
                     return Ok(self.abandoned());
                 }
-                far_run.events.emit(Event::SendingRun {
+                far_search.events.emit(Event::SendingSearch {
                     member: String::new(),
                     objects: objects.len(),
                 });
-                far_run
+                far_search
                     .far
-                    .sync(far_run.store, &keys, ObjectScope::Named(&objects))?;
-                // The program the run carries is installed by the far `sima
-                // run` as it loads, which is the longest part of the start it
+                    .sync(far_search.store, &keys, ObjectScope::Named(&objects))?;
+                // The program the search carries is installed by the far `sima
+                // search` as it loads, which is the longest part of the start it
                 // is about to wait on.
                 if self.registration.is_some() {
-                    far_run.events.emit(Event::InstallingProgram {
+                    far_search.events.emit(Event::InstallingProgram {
                         member: String::new(),
                     });
                 }
-                // The follow opens before the far run starts, so its first poll
+                // The follow opens before the far search starts, so its first poll
                 // is the journal as an earlier session left it and everything
-                // after that is this run's. It is what tells a run that once
+                // after that is this search's. It is what tells a search that once
                 // finished on this destination from the one starting now.
                 //
                 // A journal that is not there yet cannot be followed, and there
                 // is then nothing earlier to tell apart: the follow opens after
-                // the start instead, waiting for the run's first line.
-                let opened = far_run.far.follow().ok();
+                // the start instead, waiting for the search's first line.
+                let opened = far_search.far.follow().ok();
                 // The last point where nothing is computing on the destination:
-                // past the start there is a far run to be left alone, so a flag
+                // past the start there is a far search to be left alone, so a flag
                 // raised after this detaches instead.
                 if self.let_go() {
                     return Ok(self.abandoned());
                 }
-                far_run.events.emit(Event::StartingRun);
-                (far_run.far.start(self.accept)?, opened)
+                far_search.events.emit(Event::StartingSearch);
+                (far_search.far.start(self.accept)?, opened)
             }
         };
 
         let (state, end) = self.watch(pid, reattached.is_some(), opened)?;
-        // Detaching leaves the far run computing, so there is nothing to pull:
+        // Detaching leaves the far search computing, so there is nothing to pull:
         // its results come home on the next migration that sees it end, or on
         // a recall. Skipping the pull is what makes letting go immediate.
         if end == FollowEnd::Detached {
             return Ok(MigrateOutcome::Detached {
-                run: far_run.config.run.id(),
-                machine: far_run.destination.name.to_string(),
+                search: far_search.config.search.id(),
+                machine: far_search.destination.name.to_string(),
             });
         }
 
-        far_run.pull()?;
-        far_run.settle(state, end)
+        far_search.pull()?;
+        far_search.settle(state, end)
     }
 
-    /// Steps 7 through 9: follow the far run to its end, then wind it down and
+    /// Steps 7 through 9: follow the far search to its end, then wind it down and
     /// wait for it to exit.
     ///
-    /// Returns the state the far run's journal projects and what ended the
-    /// follow, both under the run's journal boundary.
+    /// Returns the state the far search's journal projects and what ended the
+    /// follow, both under the search's journal boundary.
     fn watch(
         &self,
         pid: u32,
         reattached: bool,
-        opened: Option<Box<dyn RunFeed>>,
-    ) -> Result<(RunState, FollowEnd)> {
-        let run = self.far_run.config.run.id();
-        let events = self.far_run.events;
-        let (state, end) = self.follow(&run, reattached, opened, events)?;
+        opened: Option<Box<dyn SearchFeed>>,
+    ) -> Result<(SearchState, FollowEnd)> {
+        let search = self.far_search.config.search.id();
+        let events = self.far_search.events;
+        let (state, end) = self.follow(&search, reattached, opened, events)?;
         match end {
-            // Letting go signals nothing and waits for nothing: the far run
+            // Letting go signals nothing and waits for nothing: the far search
             // is left exactly as it was.
             FollowEnd::Detached => {}
-            FollowEnd::FarRun => self.far_run.wind_down(pid, false, events)?,
-            FollowEnd::WoundDown => self.far_run.wind_down(pid, true, events)?,
+            FollowEnd::FarSearch => self.far_search.wind_down(pid, false, events)?,
+            FollowEnd::WoundDown => self.far_search.wind_down(pid, true, events)?,
         }
         Ok((state, end))
     }
 
-    /// Follows the far run until it ends, this side is interrupted, or a
-    /// rental's budget runs out, forwarding each record into the run's journal.
+    /// Follows the far search until it ends, this side is interrupted, or a
+    /// rental's budget runs out, forwarding each record into the search's journal.
     fn follow(
         &self,
-        run: &RunId,
+        search: &SearchId,
         reattached: bool,
-        opened: Option<Box<dyn RunFeed>>,
+        opened: Option<Box<dyn SearchFeed>>,
         events: &Emitter,
-    ) -> Result<(RunState, FollowEnd)> {
+    ) -> Result<(SearchState, FollowEnd)> {
         let budget = self.budget();
-        // A follow opened before the far run started is the one to use; every
-        // other case waits for the run's first journal line and opens then.
+        // A follow opened before the far search started is the one to use; every
+        // other case waits for the search's first journal line and opens then.
         // What the first poll holds follows from which it was:
         //
         // - opened before the start: an earlier session's journal. This
-        //   migration is not watching that run, so its records neither decide
+        //   migration is not watching that search, so its records neither decide
         //   this outcome nor cross into the local journal a second time.
-        // - a reattach: the far run's own history, produced while nothing was
+        // - a reattach: the far search's own history, produced while nothing was
         //   attached to journal it. It decides the state, and is not re-emitted.
         // - opened after the start: the journal was empty before it, so the
-        //   first poll is this run's like any other.
+        //   first poll is this search's like any other.
         let earlier_session = opened.is_some();
-        let mut status = RunStatus::new(*run);
+        let mut status = SearchStatus::new(*search);
         let mut feed = match opened {
             Some(feed) => feed,
             None => match self.attach()? {
                 Some(feed) => feed,
-                // The far run is up and this side let go while waiting for its
+                // The far search is up and this side let go while waiting for its
                 // first line, which is the detach it would be a moment later.
                 None => return Ok((status.state, FollowEnd::Detached)),
             },
         };
         let mut first = true;
-        // Whether this run has journaled a line of its own.
+        // Whether this search has journaled a line of its own.
         let mut journaled = false;
-        // Unset, so the first tick assesses: a migration re-run under a ceiling
+        // Unset, so the first tick assesses: a migration invoked again under a ceiling
         // already spent must not first watch for an interval.
         let mut assessed: Option<Instant> = None;
         loop {
@@ -582,76 +582,76 @@ impl Session<'_> {
                 journaled |= !records.is_empty();
             }
             first = false;
-            if !matches!(status.state, RunState::InProgress) {
-                return Ok((status.state, FollowEnd::FarRun));
+            if !matches!(status.state, SearchState::InProgress) {
+                return Ok((status.state, FollowEnd::FarSearch));
             }
             // The operator letting go, which is the whole of what a `SIGINT`
-            // asks for: the far run is none of this side's business from here.
+            // asks for: the far search is none of this side's business from here.
             if self.let_go() {
                 return Ok((status.state, FollowEnd::Detached));
             }
             // Money is the one thing that cannot wait for an operator to come
-            // back, so an exhausted ceiling ends the far run rather than
+            // back, so an exhausted ceiling ends the far search rather than
             // letting go of it.
             if let Some(budget) = budget
                 && assessed.is_none_or(|at| at.elapsed() >= BUDGET_INTERVAL)
             {
                 assessed = Some(Instant::now());
                 if let Verdict::Exhausted(exhaustion) =
-                    assess(self.far_run.store, run, budget, now_ms())?
+                    assess(self.far_search.store, search, budget, now_ms())?
                 {
                     events.emit(budget_exhausted(exhaustion));
                     return Ok((status.state, FollowEnd::WoundDown));
                 }
             }
             if records.is_empty() {
-                // A free lock is not yet an ended run: the far `sima run` takes
+                // A free lock is not yet an ended search: the far `sima search` takes
                 // it only once it has loaded its config and opened its store,
                 // and the follow can connect before that. The pid it was started
                 // under answers without a race, so it is what decides — and it
                 // is asked only on the rare tick where the lock reads free.
-                if feed.holder()?.is_none() && self.far_run.far.driving()?.is_none() {
-                    // The far run this migration started is gone and journaled
+                if feed.holder()?.is_none() && self.far_search.far.driving()?.is_none() {
+                    // The far search this migration started is gone and journaled
                     // nothing of its own, so everything the state rests on was
                     // written by an earlier session. It died while loading —
                     // an install that could not build, a binding guard that
                     // refused — and its own words are in the log it wrote.
                     if !reattached && !journaled {
-                        return Err(self.far_run.died("ended before it journaled anything"));
+                        return Err(self.far_search.died("ended before it journaled anything"));
                     }
-                    return Ok((status.state, FollowEnd::FarRun));
+                    return Ok((status.state, FollowEnd::FarSearch));
                 }
                 sleep(self.tick());
             }
         }
     }
 
-    /// Opens the follow, waiting out the window between the far run being
+    /// Opens the follow, waiting out the window between the far search being
     /// started and its first journal line.
     ///
-    /// A migration knows the run is coming up, because it started it, so it
+    /// A migration knows the search is coming up, because it started it, so it
     /// waits for that rather than reporting the refusal a view of an unjournaled
-    /// run gets. The wait ends the moment the far run is gone, and the ask is
-    /// then made once more: a run that has exited writes nothing further, so a
-    /// refusal that survives it is the answer, while a run short enough to have
+    /// search gets. The wait ends the moment the far search is gone, and the ask is
+    /// then made once more: a search that has exited writes nothing further, so a
+    /// refusal that survives it is the answer, while a search short enough to have
     /// finished inside the wait is followed from the journal it left.
     ///
-    /// `None` is the operator letting go inside that wait. A far run is up by
+    /// `None` is the operator letting go inside that wait. A far search is up by
     /// now, so the flag means here what it means for the rest of the follow:
     /// leave it computing.
-    fn attach(&self) -> Result<Option<Box<dyn RunFeed>>> {
+    fn attach(&self) -> Result<Option<Box<dyn SearchFeed>>> {
         let deadline = Instant::now() + self.attach_bound();
         loop {
-            match self.far_run.far.follow() {
+            match self.far_search.far.follow() {
                 Ok(feed) => return Ok(Some(feed)),
                 Err(error) => {
-                    if self.far_run.far.driving()?.is_none() {
-                        // A far run that is gone is not a far run that
+                    if self.far_search.far.driving()?.is_none() {
+                        // A far search that is gone is not a far search that
                         // journaled nothing: one short enough to end inside
                         // this window wrote its lines between the refusal
                         // above and this check. Nothing is racing the journal
                         // any more, so one more ask settles which it was.
-                        return match self.far_run.far.follow() {
+                        return match self.far_search.far.follow() {
                             Ok(feed) => Ok(Some(feed)),
                             Err(again) => Err(self.unattachable(again, true)),
                         };
@@ -670,26 +670,26 @@ impl Session<'_> {
 
     /// What a follow that could not attach reports.
     ///
-    /// A far run that is gone and still refuses the follow died before it
+    /// A far search that is gone and still refuses the follow died before it
     /// journaled anything, which is what
     /// every far-side load failure looks like from here — a program that cannot
     /// answer for its format, an install script that exited non-zero, a store
     /// that will not open. The follow's own refusal says only that there is no
-    /// run to follow, so the far run's own words are fetched from its log and
+    /// search to follow, so the far search's own words are fetched from its log and
     /// the machine is named.
     ///
-    /// A far run still alive that simply has not journaled inside the bound is
+    /// A far search still alive that simply has not journaled inside the bound is
     /// a different thing, and the follow's refusal is the whole of it.
     fn unattachable(&self, refusal: Error, gone: bool) -> Error {
         if !gone {
             return refusal;
         }
-        self.far_run.died(&format!(
+        self.far_search.died(&format!(
             "ended before it journaled anything, so there is nothing to follow: {refusal}"
         ))
     }
 
-    /// Step 3: the destination answers that it can drive this run, and a rented
+    /// Step 3: the destination answers that it can drive this search, and a rented
     /// one answers with the devices its far-side workers will run on.
     ///
     /// This is the first contact with the machine, and it is retried under the
@@ -703,7 +703,7 @@ impl Session<'_> {
     ///
     /// Only this step retries. Every later operation runs against a machine
     /// that has already answered, so a failure there states something real —
-    /// the run's directory could not be written, the far side could not be
+    /// the search's directory could not be written, the far side could not be
     /// started, a sync broke mid-session — and repeating it would hide that.
     ///
     /// `None` is the operator letting go while the wait ran: it is the longest
@@ -716,9 +716,9 @@ impl Session<'_> {
         let deadline = self.usable_by.unwrap_or_else(|| Instant::now() + bound);
         loop {
             // A machine that answered has answered: what it said is the result,
-            // whether that is its devices or a reason the run cannot proceed.
+            // whether that is its devices or a reason the search cannot proceed.
             // Only a machine that could not be reached is worth asking again.
-            match self.far_run.far.devices()? {
+            match self.far_search.far.devices()? {
                 Contact::Answered(devices) => return Ok(Some(devices)),
                 Contact::Unreachable(error) => {
                     if Instant::now() >= deadline {
@@ -734,35 +734,35 @@ impl Session<'_> {
     }
 
     /// Whether the operator has let go, read between the steps of placing the
-    /// run and inside the waits those steps spend.
+    /// search and inside the waits those steps spend.
     fn let_go(&self) -> bool {
         self.interrupt.load(Ordering::Relaxed)
     }
 
-    /// What an interrupt before the far run started comes home as: nothing was
+    /// What an interrupt before the far search started comes home as: nothing was
     /// started on the destination, and the teardown releases a rental taken for
     /// it exactly as it does on any placement failure.
     fn abandoned(&self) -> MigrateOutcome {
         MigrateOutcome::Abandoned {
-            run: self.far_run.config.run.id(),
-            machine: self.far_run.destination.name.to_string(),
+            search: self.far_search.config.search.id(),
+            machine: self.far_search.destination.name.to_string(),
         }
     }
 
     /// The ceiling this migration runs under, or `None` when nothing is being
-    /// paid for. `[budget]` is the run's own, the same ceiling a fleet spends
+    /// paid for. `[budget]` is the search's own, the same ceiling a fleet spends
     /// under; a machine of yours has no rate and so no ceiling to keep.
     fn budget(&self) -> Option<&Budget> {
-        matches!(self.far_run.destination.form, HostForm::Rented(_))
-            .then_some(&self.far_run.config.budget)
+        matches!(self.far_search.destination.form, HostForm::Rented(_))
+            .then_some(&self.far_search.config.budget)
     }
 
-    /// The readiness bounds this session waits under, which are the far run's.
+    /// The readiness bounds this session waits under, which are the far search's.
     fn ready_bounds(&self) -> (Duration, Duration) {
-        self.far_run.ready_bounds()
+        self.far_search.ready_bounds()
     }
 
-    /// How long the follow waits for the far run's first journal line.
+    /// How long the follow waits for the far search's first journal line.
     #[cfg(not(test))]
     fn attach_bound(&self) -> Duration {
         ATTACH_BOUND
@@ -770,7 +770,7 @@ impl Session<'_> {
 
     #[cfg(test)]
     fn attach_bound(&self) -> Duration {
-        self.far_run.overrides.attach_bound
+        self.far_search.overrides.attach_bound
     }
 
     /// How long the follow waits before polling again.
@@ -781,7 +781,7 @@ impl Session<'_> {
 
     #[cfg(test)]
     fn tick(&self) -> Duration {
-        self.far_run.overrides.tick
+        self.far_search.overrides.tick
     }
 }
 
@@ -830,33 +830,38 @@ mod tests {
                 .push(record.clone());
         };
         let destination = destination_for(&local.config).expect("the host is declared");
-        let outcome = under_collector(&local.store, &local.config.run.id(), &observer, |events| {
-            FarRun {
-                far,
-                store: &local.store,
-                config: &local.config,
-                destination: &destination,
-                events,
-                rental,
-                overrides: Overrides::default(),
-            }
-            .under_teardown(|far_run| {
-                Session {
-                    far_run,
-                    local_text: &local.text,
-                    registration: None,
-                    accept: BinaryChange::Refuse,
-                    interrupt,
-                    usable_by,
+        let outcome = under_collector(
+            &local.store,
+            &local.config.search.id(),
+            &observer,
+            |events| {
+                FarSearch {
+                    far,
+                    store: &local.store,
+                    config: &local.config,
+                    destination: &destination,
+                    events,
+                    rental,
+                    overrides: Overrides::default(),
                 }
-                .run_to_end()
-            })
-        });
+                .under_teardown(|far_search| {
+                    Session {
+                        far_search,
+                        local_text: &local.text,
+                        registration: None,
+                        accept: BinaryChange::Refuse,
+                        interrupt,
+                        usable_by,
+                    }
+                    .run_to_end()
+                })
+            },
+        );
         let records = std::mem::take(&mut *captured.lock().expect("the capture lock"));
         (outcome, records)
     }
 
-    // ---- The program the run carries with it ----
+    // ---- The program the search carries with it ----
 
     /// Drives one session under `registration` and `accept`, so what the
     /// far side is handed about the program is what the test fixes.
@@ -868,28 +873,33 @@ mod tests {
     ) -> Result<MigrateOutcome> {
         let observer = |_: &Record| {};
         let destination = destination_for(&local.config).expect("the host is declared");
-        under_collector(&local.store, &local.config.run.id(), &observer, |events| {
-            FarRun {
-                far,
-                store: &local.store,
-                config: &local.config,
-                destination: &destination,
-                events,
-                rental: None,
-                overrides: Overrides::default(),
-            }
-            .under_teardown(|far_run| {
-                Session {
-                    far_run,
-                    local_text: &local.text,
-                    registration,
-                    accept,
-                    interrupt: &AtomicBool::new(false),
-                    usable_by: None,
+        under_collector(
+            &local.store,
+            &local.config.search.id(),
+            &observer,
+            |events| {
+                FarSearch {
+                    far,
+                    store: &local.store,
+                    config: &local.config,
+                    destination: &destination,
+                    events,
+                    rental: None,
+                    overrides: Overrides::default(),
                 }
-                .run_to_end()
-            })
-        })
+                .under_teardown(|far_search| {
+                    Session {
+                        far_search,
+                        local_text: &local.text,
+                        registration,
+                        accept,
+                        interrupt: &AtomicBool::new(false),
+                        usable_by: None,
+                    }
+                    .run_to_end()
+                })
+            },
+        )
     }
 
     #[test]
@@ -898,7 +908,7 @@ mod tests {
         // digest to install, and the push carries the objects to install it
         // from.
         let local = local(RENTED, PROMPT, Some(3));
-        let run = local.config.run.id();
+        let search = local.config.search.id();
         let (_payload, spec) = crate::fixtures::file_payload();
         let digest = crate::payload::ingest(&local.store, &spec)?;
         let registration = Registration {
@@ -907,7 +917,7 @@ mod tests {
             env: vec!["PATH".to_string()],
             sdk: None,
         };
-        let far = Scripted::new().delivering(vec![vec![started(&run), finalized(&run)]]);
+        let far = Scripted::new().delivering(vec![vec![started(&search), finalized(&search)]]);
 
         session_carrying(&local, &far, Some(&registration), BinaryChange::Refuse)?;
 
@@ -929,19 +939,19 @@ mod tests {
         for object in crate::payload::closure(&local.store, &digest)? {
             assert!(
                 pushed.contains(&object),
-                "{object} must travel with the run"
+                "{object} must travel with the search"
             );
         }
         Ok(())
     }
 
     #[test]
-    fn a_run_this_build_answers_pushes_no_program_and_declares_none() -> Result<()> {
+    fn a_search_this_build_answers_pushes_no_program_and_declares_none() -> Result<()> {
         // The counterpart: nothing about a program is written down, and the
         // push is the identity components and the frontier states alone.
         let local = local(RENTED, PROMPT, Some(3));
-        let run = local.config.run.id();
-        let far = Scripted::new().delivering(vec![vec![started(&run), finalized(&run)]]);
+        let search = local.config.search.id();
+        let far = Scripted::new().delivering(vec![vec![started(&search), finalized(&search)]]);
 
         session_carrying(&local, &far, None, BinaryChange::Refuse)?;
         let placed = far
@@ -967,17 +977,17 @@ mod tests {
 
     #[test]
     fn the_acceptance_of_a_changed_program_reaches_the_far_start() -> Result<()> {
-        // The comparison is the far run's — it journals what it installed —
+        // The comparison is the far search's — it journals what it installed —
         // so the operator's acceptance has to travel to it.
         for accept in [BinaryChange::Refuse, BinaryChange::Accept] {
             let local = local(RENTED, PROMPT, Some(3));
-            let run = local.config.run.id();
-            let far = Scripted::new().delivering(vec![vec![started(&run), finalized(&run)]]);
+            let search = local.config.search.id();
+            let far = Scripted::new().delivering(vec![vec![started(&search), finalized(&search)]]);
             session_carrying(&local, &far, None, accept)?;
             assert_eq!(
                 *far.started_with.lock().expect("the acceptance lock"),
                 Some(accept),
-                "the far run is started with what the invocation stated"
+                "the far search is started with what the invocation stated"
             );
         }
         Ok(())
@@ -985,13 +995,13 @@ mod tests {
 
     #[test]
     fn a_reattach_carries_no_program_because_it_starts_nothing() -> Result<()> {
-        // A far run already going installed its program when it loaded; the
+        // A far search already going installed its program when it loaded; the
         // push and the start are skipped, so nothing is sent or accepted.
         let local = local(RENTED, PROMPT, Some(3));
-        let run = local.config.run.id();
+        let search = local.config.search.id();
         let far = Scripted::new()
             .already_driving()
-            .delivering(vec![vec![started(&run), finalized(&run)]]);
+            .delivering(vec![vec![started(&search), finalized(&search)]]);
         session_carrying(&local, &far, None, BinaryChange::Accept)?;
         assert!(!far.steps().contains(&PUSH), "{:?}", far.steps());
         assert!(!far.steps().contains(&Step::Start), "{:?}", far.steps());
@@ -1000,9 +1010,9 @@ mod tests {
     }
 
     #[test]
-    fn a_far_run_that_died_before_journaling_reports_its_own_last_words() -> Result<()> {
+    fn a_far_search_that_died_before_journaling_reports_its_own_last_words() -> Result<()> {
         // Every far-side load failure looks the same from here — the follow
-        // finds a run that never started — so the far run's log is what says
+        // finds a search that never started — so the far search's log is what says
         // which one it was. An install that could not build the program is the
         // case this exists for.
         let local = local(RENTED, PROMPT, Some(3));
@@ -1011,12 +1021,12 @@ mod tests {
         );
 
         let (outcome, _) = session_over(&local, &far, None, &AtomicBool::new(false));
-        let error = outcome.expect_err("a run that never journaled cannot be followed");
+        let error = outcome.expect_err("a search that never journaled cannot be followed");
         let text = error.to_string();
         assert!(text.contains("cloudbox"), "names the machine: {text}");
         assert!(
             text.contains("install script install.sh exited"),
-            "carries the far run's own words: {text}"
+            "carries the far search's own words: {text}"
         );
         assert!(
             far.steps().contains(&Step::LogTail),
@@ -1027,19 +1037,19 @@ mod tests {
     }
 
     #[test]
-    fn a_far_run_that_dies_over_an_earlier_session_s_journal_reports_its_death() -> Result<()> {
-        // A second migration onto a run that once finished on the destination:
+    fn a_far_search_that_dies_over_an_earlier_session_s_journal_reports_its_death() -> Result<()> {
+        // A second migration onto a search that once finished on the destination:
         // the far journal already ends in that finalization, and this
         // invocation's process dies while loading. The follow attaches to the
         // journal that is there, so the stale ending is all it can replay —
         // and it is not this migration's outcome.
         let local = local(RENTED, PROMPT, Some(3));
-        let run = local.config.run.id();
+        let search = local.config.search.id();
         let far = Scripted::new()
             .dying_while_loading(
                 "sima: validation error: the install script install.sh exited with exit status: 3",
             )
-            .over_an_existing_journal(vec![started(&run), finalized(&run)]);
+            .over_an_existing_journal(vec![started(&search), finalized(&search)]);
 
         let (outcome, _) = session_over(&local, &far, None, &AtomicBool::new(false));
         let text = outcome
@@ -1048,7 +1058,7 @@ mod tests {
         assert!(text.contains("cloudbox"), "names the machine: {text}");
         assert!(
             text.contains("install script install.sh exited"),
-            "carries the far run's own words: {text}"
+            "carries the far search's own words: {text}"
         );
         assert!(
             !far.steps().contains(&PULL),
@@ -1056,22 +1066,22 @@ mod tests {
             far.steps()
         );
         assert!(
-            local.store.manifest(&run)?.is_none(),
+            local.store.manifest(&search)?.is_none(),
             "and nothing was sealed"
         );
         Ok(())
     }
 
     #[test]
-    fn a_far_run_that_dies_after_journaling_still_comes_home_outstanding() -> Result<()> {
-        // The counterpart, and the behavior that must not drift: a far run
-        // that journaled its own records and then vanished mid-run is a run
+    fn a_far_search_that_dies_after_journaling_still_comes_home_outstanding() -> Result<()> {
+        // The counterpart, and the behavior that must not drift: a far search
+        // that journaled its own records and then vanished mid-search is a search
         // whose results come home, not a death to report.
         let local = local(RENTED, PROMPT, Some(3));
-        let run = local.config.run.id();
+        let search = local.config.search.id();
         let far = Scripted::new()
             .vanishing_when_drained()
-            .delivering(vec![vec![started(&run), committed("aa")]]);
+            .delivering(vec![vec![started(&search), committed("aa")]]);
 
         let (outcome, _) = session_over(&local, &far, None, &AtomicBool::new(false));
         assert!(matches!(outcome?, MigrateOutcome::Outstanding { .. }));
@@ -1085,15 +1095,15 @@ mod tests {
     }
 
     #[test]
-    fn a_far_run_that_died_leaving_no_log_still_names_the_machine() -> Result<()> {
-        // A run that never wrote a line leaves the absence to report, which is
+    fn a_far_search_that_died_leaving_no_log_still_names_the_machine() -> Result<()> {
+        // A search that never wrote a line leaves the absence to report, which is
         // still more than the follow's own refusal states.
         let local = local(RENTED, PROMPT, Some(3));
         let far = Scripted::new().dying_while_loading("");
 
         let (outcome, _) = session_over(&local, &far, None, &AtomicBool::new(false));
         let text = outcome
-            .expect_err("a run that never journaled cannot be followed")
+            .expect_err("a search that never journaled cannot be followed")
             .to_string();
         assert!(text.contains("cloudbox"), "{text}");
         assert!(text.contains("log is empty"), "{text}");
@@ -1101,8 +1111,8 @@ mod tests {
     }
 
     #[test]
-    fn a_far_run_that_never_journals_but_stays_up_reports_the_follow_s_refusal() -> Result<()> {
-        // A run that is up owes no explanation: the follow's own refusal is
+    fn a_far_search_that_never_journals_but_stays_up_reports_the_follow_s_refusal() -> Result<()> {
+        // A search that is up owes no explanation: the follow's own refusal is
         // the whole of what happened, and no log is fetched to explain a death
         // that did not occur. The bound the wait runs out on is production's;
         // the suite overrides only how long it is.
@@ -1118,7 +1128,7 @@ mod tests {
         assert!(text.contains("never started in this store"), "{text}");
         assert!(
             !text.contains("ended before it journaled"),
-            "a run that is up did not die: {text}"
+            "a search that is up did not die: {text}"
         );
         assert!(
             !far.steps().contains(&Step::LogTail),
@@ -1129,16 +1139,16 @@ mod tests {
     }
 
     #[test]
-    fn a_far_run_still_alive_that_has_not_journaled_is_waited_for_and_asked_nothing() -> Result<()>
-    {
-        // The other side of the distinction: a run that is up and simply has
-        // not journaled yet is not a run that died. The follow waits it out,
+    fn a_far_search_still_alive_that_has_not_journaled_is_waited_for_and_asked_nothing()
+    -> Result<()> {
+        // The other side of the distinction: a search that is up and simply has
+        // not journaled yet is not a search that died. The follow waits it out,
         // and no log is fetched to explain a failure that did not happen.
         let local = local(RENTED, PROMPT, Some(3));
-        let run = local.config.run.id();
+        let search = local.config.search.id();
         let far = Scripted::new()
             .refusing_the_follow(3)
-            .delivering(vec![vec![started(&run), finalized(&run)]]);
+            .delivering(vec![vec![started(&search), finalized(&search)]]);
 
         session_over(&local, &far, None, &AtomicBool::new(false)).0?;
         assert_eq!(
@@ -1149,27 +1159,27 @@ mod tests {
         );
         assert!(
             !far.steps().contains(&Step::LogTail),
-            "a run that is up owes no explanation: {:?}",
+            "a search that is up owes no explanation: {:?}",
             far.steps()
         );
         Ok(())
     }
 
     #[test]
-    fn a_far_run_over_before_the_follow_attaches_is_read_from_its_journal() -> Result<()> {
-        // A run short enough to end inside the start window is gone by the
+    fn a_far_search_over_before_the_follow_attaches_is_read_from_its_journal() -> Result<()> {
+        // A search short enough to end inside the start window is gone by the
         // time the attach asks what is driving the machine, and a follow that
         // landed a moment earlier was refused a journal that was still empty.
         // Gone is not the same as journaled nothing: the records are there by
-        // the second ask, and they are this run's.
+        // the second ask, and they are this search's.
         let local = local(RENTED, PROMPT, Some(3));
-        let run = local.config.run.id();
+        let search = local.config.search.id();
         let far = Scripted::new()
             // Two refusals: the follow tried before the start, over a journal
             // that is still empty, and the attach that lands before the far
-            // run's lines are readable — which is the race this pins.
+            // search's lines are readable — which is the race this pins.
             .refusing_the_follow(2)
-            .finishing_at_the_start(vec![started(&run), committed("aa"), finalized(&run)]);
+            .finishing_at_the_start(vec![started(&search), committed("aa"), finalized(&search)]);
 
         let (outcome, records) = session_over(&local, &far, None, &AtomicBool::new(false));
         outcome?;
@@ -1177,7 +1187,7 @@ mod tests {
             records
                 .iter()
                 .any(|record| matches!(record.event, Event::Committed { .. })),
-            "the far run's own records came home: {records:?}"
+            "the far search's own records came home: {records:?}"
         );
         assert_eq!(
             far.steps().last(),
@@ -1192,11 +1202,11 @@ mod tests {
 
     #[test]
     fn the_far_side_is_asked_for_the_steps_of_the_choreography_in_order() -> Result<()> {
-        // Reach the machine, place the run on it, ask whether it is already
+        // Reach the machine, place the search on it, ask whether it is already
         // going, push, start, follow, wait it out, pull.
         let local = local(RENTED, PROMPT, Some(3));
-        let run = local.config.run.id();
-        let far = Scripted::new().delivering(vec![vec![started(&run), finalized(&run)]]);
+        let search = local.config.search.id();
+        let far = Scripted::new().delivering(vec![vec![started(&search), finalized(&search)]]);
         let interrupt = AtomicBool::new(false);
         let (outcome, _) = session_over(&local, &far, None, &interrupt);
         outcome?;
@@ -1208,13 +1218,13 @@ mod tests {
                 Step::Driving,
                 PUSH,
                 // The follow opens before the start, so its first poll is the
-                // journal as it stood before this run wrote to it.
+                // journal as it stood before this search wrote to it.
                 Step::Follow,
                 Step::Start,
                 // The far side holds nothing yet, so that follow was refused
-                // and the one that reads this run's records opens after it.
+                // and the one that reads this search's records opens after it.
                 Step::Follow,
-                // The wind-down finds the run already gone: it wrote its
+                // The wind-down finds the search already gone: it wrote its
                 // terminal event and exited.
                 Step::Driving,
                 PULL,
@@ -1229,10 +1239,10 @@ mod tests {
         // the first contact is refused. The migration is what was paid for; it
         // waits for the machine rather than failing in front of it.
         let local = local(RENTED, PROMPT, Some(3));
-        let run = local.config.run.id();
+        let search = local.config.search.id();
         let far = Scripted::new()
             .refusing(1)
-            .delivering(vec![vec![started(&run), finalized(&run)]]);
+            .delivering(vec![vec![started(&search), finalized(&search)]]);
 
         let (outcome, _) = session_over(&local, &far, None, &AtomicBool::new(false));
         outcome?;
@@ -1323,10 +1333,10 @@ mod tests {
             "ready_timeout_ms = 2000\nready_poll_ms = 1",
             Some(3),
         );
-        let run = local.config.run.id();
+        let search = local.config.search.id();
         let far = Scripted::new()
             .refusing(40)
-            .delivering(vec![vec![started(&run), finalized(&run)]]);
+            .delivering(vec![vec![started(&search), finalized(&search)]]);
 
         let (outcome, _) = session_over(&local, &far, None, &AtomicBool::new(false));
         outcome?;
@@ -1373,7 +1383,7 @@ mod tests {
         let far = Scripted::new().without_the_image();
 
         let (outcome, _) = session_over(&local, &far, None, &AtomicBool::new(false));
-        let error = outcome.expect_err("a machine without the image cannot drive the run");
+        let error = outcome.expect_err("a machine without the image cannot drive the search");
         assert!(
             error.to_string().contains("image"),
             "the reason reaches the caller unchanged: {error}"
@@ -1387,12 +1397,12 @@ mod tests {
     }
 
     #[test]
-    fn the_config_the_far_side_is_given_is_the_same_run() -> Result<()> {
-        // The whole move rests on it: a far side driving another run would
+    fn the_config_the_far_side_is_given_is_the_same_search() -> Result<()> {
+        // The whole move rests on it: a far side driving another search would
         // start the chain again from segment zero.
         let local = local(RENTED, PROMPT, Some(3));
-        let run = local.config.run.id();
-        let far = Scripted::new().delivering(vec![vec![started(&run), finalized(&run)]]);
+        let search = local.config.search.id();
+        let far = Scripted::new().delivering(vec![vec![started(&search), finalized(&search)]]);
         session_over(&local, &far, None, &AtomicBool::new(false)).0?;
         let placed = far
             .placed
@@ -1400,39 +1410,39 @@ mod tests {
             .expect("the placement lock")
             .clone()
             .expect("a config was placed");
-        assert_eq!(crate::fixtures::load_str(&placed).run.id(), run);
+        assert_eq!(crate::fixtures::load_str(&placed).search.id(), search);
         Ok(())
     }
 
     #[test]
-    fn an_interrupt_while_the_run_is_being_sent_starts_nothing_and_keeps_no_machine() -> Result<()>
-    {
-        // The window a placement spends sending a run is minutes long, and an
+    fn an_interrupt_while_the_search_is_being_sent_starts_nothing_and_keeps_no_machine()
+    -> Result<()> {
+        // The window a placement spends sending a search is minutes long, and an
         // operator who lets go inside it asked for the migration to stop —
-        // starting the far run anyway would leave a machine computing and
+        // starting the far search anyway would leave a machine computing and
         // billing behind a `sima migrate` that already exited.
         let local = local(RENTED, PROMPT, Some(3));
-        let run = local.config.run.id();
-        let lock = local.store.acquire_run_lock(&run)?;
+        let search = local.config.search.id();
+        let lock = local.store.acquire_search_lock(&search)?;
         let provider = marketplace();
         let guard = hosting(&provider, &local.store, &lock)?;
         let interrupt = Arc::new(AtomicBool::new(false));
         let far = Scripted::new()
             .letting_go_at(PUSH, &interrupt)
-            .delivering(vec![vec![started(&run), committed("aa")]]);
+            .delivering(vec![vec![started(&search), committed("aa")]]);
 
         let (outcome, _) = session_over(&local, &far, Some(guard), &interrupt);
         assert_eq!(
             outcome?,
             MigrateOutcome::Abandoned {
-                run,
+                search,
                 machine: "cloudbox".to_string(),
             },
             "a placement the operator stopped is its own outcome"
         );
         assert!(
             !far.steps().contains(&Step::Start),
-            "no far run was started: {:?}",
+            "no far search was started: {:?}",
             far.steps()
         );
         assert_eq!(
@@ -1453,14 +1463,14 @@ mod tests {
         // The flag raised before anything: the migration stops where it is,
         // which is before the machine has been asked for anything at all.
         let local = local(OWNED, "", Some(3));
-        let run = local.config.run.id();
-        let far = Scripted::new().delivering(vec![vec![started(&run), committed("aa")]]);
+        let search = local.config.search.id();
+        let far = Scripted::new().delivering(vec![vec![started(&search), committed("aa")]]);
 
         let (outcome, _) = session_over(&local, &far, None, &AtomicBool::new(true));
         assert_eq!(
             outcome?,
             MigrateOutcome::Abandoned {
-                run,
+                search,
                 machine: "cloudbox".to_string(),
             }
         );
@@ -1469,30 +1479,30 @@ mod tests {
     }
 
     #[test]
-    fn a_raised_interrupt_detaches_and_leaves_the_far_run_computing() -> Result<()> {
+    fn a_raised_interrupt_detaches_and_leaves_the_far_search_computing() -> Result<()> {
         // Ctrl-C is the operator letting go, not the operator stopping the
-        // run: the far side is neither signalled nor pulled from, and the
+        // search: the far side is neither signalled nor pulled from, and the
         // machine it computes on is kept.
         let local = local(RENTED, PROMPT, Some(3));
-        let run = local.config.run.id();
-        let lock = local.store.acquire_run_lock(&run)?;
+        let search = local.config.search.id();
+        let lock = local.store.acquire_search_lock(&search)?;
         let provider = marketplace();
         let guard = hosting(&provider, &local.store, &lock)?;
-        // Raised as the far run is started, which is the first moment there is
+        // Raised as the far search is started, which is the first moment there is
         // one to let go of.
         let interrupt = Arc::new(AtomicBool::new(false));
         let far = Scripted::new()
             .letting_go_at(Step::Start, &interrupt)
-            .delivering(vec![vec![started(&run), committed("aa")]]);
+            .delivering(vec![vec![started(&search), committed("aa")]]);
 
         let (outcome, _) = session_over(&local, &far, Some(guard), &interrupt);
         assert_eq!(
             outcome?,
             MigrateOutcome::Detached {
-                run,
+                search,
                 machine: "cloudbox".to_string(),
             },
-            "letting go is its own outcome, and it names where the run is"
+            "letting go is its own outcome, and it names where the search is"
         );
         assert_eq!(
             far.steps(),
@@ -1510,7 +1520,7 @@ mod tests {
         assert_eq!(
             *far.alive.lock().expect("the pid lock"),
             Some(PID),
-            "the far run keeps computing"
+            "the far search keeps computing"
         );
         assert!(
             provider.destroyed().is_empty(),
@@ -1553,7 +1563,7 @@ mod tests {
         // this side reads its own flag. The interrupt is what was asked for and
         // the dead stream is a consequence of it: letting go stays letting go.
         let local = local(RENTED, PROMPT, Some(3));
-        let run = local.config.run.id();
+        let search = local.config.search.id();
         let interrupt = Arc::new(AtomicBool::new(false));
         let far = Scripted::new()
             .letting_go_at(Step::Start, &interrupt)
@@ -1563,7 +1573,7 @@ mod tests {
         assert_eq!(
             outcome?,
             MigrateOutcome::Detached {
-                run,
+                search,
                 machine: "cloudbox".to_string(),
             }
         );
@@ -1575,19 +1585,19 @@ mod tests {
         assert_eq!(
             *far.alive.lock().expect("the pid lock"),
             Some(PID),
-            "the far run keeps computing"
+            "the far search keeps computing"
         );
         Ok(())
     }
 
     #[test]
-    fn an_interrupt_while_the_follow_opens_lets_go_of_the_run_it_started() -> Result<()> {
-        // A far run is up by the time this side waits for its first journal
+    fn an_interrupt_while_the_follow_opens_lets_go_of_the_search_it_started() -> Result<()> {
+        // A far search is up by the time this side waits for its first journal
         // line, so the flag means there what it means from the start on: let
-        // go of it, rather than wait out the bound and report a run that never
+        // go of it, rather than wait out the bound and report a search that never
         // journaled as a fault.
         let local = local(RENTED, PROMPT, Some(3));
-        let run = local.config.run.id();
+        let search = local.config.search.id();
         let interrupt = Arc::new(AtomicBool::new(false));
         let far = Scripted::new()
             .letting_go_at(Step::Start, &interrupt)
@@ -1597,14 +1607,14 @@ mod tests {
         assert_eq!(
             outcome?,
             MigrateOutcome::Detached {
-                run,
+                search,
                 machine: "cloudbox".to_string(),
             }
         );
         assert_eq!(
             *far.alive.lock().expect("the pid lock"),
             Some(PID),
-            "the far run it started keeps computing"
+            "the far search it started keeps computing"
         );
         assert!(
             !far.steps().contains(&Step::LogTail),
@@ -1624,7 +1634,7 @@ mod tests {
         let interrupt = Arc::new(AtomicBool::new(false));
         let far = Scripted::new()
             .letting_go_at(Step::Start, &interrupt)
-            .faulting_the_stream("the run's journal on cloudbox could not be read");
+            .faulting_the_stream("the search's journal on cloudbox could not be read");
 
         let (outcome, _) = session_over(&local, &far, None, &interrupt);
         let error = outcome.expect_err("a far side reporting trouble is not a detach");
@@ -1642,12 +1652,12 @@ mod tests {
 
     #[test]
     fn an_interrupt_during_the_acquisition_abandons_it_and_rents_nothing() -> Result<()> {
-        // Detaching exists only once there is a far run to detach from. Before
+        // Detaching exists only once there is a far search to detach from. Before
         // one, the interrupt keeps the meaning it has always had: abandon the
         // offer walk and leave nothing rented.
         let local = local(RENTED, PROMPT, Some(3));
-        let run = local.config.run.id();
-        let lock = local.store.acquire_run_lock(&run)?;
+        let search = local.config.search.id();
+        let lock = local.store.acquire_search_lock(&search)?;
         let provider = marketplace();
         let HostForm::Rented(spec) = &local.config.hosts["cloudbox"].form else {
             panic!("the fixture declares a rented machine");
@@ -1676,21 +1686,21 @@ mod tests {
     }
 
     #[test]
-    fn a_detached_migration_of_a_machine_of_yours_reports_where_the_run_is() -> Result<()> {
-        // The outcome carries what the operator needs to come back: the run,
+    fn a_detached_migration_of_a_machine_of_yours_reports_where_the_search_is() -> Result<()> {
+        // The outcome carries what the operator needs to come back: the search,
         // and the machine it is still computing on.
         let local = local(OWNED, "", Some(3));
-        let run = local.config.run.id();
+        let search = local.config.search.id();
         let interrupt = Arc::new(AtomicBool::new(false));
         let far = Scripted::new()
             .letting_go_at(Step::Start, &interrupt)
-            .delivering(vec![vec![started(&run), committed("aa")]]);
+            .delivering(vec![vec![started(&search), committed("aa")]]);
 
         let (outcome, _) = session_over(&local, &far, None, &interrupt);
         assert_eq!(
             outcome?,
             MigrateOutcome::Detached {
-                run,
+                search,
                 machine: "cloudbox".to_string(),
             }
         );
@@ -1698,28 +1708,28 @@ mod tests {
     }
 
     #[test]
-    fn an_exhausted_budget_winds_the_far_run_down_and_reports_the_exhaustion() -> Result<()> {
+    fn an_exhausted_budget_winds_the_far_search_down_and_reports_the_exhaustion() -> Result<()> {
         let local = local(RENTED, PROMPT, Some(3));
-        let run = local.config.run.id();
-        let lock = local.store.acquire_run_lock(&run)?;
+        let search = local.config.search.id();
+        let lock = local.store.acquire_search_lock(&search)?;
         let provider = marketplace();
         let guard = hosting(&provider, &local.store, &lock)?;
-        // A closed rental this run already paid for, well past the ceiling the
+        // A closed rental this search already paid for, well past the ceiling the
         // config declares.
         over_budget(&local)?;
-        // The far run would go on to finalize; the ceiling is what stops it
+        // The far search would go on to finalize; the ceiling is what stops it
         // first, so a migration that never assessed would come home finalized
         // instead of wound down.
         let far = Scripted::new().delivering(vec![
-            vec![started(&run), committed("aa")],
-            vec![finalized(&run)],
+            vec![started(&search), committed("aa")],
+            vec![finalized(&search)],
         ]);
 
         let (outcome, records) = session_over(&local, &far, Some(guard), &AtomicBool::new(false));
         assert!(matches!(outcome?, MigrateOutcome::Interrupted { .. }));
         assert!(
             far.steps().contains(&Step::Interrupt(PID)),
-            "the far run is asked to wind down: {:?}",
+            "the far search is asked to wind down: {:?}",
             far.steps()
         );
         assert_eq!(far.steps().last(), Some(&PULL), "the results come home");
@@ -1738,17 +1748,17 @@ mod tests {
         // The counterpart: the same rental under a ceiling it has not reached
         // is not wound down, so the assessment decides rather than its presence.
         let local = local(RENTED, PROMPT, Some(3));
-        let run = local.config.run.id();
-        let lock = local.store.acquire_run_lock(&run)?;
+        let search = local.config.search.id();
+        let lock = local.store.acquire_search_lock(&search)?;
         let provider = marketplace();
         let guard = hosting(&provider, &local.store, &lock)?;
-        let far = Scripted::new().delivering(vec![vec![started(&run), finalized(&run)]]);
+        let far = Scripted::new().delivering(vec![vec![started(&search), finalized(&search)]]);
 
         let (outcome, records) = session_over(&local, &far, Some(guard), &AtomicBool::new(false));
         assert!(matches!(outcome?, MigrateOutcome::Outstanding { .. }));
         assert!(
             !far.steps().contains(&Step::Interrupt(PID)),
-            "nothing wound the far run down"
+            "nothing wound the far search down"
         );
         assert!(
             !records.iter().any(|record| matches!(
@@ -1773,13 +1783,13 @@ mod tests {
     }
 
     #[test]
-    fn a_far_run_that_outlasts_the_wind_down_is_terminated_and_the_pull_follows() -> Result<()> {
+    fn a_far_search_that_outlasts_the_wind_down_is_terminated_and_the_pull_follows() -> Result<()> {
         let local = local(RENTED, PROMPT, Some(3));
-        let run = local.config.run.id();
+        let search = local.config.search.id();
         over_budget(&local)?;
         let far = Scripted::new()
             .outlasting_the_wind_down()
-            .delivering(vec![vec![started(&run), committed("aa")]]);
+            .delivering(vec![vec![started(&search), committed("aa")]]);
 
         let (outcome, records) = session_over(&local, &far, None, &AtomicBool::new(false));
         assert!(matches!(outcome?, MigrateOutcome::Interrupted { .. }));
@@ -1793,34 +1803,34 @@ mod tests {
         let terminated = steps
             .iter()
             .position(|step| *step == Step::Terminate(PID))
-            .expect("the far run was terminated");
+            .expect("the far search was terminated");
         let signalled = steps
             .iter()
             .position(|step| *step == Step::Interrupt(PID))
-            .expect("the far run was signalled first");
+            .expect("the far search was signalled first");
         assert!(signalled < terminated, "signalled before terminated");
         assert_eq!(
             steps.last(),
             Some(&PULL),
-            "the pull follows a far run that is really gone: {steps:?}"
+            "the pull follows a far search that is really gone: {steps:?}"
         );
         Ok(())
     }
 
     #[test]
-    fn a_far_run_that_survives_termination_fails_the_migration_naming_it() -> Result<()> {
-        // Nothing ended it, so the far side's run lock is still held and the
+    fn a_far_search_that_survives_termination_fails_the_migration_naming_it() -> Result<()> {
+        // Nothing ended it, so the far side's search lock is still held and the
         // pull cannot succeed. Failing here names the cause; reaching the sync
         // would report the lock instead.
         let local = local(RENTED, PROMPT, Some(3));
-        let run = local.config.run.id();
+        let search = local.config.search.id();
         over_budget(&local)?;
         let far = Scripted::new()
             .stubborn()
-            .delivering(vec![vec![started(&run), committed("aa")]]);
+            .delivering(vec![vec![started(&search), committed("aa")]]);
 
         let (outcome, records) = session_over(&local, &far, None, &AtomicBool::new(false));
-        let error = outcome.expect_err("a far run that will not end fails the migration");
+        let error = outcome.expect_err("a far search that will not end fails the migration");
         let text = error.to_string();
         assert!(text.contains("cloudbox"), "names the machine: {text}");
         assert!(text.contains(&PID.to_string()), "names the pid: {text}");
@@ -1834,17 +1844,17 @@ mod tests {
     }
 
     #[test]
-    fn a_far_run_that_discards_its_first_signals_is_signalled_again() -> Result<()> {
+    fn a_far_search_that_discards_its_first_signals_is_signalled_again() -> Result<()> {
         // A shell starts an asynchronous command with `SIGINT` ignored and the
         // disposition survives the exec, so a wind-down beginning before the far
-        // run installed its own handler signals into nothing. Re-sending on
+        // search installed its own handler signals into nothing. Re-sending on
         // every poll is what closes that window.
         let local = local(RENTED, PROMPT, Some(3));
-        let run = local.config.run.id();
+        let search = local.config.search.id();
         over_budget(&local)?;
         let far = Scripted::new()
             .deaf_for(2)
-            .delivering(vec![vec![started(&run), committed("aa")]]);
+            .delivering(vec![vec![started(&search), committed("aa")]]);
 
         let (outcome, records) = session_over(&local, &far, None, &AtomicBool::new(false));
         assert!(matches!(outcome?, MigrateOutcome::Interrupted { .. }));
@@ -1857,7 +1867,7 @@ mod tests {
             "two discarded, the third heard: {:?}",
             far.steps()
         );
-        // The run went away well inside the bound, so nothing was reported.
+        // The search went away well inside the bound, so nothing was reported.
         assert!(
             !records
                 .iter()
@@ -1872,21 +1882,21 @@ mod tests {
     #[test]
     fn a_migration_that_brought_every_task_home_finalizes() -> Result<()> {
         let local = local(RENTED, PROMPT, Some(3));
-        let run = local.config.run.id();
+        let search = local.config.search.id();
         assert!(
-            local.store.manifest(&run)?.is_none(),
-            "the local run is unfinished before the migration"
+            local.store.manifest(&search)?.is_none(),
+            "the local search is unfinished before the migration"
         );
         // The far side ran the chain out.
         let (_far_dir, far) = far_store(&local.config, None);
         let scripted = Scripted::new()
             .syncing_with(&far, &local.config)
-            .delivering(vec![vec![started(&run), finalized(&run)]]);
+            .delivering(vec![vec![started(&search), finalized(&search)]]);
 
         let (outcome, _) = session_over(&local, &scripted, None, &AtomicBool::new(false));
-        assert_eq!(outcome?, MigrateOutcome::Finalized { run });
+        assert_eq!(outcome?, MigrateOutcome::Finalized { search });
         assert!(
-            local.store.manifest(&run)?.is_some(),
+            local.store.manifest(&search)?.is_some(),
             "the manifest is written here, over the store the pull completed"
         );
         Ok(())
@@ -1895,18 +1905,27 @@ mod tests {
     #[test]
     fn a_migration_with_tasks_outstanding_reports_the_count_and_writes_no_manifest() -> Result<()> {
         let local = local(RENTED, PROMPT, Some(3));
-        let run = local.config.run.id();
+        let search = local.config.search.id();
         // The far side got further, but not to the end.
         let (_far_dir, far) = far_store(&local.config, Some(8));
         let scripted = Scripted::new()
             .syncing_with(&far, &local.config)
-            .delivering(vec![vec![started(&run), finalized(&run)]]);
+            .delivering(vec![vec![started(&search), finalized(&search)]]);
 
         let (outcome, _) = session_over(&local, &scripted, None, &AtomicBool::new(false));
         // The chain is traversable forward only, so an unfinished chain always
         // leaves exactly its next segment underived-from: one key uncommitted.
-        assert_eq!(outcome?, MigrateOutcome::Outstanding { run, remaining: 1 });
-        assert!(local.store.manifest(&run)?.is_none(), "nothing was sealed");
+        assert_eq!(
+            outcome?,
+            MigrateOutcome::Outstanding {
+                search,
+                remaining: 1
+            }
+        );
+        assert!(
+            local.store.manifest(&search)?.is_none(),
+            "nothing was sealed"
+        );
         // The pull did move the far side's progress home.
         assert!(
             task_keys(&local.config, &local.store)?.len() > 4,
@@ -1918,10 +1937,10 @@ mod tests {
     #[test]
     fn a_definitive_far_side_failure_is_the_outcome() -> Result<()> {
         let local = local(RENTED, PROMPT, Some(3));
-        let run = local.config.run.id();
+        let search = local.config.search.id();
         let far = Scripted::new().delivering(vec![vec![
-            started(&run),
-            failed(&run, "aa", "the candidate diverged"),
+            started(&search),
+            failed(&search, "aa", "the candidate diverged"),
         ]]);
 
         let (outcome, _) = session_over(&local, &far, None, &AtomicBool::new(false));
@@ -1932,11 +1951,11 @@ mod tests {
                 reason: "the candidate diverged".to_string(),
             }
         );
-        assert!(local.store.manifest(&run)?.is_none());
+        assert!(local.store.manifest(&search)?.is_none());
         assert_eq!(
             far.steps().last(),
             Some(&PULL),
-            "a failed run's results still come home"
+            "a failed search's results still come home"
         );
         Ok(())
     }
@@ -1945,29 +1964,29 @@ mod tests {
 
     #[test]
     fn every_path_out_of_a_migration_tears_the_rental_down() -> Result<()> {
-        // The end state that matters: no path that ends the far run leaves a
+        // The end state that matters: no path that ends the far search leaves a
         // machine running and being paid for. The session releases the guard
         // explicitly so a teardown failure is reported rather than swallowed;
         // the guard's own drop is the second line of the same guarantee.
         //
-        // Detaching is the one path that keeps the machine, since the run it
+        // Detaching is the one path that keeps the machine, since the search it
         // hosts is still computing; it has its own test.
         let run_to = |far: &dyn FarSide, exhausted: bool| -> Result<usize> {
             let local = local(RENTED, PROMPT, Some(3));
             if exhausted {
                 over_budget(&local)?;
             }
-            let lock = local.store.acquire_run_lock(&local.config.run.id())?;
+            let lock = local.store.acquire_search_lock(&local.config.search.id())?;
             let provider = marketplace();
             let guard = hosting(&provider, &local.store, &lock)?;
             let _ = session_over(&local, far, Some(guard), &AtomicBool::new(false));
             Ok(provider.destroyed().len())
         };
 
-        // The success path: the far run finalized.
+        // The success path: the far search finalized.
         let done = local(RENTED, PROMPT, None);
-        let run = done.config.run.id();
-        let ok = Scripted::new().delivering(vec![vec![started(&run), finalized(&run)]]);
+        let search = done.config.search.id();
+        let ok = Scripted::new().delivering(vec![vec![started(&search), finalized(&search)]]);
         assert_eq!(run_to(&ok, false)?, 1, "the success path tears down");
 
         // The failure path: the machine could not answer that it can drive.
@@ -2000,7 +2019,7 @@ mod tests {
             fn sync(&self, _: &Store, _: &[TaskKey], _: ObjectScope<'_>) -> Result<SyncReport> {
                 unreachable!("the migration never got past the reach check")
             }
-            fn follow(&self) -> Result<Box<dyn RunFeed>> {
+            fn follow(&self) -> Result<Box<dyn SearchFeed>> {
                 unreachable!("the migration never got past the reach check")
             }
             fn snapshot(&self) -> Result<Option<Vec<Record>>> {
@@ -2014,23 +2033,23 @@ mod tests {
         );
 
         // The wind-down path: the ceiling ran out and this side ended the far
-        // run.
-        let wound_down = Scripted::new().delivering(vec![vec![started(&run), committed("aa")]]);
+        // search.
+        let wound_down = Scripted::new().delivering(vec![vec![started(&search), committed("aa")]]);
         assert_eq!(
             run_to(&wound_down, true)?,
             1,
             "the wind-down path tears down"
         );
 
-        // A far run that survived even termination fails the migration, and the
+        // A far search that survived even termination fails the migration, and the
         // teardown that destroys the machine it is on runs on that path too.
         let unkillable = Scripted::new()
             .stubborn()
-            .delivering(vec![vec![started(&run), committed("aa")]]);
+            .delivering(vec![vec![started(&search), committed("aa")]]);
         assert_eq!(
             run_to(&unkillable, true)?,
             1,
-            "a far run that will not end still tears down"
+            "a far search that will not end still tears down"
         );
         Ok(())
     }
@@ -2079,11 +2098,11 @@ mod tests {
     fn a_rented_far_side_already_driving_is_adopted_and_neither_pushed_to_nor_started() -> Result<()>
     {
         let local = local(RENTED, PROMPT, Some(3));
-        let run = local.config.run.id();
-        let lock = local.store.acquire_run_lock(&run)?;
+        let search = local.config.search.id();
+        let lock = local.store.acquire_search_lock(&search)?;
         let provider = marketplace();
         // The ledger as an earlier invocation left it: a live rental of this
-        // run's orchestrator.
+        // search's orchestrator.
         let offer = provider.offers()?.into_iter().next().expect("an offer");
         let Provision::Provisioned(instance) = provider.provision(&offer.id, "sima-tag-0")? else {
             panic!("the stub provisions its offer");
@@ -2096,7 +2115,7 @@ mod tests {
             tag: "sima-tag-0".to_string(),
             provider: "stub".to_string(),
             machine: "machine-0".to_string(),
-            owner: run.to_string(),
+            owner: search.to_string(),
             state: InstanceRecordState::Live {
                 instance: instance.id.0.clone(),
             },
@@ -2130,7 +2149,7 @@ mod tests {
 
         let far = Scripted::new()
             .already_driving()
-            .delivering(vec![vec![started(&run), finalized(&run)]]);
+            .delivering(vec![vec![started(&search), finalized(&search)]]);
         let (outcome, _) = session_over(&local, &far, Some(guard), &AtomicBool::new(false));
         outcome?;
         let steps = far.steps();
@@ -2148,13 +2167,13 @@ mod tests {
 
     #[test]
     fn a_machine_of_yours_already_driving_is_neither_pushed_to_nor_started() -> Result<()> {
-        // It has no ledger record to adopt, since nothing was rented; `run.pid`
+        // It has no ledger record to adopt, since nothing was rented; `search.pid`
         // is the whole of the evidence.
         let local = local(OWNED, "", Some(3));
-        let run = local.config.run.id();
+        let search = local.config.search.id();
         let far = Scripted::new()
             .already_driving()
-            .delivering(vec![vec![started(&run), finalized(&run)]]);
+            .delivering(vec![vec![started(&search), finalized(&search)]]);
 
         let (outcome, _) = session_over(&local, &far, None, &AtomicBool::new(false));
         outcome?;
@@ -2169,14 +2188,14 @@ mod tests {
 
     #[test]
     fn a_reattaching_migration_forwards_what_arrives_after_it_and_not_the_replay() -> Result<()> {
-        // The feed's first poll is the far run's whole history, produced while
+        // The feed's first poll is the far search's whole history, produced while
         // nothing was attached to journal it.
         let local = local(OWNED, "", Some(3));
-        let run = local.config.run.id();
+        let search = local.config.search.id();
         let far = Scripted::new()
             .already_driving()
-            .over_an_existing_journal(vec![started(&run), committed("aa")])
-            .delivering(vec![vec![committed("bb"), finalized(&run)]]);
+            .over_an_existing_journal(vec![started(&search), committed("aa")])
+            .delivering(vec![vec![committed("bb"), finalized(&search)]]);
 
         let (outcome, records) = session_over(&local, &far, None, &AtomicBool::new(false));
         outcome?;
@@ -2192,14 +2211,14 @@ mod tests {
     }
 
     #[test]
-    fn a_migration_that_started_the_far_run_forwards_its_whole_history() -> Result<()> {
+    fn a_migration_that_started_the_far_search_forwards_its_whole_history() -> Result<()> {
         // The counterpart: nothing was attached because nothing was running, so
         // the first poll is this migration's own to journal.
         let local = local(OWNED, "", Some(3));
-        let run = local.config.run.id();
+        let search = local.config.search.id();
         let far = Scripted::new().delivering(vec![
-            vec![started(&run), committed("aa")],
-            vec![committed("bb"), finalized(&run)],
+            vec![started(&search), committed("aa")],
+            vec![committed("bb"), finalized(&search)],
         ]);
 
         let (outcome, records) = session_over(&local, &far, None, &AtomicBool::new(false));
@@ -2213,7 +2232,7 @@ mod tests {
             .collect();
         assert_eq!(tasks, ["aa", "bb"]);
         // And the local journal holds them, which is the point of forwarding.
-        let (lines, _) = local.store.journal_from(&run, 0)?;
+        let (lines, _) = local.store.journal_from(&search, 0)?;
         assert!(
             lines.iter().filter(|line| line.contains("\"aa\"")).count() > 0,
             "the far side's records reached the local journal"

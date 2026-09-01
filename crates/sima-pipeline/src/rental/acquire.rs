@@ -5,7 +5,7 @@
 //! the devices its workers are placed on. The members are asked for at once —
 //! a boot is minutes, and the same minutes for each of them — with only the
 //! offer take serialized. What a partial acquisition means is the entry's own
-//! declaration: strict fails the run and tears down what came up, best-effort
+//! declaration: strict fails the search and tears down what came up, best-effort
 //! runs on whatever did.
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -23,7 +23,7 @@ use sima_provider::{
 };
 use sima_scheduler::ExecutionConfig;
 use sima_scheduler::{Event, Level};
-use sima_store::{Rental as RentalRole, RunLock, Store};
+use sima_store::{Rental as RentalRole, SearchLock, Store};
 use sima_trace::Emitter;
 use sima_transport::{SpawnMode, SshDestination, SshTransport};
 
@@ -39,7 +39,7 @@ use crate::rental::rented_program::RentedProgram;
 ///
 /// The rental's declared image, disk, and count are the settings the backend is
 /// built with; which backend that is comes from the one provider registry, so a
-/// run and a reconciliation resolve the same id the same way.
+/// search and a reconciliation resolve the same id the same way.
 pub(crate) fn provider_for_rental(rental: &Rental<'_>) -> Result<Box<dyn Provider + Sync>> {
     provider_for(
         rental.spec.provider.as_str(),
@@ -74,7 +74,7 @@ pub(crate) fn endpoint_target(endpoint: SshEndpoint) -> SshDestination {
 
 /// How many machines one instance's acquisition may burn through before it
 /// gives up. Each attempt is a paid rental torn down again, so the bound
-/// stays small; a machine that fails twice across runs is blacklisted by
+/// stays small; a machine that fails twice across searches is blacklisted by
 /// its incidents and stops being offered at all.
 ///
 /// Each attempt runs under one `ready_timeout` covering everything it waits
@@ -99,13 +99,13 @@ pub(crate) struct RentedHost<'a> {
     /// The machine's host label, for the journal.
     pub(crate) host: String,
     /// One slot per enumerated GPU, or a single deviceless slot. Fixed for the
-    /// run: a replacement must carry at least this many GPUs.
+    /// search: a replacement must carry at least this many GPUs.
     pub(crate) slots: Vec<Option<DeviceBinding>>,
 }
 
 /// One rented entry's machines, under the control plane and specification they
-/// were acquired through. A run may draw on several, each with its own provider
-/// and its own shortfall policy, all under the run's single budget.
+/// were acquired through. A search may draw on several, each with its own provider
+/// and its own shortfall policy, all under the search's single budget.
 pub(crate) struct RentalGroup<'a> {
     /// The control plane its machines came from.
     pub(crate) provider: &'a (dyn Provider + Sync),
@@ -126,12 +126,12 @@ pub(crate) struct RentalGroup<'a> {
 /// budget-admitted and intent-recorded by [`acquire`](sima_provider::acquire),
 /// and a machine that fails to acquire or probe is torn down individually. The
 /// fill policy decides once, over every member's answer: strict tears down
-/// every machine that came up and fails the run; best-effort proceeds with
+/// every machine that came up and fails the search; best-effort proceeds with
 /// them, so long as one machine did.
 ///
-/// `interrupt` is the run's own wind-down flag, read inside every wait an
+/// `interrupt` is the search's own wind-down flag, read inside every wait an
 /// acquisition spends: the machines are minutes of paid-for waiting before the
-/// run drives, and an operator who lets go there must not have to wait them out
+/// search drives, and an operator who lets go there must not have to wait them out
 /// or kill the process over them.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn acquire_hosts<'a>(
@@ -139,7 +139,7 @@ pub(crate) fn acquire_hosts<'a>(
     budget: &Budget,
     provider: &'a (dyn Provider + Sync),
     store: &'a Store,
-    lock: &RunLock,
+    lock: &SearchLock,
     mode: &SpawnMode,
     format: &FormatId,
     exec: &ExecutionConfig,
@@ -211,7 +211,7 @@ pub(crate) fn acquire_hosts<'a>(
     }
     // An operator who let go stops the whole rental, whatever the fill policy
     // would make of a member that could not be brought up: nothing fell short,
-    // the run is ending. Dropping `hosts` on the way out tears down every
+    // the search is ending. Dropping `hosts` on the way out tears down every
     // machine this rental had, which is the whole of what is said here — a
     // fleet released before it ran leaves nothing else to read it from.
     if interrupt.load(Ordering::Relaxed) {
@@ -222,7 +222,7 @@ pub(crate) fn acquire_hosts<'a>(
     }
     // What the shortfall costs is the entry's own declaration, and the operator
     // is told which member fell short and what follows from it — one machine
-    // short of a fleet is otherwise invisible until the run's rate looks wrong.
+    // short of a fleet is otherwise invisible until the search's rate looks wrong.
     // Every member that fell short says so: they were asked for at once, so any
     // number of them may have.
     for (member, error) in &short {
@@ -260,12 +260,12 @@ fn first_error(short: Vec<(&str, Error)>) -> Error {
 /// probe failure the guard drops here, tearing the machine down, so no
 /// half-acquired rental leaks, and the acquisition moves to another machine: a
 /// marketplace serves hosts that come up but never accept a session, and one of
-/// them must cost a machine rather than the run.
+/// them must cost a machine rather than the search.
 #[allow(clippy::too_many_arguments)]
 fn acquire_one<'a>(
     provider: &'a (dyn Provider + Sync),
     store: &'a Store,
-    lock: &RunLock,
+    lock: &SearchLock,
     spec: &Rented,
     budget: &Budget,
     mode: &SpawnMode,
@@ -281,7 +281,7 @@ fn acquire_one<'a>(
     // follow, so the retry reaches a different machine instead of renting
     // the same broken one again. The exclusion is local to this
     // acquisition; the durable incident it also records is what carries
-    // the machine's reputation across runs.
+    // the machine's reputation across searches.
     let mut constraints = spec.constraints.clone();
     let mut refused: Option<Error> = None;
     for _ in 0..PROBE_ACQUIRE_ATTEMPTS {
@@ -307,7 +307,7 @@ fn acquire_one<'a>(
             budget,
             admission,
             // The wait for a machine to come up is the longest thing an
-            // acquisition does, so the run's interrupt reaches inside it: an
+            // acquisition does, so the search's interrupt reaches inside it: an
             // operator letting go here is answered without waiting the machine
             // out.
             interrupt,
@@ -316,7 +316,7 @@ fn acquire_one<'a>(
         let target = endpoint_target(guard.endpoint().clone());
         let host = target.host().to_string();
         // Three stages, each of which can cost the machine rather than the
-        // run: it answers, it receives what the run needs, and it says where
+        // search: it answers, it receives what the search needs, and it says where
         // that work can go. A failure in any of them records an incident, drops
         // the guard — tearing the machine down — and moves to another machine.
         let outcome = probe_ready(
@@ -352,7 +352,7 @@ fn acquire_one<'a>(
             // on the way out and tears this one down.
             Err(Unusable::Interrupted) => return Err(interrupted()),
             Err(Unusable::Machine(error, kind)) => {
-                // The machine reported ready but cannot serve this run: an
+                // The machine reported ready but cannot serve this search: an
                 // incident against it, recorded before the guard drops and
                 // tears it down. A store failure recording the incident
                 // supersedes the original error.
@@ -399,19 +399,19 @@ fn acquire_one<'a>(
     Err(refused.unwrap_or_else(|| Error::Provider("the acquisition never ran".to_string())))
 }
 
-/// Why a machine did not come to serve this run.
+/// Why a machine did not come to serve this search.
 enum Unusable {
     /// The machine's own doing: an incident is recorded against it, it is
     /// excluded from the attempts that follow, and another machine is tried.
     Machine(Error, IncidentKind),
-    /// The run was interrupted while the machine was being brought up. It
+    /// The search was interrupted while the machine was being brought up. It
     /// answered for nothing, so nothing is recorded against it and no other
     /// machine is asked for.
     Interrupted,
 }
 
-/// The error an acquisition the run's interrupt reached returns. What an
-/// operator reads is the abandoned line and the run's own interrupted
+/// The error an acquisition the search's interrupt reached returns. What an
+/// operator reads is the abandoned line and the search's own interrupted
 /// outcome; this states the fact for a caller holding the error alone.
 fn interrupted() -> Error {
     Error::Provider("the acquisition was interrupted".to_string())
@@ -534,7 +534,7 @@ fn renting(member: &str, offer: &Offer) -> Event {
     }
 }
 
-/// How a fleet member is named in what the run says about it: the entry that
+/// How a fleet member is named in what the search says about it: the entry that
 /// declared it and its index within that entry's count.
 fn member(name: &str, index: usize) -> String {
     format!("{name}[{index}]")
@@ -546,11 +546,11 @@ fn member(name: &str, index: usize) -> String {
 fn shortfall(member: &str, rental: &Rental<'_>, error: &Error, acquired: usize) -> Event {
     let consequence = match rental.fill {
         FillPolicy::Strict => format!(
-            "{:?} states strict fill, so the run stops and what it acquired is torn down",
+            "{:?} states strict fill, so the search stops and what it acquired is torn down",
             rental.name
         ),
         FillPolicy::BestEffort => format!(
-            "{:?} states best-effort fill, so the run goes on with the {acquired} machine(s) \
+            "{:?} states best-effort fill, so the search goes on with the {acquired} machine(s) \
              that came up",
             rental.name
         ),
@@ -645,7 +645,7 @@ mod tests {
     fn a_machine_with_only_a_rasterizer_still_gets_a_slot() {
         // With no GPU to prefer, the rasterizer is the only device this
         // program can open and takes the slot. This is what a rented machine
-        // reports to a WGSL run when its Vulkan loader cannot initialize the
+        // reports to a WGSL search when its Vulkan loader cannot initialize the
         // NVIDIA driver: the card is there, and CUDA would enumerate it, but a
         // slot bound to it would hand a worker a device Vulkan cannot open.
         let devices = [device("10005:0000", "llvmpipe (LLVM 19)", DeviceType::Cpu)];
@@ -662,10 +662,10 @@ mod tests {
 
     #[test]
     fn a_strict_shortfall_tears_down_what_was_acquired_and_fails() -> Result<()> {
-        // One offer for two requested machines under strict fill: the run
+        // One offer for two requested machines under strict fill: the search
         // fails, and the one machine that came up is torn down.
-        let (_dir, store, run) = acquisition_env();
-        let lock = store.acquire_run_lock(&run)?;
+        let (_dir, store, search) = acquisition_env();
+        let lock = store.acquire_search_lock(&search)?;
         let provider = StubProvider::new(vec![offer("a", 100_000)]);
         let format = FormatId::new("stub.v1")?;
         let spec = spec();
@@ -694,10 +694,10 @@ mod tests {
 
     #[test]
     fn a_best_effort_shortfall_proceeds_with_what_came_up() -> Result<()> {
-        // One offer for two requested machines under best-effort: the run
+        // One offer for two requested machines under best-effort: the search
         // proceeds with the one machine, torn down on release.
-        let (_dir, store, run) = acquisition_env();
-        let lock = store.acquire_run_lock(&run)?;
+        let (_dir, store, search) = acquisition_env();
+        let lock = store.acquire_search_lock(&search)?;
         let provider = StubProvider::new(vec![offer("a", 100_000)]);
         let format = FormatId::new("stub.v1")?;
         let spec = spec();
@@ -746,13 +746,13 @@ mod tests {
     }
 
     #[test]
-    fn a_strict_shortfall_names_the_member_and_says_the_run_stops() -> Result<()> {
+    fn a_strict_shortfall_names_the_member_and_says_the_search_stops() -> Result<()> {
         // One offer for two machines: the member that could not be brought up
         // is named, with what the entry's fill policy makes of it. A fleet one
-        // machine short is otherwise invisible until the run's rate looks
+        // machine short is otherwise invisible until the search's rate looks
         // wrong.
-        let (_dir, store, run) = acquisition_env();
-        let lock = store.acquire_run_lock(&run)?;
+        let (_dir, store, search) = acquisition_env();
+        let lock = store.acquire_search_lock(&search)?;
         let provider = StubProvider::new(vec![offer("a", 100_000)]);
         let format = FormatId::new("stub.v1")?;
         let spec = spec();
@@ -783,16 +783,16 @@ mod tests {
             "names the member: {warning}"
         );
         assert!(
-            warning.contains("strict fill") && warning.contains("the run stops"),
+            warning.contains("strict fill") && warning.contains("the search stops"),
             "states what follows from it: {warning}"
         );
         Ok(())
     }
 
     #[test]
-    fn a_best_effort_shortfall_names_the_member_and_says_the_run_goes_on() -> Result<()> {
-        let (_dir, store, run) = acquisition_env();
-        let lock = store.acquire_run_lock(&run)?;
+    fn a_best_effort_shortfall_names_the_member_and_says_the_search_goes_on() -> Result<()> {
+        let (_dir, store, search) = acquisition_env();
+        let lock = store.acquire_search_lock(&search)?;
         let provider = StubProvider::new(vec![offer("a", 100_000)]);
         let format = FormatId::new("stub.v1")?;
         let spec = spec();
@@ -823,10 +823,10 @@ mod tests {
         // fleet comes up short and it has to read as one.
         assert!(
             warning.ends_with(
-                "; \"rented\" states best-effort fill, so the run goes on with the 1 machine(s) \
+                "; \"rented\" states best-effort fill, so the search goes on with the 1 machine(s) \
                  that came up"
             ),
-            "states what the run does instead: {warning}"
+            "states what the search does instead: {warning}"
         );
         release_all(one_group(&provider, &spec, FillPolicy::BestEffort, hosts))?;
         Ok(())
@@ -835,10 +835,10 @@ mod tests {
     #[test]
     fn every_machine_a_fleet_takes_says_it_is_waiting_for_it() -> Result<()> {
         // Between taking an offer and the machine answering lie a boot and an
-        // image pull, and the run is paying through all of it. What is being
+        // image pull, and the search is paying through all of it. What is being
         // waited for is stated once per machine, right after what it costs.
-        let (_dir, store, run) = acquisition_env();
-        let lock = store.acquire_run_lock(&run)?;
+        let (_dir, store, search) = acquisition_env();
+        let lock = store.acquire_search_lock(&search)?;
         let provider = StubProvider::new(vec![offer("a", 100_000), offer("b", 200_000)]);
         let format = FormatId::new("stub.v1")?;
         let spec = spec();
@@ -894,8 +894,8 @@ mod tests {
     fn a_rental_acquires_and_probes_every_machine() -> Result<()> {
         // Two offers for two machines: both acquire, each probed into a single
         // deviceless slot, all torn down on release.
-        let (_dir, store, run) = acquisition_env();
-        let lock = store.acquire_run_lock(&run)?;
+        let (_dir, store, search) = acquisition_env();
+        let lock = store.acquire_search_lock(&search)?;
         let provider = StubProvider::new(vec![offer("a", 100_000), offer("b", 200_000)]);
         let format = FormatId::new("stub.v1")?;
         let spec = spec();
@@ -933,8 +933,8 @@ mod tests {
         // up; asked for at once they are the same minutes. Four members, each
         // held in a readiness wait of the same length: the whole acquisition
         // costs about one of them, and nothing like four.
-        let (_dir, store, run) = acquisition_env();
-        let lock = store.acquire_run_lock(&run)?;
+        let (_dir, store, search) = acquisition_env();
+        let lock = store.acquire_search_lock(&search)?;
         let provider = StubProvider::new(vec![
             offer("a", 100_000),
             offer("b", 200_000),
@@ -980,13 +980,13 @@ mod tests {
         // A cap is kept by the wind-down that follows it, not by prevention
         // here, and that is as true of members asked for at once as of members
         // asked for in turn.
-        let (_dir, store, run) = acquisition_env();
-        let lock = store.acquire_run_lock(&run)?;
-        // A rental of this run, closed out, that already cost more than the cap.
+        let (_dir, store, search) = acquisition_env();
+        let lock = store.acquire_search_lock(&search)?;
+        // A rental of this search, closed out, that already cost more than the cap.
         store.put_spend(&SpendEntry {
             tag: "sima-deadbeefdeadbeef-1-aabbccdd-0".to_string(),
             provider: "stub".to_string(),
-            owner: run.to_string(),
+            owner: search.to_string(),
             price_micro_usd_hour: 2_000_000,
             started_ms: 1,
             ended_ms: 3_600_001,
@@ -1021,7 +1021,7 @@ mod tests {
             store
                 .instance_records()?
                 .iter()
-                .all(|record| record.owner != run.to_string()),
+                .all(|record| record.owner != search.to_string()),
             "and none of them wrote an intent record"
         );
         Ok(())
@@ -1031,8 +1031,8 @@ mod tests {
     fn a_probe_failure_tears_the_machine_down() -> Result<()> {
         // The machine acquires but its probe never runs: it is torn down rather
         // than left running with no slots.
-        let (_dir, store, run) = acquisition_env();
-        let lock = store.acquire_run_lock(&run)?;
+        let (_dir, store, search) = acquisition_env();
+        let lock = store.acquire_search_lock(&search)?;
         let provider = StubProvider::new(vec![offer("a", 100_000)]);
         let format = FormatId::new("stub.v1")?;
         let spec = spec();
@@ -1066,10 +1066,10 @@ mod tests {
     fn a_machine_that_refuses_its_probe_costs_a_machine_not_the_acquisition() -> Result<()> {
         // A marketplace serves hosts that come up but never accept a session.
         // The acquisition moves to the next machine instead of failing the
-        // run, and does not rent the refusing machine again: both offers are
+        // search, and does not rent the refusing machine again: both offers are
         // tried, each torn down, each carrying its own incident.
-        let (_dir, store, run) = acquisition_env();
-        let lock = store.acquire_run_lock(&run)?;
+        let (_dir, store, search) = acquisition_env();
+        let lock = store.acquire_search_lock(&search)?;
         let provider = StubProvider::new(vec![offer("a", 100_000), offer("b", 200_000)]);
         let format = FormatId::new("stub.v1")?;
         let spec = spec();
@@ -1105,8 +1105,8 @@ mod tests {
         // in, and one machine spending it ends the member's acquisition: the
         // second offer is never rented, and the probe retry does not hand the
         // member another window on top of the one it was given.
-        let (_dir, store, run) = acquisition_env();
-        let lock = store.acquire_run_lock(&run)?;
+        let (_dir, store, search) = acquisition_env();
+        let lock = store.acquire_search_lock(&search)?;
         let provider = StubProvider::new(vec![offer("a", 100_000), offer("b", 200_000)])
             .never_ready(OfferId("a".to_string()));
         let format = FormatId::new("stub.v1")?;
@@ -1174,7 +1174,7 @@ mod tests {
     /// Sets `interrupt` when the acquisition emits an event matching `at`, and
     /// answers everything it emitted.
     ///
-    /// The receiver drains when the acquisition drops its emitter, so a run
+    /// The receiver drains when the acquisition drops its emitter, so a search
     /// that never emits a match ends this rather than stranding it.
     fn interrupt_on<'a>(
         interrupt: &'a AtomicBool,
@@ -1199,7 +1199,7 @@ mod tests {
     /// Both conditions are read, because either alone leaves the acquisition
     /// holding something the test cannot name. A `Renting` line is emitted once
     /// a machine is provisioned, so one per member is what says every member's
-    /// machine is taken and paid for; the marker, which a probe run as a local
+    /// machine is taken and paid for; the marker, which a probe runs as a local
     /// command touches, is what says one of them got through its boot wait. A
     /// flag set off the marker alone lands while a slower member is still at
     /// the admission gate, and that member then rents nothing at all.
@@ -1246,12 +1246,12 @@ mod tests {
     fn an_interrupt_in_the_boot_wait_ends_the_acquisition_rather_than_waiting_it_out() -> Result<()>
     {
         // Waiting for a rented machine to come up is the longest thing an
-        // acquisition does, and the run is paying through all of it. An
+        // acquisition does, and the search is paying through all of it. An
         // operator who lets go there is answered while the wait is still
         // running: the machine is torn down and nothing is held against it,
         // since it was never given its time to answer.
-        let (_dir, store, run) = acquisition_env();
-        let lock = store.acquire_run_lock(&run)?;
+        let (_dir, store, search) = acquisition_env();
+        let lock = store.acquire_search_lock(&search)?;
         let provider =
             StubProvider::new(vec![offer("a", 100_000)]).never_ready(OfferId("a".to_string()));
         let format = FormatId::new("stub.v1")?;
@@ -1302,7 +1302,7 @@ mod tests {
         // Two members: the first is up and paid for when the operator lets go
         // during the second. Machines already rented are the whole cost of
         // stopping here, so they are released, and the line that says so is
-        // the run's last word — no shortfall is reported, because nothing fell
+        // the search's last word — no shortfall is reported, because nothing fell
         // short. Both fill policies answer alike: best-effort runs on what came
         // up when the market fell short, and this is not the market.
         for fill in [FillPolicy::Strict, FillPolicy::BestEffort] {
@@ -1322,8 +1322,8 @@ mod tests {
     /// exactly the state the assertions name: two machines paid for, one of
     /// them a host the acquisition is holding.
     fn abandons_under(fill: FillPolicy) -> Result<()> {
-        let (dir, store, run) = acquisition_env();
-        let lock = store.acquire_run_lock(&run)?;
+        let (dir, store, search) = acquisition_env();
+        let lock = store.acquire_search_lock(&search)?;
         let provider = StubProvider::new(vec![offer("a", 100_000), offer("b", 200_000)])
             .never_ready(OfferId("b".to_string()));
         let format = FormatId::new("stub.v1")?;
@@ -1429,9 +1429,9 @@ mod tests {
         // inside the time the entry gave it. An operator letting go there says
         // nothing about the machine, so it is torn down carrying no incident
         // — it would otherwise be excluded from the retries and, at two across
-        // runs, blacklisted — and no second machine is rented in its place.
-        let (dir, store, run) = acquisition_env();
-        let lock = store.acquire_run_lock(&run)?;
+        // searches, blacklisted — and no second machine is rented in its place.
+        let (dir, store, search) = acquisition_env();
+        let lock = store.acquire_search_lock(&search)?;
         let provider = StubProvider::new(vec![offer("a", 100_000), offer("b", 200_000)]);
         let format = FormatId::new("stub.v1")?;
         let spec = waiting_spec();

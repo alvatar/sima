@@ -17,7 +17,7 @@ use sima_core::{Error, Result};
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct FileConfig {
-    pub(super) run: RunSection,
+    pub(super) search: SearchSection,
     pub(super) config: ConfigSection,
     /// The `[host.*]` entries, by name; absent means none declared.
     #[serde(default)]
@@ -33,7 +33,7 @@ pub(super) struct FileConfig {
     /// and declares no migration destination.
     pub(super) orchestrator: Option<OrchestratorSection>,
     /// The `[domain.*]` entries, by format id; absent means every format this
-    /// run names is answered by this build.
+    /// search names is answered by this build.
     #[serde(default)]
     pub(super) domain: BTreeMap<String, DomainSection>,
 }
@@ -49,7 +49,7 @@ pub(super) struct DomainSection {
     /// Environment variable names the program receives beyond the baseline
     /// every spawned program gets. Absent means the baseline alone.
     pub(super) env: Option<Vec<String>>,
-    /// What travels when this run migrates: one file or one directory,
+    /// What travels when this search migrates: one file or one directory,
     /// resolved against the config file's directory. Absent means the program
     /// is this machine's alone.
     pub(super) payload: Option<String>,
@@ -67,10 +67,10 @@ pub(super) struct DomainSection {
     pub(super) sdk: Option<String>,
 }
 
-/// The `[run]` section: every field enters run identity.
+/// The `[search]` section: every field enters search identity.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct RunSection {
+pub(super) struct SearchSection {
     /// TOML integers are i64; the load rejects negatives. Seeds above
     /// `i64::MAX` are not expressible in the file format.
     pub(super) root_seed: i64,
@@ -85,7 +85,7 @@ pub(super) struct RunSection {
     pub(super) params: toml::Table,
 }
 
-/// The `[run.generator]` section: the id names the generator, every other key
+/// The `[search.generator]` section: the id names the generator, every other key
 /// belongs to it and is validated by its translation.
 #[derive(Deserialize)]
 pub(super) struct GeneratorSection {
@@ -98,7 +98,7 @@ pub(super) struct GeneratorSection {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct ConfigSection {
-    /// Where the run's store lives, relative to this file's directory unless
+    /// Where the search's store lives, relative to this file's directory unless
     /// absolute. Optional: a config that states none keeps its store under the
     /// generated directory beside it.
     pub(super) store: Option<String>,
@@ -180,7 +180,7 @@ pub(super) struct BudgetSection {
     pub(super) max_wall_clock_ms: Option<u64>,
 }
 
-/// The `[fleet]` section: the members a run may draw on.
+/// The `[fleet]` section: the members a search may draw on.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct FleetSection {

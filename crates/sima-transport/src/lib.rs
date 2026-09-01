@@ -2,7 +2,7 @@
 //! subprocess workers that host domain executors.
 //!
 //! The transport is operational machinery, never identity-bearing: nothing
-//! that crosses it is hashed, and a run's manifests are byte-identical
+//! that crosses it is hashed, and a search's manifests are byte-identical
 //! whatever transport carried its attempts.
 //!
 //! - [`protocol`] — the wire protocol: the message vocabulary both endpoints

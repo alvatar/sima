@@ -1,5 +1,5 @@
 //! CLI acceptance of `sima sdk`: the vend verb writes the package this binary
-//! carries, so a program can be developed against it outside a run.
+//! carries, so a program can be developed against it outside a search.
 //!
 //! The verb opens no store and reads no config — it writes what the binary
 //! already holds — so what is asserted here is the files and their contents.

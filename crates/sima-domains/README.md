@@ -2,7 +2,7 @@
 
 The executable substance behind each format id. A **domain** supplies
 everything the infrastructure needs to run one format's candidates: the
-executor that evaluates a spec, the generator that produces a run's specs, the
+executor that evaluates a spec, the generator that produces a search's specs, the
 codecs that give specs and params their canonical bytes, the environment its
 results depend on, and the translation of the human-facing TOML config
 sections into those bytes. The `Domain` type and the id dispatch are the
@@ -30,7 +30,7 @@ LLM-driven autonomous research loops.
   research cycle — hypothesize, run an experiment, read the result, revise.
 - **Spec:** the encoded loop program — its prompts, tool grants, control flow,
   and stopping rules.
-- **Generation:** sample and mutate loop programs from the run seed.
+- **Generation:** sample and mutate loop programs from the search seed.
 - **Evaluation:** run the loop against a suite of research tasks and score the
   outcome by a rubric over result quality, step count, and cost. The committed
   artifact is the transcript digest and the score.
@@ -45,7 +45,7 @@ CUDA and Triton kernels evolved against correctness and runtime.
   attention variant, a reduction.
 - **Spec:** the kernel source, or a parameterized schedule over tiling,
   unrolling, and memory layout.
-- **Generation:** sample and mutate schedules or source from the run seed.
+- **Generation:** sample and mutate schedules or source from the search seed.
 - **Evaluation:** compile the kernel, check correctness against a reference,
   and measure runtime. A non-compiling or incorrect kernel fails; a correct
   one is scored by latency under a fixed workload.
@@ -78,7 +78,7 @@ Evolution of cellular automata.
 - **Evaluation:** simulate the rule on seeded initial conditions and score by a
   behavioral metric such as dynamical class, complexity, or reachability.
 - **Fit:** integer arithmetic is bit-exact and deterministic, and evaluation is
-  cheap, so the substrate can search a wide rule space per unit compute.
+  cheap, so the substrate can run a wide rule space per unit compute.
 
 ## `agent_evolution`
 
@@ -88,21 +88,21 @@ Agent scaffolds and prompt programs.
   tool set, and prompt program.
 - **Spec:** the scaffold definition — the graph of steps, the prompts, and the
   tools each step may call.
-- **Generation:** sample, mutate, and recombine scaffolds from the run seed.
+- **Generation:** sample, mutate, and recombine scaffolds from the search seed.
 - **Evaluation:** run the agent over a task suite and score by success rate
   against cost. The committed artifact is the transcript digest and the score.
 - **Fit:** the environment pins the model and tool versions; the seed pins
-  sampling, so a fixed scaffold reproduces its run.
+  sampling, so a fixed scaffold reproduces its result.
 
 ## `neural_architecture_search`
 
-Architecture variants evaluated by proxy training runs.
+Architecture variants evaluated by proxy training evaluations.
 
 - **Searches:** neural network architectures for a fixed learning task.
 - **Spec:** the architecture description — the layers, their connectivity, and
   the hyperparameters that define the graph.
 - **Generation:** seed-derived sampling and mutation of architectures.
-- **Evaluation:** a proxy training run — a short schedule or a learned
+- **Evaluation:** a proxy training evaluation — a short schedule or a learned
   predictor — scores each architecture by a validation metric under a fixed
   compute budget.
 - **Fit:** the environment pins the dataset, framework, and hardware; the seed

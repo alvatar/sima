@@ -15,11 +15,11 @@ use common::{
 use sima_pipeline::{Event, load};
 use sima_store::Store;
 
-/// Spawns `sima run` over `config` with its output discarded — the store
+/// Spawns `sima search` over `config` with its output discarded — the store
 /// and the process table carry the assertions.
 fn spawn_run(config: &Path) -> Child {
     sima_command()
-        .args(["run", config.to_str().expect("utf-8 path")])
+        .args(["search", config.to_str().expect("utf-8 path")])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
@@ -28,17 +28,17 @@ fn spawn_run(config: &Path) -> Child {
 
 /// `attempt_timeout` is enforced end to end: a sleeping task is preempted at
 /// the deadline — the journal records `LeaseExpired` before the retry — and
-/// exhausting the attempts fails the run with the definitive-failure exit
+/// exhausting the attempts fails the search with the definitive-failure exit
 /// code.
 #[test]
-fn preemption_kills_an_overrunning_attempt_and_exhausts_the_run() {
+fn preemption_kills_an_overrunning_attempt_and_exhausts_the_search() {
     let dir = tempfile::tempdir().expect("temp dir");
     let text = r#"
-        [run]
+        [search]
         root_seed = 11
         format = "stub.v1"
 
-        [run.generator]
+        [search.generator]
         id = "stub.v1"
         behaviors = ["sleep:60000"]
 
@@ -52,13 +52,13 @@ fn preemption_kills_an_overrunning_attempt_and_exhausts_the_run() {
     "#;
     let config = common::write_config_text(dir.path(), "preempt.toml", text);
 
-    let status = spawn_run(&config).wait().expect("wait for the run");
+    let status = spawn_run(&config).wait().expect("wait for the search");
     assert_eq!(status.code(), Some(2), "a definitive failure exits 2");
 
     let events = journal_events(&config);
     let count = |probe: fn(&Event) -> bool| events.iter().filter(|e| probe(e)).count();
     // Both attempts expired and failed transiently; the first was retried,
-    // the second exhausted the cap; nothing committed and the run failed.
+    // the second exhausted the cap; nothing committed and the search failed.
     assert_eq!(
         count(|e| matches!(e, Event::LeaseExpired { .. })),
         2,
@@ -68,8 +68,8 @@ fn preemption_kills_an_overrunning_attempt_and_exhausts_the_run() {
     assert_eq!(count(|e| matches!(e, Event::Retried { .. })), 1);
     assert_eq!(count(|e| matches!(e, Event::Committed { .. })), 0);
     assert!(
-        matches!(events.last(), Some(Event::RunFailed { .. })),
-        "the journal closes with run_failed: {events:?}"
+        matches!(events.last(), Some(Event::SearchFailed { .. })),
+        "the journal closes with search_failed: {events:?}"
     );
     // The expiry precedes the retry, per the journal's lifecycle order.
     let expired = events
@@ -95,16 +95,16 @@ fn leased(config: &Path) -> usize {
 }
 
 /// A `sima.toml` whose sleeps keep workers busy long enough for the process
-/// table to be inspected mid-run. `workers` is operational, never identity:
-/// a reference run matches whatever count its counterpart used.
+/// table to be inspected mid-search. `workers` is operational, never identity:
+/// a reference search matches whatever count its counterpart used.
 fn write_sleep_config(dir: &Path, name: &str, store: &str, sleep_ms: u64, workers: u32) -> PathBuf {
     let text = format!(
         r#"
-        [run]
+        [search]
         root_seed = 11
         format = "stub.v1"
 
-        [run.generator]
+        [search.generator]
         id = "stub.v1"
         behaviors = ["sleep:{sleep_ms}", "sleep:{sleep_ms}"]
 
@@ -119,18 +119,21 @@ fn write_sleep_config(dir: &Path, name: &str, store: &str, sleep_ms: u64, worker
     common::write_config_text(dir, name, &text)
 }
 
-/// A worker SIGKILLed from outside mid-run converges: the run retries the
+/// A worker SIGKILLed from outside mid-search converges: the search retries the
 /// lost attempt on a replacement child, finalizes, and its manifest equals
-/// an undisturbed reference run's.
+/// an undisturbed reference search's.
 #[test]
 fn an_externally_killed_worker_converges_to_the_reference_manifest() {
     let dir = tempfile::tempdir().expect("temp dir");
 
-    // The sleep duration is identity-bearing, so the reference run shares it
+    // The sleep duration is identity-bearing, so the reference search shares it
     // exactly; it is long enough that the kill below lands mid-attempt.
     let reference = write_sleep_config(dir.path(), "reference.toml", "./store-ref", 2000, 1);
     assert_eq!(
-        spawn_run(&reference).wait().expect("reference run").code(),
+        spawn_run(&reference)
+            .wait()
+            .expect("reference search")
+            .code(),
         Some(0)
     );
     let reference = manifest_of(&reference).expect("reference manifest");
@@ -138,14 +141,14 @@ fn an_externally_killed_worker_converges_to_the_reference_manifest() {
     // One worker, so the child in the process table IS the leased child. With
     // two, the pid picked below could be the sibling still inside its
     // handshake — a child dying there is a spawn failure, which faults the
-    // run: an infrastructure fault, not this test's path.
+    // search: an infrastructure fault, not this test's path.
     let config = write_sleep_config(dir.path(), "killed.toml", "./store-killed", 2000, 1);
-    let mut run = spawn_run(&config);
+    let mut search = spawn_run(&config);
     // Wait for the worker child, then for an assignment to land — a `Leased`
     // event in the journal — so the SIGKILL lands inside the attempt.
     assert!(
         poll_until(Duration::from_secs(30), || {
-            !worker_processes(run.id()).is_empty()
+            !worker_processes(search.id()).is_empty()
         }),
         "no worker child appeared"
     );
@@ -153,17 +156,21 @@ fn an_externally_killed_worker_converges_to_the_reference_manifest() {
         poll_until(Duration::from_secs(30), || leased(&config) >= 1),
         "no assignment was leased"
     );
-    let victim = *worker_processes(run.id())
+    let victim = *worker_processes(search.id())
         .first()
         .expect("a live worker child");
-    // Safety: victim is a live child of the run process just read from the
+    // Safety: victim is a live child of the search process just read from the
     // process table; SIGKILL to it has no memory-safety conditions.
     unsafe {
         libc::kill(victim as i32, libc::SIGKILL);
     }
 
-    let status = run.wait().expect("wait for the run");
-    assert_eq!(status.code(), Some(0), "the run survives the worker death");
+    let status = search.wait().expect("wait for the search");
+    assert_eq!(
+        status.code(),
+        Some(0),
+        "the search survives the worker death"
+    );
     assert_eq!(
         manifest_of(&config).as_ref(),
         Some(&reference),
@@ -182,33 +189,36 @@ fn an_externally_killed_worker_converges_to_the_reference_manifest() {
     );
 }
 
-/// No worker outlives its parent: with the orchestrator SIGKILLed mid-run,
+/// No worker outlives its parent: with the orchestrator SIGKILLed mid-search,
 /// every `sima-worker` child exits within a deadline, the kernel has
-/// released the run lock, and a resumed run converges to the reference
+/// released the search lock, and a resumed search converges to the reference
 /// manifest.
 #[test]
-fn workers_die_with_their_parent_and_the_run_resumes() {
+fn workers_die_with_their_parent_and_the_search_resumes() {
     let dir = tempfile::tempdir().expect("temp dir");
 
     // Sleeps far longer than the orphan deadline below, so a child that
     // survives its parent is caught: a sleeping executor never reads stdin,
     // so the end-of-stream fallback alone would only exit the child after
     // its sleep completes — well past the deadline. The duration is
-    // identity-bearing, so the reference run shares it exactly.
+    // identity-bearing, so the reference search shares it exactly.
     const SLEEP_MS: u64 = 6_000;
 
     let reference = write_sleep_config(dir.path(), "reference.toml", "./store-ref", SLEEP_MS, 2);
     assert_eq!(
-        spawn_run(&reference).wait().expect("reference run").code(),
+        spawn_run(&reference)
+            .wait()
+            .expect("reference search")
+            .code(),
         Some(0)
     );
     let reference = manifest_of(&reference).expect("reference manifest");
 
     let config = write_sleep_config(dir.path(), "orphaned.toml", "./store-orphaned", SLEEP_MS, 2);
-    let mut run = spawn_run(&config);
+    let mut search = spawn_run(&config);
     assert!(
         poll_until(Duration::from_secs(30), || {
-            worker_processes(run.id()).len() == 2
+            worker_processes(search.id()).len() == 2
         }),
         "both worker children appear"
     );
@@ -219,9 +229,9 @@ fn workers_die_with_their_parent_and_the_run_resumes() {
         poll_until(Duration::from_secs(30), || leased(&config) >= 2),
         "both assignments lease"
     );
-    let workers = worker_processes(run.id());
-    run.kill().expect("SIGKILL the orchestrator");
-    run.wait().expect("reap the orchestrator");
+    let workers = worker_processes(search.id());
+    search.kill().expect("SIGKILL the orchestrator");
+    search.wait().expect("reap the orchestrator");
 
     // PR_SET_PDEATHSIG delivers SIGKILL to each child with the parent's
     // death; the deadline is generous slack for the reaper, far below the
@@ -238,15 +248,15 @@ fn workers_die_with_their_parent_and_the_run_resumes() {
     let store = Store::open(&loaded.store).expect("open store");
     drop(
         store
-            .acquire_run_lock(&loaded.run.id())
+            .acquire_search_lock(&loaded.search.id())
             .expect("the lock is free after the death"),
     );
 
-    // Resume converges. The resumed run re-executes the abandoned sleeps —
+    // Resume converges. The resumed search re-executes the abandoned sleeps —
     // they are identity-bearing, so this wait is the tasks' own duration,
     // not a correctness assumption.
-    let status = spawn_run(&config).wait().expect("resumed run");
-    assert_eq!(status.code(), Some(0), "the resumed run finalizes");
+    let status = spawn_run(&config).wait().expect("resumed search");
+    assert_eq!(status.code(), Some(0), "the resumed search finalizes");
     assert_eq!(
         manifest_of(&config).as_ref(),
         Some(&reference),
@@ -262,11 +272,11 @@ fn worker_count_never_reaches_the_manifest() {
     let write = |name: &str, store: &str, workers: u32| {
         let text = format!(
             r#"
-            [run]
+            [search]
             root_seed = 11
             format = "stub.v1"
 
-            [run.generator]
+            [search.generator]
             id = "stub.v1"
             behaviors = ["succeed", "flaky:1", "succeed", "succeed"]
 
@@ -283,8 +293,8 @@ fn worker_count_never_reaches_the_manifest() {
     let single = write("single.toml", "./store-single", 1);
     let many = write("many.toml", "./store-many", 4);
 
-    assert_eq!(spawn_run(&single).wait().expect("run").code(), Some(0));
-    assert_eq!(spawn_run(&many).wait().expect("run").code(), Some(0));
+    assert_eq!(spawn_run(&single).wait().expect("search").code(), Some(0));
+    assert_eq!(spawn_run(&many).wait().expect("search").code(), Some(0));
     assert_eq!(
         manifest_of(&single).expect("single-worker manifest"),
         manifest_of(&many).expect("four-worker manifest"),

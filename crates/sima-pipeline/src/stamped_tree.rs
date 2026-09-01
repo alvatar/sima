@@ -30,7 +30,7 @@
 //! it; it is written last and atomically, so a stamp is only ever read beside
 //! the tree it names. The lock is blocking and lives on the open file
 //! description, so a crashed builder's is released by the kernel and no
-//! staleness protocol exists — the rule the store's run lock follows.
+//! staleness protocol exists — the rule the store's search lock follows.
 //!
 //! What "complete" means is the caller's: a program tree is complete when its
 //! entry point is executable, and the SDK's when the package is importable. The

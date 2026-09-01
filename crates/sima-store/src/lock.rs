@@ -1,9 +1,9 @@
-//! The store's advisory file locks: [`RunLock`], the per-run orchestrator
+//! The store's advisory file locks: [`SearchLock`], the per-search orchestrator
 //! lock, and [`take_file_lock`], the primitive every store lock is built
 //! from — the maintenance lock over `packs/` included.
 //!
-//! One orchestrator drives a run at a time. The lock is the OS's advisory
-//! file lock on the run's `orchestrator.lock` file, so the kernel releases
+//! One orchestrator drives a search at a time. The lock is the OS's advisory
+//! file lock on the search's `orchestrator.lock` file, so the kernel releases
 //! it the instant the holder exits — cleanly, by SIGKILL, or by power loss
 //! on the machine's next boot — and no staleness protocol exists. The
 //! file's content (pid and hostname) is diagnostic only: it names the
@@ -14,7 +14,7 @@ use std::io::{Read, Write};
 use std::path::Path;
 
 use sima_core::{Error, Result};
-use sima_model::RunId;
+use sima_model::SearchId;
 
 use crate::atomic::{self, io_error};
 use crate::layout;
@@ -51,28 +51,28 @@ pub(crate) fn take_file_lock(path: &Path, contended: impl Fn(&str) -> Error) -> 
     }
 }
 
-/// Exclusive right to drive a run: holds the OS lock on the run's
+/// Exclusive right to drive a search: holds the OS lock on the search's
 /// `orchestrator.lock` file. The kernel releases it when the holder
 /// exits, however it exits. Unlocks on drop.
 ///
-/// The lock names the run it was taken for, so a reference to it is a
-/// capability: holding one proves that run's lock is held, which is what
-/// every liveness probe against that run reads.
-pub struct RunLock {
-    /// The run this lock covers.
-    run: RunId,
+/// The lock names the search it was taken for, so a reference to it is a
+/// capability: holding one proves that search's lock is held, which is what
+/// every liveness probe against that search reads.
+pub struct SearchLock {
+    /// The search this lock covers.
+    search: SearchId,
     /// The locked file, unlocked on drop.
     file: File,
 }
 
-impl RunLock {
-    /// The run this lock covers.
-    pub fn run(&self) -> &RunId {
-        &self.run
+impl SearchLock {
+    /// The search this lock covers.
+    pub fn search(&self) -> &SearchId {
+        &self.search
     }
 }
 
-impl Drop for RunLock {
+impl Drop for SearchLock {
     /// Frees the lock the moment the guard goes, by unlocking it.
     ///
     /// The OS lock lives on the open file description, and closing frees it
@@ -81,7 +81,7 @@ impl Drop for RunLock {
     /// close-on-exec clears the copies at exec, so a worker spawned while
     /// this lock is held shares its description for as long as the fork takes
     /// to reach exec. Unlocking names the lock itself, so the release is
-    /// immediate and a run resumed in that window finds the lock free.
+    /// immediate and a search resumed in that window finds the lock free.
     fn drop(&mut self) {
         // Nothing actionable remains if the release fails: the descriptor
         // closes next, and process exit releases the lock regardless.
@@ -90,28 +90,31 @@ impl Drop for RunLock {
 }
 
 impl Store {
-    /// Takes the run's orchestrator lock, creating the run directory if
+    /// Takes the search's orchestrator lock, creating the search directory if
     /// missing. A lock already held is [`Error::Validation`] naming the
     /// holder recorded in the file (pid, hostname).
-    pub fn acquire_run_lock(&self, run: &RunId) -> Result<RunLock> {
-        atomic::create_dir_durable(&layout::run_dir(self.root(), run))?;
-        let file = take_file_lock(&layout::lock_path(self.root(), run), |holder| {
+    pub fn acquire_search_lock(&self, search: &SearchId) -> Result<SearchLock> {
+        atomic::create_dir_durable(&layout::search_dir(self.root(), search))?;
+        let file = take_file_lock(&layout::lock_path(self.root(), search), |holder| {
             // Contended: name the holder the lock owner recorded.
             Error::Validation(format!(
-                "run {run} is already locked by another orchestrator: {holder}"
+                "search {search} is already locked by another orchestrator: {holder}"
             ))
         })?;
-        Ok(RunLock { run: *run, file })
+        Ok(SearchLock {
+            search: *search,
+            file,
+        })
     }
 
-    /// Reports who holds `run`'s orchestrator lock: `Some` with the holder
+    /// Reports who holds `search`'s orchestrator lock: `Some` with the holder
     /// line the locker recorded (pid, hostname) while another process holds
-    /// it, `None` while it is free. A missing run directory or lock file is
+    /// it, `None` while it is free. A missing search directory or lock file is
     /// a free lock. The probe never creates a file or directory — the lock
     /// file is opened without create — and a lock the probe itself acquires
     /// (proving it free) is released immediately when the handle drops.
-    pub fn lock_holder(&self, run: &RunId) -> Result<Option<String>> {
-        let path = layout::lock_path(self.root(), run);
+    pub fn lock_holder(&self, search: &SearchId) -> Result<Option<String>> {
+        let path = layout::lock_path(self.root(), search);
         let mut file = match OpenOptions::new().read(true).open(&path) {
             Ok(file) => file,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -120,7 +123,7 @@ impl Store {
         match file.try_lock() {
             Ok(()) => {
                 // Free, which taking it just proved. Release it explicitly,
-                // for the reason [`RunLock`]'s drop does: closing would leave
+                // for the reason [`SearchLock`]'s drop does: closing would leave
                 // the probe's own lock standing for as long as a concurrent
                 // spawn's copy of this description lives, so a probe could
                 // lock out the orchestrator it was only asking about.
@@ -154,23 +157,23 @@ mod tests {
 
     use super::*;
 
-    /// A fresh store and a run id to lock; the run's directory does not
+    /// A fresh store and a search id to lock; the search's directory does not
     /// exist yet, so acquisition also covers its creation.
-    fn store_and_run() -> (tempfile::TempDir, Store, RunId) {
+    fn store_and_search() -> (tempfile::TempDir, Store, SearchId) {
         let dir = tempfile::tempdir().expect("temp dir");
         let store = Store::open(dir.path()).expect("open store");
-        let run = RunId::from_hash(hash_bytes(b"a run to lock"));
-        (dir, store, run)
+        let search = SearchId::from_hash(hash_bytes(b"a search to lock"));
+        (dir, store, search)
     }
 
     #[test]
     fn acquire_records_the_holder_in_the_lock_file() -> Result<()> {
-        let (dir, store, run) = store_and_run();
-        let _lock = store.acquire_run_lock(&run)?;
+        let (dir, store, search) = store_and_search();
+        let _lock = store.acquire_search_lock(&search)?;
         let content = fs::read_to_string(
             dir.path()
-                .join("runs")
-                .join(run.to_string())
+                .join("searches")
+                .join(search.to_string())
                 .join("orchestrator.lock"),
         )
         .expect("read lock file");
@@ -181,20 +184,20 @@ mod tests {
     }
 
     #[test]
-    fn a_lock_names_the_run_it_covers() -> Result<()> {
-        let (_dir, store, run) = store_and_run();
-        let lock = store.acquire_run_lock(&run)?;
-        // A reference to the lock stands for that run's liveness, so the
-        // run it covers is readable from it.
-        assert_eq!(lock.run(), &run);
+    fn a_lock_names_the_search_it_covers() -> Result<()> {
+        let (_dir, store, search) = store_and_search();
+        let lock = store.acquire_search_lock(&search)?;
+        // A reference to the lock stands for that search's liveness, so the
+        // search it covers is readable from it.
+        assert_eq!(lock.search(), &search);
         Ok(())
     }
 
     #[test]
     fn a_held_lock_is_validation_naming_the_holder() -> Result<()> {
-        let (_dir, store, run) = store_and_run();
-        let _lock = store.acquire_run_lock(&run)?;
-        match store.acquire_run_lock(&run) {
+        let (_dir, store, search) = store_and_search();
+        let _lock = store.acquire_search_lock(&search)?;
+        match store.acquire_search_lock(&search) {
             Err(Error::Validation(msg)) => {
                 let pid = std::process::id().to_string();
                 assert!(msg.contains(&pid), "the error names the holder: {msg}");
@@ -207,17 +210,17 @@ mod tests {
 
     #[test]
     fn dropping_the_lock_releases_it() -> Result<()> {
-        let (_dir, store, run) = store_and_run();
-        drop(store.acquire_run_lock(&run)?);
+        let (_dir, store, search) = store_and_search();
+        drop(store.acquire_search_lock(&search)?);
         // Released on drop: the second acquisition succeeds.
-        store.acquire_run_lock(&run)?;
+        store.acquire_search_lock(&search)?;
         Ok(())
     }
 
     #[test]
     fn dropping_the_lock_releases_it_while_a_copy_of_its_descriptor_lives() -> Result<()> {
-        let (_dir, store, run) = store_and_run();
-        let lock = store.acquire_run_lock(&run)?;
+        let (_dir, store, search) = store_and_search();
+        let lock = store.acquire_search_lock(&search)?;
         // What spawning a worker does to this descriptor: the fork hands the
         // child a copy of every one of the parent's, and close-on-exec closes
         // them at exec rather than at fork, so any concurrent spawn shares
@@ -226,67 +229,72 @@ mod tests {
         // itself, so it cannot wait on an unrelated child reaching exec.
         let copy = lock.file.try_clone().expect("copy the lock's descriptor");
         drop(lock);
-        store.acquire_run_lock(&run)?;
+        store.acquire_search_lock(&search)?;
         drop(copy);
         Ok(())
     }
 
     #[test]
     fn lock_holder_names_the_holder_while_held_and_clears_on_release() -> Result<()> {
-        let (_dir, store, run) = store_and_run();
-        let lock = store.acquire_run_lock(&run)?;
-        let holder = store.lock_holder(&run)?.expect("a holder while locked");
+        let (_dir, store, search) = store_and_search();
+        let lock = store.acquire_search_lock(&search)?;
+        let holder = store.lock_holder(&search)?.expect("a holder while locked");
         // The probe returns the recorded diagnostic line: pid, then hostname.
         let pid = std::process::id().to_string();
         assert_eq!(holder.split_whitespace().next(), Some(pid.as_str()));
         drop(lock);
-        assert_eq!(store.lock_holder(&run)?, None);
+        assert_eq!(store.lock_holder(&search)?, None);
         Ok(())
     }
 
     #[test]
-    fn lock_holder_probes_a_missing_run_without_creating_anything() -> Result<()> {
-        let (dir, store, run) = store_and_run();
-        assert_eq!(store.lock_holder(&run)?, None);
-        // The probe is read-only: no run directory appeared.
-        assert!(!dir.path().join("runs").join(run.to_string()).exists());
+    fn lock_holder_probes_a_missing_search_without_creating_anything() -> Result<()> {
+        let (dir, store, search) = store_and_search();
+        assert_eq!(store.lock_holder(&search)?, None);
+        // The probe is read-only: no search directory appeared.
+        assert!(
+            !dir.path()
+                .join("searches")
+                .join(search.to_string())
+                .exists()
+        );
         Ok(())
     }
 
     #[test]
-    fn lock_holder_on_a_run_without_a_lock_file_creates_none() -> Result<()> {
-        let (dir, store, run) = store_and_run();
-        let run_dir = dir.path().join("runs").join(run.to_string());
-        fs::create_dir_all(&run_dir).expect("create run dir");
-        assert_eq!(store.lock_holder(&run)?, None);
+    fn lock_holder_on_a_search_without_a_lock_file_creates_none() -> Result<()> {
+        let (dir, store, search) = store_and_search();
+        let search_dir = dir.path().join("searches").join(search.to_string());
+        fs::create_dir_all(&search_dir).expect("create search dir");
+        assert_eq!(store.lock_holder(&search)?, None);
         // The probe opened without create: still no lock file.
-        assert!(!run_dir.join("orchestrator.lock").exists());
+        assert!(!search_dir.join("orchestrator.lock").exists());
         Ok(())
     }
 
     #[test]
     fn lock_holder_is_none_on_a_released_lock_file() -> Result<()> {
-        let (dir, store, run) = store_and_run();
+        let (dir, store, search) = store_and_search();
         // A lock file left by an exited holder: the OS released the lock
         // with the process, so the stale content names nobody alive.
-        let run_dir = dir.path().join("runs").join(run.to_string());
-        fs::create_dir_all(&run_dir).expect("create run dir");
-        fs::write(run_dir.join("orchestrator.lock"), b"999999 elsewhere\n")
+        let search_dir = dir.path().join("searches").join(search.to_string());
+        fs::create_dir_all(&search_dir).expect("create search dir");
+        fs::write(search_dir.join("orchestrator.lock"), b"999999 elsewhere\n")
             .expect("pre-create lock file");
-        assert_eq!(store.lock_holder(&run)?, None);
+        assert_eq!(store.lock_holder(&search)?, None);
         Ok(())
     }
 
     #[test]
     fn a_leftover_lock_file_without_a_holder_acquires_fine() -> Result<()> {
-        let (dir, store, run) = store_and_run();
+        let (dir, store, search) = store_and_search();
         // A plain file left by a dead holder: the OS released its lock
         // with the process, so the content is stale and irrelevant.
-        let run_dir = dir.path().join("runs").join(run.to_string());
-        fs::create_dir_all(&run_dir).expect("create run dir");
-        fs::write(run_dir.join("orchestrator.lock"), b"999999 elsewhere\n")
+        let search_dir = dir.path().join("searches").join(search.to_string());
+        fs::create_dir_all(&search_dir).expect("create search dir");
+        fs::write(search_dir.join("orchestrator.lock"), b"999999 elsewhere\n")
             .expect("pre-create lock file");
-        let _lock = store.acquire_run_lock(&run)?;
+        let _lock = store.acquire_search_lock(&search)?;
         Ok(())
     }
 }

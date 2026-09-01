@@ -21,8 +21,8 @@ pub const SYNC_PROTOCOL_VERSION: u32 = 2;
 /// under 400 KiB — nearly three orders of magnitude below the frame cap, which
 /// makes the bound obviously safe rather than tuned against it. The whole
 /// inventory travels as a sequence of these, so what the cap bounds is one
-/// frame rather than the size of a run, and an inventory of any size syncs. In
-/// one frame the cap would stop a run of about 1.3M tasks from syncing at all.
+/// frame rather than the size of a search, and an inventory of any size syncs. In
+/// one frame the cap would stop a search of about 1.3M tasks from syncing at all.
 pub(crate) const INVENTORY_CHUNK: usize = 4096;
 
 const TAG_HELLO: u8 = 0;
@@ -40,7 +40,7 @@ pub(crate) enum SyncMessage {
         /// The sender's [`SYNC_PROTOCOL_VERSION`]; the peer refuses a mismatch.
         protocol: u32,
     },
-    /// One chunk of the inventory a side holds within the run's task set: some
+    /// One chunk of the inventory a side holds within the search's task set: some
     /// of the records it holds as `(key, record digest)` pairs, and some of the
     /// objects those records reference. The record digests let the peer detect
     /// divergence — a key held on both sides under different bytes.
@@ -195,7 +195,7 @@ impl SyncMessage {
     }
 }
 
-/// Reads a `u64`-counted run of `(task key, record digest)` pairs. The count
+/// Reads a `u64`-counted search of `(task key, record digest)` pairs. The count
 /// is untrusted, so pairs accumulate without preallocation: each reads two
 /// digests, so a lying count fails on truncation before any oversized buffer.
 fn decode_record_pairs(dec: &mut Dec<'_>) -> Result<Vec<(TaskKey, Hash)>> {
@@ -209,7 +209,7 @@ fn decode_record_pairs(dec: &mut Dec<'_>) -> Result<Vec<(TaskKey, Hash)>> {
     Ok(pairs)
 }
 
-/// Reads a `u64`-counted run of task keys, without preallocating from the
+/// Reads a `u64`-counted search of task keys, without preallocating from the
 /// untrusted count.
 fn decode_keys(dec: &mut Dec<'_>) -> Result<Vec<TaskKey>> {
     let count = dec.u64()?;
@@ -220,7 +220,7 @@ fn decode_keys(dec: &mut Dec<'_>) -> Result<Vec<TaskKey>> {
     Ok(keys)
 }
 
-/// Reads a `u64`-counted run of digests, without preallocating from the
+/// Reads a `u64`-counted search of digests, without preallocating from the
 /// untrusted count.
 fn decode_hashes(dec: &mut Dec<'_>) -> Result<Vec<Hash>> {
     let count = dec.u64()?;

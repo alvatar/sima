@@ -1,4 +1,4 @@
-//! End-to-end acceptance of a migrated run whose format is served by a program
+//! End-to-end acceptance of a migrated search whose format is served by a program
 //! of its own: the program travels to the destination as objects, installs
 //! itself there, runs the search, and the results come home.
 //!
@@ -10,20 +10,20 @@
 //!
 //! What each test fixes:
 //!
-//! - the run executes on the destination and finalizes to the manifest an
-//!   uninterrupted local run writes, over the same run id and the same keys;
+//! - the search executes on the destination and finalizes to the manifest an
+//!   uninterrupted local search writes, over the same search id and the same keys;
 //! - both payload shapes travel — a single file that is its own entry point,
 //!   and a directory whose install script builds one;
 //! - the destination installs once and the stamp answers every later load;
-//! - a changed payload reaches the destination, and the far run's own binding
+//! - a changed payload reaches the destination, and the far search's own binding
 //!   guard stops it until the invocation accepts the change;
-//! - an interrupt winds the far run down and brings home what its program
+//! - an interrupt winds the far search down and brings home what its program
 //!   computed;
 //! - a program written against the SDK finds it on the destination, vended
 //!   there by that machine's own binary;
 //! - an install that fails states its own last words to the operator who asked
 //!   for the migration;
-//! - a run whose format this workspace carries no code for migrates onto a
+//! - a search whose format this workspace carries no code for migrates onto a
 //!   rented destination and finalizes there, its workers derived from the
 //!   program's own enumeration.
 
@@ -37,29 +37,29 @@ use common::{example_binary, manifest_bytes, worker_binary};
 use sima_core::Result;
 use sima_model::{TaskKey, TaskRecord};
 use sima_pipeline::{
-    BinaryChange, Engagement, MigrateOutcome, Record, RunControl, RunOutcome, load, migrate,
+    BinaryChange, Engagement, MigrateOutcome, Record, SearchControl, SearchOutcome, load, migrate,
     orchestrate, task_keys,
 };
 use sima_store::Store;
 
-/// The segment count a run finishes in: short enough that a whole run is a
+/// The segment count a search finishes in: short enough that a whole search is a
 /// fraction of a second.
 const SEGMENTS: u64 = 4;
 
-/// The run every test here drives: two candidates over accumulating chains,
+/// The search every test here drives: two candidates over accumulating chains,
 /// answered by a program rather than by this build.
 ///
-/// `[run]` is the only hashed section, so every config written from it
-/// describes one run whatever machine drives it and whatever serves its format.
-fn run_section() -> String {
+/// `[search]` is the only hashed section, so every config written from it
+/// describes one search whatever machine drives it and whatever serves its format.
+fn search_section() -> String {
     format!(
         r#"
-        [run]
+        [search]
         root_seed = 21
         segments = {SEGMENTS}
         format = "stub.v1"
 
-        [run.generator]
+        [search.generator]
         id = "stub.v1"
         behaviors = ["accumulate:2", "accumulate:2"]
 
@@ -161,7 +161,7 @@ enum Shape {
 ///
 /// `marker` goes into the wrapper, so two calls differing only in it produce
 /// two payloads and two digests. `installs` is a path the directory form's
-/// script appends to on every run, which is how the stamp is observed.
+/// script appends to on every search, which is how the stamp is observed.
 fn program(dir: &Path, shape: Shape, marker: &str, installs: &Path) -> String {
     match shape {
         Shape::File => {
@@ -199,20 +199,23 @@ fn migrating(dir: &Path, root: &Path, entry: &str) -> PathBuf {
             "{}\n[orchestrator]\nworkers = 2\nmigrate = \"far\"\n\
              \n[host.far]\nprovider = \"stub\"\nroot = {root:?}\nbinary = {binary:?}\n\
              ready_timeout_ms = 30000\nready_poll_ms = 20\n\n{entry}",
-            run_section(),
+            search_section(),
             root = root.to_string_lossy(),
             binary = far_binary(),
         ),
     )
 }
 
-/// A config under `dir` that drives the same run here, its format served by
+/// A config under `dir` that drives the same search here, its format served by
 /// the program `entry` declares. It names no destination, so nothing moves.
 fn local(dir: &Path, entry: &str) -> PathBuf {
     write(
         dir,
         "local.toml",
-        &format!("{}\n[orchestrator]\nworkers = 2\n\n{entry}", run_section()),
+        &format!(
+            "{}\n[orchestrator]\nworkers = 2\n\n{entry}",
+            search_section()
+        ),
     )
 }
 
@@ -222,18 +225,18 @@ fn write(dir: &Path, name: &str, text: &str) -> PathBuf {
     common::write_config_text(dir, name, text)
 }
 
-/// Drives the run `config` describes to its end, here.
-fn drive(config: &Path) -> Result<RunOutcome> {
+/// Drives the search `config` describes to its end, here.
+fn drive(config: &Path) -> Result<SearchOutcome> {
     drive_stopping(config, None)
 }
 
-/// Drives the run `config` describes, interrupting once `stop_after` tasks
+/// Drives the search `config` describes, interrupting once `stop_after` tasks
 /// have committed; `None` runs it to its end.
-fn drive_stopping(config: &Path, stop_after: Option<usize>) -> Result<RunOutcome> {
+fn drive_stopping(config: &Path, stop_after: Option<usize>) -> Result<SearchOutcome> {
     let loaded = load(config)?;
     let interrupt = AtomicBool::new(false);
     let committed = std::sync::atomic::AtomicUsize::new(0);
-    let control = RunControl {
+    let control = SearchControl {
         observer: &|record: &Record| {
             if let Some(stop_after) = stop_after
                 && matches!(record.event, sima_pipeline::Event::Committed { .. })
@@ -253,8 +256,8 @@ fn drive_stopping(config: &Path, stop_after: Option<usize>) -> Result<RunOutcome
     )
 }
 
-/// Moves the run `config` describes onto its destination.
-fn move_run(config: &Path, accept: BinaryChange) -> Result<MigrateOutcome> {
+/// Moves the search `config` describes onto its destination.
+fn move_search(config: &Path, accept: BinaryChange) -> Result<MigrateOutcome> {
     let loaded = load(config)?;
     migrate(
         config,
@@ -265,7 +268,7 @@ fn move_run(config: &Path, accept: BinaryChange) -> Result<MigrateOutcome> {
     )
 }
 
-/// Every record the store of the run `config` describes currently holds.
+/// Every record the store of the search `config` describes currently holds.
 fn committed_records(config: &Path) -> Result<BTreeMap<TaskKey, TaskRecord>> {
     let loaded = load(config)?;
     let store = Store::open(&loaded.store)?;
@@ -278,9 +281,15 @@ fn committed_records(config: &Path) -> Result<BTreeMap<TaskKey, TaskRecord>> {
     Ok(records)
 }
 
-/// The run directory the far side keeps for the run `config` describes.
+/// The search directory the far side keeps for the search `config` describes.
 fn far_dir(config: &Path, root: &Path) -> PathBuf {
-    root.join(load(config).expect("the config loads").run.id().to_string())
+    root.join(
+        load(config)
+            .expect("the config loads")
+            .search
+            .id()
+            .to_string(),
+    )
 }
 
 /// The program digests the far side's journal records, in the order its
@@ -289,7 +298,7 @@ fn far_bindings(config: &Path, root: &Path) -> Vec<String> {
     let loaded = load(config).expect("the config loads");
     let store = Store::open(far_dir(config, root).join("store")).expect("open the far store");
     store
-        .journal(&loaded.run.id())
+        .journal(&loaded.search.id())
         .expect("read the far journal")
         .iter()
         .filter_map(|line| Record::from_line(line).ok())
@@ -306,7 +315,7 @@ fn far_worker_programs(config: &Path, root: &Path) -> Vec<Option<String>> {
     let loaded = load(config).expect("the config loads");
     let store = Store::open(far_dir(config, root).join("store")).expect("open the far store");
     store
-        .journal(&loaded.run.id())
+        .journal(&loaded.search.id())
         .expect("read the far journal")
         .iter()
         .filter_map(|line| Record::from_line(line).ok())
@@ -336,7 +345,7 @@ fn installs(path: &Path) -> usize {
 }
 
 #[test]
-fn a_program_served_run_executes_on_its_destination_and_comes_home_complete() -> Result<()> {
+fn a_program_served_search_executes_on_its_destination_and_comes_home_complete() -> Result<()> {
     // The milestone in one test: the program travels as objects, installs
     // itself on the destination, runs the search there, and the store that
     // comes home is byte-identical to one this machine produced alone.
@@ -349,29 +358,32 @@ fn a_program_served_run_executes_on_its_destination_and_comes_home_complete() ->
     let reference_dir = dir.path().join("reference");
     let reference_entry = program(&reference_dir, Shape::Directory, "one", &installs_at);
     let reference = local(&reference_dir, &reference_entry);
-    assert!(matches!(drive(&reference)?, RunOutcome::Finalized { .. }));
+    assert!(matches!(
+        drive(&reference)?,
+        SearchOutcome::Finalized { .. }
+    ));
 
-    // The migrated run: the same run, moved before it starts.
+    // The migrated search: the same search, moved before it starts.
     let migrated_dir = dir.path().join("migrated");
     let migrated_entry = program(&migrated_dir, Shape::Directory, "one", &installs_at);
     let migrated = migrating(&migrated_dir, &far_root, &migrated_entry);
     assert_eq!(
-        load(&migrated)?.run.id(),
-        load(&reference)?.run.id(),
-        "where a format is answered from is operational, so it is one run"
+        load(&migrated)?.search.id(),
+        load(&reference)?.search.id(),
+        "where a format is answered from is operational, so it is one search"
     );
 
-    let outcome = move_run(&migrated, BinaryChange::Refuse)?;
+    let outcome = move_search(&migrated, BinaryChange::Refuse)?;
     assert!(
         matches!(outcome, MigrateOutcome::Finalized { .. }),
         "the migration came home complete: {outcome:?}"
     );
 
-    // The far side really did the work: its own store holds the run.
+    // The far side really did the work: its own store holds the search.
     let far = far_dir(&migrated, &far_root);
     assert!(
-        far.join("store/runs").is_dir(),
-        "the destination drove the run in its own store"
+        far.join("store/searches").is_dir(),
+        "the destination drove the search in its own store"
     );
     assert!(
         far.join(".sima/program/stub.v1/installed/program")
@@ -379,12 +391,12 @@ fn a_program_served_run_executes_on_its_destination_and_comes_home_complete() ->
         "and installed the program to do it with"
     );
 
-    // The criterion the milestone carries: byte equality with a run this
+    // The criterion the milestone carries: byte equality with a search this
     // machine drove alone.
     assert_eq!(
-        manifest_bytes(&migrated).expect("the migrated run finalized"),
+        manifest_bytes(&migrated).expect("the migrated search finalized"),
         manifest_bytes(&reference).expect("the reference finalized"),
-        "one run, one manifest, whichever machine computed it"
+        "one search, one manifest, whichever machine computed it"
     );
     assert_eq!(
         committed_records(&migrated)?,
@@ -405,7 +417,7 @@ fn a_single_file_payload_needs_no_install_script_to_travel() -> Result<()> {
     let migrated = migrating(&migrated_dir, &far_root, &entry);
 
     assert!(matches!(
-        move_run(&migrated, BinaryChange::Refuse)?,
+        move_search(&migrated, BinaryChange::Refuse)?,
         MigrateOutcome::Finalized { .. }
     ));
     let far = far_dir(&migrated, &far_root);
@@ -421,8 +433,8 @@ fn a_single_file_payload_needs_no_install_script_to_travel() -> Result<()> {
 }
 
 #[test]
-fn the_run_a_migration_drives_is_the_run_this_machine_would_have_driven() -> Result<()> {
-    // Identity, stated over both halves: the run id and every task key are the
+fn the_search_a_migration_drives_is_the_search_this_machine_would_have_driven() -> Result<()> {
+    // Identity, stated over both halves: the search id and every task key are the
     // same whether the program answers here or on the destination.
     let dir = tempfile::tempdir().expect("temp dir");
     let far_root = dir.path().join("far");
@@ -431,18 +443,18 @@ fn the_run_a_migration_drives_is_the_run_this_machine_would_have_driven() -> Res
     let local_dir = dir.path().join("local");
     let local_entry = program(&local_dir, Shape::Directory, "one", &installs_at);
     let here = local(&local_dir, &local_entry);
-    assert!(matches!(drive(&here)?, RunOutcome::Finalized { .. }));
+    assert!(matches!(drive(&here)?, SearchOutcome::Finalized { .. }));
 
     let migrated_dir = dir.path().join("migrated");
     let migrated_entry = program(&migrated_dir, Shape::Directory, "one", &installs_at);
     let migrated = migrating(&migrated_dir, &far_root, &migrated_entry);
     assert!(matches!(
-        move_run(&migrated, BinaryChange::Refuse)?,
+        move_search(&migrated, BinaryChange::Refuse)?,
         MigrateOutcome::Finalized { .. }
     ));
 
     let (here_loaded, migrated_loaded) = (load(&here)?, load(&migrated)?);
-    assert_eq!(here_loaded.run.id(), migrated_loaded.run.id());
+    assert_eq!(here_loaded.search.id(), migrated_loaded.search.id());
     assert_eq!(
         task_keys(&here_loaded, &Store::open(&here_loaded.store)?)?,
         task_keys(&migrated_loaded, &Store::open(&migrated_loaded.store)?)?,
@@ -462,15 +474,15 @@ fn a_second_migration_of_an_unchanged_payload_installs_nothing() -> Result<()> {
     let migrated = migrating(&migrated_dir, &far_root, &entry);
 
     assert!(matches!(
-        move_run(&migrated, BinaryChange::Refuse)?,
+        move_search(&migrated, BinaryChange::Refuse)?,
         MigrateOutcome::Finalized { .. }
     ));
     assert_eq!(installs(&installs_at), 1, "the destination built it once");
 
-    // The run is complete, so the second migration starts a far run that has
+    // The search is complete, so the second migration starts a far search that has
     // nothing to compute — and nothing to install either.
     assert!(matches!(
-        move_run(&migrated, BinaryChange::Refuse)?,
+        move_search(&migrated, BinaryChange::Refuse)?,
         MigrateOutcome::Finalized { .. }
     ));
     assert_eq!(installs(&installs_at), 1, "and did not build it again");
@@ -480,7 +492,7 @@ fn a_second_migration_of_an_unchanged_payload_installs_nothing() -> Result<()> {
 #[test]
 fn a_changed_payload_reaches_the_destination_and_stops_at_its_binding_guard() -> Result<()> {
     // A payload edit reaches the destination by re-running the config: the new
-    // manifest travels, the destination installs it, and the far run's own
+    // manifest travels, the destination installs it, and the far search's own
     // binding guard is what stops there — its stored results and checkpoints
     // came from the previous build, and only the invocation can say that is
     // acceptable.
@@ -491,20 +503,20 @@ fn a_changed_payload_reaches_the_destination_and_stops_at_its_binding_guard() ->
     let entry = program(&migrated_dir, Shape::Directory, "one", &installs_at);
     let migrated = migrating(&migrated_dir, &far_root, &entry);
     assert!(matches!(
-        move_run(&migrated, BinaryChange::Refuse)?,
+        move_search(&migrated, BinaryChange::Refuse)?,
         MigrateOutcome::Finalized { .. }
     ));
     let first = far_bindings(&migrated, &far_root);
     assert_eq!(first.len(), 1, "the destination bound what it installed");
 
-    // The program is edited here. Its declarations are unchanged, so the run
+    // The program is edited here. Its declarations are unchanged, so the search
     // id and every task key stand; what changed is the build that computes.
     program(&migrated_dir, Shape::Directory, "two", &installs_at);
-    let error = move_run(&migrated, BinaryChange::Refuse)
+    let error = move_search(&migrated, BinaryChange::Refuse)
         .expect_err("the far binding guard refused the changed program");
 
     // The edit travelled and was installed, and the guard refused it — which
-    // this migration reports as its own outcome. The far run died while
+    // this migration reports as its own outcome. The far search died while
     // loading, so the finalization its journal still ends in is the previous
     // migration's and decides nothing here.
     assert_eq!(
@@ -517,21 +529,21 @@ fn a_changed_payload_reaches_the_destination_and_stops_at_its_binding_guard() ->
         reported.contains("--accept-binary"),
         "the refusal is the migration's outcome: {reported}"
     );
-    let refused = std::fs::read_to_string(far_dir(&migrated, &far_root).join("run.log"))
-        .expect("the far run wrote a log");
+    let refused = std::fs::read_to_string(far_dir(&migrated, &far_root).join("search.log"))
+        .expect("the far search wrote a log");
     assert!(
         refused.contains("--accept-binary"),
-        "and the far run's own log is where it came from: {refused}"
+        "and the far search's own log is where it came from: {refused}"
     );
     assert_eq!(
         far_bindings(&migrated, &far_root),
         first,
-        "a refused session binds nothing, so the run still names the build that drove it"
+        "a refused session binds nothing, so the search still names the build that drove it"
     );
 
-    // With the acceptance, the far run binds the new build and drives on.
+    // With the acceptance, the far search binds the new build and drives on.
     assert!(matches!(
-        move_run(&migrated, BinaryChange::Accept)?,
+        move_search(&migrated, BinaryChange::Accept)?,
         MigrateOutcome::Finalized { .. }
     ));
     let accepted = far_bindings(&migrated, &far_root);
@@ -540,16 +552,16 @@ fn a_changed_payload_reaches_the_destination_and_stops_at_its_binding_guard() ->
     assert_eq!(
         installs(&installs_at),
         2,
-        "the stamp answered the accepted run, which installs nothing new"
+        "the stamp answered the accepted search, which installs nothing new"
     );
     Ok(())
 }
 
 #[test]
 fn a_program_served_migration_winds_down_on_its_ceiling_and_brings_home_what_ran() -> Result<()> {
-    // The wind-down over a run the destination had to install a program for:
-    // the far run reaches the wall-clock ceiling its config carried across,
-    // ends itself, and whatever its program computed is pulled — the run comes
+    // The wind-down over a search the destination had to install a program for:
+    // the far search reaches the wall-clock ceiling its config carried across,
+    // ends itself, and whatever its program computed is pulled — the search comes
     // home resumable rather than sealed.
     let dir = tempfile::tempdir().expect("temp dir");
     let far_root = dir.path().join("far");
@@ -564,12 +576,12 @@ fn a_program_served_migration_winds_down_on_its_ceiling_and_brings_home_what_ran
         "paced.toml",
         &format!(
             r#"
-            [run]
+            [search]
             root_seed = 21
             segments = 400
             format = "stub.v1"
 
-            [run.generator]
+            [search.generator]
             id = "stub.v1"
             behaviors = ["accumulate:2:250", "accumulate:2:250"]
 
@@ -602,13 +614,13 @@ fn a_program_served_migration_winds_down_on_its_ceiling_and_brings_home_what_ran
     // frontier and the pull has something of its own to bring home.
     assert!(matches!(
         drive_stopping(&migrated, Some(2))?,
-        RunOutcome::Interrupted { .. }
+        SearchOutcome::Interrupted { .. }
     ));
     let before = committed_records(&migrated)?;
-    assert!(!before.is_empty(), "the local run committed something");
+    assert!(!before.is_empty(), "the local search committed something");
 
     let loaded = load(&migrated)?;
-    let outcome = move_run(&migrated, BinaryChange::Refuse)?;
+    let outcome = move_search(&migrated, BinaryChange::Refuse)?;
     assert!(
         matches!(outcome, MigrateOutcome::Interrupted { .. }),
         "a wound-down migration is resumable, not finalized: {outcome:?}"
@@ -665,7 +677,7 @@ fn a_program_written_against_the_sdk_finds_it_on_the_destination() -> Result<()>
     let migrated = migrating(&migrated_dir, &far_root, &entry);
 
     assert!(matches!(
-        move_run(&migrated, BinaryChange::Refuse)?,
+        move_search(&migrated, BinaryChange::Refuse)?,
         MigrateOutcome::Finalized { .. }
     ));
 
@@ -710,7 +722,7 @@ fn every_far_worker_answers_the_program_the_migration_sent() -> Result<()> {
     // The agreement observed as a recorded fact where it matters: the far side
     // installed the tree the digest names, spawned its workers from it, and
     // each one answered that same digest back — journaled beside the device it
-    // ran on. The spawn is what enforces it, so a run that finalized is a run
+    // ran on. The spawn is what enforces it, so a search that finalized is a search
     // whose every worker agreed.
     let dir = tempfile::tempdir().expect("temp dir");
     let far_root = dir.path().join("far");
@@ -720,7 +732,7 @@ fn every_far_worker_answers_the_program_the_migration_sent() -> Result<()> {
     let migrated = migrating(&migrated_dir, &far_root, &entry);
 
     assert!(matches!(
-        move_run(&migrated, BinaryChange::Refuse)?,
+        move_search(&migrated, BinaryChange::Refuse)?,
         MigrateOutcome::Finalized { .. }
     ));
 
@@ -738,7 +750,7 @@ fn every_far_worker_answers_the_program_the_migration_sent() -> Result<()> {
 }
 
 #[test]
-fn a_local_run_of_a_program_this_machine_holds_binds_no_program_digest() -> Result<()> {
+fn a_local_search_of_a_program_this_machine_holds_binds_no_program_digest() -> Result<()> {
     // The other presence direction, end to end: nothing travelled, so nothing
     // is stated to the workers, the wire field crosses empty, and the journal
     // records no digest.
@@ -747,12 +759,12 @@ fn a_local_run_of_a_program_this_machine_holds_binds_no_program_digest() -> Resu
     let local_dir = dir.path().join("local");
     let entry = program(&local_dir, Shape::Directory, "one", &installs_at);
     let config = local(&local_dir, &entry);
-    assert!(matches!(drive(&config)?, RunOutcome::Finalized { .. }));
+    assert!(matches!(drive(&config)?, SearchOutcome::Finalized { .. }));
 
     let loaded = load(&config)?;
     let store = Store::open(local_dir.join("store"))?;
     let bound: Vec<Option<String>> = store
-        .journal(&loaded.run.id())?
+        .journal(&loaded.search.id())?
         .iter()
         .filter_map(|line| Record::from_line(line).ok())
         .filter_map(|record| match record.event {
@@ -760,7 +772,7 @@ fn a_local_run_of_a_program_this_machine_holds_binds_no_program_digest() -> Resu
             _ => None,
         })
         .collect();
-    assert!(!bound.is_empty(), "the run bound workers");
+    assert!(!bound.is_empty(), "the search bound workers");
     assert!(
         bound.iter().all(Option::is_none),
         "a program that travelled nowhere names no digest: {bound:?}"
@@ -768,16 +780,16 @@ fn a_local_run_of_a_program_this_machine_holds_binds_no_program_digest() -> Resu
     Ok(())
 }
 
-/// A digest naming a program no run of these tests ever sent, for the drift
+/// A digest naming a program no search of these tests ever sent, for the drift
 /// case below.
 const DRIFTED: &str = "3333333333333333333333333333333333333333333333333333333333333333";
 
 #[test]
 fn a_destination_running_another_program_fails_the_spawn_naming_both_digests() -> Result<()> {
-    // A machine whose installed tree drifted from what the run sent. Overriding
+    // A machine whose installed tree drifted from what the search sent. Overriding
     // the variable inside the program is this test's stand-in for that: sima
     // states the digest it installed and the child answers another, which is
-    // exactly what a machine holding a different program produces. The run must
+    // exactly what a machine holding a different program produces. The search must
     // stop at the first worker spawn, naming the two programs.
     let dir = tempfile::tempdir().expect("temp dir");
     let far_root = dir.path().join("far");
@@ -795,10 +807,10 @@ fn a_destination_running_another_program_fails_the_spawn_naming_both_digests() -
         "[domain.\"stub.v1\"]\nbinary = \"./program.sh\"\npayload = \"./program.sh\"\n",
     );
 
-    let outcome = move_run(&migrated, BinaryChange::Refuse)?;
+    let outcome = move_search(&migrated, BinaryChange::Refuse)?;
     assert!(
         matches!(outcome, MigrateOutcome::Outstanding { .. }),
-        "no worker took a task, so the run came home with all of them: {outcome:?}"
+        "no worker took a task, so the search came home with all of them: {outcome:?}"
     );
     assert!(manifest_bytes(&migrated).is_none(), "nothing was finalized");
     assert!(
@@ -811,7 +823,7 @@ fn a_destination_running_another_program_fails_the_spawn_naming_both_digests() -
     // machine state met a second time, with the refusal in hand rather than on
     // the destination's own stderr.
     let far_config = far_dir(&migrated, &far_root).join("sima.toml");
-    let error = drive(&far_config).expect_err("a program disagreement fails the run");
+    let error = drive(&far_config).expect_err("a program disagreement fails the search");
     let text = error.to_string();
     assert!(text.contains("program digest mismatch"), "{text}");
     assert!(
@@ -820,15 +832,15 @@ fn a_destination_running_another_program_fails_the_spawn_naming_both_digests() -
     );
     assert!(
         text.contains(&far_payload_digest(&migrated, &far_root)),
-        "and what the run sent: {text}"
+        "and what the search sent: {text}"
     );
     Ok(())
 }
 
 #[test]
 fn an_install_that_fails_on_the_destination_states_its_own_last_words() -> Result<()> {
-    // The failure happens inside the far `sima run`, before it journals, so
-    // the follow finds a run that never started. What the operator gets back
+    // The failure happens inside the far `sima search`, before it journals, so
+    // the follow finds a search that never started. What the operator gets back
     // is the machine's name and the script's own output.
     let dir = tempfile::tempdir().expect("temp dir");
     let far_root = dir.path().join("far");
@@ -845,7 +857,7 @@ fn an_install_that_fails_on_the_destination_states_its_own_last_words() -> Resul
          payload = \"./src\"\ninstall = \"./install.sh\"\n",
     );
 
-    let error = move_run(&migrated, BinaryChange::Refuse)
+    let error = move_search(&migrated, BinaryChange::Refuse)
         .expect_err("an install that fails fails the migration");
     let text = error.to_string();
     assert!(text.contains("\"far\""), "names the machine: {text}");
@@ -857,7 +869,7 @@ fn an_install_that_fails_on_the_destination_states_its_own_last_words() -> Resul
     Ok(())
 }
 
-/// A config under `dir` migrating a run of `example.doubler.v1` — a format this
+/// A config under `dir` migrating a search of `example.doubler.v1` — a format this
 /// workspace carries no code for — onto a rented stub machine rooted at `root`,
 /// served by the example program itself as a single-file payload.
 fn migrating_unknown_format(dir: &Path, root: &Path) -> PathBuf {
@@ -874,11 +886,11 @@ fn migrating_unknown_format(dir: &Path, root: &Path) -> PathBuf {
         "unknown.toml",
         &format!(
             r#"
-        [run]
+        [search]
         root_seed = 7
         format = "example.doubler.v1"
 
-        [run.generator]
+        [search.generator]
         id = "example.doubler.v1"
         count = 4
 
@@ -909,20 +921,20 @@ fn migrating_unknown_format(dir: &Path, root: &Path) -> PathBuf {
 
 #[test]
 fn a_format_this_build_carries_no_code_for_migrates_onto_a_rented_machine() -> Result<()> {
-    // The destination could answer nothing about this run before it had the
+    // The destination could answer nothing about this search before it had the
     // program: its readiness probe names no format, and the config synthesized
-    // for it states no worker layout. The far run installs the program, asks it
+    // for it states no worker layout. The far search installs the program, asks it
     // which devices its work can go on, and derives its workers from that.
     let dir = tempfile::tempdir().expect("temp dir");
     let root = tempfile::tempdir().expect("temp dir");
     let config = migrating_unknown_format(&dir.path().join("near"), root.path());
 
-    let outcome = move_run(&config, BinaryChange::Refuse)?;
+    let outcome = move_search(&config, BinaryChange::Refuse)?;
     assert!(
         matches!(outcome, MigrateOutcome::Finalized { .. }),
         "{outcome:?}"
     );
-    // The far run's workers ran the program the migration delivered, each
+    // The far search's workers ran the program the migration delivered, each
     // answering the digest the destination's own stamp carries.
     let programs = far_worker_programs(&config, root.path());
     assert!(!programs.is_empty(), "the far side bound workers");

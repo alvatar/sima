@@ -2,8 +2,8 @@
 //! model through the pipeline API: a `ca_evolution.nca` `sima.toml` runs generate
 //! → execute → commit → inspect to a finalized manifest committing framed
 //! continuation state over 8-channel grids, a segment boundary leaves the
-//! committed trajectory byte-identical, and a malformed `[run.params]` or
-//! `[run.generator]` section fails at load — before any store or GPU work.
+//! committed trajectory byte-identical, and a malformed `[search.params]` or
+//! `[search.generator]` section fails at load — before any store or GPU work.
 
 mod common;
 
@@ -13,28 +13,30 @@ use common::loaded_text;
 use sima_core::{Error, Hash, Result};
 use sima_domains::substrates::cellular::Grid;
 use sima_domains::{decode_continuation, encode_continuation};
-use sima_pipeline::{BinaryChange, Engagement, LoadedConfig, RunControl, RunOutcome, orchestrate};
+use sima_pipeline::{
+    BinaryChange, Engagement, LoadedConfig, SearchControl, SearchOutcome, orchestrate,
+};
 use sima_store::Store;
 
 /// The ca_evolution.nca config text: `count` candidates, each a network sampled
 /// at `weight_scale = 0.5` (candidate `i` owns a distinct substream, so the
 /// generator's duplicate-draw check passes), on a 32x32 grid, `steps` per
-/// segment. `segments` renders the optional `[run]` key.
+/// segment. `segments` renders the optional `[search]` key.
 fn config_text(store: &str, count: u32, steps: u32, segments: Option<u64>) -> String {
     let segments = segments.map_or(String::new(), |n| format!("segments = {n}"));
     format!(
         r#"
-        [run]
+        [search]
         root_seed = 42
         format = "ca_evolution.nca.v1"
         {segments}
 
-        [run.generator]
+        [search.generator]
         id = "ca_evolution.nca.v1"
         count = {count}
         weight_scale = 0.5
 
-        [run.params]
+        [search.params]
         width = 32
         height = 32
         steps = {steps}
@@ -65,12 +67,12 @@ fn nca_config(
     loaded_text(dir, name, &config_text(store, count, steps, segments))
 }
 
-/// The `state` artifacts across the run's manifest entries: each entry's object
+/// The `state` artifacts across the search's manifest entries: each entry's object
 /// hash, the step its framed continuation state reached, and its decoded grid.
 fn manifest_states(config: &LoadedConfig) -> Result<Vec<(Hash, u64, Grid)>> {
     let store = Store::open(&config.store)?;
     let manifest = store
-        .manifest(&config.run.id())?
+        .manifest(&config.search.id())?
         .expect("a finalized manifest");
     manifest
         .entries
@@ -128,11 +130,11 @@ mod on_device {
         assert!(matches!(
             orchestrate(
                 &config,
-                &RunControl::detached(),
+                &SearchControl::detached(),
                 Engagement::Orchestrator,
                 BinaryChange::Refuse
             )?,
-            RunOutcome::Finalized { .. }
+            SearchOutcome::Finalized { .. }
         ));
         // Four candidates, one manifest entry each, every committed state framed at
         // step 100 over a 32x32 eight-channel grid.
@@ -160,11 +162,11 @@ mod on_device {
         assert!(matches!(
             orchestrate(
                 &segmented,
-                &RunControl::detached(),
+                &SearchControl::detached(),
                 Engagement::Orchestrator,
                 BinaryChange::Refuse,
             )?,
-            RunOutcome::Finalized { .. }
+            SearchOutcome::Finalized { .. }
         ));
         let segment_states = manifest_states(&segmented)?;
         assert_eq!(segment_states.len(), 2);
@@ -177,22 +179,22 @@ mod on_device {
         assert!(matches!(
             orchestrate(
                 &whole,
-                &RunControl::detached(),
+                &SearchControl::detached(),
                 Engagement::Orchestrator,
                 BinaryChange::Refuse
             )?,
-            RunOutcome::Finalized { .. }
+            SearchOutcome::Finalized { .. }
         ));
         let whole_states = manifest_states(&whole)?;
         assert_eq!(whole_states.len(), 1);
         let (whole_object, whole_step, whole_grid) = &whole_states[0];
-        assert_eq!(*whole_step, 100, "the unsegmented run reaches step 100");
+        assert_eq!(*whole_step, 100, "the unsegmented search reaches step 100");
         assert_eq!(whole_grid.channels(), 8);
 
         // The framed step makes the committed state a complete continuation, so the
         // 100-step state is byte-identical whether or not a segment boundary cut the
         // trajectory. The unsegmented state's object must already exist in the
-        // segmented run's store — the `get` errors if absent, so it is the membership
+        // segmented search's store — the `get` errors if absent, so it is the membership
         // check — and its bytes must equal the framed state reconstructed here from
         // the decoded step and grid, not a second fetch of the same object.
         let from_segmented = Store::open(&segmented.store)?.get(whole_object)?;

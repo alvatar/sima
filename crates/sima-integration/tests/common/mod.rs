@@ -18,14 +18,14 @@ pub fn loaded_text(dir: &Path, name: &str, text: &str) -> Result<LoadedConfig> {
     load(&path)
 }
 
-/// The journal events of the run `config` describes, in append order. Each
+/// The journal events of the search `config` describes, in append order. Each
 /// top-level file under `tests/` compiles as its own crate, so a helper only
 /// some suites use reads as dead code in the others.
 #[allow(dead_code)]
 pub fn journal_events(config: &LoadedConfig) -> Vec<Event> {
     let store = Store::open(&config.store).expect("open store");
     store
-        .journal(&config.run.id())
+        .journal(&config.search.id())
         .expect("read journal")
         .iter()
         .map(|line| Record::from_line(line).expect("parse journal line").event)
@@ -160,7 +160,7 @@ fn build_worker_binary() {
 }
 
 /// Builds `package`'s binary and returns its path, for the suites that drive a
-/// run through a program of its own.
+/// search through a program of its own.
 #[allow(dead_code)]
 pub fn built_binary(package: &str) -> PathBuf {
     build_binary(package);
@@ -182,6 +182,6 @@ fn build_binary(package: &str) {
     let status = std::process::Command::new(cargo)
         .args(["build", "-p", package])
         .status()
-        .unwrap_or_else(|e| panic!("run cargo build for {package}: {e}"));
+        .unwrap_or_else(|e| panic!("search cargo build for {package}: {e}"));
     assert!(status.success(), "building {package} failed");
 }

@@ -1,8 +1,8 @@
 //! The parent's side of the domain service: [`DomainService`] holds the
-//! conversation with one program for the life of a run.
+//! conversation with one program for the life of a search.
 //!
 //! The program is spawned once, in its domain-service role, and answers every
-//! question the run asks about its format: what environment its results depend
+//! question the search asks about its format: what environment its results depend
 //! on, what devices its work runs on, how its configuration translates, and
 //! what specs its generators produce. Holding the session open is what lets a
 //! program pay its startup cost once.
@@ -12,7 +12,7 @@
 //!
 //! A reader thread decodes the program's frames into a channel, so a question
 //! waits on the channel rather than on the pipe: a program that goes silent
-//! is bounded by the run's answer deadline instead of stopping the
+//! is bounded by the search's answer deadline instead of stopping the
 //! orchestrator. [`DomainService::generate`] is the one question left
 //! unbounded — it is computation proportional to the batch, the analog of a
 //! task attempt rather than an answer.
@@ -59,7 +59,7 @@ pub struct DomainService {
 
 impl DomainService {
     /// Spawns `binary` in its domain-service role for `format` under `policy`
-    /// and completes the handshake, so a program that cannot be run, cannot
+    /// and completes the handshake, so a program that cannot be search, cannot
     /// speak this protocol version, or does not serve the format fails here
     /// rather than at the first question. `answer_timeout` bounds the
     /// handshake and every later question but `Generate`.
@@ -75,7 +75,7 @@ impl DomainService {
         DomainService::converse(command, scratch, binary.to_path_buf(), answer_timeout)
     }
 
-    /// Spawns the domain service `argv` runs and completes the same handshake.
+    /// Spawns the domain service named by `argv` and completes the same handshake.
     ///
     /// The argv already carries the role and the format, because the program it
     /// reaches is on another machine and something wraps it to get there — an
@@ -176,7 +176,7 @@ impl DomainService {
         }
     }
 
-    /// The `[run.params]` section, as text, translated into the format's
+    /// The `[search.params]` section, as text, translated into the format's
     /// canonical params bytes.
     pub fn translate_config(
         &mut self,
@@ -198,7 +198,7 @@ impl DomainService {
         }
     }
 
-    /// The `[run.generator]` section, as text, translated into the generator's
+    /// The `[search.generator]` section, as text, translated into the generator's
     /// opaque params blob.
     pub fn translate_generator_config(
         &mut self,
@@ -218,12 +218,12 @@ impl DomainService {
         }
     }
 
-    /// The run's candidate specs.
+    /// The search's candidate specs.
     ///
     /// The one question with no deadline: generation is computation
     /// proportional to the batch, so a bound sized for answers would kill a
     /// legitimate large batch. A generator computes under the same trust as an
-    /// executor, and a runaway one is interrupted the way any run is — Ctrl-C,
+    /// executor, and a runaway one is interrupted the way any search is — Ctrl-C,
     /// with the store losing nothing.
     pub fn generate(
         &mut self,
@@ -341,7 +341,7 @@ impl DomainService {
     ///
     /// A session with no deadline is one whose questions may take as long as
     /// the program lives; the farewell still needs a bound, because it runs
-    /// where a run is being torn down.
+    /// where a search is being torn down.
     fn farewell_bound(&self) -> Duration {
         bounded_farewell(self.answer_timeout)
     }
@@ -355,8 +355,8 @@ impl Drop for DomainService {
     ///
     /// The wait is bounded because a program that ignores its closed stdin
     /// would otherwise hold this drop forever — and this drop runs on the
-    /// thread tearing a run down, so a program that will not leave would keep
-    /// the process alive after the run ended. Past the bound it is killed and
+    /// thread tearing a search down, so a program that will not leave would keep
+    /// the process alive after the search ended. Past the bound it is killed and
     /// reaped, which is what frees the scratch directory too.
     ///
     /// The reader handle is released on every path, never joined: the thread
@@ -516,7 +516,7 @@ mod tests {
 
     #[test]
     fn a_program_that_ignores_its_closed_stdin_is_killed_within_the_bound() {
-        // The drop runs on the thread tearing a run down, so a program that
+        // The drop runs on the thread tearing a search down, so a program that
         // will not leave must not hold it: past the bound it is killed and
         // reaped. `sleep` ignores its stdin entirely, which is exactly the
         // shape that used to hang.

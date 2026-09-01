@@ -1,6 +1,6 @@
 //! [`serve`]: the process entry point of a program that hosts a domain.
 //!
-//! One binary answers both roles a run needs of a program, and the arguments
+//! One binary answers both roles a search needs of a program, and the arguments
 //! it was spawned with say which: bare, it hosts the format's executor over
 //! the worker protocol; under `--serve-domain <format>`, it answers what the
 //! format binds over the domain service. A program is then its two components

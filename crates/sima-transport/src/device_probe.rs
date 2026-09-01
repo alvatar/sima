@@ -4,11 +4,11 @@ use sima_model::FormatId;
 
 /// The question a device probe puts to a machine.
 ///
-/// A run whose format this build carries asks about that format: the worker
+/// A search whose format this build carries asks about that format: the worker
 /// resolves it and answers with that backend's own devices, which are the
-/// places the run's work can go.
+/// places the search's work can go.
 ///
-/// A run whose format is a program outside this build asks about no format at
+/// A search whose format is a program outside this build asks about no format at
 /// all. The worker on that machine cannot resolve the format, and only the
 /// installed program knows which devices its backend opens, so the answer is a
 /// statement about the machine — it is reachable, and this is its hardware —

@@ -409,7 +409,7 @@ mod tests {
     #[test]
     fn translate_config_carries_the_section_text_and_the_segment_flag() {
         // Both inputs reach the domain: the section as written, and whether the
-        // run divides candidates into segments.
+        // search divides candidates into segments.
         let (result, answers) = drive(
             false,
             &[

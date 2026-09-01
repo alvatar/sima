@@ -22,7 +22,7 @@ pub enum Error {
     Encoding(String),
     /// A value violates a model invariant, or a caller misuses a store
     /// API: malformed name, duplicate or unsorted components, empty
-    /// environment, finalizing an uncreated run, journal payloads breaking
+    /// environment, finalizing an uncreated search, journal payloads breaking
     /// the framing rules. The payload names the violated invariant.
     Validation(String),
     /// An OS-level filesystem failure while touching `path`.
@@ -136,8 +136,8 @@ mod tests {
     fn a_reported_failure_renders_as_the_far_side_rendered_it() {
         // The far side already named the failure class; rendering it again
         // here would prefix one classification with another.
-        let e = Error::Reported("validation error: run was never started".to_string());
-        assert_eq!(e.to_string(), "validation error: run was never started");
+        let e = Error::Reported("validation error: search was never started".to_string());
+        assert_eq!(e.to_string(), "validation error: search was never started");
     }
 
     #[test]

@@ -1,19 +1,19 @@
 //! End-to-end acceptance of a format served by its own program: the protocol
-//! carries everything a run's identity is made of, and a program outside this
+//! carries everything a search's identity is made of, and a program outside this
 //! workspace runs a whole search through the same spine.
 //!
-//! The equivalence here is what proves the protocol sufficient. A run driven
-//! through a program produces the run id and the task keys the same run
+//! The equivalence here is what proves the protocol sufficient. A search driven
+//! through a program produces the search id and the task keys the same search
 //! produces by direct call, so anything the protocol failed to carry would
 //! change a hash and fail these tests rather than pass silently.
 //!
 //! The spawn surface is acceptance-tested the same way, from the program's own
-//! point of view: a wrapper script reports what it was handed, and a whole run
+//! point of view: a wrapper script reports what it was handed, and a whole search
 //! through it is the proof.
 //!
 //! Two boundaries around the program's identity are here too: the build that
 //! served a session is journaled and compared at the next resume, and a
-//! migration of a run whose entry names no payload is refused, since a
+//! migration of a search whose entry names no payload is refused, since a
 //! migration carries the program to the destination as objects and an entry
 //! that names none states the program is this machine's alone.
 
@@ -27,12 +27,12 @@ use sima_contracts::Generator;
 use sima_core::{Error, Result, hash_bytes};
 use sima_example_executor::DoublerGenerator;
 use sima_pipeline::{
-    BinaryChange, Engagement, Event, LoadedConfig, Record, RunControl, RunOutcome, migrate,
+    BinaryChange, Engagement, Event, LoadedConfig, Record, SearchControl, SearchOutcome, migrate,
     orchestrate, task_keys,
 };
 use sima_store::Store;
 
-/// A stub run, optionally routing its format to `program` and declaring the
+/// A stub search, optionally routing its format to `program` and declaring the
 /// variable names that program receives. Everything else is identical, so what
 /// the two configs differ in is where the format is answered from.
 fn stub_config(store: &str, program: Option<&Path>, env: &[&str]) -> String {
@@ -46,15 +46,15 @@ fn stub_config(store: &str, program: Option<&Path>, env: &[&str]) -> String {
     });
     format!(
         r#"
-        [run]
+        [search]
         root_seed = 42
         format = "stub.v1"
 
-        [run.generator]
+        [search.generator]
         id = "stub.v1"
         behaviors = ["succeed", "succeed", "flaky:1", "succeed"]
 
-        [run.params]
+        [search.params]
         hex = "00ff"
 
         [config]
@@ -74,11 +74,11 @@ fn stub_config(store: &str, program: Option<&Path>, env: &[&str]) -> String {
 fn example_config(store: &str, count: u32, program: &Path) -> String {
     format!(
         r#"
-        [run]
+        [search]
         root_seed = 7
         format = "example.doubler.v1"
 
-        [run.generator]
+        [search.generator]
         id = "example.doubler.v1"
         count = {count}
 
@@ -96,14 +96,14 @@ fn example_config(store: &str, count: u32, program: &Path) -> String {
     )
 }
 
-/// The candidate count a run cannot finish in the window between the commit
+/// The candidate count a search cannot finish in the window between the commit
 /// that raises the interrupt and the driver observing it. The observer runs on
 /// the collector's thread, so a loaded machine can delay the flag past a short
-/// run's last commit; this count makes the interrupting tests decide on the
+/// search's last commit; this count makes the interrupting tests decide on the
 /// ordering of events rather than on how fast this machine is.
 const UNFINISHABLE: u32 = 200;
 
-/// The task keys `config`'s run comprises, over a store of its own.
+/// The task keys `config`'s search comprises, over a store of its own.
 fn keys(config: &LoadedConfig) -> Result<Vec<String>> {
     let store = Store::open(&config.store)?;
     Ok(task_keys(config, &store)?
@@ -112,11 +112,11 @@ fn keys(config: &LoadedConfig) -> Result<Vec<String>> {
         .collect())
 }
 
-/// The doubled bytes the run committed, in manifest order.
+/// The doubled bytes the search committed, in manifest order.
 fn doubled(config: &LoadedConfig) -> Result<Vec<u8>> {
     let store = Store::open(&config.store)?;
     let manifest = store
-        .manifest(&config.run.id())?
+        .manifest(&config.search.id())?
         .expect("a finalized manifest");
     manifest
         .entries
@@ -203,7 +203,7 @@ fn make_executable(path: &Path) {
     }
 }
 
-/// The digests the run's journal records its programs under, in append order.
+/// The digests the search's journal records its programs under, in append order.
 fn bound_digests(config: &LoadedConfig) -> Vec<String> {
     journal_events(config)
         .into_iter()
@@ -221,7 +221,7 @@ fn digest_of(path: &Path) -> String {
 
 #[test]
 fn a_program_receives_the_spawn_surface_its_entry_declares() {
-    // The spawn surface, observed by the program itself through a whole run:
+    // The spawn surface, observed by the program itself through a whole search:
     // the canary dropped, the declared name forwarded, the working directory
     // its own. The orchestrator runs as its own process here because that is
     // the only way its environment can hold what the child must and must not
@@ -234,18 +234,18 @@ fn a_program_receives_the_spawn_surface_its_entry_declares() {
     )
     .expect("write the config");
     let output = std::process::Command::new(built_binary("sima"))
-        .args(["run", "sima.toml"])
+        .args(["search", "sima.toml"])
         .current_dir(dir.path())
         .env(CANARY, "a credential the orchestrator holds")
         .env(DECLARED, "/opt/acme/assets")
         .output()
-        .expect("run sima");
-    // The run finalized, so both roles of the program ran past their two
+        .expect("search sima");
+    // The search finalized, so both roles of the program ran past their two
     // checks: a spawn that carried the canary would have exited 7, and one
     // missing the declared name would have exited 8.
     assert!(
         output.status.success(),
-        "the run finalized: {}\n{}",
+        "the search finalized: {}\n{}",
         output.status,
         String::from_utf8_lossy(&output.stderr)
     );
@@ -253,12 +253,12 @@ fn a_program_receives_the_spawn_surface_its_entry_declares() {
     // resolved inside a scratch directory that is gone with the process.
     assert!(
         !dir.path().join("canary").exists(),
-        "a relative write by the program landed in the run's directory"
+        "a relative write by the program landed in the search's directory"
     );
 }
 
 #[test]
-fn a_run_through_a_program_keeps_the_identity_it_has_by_direct_call() -> Result<()> {
+fn a_search_through_a_program_keeps_the_identity_it_has_by_direct_call() -> Result<()> {
     // The proof the protocol carries everything the parent needs: the params,
     // the generator's settings, the environment, and every spec the generator
     // produced all enter these hashes, so a field the protocol dropped would
@@ -275,9 +275,9 @@ fn a_run_through_a_program_keeps_the_identity_it_has_by_direct_call() -> Result<
         &stub_config("./served", Some(&worker()), &[]),
     )?;
     assert_eq!(
-        direct.run.id(),
-        served.run.id(),
-        "the run id is the same whichever side answered"
+        direct.search.id(),
+        served.search.id(),
+        "the search id is the same whichever side answered"
     );
     assert_eq!(
         keys(&direct)?,
@@ -288,8 +288,8 @@ fn a_run_through_a_program_keeps_the_identity_it_has_by_direct_call() -> Result<
 }
 
 #[test]
-fn a_run_through_a_program_commits_what_it_would_have_committed() -> Result<()> {
-    // The identity holds through execution too: the same run driven both ways
+fn a_search_through_a_program_commits_what_it_would_have_committed() -> Result<()> {
+    // The identity holds through execution too: the same search driven both ways
     // finalizes over the same manifest entries.
     let dir = tempfile::tempdir().expect("temp dir");
     let direct = loaded_text(
@@ -305,19 +305,19 @@ fn a_run_through_a_program_commits_what_it_would_have_committed() -> Result<()> 
     for config in [&direct, &served] {
         let outcome = orchestrate(
             config,
-            &RunControl::detached(),
+            &SearchControl::detached(),
             Engagement::Orchestrator,
             BinaryChange::Refuse,
         )?;
         assert!(
-            matches!(outcome, RunOutcome::Finalized { .. }),
+            matches!(outcome, SearchOutcome::Finalized { .. }),
             "{outcome:?}"
         );
     }
     let entries = |config: &LoadedConfig| -> Result<Vec<String>> {
         let store = Store::open(&config.store)?;
         Ok(store
-            .manifest(&config.run.id())?
+            .manifest(&config.search.id())?
             .expect("a finalized manifest")
             .entries
             .iter()
@@ -343,15 +343,15 @@ fn a_search_runs_end_to_end_through_a_program_of_its_own() -> Result<()> {
     assert!(matches!(
         orchestrate(
             &config,
-            &RunControl::detached(),
+            &SearchControl::detached(),
             Engagement::Orchestrator,
             BinaryChange::Refuse
         )?,
-        RunOutcome::Finalized { .. }
+        SearchOutcome::Finalized { .. }
     ));
     let store = Store::open(&config.store)?;
     let manifest = store
-        .manifest(&config.run.id())?
+        .manifest(&config.search.id())?
         .expect("a finalized manifest");
     assert_eq!(manifest.entries.len(), 4, "one entry per candidate");
     // What the store holds is what the program's own executor returns: every
@@ -370,8 +370,8 @@ fn a_search_runs_end_to_end_through_a_program_of_its_own() -> Result<()> {
 }
 
 #[test]
-fn a_run_through_a_program_resumes_after_an_interruption() -> Result<()> {
-    // The store is the only durable state, so an interrupted run continues
+fn a_search_through_a_program_resumes_after_an_interruption() -> Result<()> {
+    // The store is the only durable state, so an interrupted search continues
     // where it stopped — the program is spawned afresh and the tasks already
     // committed are not run again.
     let dir = tempfile::tempdir().expect("temp dir");
@@ -389,7 +389,7 @@ fn a_run_through_a_program_resumes_after_an_interruption() -> Result<()> {
     };
     let outcome = orchestrate(
         &config,
-        &RunControl {
+        &SearchControl {
             observer: &observer,
             interrupt: &interrupt,
             on_start: None,
@@ -398,19 +398,19 @@ fn a_run_through_a_program_resumes_after_an_interruption() -> Result<()> {
         BinaryChange::Refuse,
     )?;
     assert!(
-        matches!(outcome, RunOutcome::Interrupted { .. }),
-        "the run stopped partway: {outcome:?}"
+        matches!(outcome, SearchOutcome::Interrupted { .. }),
+        "the search stopped partway: {outcome:?}"
     );
-    // The same config again: the run resumes over the store it left.
+    // The same config again: the search resumes over the store it left.
     let resumed = loaded_text(dir.path(), "sima.toml", &text)?;
     assert!(matches!(
         orchestrate(
             &resumed,
-            &RunControl::detached(),
+            &SearchControl::detached(),
             Engagement::Orchestrator,
             BinaryChange::Refuse
         )?,
-        RunOutcome::Finalized { .. }
+        SearchOutcome::Finalized { .. }
     ));
     assert_eq!(
         doubled(&resumed)?.len(),
@@ -421,8 +421,8 @@ fn a_run_through_a_program_resumes_after_an_interruption() -> Result<()> {
 }
 
 #[test]
-fn a_run_through_a_program_journals_the_build_that_served_it() -> Result<()> {
-    // Provenance the environment hash never sees: the run's identity is what
+fn a_search_through_a_program_journals_the_build_that_served_it() -> Result<()> {
+    // Provenance the environment hash never sees: the search's identity is what
     // the program declares, and the journal says which build declared it.
     let dir = tempfile::tempdir().expect("temp dir");
     let config = loaded_text(
@@ -433,25 +433,25 @@ fn a_run_through_a_program_journals_the_build_that_served_it() -> Result<()> {
     assert!(matches!(
         orchestrate(
             &config,
-            &RunControl::detached(),
+            &SearchControl::detached(),
             Engagement::Orchestrator,
             BinaryChange::Refuse
         )?,
-        RunOutcome::Finalized { .. }
+        SearchOutcome::Finalized { .. }
     ));
     assert_eq!(bound_digests(&config), [digest_of(&worker())]);
-    // The run's identity is untouched by the record: the same config answered
-    // in process produces the same run id.
+    // The search's identity is untouched by the record: the same config answered
+    // in process produces the same search id.
     let direct = loaded_text(
         dir.path(),
         "direct.toml",
         &stub_config("./direct", None, &[]),
     )?;
-    assert_eq!(config.run.id(), direct.run.id());
+    assert_eq!(config.search.id(), direct.search.id());
     Ok(())
 }
 
-/// Drives the example run through `wrapper` until two candidates commit, then
+/// Drives the example search through `wrapper` until two candidates commit, then
 /// interrupts it — the state a resume gate is asked about.
 fn interrupted_through(dir: &Path, text: &str) -> Result<()> {
     let config = loaded_text(dir, "sima.toml", text)?;
@@ -466,7 +466,7 @@ fn interrupted_through(dir: &Path, text: &str) -> Result<()> {
     };
     let outcome = orchestrate(
         &config,
-        &RunControl {
+        &SearchControl {
             observer: &observer,
             interrupt: &interrupt,
             on_start: None,
@@ -475,8 +475,8 @@ fn interrupted_through(dir: &Path, text: &str) -> Result<()> {
         BinaryChange::Refuse,
     )?;
     assert!(
-        matches!(outcome, RunOutcome::Interrupted { .. }),
-        "the run stopped partway: {outcome:?}"
+        matches!(outcome, SearchOutcome::Interrupted { .. }),
+        "the search stopped partway: {outcome:?}"
     );
     Ok(())
 }
@@ -499,7 +499,7 @@ fn a_resume_after_the_program_changed_refuses_and_names_both_builds() -> Result<
     let resumed = loaded_text(dir.path(), "sima.toml", &text)?;
     let Err(error) = orchestrate(
         &resumed,
-        &RunControl::detached(),
+        &SearchControl::detached(),
         Engagement::Orchestrator,
         BinaryChange::Refuse,
     ) else {
@@ -516,17 +516,17 @@ fn a_resume_after_the_program_changed_refuses_and_names_both_builds() -> Result<
     ] {
         assert!(text.contains(named), "{named} is missing from {text}");
     }
-    // The refused session drove nothing: the run still names the build that
+    // The refused session drove nothing: the search still names the build that
     // did, and the store holds no manifest.
     assert_eq!(bound_digests(&resumed), [before]);
     let store = Store::open(&resumed.store)?;
-    assert!(store.manifest(&resumed.run.id())?.is_none());
+    assert!(store.manifest(&resumed.search.id())?.is_none());
     Ok(())
 }
 
 #[test]
 fn a_resume_that_accepts_the_change_runs_and_binds_the_new_build() -> Result<()> {
-    // Accepting is a decision about this run: the changed build finishes it,
+    // Accepting is a decision about this search: the changed build finishes it,
     // and becomes what the next resume compares against.
     let dir = tempfile::tempdir().expect("temp dir");
     let program = built_binary("sima-example-executor");
@@ -542,11 +542,11 @@ fn a_resume_that_accepts_the_change_runs_and_binds_the_new_build() -> Result<()>
     assert!(matches!(
         orchestrate(
             &accepted,
-            &RunControl::detached(),
+            &SearchControl::detached(),
             Engagement::Orchestrator,
             BinaryChange::Accept
         )?,
-        RunOutcome::Finalized { .. }
+        SearchOutcome::Finalized { .. }
     ));
     assert_eq!(
         doubled(&accepted)?.len(),
@@ -561,11 +561,11 @@ fn a_resume_that_accepts_the_change_runs_and_binds_the_new_build() -> Result<()>
     assert!(matches!(
         orchestrate(
             &again,
-            &RunControl::detached(),
+            &SearchControl::detached(),
             Engagement::Orchestrator,
             BinaryChange::Refuse
         )?,
-        RunOutcome::Finalized { .. }
+        SearchOutcome::Finalized { .. }
     ));
     assert_eq!(bound_digests(&again), [before, after.clone(), after]);
     Ok(())
@@ -573,7 +573,7 @@ fn a_resume_that_accepts_the_change_runs_and_binds_the_new_build() -> Result<()>
 
 #[test]
 fn a_resume_over_an_unchanged_program_passes_the_gate() -> Result<()> {
-    // The refusing default is the every-run case, so an unchanged program
+    // The refusing default is the every-search case, so an unchanged program
     // resumes with the flag absent.
     let dir = tempfile::tempdir().expect("temp dir");
     let program = built_binary("sima-example-executor");
@@ -587,11 +587,11 @@ fn a_resume_over_an_unchanged_program_passes_the_gate() -> Result<()> {
     assert!(matches!(
         orchestrate(
             &resumed,
-            &RunControl::detached(),
+            &SearchControl::detached(),
             Engagement::Orchestrator,
             BinaryChange::Refuse
         )?,
-        RunOutcome::Finalized { .. }
+        SearchOutcome::Finalized { .. }
     ));
     assert_eq!(
         doubled(&resumed)?.len(),

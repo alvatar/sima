@@ -1,10 +1,10 @@
-//! The machines a run may draw on: what a declaration resolves into, and the
+//! The machines a search may draw on: what a declaration resolves into, and the
 //! translation that gets it there.
 //!
 //! A machine is declared once by name and referred to by name everywhere else.
 //! What separates the two kinds is who owns it: a machine of yours is reached
 //! over ssh and states its own worker layout, while a rented one names a
-//! provider and states a specification, because it does not exist until the run
+//! provider and states a specification, because it does not exist until the search
 //! asks for it. Each kind rejects the other's keys by name, so a declaration
 //! that mixes them fails saying which key belongs where.
 
@@ -25,7 +25,7 @@ const DEFAULT_IMAGE: &str = "localhost/sima:latest";
 const DEFAULT_RUNTIME: &str = "docker";
 /// The image a rented machine runs when its entry names none. It carries both
 /// binaries: `sima-worker` for the machine's workers, and `sima` for the
-/// orchestrator of a run migrated onto it.
+/// orchestrator of a search migrated onto it.
 const DEFAULT_RENTED_IMAGE: &str = "ghcr.io/alvatar/sima:latest";
 /// The disk a rented machine is provisioned with when its entry names none.
 const DEFAULT_DISK_GB: u64 = 32;
@@ -36,18 +36,18 @@ pub(crate) const DEFAULT_READY_TIMEOUT_MS: u64 = 600_000;
 /// How often a rental polls an instance for readiness when its entry names no
 /// interval.
 pub(crate) const DEFAULT_READY_POLL_MS: u64 = 5_000;
-/// Where a migrated run's directory goes on a machine whose entry names no
+/// Where a migrated search's directory goes on a machine whose entry names no
 /// root.
-const DEFAULT_ROOT: &str = "~/sima-runs";
-/// The `sima` binary a migrated run is driven by on a machine whose entry names
+const DEFAULT_ROOT: &str = "~/sima";
+/// The `sima` binary a migrated search is driven by on a machine whose entry names
 /// none.
 const DEFAULT_BINARY: &str = "sima";
 
-/// This machine: the worker layout a run executes on by default, and the host a
-/// migration moves the run onto.
+/// This machine: the worker layout a search executes on by default, and the host a
+/// migration moves the search onto.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Orchestrator {
-    /// The `[host.*]` entry `sima migrate` moves the run onto, or `None` for a
+    /// The `[host.*]` entry `sima migrate` moves the search onto, or `None` for a
     /// config that names no destination.
     pub migrate: Option<String>,
     /// The container this machine's workers run in, or `None` for workers as
@@ -63,9 +63,9 @@ pub struct Orchestrator {
 pub struct Host {
     /// How the machine is obtained and what it runs.
     pub form: HostForm,
-    /// Where a migrated run's directory goes on this machine.
+    /// Where a migrated search's directory goes on this machine.
     pub root: String,
-    /// The `sima` binary that drives a migrated run on this machine.
+    /// The `sima` binary that drives a migrated search on this machine.
     pub binary: String,
 }
 
@@ -74,19 +74,19 @@ pub struct Host {
 pub struct HostClass {
     /// How the machines are obtained and what they run.
     pub form: HostClassForm,
-    /// Where a migrated run's directory goes on these machines.
+    /// Where a migrated search's directory goes on these machines.
     pub root: String,
-    /// The `sima` binary that drives a migrated run on these machines.
+    /// The `sima` binary that drives a migrated search on these machines.
     pub binary: String,
 }
 
-/// A host is a machine you have or one rented for the run. The two are
+/// A host is a machine you have or one rented for the search. The two are
 /// exclusive by construction, so nothing downstream asks which keys were given.
 #[derive(Debug, Clone, PartialEq)]
 pub enum HostForm {
     /// A machine of yours, reached over ssh.
     Owned(OwnedHost),
-    /// A machine rented for the run.
+    /// A machine rented for the search.
     Rented(Rented),
 }
 
@@ -127,13 +127,13 @@ pub struct OwnedClass {
 
 /// A machine to rent: which control plane, what to ask it for, and how long to
 /// wait for the result. It states no worker layout — the machine does not exist
-/// until the run asks for it, so its devices come from the enumeration probe.
+/// until the search asks for it, so its devices come from the enumeration probe.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Rented {
     /// The control-plane backend to acquire through.
     pub provider: ProviderId,
     /// The image each instance runs: `sima-worker` for its workers, and the
-    /// `sima` a run migrated onto it is driven by.
+    /// `sima` a search migrated onto it is driven by.
     pub image: String,
     /// The disk each instance is provisioned with, in gigabytes.
     pub disk_gb: u64,
@@ -164,7 +164,7 @@ pub struct Container {
     pub image: String,
     /// The container runtime: `docker` or `podman`.
     pub runtime: String,
-    /// Verbatim flags for the container-run command — GPU access and the like.
+    /// Verbatim flags for the container-search command — GPU access and the like.
     pub run_args: Vec<String>,
 }
 
@@ -174,7 +174,7 @@ pub enum Pool {
     /// A plain worker count, naming no device.
     Workers(usize),
     /// One selector per device class; the pool is their sum. The selectors stay
-    /// unresolved until the run starts, over the hardware they name.
+    /// unresolved until the search starts, over the hardware they name.
     Devices(Vec<DeviceSelector>),
 }
 
@@ -196,11 +196,11 @@ impl Pool {
     }
 }
 
-/// The set of machines a run may draw on, listed by name. A collective, so it
+/// The set of machines a search may draw on, listed by name. A collective, so it
 /// never declares an element.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Fleet {
-    /// The hosts and host classes the run may use, in the order listed.
+    /// The hosts and host classes the search may use, in the order listed.
     pub members: Vec<String>,
 }
 
@@ -238,7 +238,7 @@ impl ProviderId {
 /// What a rented class does when it cannot acquire its full declared count.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FillPolicy {
-    /// The full count or the run fails before any task runs, tearing down
+    /// The full count or the search fails before any task runs, tearing down
     /// whatever was acquired.
     Strict,
     /// Run with what was acquired, at least one machine.
@@ -266,11 +266,15 @@ pub(super) fn resolve_orchestrator(
             section.provider.is_some(),
             "the orchestrator is this machine, which is not rented",
         ),
-        ("root", section.root.is_some(), "the run already lives here"),
+        (
+            "root",
+            section.root.is_some(),
+            "the search already lives here",
+        ),
         (
             "binary",
             section.binary.is_some(),
-            "the run is already driven by this binary",
+            "the search is already driven by this binary",
         ),
     ] {
         if present {
@@ -426,7 +430,7 @@ pub(super) fn resolve_host_class(
     Ok(HostClass { form, root, binary })
 }
 
-/// Where a migrated run's directory goes on a machine and which `sima` drives it
+/// Where a migrated search's directory goes on a machine and which `sima` drives it
 /// there, defaulted. Both are host keys on either form, since any host may
 /// become a migration destination, so both are read before the form is decided.
 fn migration_paths(section: &mut MachineSection) -> (String, String) {
@@ -541,7 +545,7 @@ fn class_count(path: &Path, subject: &str, count: Option<i64>) -> Result<Option<
 }
 
 /// The container a machine of yours runs its workers in. Its image defaults, so
-/// every machine has one and the runtime and the run flags are always
+/// every machine has one and the runtime and the search flags are always
 /// meaningful — an entry naming none of the three still gets the default
 /// container.
 fn machine_container(
@@ -562,7 +566,7 @@ fn machine_container(
 /// plain subprocesses.
 ///
 /// This machine's image does not default — the orchestrator runs bare unless it
-/// is asked for a container — so the runtime and the run flags would describe a
+/// is asked for a container — so the runtime and the search flags would describe a
 /// container that does not exist, and each is rejected naming the key.
 fn orchestrator_container(
     path: &Path,

@@ -1,8 +1,8 @@
 //! CLI acceptance for `sima pack`: consolidating a store built by a real
-//! run, and sweeping it with `--gc`, against the built binary.
+//! search, and sweeping it with `--gc`, against the built binary.
 //!
 //! The verb takes a store directory and nothing else, so these tests point
-//! it straight at the store a run wrote and then read that run back through
+//! it straight at the store a search wrote and then read that search back through
 //! the ordinary query commands — which is the claim: how the store holds an
 //! object is invisible to everything above it.
 
@@ -48,23 +48,23 @@ fn loose_object_count(store: &Path) -> usize {
         .sum()
 }
 
-/// A finalized run over `behaviors`, returning the temp dir, the config
+/// A finalized search over `behaviors`, returning the temp dir, the config
 /// path, and the store directory.
-fn finalized_run(behaviors: &str) -> (tempfile::TempDir, PathBuf, PathBuf) {
+fn finalized_search(behaviors: &str) -> (tempfile::TempDir, PathBuf, PathBuf) {
     let dir = tempfile::tempdir().expect("temp dir");
     let config = write_config(dir.path(), behaviors);
-    let output = sima(&["run", config.to_str().expect("utf-8 path")]);
+    let output = sima(&["search", config.to_str().expect("utf-8 path")]);
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let store = dir.path().join("store");
     (dir, config, store)
 }
 
 #[test]
-fn pack_consolidates_a_store_a_run_wrote_and_the_run_still_reads() {
-    let (_dir, config, store) = finalized_run(r#""succeed", "succeed", "succeed""#);
+fn pack_consolidates_a_store_a_search_wrote_and_the_search_still_reads() {
+    let (_dir, config, store) = finalized_search(r#""succeed", "succeed", "succeed""#);
     let before = loose_object_count(&store);
-    assert!(before > 0, "the run wrote loose objects");
-    let manifest = manifest_of(&config).expect("the run finalized");
+    assert!(before > 0, "the search wrote loose objects");
+    let manifest = manifest_of(&config).expect("the search finalized");
 
     let output = sima(&["pack", store.to_str().expect("utf-8 path")]);
     assert_eq!(output.status.code(), Some(0), "{output:?}");
@@ -80,7 +80,7 @@ fn pack_consolidates_a_store_a_run_wrote_and_the_run_still_reads() {
     assert_eq!(loose_object_count(&store), 0, "no loose object survives");
     assert_eq!(pack_files(&store).len(), 1, "one pack holds them");
 
-    // The run reads back through the ordinary query commands: the store's
+    // The search reads back through the ordinary query commands: the store's
     // shape is invisible above it.
     let path = config.to_str().expect("utf-8 path");
     let report = sima(&["report", path]);
@@ -93,7 +93,7 @@ fn pack_consolidates_a_store_a_run_wrote_and_the_run_still_reads() {
 
 #[test]
 fn a_second_pack_reports_nothing_to_do() {
-    let (_dir, _config, store) = finalized_run(r#""succeed", "succeed""#);
+    let (_dir, _config, store) = finalized_search(r#""succeed", "succeed""#);
     let path = store.to_str().expect("utf-8 path");
     sima(&["pack", path]);
     let before = pack_files(&store);
@@ -102,16 +102,16 @@ fn a_second_pack_reports_nothing_to_do() {
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     assert!(
         stdout(&output).contains("packed 0 objects"),
-        "the second run says it did nothing: {}",
+        "the second search says it did nothing: {}",
         stdout(&output)
     );
     assert_eq!(pack_files(&store), before);
 }
 
 #[test]
-fn pack_with_gc_keeps_a_finalized_run_whole() {
-    let (_dir, config, store) = finalized_run(r#""succeed", "succeed""#);
-    let manifest = manifest_of(&config).expect("the run finalized");
+fn pack_with_gc_keeps_a_finalized_search_whole() {
+    let (_dir, config, store) = finalized_search(r#""succeed", "succeed""#);
+    let manifest = manifest_of(&config).expect("the search finalized");
     let path = store.to_str().expect("utf-8 path");
 
     let output = sima(&["pack", path, "--gc"]);
@@ -125,11 +125,11 @@ fn pack_with_gc_keeps_a_finalized_run_whole() {
     assert_eq!(manifest_of(&config).expect("manifest"), manifest);
     let report = sima(&["report", config.to_str().expect("utf-8 path")]);
     assert_eq!(report.status.code(), Some(0), "{report:?}");
-    // The run's closure survived, so nothing it references was swept.
+    // The search's closure survived, so nothing it references was swept.
     let loaded = load(&config).expect("load config");
     let opened = sima_store::Store::open(&loaded.store).expect("open store");
     opened
-        .run_closure(&loaded.run.id())
+        .search_closure(&loaded.search.id())
         .expect("the closure enumerates whole");
 }
 
@@ -145,7 +145,7 @@ fn pack_on_a_directory_that_is_not_a_store_fails() {
 
 #[test]
 fn pack_refuses_a_remote_target_and_an_unknown_flag() {
-    let (_dir, _config, store) = finalized_run(r#""succeed""#);
+    let (_dir, _config, store) = finalized_search(r#""succeed""#);
     let path = store.to_str().expect("utf-8 path");
     // The verb reshapes a store, so it never observes one over ssh; and it
     // takes no flag but --gc.
@@ -170,7 +170,7 @@ fn the_usage_text_names_both_forms_of_the_verb() {
 
 #[test]
 fn a_store_past_the_threshold_is_told_to_pack() {
-    let (_dir, config, store) = finalized_run(r#""succeed""#);
+    let (_dir, config, store) = finalized_search(r#""succeed""#);
     // The estimate scales one fan-out subdirectory by 256, so filling `00`
     // with 391 entries puts the store past the six-figure threshold without
     // writing six figures of files. The names are object-shaped, so every
@@ -181,9 +181,9 @@ fn a_store_past_the_threshold_is_told_to_pack() {
         std::fs::write(fanout.join(format!("00{i:062x}")), b"").expect("write object");
     }
     // Every verb of main.rs's STORE_OPENING_VERBS, `rm` last: it deletes
-    // the run, so the others must observe the store first. The warning
+    // the search, so the others must observe the store first. The warning
     // prints before the verb dispatches, so only stderr is asserted on.
-    for verb in ["status", "report", "run", "migrate", "rm"] {
+    for verb in ["status", "report", "search", "migrate", "rm"] {
         let output = sima(&[verb, config.to_str().expect("utf-8 path")]);
         let text = stderr(&output);
         assert!(
@@ -195,11 +195,11 @@ fn a_store_past_the_threshold_is_told_to_pack() {
 
 #[test]
 fn a_small_store_prints_no_loose_object_warning() {
-    let (_dir, config, _store) = finalized_run(r#""succeed""#);
+    let (_dir, config, _store) = finalized_search(r#""succeed""#);
     // The warning fires only past the threshold; a store this size is far
     // under it, and every store-opening verb stays silent — `rm` last,
-    // since it deletes the run the others observe.
-    for verb in ["status", "report", "run", "migrate", "rm"] {
+    // since it deletes the search the others observe.
+    for verb in ["status", "report", "search", "migrate", "rm"] {
         let output = sima(&[verb, config.to_str().expect("utf-8 path")]);
         assert!(
             !stderr(&output).contains("loose objects"),

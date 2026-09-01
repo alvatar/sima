@@ -107,7 +107,7 @@ impl TryFrom<String> for DeviceClass {
 
 impl fmt::Display for DeviceClass {
     /// Renders the class as the backend minted it, the spelling that names a
-    /// device in configuration, diagnostics, and the run journal.
+    /// device in configuration, diagnostics, and the search journal.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.0)
     }
@@ -241,7 +241,7 @@ pub fn resolve_member(
 ///
 /// With `requested` set, the named index wins when it is compute-capable and
 /// fails otherwise; without it, the lowest `(type rank, index)` pair wins, so
-/// the pick is deterministic across runs on one machine.
+/// the pick is deterministic across invocations on one machine.
 pub fn choose_device(
     candidates: &[(usize, DeviceType)],
     requested: Option<usize>,

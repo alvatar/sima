@@ -1,5 +1,5 @@
 //! End-to-end acceptance of the structured stats and the snapshot predicate
-//! through the pipeline API: a stub run journals named scalars for completed
+//! through the pipeline API: a stub search journals named scalars for completed
 //! and failed tasks and `report` renders them, and a Gray-Scott search with a
 //! `snapshot_when` predicate drops the snapshots of candidates that fail it,
 //! keeps those that pass, journals scalars for every task, and finalizes a
@@ -13,7 +13,8 @@ use std::path::Path;
 use common::{journal_events, loaded_text};
 use sima_core::Result;
 use sima_pipeline::{
-    BinaryChange, Engagement, Event, LoadedConfig, RunControl, RunOutcome, orchestrate, report,
+    BinaryChange, Engagement, Event, LoadedConfig, SearchControl, SearchOutcome, orchestrate,
+    report,
 };
 use sima_store::Store;
 
@@ -21,11 +22,11 @@ use sima_store::Store;
 fn stub_config(dir: &Path, name: &str, store: &str, behaviors: &str) -> Result<LoadedConfig> {
     let text = format!(
         r#"
-        [run]
+        [search]
         root_seed = 11
         format = "stub.v1"
 
-        [run.generator]
+        [search.generator]
         id = "stub.v1"
         behaviors = [{behaviors}]
 
@@ -69,11 +70,11 @@ fn gray_scott_config(
     let store = format!("./store-{case}-{label}");
     let text = format!(
         r#"
-        [run]
+        [search]
         root_seed = 42
         format = "{format}"
 
-        [run.generator]
+        [search.generator]
         id = "{format}"
         count = {count}
         feed = [0.054, 0.056]
@@ -81,7 +82,7 @@ fn gray_scott_config(
         diffusion_u = [0.16, 0.16]
         diffusion_v = [0.08, 0.08]
 
-        [run.params]
+        [search.params]
         width = 32
         height = 32
         steps = {steps}
@@ -108,7 +109,7 @@ fn gray_scott_config(
 fn state_artifact_present(config: &LoadedConfig) -> Result<Vec<bool>> {
     let store = Store::open(&config.store)?;
     let manifest = store
-        .manifest(&config.run.id())?
+        .manifest(&config.search.id())?
         .expect("a finalized manifest");
     manifest
         .entries
@@ -135,7 +136,7 @@ fn every_committed_task_has_scalars(events: &[Event]) -> bool {
 }
 
 #[test]
-fn a_stub_run_journals_scalars_and_report_renders_them() -> Result<()> {
+fn a_stub_search_journals_scalars_and_report_renders_them() -> Result<()> {
     // A clean success and a candidate that fails once before committing: the
     // journal carries structured scalars for both the Committed and the Failed
     // events, and `report` renders them generically.
@@ -149,11 +150,11 @@ fn a_stub_run_journals_scalars_and_report_renders_them() -> Result<()> {
     assert!(matches!(
         orchestrate(
             &config,
-            &RunControl::detached(),
+            &SearchControl::detached(),
             Engagement::Orchestrator,
             BinaryChange::Refuse
         )?,
-        RunOutcome::Finalized { .. }
+        SearchOutcome::Finalized { .. }
     ));
 
     let events = journal_events(&config);
@@ -215,15 +216,15 @@ mod on_device {
     use super::*;
 
     #[test]
-    fn a_predicate_run_finalizes_a_deterministic_manifest() -> Result<()> {
-        // The same predicate config run twice into fresh stores finalizes
+    fn a_predicate_search_finalizes_a_deterministic_manifest() -> Result<()> {
+        // The same predicate config search twice into fresh stores finalizes
         // byte-identical manifests: the predicate verdict is a pure function of the
         // deterministic final grid, so it decides identically both times.
         let dir = tempfile::tempdir().expect("temp dir");
         let predicate = Some(r#"{ scalar = "activity", min = 1e-4 }"#);
         let manifest = |config: &LoadedConfig| -> Result<_> {
             Ok(Store::open(&config.store)?
-                .manifest(&config.run.id())?
+                .manifest(&config.search.id())?
                 .expect("a finalized manifest"))
         };
         for (label, format) in FORMATS {
@@ -233,11 +234,11 @@ mod on_device {
                 assert!(matches!(
                     orchestrate(
                         config,
-                        &RunControl::detached(),
+                        &SearchControl::detached(),
                         Engagement::Orchestrator,
                         BinaryChange::Refuse
                     )?,
-                    RunOutcome::Finalized { .. }
+                    SearchOutcome::Finalized { .. }
                 ));
             }
             assert_eq!(manifest(&first)?, manifest(&second)?, "{format}");
@@ -246,7 +247,7 @@ mod on_device {
     }
 
     #[test]
-    fn a_no_predicate_run_keeps_every_snapshot() -> Result<()> {
+    fn a_no_predicate_search_keeps_every_snapshot() -> Result<()> {
         // The pre-milestone behavior: without a predicate every candidate commits
         // its state artifact, unchanged.
         let dir = tempfile::tempdir().expect("temp dir");
@@ -255,11 +256,11 @@ mod on_device {
             assert!(matches!(
                 orchestrate(
                     &config,
-                    &RunControl::detached(),
+                    &SearchControl::detached(),
                     Engagement::Orchestrator,
                     BinaryChange::Refuse
                 )?,
-                RunOutcome::Finalized { .. }
+                SearchOutcome::Finalized { .. }
             ));
             let present = state_artifact_present(&config)?;
             assert_eq!(present.len(), 3, "{format}");
@@ -286,11 +287,11 @@ mod on_device {
             assert!(matches!(
                 orchestrate(
                     &config,
-                    &RunControl::detached(),
+                    &SearchControl::detached(),
                     Engagement::Orchestrator,
                     BinaryChange::Refuse
                 )?,
-                RunOutcome::Finalized { .. }
+                SearchOutcome::Finalized { .. }
             ));
             let present = state_artifact_present(&config)?;
             assert_eq!(present.len(), 3, "{format}");
@@ -325,11 +326,11 @@ mod on_device {
             assert!(matches!(
                 orchestrate(
                     &config,
-                    &RunControl::detached(),
+                    &SearchControl::detached(),
                     Engagement::Orchestrator,
                     BinaryChange::Refuse
                 )?,
-                RunOutcome::Finalized { .. }
+                SearchOutcome::Finalized { .. }
             ));
             let present = state_artifact_present(&config)?;
             assert_eq!(present.len(), 3, "{format}");

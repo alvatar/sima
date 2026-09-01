@@ -6,7 +6,7 @@ use sima_core::{Error, Result};
 use crate::substrates::cellular::ops::CellularOps;
 use crate::substrates::cellular::{BLOCK_WIDTH, Grid};
 
-/// The result of a [`run`]: the two ping-pong buffers left resident on the
+/// The result of a [`search`]: the two ping-pong buffers left resident on the
 /// device — the final grid $G_N$ and the step before it $G_{N-1}$ — over the
 /// backend that produced them.
 ///
@@ -18,7 +18,7 @@ pub(crate) struct Trajectory<'a, O: CellularOps> {
     /// The most recently written buffer: the final grid $G_N$.
     current: O::Buffer,
     /// The buffer written the step before: $G_{N-1}$. Equal in content to
-    /// `current` when the run took no steps.
+    /// `current` when the search took no steps.
     previous: O::Buffer,
     width: u32,
     height: u32,
@@ -88,13 +88,13 @@ impl<O: CellularOps> Trajectory<'_, O> {
 /// `base + i` into it as `[lo, hi]` inside its own submission, bound last, so a
 /// kernel that depends on the absolute step reads it as a `u64`. When `None`,
 /// no step buffer is created or bound and the dispatch is byte-identical to a
-/// run without one.
+/// search without one.
 ///
 /// `steps == 0` dispatches nothing and leaves both buffers holding `initial`,
 /// so a reduction over the pair reports no activity. The harness is
 /// neighborhood-agnostic: a small stencil and a large-radius convolution are
 /// both just the `kernel` argument.
-pub(crate) fn run<'a, O: CellularOps>(
+pub(crate) fn search<'a, O: CellularOps>(
     ops: &'a O,
     kernel: &O::Kernel,
     initial: &Grid,
@@ -120,7 +120,7 @@ pub(crate) fn run<'a, O: CellularOps>(
     let mut dims = ops.buffer(std::mem::size_of_val(&dims_values))?;
     ops.upload(&mut dims, bytemuck::cast_slice(&dims_values))?;
     // A f32 -> u8 cast is alignment-safe, so the payload uploads zero-copy.
-    // Both buffers start on `initial` so a zero-step run leaves the pair equal.
+    // Both buffers start on `initial` so a zero-step search leaves the pair equal.
     ops.upload(&mut a, bytemuck::cast_slice(payload))?;
     ops.upload(&mut b, bytemuck::cast_slice(payload))?;
 
@@ -261,8 +261,8 @@ mod tests {
                 .kernel(SMOKE_WGSL, WgslOps::ENTRY, BLOCK_WIDTH)
                 .expect("build the smoke shader");
             case(&|initial, steps| {
-                run(&wgsl, &wgsl_kernel, initial, steps, &[], None)
-                    .expect("WGSL run")
+                search(&wgsl, &wgsl_kernel, initial, steps, &[], None)
+                    .expect("WGSL search")
                     .grid()
                     .expect("WGSL grid")
             });
@@ -272,8 +272,8 @@ mod tests {
                 .kernel(SMOKE_PTX, CudaOps::ENTRY, BLOCK_WIDTH)
                 .expect("load the smoke PTX");
             case(&|initial, steps| {
-                run(&cuda, &cuda_kernel, initial, steps, &[], None)
-                    .expect("CUDA run")
+                search(&cuda, &cuda_kernel, initial, steps, &[], None)
+                    .expect("CUDA search")
                     .grid()
                     .expect("CUDA grid")
             });
@@ -383,8 +383,8 @@ mod tests {
             let wgsl_kernel = wgsl
                 .kernel(STEP_PROBE_WGSL, WgslOps::ENTRY, BLOCK_WIDTH)
                 .expect("build the step probe shader");
-            let advanced = run(&wgsl, &wgsl_kernel, &initial, steps, &[], Some(base))
-                .expect("WGSL run")
+            let advanced = search(&wgsl, &wgsl_kernel, &initial, steps, &[], Some(base))
+                .expect("WGSL search")
                 .grid()
                 .expect("WGSL grid");
             assert_step_indices_transported(&advanced, base, steps, "WGSL");
@@ -393,8 +393,8 @@ mod tests {
             let cuda_kernel = cuda
                 .kernel(STEP_PROBE_PTX, CudaOps::ENTRY, BLOCK_WIDTH)
                 .expect("load the step probe PTX");
-            let advanced = run(&cuda, &cuda_kernel, &initial, steps, &[], Some(base))
-                .expect("CUDA run")
+            let advanced = search(&cuda, &cuda_kernel, &initial, steps, &[], Some(base))
+                .expect("CUDA search")
                 .grid()
                 .expect("CUDA grid");
             assert_step_indices_transported(&advanced, base, steps, "CUDA");

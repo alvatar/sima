@@ -1,6 +1,6 @@
 //! The tui runtime: the subcommand entry, the terminal guard and panic hook,
 //! the key mapping, and the event loop that applies observations to the
-//! display and drives the run on a background thread.
+//! display and drives the search on a background thread.
 
 use std::any::Any;
 use std::cell::Cell;
@@ -24,8 +24,8 @@ use ratatui::backend::CrosstermBackend;
 
 use sima_core::Error;
 use sima_pipeline::{
-    BinaryChange, Engagement, LoadedConfig, LocalFeed, Record, RemoteFeed, RunControl, RunFeed,
-    RunStatus, load, orchestrate,
+    BinaryChange, Engagement, LoadedConfig, LocalFeed, Record, RemoteFeed, SearchControl,
+    SearchFeed, SearchStatus, load, orchestrate,
 };
 
 use crate::Target;
@@ -45,25 +45,25 @@ thread_local! {
 /// enough that a redraw after an applied event feels immediate.
 const TICK_MS: u64 = 50;
 
-/// The channel bound between the run thread and the UI loop. Generous enough
+/// The channel bound between the search thread and the UI loop. Generous enough
 /// that the observer never blocks in practice; the loop drains it fully each
 /// tick.
 const CHANNEL_BOUND: usize = 1024;
 
-/// How many ticks between run-lock probes: with the tick at [`TICK_MS`], the
+/// How many ticks between search-lock probes: with the tick at [`TICK_MS`], the
 /// observer probes about once per second, so the probe — which briefly
 /// acquires a lock it finds free to prove it free — stays rare.
 const PROBE_TICKS: u32 = 20;
 
-/// `sima tui <config>`: opens the terminal frontend over the configured run.
+/// `sima tui <config>`: opens the terminal frontend over the configured search.
 ///
 /// A full-screen UI needs a terminal to draw into and read keys from; when
 /// stdout is not a TTY — piped or redirected — there is nothing to drive, so
 /// the command refuses rather than corrupt a non-terminal stream.
 ///
-/// Mode selection is automatic: a run lock held by another process means a
-/// foreign orchestrator drives this run, and the session observes it; a free
-/// lock enters the drive session. A run on another host is observed and never
+/// Mode selection is automatic: a search lock held by another process means a
+/// foreign orchestrator drives this search, and the session observes it; a free
+/// lock enters the drive session. A search on another host is observed and never
 /// driven — driving happens where the hardware is.
 pub fn tui_command(target: &Target, engagement: Engagement) -> ExitCode {
     if !io::stdout().is_terminal() {
@@ -76,7 +76,7 @@ pub fn tui_command(target: &Target, engagement: Engagement) -> ExitCode {
     }
 }
 
-/// The session over a run on this machine: observe while a foreign
+/// The session over a search on this machine: observe while a foreign
 /// orchestrator holds it, otherwise drive it.
 fn local_command(config: &Path, engagement: Engagement) -> ExitCode {
     let loaded = match load(config) {
@@ -106,11 +106,11 @@ fn local_command(config: &Path, engagement: Engagement) -> ExitCode {
     finish(run_session(loaded, status, engagement))
 }
 
-/// The session over a run on another host: always an observation, whatever
+/// The session over a search on another host: always an observation, whatever
 /// its lock says, since this machine cannot drive it.
 fn remote_command(host: &str, config: &str) -> ExitCode {
     // Open before entering the terminal so an unreachable host, a version
-    // gap, or a run never started there surfaces on the normal screen.
+    // gap, or a search never started there surfaces on the normal screen.
     let feed = match RemoteFeed::open(host, config) {
         Ok(feed) => feed,
         Err(e) => return crate::report(e),
@@ -119,7 +119,7 @@ fn remote_command(host: &str, config: &str) -> ExitCode {
         Ok(holder) => holder,
         Err(e) => return crate::report(e),
     };
-    // A run on another host is never driven from here, so the engagement it
+    // A search on another host is never driven from here, so the engagement it
     // would take never reaches an orchestrator.
     finish(observe_session(
         Box::new(feed),
@@ -141,9 +141,9 @@ fn finish(result: io::Result<u8>) -> ExitCode {
     }
 }
 
-/// The run's holder when another process drives it: the opened feed and the
+/// The search's holder when another process drives it: the opened feed and the
 /// recorded holder line, or `None` when the lock is free. A store that does
-/// not exist yet, and a run never started in it, have nothing to observe —
+/// not exist yet, and a search never started in it, have nothing to observe —
 /// and a query must not create the store — so both read as free and the drive
 /// session proceeds.
 fn observed_holder(config: &LoadedConfig) -> sima_core::Result<Option<(LocalFeed, String)>> {
@@ -177,7 +177,11 @@ fn key_action(key: KeyEvent) -> Option<KeyAction> {
 
 /// Runs one drive session over `config`, returning its exit code: sets up
 /// the terminal and hands the seeded state to the drive loop.
-fn run_session(config: LoadedConfig, status: RunStatus, engagement: Engagement) -> io::Result<u8> {
+fn run_session(
+    config: LoadedConfig,
+    status: SearchStatus,
+    engagement: Engagement,
+) -> io::Result<u8> {
     // Mark this as the UI thread that owns the terminal, so the panic hook
     // restores it only for a panic here and stays inert on worker and
     // orchestrate threads.
@@ -187,15 +191,15 @@ fn run_session(config: LoadedConfig, status: RunStatus, engagement: Engagement) 
     drive_loop(&mut guard, config, status, false, engagement)
 }
 
-/// The drive loop: applies keys and run events to the state, drives the run
+/// The drive loop: applies keys and search events to the state, drives the search
 /// on a background thread, and returns the session's exit code. The observer
 /// session enters here on take-over, reusing its live terminal; its `start`
-/// arms an immediate start, so the freed run continues without a second key
+/// arms an immediate start, so the freed search continues without a second key
 /// press.
 fn drive_loop(
     guard: &mut TerminalGuard,
     config: LoadedConfig,
-    status: RunStatus,
+    status: SearchStatus,
     start: bool,
     engagement: Engagement,
 ) -> io::Result<u8> {
@@ -207,8 +211,8 @@ fn drive_loop(
     let config = Arc::new(config);
 
     let (tx, rx) = mpsc::sync_channel::<Msg>(CHANNEL_BOUND);
-    // The interrupt flag of the run currently in flight, shared with the run
-    // thread; a fresh run gets a fresh flag.
+    // The interrupt flag of the search currently in flight, shared with the search
+    // thread; a fresh search gets a fresh flag.
     let mut interrupt: Option<Arc<AtomicBool>> = None;
     // The display is push-driven: redraw only after a message changed the
     // state, never on the bare keyboard tick. The first frame is the initial
@@ -224,7 +228,7 @@ fn drive_loop(
         }
 
         dirty |= apply_key(&mut state)?;
-        // Drain everything the run thread has sent since the last tick.
+        // Drain everything the search thread has sent since the last tick.
         while let Ok(msg) = rx.try_recv() {
             state.handle(msg);
             dirty = true;
@@ -248,20 +252,20 @@ fn drive_loop(
 }
 
 /// What ends an observer loop: the session leaves with its exit code, or the
-/// user takes the freed run over into the drive session, carrying the config
-/// to drive it from — which only a session over a local run holds.
+/// user takes the freed search over into the drive session, carrying the config
+/// to drive it from — which only a session over a local search holds.
 enum ObserveEnd {
     Exit(u8),
     TakeOver(Box<LoadedConfig>),
 }
 
-/// Runs one observer session over a run another orchestrator holds: sets up
-/// the terminal and tails the run through `observer`. On take-over — `s`
-/// once the lock is free — the run continues through the normal resume path:
+/// Runs one observer session over a search another orchestrator holds: sets up
+/// the terminal and tails the search through `observer`. On take-over — `s`
+/// once the lock is free — the search continues through the normal resume path:
 /// a fresh seed (stale leases cleared, exactly as the drive session seeds),
 /// then the drive loop on the same terminal with the start armed.
 fn observe_session(
-    feed: Box<dyn RunFeed>,
+    feed: Box<dyn SearchFeed>,
     holder: Option<String>,
     takeover: Option<LoadedConfig>,
     engagement: Engagement,
@@ -280,16 +284,16 @@ fn observe_session(
 
 /// The observer loop: each tick polls the journal and applies every new
 /// event through the same path drive events take — the first batch replays
-/// the run's history and seeds the display — and every [`PROBE_TICKS`] ticks
-/// probes the run lock for liveness. A terminal journal event presents the
-/// ended run; a freed lock without one presents the run as resumable.
+/// the search's history and seeds the display — and every [`PROBE_TICKS`] ticks
+/// probes the search lock for liveness. A terminal journal event presents the
+/// ended search; a freed lock without one presents the search as resumable.
 fn observe_loop(
     guard: &mut TerminalGuard,
-    mut feed: Box<dyn RunFeed>,
+    mut feed: Box<dyn SearchFeed>,
     holder: Option<String>,
     mut takeover: Option<LoadedConfig>,
 ) -> io::Result<ObserveEnd> {
-    let mut state = TuiState::new(RunStatus::new(feed.info().run), feed.info().workers);
+    let mut state = TuiState::new(SearchStatus::new(feed.info().search), feed.info().workers);
     if takeover.is_none() {
         state.observe_only();
     }
@@ -366,7 +370,7 @@ fn apply_key(state: &mut TuiState) -> io::Result<bool> {
     Ok(false)
 }
 
-/// Spawns the orchestrate thread for one run: its observer forwards every
+/// Spawns the orchestrate thread for one search: its observer forwards every
 /// journal record into the channel, the shared flag carries interrupts in,
 /// and its return arrives as [`Msg::Finished`].
 fn spawn_run(
@@ -387,14 +391,14 @@ fn spawn_run(
         // hung. The panic hook is inert off the UI thread, so it does not touch
         // the terminal from here. Catching is this caller's own boundary
         // decision, made because a hung session inside a raw-mode alternate
-        // screen is worse than a lost backtrace; `sima run` makes the opposite
+        // screen is worse than a lost backtrace; `sima search` makes the opposite
         // choice and dies with the panic. `catch_unwind` intercepts only
         // unwinding panics: under `panic = "abort"` this catch is unreachable
         // and the session dies with the process — a crash the store's
         // recovery guarantee covers, so nothing here depends on unwinding
         // for correctness.
         let outcome = std::panic::catch_unwind(AssertUnwindSafe(|| {
-            let control = RunControl {
+            let control = SearchControl {
                 observer: &observer,
                 interrupt: &interrupt,
                 on_start: None,
@@ -414,7 +418,7 @@ fn panic_fault(payload: Box<dyn Any + Send>) -> Error {
         .map(|s| (*s).to_string())
         .or_else(|| payload.downcast_ref::<String>().cloned())
         .unwrap_or_else(|| "unknown cause".to_string());
-    Error::System(format!("the run thread panicked: {text}"))
+    Error::System(format!("the search thread panicked: {text}"))
 }
 
 /// Restores the terminal on a UI-thread panic before the default hook prints,
@@ -542,7 +546,7 @@ mod tests {
     #[test]
     fn a_caught_panic_renders_its_cause_as_a_fault() {
         // A panic carries its message as either a &str or a String; both
-        // reach the fault so the run thread's cause is not lost.
+        // reach the fault so the search thread's cause is not lost.
         let from_str: Box<dyn Any + Send> = Box::new("boom");
         assert!(panic_fault(from_str).to_string().contains("boom"));
         let from_string: Box<dyn Any + Send> = Box::new("kaboom".to_string());

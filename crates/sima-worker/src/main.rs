@@ -48,12 +48,12 @@ fn resolver(
 /// The two forms answer two questions:
 ///
 /// - `Some(format)` — the devices the program bound to that format can run on.
-///   The format selects the backend to ask, so the answer is where this run's
+///   The format selects the backend to ask, so the answer is where this search's
 ///   work can be placed rather than every device present; a machine commonly
 ///   has devices only one backend reaches. The orchestrator runs this over ssh
-///   at run start to resolve a remote's device selectors.
+///   at search start to resolve a remote's device selectors.
 /// - `None` — every device every compiled backend reaches. The readiness probe
-///   for a run whose format is a program outside this build: nothing here can
+///   for a search whose format is a program outside this build: nothing here can
 ///   resolve that format, so the answer states that the machine is up and what
 ///   hardware it has, and the program's own enumeration decides placement.
 fn enumerate_devices(format: Option<&str>) -> Result<()> {
@@ -75,7 +75,7 @@ fn enumerate_devices(format: Option<&str>) -> Result<()> {
 ///
 /// The in-tree formats are reached through the same two contracts a program
 /// outside the workspace implements, so this role proves those contracts carry
-/// everything a run needs.
+/// everything a search needs.
 fn serve_domain(format: &FormatId) -> Result<()> {
     let domain = sima_domains::domain_for(format)?;
     let generators = sima_domains::generators_for(format)?;
@@ -114,7 +114,7 @@ fn main() {
         eprintln!("sima-worker: orphaned before startup");
         std::process::exit(1);
     }
-    // The domain-service role: one session for the run, answering what a
+    // The domain-service role: one session for the search, answering what a
     // format binds. It runs under the same orphan protection as a worker,
     // its session being just as long-lived.
     let role = match Role::from_args(std::env::args()) {

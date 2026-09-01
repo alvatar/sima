@@ -1,5 +1,5 @@
 //! The values a rental test starts from: a rented specification, the rental
-//! that draws on it, a store with a run to own acquisitions, and the offers a
+//! that draws on it, a store with a search to own acquisitions, and the offers a
 //! stub marketplace lists.
 //!
 //! Both halves of this namespace build the same handful of things to exercise
@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, channel};
 use std::time::Duration;
 
-use sima_model::{FormatId, GeneratorConfig, GeneratorId, Params, RunConfig, RunId};
+use sima_model::{FormatId, GeneratorConfig, GeneratorId, Params, SearchConfig, SearchId};
 use sima_provider::{Constraints, Offer, OfferId, Price, Provider};
 use sima_scheduler::{Event, ExecutionConfig};
 use sima_store::Store;
@@ -90,7 +90,7 @@ pub(super) fn rental(spec: &Rented, count: usize, fill: FillPolicy) -> Rental<'_
         fill,
         // The machines these fixtures rent are given no program, so neither
         // path a delivery would take is exercised through them.
-        root: "~/sima-runs",
+        root: "~/sima",
         binary: "sima",
     }
 }
@@ -127,11 +127,11 @@ pub(super) fn offer(id: &str, price: u64) -> Offer {
     }
 }
 
-/// A store over a fresh temp directory and a run id to own acquisitions.
-pub(super) fn acquisition_env() -> (TempDir, Store, RunId) {
+/// A store over a fresh temp directory and a search id to own acquisitions.
+pub(super) fn acquisition_env() -> (TempDir, Store, SearchId) {
     let dir = tempfile::tempdir().expect("temp dir");
     let store = Store::open(dir.path()).expect("open store");
-    let run = RunConfig {
+    let search = SearchConfig {
         root_seed: 1,
         segments: None,
         format: FormatId::new("stub.v1").expect("format id"),
@@ -142,7 +142,7 @@ pub(super) fn acquisition_env() -> (TempDir, Store, RunId) {
         params: Params { bytes: vec![1] },
     }
     .id();
-    (dir, store, run)
+    (dir, store, search)
 }
 
 /// The execution settings the transport carries; no checkpoint cadence.

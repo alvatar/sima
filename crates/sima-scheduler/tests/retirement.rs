@@ -1,4 +1,4 @@
-//! Worker retirement: an ssh transport that yields no worker winds the run
+//! Worker retirement: an ssh transport that yields no worker winds the search
 //! down by faulting under strict fill, degrading to the survivors under
 //! best-effort, and faulting rather than hanging when the last worker leaves.
 
@@ -6,11 +6,11 @@ mod common;
 
 use std::time::Duration;
 
-use common::{config, exec, journal_events, run_id, run_pools, stub_resolver, temp_store};
+use common::{config, exec, journal_events, run_pools, search_id, stub_resolver, temp_store};
 use sima_contracts::DeviceBinding;
 use sima_core::{Error, Result};
 use sima_domains::StubBehavior;
-use sima_scheduler::{Event, Level, RunOutcome, WorkerPool};
+use sima_scheduler::{Event, Level, SearchOutcome, WorkerPool};
 use sima_trace::Emitter;
 use sima_transport::loopback::LoopbackTransport;
 use sima_transport::{SpawnOutcome, WorkerTransport};
@@ -34,7 +34,7 @@ impl WorkerTransport for RetiringTransport {
 }
 
 /// A transport whose spawn fails outright — an infrastructure error, not a
-/// retirement. The regression guard that a spawn `Err` still faults the run.
+/// retirement. The regression guard that a spawn `Err` still faults the search.
 struct FailingSpawnTransport;
 
 impl WorkerTransport for FailingSpawnTransport {
@@ -56,7 +56,7 @@ fn one_slot() -> Vec<Option<DeviceBinding>> {
 }
 
 #[test]
-fn a_fatal_retirement_faults_the_run() -> Result<()> {
+fn a_fatal_retirement_faults_the_search() -> Result<()> {
     let cfg = config(70, vec![StubBehavior::Succeed]);
     let (_dir, store) = temp_store();
     let transport = RetiringTransport { fatal: true };
@@ -68,7 +68,7 @@ fn a_fatal_retirement_faults_the_run() -> Result<()> {
     match run_pools(&store, &cfg, &exec(1, 3, 1_000), &pools) {
         Err(Error::Transport(msg)) => {
             // The message is policy-neutral: a transport retires fatally
-            // whenever the run cannot proceed without it, not only under strict
+            // whenever the search cannot proceed without it, not only under strict
             // fill.
             assert!(
                 msg.contains("cannot continue without it"),
@@ -77,14 +77,14 @@ fn a_fatal_retirement_faults_the_run() -> Result<()> {
         }
         other => panic!("expected a transport retirement fault, got {other:?}"),
     }
-    // A faulted run writes no manifest.
-    assert!(store.manifest(&run_id(&cfg))?.is_none());
+    // A faulted search writes no manifest.
+    assert!(store.manifest(&search_id(&cfg))?.is_none());
     Ok(())
 }
 
 #[test]
 fn a_retirement_is_journaled_as_a_diagnostic() -> Result<()> {
-    // A best-effort retirement degrades a pool with no run-level failure; a
+    // A best-effort retirement degrades a pool with no search-level failure; a
     // journal diagnostic is what makes the degradation visible. Two candidates,
     // a retiring best-effort pool and a healthy survivor: the survivor drains
     // the queue and the retirement leaves a warning behind.
@@ -106,7 +106,7 @@ fn a_retirement_is_journaled_as_a_diagnostic() -> Result<()> {
         },
     ];
     run_pools(&store, &cfg, &exec, &pools)?;
-    let events = journal_events(&store, &run_id(&cfg));
+    let events = journal_events(&store, &search_id(&cfg));
     assert!(
         events.iter().any(|event| matches!(
             event,
@@ -118,9 +118,9 @@ fn a_retirement_is_journaled_as_a_diagnostic() -> Result<()> {
 }
 
 #[test]
-fn a_non_fatal_retirement_lets_a_survivor_finish_the_run() -> Result<()> {
+fn a_non_fatal_retirement_lets_a_survivor_finish_the_search() -> Result<()> {
     // Two distinct candidates, and two pools: a retiring best-effort pool and a
-    // healthy loopback pool. The survivor drains the queue and the run
+    // healthy loopback pool. The survivor drains the queue and the search
     // finalizes.
     let cfg = config(71, vec![StubBehavior::Succeed, StubBehavior::Sleep(0)]);
     let (_dir, store) = temp_store();
@@ -141,11 +141,11 @@ fn a_non_fatal_retirement_lets_a_survivor_finish_the_run() -> Result<()> {
     ];
     assert!(matches!(
         run_pools(&store, &cfg, &exec, &pools)?,
-        RunOutcome::Finalized { .. }
+        SearchOutcome::Finalized { .. }
     ));
     // Every candidate committed through the survivor.
     let manifest = store
-        .manifest(&run_id(&cfg))?
+        .manifest(&search_id(&cfg))?
         .expect("a finalized manifest");
     assert_eq!(manifest.entries.len(), 2);
     Ok(())
@@ -154,7 +154,7 @@ fn a_non_fatal_retirement_lets_a_survivor_finish_the_run() -> Result<()> {
 #[test]
 fn the_last_worker_retiring_faults_rather_than_hangs() -> Result<()> {
     // A best-effort retirement that leaves no worker behind: with work still
-    // pending and no one to drain it, the run must fault instead of the driver
+    // pending and no one to drain it, the search must fault instead of the driver
     // waiting forever.
     let cfg = config(72, vec![StubBehavior::Succeed]);
     let (_dir, store) = temp_store();
@@ -173,14 +173,14 @@ fn the_last_worker_retiring_faults_rather_than_hangs() -> Result<()> {
         }
         other => panic!("expected an every-worker-retired fault, got {other:?}"),
     }
-    assert!(store.manifest(&run_id(&cfg))?.is_none());
+    assert!(store.manifest(&search_id(&cfg))?.is_none());
     Ok(())
 }
 
 #[test]
-fn a_spawn_failure_still_faults_the_run() -> Result<()> {
+fn a_spawn_failure_still_faults_the_search() -> Result<()> {
     // The regression guard: a spawn that returns `Err` — an infrastructure
-    // failure, not a retirement — faults the run, unchanged by the
+    // failure, not a retirement — faults the search, unchanged by the
     // SpawnOutcome refactor.
     let cfg = config(73, vec![StubBehavior::Succeed]);
     let (_dir, store) = temp_store();
@@ -199,6 +199,6 @@ fn a_spawn_failure_still_faults_the_run() -> Result<()> {
         }
         other => panic!("expected a transport fault, got {other:?}"),
     }
-    assert!(store.manifest(&run_id(&cfg))?.is_none());
+    assert!(store.manifest(&search_id(&cfg))?.is_none());
     Ok(())
 }

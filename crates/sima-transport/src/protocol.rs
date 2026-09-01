@@ -13,7 +13,7 @@
 //! one [`Assignment`], answered by zero or more [`ToParent::Save`] frames and
 //! exactly one of [`ToParent::Done`], [`ToParent::Panicked`], or
 //! [`ToParent::Fault`]; [`ToParent::Event`] frames may interleave anywhere
-//! after `Ready`, carrying structured events for the run's collector. There
+//! after `Ready`, carrying structured events for the search's collector. There
 //! is no shutdown message: the parent closing the child's stdin is the
 //! shutdown signal.
 
@@ -55,8 +55,8 @@ const OUTCOME_FAILED: u8 = 1;
 const OUTCOME_REJECTED: u8 = 2;
 
 /// The handshake opening, sent once after spawn: the protocol version the
-/// parent speaks, the run's format id — the child resolves its executor from
-/// it, once — the run's checkpoint cadence settings, and the device the child
+/// parent speaks, the search's format id — the child resolves its executor from
+/// it, once — the search's checkpoint cadence settings, and the device the child
 /// computes on.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Hello {
@@ -66,7 +66,7 @@ pub struct Hello {
     /// and the transport's reader threads can attribute events without a
     /// side channel.
     pub worker: u64,
-    /// The run's format id; every assignment's spec bytes are of this format.
+    /// The search's format id; every assignment's spec bytes are of this format.
     pub format: FormatId,
     /// Wall-clock checkpoint cadence in milliseconds; `u64::MAX` disables
     /// the axis.
@@ -79,7 +79,7 @@ pub struct Hello {
 }
 
 impl Hello {
-    /// The handshake frame for a run over `format` with the given checkpoint
+    /// The handshake frame for a search over `format` with the given checkpoint
     /// cadence, in the wire's cadence encoding: a disabled wall-clock axis is
     /// `u64::MAX` milliseconds — an interval too large for the u64 saturates
     /// there, since a cadence beyond the address space of milliseconds is
@@ -87,7 +87,7 @@ impl Hello {
     ///
     /// The worker id and device are left unbound: they vary per worker, so
     /// each spawn sets them on a copy of this frame.
-    pub fn for_run(
+    pub fn for_search(
         format: FormatId,
         checkpoint_interval: Duration,
         checkpoint_interval_steps: Option<NonZeroU64>,
@@ -115,7 +115,7 @@ impl Hello {
 pub struct Assignment {
     /// The candidate bytes; their format travels once in [`Hello`].
     pub spec: Vec<u8>,
-    /// The run params blob.
+    /// The search params blob.
     pub params: Vec<u8>,
     /// The task's deterministic seed.
     pub seed: u64,
@@ -181,7 +181,7 @@ pub enum ToParent {
     /// `sima_trace::Event`, carried opaquely — observational serde-world
     /// bytes inside the canonical frame, the same way spec and params bytes
     /// travel opaquely elsewhere. The parent's reader thread parses and
-    /// forwards it to the run's collector; it never reaches the lease loop.
+    /// forwards it to the search's collector; it never reaches the lease loop.
     Event(Vec<u8>),
 }
 

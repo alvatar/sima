@@ -1,36 +1,36 @@
-//! [`RunTimeline`]: a run's execution metrics and temporal shape, merged from
+//! [`SearchTimeline`]: a search's execution metrics and temporal shape, merged from
 //! its journal.
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use sima_model::RunId;
+use sima_model::SearchId;
 use sima_scheduler::{Event, Record};
 
 use crate::task_history::worker_bindings;
 
-/// A run's execution metrics and temporal shape, merged from its journal.
+/// A search's execution metrics and temporal shape, merged from its journal.
 ///
-/// Every rate and per-worker figure covers the latest run session — a resumed
-/// run's journal spans sessions separated by downtime, and a span across that
+/// Every rate and per-worker figure covers the latest search session — a resumed
+/// search's journal spans sessions separated by downtime, and a span across that
 /// downtime would collapse every rate toward zero. [`committed`](Self::committed)
-/// is the run-wide cumulative count, since a count carries across sessions
+/// is the search-wide cumulative count, since a count carries across sessions
 /// where a rate does not.
 ///
 /// Every duration is elapsed wall-clock as the collector observed it: the
 /// journal stamps each event at append, so a span covers the queueing and
 /// transport around the work as well as the work.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RunTimeline {
-    /// The run the metrics describe.
-    pub run: RunId,
-    /// The session's task count, from its `RunStarted` — the denominator of
+pub struct SearchTimeline {
+    /// The search the metrics describe.
+    pub search: SearchId,
+    /// The session's task count, from its `SearchStarted` — the denominator of
     /// the retry rates.
     pub tasks: usize,
     /// Committed tasks across the whole journal.
     pub committed: usize,
     /// Committed tasks within the session — the throughput numerator.
     pub session_committed: usize,
-    /// When the session started: the last `RunStarted`'s stamp.
+    /// When the session started: the last `SearchStarted`'s stamp.
     pub session_start_ms: u64,
     /// The last stamp the journal carries, which bounds the session.
     pub session_end_ms: u64,
@@ -44,7 +44,7 @@ pub struct RunTimeline {
 }
 
 /// A session's retry figures, each a numerator over its own denominator. They
-/// answer three questions that disagree on the same run: how much retrying
+/// answer three questions that disagree on the same search: how much retrying
 /// happened, how many tasks it touched, and how much attempted work was
 /// wasted.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -107,11 +107,11 @@ struct WorkerAccumulator {
     spans: Vec<(u64, u64)>,
 }
 
-/// Merges `records` — a run's lifecycle events in append order — into the
-/// metrics of `run`, over records from any source: a journal read locally,
-/// or a stream from the host that drives the run. Every figure is an infrastructure fact the journal states, so no
+/// Merges `records` — a search's lifecycle events in append order — into the
+/// metrics of `search`, over records from any source: a journal read locally,
+/// or a stream from the host that drives the search. Every figure is an infrastructure fact the journal states, so no
 /// domain is consulted and the merge cannot fail.
-pub fn timeline_records(run: RunId, records: &[Record]) -> RunTimeline {
+pub fn timeline_records(search: SearchId, records: &[Record]) -> SearchTimeline {
     let bindings = worker_bindings(records);
     let committed = records
         .iter()
@@ -133,7 +133,7 @@ pub fn timeline_records(run: RunId, records: &[Record]) -> RunTimeline {
     for record in session {
         let ts_ms = record.ts_ms;
         match &record.event {
-            Event::RunStarted { tasks: count, .. } => tasks = *count,
+            Event::SearchStarted { tasks: count, .. } => tasks = *count,
             Event::WorkerBound { worker, .. } => {
                 let accumulator = workers.entry(*worker).or_default();
                 // Journal order is chronological, but taking the minimum keeps
@@ -178,9 +178,9 @@ pub fn timeline_records(run: RunId, records: &[Record]) -> RunTimeline {
             | Event::DriverChanged { .. }
             | Event::Queued { .. }
             | Event::Diagnostic { .. }
-            | Event::RunFinalized { .. }
-            | Event::RunFailed { .. }
-            | Event::RunInterrupted { .. }
+            | Event::SearchFinalized { .. }
+            | Event::SearchFailed { .. }
+            | Event::SearchInterrupted { .. }
             // Rental lifecycle states nothing about worker timing or rates.
             | Event::InstanceOnline { .. }
             | Event::InstanceLost { .. }
@@ -190,13 +190,13 @@ pub fn timeline_records(run: RunId, records: &[Record]) -> RunTimeline {
             | Event::AcquisitionAbandoned { .. }
             // A checkpoint persisted times nothing an attempt is measured by.
             | Event::Checkpointed { .. }
-            // The phases of placing a run on a machine time nothing a worker
+            // The phases of placing a search on a machine time nothing a worker
             // did.
             | Event::Renting { .. }
             | Event::AwaitingMachine { .. }
-            | Event::SendingRun { .. }
+            | Event::SendingSearch { .. }
             | Event::InstallingProgram { .. }
-            | Event::StartingRun => {}
+            | Event::StartingSearch => {}
         }
     }
     retries.retried_tasks = retried.len();
@@ -208,8 +208,8 @@ pub fn timeline_records(run: RunId, records: &[Record]) -> RunTimeline {
         push_span(&mut workers, worker, started_ms, session_end_ms);
     }
 
-    RunTimeline {
-        run,
+    SearchTimeline {
+        search,
         tasks,
         committed,
         session_committed,
@@ -232,14 +232,14 @@ pub fn timeline_records(run: RunId, records: &[Record]) -> RunTimeline {
     }
 }
 
-/// The records of the latest session: a resumed run restates `RunStarted` per
+/// The records of the latest session: a resumed search restates `SearchStarted` per
 /// orchestration, and the last one opens the session the metrics cover. A
 /// journal naming no session start is read whole, so a malformed one merges to
 /// figures rather than to nothing.
 fn session(records: &[Record]) -> &[Record] {
     records
         .iter()
-        .rposition(|record| matches!(record.event, Event::RunStarted { .. }))
+        .rposition(|record| matches!(record.event, Event::SearchStarted { .. }))
         .map_or(records, |start| &records[start..])
 }
 
@@ -259,7 +259,7 @@ fn close<'a>(
 }
 
 /// Credits `worker` with a lease span. An end before the start would be a
-/// journal whose stamps run backwards, and the span is empty rather than
+/// journal whose stamps search backwards, and the span is empty rather than
 /// negative.
 fn push_span(
     workers: &mut BTreeMap<u64, WorkerAccumulator>,
@@ -310,8 +310,8 @@ mod tests {
 
     use crate::fixtures::{journal_with, stub_config};
 
-    fn run_id() -> RunId {
-        RunId::from_hash(hash_bytes(b"timeline test run"))
+    fn search_id() -> SearchId {
+        SearchId::from_hash(hash_bytes(b"timeline test search"))
     }
 
     /// Wraps an event as a record stamped `ts_ms`.
@@ -322,8 +322,8 @@ mod tests {
     fn started(tasks: usize, ts_ms: u64) -> Record {
         at(
             ts_ms,
-            Event::RunStarted {
-                run: "00".repeat(32),
+            Event::SearchStarted {
+                search: "00".repeat(32),
                 tasks,
                 committed: 0,
             },
@@ -414,12 +414,12 @@ mod tests {
     }
 
     /// The metrics `records` merge to.
-    fn merged(records: &[Record]) -> RunTimeline {
-        timeline_records(run_id(), records)
+    fn merged(records: &[Record]) -> SearchTimeline {
+        timeline_records(search_id(), records)
     }
 
     /// The metrics of the worker `id`, which the merge must have named.
-    fn worker(timeline: &RunTimeline, id: u64) -> WorkerMetrics {
+    fn worker(timeline: &SearchTimeline, id: u64) -> WorkerMetrics {
         timeline
             .workers
             .iter()
@@ -507,7 +507,7 @@ mod tests {
 
     #[test]
     fn the_three_retry_figures_measure_volume_prevalence_and_waste() {
-        // A run where a few very flaky tasks carry all the retrying: ten tasks
+        // A search where a few very flaky tasks carry all the retrying: ten tasks
         // fail ten times each before committing, and the rest commit first try.
         // Prevalence reads 1% where volume reads 10%.
         let mut records = vec![started(1_000, 0)];
@@ -592,8 +592,8 @@ mod tests {
     }
 
     #[test]
-    fn the_rates_cover_the_latest_session_and_the_commit_count_the_run() {
-        // A run resumed after an hour of downtime: merging the gap into the
+    fn the_rates_cover_the_latest_session_and_the_commit_count_the_search() {
+        // A search resumed after an hour of downtime: merging the gap into the
         // rates would collapse them, so they cover the latest session alone.
         let timeline = merged(&[
             started(2, 0),
@@ -608,7 +608,7 @@ mod tests {
         assert_eq!(timeline.session_start_ms, 3_600_000);
         assert_eq!(timeline.session_end_ms, 3_600_400);
         assert_eq!(timeline.session_committed, 1);
-        assert_eq!(timeline.committed, 2, "the commit count is run-wide");
+        assert_eq!(timeline.committed, 2, "the commit count is search-wide");
         assert_eq!(timeline.commit_times_ms, vec![3_600_400]);
         let worker = worker(&timeline, 0);
         assert_eq!(worker.spans, vec![(3_600_100, 3_600_400)]);
@@ -687,7 +687,7 @@ mod tests {
         let (_dir, config) = journal_with(&records)?;
         assert_eq!(
             timeline_records(stub_config()?.id(), &records),
-            timeline_records(config.run.id(), &crate::journal::records(&config)?)
+            timeline_records(config.search.id(), &crate::journal::records(&config)?)
         );
         Ok(())
     }

@@ -8,7 +8,7 @@ use sima_core::{Error, Hash, Result, hash_bytes};
 
 /// Canonical identity of the compiler and the output-affecting options.
 ///
-/// A domain records this next to a kernel's source digest so a run's engine
+/// A domain records this next to a kernel's source digest so a search's engine
 /// identity covers how the WGSL was lowered to SPIR-V, not only its source.
 /// The value is a pinned constant; the known-answer test in this module fails
 /// if a `naga` upgrade changes emitted SPIR-V, forcing a deliberate update

@@ -126,9 +126,10 @@ mod tests {
     }
 
     #[test]
-    fn a_run_started_line_without_a_commit_count_is_rejected() {
-        let run = "cd".repeat(32);
-        let line = format!(r#"{{"ts_ms":1234,"event":"run_started","run":"{run}","tasks":3}}"#);
+    fn a_search_started_line_without_a_commit_count_is_rejected() {
+        let search = "cd".repeat(32);
+        let line =
+            format!(r#"{{"ts_ms":1234,"event":"search_started","search":"{search}","tasks":3}}"#);
         assert!(matches!(Record::from_line(&line), Err(Error::Encoding(_))));
     }
 
@@ -193,10 +194,10 @@ mod tests {
     /// One instance of every variant, for exhaustiveness over the vocabulary.
     fn every_variant() -> Vec<Event> {
         let task = "ab".repeat(32);
-        let run = "cd".repeat(32);
+        let search = "cd".repeat(32);
         vec![
-            Event::RunStarted {
-                run: run.clone(),
+            Event::SearchStarted {
+                search: search.clone(),
                 tasks: 3,
                 committed: 1,
             },
@@ -264,16 +265,16 @@ mod tests {
                 binary: "/opt/acme/worker".to_string(),
                 digest: "ef".repeat(32),
             },
-            Event::RunFinalized {
-                run: run.clone(),
+            Event::SearchFinalized {
+                search: search.clone(),
                 committed: 3,
             },
-            Event::RunFailed {
-                run: run.clone(),
+            Event::SearchFailed {
+                search: search.clone(),
                 task: task.clone(),
                 reason: "rejected".to_string(),
             },
-            Event::RunInterrupted { run },
+            Event::SearchInterrupted { search },
             Event::Diagnostic {
                 level: Level::Error,
                 source: "panic".to_string(),

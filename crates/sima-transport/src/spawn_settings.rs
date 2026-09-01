@@ -21,17 +21,17 @@ pub struct SpawnSettings {
     /// How long the spawn waits for `Ready`. [`Duration::MAX`] waits for as
     /// long as the child lives.
     pub(crate) answer_timeout: Duration,
-    /// The run's settings, with the worker id and device left unbound: they
+    /// The search's settings, with the worker id and device left unbound: they
     /// vary per worker, so each spawn sets them on a copy of this frame.
     pub(crate) hello: Hello,
-    /// The digest of the program this run sent to the machine these workers
+    /// The digest of the program this search sent to the machine these workers
     /// run on, which each of them answers back at the handshake; `None` for a
     /// format this build answers in process, where no program travelled.
     pub(crate) program_digest: Option<String>,
 }
 
 impl SpawnSettings {
-    /// The settings a run over `format` spawns its workers under, with the
+    /// The settings a search over `format` spawns its workers under, with the
     /// given checkpoint cadence ([`Duration::MAX`] and `None` disable an
     /// axis) and the given deadline on the handshake answer.
     pub fn new(
@@ -44,14 +44,14 @@ impl SpawnSettings {
         SpawnSettings {
             policy,
             answer_timeout,
-            hello: Hello::for_run(format, checkpoint_interval, checkpoint_interval_steps),
+            hello: Hello::for_search(format, checkpoint_interval, checkpoint_interval_steps),
             program_digest: None,
         }
     }
 
     /// The same settings expecting `digest` from every worker's handshake.
     ///
-    /// `Some` names the program this run sent to the machine the workers run
+    /// `Some` names the program this search sent to the machine the workers run
     /// on, so a worker answering anything else fails its spawn; `None` expects
     /// none, and a worker naming a program fails its spawn just the same. What
     /// the digest identifies is the caller's business — this side compares.

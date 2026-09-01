@@ -1,12 +1,13 @@
 //! Terminal rendering: one plain line per meaningful lifecycle event, and
 //! the status block. Ids render short — the first twelve hex characters —
-//! since a run's journal names them consistently.
+//! since a search's journal names them consistently.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use sima_pipeline::{
-    Attempt, AttemptResult, Event, MachineReport, Record, RetryStats, RunId, RunState, RunStatus,
-    RunSummary, RunTimeline, SpendReport, TaskHistory, TaskOutcome, WorkerMetrics,
+    Attempt, AttemptResult, Event, MachineReport, Record, RetryStats, SearchId, SearchState,
+    SearchStatus, SearchSummary, SearchTimeline, SpendReport, TaskHistory, TaskOutcome,
+    WorkerMetrics,
 };
 
 /// How many hex characters of an id a progress line shows.
@@ -20,21 +21,21 @@ pub fn short(id: &str) -> &str {
 /// Renders `event` to the one line it warrants, or `None` for the `Queued`,
 /// `WorkerBound`, and `ProgramBound` bookkeeping events.
 /// `committed`/`tasks` supply
-/// the running `committed k/n` count a commit line shows; on `RunStarted`, a
-/// nonzero `committed` is the run's prior progress and the line states the
+/// the running `committed k/n` count a commit line shows; on `SearchStarted`, a
+/// nonzero `committed` is the search's prior progress and the line states the
 /// ledger it resumes, so a resumed session does not read as a restart. The single source of the
-/// event wording: `sima run` prints these lines to stdout and the tui folds
+/// event wording: `sima search` prints these lines to stdout and the tui folds
 /// them into its event log.
 pub fn describe(event: &Event, committed: usize, tasks: usize) -> Option<String> {
     Some(match event {
-        // A run over a store that already holds progress states its ledger
+        // A search over a store that already holds progress states its ledger
         // rather than a task count: continuing and restarting otherwise read
         // the same, and only one of them is what happened.
-        Event::RunStarted { tasks, .. } if committed > 0 => format!(
+        Event::SearchStarted { tasks, .. } if committed > 0 => format!(
             "resuming: {committed}/{tasks} committed, {} outstanding",
             tasks.saturating_sub(committed)
         ),
-        Event::RunStarted { tasks, .. } => format!("started: {tasks} tasks"),
+        Event::SearchStarted { tasks, .. } => format!("started: {tasks} tasks"),
         Event::Committed { task, .. } => {
             format!("committed {committed}/{tasks}  {}", short(task))
         }
@@ -57,24 +58,24 @@ pub fn describe(event: &Event, committed: usize, tasks: usize) -> Option<String>
         Event::CheckpointDegraded { task, error } => {
             format!("checkpoint degraded {}: {error}", short(task))
         }
-        // What a run looks like while it is computing: an attempt begins, and
+        // What a search looks like while it is computing: an attempt begins, and
         // its checkpoints stand for it still being alive. Between them a
         // terminal that showed only commits was silent for as long as a task
-        // takes, and silence reads the same whether a run computes or wedges.
+        // takes, and silence reads the same whether a search computes or wedges.
         Event::Leased { task, worker, .. } => {
             format!("task {} started (worker {worker})", short(task))
         }
         Event::Checkpointed { task, worker } => {
             format!("task {} checkpointed (worker {worker})", short(task))
         }
-        Event::RunFinalized { committed, .. } => {
+        Event::SearchFinalized { committed, .. } => {
             format!("finalized: {committed} tasks committed")
         }
-        Event::RunFailed { task, reason, .. } => {
-            format!("run failed on {}: {reason}", short(task))
+        Event::SearchFailed { task, reason, .. } => {
+            format!("search failed on {}: {reason}", short(task))
         }
-        Event::RunInterrupted { .. } => {
-            "interrupted: store resumable, re-run to continue".to_string()
+        Event::SearchInterrupted { .. } => {
+            "interrupted: store resumable, run the search again to continue".to_string()
         }
         // A rebind means the hardware changed under the search: the chain's
         // device is gone and its work moved. Loud by design.
@@ -83,7 +84,7 @@ pub fn describe(event: &Event, committed: usize, tasks: usize) -> Option<String>
         }
         // A warn or error diagnostic is worth a console line; info-level
         // diagnostics (worker stderr) are journaled, not echoed, so the
-        // run's console output stays clean.
+        // search's console output stays clean.
         Event::Diagnostic {
             level,
             source,
@@ -101,7 +102,7 @@ pub fn describe(event: &Event, committed: usize, tasks: usize) -> Option<String>
                 None => format!("{level} {source}: {message}"),
             }
         }
-        // The phases of putting a run on a machine, each stated as it begins:
+        // The phases of putting a search on a machine, each stated as it begins:
         // between them lie the minutes a placement takes, and an operator
         // reading a silent terminal cannot otherwise tell them from a hang.
         Event::Renting {
@@ -121,14 +122,14 @@ pub fn describe(event: &Event, committed: usize, tasks: usize) -> Option<String>
             named(member),
             timeout_ms / 1_000
         ),
-        Event::SendingRun { member, objects } => {
-            format!("sending the run{}: {objects} objects", named(member))
+        Event::SendingSearch { member, objects } => {
+            format!("sending the search{}: {objects} objects", named(member))
         }
         Event::InstallingProgram { member } => {
             format!("installing the program{}", named(member))
         }
-        Event::StartingRun => "starting the run".to_string(),
-        // Not narration: it says machines the run was paying for are gone,
+        Event::StartingSearch => "starting the search".to_string(),
+        // Not narration: it says machines the search was paying for are gone,
         // which an operator reads whatever they asked to be told.
         Event::AcquisitionAbandoned { released } => format!(
             "acquisition abandoned: {released} machine(s) released, none of them left running"
@@ -203,7 +204,7 @@ fn hardware(gpu_model: &str, gpu_count: u32) -> String {
 }
 
 /// The member a phase line names, as the ` <member>` that follows the verb —
-/// empty for a migration, which places its run on the one machine its
+/// empty for a migration, which places its search on the one machine its
 /// destination names.
 fn named(member: &str) -> String {
     if member.is_empty() {
@@ -213,46 +214,46 @@ fn named(member: &str) -> String {
     }
 }
 
-/// How much of a run's stream reaches the terminal.
+/// How much of a search's stream reaches the terminal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Narration {
-    /// Every line a run's events warrant.
+    /// Every line a search's events warrant.
     Full,
-    /// The run's own progress alone — what it is, what it started, what it
+    /// The search's own progress alone — what it is, what it started, what it
     /// committed, how it ended — plus anything gone wrong. What `--quiet`
     /// states, for an invocation whose output is read by something other than
     /// an operator watching it happen.
     Minimal,
 }
 
-/// Whether `event` is narration: a line saying where the run's placement or
-/// its work has got to, rather than what the run did. These are what
+/// Whether `event` is narration: a line saying where the search's placement or
+/// its work has got to, rather than what the search did. These are what
 /// [`Narration::Minimal`] drops.
 ///
 /// A machine lost or replaced is not among them: it reports hardware going
-/// away under a run, which is a fact about the run whoever is reading.
+/// away under a search, which is a fact about the search whoever is reading.
 fn narrated(event: &Event) -> bool {
     matches!(
         event,
         Event::Renting { .. }
             | Event::AwaitingMachine { .. }
-            | Event::SendingRun { .. }
+            | Event::SendingSearch { .. }
             | Event::InstallingProgram { .. }
-            | Event::StartingRun
+            | Event::StartingSearch
             | Event::InstanceOnline { .. }
             | Event::Leased { .. }
             | Event::Checkpointed { .. }
     )
 }
 
-/// Progress rendering over a run's event stream: prints one line per
+/// Progress rendering over a search's event stream: prints one line per
 /// meaningful event. Called from the collector thread, one record at a
 /// time, in journal order; the counters give the `committed k/n` running
 /// count.
 pub struct Progress {
-    /// The run's task count, from `RunStarted`.
+    /// The search's task count, from `SearchStarted`.
     tasks: AtomicUsize,
-    /// Commits accounted for: the run's prior commits plus those seen live.
+    /// Commits accounted for: the search's prior commits plus those seen live.
     committed: AtomicUsize,
     /// How much of the stream this renderer prints.
     narration: Narration,
@@ -260,8 +261,8 @@ pub struct Progress {
 
 impl Progress {
     /// A progress renderer over a session's events, printing as much of them
-    /// as `narration` states. Both counters come from the run's own
-    /// `RunStarted`, so nothing needs to be known before the run starts.
+    /// as `narration` states. Both counters come from the search's own
+    /// `SearchStarted`, so nothing needs to be known before the search starts.
     pub fn new(narration: Narration) -> Progress {
         Progress {
             tasks: AtomicUsize::new(0),
@@ -278,12 +279,12 @@ impl Progress {
         if self.narration == Narration::Minimal && narrated(event) {
             return;
         }
-        if let Event::RunStarted {
+        if let Event::SearchStarted {
             tasks, committed, ..
         } = event
         {
             self.tasks.store(*tasks, Ordering::Relaxed);
-            // The run's prior commits, counted from the store's records by
+            // The search's prior commits, counted from the store's records by
             // the source that derived the frontier. A resumed session counts
             // on from there.
             self.committed.store(*committed, Ordering::Relaxed);
@@ -306,19 +307,19 @@ impl Progress {
     }
 }
 
-/// The runs a store holds, one line each: id, state, and task ledger. A store
+/// The searches a store holds, one line each: id, state, and task ledger. A store
 /// holding none is a line saying so, since an empty answer to a question about
 /// a store is still an answer.
-pub fn runs_block(summaries: &[RunSummary]) -> String {
+pub fn searches_block(summaries: &[SearchSummary]) -> String {
     if summaries.is_empty() {
-        return "this store holds no run".to_string();
+        return "this store holds no search".to_string();
     }
-    let mut block = format!("{:<64}  {:<12}  {}", "run", "state", "committed");
+    let mut block = format!("{:<64}  {:<12}  {}", "search", "state", "committed");
     for summary in summaries {
         block.push_str(&format!(
             "\n{:<64}  {:<12}  {}/{}",
-            summary.run,
-            run_state(&summary.state),
+            summary.search,
+            search_state(&summary.state),
             summary.committed,
             summary.tasks
         ));
@@ -352,14 +353,14 @@ pub fn task_block(history: &TaskHistory) -> String {
 /// The failure digest's column headers, in render order.
 const FAILURE_COLUMNS: [&str; 5] = ["task", "final", "attempts", "worker", "reason"];
 
-/// Renders the failure digest: a header counting the tasks the run did not
+/// Renders the failure digest: a header counting the tasks the search did not
 /// commit, then one row each naming how the task ended and why. An empty
 /// digest is the header alone.
-pub fn failures_block(run: &RunId, failures: &[TaskHistory]) -> String {
+pub fn failures_block(search: &SearchId, failures: &[TaskHistory]) -> String {
     let tasks = if failures.len() == 1 { "task" } else { "tasks" };
     let header = format!(
-        "run {}   {} {tasks} did not commit",
-        short(&run.to_string()),
+        "search {}   {} {tasks} did not commit",
+        short(&search.to_string()),
         failures.len()
     );
     if failures.is_empty() {
@@ -531,24 +532,24 @@ fn attempt_note(attempt: &Attempt) -> String {
     note
 }
 
-/// A run's state as a line names it. The one wording, shared by the status
+/// A search's state as a line names it. The one wording, shared by the status
 /// block and the store's listing.
-fn run_state(state: &RunState) -> String {
+fn search_state(state: &SearchState) -> String {
     match state {
-        RunState::InProgress => "in progress".to_string(),
-        RunState::Finalized => "finalized".to_string(),
-        RunState::Failed { task, reason } => {
+        SearchState::InProgress => "in progress".to_string(),
+        SearchState::Finalized => "finalized".to_string(),
+        SearchState::Failed { task, reason } => {
             format!("failed on {}: {reason}", short(task))
         }
-        RunState::Interrupted => "interrupted".to_string(),
+        SearchState::Interrupted => "interrupted".to_string(),
     }
 }
 
 /// Renders the status block, one aligned `name  value` line per field.
-pub fn status_block(status: &RunStatus) -> String {
-    let state = run_state(&status.state);
+pub fn status_block(status: &SearchStatus) -> String {
+    let state = search_state(&status.state);
     let block = format!(
-        "run                  {}\n\
+        "search                  {}\n\
          state                {state}\n\
          tasks                {}\n\
          committed            {}\n\
@@ -557,7 +558,7 @@ pub fn status_block(status: &RunStatus) -> String {
          faulted              {}\n\
          lease expired        {}\n\
          checkpoint degraded  {}",
-        status.run,
+        status.search,
         status.tasks,
         status.committed,
         status.retried,
@@ -572,12 +573,12 @@ pub fn status_block(status: &RunStatus) -> String {
     }
 }
 
-/// The run's device composition: committed tasks per device, busiest first,
+/// The search's device composition: committed tasks per device, busiest first,
 /// and the chains that moved when their device went absent.
 ///
-/// `None` when the journal names no device, as a run whose domain uses none
+/// `None` when the journal names no device, as a search whose domain uses none
 /// does. Nothing is inferred: what is not in the journal is not printed.
-fn devices_line(status: &RunStatus) -> Option<String> {
+fn devices_line(status: &SearchStatus) -> Option<String> {
     if status.devices.is_empty() {
         return None;
     }
@@ -679,22 +680,22 @@ const WORKER_COLUMNS: [&str; 8] = [
 /// What a figure reads when the counts it is taken over leave it undefined.
 const UNDEFINED: &str = "—";
 
-/// Renders a run's metrics: the summary scalars, the three retry ratios, the
+/// Renders a search's metrics: the summary scalars, the three retry ratios, the
 /// per-worker table, and the temporal chart beneath them.
 ///
-/// Every duration is elapsed wall-clock as the run's journal stamped it, so a
+/// Every duration is elapsed wall-clock as the search's journal stamped it, so a
 /// worker's occupancy covers the queueing and transport around its work as
 /// well as the work.
-pub fn timeline_block(timeline: &RunTimeline) -> String {
+pub fn timeline_block(timeline: &SearchTimeline) -> String {
     let span_ms = timeline
         .session_end_ms
         .saturating_sub(timeline.session_start_ms);
     let mut block = format!(
-        "run          {}\n\
+        "search          {}\n\
          wall-clock   {}\n\
          committed    {}\n\
          throughput   {}",
-        timeline.run,
+        timeline.search,
         duration(span_ms),
         timeline.committed,
         throughput(timeline.session_committed, span_ms),
@@ -716,7 +717,7 @@ pub fn timeline_block(timeline: &RunTimeline) -> String {
 }
 
 /// Committed tasks per second over a session of `span_ms`, or a placeholder
-/// for a session of no span — a run that journaled its start and nothing
+/// for a session of no span — a search that journaled its start and nothing
 /// since has no rate, rather than an infinite one.
 fn throughput(committed: usize, span_ms: u64) -> String {
     if span_ms == 0 {
@@ -739,7 +740,7 @@ fn duration(ms: u64) -> String {
 
 /// The three retry figures, each on its own line naming the numerator and
 /// denominator it is taken over. They answer different questions and can
-/// disagree by an order of magnitude on one run, so each states its own ratio
+/// disagree by an order of magnitude on one search, so each states its own ratio
 /// rather than leaving the reader to guess which a bare number is.
 fn retry_block(retries: &RetryStats, tasks: usize) -> String {
     let rows = [
@@ -835,7 +836,7 @@ fn utilization(worker: &WorkerMetrics) -> String {
 /// The temporal chart over the session: commits per column, then one
 /// occupancy bar per worker, all on the one axis so they align. `None` for a
 /// session of no span, which has no axis to bucket.
-fn chart(timeline: &RunTimeline, span_ms: u64) -> Option<String> {
+fn chart(timeline: &SearchTimeline, span_ms: u64) -> Option<String> {
     if span_ms == 0 {
         return None;
     }
@@ -936,12 +937,12 @@ mod tests {
     }
 
     #[test]
-    fn a_run_started_line_reports_prior_commits_when_resuming() {
-        // A resumed run states its ledger rather than a task count: what is
-        // committed, out of how many, and how much is left. A fresh run keeps
+    fn a_search_started_line_reports_prior_commits_when_resuming() {
+        // A resumed search states its ledger rather than a task count: what is
+        // committed, out of how many, and how much is left. A fresh search keeps
         // the bare form, since there is no ledger to state.
-        let event = Event::RunStarted {
-            run: "ab".repeat(32),
+        let event = Event::SearchStarted {
+            search: "ab".repeat(32),
             tasks: 200,
             committed: 26,
         };
@@ -962,8 +963,8 @@ mod tests {
     }
 
     #[test]
-    fn a_minimal_narration_drops_the_placement_lines_and_keeps_the_run_s_own() {
-        // What `--quiet` leaves: the run's own progress, and anything gone
+    fn a_minimal_narration_drops_the_placement_lines_and_keeps_the_search_s_own() {
+        // What `--quiet` leaves: the search's own progress, and anything gone
         // wrong. The placement lines are for watching a placement happen.
         for event in [
             Event::Renting {
@@ -977,14 +978,14 @@ mod tests {
                 member: "cheap[0]".to_string(),
                 timeout_ms: 600_000,
             },
-            Event::SendingRun {
+            Event::SendingSearch {
                 member: String::new(),
                 objects: 12,
             },
             Event::InstallingProgram {
                 member: String::new(),
             },
-            Event::StartingRun,
+            Event::StartingSearch,
             Event::Leased {
                 task: "cd".repeat(32),
                 worker: 1,
@@ -1006,8 +1007,8 @@ mod tests {
             assert!(narrated(&event), "{event:?} is narration");
         }
         for event in [
-            Event::RunStarted {
-                run: "ab".repeat(32),
+            Event::SearchStarted {
+                search: "ab".repeat(32),
                 tasks: 3,
                 committed: 0,
             },
@@ -1017,12 +1018,12 @@ mod tests {
                 stats: Vec::new(),
                 stats_blob_hex: String::new(),
             },
-            Event::RunFinalized {
-                run: "ab".repeat(32),
+            Event::SearchFinalized {
+                search: "ab".repeat(32),
                 committed: 3,
             },
-            // A machine lost under a run is not narration of a placement: it
-            // is the fleet changing under the work, which a quiet run states.
+            // A machine lost under a search is not narration of a placement: it
+            // is the fleet changing under the work, which a quiet search states.
             Event::InstanceLost {
                 tag: "t".to_string(),
                 instance: "ab".repeat(32),
@@ -1033,7 +1034,7 @@ mod tests {
                 to: "cd".repeat(32),
             },
             // An acquisition abandoned states the same kind of fact: machines
-            // the run was paying for are gone, and the run is not going to
+            // the search was paying for are gone, and the search is not going to
             // start.
             Event::AcquisitionAbandoned { released: 2 },
             Event::Diagnostic {
@@ -1053,19 +1054,19 @@ mod tests {
                 task: None,
             },
         ] {
-            assert!(!narrated(&event), "{event:?} is the run's own");
+            assert!(!narrated(&event), "{event:?} is the search's own");
         }
     }
 
     #[test]
     fn a_session_counts_commits_on_from_the_started_event() {
         let progress = Progress::new(Narration::Full);
-        progress.event(&rec(Event::RunStarted {
-            run: "ab".repeat(32),
+        progress.event(&rec(Event::SearchStarted {
+            search: "ab".repeat(32),
             tasks: 3,
             committed: 2,
         }));
-        // The count is the event's, which the run derived from its store —
+        // The count is the event's, which the search derived from its store —
         // the journal replay this once read from can lag its own records.
         assert_eq!(progress.committed(), 2);
 
@@ -1227,15 +1228,15 @@ mod tests {
 
     #[test]
     fn an_info_diagnostic_renders_nothing() {
-        // Worker stderr is journaled, not echoed: the run's console output
+        // Worker stderr is journaled, not echoed: the search's console output
         // stays clean.
         let info = diagnostic(sima_pipeline::Level::Info, "worker stderr", "starting up");
         assert!(describe(&info, 0, 0).is_none());
     }
 
-    /// A zeroed status for a throwaway run; tests set the fields they assert.
-    fn a_status() -> RunStatus {
-        RunStatus::new(a_run())
+    /// A zeroed status for a throwaway search; tests set the fields they assert.
+    fn a_status() -> SearchStatus {
+        SearchStatus::new(a_search())
     }
 
     #[test]
@@ -1246,7 +1247,7 @@ mod tests {
         status.retried = 1;
         let block = status_block(&status);
         for field in [
-            "run",
+            "search",
             "state",
             "tasks",
             "committed",
@@ -1262,7 +1263,7 @@ mod tests {
     }
 
     #[test]
-    fn the_status_block_reports_the_run_s_device_composition() {
+    fn the_status_block_reports_the_search_s_device_composition() {
         let mut status = a_status();
         status.committed = 1000;
         status.devices = [
@@ -1302,7 +1303,7 @@ mod tests {
     }
 
     #[test]
-    fn a_run_that_moved_no_chain_reports_no_rebinds() {
+    fn a_search_that_moved_no_chain_reports_no_rebinds() {
         let mut status = a_status();
         status.devices = [("Intel Arc 140T".to_string(), 4)].into_iter().collect();
         let block = status_block(&status);
@@ -1313,7 +1314,7 @@ mod tests {
         assert!(!block.contains("rebound"), "{block}");
     }
 
-    /// `text` with every run of spaces collapsed to one, so an assertion
+    /// `text` with every search of spaces collapsed to one, so an assertion
     /// names the cells of a line rather than the padding between them.
     fn squeezed(text: &str) -> String {
         text.split_whitespace().collect::<Vec<&str>>().join(" ")
@@ -1473,12 +1474,12 @@ mod tests {
         assert!(block.contains("NVIDIA RTX PRO 2000"), "{block}");
     }
 
-    /// The run the digest tests render against.
-    fn a_run() -> RunId {
-        RunId::from_hash(sima_core::hash_bytes(b"a run to render"))
+    /// The search the digest tests render against.
+    fn a_search() -> SearchId {
+        SearchId::from_hash(sima_core::hash_bytes(b"a search to render"))
     }
 
-    /// One task the run ended on a rejection.
+    /// One task the search ended on a rejection.
     fn a_rejected_history() -> TaskHistory {
         TaskHistory {
             task: "7f".repeat(32),
@@ -1500,7 +1501,7 @@ mod tests {
 
     #[test]
     fn the_failure_digest_names_each_task_its_outcome_and_its_reason() {
-        let block = failures_block(&a_run(), &[a_rejected_history()]);
+        let block = failures_block(&a_search(), &[a_rejected_history()]);
         let squeezed = squeezed(&block);
         assert!(squeezed.contains("1 task did not commit"), "{block}");
         assert!(
@@ -1531,14 +1532,14 @@ mod tests {
                 error: "executor died".to_string(),
             },
         };
-        let block = squeezed(&failures_block(&a_run(), &[history]));
+        let block = squeezed(&failures_block(&a_search(), &[history]));
         assert!(block.contains("faulted"), "{block}");
         assert!(block.contains("executor died"), "{block}");
     }
 
     #[test]
     fn a_digest_of_no_failures_is_the_header_alone() {
-        let block = failures_block(&a_run(), &[]);
+        let block = failures_block(&a_search(), &[]);
         assert!(block.contains("0 tasks did not commit"), "{block}");
         assert!(!block.contains("reason"), "no table: {block}");
         assert_eq!(block.lines().count(), 1, "{block}");
@@ -1548,14 +1549,14 @@ mod tests {
     fn the_digest_header_pluralizes_its_count() {
         let two = [a_rejected_history(), a_rejected_history()];
         assert!(
-            failures_block(&a_run(), &two).contains("2 tasks did not commit"),
+            failures_block(&a_search(), &two).contains("2 tasks did not commit"),
             "two failures read as tasks"
         );
     }
 
     #[test]
-    fn a_run_that_names_no_device_renders_no_device_line() {
-        // A journal carrying no WorkerBound events, as a run whose domain uses
+    fn a_search_that_names_no_device_renders_no_device_line() {
+        // A journal carrying no WorkerBound events, as a search whose domain uses
         // no device writes: there is nothing truthful to print.
         let block = status_block(&a_status());
         assert!(!block.contains("devices"), "{block}");
@@ -1583,11 +1584,11 @@ mod tests {
         }
     }
 
-    /// A run of a thousand tasks over two minutes and change: one worker alive
+    /// A search of a thousand tasks over two minutes and change: one worker alive
     /// from the start, one that took forty seconds to provision.
-    fn a_timeline() -> RunTimeline {
-        RunTimeline {
-            run: a_run(),
+    fn a_timeline() -> SearchTimeline {
+        SearchTimeline {
+            search: a_search(),
             tasks: 1_000,
             committed: 1_000,
             session_committed: 1_000,
@@ -1608,9 +1609,12 @@ mod tests {
     }
 
     #[test]
-    fn the_timeline_block_names_the_run_its_wall_clock_and_its_throughput() {
+    fn the_timeline_block_names_the_search_its_wall_clock_and_its_throughput() {
         let squeezed = squeezed(&timeline_block(&a_timeline()));
-        assert!(squeezed.contains(&format!("run {}", a_run())), "{squeezed}");
+        assert!(
+            squeezed.contains(&format!("search {}", a_search())),
+            "{squeezed}"
+        );
         assert!(squeezed.contains("wall-clock 2m14s"), "{squeezed}");
         assert!(squeezed.contains("committed 1000"), "{squeezed}");
         // A thousand commits over 134 seconds.
@@ -1620,7 +1624,7 @@ mod tests {
     #[test]
     fn each_retry_ratio_is_rendered_with_the_counts_it_is_taken_over() {
         // The three figures answer different questions and disagree on the same
-        // run, so each states its own numerator and denominator in words.
+        // search, so each states its own numerator and denominator in words.
         let squeezed = squeezed(&timeline_block(&a_timeline()));
         assert!(
             squeezed.contains("retries / tasks 120 / 1000 = 0.12 per task"),
@@ -1651,7 +1655,7 @@ mod tests {
             "{block}"
         );
         // The remote worker was provisioned forty seconds in, so it was alive
-        // for less of the run and its utilization is over that lifespan.
+        // for less of the search and its utilization is over that lifespan.
         assert!(
             squeezed.contains("w2 (none) gpubox 41.20s 0 65% 340 351"),
             "{block}"
@@ -1699,7 +1703,7 @@ mod tests {
 
     #[test]
     fn a_late_bound_workers_bar_begins_with_the_blanks_its_spawn_gap_spans() {
-        // Forty-one seconds of a 134-second run: the provisioning gap is drawn
+        // Forty-one seconds of a 134-second search: the provisioning gap is drawn
         // to scale as columns where the worker did not yet exist.
         let block = timeline_block(&a_timeline());
         let lines = chart_lines(&block);
@@ -1717,7 +1721,7 @@ mod tests {
     fn the_spend_block_reports_closed_entries_open_rentals_and_the_total() {
         let report = SpendReport {
             entries: vec![sima_pipeline::SpendEntry {
-                tag: "sima-run-1".to_string(),
+                tag: "sima-search-1".to_string(),
                 provider: "vast".to_string(),
                 owner: "ab".repeat(32),
                 price_micro_usd_hour: 412_000,
@@ -1726,7 +1730,7 @@ mod tests {
                 cost_micro_usd: 412_000,
             }],
             open: vec![sima_pipeline::OpenSpend {
-                tag: "sima-run-2".to_string(),
+                tag: "sima-search-2".to_string(),
                 rate: sima_pipeline::Price(500_000),
                 started_ms: 2_000,
                 accrued: sima_pipeline::Cost(250_000),
@@ -1736,11 +1740,11 @@ mod tests {
         let block = spend_block(&report);
         // A closed entry names its tag, duration, rate, and cost.
         assert!(block.contains("closed rentals   1"), "{block}");
-        assert!(block.contains("sima-run-1"), "{block}");
+        assert!(block.contains("sima-search-1"), "{block}");
         assert!(block.contains("$0.412/hr"), "{block}");
         // An open rental names its accrual so far.
         assert!(block.contains("open rentals     1"), "{block}");
-        assert!(block.contains("sima-run-2"), "{block}");
+        assert!(block.contains("sima-search-2"), "{block}");
         assert!(block.contains("$0.250 so far"), "{block}");
         // And the total in dollars.
         assert!(block.contains("total            $0.662"), "{block}");
@@ -1816,10 +1820,10 @@ mod tests {
 
     #[test]
     fn a_session_of_no_span_renders_its_scalars_without_a_chart() {
-        // A run that journaled its start and nothing since: there is no axis to
+        // A search that journaled its start and nothing since: there is no axis to
         // bucket, and no rate to take over a zero denominator.
-        let timeline = RunTimeline {
-            run: a_run(),
+        let timeline = SearchTimeline {
+            search: a_search(),
             tasks: 4,
             committed: 0,
             session_committed: 0,

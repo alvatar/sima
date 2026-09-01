@@ -9,7 +9,7 @@
 use sima_contracts::{DeviceBinding, DeviceInfo};
 use sima_core::{Hash, Result, hash_bytes};
 
-use crate::substrates::cellular::harness::{Trajectory, run};
+use crate::substrates::cellular::harness::{Trajectory, search};
 use crate::substrates::cellular::ops::CellularOps;
 use crate::substrates::cellular::reduce::{GridPair, ReduceKernels, reduce};
 use crate::substrates::cellular::{CellularEngine, CellularEvaluation, EvaluationInput, Grid};
@@ -82,7 +82,7 @@ impl<O: CellularOps> CellularEngine for CellularBackend<O> {
             None => None,
         };
         let params: Vec<&O::Buffer> = uniforms.iter().chain(seed.iter()).collect();
-        let trajectory = run(
+        let trajectory = search(
             &self.ops,
             &self.kernel,
             input.initial,

@@ -17,7 +17,7 @@ use super::params::decode_params;
 use crate::substrates::cellular::{CellularEngine, EvaluationInput, Grid};
 
 /// Evaluates a candidate of the model `M` on the backend `E`, under format
-/// `M::FORMAT_ID`: the spec's genome and the run params frame one task — ignite
+/// `M::FORMAT_ID`: the spec's genome and the search params frame one task — ignite
 /// (or continue) a grid, advance it `steps` kernel dispatches, reduce the final
 /// grid pair into the observational stat scalars, and commit the final state as
 /// the `state` artifact. A bare-grid model commits the grid's canonical bytes; a
@@ -38,7 +38,7 @@ use crate::substrates::cellular::{CellularEngine, EvaluationInput, Grid};
 /// documented inline at the lock site.
 ///
 /// The checkpoint channel goes unused: the harness performs all `steps`
-/// dispatches in one call and downloads once at the end, so there is no mid-run
+/// dispatches in one call and downloads once at the end, so there is no mid-search
 /// state to offer, and a killed attempt restarts its segment from the segment's
 /// input — bounded by `steps`, which `segments` controls. A config that sets a
 /// checkpoint interval simply never gets a save for this model. Ignoring the
@@ -99,7 +99,7 @@ impl<M: CaModel, E: CellularEngine> Executor for CaExecutor<M, E> {
                 M::STEPPED.then_some(0u64),
             ),
             // A successor continues from its predecessor's committed state, which
-            // must match the run's dimensions exactly.
+            // must match the search's dimensions exactly.
             Some(bytes) => {
                 let (step, grid) = if M::STEPPED {
                     let (step, grid) = decode_continuation(bytes).map_err(|e| {
@@ -116,7 +116,7 @@ impl<M: CaModel, E: CellularEngine> Executor for CaExecutor<M, E> {
                 let want = (shared.width(), shared.height(), M::CHANNELS);
                 if got != want {
                     return Err(Error::Validation(format!(
-                        "{} input state dimensions {got:?} do not match the run params {want:?}",
+                        "{} input state dimensions {got:?} do not match the search params {want:?}",
                         M::NAME
                     )));
                 }
@@ -185,7 +185,7 @@ impl<M: CaModel, E: CellularEngine> Executor for CaExecutor<M, E> {
     }
 }
 
-/// The stat scalars to carry forward given the reduction result and the run's
+/// The stat scalars to carry forward given the reduction result and the search's
 /// predicate. The fault handling discriminates on the error variant:
 ///
 /// - A definitive fault (`Error::Validation`, a misdeclared model constant such
@@ -213,7 +213,7 @@ fn stats_or_propagate(
     }
 }
 
-/// Whether to commit the snapshot given the run's predicate and the computed
+/// Whether to commit the snapshot given the search's predicate and the computed
 /// stats. An absent predicate always commits. A present predicate commits
 /// exactly when the named scalar is at least its minimum AND every scalar in
 /// the list is finite: a non-finite value anywhere marks the candidate diverged
@@ -305,7 +305,7 @@ mod tests {
         }
     }
 
-    /// Well-formed toy run params on a 64x64 grid.
+    /// Well-formed toy search params on a 64x64 grid.
     fn params() -> Params {
         Params {
             bytes: encode_params::<Toy>(
@@ -399,7 +399,7 @@ mod tests {
 
     #[test]
     fn a_mismatched_input_state_is_an_error() -> Result<()> {
-        // An 8x8 predecessor grid against 64x64 run params: the error names both
+        // An 8x8 predecessor grid against 64x64 search params: the error names both
         // dimension triples. The toy model has one channel.
         let exec = CaExecutor::<Toy, WgslEngine>::new(None)?;
         let spec = spec();

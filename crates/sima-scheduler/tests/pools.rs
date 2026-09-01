@@ -1,5 +1,5 @@
 //! Worker pools over several transports, through the real wire protocol and
-//! host loop: one run spread across two loopback pools on distinct hosts, each
+//! host loop: one search spread across two loopback pools on distinct hosts, each
 //! holding its own device class.
 //!
 //! What is under test is the pool boundary — slots spawn on their own pool's
@@ -14,11 +14,11 @@ use std::time::Duration;
 
 use common::{
     chained_config, class, class_slot, device, device_naming_resolver, exec_over, journal_events,
-    named_class, run_id, run_pools, task_classes, temp_store,
+    named_class, run_pools, search_id, task_classes, temp_store,
 };
 use sima_core::Result;
 use sima_domains::StubBehavior;
-use sima_scheduler::{Event, RunOutcome, WorkerPool, worker_slots};
+use sima_scheduler::{Event, SearchOutcome, WorkerPool, worker_slots};
 use sima_transport::loopback::LoopbackTransport;
 
 /// Two fictitious classes, one per pool.
@@ -26,18 +26,18 @@ const INTEL: u32 = 0x8086;
 const NVIDIA: u32 = 0x10de;
 
 #[test]
-fn a_run_spreads_across_two_pools_and_places_by_class() -> Result<()> {
+fn a_search_spreads_across_two_pools_and_places_by_class() -> Result<()> {
     let (_dir, store) = temp_store();
     let config = chained_config(101, vec![StubBehavior::Accumulate(2); 4], 3);
-    let run = run_id(&config);
+    let search = search_id(&config);
     // Seed one chain onto each class, so both pools run real work and the
     // cross-pool binding is concrete rather than a placement race.
-    store.create_run(&config)?;
-    store.bind_chain(&run, 0, &class_slot(&class(INTEL)))?;
-    store.bind_chain(&run, 1, &class_slot(&class(NVIDIA)))?;
+    store.create_search(&config)?;
+    store.bind_chain(&search, 0, &class_slot(&class(INTEL)))?;
+    store.bind_chain(&search, 1, &class_slot(&class(NVIDIA)))?;
 
     // Two pools, each a class of its own on a distinct host. The execs supply
-    // each pool's two slots; only their cadence reaches the run.
+    // each pool's two slots; only their cadence reaches the search.
     let nvidia_exec = exec_over(vec![device(NVIDIA, 2)], 1);
     let intel_exec = exec_over(vec![device(INTEL, 2)], 1);
     let alpha = LoopbackTransport::new(
@@ -65,9 +65,9 @@ fn a_run_spreads_across_two_pools_and_places_by_class() -> Result<()> {
         },
     ];
     let outcome = run_pools(&store, &config, &nvidia_exec, &pools)?;
-    assert!(matches!(outcome, RunOutcome::Finalized { .. }));
+    assert!(matches!(outcome, SearchOutcome::Finalized { .. }));
 
-    let events = journal_events(&store, &run);
+    let events = journal_events(&store, &search);
     let nvidia = format!("{NVIDIA:04x}:0001");
     let intel = format!("{INTEL:04x}:0001");
 

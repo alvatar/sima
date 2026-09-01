@@ -1,10 +1,10 @@
 //! The machine-reputation ledger: one record per operational incident, keyed
 //! by the marketplace machine that produced it.
 //!
-//! A rented machine that vanished mid-run, never came up, or came up without a
+//! A rented machine that vanished mid-search, never came up, or came up without a
 //! usable GPU has already cost money once. Each such behavior is recorded here
 //! durably, scoped to the provider's stable machine identifier and shared by
-//! every run using the store, so a machine with a pattern of failures is
+//! every search using the store, so a machine with a pattern of failures is
 //! disqualified at offer selection. The blacklist itself is never stored: it
 //! is derived from these records at each acquisition, so there is one source
 //! of truth and nothing to reconcile.
@@ -49,7 +49,7 @@ pub struct MachineIncident {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum IncidentKind {
-    /// A live instance the supervisor polled `Gone` mid-run.
+    /// A live instance the supervisor polled `Gone` mid-search.
     Lost,
     /// A provisioned machine that never reported a usable endpoint within the
     /// readiness timeout, including one that went `Gone` while provisioning.
@@ -57,9 +57,9 @@ pub enum IncidentKind {
     /// A machine that reported ready but failed the ssh worker probe, so it
     /// cannot run work.
     ProbeFailed,
-    /// A machine that answered but could not be given the program the run's
+    /// A machine that answered but could not be given the program the search's
     /// format is routed to — the delivery or the install it runs failed — so it
-    /// can serve no worker for this run.
+    /// can serve no worker for this search.
     InstallFailed,
 }
 

@@ -3,7 +3,7 @@
 //!
 //! A rented machine's whole influence is operational — a worker never touches
 //! the store — so a bad machine is judged by observable behavior alone: it
-//! vanished mid-run, never became ready, or failed the worker probe. Each such
+//! vanished mid-search, never became ready, or failed the worker probe. Each such
 //! behavior is recorded durably against the provider's stable machine
 //! identifier, so a machine with a pattern of failures is disqualified at
 //! selection. The recording sites call through the store handle they already
@@ -90,13 +90,13 @@ pub struct MachineSummary {
     pub machine: String,
     /// Incidents of every kind against the machine.
     pub incidents: usize,
-    /// Incidents where a live instance was polled gone mid-run.
+    /// Incidents where a live instance was polled gone mid-search.
     pub lost: usize,
     /// Incidents where a machine never became ready.
     pub never_ready: usize,
     /// Incidents where a ready machine failed the worker probe.
     pub probe_failed: usize,
-    /// Incidents where a ready machine could not be given the run's program.
+    /// Incidents where a ready machine could not be given the search's program.
     pub install_failed: usize,
     /// The earliest incident's stamp, in epoch milliseconds.
     pub first_occurred_ms: u64,

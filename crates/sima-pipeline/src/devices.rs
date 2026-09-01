@@ -1,8 +1,8 @@
-//! Device selectors: naming the devices a run spreads its workers over, and
+//! Device selectors: naming the devices a search spreads its workers over, and
 //! resolving those names against the devices its program can actually open
 //! here.
 //!
-//! Resolution happens where a run starts, never where a config is read: a
+//! Resolution happens where a search starts, never where a config is read: a
 //! selector names real hardware, and reading a config must work on a machine
 //! with no GPU at all — `sima status` and `sima report` never enumerate.
 
@@ -31,8 +31,8 @@ pub struct DeviceSelector {
 /// every enumerated device is a CPU they all stand — a host that offers this
 /// program no GPU still gets workers.
 ///
-/// The devices are the ones the run's program can open, since the probe asked
-/// about its format, so every device this yields is a place the run can
+/// The devices are the ones the search's program can open, since the probe asked
+/// about its format, so every device this yields is a place the search can
 /// actually put a worker.
 pub(crate) fn usable(devices: &[DeviceInfo]) -> impl Iterator<Item = &DeviceInfo> {
     let has_gpu = devices
@@ -163,7 +163,7 @@ fn render_available(enumerated: &[DeviceInfo]) -> String {
 ///
 /// Three places derive a worker layout from one enumeration and must agree on
 /// what a machine offers: a rented machine's slots, the far-side config a
-/// migration synthesizes for one, and a run whose layout its program's own
+/// migration synthesizes for one, and a search whose layout its program's own
 /// enumeration decides. [`usable`] is the rule they share.
 pub(crate) fn derived_slots(devices: &[DeviceInfo]) -> Vec<Option<DeviceBinding>> {
     if devices.is_empty() {
@@ -269,7 +269,7 @@ mod tests {
 
     #[test]
     fn a_selector_matching_several_classes_is_ambiguous() {
-        // Two different NVIDIA cards: "NVIDIA" names both, so the run would
+        // Two different NVIDIA cards: "NVIDIA" names both, so the search would
         // not know which to place work on.
         let two_nvidias = vec![
             info("10de:2d39", "NVIDIA RTX PRO 2000", 0),

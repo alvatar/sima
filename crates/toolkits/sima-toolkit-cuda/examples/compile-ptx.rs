@@ -7,7 +7,7 @@
 //! `RUNPATH`:
 //!
 //! ```text
-//! cargo run -p sima-toolkit-cuda --example compile-ptx -- kernel.cu > kernel.ptx
+//! cargo search -p sima-toolkit-cuda --example compile-ptx -- kernel.cu > kernel.ptx
 //! ```
 //!
 //! Each kernel's regeneration test then asserts the committed artifact is

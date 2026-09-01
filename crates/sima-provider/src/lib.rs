@@ -1,5 +1,5 @@
 //! The rented-hardware control plane: the provider-agnostic boundary between a
-//! run and the machines it rents.
+//! search and the machines it rents.
 //!
 //! A provider lists a marketplace of concrete offers, rents one, reports
 //! its state, and destroys it. Offers are normalized across providers, so
@@ -19,10 +19,10 @@
 //! acquisition, destroys what an earlier process left behind.
 //!
 //! What those machines cost is counted the same way: every rental that ends
-//! leaves a durable spend entry behind, so a run's total spend outlives both
+//! leaves a durable spend entry behind, so a search's total spend outlives both
 //! its machines and the process that rented them. A [`Budget`] states the
 //! ceilings that total and the rental phase's wall-clock must stay under,
-//! [`assess`] answers where a run stands against them, and acquisition
+//! [`assess`] answers where a search stands against them, and acquisition
 //! refuses to rent once they are reached.
 
 mod acquire;

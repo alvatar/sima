@@ -7,7 +7,7 @@
 //!
 //! The load already rejected a `migrate` naming a class or naming nothing
 //! declared, so the only fault left here is a config that names no destination
-//! at all — which `sima run` is entitled to and `sima migrate` is not.
+//! at all — which `sima search` is entitled to and `sima migrate` is not.
 
 use sima_core::{Error, Result};
 
@@ -27,16 +27,16 @@ pub(crate) struct Destination<'a> {
     pub(crate) name: &'a str,
     /// How the machine is obtained and what it runs.
     pub(crate) form: &'a HostForm,
-    /// Where the run's directory goes on that machine.
+    /// Where the search's directory goes on that machine.
     pub(crate) root: &'a str,
-    /// The `sima` binary that drives the run there.
+    /// The `sima` binary that drives the search there.
     pub(crate) binary: &'a str,
 }
 
 /// The destination `config`'s orchestrator names.
 ///
 /// A config whose `[orchestrator]` names no `migrate` names no destination,
-/// which is a validation error naming the key: `sima run` ignores the key, so
+/// which is a validation error naming the key: `sima search` ignores the key, so
 /// its absence is only a fault for the command that needs it. Every other way
 /// the key could be wrong — naming a class, naming nothing declared — the load
 /// already rejected, so the lookup here cannot miss.
@@ -44,7 +44,7 @@ pub(crate) fn destination_for(config: &LoadedConfig) -> Result<Destination<'_>> 
     let name = config.orchestrator.migrate.as_deref().ok_or_else(|| {
         Error::Validation(
             "this config names no migration destination; give [orchestrator] a migrate key \
-             naming the [host.*] entry to move the run onto"
+             naming the [host.*] entry to move the search onto"
                 .to_string(),
         )
     })?;
@@ -74,11 +74,11 @@ mod tests {
         let migrate = destination.map_or(String::new(), |name| format!("migrate = {name:?}\n"));
         format!(
             r#"
-            [run]
+            [search]
             root_seed = 1
             format = "stub.v1"
 
-            [run.generator]
+            [search.generator]
             id = "stub.v1"
             behaviors = ["succeed"]
 
@@ -114,7 +114,7 @@ mod tests {
         let destination = destination_for(&loaded).expect("the host is declared");
         assert_eq!(destination.name, "gpubox");
         // The defaults a migration relies on, unstated by this entry.
-        assert_eq!(destination.root, "~/sima-runs");
+        assert_eq!(destination.root, "~/sima");
         assert_eq!(destination.binary, "sima");
         let HostForm::Owned(owned) = destination.form else {
             panic!("expected a machine of yours");

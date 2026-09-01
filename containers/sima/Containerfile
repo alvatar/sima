@@ -1,5 +1,5 @@
-# The sima container image: the executor host a run's workers are launched as,
-# and the orchestrator a migrated run is driven by.
+# The sima container image: the executor host a search's workers are launched as,
+# and the orchestrator a migrated search is driven by.
 #
 # Two stages. The build stage compiles both binaries against bookworm's glibc
 # so they run on the matching runtime stage — the development host's glibc is
@@ -11,7 +11,7 @@
 #
 # `sima-worker` stays the entrypoint, so a worker starts exactly as it always
 # has. `sima` is on the path beside it, because a machine rented to host a
-# migrated run drives it from inside this image: the far side runs `sima run`,
+# migrated search drives it from inside this image: the far side runs `sima search`,
 # `sima sync-serve`, and `sima follow-serve` there.
 
 FROM rust:1.92-bookworm AS build
@@ -29,7 +29,7 @@ LABEL org.opencontainers.image.source="https://github.com/alvatar/sima"
 # libraries but not these X11/GL dispatch libraries, and without them the
 # loader silently falls back to llvmpipe on GPU hosts.
 #
-# openssh-client is what a migrated run reaches its own destination with; a
+# openssh-client is what a migrated search reaches its own destination with; a
 # migration onto a rented machine also spawns `sima sync-serve` back over the
 # hop it arrived on.
 #

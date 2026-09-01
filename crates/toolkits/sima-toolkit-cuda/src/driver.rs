@@ -2,7 +2,7 @@
 //! driver failures into [`Error::Backend`].
 //!
 //! Every path that touches CUDA starts here. The driver library is opened at
-//! run time, so a machine with no NVIDIA driver installed loads nothing and
+//! search time, so a machine with no NVIDIA driver installed loads nothing and
 //! reports no devices instead of failing.
 
 use std::sync::OnceLock;
@@ -23,7 +23,7 @@ fn driver_library() -> Option<&'static libloading::Library> {
     static LIBRARY: OnceLock<Option<libloading::Library>> = OnceLock::new();
     LIBRARY
         .get_or_init(|| {
-            // The same candidate names `cudarc` searches, in the same order, so
+            // The same candidate names `cudarc` tries, in the same order, so
             // the probe answers exactly whether `cudarc` will find the library.
             ["cuda", "nvcuda"]
                 .into_iter()

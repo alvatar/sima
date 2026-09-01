@@ -91,7 +91,7 @@ fn format(name: &str) -> FormatId {
 
 #[test]
 fn every_format_describes_the_environment_its_dispatch_supplies() {
-    // The environment enters every task key, so a run driven through the
+    // The environment enters every task key, so a search driven through the
     // protocol keeps the keys it has by direct call.
     for name in FORMATS {
         let mut service = Service::spawn(name);
@@ -137,7 +137,7 @@ fn every_format_enumerates_the_devices_its_backend_reports() {
 #[test]
 fn params_translate_to_the_bytes_the_dispatch_produces() {
     // The section crosses as text and comes back as the canonical bytes that
-    // enter the run id, so the two paths agree byte for byte.
+    // enter the search id, so the two paths agree byte for byte.
     let text = "hex = \"00ff\"\n";
     let mut service = Service::spawn("stub.v1");
     let answer = service.ask(ToDomain::TranslateConfig {
@@ -179,7 +179,7 @@ fn generator_params_translate_to_the_bytes_the_dispatch_produces() {
 fn generation_answers_the_specs_the_in_process_generator_produces() {
     // Generation is deterministic in the seed and the params, so the specs
     // that cross the pipe are the ones the in-process generator produces —
-    // which is what keeps every task key of the run the same.
+    // which is what keeps every task key of the search the same.
     let text = "behaviors = [\"succeed\", \"reject\", \"panic\"]\n";
     let generator = GeneratorId::new("stub.v1").expect("generator id");
     let params = sima_domains::generator_for(&format("stub.v1"), &generator)
@@ -225,7 +225,7 @@ fn a_format_this_build_does_not_carry_exits_nonzero_naming_the_id() {
         .arg("no-such-domain.v1")
         .stdin(Stdio::null())
         .output()
-        .expect("run sima-worker");
+        .expect("search sima-worker");
     assert_eq!(output.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("no-such-domain.v1"), "{stderr}");
@@ -237,14 +237,14 @@ fn the_flag_without_a_format_exits_nonzero_naming_what_it_takes() {
         .arg("--serve-domain")
         .stdin(Stdio::null())
         .output()
-        .expect("run sima-worker");
+        .expect("search sima-worker");
     assert_eq!(output.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("--serve-domain"), "{stderr}");
 }
 
 /// The parent-side session against the built binary: the same answers, reached
-/// the way a run reaches them.
+/// the way a search reaches them.
 mod session {
     use sima_transport::SpawnPolicy;
     use sima_transport::domain_service::DomainService;
@@ -264,8 +264,8 @@ mod session {
     }
 
     #[test]
-    fn a_session_answers_every_question_a_run_asks() {
-        // One session, every question: a program is spawned once for a run and
+    fn a_session_answers_every_question_a_search_asks() {
+        // One session, every question: a program is spawned once for a search and
         // answers each of them over the pipe it already holds.
         let mut service = service("stub.v1");
         let format = format("stub.v1");
@@ -303,7 +303,7 @@ mod session {
     #[test]
     fn a_program_that_does_not_serve_the_format_fails_at_the_handshake() {
         // The format is settled when the program is spawned, so a binary that
-        // cannot answer for it fails before a run reaches its first question.
+        // cannot answer for it fails before a search reaches its first question.
         let error = DomainService::spawn(
             std::path::Path::new(env!("CARGO_BIN_EXE_sima-worker")),
             &format("no-such-domain.v1"),
@@ -334,7 +334,7 @@ mod session {
 
     #[test]
     fn a_failure_the_program_rendered_crosses_verbatim() {
-        // The program's own words reach the run: a question about another
+        // The program's own words reach the search: a question about another
         // format is refused by the program, and the parent surfaces that.
         let mut service = service("stub.v1");
         let error = service

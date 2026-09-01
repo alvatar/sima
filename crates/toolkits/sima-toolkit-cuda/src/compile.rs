@@ -5,11 +5,11 @@
 //! output is committed beside the source. Nothing on the execution path calls
 //! into this module: a worker loads the committed PTX and the driver's
 //! just-in-time compiler takes it from there, so no worker image ships a
-//! compiler and no run depends on the CUDA toolkit being installed.
+//! compiler and no search depends on the CUDA toolkit being installed.
 //!
 //! What a domain records for a CUDA kernel is therefore the digest of the PTX
 //! itself, the artifact that executes, rather than a source digest paired with
-//! a compiler version the run has to trust. [`COMPILER_ID`] states only what
+//! a compiler version the search has to trust. [`COMPILER_ID`] states only what
 //! that PTX targets.
 
 use cudarc::nvrtc::sys;
@@ -60,7 +60,7 @@ pub const PTX_OPTIONS: [&str; 2] = ["--gpu-architecture=compute_75", "--fmad=tru
 ///   however old the architecture it targets.
 ///
 /// Regeneration is therefore pinned to NVRTC 12.0.x, which emits ISA 8.0 and so
-/// loads on r525 and newer — below the driver branch of any host a run rents.
+/// loads on r525 and newer — below the driver branch of any host a search rents.
 /// A later NVRTC raises the ISA and narrows that set: 12.9 emits ISA 8.8, which
 /// needs r575.
 pub fn compile(source: &str) -> Result<String> {

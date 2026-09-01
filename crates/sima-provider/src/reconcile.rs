@@ -5,7 +5,7 @@
 //! it ran on lost power. The ledger record it wrote before calling the
 //! provider is the trace, and this pass acts on it:
 //!
-//! | Record state | Provider says                        | Owner run lock | Action                              |
+//! | Record state | Provider says                        | Owner search lock | Action                              |
 //! |--------------|--------------------------------------|----------------|-------------------------------------|
 //! | live         | the listing carries the instance     | held           | keep: a running orchestrator owns it |
 //! | live         | the listing carries the instance     | free           | destroy instance, close the rental out |
@@ -32,22 +32,22 @@
 //! what the marketplace bills. The record's own rate stands for a machine
 //! the scan did not find, and for a listing stating no rate.
 //!
-//! The owner run lock column rests on one contract: every live run holds
+//! The owner search lock column rests on one contract: every live search holds
 //! its orchestrator lock for as long as it holds a machine.
-//! [`acquire`](crate::acquire) enforces it for the acquiring run through its
+//! [`acquire`](crate::acquire) enforces it for the acquiring search through its
 //! signature, which takes the lock itself.
 //!
-//! A record is judged by its owner's lock alone, so a run holding its lock
+//! A record is judged by its owner's lock alone, so a search holding its lock
 //! keeps every record naming it — including one an earlier process of that
-//! same run left behind. Such a leftover is indistinguishable from a machine
+//! same search left behind. Such a leftover is indistinguishable from a machine
 //! the live process is using, and it is reaped like any orphan once the
-//! run's lock is free.
+//! search's lock is free.
 //!
 //! Only records naming the given provider participate; another provider's
 //! records are left untouched and unreported.
 
 use sima_core::{Error, Result};
-use sima_model::RunId;
+use sima_model::SearchId;
 use sima_store::{InstanceRecord, InstanceRecordState, Rental, Store};
 
 use crate::guard::{close_out, teardown};
@@ -56,7 +56,7 @@ use crate::provider::{InstanceId, InstanceStatus, Provider, TaggedInstance};
 
 /// Which rentals a reconciliation pass considers.
 ///
-/// A run's orchestrator holds its lock while it drives, so a record whose owner
+/// A search's orchestrator holds its lock while it drives, so a record whose owner
 /// holds no lock is normally an orphan of a crash and is destroyed. A migration
 /// breaks that inference: it detaches the far side deliberately, and the local
 /// process may be gone while the rental is working and paid for, so a
@@ -66,7 +66,7 @@ use crate::provider::{InstanceId, InstanceStatus, Provider, TaggedInstance};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReconcileScope {
     /// Rentals carrying workers alone. The default, and what every acquisition
-    /// runs: it must not destroy a working detached migration.
+    /// searches: it must not destroy a working detached migration.
     Workers,
     /// Every rental, a hosting one included. What `sima reconcile --hosted`
     /// asks for, when the operator knows no migration is running.
@@ -199,14 +199,14 @@ fn reaping<P: Provider + ?Sized>(
     }
 }
 
-/// Whether the run that wrote `record` is still running.
+/// Whether the search that wrote `record` is still running.
 ///
-/// The probe is the run's orchestrator lock, which the kernel releases the
+/// The probe is the search's orchestrator lock, which the kernel releases the
 /// moment its holder exits: a free lock means the owner is gone. The lock
 /// answers on the machine holding it, which is the machine acquisition and
 /// reconciliation both run on.
 fn owner_alive(store: &Store, record: &InstanceRecord) -> Result<bool> {
-    let owner = RunId::from_hex(&record.owner).map_err(|_| {
+    let owner = SearchId::from_hex(&record.owner).map_err(|_| {
         Error::Corruption(format!(
             "instance record {} names a malformed owner {:?}",
             record.tag, record.owner
@@ -226,13 +226,13 @@ mod tests {
     use crate::provider::{InstanceId, Provider};
     use crate::stub::StubProvider;
     use crate::testutil::{
-        acquire_any, instance_record, instance_record_as, live_state, sample_run, spend_entries,
+        acquire_any, instance_record, instance_record_as, live_state, sample_search, spend_entries,
         stub_offer, temp_store,
     };
 
-    /// A record for `tag` in `state`, owned by the run for seed 7.
+    /// A record for `tag` in `state`, owned by the search for seed 7.
     fn record(tag: &str, state: InstanceRecordState) -> InstanceRecord {
-        instance_record(tag, state, sample_run(7))
+        instance_record(tag, state, sample_search(7))
     }
 
     #[test]
@@ -257,7 +257,7 @@ mod tests {
         let orphan = record("sima-tag-0", live_state("i-1"));
         store.put_instance(&orphan)?;
         reconcile(&stub, &store, ReconcileScope::Workers)?;
-        let entries = spend_entries(&store, &sample_run(7))?;
+        let entries = spend_entries(&store, &sample_search(7))?;
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].tag, "sima-tag-0");
         assert_eq!(entries[0].started_ms, orphan.created_ms);
@@ -275,7 +275,7 @@ mod tests {
         let orphan = record("sima-tag-0", live_state("expired"));
         store.put_instance(&orphan)?;
         reconcile(&stub, &store, ReconcileScope::Workers)?;
-        let entries = spend_entries(&store, &sample_run(7))?;
+        let entries = spend_entries(&store, &sample_search(7))?;
         assert_eq!(entries.len(), 1);
         // Nothing states a rate for a machine that no longer exists, so the
         // record's own is what the entry books.
@@ -297,7 +297,7 @@ mod tests {
         assert_eq!(report.destroyed, vec![InstanceId("i-1".to_string())]);
         assert_eq!(report.cleared, vec!["sima-tag-0".to_string()]);
         assert!(stub.live().is_empty());
-        let entries = spend_entries(&store, &sample_run(7))?;
+        let entries = spend_entries(&store, &sample_search(7))?;
         assert_eq!(entries.len(), 1);
         // No listing row is in hand, so the record's rate is what it costs.
         assert_eq!(entries[0].price_micro_usd_hour, orphan.price_micro_usd_hour);
@@ -318,7 +318,7 @@ mod tests {
             Err(Error::Provider(message)) if message == "show instance: 503"
         ));
         assert_eq!(store.instance_records()?, vec![orphan]);
-        assert!(spend_entries(&store, &sample_run(7))?.is_empty());
+        assert!(spend_entries(&store, &sample_search(7))?.is_empty());
         Ok(())
     }
 
@@ -329,7 +329,7 @@ mod tests {
             .with_instance(InstanceId("i-2".to_string()), "sima-tag-0");
         store.put_instance(&record("sima-tag-0", InstanceRecordState::Intent))?;
         reconcile(&stub, &store, ReconcileScope::Workers)?;
-        assert_eq!(spend_entries(&store, &sample_run(7))?.len(), 1);
+        assert_eq!(spend_entries(&store, &sample_search(7))?.len(), 1);
         Ok(())
     }
 
@@ -344,7 +344,7 @@ mod tests {
             .with_instance(InstanceId("i-2".to_string()), "sima-tag-0");
         store.put_instance(&record("sima-tag-0", InstanceRecordState::Intent))?;
         reconcile(&stub, &store, ReconcileScope::Workers)?;
-        let entries = spend_entries(&store, &sample_run(7))?;
+        let entries = spend_entries(&store, &sample_search(7))?;
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].price_micro_usd_hour, 250_000);
         Ok(())
@@ -360,7 +360,7 @@ mod tests {
             .with_instance(InstanceId("i-1".to_string()), "sima-tag-0");
         store.put_instance(&record("sima-tag-0", live_state("i-1")))?;
         reconcile(&stub, &store, ReconcileScope::Workers)?;
-        let entries = spend_entries(&store, &sample_run(7))?;
+        let entries = spend_entries(&store, &sample_search(7))?;
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].price_micro_usd_hour, 40_000);
         Ok(())
@@ -374,7 +374,7 @@ mod tests {
         let orphan = record("sima-tag-0", live_state("i-1"));
         store.put_instance(&orphan)?;
         reconcile(&stub, &store, ReconcileScope::Workers)?;
-        let entries = spend_entries(&store, &sample_run(7))?;
+        let entries = spend_entries(&store, &sample_search(7))?;
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].price_micro_usd_hour, orphan.price_micro_usd_hour);
         Ok(())
@@ -390,7 +390,7 @@ mod tests {
         // ledger never accounts for.
         store.put_instance(&record("sima-tag-0", InstanceRecordState::Intent))?;
         reconcile(&stub, &store, ReconcileScope::Workers)?;
-        let entries = spend_entries(&store, &sample_run(7))?;
+        let entries = spend_entries(&store, &sample_search(7))?;
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].tag, "sima-tag-0");
         assert!(store.instance_records()?.is_empty());
@@ -404,14 +404,14 @@ mod tests {
         let orphan = record("sima-tag-0", live_state("expired"));
         store.put_instance(&orphan)?;
         reconcile(&stub, &store, ReconcileScope::Workers)?;
-        let first = spend_entries(&store, &sample_run(7))?;
+        let first = spend_entries(&store, &sample_search(7))?;
         assert_eq!(first.len(), 1);
         // The state a crash between the entry write and the record clear
         // leaves: the record is back, and its close-out reproduces the same
         // key, so the entry is rewritten rather than added to.
         store.put_instance(&orphan)?;
         reconcile(&stub, &store, ReconcileScope::Workers)?;
-        let second = spend_entries(&store, &sample_run(7))?;
+        let second = spend_entries(&store, &sample_search(7))?;
         assert_eq!(second.len(), 1);
         assert!(second[0].ended_ms >= first[0].ended_ms);
         Ok(())
@@ -424,7 +424,7 @@ mod tests {
         let orphan = record("sima-tag-0", InstanceRecordState::Intent);
         store.put_instance(&orphan)?;
         reconcile(&stub, &store, ReconcileScope::Workers)?;
-        let charged = spend_entries(&store, &sample_run(7))?;
+        let charged = spend_entries(&store, &sample_search(7))?;
         assert_eq!(charged.len(), 1);
         // The acquiring process comes back to a tag reconciliation already
         // charged and cleared. Its teardown finds no record, so it writes
@@ -436,7 +436,7 @@ mod tests {
             &InstanceId("i-1".to_string()),
             None,
         )?;
-        let entries = spend_entries(&store, &sample_run(7))?;
+        let entries = spend_entries(&store, &sample_search(7))?;
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].started_ms, orphan.created_ms);
         assert_eq!(entries[0].ended_ms, charged[0].ended_ms);
@@ -450,8 +450,8 @@ mod tests {
             .with_instance(InstanceId("i-1".to_string()), "sima-tag-0");
         store.put_instance(&record("sima-tag-0", live_state("i-1")))?;
         // The owner holds its orchestrator lock for the length of the pass,
-        // which is what a running run looks like.
-        let _lock = store.acquire_run_lock(&sample_run(7))?;
+        // which is what a running search looks like.
+        let _lock = store.acquire_search_lock(&sample_search(7))?;
         let report = reconcile(&stub, &store, ReconcileScope::Workers)?;
         assert!(report.destroyed.is_empty());
         assert!(report.cleared.is_empty());
@@ -509,7 +509,7 @@ mod tests {
         let stub = StubProvider::new(Vec::new())
             .with_instance(InstanceId("i-4".to_string()), "sima-tag-0");
         store.put_instance(&record("sima-tag-0", InstanceRecordState::Intent))?;
-        let _lock = store.acquire_run_lock(&sample_run(7))?;
+        let _lock = store.acquire_search_lock(&sample_search(7))?;
         let report = reconcile(&stub, &store, ReconcileScope::Workers)?;
         assert!(report.destroyed.is_empty());
         assert!(report.cleared.is_empty());
@@ -538,7 +538,7 @@ mod tests {
         let (_dir, store) = temp_store();
         let stub = StubProvider::new(Vec::new());
         let mut malformed = record("sima-tag-0", live_state("i-6"));
-        malformed.owner = "not-a-run-id".to_string();
+        malformed.owner = "not-a-search-id".to_string();
         store.put_instance(&malformed)?;
         assert!(matches!(
             reconcile(&stub, &store, ReconcileScope::Workers),
@@ -552,12 +552,12 @@ mod tests {
         let (_dir, store) = temp_store();
         let stub = StubProvider::new(vec![stub_offer("cheap", 100_000)])
             .with_instance(InstanceId("orphan".to_string()), "sima-tag-0");
-        // The orphan belongs to another run, whose lock is free: the
-        // acquiring run holds only its own.
+        // The orphan belongs to another search, whose lock is free: the
+        // acquiring search holds only its own.
         store.put_instance(&instance_record(
             "sima-tag-0",
             live_state("orphan"),
-            sample_run(8),
+            sample_search(8),
         ))?;
         let guard = acquire_any(&stub, &store)?;
         // The orphan went down before the new machine came up, and the
@@ -587,7 +587,7 @@ mod tests {
     }
 
     /// A stub holding one worker rental and one hosting rental, both owned by a
-    /// run holding no lock — the shape a pass reaps — with their records in the
+    /// search holding no lock — the shape a pass reaps — with their records in the
     /// ledger.
     fn one_of_each(store: &Store) -> StubProvider {
         let stub = StubProvider::new(vec![stub_offer("a", 100_000), stub_offer("b", 200_000)]);
@@ -600,7 +600,7 @@ mod tests {
                 .put_instance(&instance_record_as(
                     tag,
                     live_state(&instance),
-                    sample_run(7),
+                    sample_search(7),
                     role,
                 ))
                 .expect("put the ledger record");

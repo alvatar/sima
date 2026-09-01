@@ -1,12 +1,12 @@
-//! Running the commands a run's setup depends on, and finding the binary its
+//! Running the commands a search's setup depends on, and finding the binary its
 //! workers are spawned from.
 //!
-//! Three parts of the pipeline reach outside the process before a run starts —
-//! orchestration, rental, and migration — and each needs the same things: run a
-//! command and read its exit status, run one and read its stdout, and confirm a
+//! Three parts of the pipeline reach outside the process before a search starts —
+//! orchestration, rental, and migration — and each needs the same things: search a
+//! command and read its exit status, search one and read its stdout, and confirm a
 //! machine holds the worker image. Holding them here is what keeps rental and
 //! migration from importing orchestration for helpers that have nothing to do
-//! with driving a run.
+//! with driving a search.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};

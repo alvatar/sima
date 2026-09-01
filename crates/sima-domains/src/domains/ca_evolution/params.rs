@@ -1,5 +1,5 @@
-//! [`CaParams`]: the run knobs every CA model shares, and the shared half of the
-//! `[run.params]` translation.
+//! [`CaParams`]: the search knobs every CA model shares, and the shared half of the
+//! `[search.params]` translation.
 
 use sima_core::{Codec, Dec, Enc, Error, Result};
 use sima_model::Params;
@@ -7,7 +7,7 @@ use sima_model::Params;
 use super::model::CaModel;
 use crate::domains::translate::{TomlConfig, float, integer, reject_unknown_keys};
 
-/// The run parameters shared by every CA model: the grid extents, the steps one
+/// The search parameters shared by every CA model: the grid extents, the steps one
 /// segment advances, and the integration step size. A model's own ignition
 /// configuration follows these in the canonical params blob.
 ///
@@ -36,7 +36,7 @@ pub(crate) struct CaParams {
     snapshot_when: Option<(String, f64)>,
 }
 
-/// The shared `[run.params]` keys; the model owns any key beyond these.
+/// The shared `[search.params]` keys; the model owns any key beyond these.
 pub(crate) const SHARED_KEYS: [&str; 5] = ["width", "height", "steps", "dt", "snapshot_when"];
 
 /// Validates a count parameter: at least 1. Zero cells make no grid, and a
@@ -52,7 +52,7 @@ fn at_least_one(name: &str, value: u32) -> Result<u32> {
 }
 
 impl CaParams {
-    /// Builds shared run parameters, validating each field: `width`, `height`,
+    /// Builds shared search parameters, validating each field: `width`, `height`,
     /// and `steps` must be at least 1; `dt` must be finite and strictly greater
     /// than zero. Any violation is [`Error::Validation`] naming the field.
     pub(crate) fn new(width: u32, height: u32, steps: u32, dt: f32) -> Result<CaParams> {
@@ -146,14 +146,14 @@ impl Codec for CaParams {
     }
 }
 
-/// Reads every shared `[run.params]` key for model `M`, rejecting any key
+/// Reads every shared `[search.params]` key for model `M`, rejecting any key
 /// outside the set, and funnels them through [`CaParams::new`].
 ///
 /// The snapshot predicate is read here rather than patched in afterwards: it is
 /// one of the shared keys, and a parse that accepted the key while dropping its
 /// value would hand back a `CaParams` missing a predicate the config states.
 /// Reading it needs the model — the scalar is validated against the names its
-/// reduction emits — and whether the run is segmented, which is why this is a
+/// reduction emits — and whether the search is segmented, which is why this is a
 /// model-aware function rather than a [`TomlConfig`] impl.
 fn parse_shared<M: CaModel>(table: &toml::Table, segmented: bool) -> Result<CaParams> {
     let (id, section) = (M::FORMAT_ID, "params");
@@ -169,7 +169,7 @@ fn parse_shared<M: CaModel>(table: &toml::Table, segmented: bool) -> Result<CaPa
     })
 }
 
-/// The canonical run-params blob: the shared fields, then the model's ignition.
+/// The canonical search-params blob: the shared fields, then the model's ignition.
 pub(crate) fn encode_params<M: CaModel>(shared: &CaParams, ignition: &M::Ignition) -> Vec<u8> {
     let mut enc = Enc::new();
     shared.encode(&mut enc);
@@ -177,7 +177,7 @@ pub(crate) fn encode_params<M: CaModel>(shared: &CaParams, ignition: &M::Ignitio
     enc.finish()
 }
 
-/// Parses the run-params blob: the shared fields, then the model's ignition
+/// Parses the search-params blob: the shared fields, then the model's ignition
 /// codec consumes the remainder. Trailing bytes are a decode error.
 pub(crate) fn decode_params<M: CaModel>(bytes: &[u8]) -> Result<(CaParams, M::Ignition)> {
     let mut dec = Dec::new(bytes);
@@ -187,15 +187,15 @@ pub(crate) fn decode_params<M: CaModel>(bytes: &[u8]) -> Result<(CaParams, M::Ig
     Ok((shared, ignition))
 }
 
-/// Translates the `[run.params]` table into the canonical params blob: the
+/// Translates the `[search.params]` table into the canonical params blob: the
 /// shared keys here, the model's ignition keys via its ignition's
 /// [`TomlConfig`] parser. The table is split so each derived parser rejects only
 /// the unknown keys in its own set — the shared keys go to [`CaParams`], the
 /// rest to the model. All keys are required, with no defaults — every value that
 /// determines candidate identity is visible in the config file.
 ///
-/// `segmented` is whether the run divides candidates into segments; a
-/// `snapshot_when` predicate on a segmented run is a validation error, because
+/// `segmented` is whether the search divides candidates into segments; a
+/// `snapshot_when` predicate on a segmented search is a validation error, because
 /// one params-carried predicate would gate every segment identically and a
 /// chain successor faults on its predecessor's dropped state.
 pub(crate) fn translate<M: CaModel>(table: &toml::Table, segmented: bool) -> Result<Params> {
@@ -214,12 +214,12 @@ pub(crate) fn translate<M: CaModel>(table: &toml::Table, segmented: bool) -> Res
 }
 
 /// Parses and validates the `snapshot_when` inline table `{ scalar, min }`
-/// against model `M`: the run must be unsegmented, the keys exactly `scalar` and
+/// against model `M`: the search must be unsegmented, the keys exactly `scalar` and
 /// `min`, and the scalar name one the model's reduction emits.
 fn parse_snapshot_when<M: CaModel>(value: &toml::Value, segmented: bool) -> Result<(String, f64)> {
     if segmented {
         return Err(Error::Validation(format!(
-            "{} params snapshot_when requires an unsegmented run: one params-carried \
+            "{} params snapshot_when requires an unsegmented search: one params-carried \
              predicate would gate every segment identically and break the chain",
             M::FORMAT_ID
         )));
@@ -310,7 +310,7 @@ mod tests {
     }
 
     #[test]
-    fn the_shared_parse_refuses_a_predicate_on_a_segmented_run() -> Result<()> {
+    fn the_shared_parse_refuses_a_predicate_on_a_segmented_search() -> Result<()> {
         // The rule the predicate carries, applied where the predicate is read
         // rather than at one caller: one params-carried predicate would gate
         // every segment identically and break the chain.
@@ -441,7 +441,7 @@ mod tests {
         ));
     }
 
-    /// The toy model's full `[run.params]` grammar: the shared keys plus the toy
+    /// The toy model's full `[search.params]` grammar: the shared keys plus the toy
     /// model's single `base` key.
     fn params_table(text: &str) -> toml::Table {
         text.parse().expect("parse test table")
@@ -513,7 +513,7 @@ mod tests {
         }
     }
 
-    /// A `[run.params]` table with a `snapshot_when` inline predicate over the
+    /// A `[search.params]` table with a `snapshot_when` inline predicate over the
     /// full toy grammar.
     fn params_with_predicate(scalar: &str, min: &str) -> toml::Table {
         params_table(&format!(
@@ -547,7 +547,7 @@ mod tests {
     #[test]
     fn a_predicate_changes_the_params_bytes() -> Result<()> {
         // A predicate-bearing config and a predicate-free one produce different
-        // params blobs, so their run ids differ.
+        // params blobs, so their search ids differ.
         let without = translate::<Toy>(&params_table(FULL_PARAMS), false)?.bytes;
         let with = translate::<Toy>(&params_with_predicate("population", "0.5"), false)?.bytes;
         assert_ne!(without, with);
@@ -571,7 +571,7 @@ mod tests {
     }
 
     #[test]
-    fn translate_rejects_a_predicate_on_a_segmented_run() {
+    fn translate_rejects_a_predicate_on_a_segmented_search() {
         // A params-carried predicate would gate every segment identically; the
         // error states the constraint.
         match translate::<Toy>(&params_with_predicate("population", "0.5"), true) {

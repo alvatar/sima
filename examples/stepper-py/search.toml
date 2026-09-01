@@ -1,21 +1,21 @@
-[run]
+[search]
 root_seed = 1
 format = "example.stepper.v1"
 segments = 3
 
-[run.generator]
+[search.generator]
 id = "example.stepper.candidates"
 count = 2
 
-[run.params]
-steps = 300000000     # minutes of compute: a run worth moving between machines
+[search.params]
+steps = 300000000     # minutes of compute: a search worth moving between machines
 
 [config]
 max_attempts = 3
 checkpoint_interval_ms = 2000   # save resumable state every 2s
 
 [orchestrator]
-migrate = "cloudbox"  # the [host.*] entry `sima migrate` moves the run onto
+migrate = "cloudbox"  # the [host.*] entry `sima migrate` moves the search onto
 
 [[orchestrator.device]]
 select = "example:cpu"
@@ -29,9 +29,9 @@ binary = "./stepper.py"
 env = ["PATH"]
 # The SDK this program is written against. The sima binary carries the package
 # and puts it on the interpreter's path, so `import sima` resolves here and on
-# any machine this run moves to, with nothing installed there.
+# any machine this search moves to, with nothing installed there.
 sdk = "python"
-# What travels when `sima migrate` moves this run onto another machine. One
+# What travels when `sima migrate` moves this search onto another machine. One
 # file is the program itself: the destination installs it as the entry point
 # and needs no script. A directory would need one, naming it here as
 # `install`, and that script leaves an executable $SIMA_INSTALL_DIR/program.
@@ -40,11 +40,11 @@ sdk = "python"
 payload = "./stepper.py"
 
 # The rented destination `migrate` names: sima finds a vast offer under the
-# constraints, boots its image on it, and the run lives there until recalled.
+# constraints, boots its image on it, and the search lives there until recalled.
 [host.cloudbox]
 provider = "vast"     # rent from vast.ai; key comes from $VAST_API_KEY
 disk_gb  = 32         # disk the instance is created with
-root     = "~/sima-runs"   # where the migrated run lives on the machine
+root     = "~/sima"   # where the migrated search lives on the machine
 binary   = "sima"     # the sima binary there (on the image's PATH)
 
 [host.cloudbox.constraints]
@@ -63,20 +63,19 @@ max_price_usd_hour = 0.10   # cheapest end of the market
 verified_only      = true
 min_reliability    = 0.98   # skip the flaky bottom of the market
 
-# The machines `sima run --fleet` draws workers from: store and orchestrator
+# The machines `sima search --fleet` draws workers from: store and orchestrator
 # stay here, members only lend workers. Without the flag no member is engaged
 # and no rental key is read.
 [fleet]
 members = ["cheap"]
 
 [budget]
-max_spend_usd     = 2.0     # wind the run down if rental spend reaches this
+max_spend_usd     = 2.0     # wind the search down if rental spend reaches this
 max_wall_clock_ms = 0       # no ceiling; a rented destination is never sent one
 
 # A machine you have instead, reached over ssh at the entry's own name.
 # [host.gpubox]
 # workers = 4                             # exclusive with a device table
 # ssh     = "user@10.0.0.5"               # override the address
-# root    = "~/sima-runs"                 # where a migrated run lives there
+# root    = "~/sima"                 # where a migrated search lives there
 # binary  = "sima"                        # the sima binary there
-

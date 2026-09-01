@@ -13,18 +13,18 @@
 //! <root>/instances/<tag>           one rented instance's ledger record
 //! <root>/spend/<owner-hex>/<tag>-<started-ms>   one closed rental's cost
 //! <root>/machines/<provider>-<machine>/<tag>-<occurred-ms>   one incident
-//! <root>/runs/<run-id-hex>/manifest.json
-//! <root>/runs/<run-id-hex>/journal
-//! <root>/runs/<run-id-hex>/orchestrator.lock
-//! <root>/runs/<run-id-hex>/checkpoint/<slot>   mutable resume scratch
-//! <root>/runs/<run-id-hex>/placement/<chain>   mutable chain device binding
-//! <root>/runs/<run-id-hex>/remove-intent       resumable removal plan
+//! <root>/searches/<search-id-hex>/manifest.json
+//! <root>/searches/<search-id-hex>/journal
+//! <root>/searches/<search-id-hex>/orchestrator.lock
+//! <root>/searches/<search-id-hex>/checkpoint/<slot>   mutable resume scratch
+//! <root>/searches/<search-id-hex>/placement/<chain>   mutable chain device binding
+//! <root>/searches/<search-id-hex>/remove-intent       resumable removal plan
 //! ```
 
 use std::path::{Path, PathBuf};
 
 use sima_core::Hash;
-use sima_model::{RunId, TaskKey};
+use sima_model::{SearchId, TaskKey};
 
 /// The `objects/` CAS directory.
 pub(crate) fn objects_dir(root: &Path) -> PathBuf {
@@ -91,9 +91,9 @@ pub(crate) fn machines_ledger_dir(root: &Path) -> PathBuf {
     root.join("machines")
 }
 
-/// The `runs/` directory.
-pub(crate) fn runs_dir(root: &Path) -> PathBuf {
-    root.join("runs")
+/// The `searches/` directory.
+pub(crate) fn searches_dir(root: &Path) -> PathBuf {
+    root.join("searches")
 }
 
 /// One fan-out subdirectory: `objects/<aa>/`, holding every object whose
@@ -153,53 +153,53 @@ pub(crate) fn machine_incident_path(
     machine_dir(root, provider, machine).join(crate::machines::incident_key(tag, occurred_ms))
 }
 
-/// A run's directory: `runs/<run-id-hex>/`.
-pub(crate) fn run_dir(root: &Path, run: &RunId) -> PathBuf {
-    runs_dir(root).join(run.to_string())
+/// A search's directory: `searches/<search-id-hex>/`.
+pub(crate) fn search_dir(root: &Path, search: &SearchId) -> PathBuf {
+    searches_dir(root).join(search.to_string())
 }
 
-/// A run's manifest path: `runs/<run-id-hex>/manifest.json`.
-pub(crate) fn manifest_path(root: &Path, run: &RunId) -> PathBuf {
-    run_dir(root, run).join("manifest.json")
+/// A search's manifest path: `searches/<search-id-hex>/manifest.json`.
+pub(crate) fn manifest_path(root: &Path, search: &SearchId) -> PathBuf {
+    search_dir(root, search).join("manifest.json")
 }
 
-/// A run's journal path: `runs/<run-id-hex>/journal`.
+/// A search's journal path: `searches/<search-id-hex>/journal`.
 ///
 /// Public because the path is asked for outside this crate: a migration probes
 /// the far side's journal over a store root that is a path on another machine,
 /// and this is the one place that path is stated.
-pub fn journal_path(root: &Path, run: &RunId) -> PathBuf {
-    run_dir(root, run).join("journal")
+pub fn journal_path(root: &Path, search: &SearchId) -> PathBuf {
+    search_dir(root, search).join("journal")
 }
 
-/// A run's orchestrator-lock path: `runs/<run-id-hex>/orchestrator.lock`.
-pub(crate) fn lock_path(root: &Path, run: &RunId) -> PathBuf {
-    run_dir(root, run).join("orchestrator.lock")
+/// A search's orchestrator-lock path: `searches/<search-id-hex>/orchestrator.lock`.
+pub(crate) fn lock_path(root: &Path, search: &SearchId) -> PathBuf {
+    search_dir(root, search).join("orchestrator.lock")
 }
 
-/// A run's checkpoint directory: `runs/<run-id-hex>/checkpoint/`.
-pub(crate) fn checkpoint_dir(root: &Path, run: &RunId) -> PathBuf {
-    run_dir(root, run).join("checkpoint")
+/// A search's checkpoint directory: `searches/<search-id-hex>/checkpoint/`.
+pub(crate) fn checkpoint_dir(root: &Path, search: &SearchId) -> PathBuf {
+    search_dir(root, search).join("checkpoint")
 }
 
-/// A chain's checkpoint-slot path: `runs/<run-id-hex>/checkpoint/<slot>`.
-pub(crate) fn checkpoint_path(root: &Path, run: &RunId, slot: u64) -> PathBuf {
-    checkpoint_dir(root, run).join(slot.to_string())
+/// A chain's checkpoint-slot path: `searches/<search-id-hex>/checkpoint/<slot>`.
+pub(crate) fn checkpoint_path(root: &Path, search: &SearchId, slot: u64) -> PathBuf {
+    checkpoint_dir(root, search).join(slot.to_string())
 }
 
-/// A run's placement directory: `runs/<run-id-hex>/placement/`.
-pub(crate) fn placement_dir(root: &Path, run: &RunId) -> PathBuf {
-    run_dir(root, run).join("placement")
+/// A search's placement directory: `searches/<search-id-hex>/placement/`.
+pub(crate) fn placement_dir(root: &Path, search: &SearchId) -> PathBuf {
+    search_dir(root, search).join("placement")
 }
 
-/// A chain's placement-slot path: `runs/<run-id-hex>/placement/<chain>`.
-pub(crate) fn placement_path(root: &Path, run: &RunId, chain: u64) -> PathBuf {
-    placement_dir(root, run).join(chain.to_string())
+/// A chain's placement-slot path: `searches/<search-id-hex>/placement/<chain>`.
+pub(crate) fn placement_path(root: &Path, search: &SearchId, chain: u64) -> PathBuf {
+    placement_dir(root, search).join(chain.to_string())
 }
 
-/// A run's removal-intent path: `runs/<run-id-hex>/remove-intent`.
-pub(crate) fn remove_intent_path(root: &Path, run: &RunId) -> PathBuf {
-    run_dir(root, run).join("remove-intent")
+/// A search's removal-intent path: `searches/<search-id-hex>/remove-intent`.
+pub(crate) fn remove_intent_path(root: &Path, search: &SearchId) -> PathBuf {
+    search_dir(root, search).join("remove-intent")
 }
 
 #[cfg(test)]
@@ -229,7 +229,7 @@ mod tests {
         assert_eq!(objects_dir(root()), Path::new("/store/objects"));
         assert_eq!(packs_dir(root()), Path::new("/store/packs"));
         assert_eq!(tasks_dir(root()), Path::new("/store/tasks"));
-        assert_eq!(runs_dir(root()), Path::new("/store/runs"));
+        assert_eq!(searches_dir(root()), Path::new("/store/searches"));
         assert_eq!(instances_dir(root()), Path::new("/store/instances"));
         assert_eq!(spend_ledger_dir(root()), Path::new("/store/spend"));
         assert_eq!(machines_ledger_dir(root()), Path::new("/store/machines"));
@@ -273,20 +273,26 @@ mod tests {
     }
 
     #[test]
-    fn a_run_holds_its_files_under_its_own_directory() -> Result<()> {
-        // Everything a run owns is one subtree, which is what makes removing a
-        // run a directory removal rather than a scan.
-        let run = RunId::from_hash(hash_bytes(b"a pinned run"));
-        let dir = Path::new("/store/runs").join(run.to_string());
-        assert_eq!(run_dir(root(), &run), dir);
-        assert_eq!(manifest_path(root(), &run), dir.join("manifest.json"));
-        assert_eq!(journal_path(root(), &run), dir.join("journal"));
-        assert_eq!(lock_path(root(), &run), dir.join("orchestrator.lock"));
-        assert_eq!(remove_intent_path(root(), &run), dir.join("remove-intent"));
-        assert_eq!(checkpoint_dir(root(), &run), dir.join("checkpoint"));
-        assert_eq!(checkpoint_path(root(), &run, 7), dir.join("checkpoint/7"));
-        assert_eq!(placement_dir(root(), &run), dir.join("placement"));
-        assert_eq!(placement_path(root(), &run, 3), dir.join("placement/3"));
+    fn a_search_holds_its_files_under_its_own_directory() -> Result<()> {
+        // Everything a search owns is one subtree, which is what makes removing a
+        // search a directory removal rather than a scan.
+        let search = SearchId::from_hash(hash_bytes(b"a pinned search"));
+        let dir = Path::new("/store/searches").join(search.to_string());
+        assert_eq!(search_dir(root(), &search), dir);
+        assert_eq!(manifest_path(root(), &search), dir.join("manifest.json"));
+        assert_eq!(journal_path(root(), &search), dir.join("journal"));
+        assert_eq!(lock_path(root(), &search), dir.join("orchestrator.lock"));
+        assert_eq!(
+            remove_intent_path(root(), &search),
+            dir.join("remove-intent")
+        );
+        assert_eq!(checkpoint_dir(root(), &search), dir.join("checkpoint"));
+        assert_eq!(
+            checkpoint_path(root(), &search, 7),
+            dir.join("checkpoint/7")
+        );
+        assert_eq!(placement_dir(root(), &search), dir.join("placement"));
+        assert_eq!(placement_path(root(), &search, 3), dir.join("placement/3"));
         Ok(())
     }
 

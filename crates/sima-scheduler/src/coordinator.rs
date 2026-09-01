@@ -1,6 +1,6 @@
-//! [`Coordinator`]: the shared run coordination.
+//! [`Coordinator`]: the shared search coordination.
 //!
-//! One `Coordinator` per run holds everything the scheduler threads share — the
+//! One `Coordinator` per search holds everything the scheduler threads share — the
 //! ready queue, the lease table, and the wind-down state — behind a single
 //! mutex, plus the condition variable every thread waits on. Its methods are
 //! the only access: leasing the next task, the settlement methods that release
@@ -38,9 +38,9 @@ pub(crate) struct Leased {
 
 /// What the driver's next step is, as the shared state decides it.
 pub(crate) enum Gate {
-    /// The run wound down and every lease is released; the payload is the
+    /// The search wound down and every lease is released; the payload is the
     /// reason, taken by value.
-    Terminal(RunState),
+    Terminal(SearchState),
     /// The queue is empty and work has settled since the last poll, so the
     /// source is asked for more. `idle` is whether any lease is outstanding —
     /// an empty poll finalizes only when none is — and `keys` is what settled
@@ -59,23 +59,23 @@ pub(crate) struct Failure {
     pub(crate) reason: String,
 }
 
-/// Why the run is winding down. `Running` is the steady state; every other
+/// Why the search is winding down. `Running` is the steady state; every other
 /// variant is terminal and makes each worker stop pulling new work. The
 /// variants form a precedence order — `Running < Interrupted < Failed <
 /// Fault` — and each setter only upgrades: an interrupt never displaces a
 /// failure, a failure never displaces a fault, and among faults the first
 /// wins. `Finished` sits outside the order as the drained sentinel the
 /// driver installs when it takes the terminal state.
-pub(crate) enum RunState {
+pub(crate) enum SearchState {
     /// Work is proceeding.
     Running,
-    /// The caller requested a graceful wind-down; the run returns
-    /// [`RunOutcome::Interrupted`](crate::RunOutcome::Interrupted).
+    /// The caller requested a graceful wind-down; the search returns
+    /// [`SearchOutcome::Interrupted`](crate::SearchOutcome::Interrupted).
     Interrupted,
-    /// A definitive candidate failure; the run returns
-    /// [`RunOutcome::Failed`](crate::RunOutcome::Failed).
+    /// A definitive candidate failure; the search returns
+    /// [`SearchOutcome::Failed`](crate::SearchOutcome::Failed).
     Failed(Failure),
-    /// An infrastructure fault; the run returns `Err`.
+    /// An infrastructure fault; the search returns `Err`.
     Fault(Error),
     /// The driver saw the work through and asked the pool to exit.
     Finished,
@@ -92,8 +92,8 @@ struct Shared {
     /// and leases live in memory only — a process death drops them all, and
     /// resume re-derives the frontier from the store.
     leases: HashSet<TaskKey>,
-    /// The run's wind-down state.
-    state: RunState,
+    /// The search's wind-down state.
+    state: SearchState,
     /// Monotonic count of lease releases: incremented once per settled
     /// attempt, whatever the outcome. The driver records this count at each
     /// poll of the task source and polls again only after it has moved.
@@ -108,27 +108,27 @@ struct Shared {
     /// chain a settled task belongs to can have gained one — so handing the
     /// source what settled lets it re-probe those chains alone instead of every
     /// chain it has handed out. Drained by the poll gate, so the list is the
-    /// size of one poll's worth of settlements rather than the run's.
+    /// size of one poll's worth of settlements rather than the search's.
     settled_keys: Vec<TaskKey>,
-    /// The device class each chain's work runs on, seeded at run start from
+    /// The device class each chain's work runs on, seeded at search start from
     /// the store's placement slots and extended as chains bind. Empty and
-    /// unread when the run has one implicit class.
+    /// unread when the search has one implicit class.
     chains: HashMap<u64, DeviceClass>,
     /// The class each chain-less task's attempts run on. A stateless task is a
-    /// chain of length one: its retries stick within the run, and once it
+    /// chain of length one: its retries stick within the search, and once it
     /// commits there is nothing left to place — so this stays in memory and
     /// no slot is ever written for it.
     stateless: HashMap<TaskKey, DeviceClass>,
     /// Workers still alive, seeded to the pool's slot total before the workers
     /// spawn and decremented as each exits. When the last one exits while the
-    /// run is still `Running`, no worker remains to drain the queue, so the run
+    /// search is still `Running`, no worker remains to drain the queue, so the search
     /// faults instead of the driver waiting forever.
     live_workers: usize,
 }
 
 impl Shared {
     /// The class a pending task's work is bound to, if any. A chained task
-    /// reads the run's durable placement; a chain-less one reads the in-memory
+    /// reads the search's durable placement; a chain-less one reads the in-memory
     /// retry stickiness.
     ///
     /// Borrowed rather than owned: the queue scan calls this once per queued
@@ -148,7 +148,7 @@ impl Shared {
     fn bind(&mut self, pending: &Pending, class: &DeviceClass) -> ChainPlacement {
         match pending.task.chain {
             // A chain-less task places in memory alone: it is a chain of
-            // length one, so nothing outlives the run to be coherent with.
+            // length one, so nothing outlives the search to be coherent with.
             None => {
                 self.stateless.insert(pending.key, class.clone());
                 ChainPlacement::Settled
@@ -176,7 +176,7 @@ impl Shared {
 pub(crate) struct Coordinator {
     state: Mutex<Shared>,
     state_changed: Condvar,
-    /// The classes the run has. Empty for the single implicit class, which is
+    /// The classes the search has. Empty for the single implicit class, which is
     /// what makes [`Coordinator::next_task`] short-circuit placement entirely.
     classes: Vec<DeviceClass>,
 }
@@ -191,7 +191,7 @@ impl Coordinator {
         Coordinator::with_placement(Vec::new(), HashMap::new())
     }
 
-    /// A fresh coordinator for a run over `classes`, its chain placements
+    /// A fresh coordinator for a search over `classes`, its chain placements
     /// seeded from `chains` — the bindings the store already holds, so a
     /// resumed chain returns to the class it ran on.
     pub(crate) fn with_placement(
@@ -202,7 +202,7 @@ impl Coordinator {
             state: Mutex::new(Shared {
                 queue: VecDeque::new(),
                 leases: HashSet::new(),
-                state: RunState::Running,
+                state: SearchState::Running,
                 settled: 0,
                 settled_keys: Vec::new(),
                 chains,
@@ -225,13 +225,13 @@ impl Coordinator {
     }
 
     /// Leases the next task the calling worker's `class` may run, inserting
-    /// its lease and counting it in flight; returns `None` once the run is
+    /// its lease and counting it in flight; returns `None` once the search is
     /// winding down and the calling worker should exit.
     ///
     /// A worker of a class takes the first queued task its class is eligible
     /// for, so an unbound chain goes to whichever class reaches it first and a
-    /// bound one waits for its own. A run with one implicit class passes
-    /// `None` and takes the head of the queue, exactly as a run with no
+    /// bound one waits for its own. A search with one implicit class passes
+    /// `None` and takes the head of the queue, exactly as a search with no
     /// placement does.
     ///
     /// The park is unconditional: a worker whose class has nothing eligible
@@ -240,7 +240,7 @@ impl Coordinator {
     pub(crate) fn next_task(&self, class: Option<&DeviceClass>) -> Option<Leased> {
         let mut shared = self.lock();
         loop {
-            if !matches!(shared.state, RunState::Running) {
+            if !matches!(shared.state, SearchState::Running) {
                 // Winding down: pull no more work. Wake peers and the driver so
                 // they observe the state and drain.
                 self.state_changed.notify_all();
@@ -300,18 +300,18 @@ impl Coordinator {
     }
 
     /// Clears a lease with no further state change: the task committed, or a
-    /// run winding down abandoned its in-flight attempt.
+    /// search winding down abandoned its in-flight attempt.
     pub(crate) fn resolve(&self, key: TaskKey) {
         self.settle(key, |_shared| {});
     }
 
-    /// Clears the lease and, while the run is still healthy, re-enqueues the
-    /// task at the next attempt. Returns whether it was re-enqueued: a run
+    /// Clears the lease and, while the search is still healthy, re-enqueues the
+    /// task at the next attempt. Returns whether it was re-enqueued: a search
     /// already winding down abandons the task rather than queueing work no
     /// worker will take.
     pub(crate) fn requeue(&self, key: TaskKey, task: RunnableTask, next_attempt: u32) -> bool {
         self.settle(key, |shared| {
-            let running = matches!(shared.state, RunState::Running);
+            let running = matches!(shared.state, SearchState::Running);
             if running {
                 // The key is already in hand as a parameter — the requeued
                 // attempt reuses it rather than recomputing it under the lock.
@@ -327,13 +327,16 @@ impl Coordinator {
 
     /// Records a definitive candidate failure. It upgrades the healthy and
     /// interrupted states — a candidate that failed definitively during an
-    /// interrupt wind-down still decides the run — and never downgrades an
+    /// interrupt wind-down still decides the search — and never downgrades an
     /// infrastructure fault; the first candidate failure among candidate
     /// failures wins.
     pub(crate) fn terminate(&self, key: TaskKey, reason: String) {
         self.settle(key, |shared| {
-            if matches!(shared.state, RunState::Running | RunState::Interrupted) {
-                shared.state = RunState::Failed(Failure { task: key, reason });
+            if matches!(
+                shared.state,
+                SearchState::Running | SearchState::Interrupted
+            ) {
+                shared.state = SearchState::Failed(Failure { task: key, reason });
             }
         });
     }
@@ -343,20 +346,20 @@ impl Coordinator {
     /// interrupt in the precedence order.
     pub(crate) fn interrupt(&self) {
         let mut shared = self.lock();
-        if matches!(shared.state, RunState::Running) {
-            shared.state = RunState::Interrupted;
+        if matches!(shared.state, SearchState::Running) {
+            shared.state = SearchState::Interrupted;
         }
         self.state_changed.notify_all();
     }
 
     /// Records an infrastructure fault: it outranks a definitive candidate
-    /// failure, because the result path itself broke and the run must surface
+    /// failure, because the result path itself broke and the search must surface
     /// the error. The first fault wins; a later candidate failure never
     /// displaces it.
     pub(crate) fn fault(&self, key: TaskKey, err: Error) {
         self.settle(key, |shared| {
-            if !matches!(shared.state, RunState::Fault(_)) {
-                shared.state = RunState::Fault(err);
+            if !matches!(shared.state, SearchState::Fault(_)) {
+                shared.state = SearchState::Fault(err);
             }
         });
     }
@@ -366,18 +369,18 @@ impl Coordinator {
     /// first fault wins.
     ///
     /// [`fault`]: Coordinator::fault
-    pub(crate) fn fault_run(&self, err: Error) {
+    pub(crate) fn fault_search(&self, err: Error) {
         let mut shared = self.lock();
-        if !matches!(shared.state, RunState::Fault(_)) {
-            shared.state = RunState::Fault(err);
+        if !matches!(shared.state, SearchState::Fault(_)) {
+            shared.state = SearchState::Fault(err);
         }
         self.state_changed.notify_all();
     }
 
-    /// Whether the run is still in its steady state, for a caller deciding
+    /// Whether the search is still in its steady state, for a caller deciding
     /// whether to keep working rather than to wind down.
     pub(crate) fn is_running(&self) -> bool {
-        matches!(self.lock().state, RunState::Running)
+        matches!(self.lock().state, SearchState::Running)
     }
 
     /// What the driver does next, given the settle count it last polled at.
@@ -388,14 +391,14 @@ impl Coordinator {
     /// so a notification arriving between the two is not missed.
     pub(crate) fn next_gate(&self, polled_at: Option<u64>, park: Duration) -> Option<Gate> {
         let mut shared = self.lock();
-        if !matches!(shared.state, RunState::Running) {
+        if !matches!(shared.state, SearchState::Running) {
             // Drained means every lease is released; the queue may still hold
             // tasks no worker will take, which is what a wind-down leaves.
             if shared.leases.is_empty() {
                 // Take the terminal reason by value: the payload moves out to
                 // be returned, and the `Finished` left in its place is the
                 // signal that makes every worker's next_task exit.
-                let terminal = std::mem::replace(&mut shared.state, RunState::Finished);
+                let terminal = std::mem::replace(&mut shared.state, SearchState::Finished);
                 self.state_changed.notify_all();
                 return Some(Gate::Terminal(terminal));
             }
@@ -423,7 +426,7 @@ impl Coordinator {
     /// Installs the drained sentinel: the driver saw the work through and the
     /// pool may exit.
     pub(crate) fn finish(&self) {
-        self.lock().state = RunState::Finished;
+        self.lock().state = SearchState::Finished;
         self.state_changed.notify_all();
     }
 
@@ -434,12 +437,12 @@ impl Coordinator {
         self.state_changed.notify_all();
     }
 
-    /// The run's wind-down state, for an assertion about which one it reached.
+    /// The search's wind-down state, for an assertion about which one it reached.
     /// Reading it costs the lock, so it is handed to a closure rather than
-    /// cloned: `RunState` carries an `Error` and a `Failure`, neither of which
+    /// cloned: `SearchState` carries an `Error` and a `Failure`, neither of which
     /// is cloneable.
     #[cfg(test)]
-    pub(crate) fn with_state<T>(&self, read: impl FnOnce(&RunState) -> T) -> T {
+    pub(crate) fn with_state<T>(&self, read: impl FnOnce(&SearchState) -> T) -> T {
         read(&self.lock().state)
     }
 
@@ -473,21 +476,21 @@ impl Coordinator {
     }
 
     /// Seeds the live-worker count to `count`, the pool's slot total, before
-    /// the workers spawn. Set once at run start.
+    /// the workers spawn. Set once at search start.
     pub(crate) fn set_live_workers(&self, count: usize) {
         self.lock().live_workers = count;
     }
 
-    /// Records a worker's exit. The last worker leaving while the run is still
+    /// Records a worker's exit. The last worker leaving while the search is still
     /// `Running` faults it: no worker remains to drain the queue, so the driver
-    /// would otherwise wait forever. A worker that exits after the run has
+    /// would otherwise wait forever. A worker that exits after the search has
     /// already wound down decrements the count and nothing more — the terminal
     /// state stands.
     pub(crate) fn worker_exited(&self) {
         let mut shared = self.lock();
         shared.live_workers = shared.live_workers.saturating_sub(1);
-        if shared.live_workers == 0 && matches!(shared.state, RunState::Running) {
-            shared.state = RunState::Fault(Error::Transport(
+        if shared.live_workers == 0 && matches!(shared.state, SearchState::Running) {
+            shared.state = SearchState::Fault(Error::Transport(
                 "every worker retired with work still pending".to_string(),
             ));
         }
@@ -502,8 +505,8 @@ mod tests {
 
     use super::*;
 
-    /// A coordinator in a given run state, with an empty queue and lease table.
-    fn coordinator_with(state: RunState) -> Coordinator {
+    /// A coordinator in a given search state, with an empty queue and lease table.
+    fn coordinator_with(state: SearchState) -> Coordinator {
         let coordinator = Coordinator::new();
         coordinator.lock().state = state;
         coordinator
@@ -625,7 +628,7 @@ mod tests {
 
     #[test]
     fn a_chain_bound_to_an_absent_class_moves_to_a_class_that_is_here() {
-        // A run whose devices do not include the chain's class: the work
+        // A search whose devices do not include the chain's class: the work
         // moves rather than stranding, and the decision comes back to be
         // journaled.
         let gone = class("1002:1234");
@@ -633,7 +636,7 @@ mod tests {
             vec![pending(Some(0), 1)],
             HashMap::from([(0, gone.clone())]),
         );
-        let leased = take(&coordinator, &nvidia()).expect("the run continues");
+        let leased = take(&coordinator, &nvidia()).expect("the search continues");
         assert_eq!(
             leased.placement,
             ChainPlacement::Rebound {
@@ -648,7 +651,7 @@ mod tests {
     #[test]
     fn a_chain_less_tasks_retry_stays_on_the_class_that_first_ran_it() {
         // A stateless task is a chain of length one: its attempts stick within
-        // the run, and nothing about it is persisted.
+        // the search, and nothing about it is persisted.
         let task = pending(None, 1);
         let key = task.key;
         let coordinator = placed(vec![task], HashMap::new());
@@ -674,7 +677,7 @@ mod tests {
 
     #[test]
     fn one_implicit_class_takes_the_head_of_the_queue_untouched() {
-        // The single-device run: no class, no placement state read or written,
+        // The single-device search: no class, no placement state read or written,
         // and the queue stays strictly FIFO.
         let first = pending(Some(0), 1);
         let first_key = first.key;
@@ -743,7 +746,7 @@ mod tests {
     }
 
     #[test]
-    fn a_wound_down_run_yields_its_terminal_reason_once() {
+    fn a_wound_down_search_yields_its_terminal_reason_once() {
         // The driver takes the reason by value and leaves `Finished` behind,
         // which is the signal every worker's next_task exits on — so a second
         // look yields the sentinel rather than the reason again.
@@ -751,16 +754,16 @@ mod tests {
         coordinator.interrupt();
         assert!(matches!(
             coordinator.next_gate(None, PARK),
-            Some(Gate::Terminal(RunState::Interrupted))
+            Some(Gate::Terminal(SearchState::Interrupted))
         ));
         assert!(matches!(
             coordinator.next_gate(None, PARK),
-            Some(Gate::Terminal(RunState::Finished))
+            Some(Gate::Terminal(SearchState::Finished))
         ));
     }
 
     #[test]
-    fn a_wound_down_run_holding_a_lease_is_not_terminal_yet() {
+    fn a_wound_down_search_holding_a_lease_is_not_terminal_yet() {
         // The in-flight attempt has to settle first, or the driver would
         // return while a worker still holds a task.
         let coordinator = Coordinator::new();
@@ -771,7 +774,7 @@ mod tests {
         coordinator.resolve(key);
         assert!(matches!(
             coordinator.next_gate(None, PARK),
-            Some(Gate::Terminal(RunState::Interrupted))
+            Some(Gate::Terminal(SearchState::Interrupted))
         ));
     }
 
@@ -786,23 +789,23 @@ mod tests {
 
     #[test]
     fn a_fault_upgrades_a_definitive_candidate_failure() {
-        let coordinator = coordinator_with(RunState::Failed(Failure {
+        let coordinator = coordinator_with(SearchState::Failed(Failure {
             task: a_key(),
             reason: "candidate rejected".to_string(),
         }));
         coordinator.fault(a_key(), Error::Corruption("store broke".to_string()));
-        assert!(matches!(coordinator.lock().state, RunState::Fault(_)));
+        assert!(matches!(coordinator.lock().state, SearchState::Fault(_)));
     }
 
     #[test]
     fn the_first_fault_is_kept_over_a_later_one() {
-        let coordinator = coordinator_with(RunState::Fault(Error::Corruption(
+        let coordinator = coordinator_with(SearchState::Fault(Error::Corruption(
             "first fault".to_string(),
         )));
         coordinator.fault(a_key(), Error::Validation("second fault".to_string()));
         match &coordinator.lock().state {
-            RunState::Fault(e) => assert_eq!(e.to_string(), "store corruption: first fault"),
-            _ => panic!("expected a fault run state"),
+            SearchState::Fault(e) => assert_eq!(e.to_string(), "store corruption: first fault"),
+            _ => panic!("expected a fault search state"),
         }
     }
 
@@ -810,63 +813,63 @@ mod tests {
     fn an_interrupt_upgrades_a_running_coordinator() {
         let coordinator = Coordinator::new();
         coordinator.interrupt();
-        assert!(matches!(coordinator.lock().state, RunState::Interrupted));
+        assert!(matches!(coordinator.lock().state, SearchState::Interrupted));
     }
 
     #[test]
     fn an_interrupt_never_displaces_a_definitive_failure() {
-        let coordinator = coordinator_with(RunState::Failed(Failure {
+        let coordinator = coordinator_with(SearchState::Failed(Failure {
             task: a_key(),
             reason: "candidate rejected".to_string(),
         }));
         coordinator.interrupt();
-        assert!(matches!(coordinator.lock().state, RunState::Failed(_)));
+        assert!(matches!(coordinator.lock().state, SearchState::Failed(_)));
     }
 
     #[test]
     fn an_interrupt_never_displaces_a_fault() {
-        let coordinator = coordinator_with(RunState::Fault(Error::Corruption(
+        let coordinator = coordinator_with(SearchState::Fault(Error::Corruption(
             "store broke".to_string(),
         )));
         coordinator.interrupt();
-        assert!(matches!(coordinator.lock().state, RunState::Fault(_)));
+        assert!(matches!(coordinator.lock().state, SearchState::Fault(_)));
     }
 
     #[test]
     fn a_definitive_failure_upgrades_an_interrupt() {
-        let coordinator = coordinator_with(RunState::Interrupted);
+        let coordinator = coordinator_with(SearchState::Interrupted);
         coordinator.terminate(a_key(), "candidate rejected".to_string());
-        assert!(matches!(coordinator.lock().state, RunState::Failed(_)));
+        assert!(matches!(coordinator.lock().state, SearchState::Failed(_)));
     }
 
     #[test]
     fn a_fault_upgrades_an_interrupt() {
-        let coordinator = coordinator_with(RunState::Interrupted);
+        let coordinator = coordinator_with(SearchState::Interrupted);
         coordinator.fault(a_key(), Error::Corruption("store broke".to_string()));
-        assert!(matches!(coordinator.lock().state, RunState::Fault(_)));
+        assert!(matches!(coordinator.lock().state, SearchState::Fault(_)));
     }
 
     #[test]
-    fn a_run_fault_upgrades_without_touching_leases() {
+    fn a_search_fault_upgrades_without_touching_leases() {
         let coordinator = Coordinator::new();
         coordinator.lock().leases.insert(a_key());
-        coordinator.fault_run(Error::Transport("spawn failed".to_string()));
+        coordinator.fault_search(Error::Transport("spawn failed".to_string()));
         let shared = coordinator.lock();
-        assert!(matches!(shared.state, RunState::Fault(_)));
+        assert!(matches!(shared.state, SearchState::Fault(_)));
         // No lease settles: the fault holds none.
         assert!(shared.leases.contains(&a_key()));
         assert_eq!(shared.settled, 0);
     }
 
     #[test]
-    fn a_run_fault_never_displaces_an_earlier_fault() {
-        let coordinator = coordinator_with(RunState::Fault(Error::Corruption(
+    fn a_search_fault_never_displaces_an_earlier_fault() {
+        let coordinator = coordinator_with(SearchState::Fault(Error::Corruption(
             "first fault".to_string(),
         )));
-        coordinator.fault_run(Error::Transport("respawn failed".to_string()));
+        coordinator.fault_search(Error::Transport("respawn failed".to_string()));
         match &coordinator.lock().state {
-            RunState::Fault(e) => assert_eq!(e.to_string(), "store corruption: first fault"),
-            _ => panic!("expected a fault run state"),
+            SearchState::Fault(e) => assert_eq!(e.to_string(), "store corruption: first fault"),
+            _ => panic!("expected a fault search state"),
         }
     }
 }

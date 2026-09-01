@@ -3,7 +3,7 @@
 //! commit → inspect to a finalized manifest, a segment boundary leaves the
 //! committed trajectory byte-identical, the same genome evaluated by the two
 //! backends lands on the same grid within tolerance, and a malformed
-//! `[run.params]` section fails at load — before any store or GPU work.
+//! `[search.params]` section fails at load — before any store or GPU work.
 //!
 //! The `on_device` tests drive a real device; the program's identity, its
 //! params validation, and the shipped config are checked device-free.
@@ -20,8 +20,8 @@ use common::{
 use sima_core::{Error, Hash, Result};
 use sima_domains::substrates::cellular::Grid;
 use sima_pipeline::{
-    BinaryChange, Cost, DeviceSelector, Engagement, LoadedConfig, Pool, RunControl, RunOutcome,
-    orchestrate,
+    BinaryChange, Cost, DeviceSelector, Engagement, LoadedConfig, Pool, SearchControl,
+    SearchOutcome, orchestrate,
 };
 use sima_store::Store;
 
@@ -48,17 +48,17 @@ const TOLERANCE: f64 = 1e-3;
 /// A config over `format` for the Gray-Scott rule: `count` candidates in a
 /// narrow band around the pattern point — the feed range is the one
 /// non-degenerate axis, so every candidate is distinct — on a 32x32 grid,
-/// `steps` per segment. `segments` renders the optional `[run]` key.
+/// `steps` per segment. `segments` renders the optional `[search]` key.
 fn config_text(format: &str, store: &str, count: u32, steps: u32, segments: Option<u64>) -> String {
     let segments = segments.map_or(String::new(), |n| format!("segments = {n}"));
     format!(
         r#"
-        [run]
+        [search]
         root_seed = 42
         format = "{format}"
         {segments}
 
-        [run.generator]
+        [search.generator]
         id = "{format}"
         count = {count}
         feed = [0.054, 0.056]
@@ -66,7 +66,7 @@ fn config_text(format: &str, store: &str, count: u32, steps: u32, segments: Opti
         diffusion_u = [0.16, 0.16]
         diffusion_v = [0.08, 0.08]
 
-        [run.params]
+        [search.params]
         width = 32
         height = 32
         steps = {steps}
@@ -109,12 +109,12 @@ fn config(
     )
 }
 
-/// The `state` artifacts across the run's manifest entries: each entry's
+/// The `state` artifacts across the search's manifest entries: each entry's
 /// object hash and its decoded grid.
 fn manifest_states(config: &LoadedConfig) -> Result<Vec<(Hash, Grid)>> {
     let store = Store::open(&config.store)?;
     let manifest = store
-        .manifest(&config.run.id())?
+        .manifest(&config.search.id())?
         .expect("a finalized manifest");
     manifest
         .entries
@@ -136,8 +136,8 @@ fn manifest_states(config: &LoadedConfig) -> Result<Vec<(Hash, Grid)>> {
 
 #[test]
 fn the_two_programs_are_separately_addressable() -> Result<()> {
-    // Device-free: both configs load, and the runs they describe carry
-    // different ids. The rule is shared and the identities are not, so a run
+    // Device-free: both configs load, and the searches they describe carry
+    // different ids. The rule is shared and the identities are not, so a search
     // of one never resolves a task key to the other's stored result.
     let dir = tempfile::tempdir().expect("temp dir");
     let cuda = config(
@@ -158,8 +158,8 @@ fn the_two_programs_are_separately_addressable() -> Result<()> {
         100,
         None,
     )?;
-    assert_eq!(cuda.run.format.as_str(), CUDA_FORMAT);
-    assert_ne!(cuda.run.id(), wgsl.run.id());
+    assert_eq!(cuda.search.format.as_str(), CUDA_FORMAT);
+    assert_ne!(cuda.search.id(), wgsl.search.id());
     Ok(())
 }
 
@@ -167,7 +167,7 @@ fn the_two_programs_are_separately_addressable() -> Result<()> {
 fn a_malformed_params_section_fails_at_load() -> Result<()> {
     let dir = tempfile::tempdir().expect("temp dir");
     let valid = config_text(CUDA_FORMAT, "./store", 1, 10, None);
-    // Each case malforms one aspect of [run.params]; the load fails with
+    // Each case malforms one aspect of [search.params]; the load fails with
     // Validation naming the key, before any store or GPU work.
     let cases = [
         ("width = 32", "", "width"), // missing key
@@ -191,10 +191,10 @@ fn a_malformed_params_section_fails_at_load() -> Result<()> {
 fn the_shipped_cuda_search_config_loads() -> Result<()> {
     // The committed `examples/gray-scott-cuda-search.toml` parses cleanly
     // through the full load path, device-free — a guard on the shipped file
-    // itself, so an edit that breaks it fails here rather than only at run
+    // itself, so an edit that breaks it fails here rather than only at search
     // time.
     let loaded = load_example_variant(EXAMPLE, &shipped_example(EXAMPLE))?;
-    assert_eq!(loaded.run.format.as_str(), CUDA_FORMAT);
+    assert_eq!(loaded.search.format.as_str(), CUDA_FORMAT);
     assert_eq!(loaded.execution.workers, 2);
     Ok(())
 }
@@ -251,7 +251,7 @@ fn the_shipped_search_config_loads_segmented() -> Result<()> {
     // commented, and this variant enables the one and leaves the other.
     let text = uncomment(&shipped_example(EXAMPLE), &["segments = 10"]);
     let loaded = load_example_variant(EXAMPLE, &text)?;
-    assert_eq!(loaded.run.segments, NonZeroU64::new(10));
+    assert_eq!(loaded.search.segments, NonZeroU64::new(10));
     Ok(())
 }
 
@@ -320,11 +320,11 @@ mod on_device {
         assert!(matches!(
             orchestrate(
                 &config,
-                &RunControl::detached(),
+                &SearchControl::detached(),
                 Engagement::Orchestrator,
                 BinaryChange::Refuse
             )?,
-            RunOutcome::Finalized { .. }
+            SearchOutcome::Finalized { .. }
         ));
         // Four candidates, one manifest entry each, every committed state a
         // 32x32 two-channel grid. The dimensions are the whole assertion: the
@@ -342,7 +342,7 @@ mod on_device {
         // Resume across a segment boundary is backend-independent machinery, and
         // this is what proves the CUDA engine's resident state survives it: the
         // second segment must continue from the first segment's committed grid and
-        // land exactly where an unsegmented run of the same length lands.
+        // land exactly where an unsegmented search of the same length lands.
         let dir = tempfile::tempdir().expect("temp dir");
         let segmented = config(
             dir.path(),
@@ -356,11 +356,11 @@ mod on_device {
         assert!(matches!(
             orchestrate(
                 &segmented,
-                &RunControl::detached(),
+                &SearchControl::detached(),
                 Engagement::Orchestrator,
                 BinaryChange::Refuse,
             )?,
-            RunOutcome::Finalized { .. }
+            SearchOutcome::Finalized { .. }
         ));
         assert_eq!(manifest_states(&segmented)?.len(), 2);
 
@@ -376,18 +376,18 @@ mod on_device {
         assert!(matches!(
             orchestrate(
                 &whole,
-                &RunControl::detached(),
+                &SearchControl::detached(),
                 Engagement::Orchestrator,
                 BinaryChange::Refuse
             )?,
-            RunOutcome::Finalized { .. }
+            SearchOutcome::Finalized { .. }
         ));
         let whole_states = manifest_states(&whole)?;
         assert_eq!(whole_states.len(), 1);
 
         // Content addressing turns "the 100-step grid is byte-identical whether or
         // not a segment boundary cut the trajectory" into a hash membership check:
-        // the unsegmented state's object must already exist in the segmented run's
+        // the unsegmented state's object must already exist in the segmented search's
         // store, because the second segment committed the same bytes.
         let (whole_object, whole_grid) = &whole_states[0];
         let bytes = Store::open(&segmented.store)?.get(whole_object)?;
@@ -399,10 +399,10 @@ mod on_device {
     #[test]
     fn both_programs_evolve_the_same_rule_to_the_same_grid() -> Result<()> {
         // The port's acceptance at program level: one genome, two backends, two
-        // full runs through the spine, and grids that agree cell for cell within
+        // full executions through the spine, and grids that agree cell for cell within
         // tolerance. The step count is deliberately short — a rounding difference
         // one backend makes and the other does not compounds with every step, so
-        // a long run measures divergence growth rather than transcription
+        // a long search measures divergence growth rather than transcription
         // fidelity, which is what this test is for.
         let dir = tempfile::tempdir().expect("temp dir");
         let cuda = config(
@@ -427,11 +427,11 @@ mod on_device {
             assert!(matches!(
                 orchestrate(
                     config,
-                    &RunControl::detached(),
+                    &SearchControl::detached(),
                     Engagement::Orchestrator,
                     BinaryChange::Refuse
                 )?,
-                RunOutcome::Finalized { .. }
+                SearchOutcome::Finalized { .. }
             ));
         }
         let cuda_states = manifest_states(&cuda)?;

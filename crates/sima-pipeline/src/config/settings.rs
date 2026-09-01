@@ -1,8 +1,8 @@
-//! The operational settings: what a run executes under, and what it may spend.
+//! The operational settings: what a search executes under, and what it may spend.
 //!
-//! None of it enters the run id. A deadline, a cadence, an attempt count, and a
+//! None of it enters the search id. A deadline, a cadence, an attempt count, and a
 //! spend ceiling are all properties of this session rather than of the work, so
-//! two runs differing only here are the same run and share their results.
+//! two searches differing only here are the same search and share their results.
 
 use std::num::NonZeroU64;
 use std::path::Path;
@@ -15,7 +15,7 @@ use sima_scheduler::ExecutionConfig;
 use super::file::{BudgetSection, ConfigSection};
 use super::machines::{Orchestrator, Pool};
 
-/// Assembles the parameters the run executes under from `[config]` and the
+/// Assembles the parameters the search executes under from `[config]` and the
 /// orchestrator's worker layout. The orchestrator's device selectors stay
 /// unresolved: they name real hardware, and loading a config must work where
 /// none is present.
@@ -75,7 +75,7 @@ pub(super) fn resolve_budget(path: &Path, section: Option<BudgetSection>) -> Res
         max_spend,
         // Zero states the absence of a ceiling, the same as omitting the key.
         // The only other reading is a deadline that has already passed, which
-        // would wind the run down before it computed anything — nothing to ask
+        // would wind the search down before it computed anything — nothing to ask
         // for, and a trap for a config that arrives at zero by arithmetic.
         max_wall_clock: section
             .max_wall_clock_ms

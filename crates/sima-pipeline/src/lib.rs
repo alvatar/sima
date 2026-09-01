@@ -1,7 +1,7 @@
-//! Pipeline layer: the human-facing configuration in, a driven run out.
+//! Pipeline layer: the human-facing configuration in, a driven search out.
 //!
 //! A `sima.toml` is loaded and translated into the identity-bearing
-//! [`sima_model::RunConfig`] plus the operational execution settings. The
+//! [`sima_model::SearchConfig`] plus the operational execution settings. The
 //! format id resolves through the [`DomainRegistry`] to what answers for it —
 //! [`sima_domains`] for the formats this build carries, or the program a
 //! `[domain.*]` entry names — which supplies the executor that evaluates the
@@ -10,12 +10,12 @@
 //! own config translation. The pipeline routes configuration sections to the
 //! code that owns them; it never interprets their content.
 //!
-//! Beside the driven run sit the read-only queries over what a run left
-//! behind. Each merges the run's journal and touches no store object:
-//! [`status`] and [`task_history`] project execution — the run's state, and
+//! Beside the driven search sit the read-only queries over what a search left
+//! behind. Each merges the search's journal and touches no store object:
+//! [`status`] and [`task_history`] project execution — the search's state, and
 //! one task's attempts — [`failures`] names the tasks that did not commit,
 //! and [`report`] and [`report_task`] render the results committed tasks
-//! produced, while [`timeline`] measures how efficiently the run executed.
+//! produced, while [`timeline`] measures how efficiently the search executed.
 //! The queries return data; rendering it is the caller's.
 
 mod ceiling;
@@ -38,9 +38,9 @@ mod providers;
 mod remove;
 mod rental;
 mod report;
-mod run_observer;
-mod runs;
 mod sdk;
+mod search_observer;
+mod searches;
 mod spend;
 mod stamped_tree;
 mod stats;
@@ -57,8 +57,8 @@ pub use config::{
 pub use devices::DeviceSelector;
 pub use domain_registry::DomainRegistry;
 pub use feed::{
-    FOLLOW_PROTOCOL_VERSION, FeedInfo, FollowFrame, LocalFeed, RemoteFeed, RunFeed, follow_serve,
-    local_snapshot, remote_snapshot,
+    FOLLOW_PROTOCOL_VERSION, FeedInfo, FollowFrame, LocalFeed, RemoteFeed, SearchFeed,
+    follow_serve, local_snapshot, remote_snapshot,
 };
 pub use fleet::Engagement;
 pub use machines::machines;
@@ -69,24 +69,24 @@ pub use program_delivery::{ProgramDelivery, ingest_program, receive_program};
 pub use providers::{ProviderSettings, provider_for};
 pub use remove::{remove, remove_matching};
 pub use report::{ReportRow, report, report_records, report_task_records};
-pub use run_observer::RunObserver;
 pub use sdk::Sdk;
+pub use search_observer::SearchObserver;
 pub use spend::spend;
 // The rental-ledger and reputation types a caller renders those reports
 // through.
 pub use sima_provider::{Cost, MachineReport, MachineSummary, OpenSpend, Price, SpendReport};
 pub use sima_store::SpendEntry;
-// The run identity a query names, re-exported with the rest of the surface a
-// caller reads a run through.
-pub use runs::{RunSummary, runs};
-pub use sima_model::RunId;
+// The search identity a query names, re-exported with the rest of the surface a
+// caller reads a search through.
+pub use searches::{SearchSummary, searches};
+pub use sima_model::SearchId;
 pub use sima_store::RemovalReport;
-// The scheduler types a caller drives and observes runs through, re-exported
+// The scheduler types through which a caller drives and observes a search, re-exported
 // so the CLI consumes one coherent surface.
-pub use sima_scheduler::{Event, LIVENESS_INTERVAL, Level, Record, RunControl, RunOutcome};
-pub use status::{Occupancy, RunState, RunStatus, seeded_status, status, status_records};
+pub use sima_scheduler::{Event, LIVENESS_INTERVAL, Level, Record, SearchControl, SearchOutcome};
+pub use status::{Occupancy, SearchState, SearchStatus, seeded_status, status, status_records};
 pub use task_history::{
     Attempt, AttemptResult, TaskHistory, TaskOutcome, failures_records, task_history_records,
 };
 pub use task_keys::task_keys;
-pub use timeline::{RetryStats, RunTimeline, WorkerMetrics, timeline_records};
+pub use timeline::{RetryStats, SearchTimeline, WorkerMetrics, timeline_records};

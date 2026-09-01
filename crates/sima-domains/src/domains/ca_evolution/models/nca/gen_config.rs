@@ -1,5 +1,5 @@
 //! [`NcaGenConfig`]: the Neural CA generator's sampling box, and the model's
-//! `[run.generator]` sampling key.
+//! `[search.generator]` sampling key.
 
 use sima_core::{Codec, Dec, Enc, Error, Result, prng};
 
@@ -65,7 +65,7 @@ impl Codec for NcaGenConfig {
 }
 
 impl TomlConfig for NcaGenConfig {
-    /// Reads the `weight_scale` key from the `[run.generator]` table (the shared
+    /// Reads the `weight_scale` key from the `[search.generator]` table (the shared
     /// `count` is already stripped), rejecting any key it does not define.
     fn parse(table: &toml::Table, id: &str, section: &str) -> Result<NcaGenConfig> {
         translate::reject_unknown_keys(id, table, &["weight_scale"], section)?;
@@ -175,7 +175,7 @@ mod tests {
         Ok(())
     }
 
-    /// The model's `[run.generator]` keys (the shared `count` is stripped before
+    /// The model's `[search.generator]` keys (the shared `count` is stripped before
     /// the model sees the table).
     const KEYS: &str = "weight_scale = 0.5";
 

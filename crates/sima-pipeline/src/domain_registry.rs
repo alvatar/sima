@@ -1,6 +1,6 @@
 //! [`DomainRegistry`]: where a format's domain is answered from.
 //!
-//! A run asks one boundary — [`DomainSource`] — for everything the orchestrator
+//! A search asks one boundary — [`DomainSource`] — for everything the orchestrator
 //! reads of a format: its environment, its devices, its configuration
 //! translations, its generator, and the binary its workers are spawned from.
 //! Two things answer it:
@@ -11,7 +11,7 @@
 //!   holds one session with that program for the life of the config.
 //!
 //! The registry is what a config resolves into, so a program that cannot answer
-//! for the format it is declared under fails there — before a run reaches a
+//! for the format it is declared under fails there — before a search reaches a
 //! store.
 
 use std::collections::BTreeMap;
@@ -40,7 +40,7 @@ pub(crate) struct DomainEntry {
     /// Exact variable names, forwarded from the orchestrator's environment
     /// where it holds them.
     pub(crate) env: Vec<String>,
-    /// What travels when this run migrates, resolved against the config file's
+    /// What travels when this search migrates, resolved against the config file's
     /// directory. `None` for an entry whose program stays on this machine.
     pub(crate) payload: Option<PayloadSpec>,
     /// The payload manifest the store already holds, which is what a
@@ -65,14 +65,14 @@ pub(crate) trait DomainSource: Send + Sync {
     /// The devices the format's work can run on.
     fn enumerate_devices(&self, format: &FormatId) -> Result<Vec<DeviceInfo>>;
 
-    /// The `[run.params]` section, as text, translated into the canonical
-    /// params bytes that enter the run id.
+    /// The `[search.params]` section, as text, translated into the canonical
+    /// params bytes that enter the search id.
     fn translate_config(&self, format: &FormatId, toml: &str, segmented: bool) -> Result<Params>;
 
-    /// The generator the run produces its candidates from, which also owns the
-    /// translation of its own `[run.generator]` section.
+    /// The generator the search produces its candidates from, which also owns the
+    /// translation of its own `[search.generator]` section.
     ///
-    /// Built here rather than at the first batch, so a run naming a generator
+    /// Built here rather than at the first batch, so a search naming a generator
     /// its source cannot answer for fails before its store exists.
     fn generator(
         &self,
@@ -113,7 +113,7 @@ impl DomainSource for BuiltinSource {
         format: &FormatId,
     ) -> Result<Box<dyn Generator + '_>> {
         // The format is what the generator is checked against: a generator
-        // drawing for another format would produce specs this run's executor
+        // drawing for another format would produce specs this search's executor
         // cannot read.
         sima_domains::generator_for(format, generator)
     }
@@ -133,15 +133,15 @@ impl DomainSource for BuiltinSource {
 pub(crate) struct BinarySource {
     binary: PathBuf,
     /// The blake3 digest of the program file, read where the config resolved
-    /// into this registry. Provenance a run journals and a resume compares
-    /// against; it enters no hash, so the run's identity is what the program
+    /// into this registry. Provenance a search journals and a resume compares
+    /// against; it enters no hash, so the search's identity is what the program
     /// declares and nothing else.
     digest: Hash,
     /// The policy this program's processes are spawned under — its domain
-    /// service and every worker of the run alike, so the two halves of one
+    /// service and every worker of the search alike, so the two halves of one
     /// program see one environment.
     policy: SpawnPolicy,
-    /// What travels when this run migrates, as the entry declared it. A
+    /// What travels when this search migrates, as the entry declared it. A
     /// migration reads it through [`DomainRegistry::routed`], which is the one
     /// boundary a caller sees the program itself through.
     payload: Option<PayloadSpec>,
@@ -155,17 +155,17 @@ pub(crate) struct BinarySource {
     sdk: Option<Sdk>,
     /// The payload manifest this machine's program was installed from. It has
     /// two consumers: the policy above states it to every process spawned from
-    /// the program, and the run expects it back from each worker's handshake.
+    /// the program, and the search expects it back from each worker's handshake.
     payload_digest: Option<Hash>,
     /// The open session. One conversation serves the whole config, so the
     /// program pays its startup cost once; the lock is what makes that one
-    /// conversation reachable from the threads a run drives.
+    /// conversation reachable from the threads a search drives.
     session: Mutex<DomainService>,
 }
 
 impl BinarySource {
     /// Digests the entry's program, spawns it for its format, and confirms it
-    /// answers — so a program that cannot be read or run, or does not serve the
+    /// answers — so a program that cannot be read or search, or does not serve the
     /// format, fails here. Every question this session asks is bounded by
     /// `answer_timeout`.
     fn spawn(entry: DomainEntry, answer_timeout: Duration) -> Result<BinarySource> {
@@ -198,7 +198,7 @@ impl BinarySource {
         // The vended package leads the program's module path, so `import` finds
         // the copy this binary wrote before anything the machine installed.
         // Both spawn sites share the policy, so the domain service and every
-        // worker of the run read one path.
+        // worker of the search read one path.
         let prepend = sdk
             .zip(sdk_path)
             .map(|(sdk, path)| (sdk.path_variable().to_string(), path.into_os_string()))
@@ -309,7 +309,7 @@ impl Generator for SessionGenerator<'_> {
     }
 }
 
-/// Which source answers for each format of a run.
+/// Which source answers for each format of a search.
 ///
 /// Opaque to a caller: a loaded config carries one, and what it holds is the
 /// pipeline's own business.
@@ -322,7 +322,7 @@ pub struct DomainRegistry {
 
 impl DomainRegistry {
     /// The registry `entries` declare: one program per format, each spawned and
-    /// asked to answer for the format it is declared under, under the run's
+    /// asked to answer for the format it is declared under, under the search's
     /// answer deadline.
     pub(crate) fn new(
         entries: Vec<DomainEntry>,
@@ -358,7 +358,7 @@ impl DomainRegistry {
 
     /// The program a config routes `format` to, or `None` for a format this
     /// build answers itself. What separates the two cases for a caller that
-    /// needs the program rather than the answers — the run's provenance and
+    /// needs the program rather than the answers — the search's provenance and
     /// the refusals a program's presence implies.
     pub(crate) fn routed(&self, format: &FormatId) -> Option<RoutedProgram<'_>> {
         self.configured
@@ -376,7 +376,7 @@ impl DomainRegistry {
 
 /// The program answering for one format: the file a config named, the digest
 /// of the bytes that file held when the config resolved, and what the entry
-/// declared travels when the run moves.
+/// declared travels when the search moves.
 pub(crate) struct RoutedProgram<'a> {
     pub(crate) binary: &'a Path,
     pub(crate) digest: &'a Hash,
@@ -391,7 +391,7 @@ pub(crate) struct RoutedProgram<'a> {
     /// declaration: the package itself is the destination binary's to vend.
     pub(crate) sdk: Option<Sdk>,
     /// The payload manifest this machine's program was installed from, which is
-    /// what every worker of the run must answer at its handshake. `None` for a
+    /// what every worker of the search must answer at its handshake. `None` for a
     /// program that travelled nowhere.
     pub(crate) payload_digest: Option<&'a Hash>,
 }
@@ -493,9 +493,9 @@ mod tests {
 
     #[test]
     fn a_generator_that_does_not_belong_to_the_format_is_refused() {
-        // A run declares a format and a generator separately, and the two must
+        // A search declares a format and a generator separately, and the two must
         // agree: a generator that produces specs of another format would mint a
-        // run id over the mismatch and fail only when the first spec is stored,
+        // search id over the mismatch and fail only when the first spec is stored,
         // after the store exists. The refusal names both ids, since either one
         // could be the typo.
         let registry = DomainRegistry::builtin();
@@ -516,7 +516,7 @@ mod tests {
     fn a_binary_that_cannot_answer_for_its_format_fails_to_register() {
         // The registry is what a config resolves into, so a program that
         // cannot answer for the format it is declared under fails there —
-        // before a run reaches a store.
+        // before a search reaches a store.
         let Err(error) = DomainRegistry::new(
             vec![entry("acme.thing.v1", built_worker(), Vec::new())],
             Duration::MAX,
@@ -536,7 +536,7 @@ mod tests {
             )],
             Duration::MAX,
         ) else {
-            panic!("expected a binary that cannot be run to fail");
+            panic!("expected a binary that cannot be search to fail");
         };
         assert!(
             error.to_string().contains("/no/such/domain/binary"),
@@ -559,7 +559,7 @@ mod tests {
     #[test]
     fn both_sources_translate_a_section_to_the_same_bytes() -> Result<()> {
         // What proves the protocol carries the configuration: the bytes that enter
-        // the run id are the same whichever side answered.
+        // the search id are the same whichever side answered.
         let registry = served_by_binary()?;
         let builtin = DomainRegistry::builtin();
         let text = "hex = \"00ff\"\n";
@@ -622,8 +622,8 @@ mod tests {
 
     #[test]
     fn an_unknown_generator_binds_nothing_in_process() {
-        // The in-process source builds the generator where the run is set up,
-        // so a run naming a generator this build does not carry fails before
+        // The in-process source builds the generator where the search is set up,
+        // so a search naming a generator this build does not carry fails before
         // its store exists.
         let registry = DomainRegistry::builtin();
         let Err(error) = registry
@@ -653,7 +653,7 @@ mod tests {
     #[test]
     fn an_entry_s_declared_names_reach_the_policy_its_program_is_spawned_under() -> Result<()> {
         // One policy answers for the whole program: the session already open
-        // and every worker the run will spawn from the same binary.
+        // and every worker the search will spawn from the same binary.
         let registry = DomainRegistry::new(
             vec![entry(
                 "stub.v1",
@@ -748,7 +748,7 @@ mod tests {
 
     #[test]
     fn an_entry_routes_its_format_with_the_digest_of_the_file_it_names() -> Result<()> {
-        // What the run journals as provenance: the bytes of the build that
+        // What the search journals as provenance: the bytes of the build that
         // answered, digested where the config resolved into a registry.
         let registry = served_by_binary()?;
         let routed = registry
@@ -763,7 +763,7 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn a_binary_whose_bytes_cannot_be_read_names_itself() {
-        // A program sima cannot digest is a program whose provenance a run
+        // A program sima cannot digest is a program whose provenance a search
         // could not record, so the config fails to resolve rather than running
         // with a build nothing identifies. Execute permission alone runs a
         // binary but does not read it.

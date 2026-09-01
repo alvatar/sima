@@ -10,7 +10,7 @@
 //! The **state bytes behind them** are what is worth not sending. The far side
 //! reads the last state of each chain and nothing else, so every earlier one is
 //! bandwidth and rental time spent on bytes nobody opens, and the waste grows
-//! with how far the local run got before the interrupt.
+//! with how far the local search got before the interrupt.
 //!
 //! ```text
 //!    chain interrupted after segment 2 of 6
@@ -24,7 +24,7 @@
 //!
 //! The named set is computed here rather than in the store because it needs
 //! [`STATE_ARTIFACT`] from `sima-contracts`, which `sima-store` does not depend
-//! on — and because it is a property of how a run continues, which is this
+//! on — and because it is a property of how a search continues, which is this
 //! layer's subject.
 
 use std::collections::BTreeSet;
@@ -39,7 +39,7 @@ use sima_store::Store;
 ///
 /// That last set is exactly the frontier states, derived from the records alone
 /// with no knowledge of chain structure: a state some successor consumes is not
-/// a frontier, and one nothing consumes is. A run with no segments names the
+/// a frontier, and one nothing consumes is. A search with no segments names the
 /// identity components alone, since a completed stateless task's output is
 /// never an input to anything.
 ///
@@ -177,7 +177,7 @@ mod tests {
     }
 
     #[test]
-    fn a_run_with_no_segments_names_the_identity_components_alone() -> Result<()> {
+    fn a_search_with_no_segments_names_the_identity_components_alone() -> Result<()> {
         // A completed stateless task's output is never an input to anything, so
         // there is no continuation state to hand anyone.
         let (_dir, store) = store();
@@ -240,20 +240,20 @@ mod tests {
         Ok(())
     }
 
-    /// A generator-derived chain, run partway, then pushed under the named
+    /// A generator-derived chain, search partway, then pushed under the named
     /// scope into a fresh store — the shape a migration produces.
     mod over_a_real_chain {
         use sima_domains::{StubBehavior, StubGenerator, StubGeneratorConfig};
-        use sima_model::{GeneratorConfig, GeneratorId, RunConfig};
-        use sima_scheduler::{RunOutcome, run_keys};
+        use sima_model::{GeneratorConfig, GeneratorId, SearchConfig};
+        use sima_scheduler::{SearchOutcome, search_keys};
         use sima_store::ObjectScope;
 
         use super::*;
-        use crate::fixtures::{drive_run, stub_environment, sync_between};
+        use crate::fixtures::{drive_search, stub_environment, sync_between};
 
-        /// A run of one candidate over twenty accumulating segments.
-        fn chained_run() -> RunConfig {
-            RunConfig {
+        /// A search of one candidate over twenty accumulating segments.
+        fn chained_search() -> SearchConfig {
+            SearchConfig {
                 root_seed: 5,
                 segments: std::num::NonZeroU64::new(20),
                 format: FormatId::new("stub.v1").expect("format id"),
@@ -279,16 +279,16 @@ mod tests {
             let there = tempfile::tempdir().expect("temp dir");
             let local = Store::open(here.path())?;
             let far = Store::open(there.path())?;
-            let config = chained_run();
+            let config = chained_search();
             // Stopped shortly after it starts committing, so the chain is
             // partway and has a frontier to hand over.
             assert!(matches!(
-                drive_run(&local, &config, Some(3)),
-                RunOutcome::Interrupted { .. }
+                drive_search(&local, &config, Some(3)),
+                SearchOutcome::Interrupted { .. }
             ));
 
             let generator = StubGenerator::new()?;
-            let keys = run_keys(&local, &config, &stub_environment(), &generator)?;
+            let keys = search_keys(&local, &config, &stub_environment(), &generator)?;
             let named = push_objects(&local, &keys)?;
             assert!(keys.len() > 2, "the chain got past its first segment");
 
@@ -301,7 +301,7 @@ mod tests {
             }
             // The frontier the far side derives is the one this side derives.
             assert_eq!(
-                run_keys(&far, &config, &stub_environment(), &generator)?,
+                search_keys(&far, &config, &stub_environment(), &generator)?,
                 keys,
                 "the gapped store derives the frontier the complete one does"
             );

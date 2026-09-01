@@ -2,13 +2,13 @@
 
 use sima_contracts::Generator;
 use sima_core::{Result, prng};
-use sima_model::{Environment, RunConfig, TaskIdentity, TaskKey};
+use sima_model::{Environment, SearchConfig, TaskIdentity, TaskKey};
 use sima_store::Store;
 
 use crate::task_source::{RunnableTask, TaskSource, generate_specs};
 
 /// A task source over a fixed batch of candidates. On construction it
-/// materializes the frontier: it generates the run's specs, stores each spec
+/// materializes the frontier: it generates the search's specs, stores each spec
 /// object, derives every task identity, and separates the tasks the store
 /// already answers from those still to run. The frontier is a pure function of
 /// `(config, environment)`, so it is identical across fresh stores. Resume is
@@ -33,7 +33,7 @@ impl StaticBatch {
     /// unfinished work.
     pub fn new(
         generator: &dyn Generator,
-        config: &RunConfig,
+        config: &SearchConfig,
         environment: &Environment,
         store: &Store,
     ) -> Result<StaticBatch> {
@@ -46,7 +46,7 @@ impl StaticBatch {
             let identity = TaskIdentity {
                 spec: spec_id,
                 params,
-                // The per-task seed is a deterministic substream of the run
+                // The per-task seed is a deterministic substream of the search
                 // seed, keyed by the candidate's index in the generator output.
                 seed: prng::derive(config.root_seed, i as u64),
                 environment: environment_id,
@@ -54,7 +54,7 @@ impl StaticBatch {
             };
             let key = identity.key();
             all_keys.push(key);
-            // An existence check, not a read: resuming a mostly-complete run
+            // An existence check, not a read: resuming a mostly-complete search
             // must not decode every committed record to answer a boolean.
             if !store.has_record(&key)? {
                 runnable.push(RunnableTask {
@@ -104,9 +104,9 @@ mod tests {
     use sima_domains::{StubBehavior, StubGenerator, StubGeneratorConfig};
     use sima_model::{GeneratorConfig, Params};
 
-    /// A run config whose generator programs the given behaviors.
-    fn config(behaviors: Vec<StubBehavior>) -> Result<RunConfig> {
-        Ok(RunConfig {
+    /// A search config whose generator programs the given behaviors.
+    fn config(behaviors: Vec<StubBehavior>) -> Result<SearchConfig> {
+        Ok(SearchConfig {
             root_seed: 7,
             segments: None,
             format: sima_model::FormatId::new("stub.v1")?,

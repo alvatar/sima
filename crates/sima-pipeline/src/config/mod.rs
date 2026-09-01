@@ -1,24 +1,24 @@
 //! [`LoadedConfig`]: a `sima.toml`, loaded and translated.
 //!
-//! A run declares the machines it can use by naming them once, and refers to
+//! A search declares the machines it can use by naming them once, and refers to
 //! them by name everywhere else. A host is one machine; a host class is several
-//! identical machines declared in one entry; `[fleet]` lists the members a run
+//! identical machines declared in one entry; `[fleet]` lists the members a search
 //! may draw on; `[orchestrator]` is this machine.
 //!
 //! The file schema (this comment is the reference):
 //!
 //! ```toml
-//! [run]                                   # the only hashed section
+//! [search]                                   # the only hashed section
 //! root_seed = 42
 //! format    = "stub.v1"
 //! segments  = 10                          # optional; absent = static batch, >= 1
 //!
-//! [run.generator]
+//! [search.generator]
 //! id    = "stub.v1"
 //! # remaining keys are generator-specific; stub.v1 takes:
 //! behaviors = ["succeed", "flaky:2", "sleep:50", "reject", "panic"]
 //!
-//! [run.params]                            # domain-specific; stub.v1 takes:
+//! [search.params]                            # domain-specific; stub.v1 takes:
 //! hex = ""                                # optional hex string, default empty
 //!
 //! [config]                                # global settings, fully qualified
@@ -36,7 +36,7 @@
 //! # runtime  = "podman"                   # docker | podman; default docker
 //! # run_args = ["--gpus", "all"]          # verbatim container-run flags
 //! # workers  = 4                          # exclusive with the device tables below
-//! # root     = "~/sima-runs"              # a migrated run's directory and the programs delivered here; default as shown
+//! # root     = "~/sima"              # a migrated search's directory and the programs delivered here; default as shown
 //! # binary   = "sima"                     # the sima binary here; default as shown
 //! [[host.gpubox.device]]
 //! select  = "nvidia"
@@ -80,17 +80,17 @@
 //! members = ["gpubox", "lab", "rtx4090"]
 //!
 //! [budget]
-//! max_spend_usd     = 20.0                # ceiling on the run's total rental
+//! max_spend_usd     = 20.0                # ceiling on the search's total rental
 //!                                         # spend, assessed only while a
-//!                                         # migration or a fleet run is attached
-//! max_wall_clock_ms = 0                   # ceiling on how long the run may
+//!                                         # migration or a fleet search is attached
+//! max_wall_clock_ms = 0                   # ceiling on how long the search may
 //!                                         # compute, measured from the start of
 //!                                         # each execution; 0 is no ceiling.
-//!                                         # Kept on a local run and on a machine
+//!                                         # Kept on a local search and on a machine
 //!                                         # of yours, never sent to a rental
 //!
 //! [orchestrator]                          # this machine
-//! migrate = "cloudbox"                   # the host `sima migrate` moves the run onto
+//! migrate = "cloudbox"                   # the host `sima migrate` moves the search onto
 //! # image    = "localhost/sima:latest"    # run this machine's workers in a container
 //! # runtime  = "podman"                   # docker | podman; default docker
 //! # run_args = ["--gpus", "all"]          # verbatim container-run flags
@@ -103,7 +103,7 @@
 //! binary  = "/opt/acme/worker"            # resolved against this file's directory
 //! # env     = ["ACME_ASSETS"]             # optional; variable names it also receives
 //! # sdk     = "python"                    # optional; the SDK this binary vends
-//! # payload = "./program"                 # optional; what travels when the run migrates
+//! # payload = "./program"                 # optional; what travels when the search migrates
 //! # install = "./install.sh"              # optional for a file payload, required for a directory
 //! # payload_digest = "<64 hex>"           # a migration writes this; the manifest to install here
 //! ```
@@ -111,7 +111,7 @@
 //! ## Where a format is answered from
 //!
 //! A `[domain.<format>]` entry names the binary that answers for that format:
-//! sima spawns it, asks it what the format binds, and spawns the run's workers
+//! sima spawns it, asks it what the format binds, and spawns the search's workers
 //! from it. Every format without an entry is answered by this build, in
 //! process. The entry is read when the config loads, so a program that cannot
 //! answer for the format it is declared under fails there.
@@ -139,18 +139,18 @@
 //! The key is independent of `payload`, and a migration carries it as the
 //! declaration it is: the destination's own binary vends the package there.
 //! `sima sdk <language> --out <dir>` writes the same package by hand, for
-//! developing a program outside a run.
+//! developing a program outside a search.
 //!
-//! ### What travels when the run reaches another machine
+//! ### What travels when the search reaches another machine
 //!
 //! `binary` says how the program runs here; `payload` says what travels — one
 //! file or one directory, resolved against this file's directory. It travels
 //! the same way for both ways of using another machine: `sima migrate` sends it
-//! to the destination, and `sima run --fleet` sends it to every machine the
+//! to the destination, and `sima search --fleet` sends it to every machine the
 //! fleet draws in, where it is installed under `<root>/programs/` and the
 //! machine's workers are spawned from it. An entry that states none describes a
 //! program this machine holds and no other, and both refuse it, naming the key.
-//! A plain local `sima run` validates both keys and otherwise ignores them.
+//! A plain local `sima search` validates both keys and otherwise ignores them.
 //!
 //! `install` is the shell script the destination runs over the materialized
 //! payload. It is optional for a single-file payload, which is its own entry
@@ -175,15 +175,15 @@
 //! script.
 //!
 //! The digest has a second consumer past the install: it is what every worker
-//! of the run answers at its handshake. Each process spawned from the program
+//! of the search answers at its handshake. Each process spawned from the program
 //! is told it, echoes it back, and a worker answering anything else fails its
-//! spawn — so the machines a run uses agree with it on which program they run.
-//! On a machine the run delivered to, the value is read from that machine's own
+//! spawn — so the machines a search uses agree with it on which program they run.
+//! On a machine the search delivered to, the value is read from that machine's own
 //! stamp at exec time, so what it answers is that disk's claim.
 //!
 //! A config carrying `payload_digest` and no `[orchestrator]` worker layout is
 //! what a migration onto a rented machine synthesizes: nothing there could say
-//! where the run's work goes until the program was installed. Such a run
+//! where the search's work goes until the program was installed. Such a search
 //! derives one worker per usable device from the program's own enumeration at
 //! start. Every other config states its layout, as the refusal for one that
 //! states neither says.
@@ -221,7 +221,7 @@
 //! | `disk_gb` | no | yes | provisioned disk |
 //! | `ready_timeout_ms`, `ready_poll_ms` | no | yes | readiness bounds |
 //! | `[….constraints]` | no | yes | offer constraints |
-//! | `root` | yes | yes | where a migrated run lives on that machine, and where its `programs/` directory holds what runs deliver there |
+//! | `root` | yes | yes | where a migrated search lives on that machine, and where its `programs/` directory holds what searches deliver there |
 //! | `binary` | yes | yes | the `sima` binary on that machine |
 //!
 //! A rented machine states no worker layout: it did not exist when the config
@@ -231,55 +231,55 @@
 //! same worker-side keys an owned host does — `image`, `runtime`, `run_args`,
 //! and either `workers` or device tables — plus `migrate`, which names a
 //! `[host.*]` entry. It takes no `ssh` and no `provider`, being where the
-//! command was typed, and no `root` or `binary`, the run already being here. Its
+//! command was typed, and no `root` or `binary`, the search already being here. Its
 //! `runtime` and `run_args` describe the container `image` names, so both are
 //! rejected without one.
 //!
-//! `[budget]` is run-global: a run may draw on several rented classes under one
-//! ceiling, so the ceiling is a property of the run. Its two keys differ in
+//! `[budget]` is search-global: a search may draw on several rented classes under one
+//! ceiling, so the ceiling is a property of the search. Its two keys differ in
 //! where they are kept:
 //!
-//! - `max_spend_usd` bounds what the run's rentals cost, and enforcing it means
+//! - `max_spend_usd` bounds what the search's rentals cost, and enforcing it means
 //!   destroying a machine — a provider-API call, which needs the credential
 //!   that never leaves this machine. It is therefore assessed only while
 //!   something here is attached, and a section stating it alone is inert to a
-//!   run that rents nothing.
-//! - `max_wall_clock_ms` bounds how long the run may compute, measured from the
+//!   search that rents nothing.
+//! - `max_wall_clock_ms` bounds how long the search may compute, measured from the
 //!   start of each execution, and `0` states no ceiling at all — the same as
 //!   omitting the key. It is kept where no bill runs against the time it
-//!   bounds: a plain `sima run` interrupts itself on it, and so does a run
+//!   bounds: a plain `sima search` interrupts itself on it, and so does a search
 //!   migrated onto a machine of yours, which carries the key. The key does not
 //!   travel to a rented destination, because a rental bills by the hour rather
-//!   than by use — a run stopped early there saves nothing, and the machine
+//!   than by use — a search stopped early there saves nothing, and the machine
 //!   bills on until `sima recall` or `sima reconcile` takes it down.
 //!
-//! ## What a run uses
+//! ## What a search uses
 //!
 //! ```text
-//! sima run           the orchestrator alone
-//! sima run --fleet   the orchestrator plus every member of [fleet]
+//! sima search           the orchestrator alone
+//! sima search --fleet   the orchestrator plus every member of [fleet]
 //! ```
 //!
-//! Declaring a machine says a run *may* use it; the invocation says it *does*.
+//! Declaring a machine says a search *may* use it; the invocation says it *does*.
 //! Without `--fleet` no provider is constructed and no credential is read. A
 //! declared host or class that no `[fleet] members` list names is valid and
 //! unused.
 //!
 //! ## Identity and cadence
 //!
-//! The `[run]` section is canonicalized into [`RunConfig`], so its fields define
-//! the run id; every other section is operational and never hashed — a run
+//! The `[search]` section is canonicalized into [`SearchConfig`], so its fields define
+//! the search id; every other section is operational and never hashed — a search
 //! resumed with different parallelism, a different store path, or a different
 //! set of machines keeps its id. The structural keys are strict: an unknown key
-//! anywhere is rejected. The `[run.generator]` table (minus `id`) and the
-//! `[run.params]` table pass opaquely to the generator and domain translations,
+//! anywhere is rejected. The `[search.generator]` table (minus `id`) and the
+//! `[search.params]` table pass opaquely to the generator and domain translations,
 //! which own and validate their keys.
 //!
 //! The two checkpoint cadences are unioned: a save is due when either fires, and
 //! either present enables checkpointing. With both absent, no checkpoint is ever
 //! written.
 //!
-//! A device `select` names real hardware, so it resolves when a run starts and
+//! A device `select` names real hardware, so it resolves when a search starts and
 //! never at load — reading a config needs no GPU.
 
 /// The one directory a driven config writes into beside itself: its store
@@ -292,7 +292,7 @@ pub(crate) const GENERATED_DIR: &str = ".sima";
 mod file;
 mod load;
 mod machines;
-mod run;
+mod search;
 mod settings;
 
 pub use load::{LoadedConfig, load};

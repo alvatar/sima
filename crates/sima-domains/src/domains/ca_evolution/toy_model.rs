@@ -4,7 +4,7 @@
 //! [`CaExecutor<M>`](super::executor::CaExecutor) over a model that is not
 //! Gray-Scott, proving they depend on no concrete model. It is unregistered and
 //! has no WGSL kernel, so it is not runnable — a genericity lock, not a model a
-//! run can select.
+//! search can select.
 
 use sima_core::{Codec, Dec, Enc, Error, Result, prng};
 
@@ -217,7 +217,7 @@ mod tests {
 
     #[test]
     fn the_spine_runs_over_a_non_gray_scott_model() -> Result<()> {
-        // Params translation: a full toy `[run.params]` table becomes a blob that
+        // Params translation: a full toy `[search.params]` table becomes a blob that
         // decodes back to the shared fields and the toy ignition.
         let params_table: toml::Table = "width = 8\nheight = 8\nsteps = 4\ndt = 1.0\nbase = 0.5"
             .parse()

@@ -165,7 +165,7 @@ fn execute_assignment<W: Write>(
     writer: &RefCell<W>,
 ) -> Result<()> {
     // The spec's format travels once in the handshake; every assignment of
-    // the run reassembles under it.
+    // the search reassembles under it.
     let spec = Spec {
         format: hello.format.clone(),
         bytes: assignment.spec,
@@ -267,7 +267,7 @@ fn write_event<W: Write>(writer: &RefCell<W>, event: &Event) -> Result<()> {
     write_frame(&mut *writer.borrow_mut(), &ToParent::Event(bytes).encode())
 }
 
-/// The run's checkpoint cadence, decoded from the handshake's settings:
+/// The search's checkpoint cadence, decoded from the handshake's settings:
 /// `u64::MAX` milliseconds disables the wall-clock axis, `0` steps disables
 /// the step axis.
 fn cadence(hello: &Hello) -> CheckpointCadence {

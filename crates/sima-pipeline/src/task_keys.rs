@@ -1,12 +1,12 @@
-//! The task keys a run comprises over a store, derived two ways.
+//! The task keys a search comprises over a store, derived two ways.
 //!
 //! [`task_keys`] is the pipeline half of the scheduler's own derivation: it
-//! reads the run's environment and generator from the source that answers for
-//! its format, and hands them to [`sima_scheduler::run_keys`]. It is what a
+//! reads the search's environment and generator from the source that answers for
+//! its format, and hands them to [`sima_scheduler::search_keys`]. It is what a
 //! side of a sync that holds the config derives — no key list crosses the
 //! wire, so the sync protocol stays as it is.
 //!
-//! [`journaled_keys`] derives the same kind of set from the run's journal
+//! [`journaled_keys`] derives the same kind of set from the search's journal
 //! alone, for the side of a sync that must not load a config. A far side
 //! serving a sync is delivering the program its config would spawn, so
 //! loading that config is the one thing it cannot do; its journal names every
@@ -15,46 +15,46 @@
 use std::collections::BTreeSet;
 
 use sima_core::Result;
-use sima_model::{RunId, TaskKey};
+use sima_model::{SearchId, TaskKey};
 use sima_scheduler::Record;
 use sima_store::Store;
 
 use crate::config::LoadedConfig;
 use crate::task_history::lifecycle_task;
 
-/// The task keys `config`'s run comprises, as `store`'s current state
+/// The task keys `config`'s search comprises, as `store`'s current state
 /// materializes them.
 ///
-/// Deriving them **writes the run's spec objects to `store`**, since the
-/// derivation constructs the run's task source; the write is idempotent, and
-/// nothing else about the store changes — no run is registered, no record is
+/// Deriving them **writes the search's spec objects to `store`**, since the
+/// derivation constructs the search's task source; the write is idempotent, and
+/// nothing else about the store changes — no search is registered, no record is
 /// committed, and no journal line is appended. `store` is the caller's, so a
 /// caller deriving over a far side's store passes that one.
 pub fn task_keys(config: &LoadedConfig, store: &Store) -> Result<Vec<TaskKey>> {
-    let source = config.domains.source(&config.run.format);
-    let environment = source.environment(&config.run.format)?;
-    let generator = source.generator(&config.run.generator.id, &config.run.format)?;
-    sima_scheduler::run_keys(store, &config.run, &environment, generator.as_ref())
+    let source = config.domains.source(&config.search.format);
+    let environment = source.environment(&config.search.format)?;
+    let generator = source.generator(&config.search.generator.id, &config.search.format)?;
+    sima_scheduler::search_keys(store, &config.search, &environment, generator.as_ref())
 }
 
-/// The task keys `run`'s journal names in `store`: every key a lifecycle event
+/// The task keys `search`'s journal names in `store`: every key a lifecycle event
 /// belongs to, ordered and deduplicated.
 ///
 /// This is exactly the set with state on this side. A record or a checkpoint
-/// exists only for a task the run queued, and queueing is journaled, so a key
+/// exists only for a task the search queued, and queueing is journaled, so a key
 /// the journal never named references nothing here and has nothing to
-/// advertise. A run that journaled nothing yields the empty set, which is what
+/// advertise. A search that journaled nothing yields the empty set, which is what
 /// a store about to receive its first push holds.
 ///
 /// **A line that does not parse is skipped**, the rule
 /// [`crate::program_binding`] reads the journal under: it is observational, a
 /// crash can tear its final write, and a torn line states nothing about which
 /// tasks ran. A task field that is not a key is skipped for the same reason —
-/// what it cost is one key not advertised, which leaves the run resumable,
+/// what it cost is one key not advertised, which leaves the search resumable,
 /// while refusing would fail a whole transfer over one damaged line.
-pub(crate) fn journaled_keys(store: &Store, run: &RunId) -> Result<Vec<TaskKey>> {
+pub(crate) fn journaled_keys(store: &Store, search: &SearchId) -> Result<Vec<TaskKey>> {
     let mut keys = BTreeSet::new();
-    for line in store.journal(run)? {
+    for line in store.journal(search)? {
         let Ok(record) = Record::from_line(&line) else {
             continue;
         };
@@ -81,11 +81,11 @@ mod tests {
         let segments = segments.map_or(String::new(), |n| format!("segments = {n}\n"));
         format!(
             r#"
-            [run]
+            [search]
             root_seed = 4
             format = "stub.v1"
             {segments}
-            [run.generator]
+            [search.generator]
             id = "stub.v1"
             behaviors = ["succeed", "succeed", "succeed"]
 
@@ -109,9 +109,9 @@ mod tests {
         let generator = StubGenerator::new()?;
         assert_eq!(
             task_keys(&loaded, &store)?,
-            sima_scheduler::run_keys(
+            sima_scheduler::search_keys(
                 &store,
-                &loaded.run,
+                &loaded.search,
                 &crate::fixtures::stub_environment(),
                 &generator
             )?
@@ -145,24 +145,24 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let store = Store::open(dir.path())?;
         let mut loaded = load_str(&config(None));
-        loaded.run.format = sima_model::FormatId::new("no-such-domain.v1")?;
+        loaded.search.format = sima_model::FormatId::new("no-such-domain.v1")?;
         assert!(task_keys(&loaded, &store).is_err());
         Ok(())
     }
 
     // ---- The journal's own account of what a store holds ----
 
-    /// A stub config whose candidates accumulate, so a segmented run of them
+    /// A stub config whose candidates accumulate, so a segmented search of them
     /// commits the continuation state each next segment starts from.
     fn chained(segments: u64) -> String {
         format!(
             r#"
-            [run]
+            [search]
             root_seed = 4
             format = "stub.v1"
             segments = {segments}
 
-            [run.generator]
+            [search.generator]
             id = "stub.v1"
             behaviors = ["accumulate:2", "accumulate:2", "accumulate:2"]
 
@@ -177,7 +177,7 @@ mod tests {
     }
 
     #[test]
-    fn a_driven_run_journals_every_key_it_comprises() -> Result<()> {
+    fn a_driven_search_journals_every_key_it_comprises() -> Result<()> {
         // The claim the store-addressed sync rests on: what a side that cannot
         // load a config derives from the journal is what a side that can
         // derives from the config.
@@ -185,26 +185,26 @@ mod tests {
         let store = Store::open(dir.path())?;
         let loaded = load_str(&chained(4));
         assert!(matches!(
-            crate::fixtures::drive_run(&store, &loaded.run, None),
-            sima_scheduler::RunOutcome::Finalized { .. }
+            crate::fixtures::drive_search(&store, &loaded.search, None),
+            sima_scheduler::SearchOutcome::Finalized { .. }
         ));
         let keys = task_keys(&loaded, &store)?;
         assert_eq!(keys.len(), 12, "three candidates over four segments");
         let mut expected = keys.clone();
         expected.sort();
-        assert_eq!(journaled_keys(&store, &loaded.run.id())?, expected);
+        assert_eq!(journaled_keys(&store, &loaded.search.id())?, expected);
         Ok(())
     }
 
     #[test]
-    fn a_run_stopped_partway_journals_the_keys_it_reached() -> Result<()> {
-        // The shape a far run that was wound down leaves: the journal names
+    fn a_search_stopped_partway_journals_the_keys_it_reached() -> Result<()> {
+        // The shape a far search that was wound down leaves: the journal names
         // what it worked on, which is exactly what it has state for.
         let dir = tempfile::tempdir().expect("temp dir");
         let store = Store::open(dir.path())?;
         let loaded = load_str(&chained(4));
-        crate::fixtures::drive_run(&store, &loaded.run, Some(2));
-        let journaled = journaled_keys(&store, &loaded.run.id())?;
+        crate::fixtures::drive_search(&store, &loaded.search, Some(2));
+        let journaled = journaled_keys(&store, &loaded.search.id())?;
         assert!(!journaled.is_empty(), "it reached some");
         for key in &journaled {
             assert!(
@@ -223,12 +223,12 @@ mod tests {
     }
 
     #[test]
-    fn a_run_that_journaled_nothing_names_no_key() -> Result<()> {
+    fn a_search_that_journaled_nothing_names_no_key() -> Result<()> {
         // What a store about to take its first push holds.
         let dir = tempfile::tempdir().expect("temp dir");
         let store = Store::open(dir.path())?;
         let loaded = load_str(&config(None));
-        assert!(journaled_keys(&store, &loaded.run.id())?.is_empty());
+        assert!(journaled_keys(&store, &loaded.search.id())?.is_empty());
         Ok(())
     }
 
@@ -239,14 +239,14 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let store = Store::open(dir.path())?;
         let loaded = load_str(&chained(2));
-        crate::fixtures::drive_run(&store, &loaded.run, None);
-        let intact = journaled_keys(&store, &loaded.run.id())?;
+        crate::fixtures::drive_search(&store, &loaded.search, None);
+        let intact = journaled_keys(&store, &loaded.search.id())?;
         assert!(!intact.is_empty());
 
         store
-            .journal_writer(&loaded.run.id())?
+            .journal_writer(&loaded.search.id())?
             .append("{\"ts_ms\":1,\"event\":\"no_such_event\"}")?;
-        assert_eq!(journaled_keys(&store, &loaded.run.id())?, intact);
+        assert_eq!(journaled_keys(&store, &loaded.search.id())?, intact);
         Ok(())
     }
 
@@ -257,39 +257,39 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let store = Store::open(dir.path())?;
         let loaded = load_str(&config(None));
-        store.create_run(&loaded.run)?;
-        store.journal_writer(&loaded.run.id())?.append(
+        store.create_search(&loaded.search)?;
+        store.journal_writer(&loaded.search.id())?.append(
             &sima_scheduler::Record::stamped(sima_scheduler::Event::Queued {
                 task: "not a key".to_string(),
             })
             .to_line()?,
         )?;
-        assert!(journaled_keys(&store, &loaded.run.id())?.is_empty());
+        assert!(journaled_keys(&store, &loaded.search.id())?.is_empty());
         Ok(())
     }
 
     #[test]
-    fn a_run_level_event_names_no_key() -> Result<()> {
-        // The events that frame the run rather than a task carry no key to
+    fn a_search_level_event_names_no_key() -> Result<()> {
+        // The events that frame the search rather than a task carry no key to
         // advertise, so nothing derives one from them.
         let dir = tempfile::tempdir().expect("temp dir");
         let store = Store::open(dir.path())?;
         let loaded = load_str(&config(None));
-        store.create_run(&loaded.run)?;
-        let mut writer = store.journal_writer(&loaded.run.id())?;
+        store.create_search(&loaded.search)?;
+        let mut writer = store.journal_writer(&loaded.search.id())?;
         for event in [
-            sima_scheduler::Event::RunStarted {
-                run: loaded.run.id().to_string(),
+            sima_scheduler::Event::SearchStarted {
+                search: loaded.search.id().to_string(),
                 tasks: 3,
                 committed: 0,
             },
-            sima_scheduler::Event::RunInterrupted {
-                run: loaded.run.id().to_string(),
+            sima_scheduler::Event::SearchInterrupted {
+                search: loaded.search.id().to_string(),
             },
         ] {
             writer.append(&sima_scheduler::Record::stamped(event).to_line()?)?;
         }
-        assert!(journaled_keys(&store, &loaded.run.id())?.is_empty());
+        assert!(journaled_keys(&store, &loaded.search.id())?.is_empty());
         Ok(())
     }
 }

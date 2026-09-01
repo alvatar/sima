@@ -16,8 +16,8 @@
 //! [`enumerate_all_devices`] asks it about the machine instead, across every
 //! compiled backend. That answer states reachability and hardware, and is used
 //! where no format this build carries is in play: a fleet machine's readiness
-//! probe for a run whose format is a program outside this build. Placement for
-//! such a run comes from the program's own enumeration, never from this list.
+//! probe for a search whose format is a program outside this build. Placement for
+//! such a search comes from the program's own enumeration, never from this list.
 
 use sima_core::Result;
 use sima_model::FormatId;
@@ -36,7 +36,7 @@ pub fn enumerate_devices(format: &FormatId) -> Result<Vec<DeviceInfo>> {
 /// Every device every compiled backend reaches, asked about a machine rather
 /// than about a program.
 ///
-/// This is the answer for a run whose format is a program outside this build:
+/// This is the answer for a search whose format is a program outside this build:
 /// nothing here can resolve that format, and only the program itself knows
 /// which of these devices its backend opens. The list is therefore a statement
 /// about the machine — it is reachable, and this is its hardware — and never a

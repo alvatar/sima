@@ -8,13 +8,13 @@
 //! attempt reproduces what the failed attempt would have committed.
 //!
 //! A binding moves only when its class is absent from the current device set —
-//! the hardware changed between sessions — and the journal records it. Run
+//! the hardware changed between sessions — and the journal records it. Search
 //! continuity outranks placement: a chain never strands because the card it
 //! ran on is gone.
 //!
 //! Placement is derived operational state, never identity: the binding enters
 //! no task key, no record, and no manifest. The slot it persists to lives
-//! beside the run's checkpoints, and losing it costs coherence for one chain,
+//! beside the search's checkpoints, and losing it costs coherence for one chain,
 //! never correctness.
 
 use serde::{Deserialize, Serialize};
@@ -28,7 +28,7 @@ pub(crate) enum Eligibility {
     Run,
     /// The chain is unbound: this worker takes it and binds it.
     Bind,
-    /// The chain is bound to a class absent from the run's devices: this
+    /// The chain is bound to a class absent from the search's devices: this
     /// worker takes it and the binding moves.
     Rebind,
     /// The chain belongs to another class that is present: leave it be.
@@ -36,7 +36,7 @@ pub(crate) enum Eligibility {
 }
 
 /// What a worker of `class` may do with a task whose chain is bound to
-/// `bound`, given `present_classes`, the classes the run has.
+/// `bound`, given `present_classes`, the classes the search has.
 ///
 /// Pure over its inputs, so the rule is verifiable without threads, workers,
 /// or a device.
@@ -66,11 +66,11 @@ pub(crate) fn eligibility(
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ChainPlacement {
     /// Nothing to record: the chain was already bound to the pulling class,
-    /// the task has no chain, or the run has one implicit class.
+    /// the task has no chain, or the search has one implicit class.
     Settled,
     /// The pull bound an unbound chain to the pulling worker's class.
     Bound { chain: u64, to: DeviceClass },
-    /// The pull moved a chain off a class absent from the run's devices.
+    /// The pull moved a chain off a class absent from the search's devices.
     Rebound {
         chain: u64,
         from: DeviceClass,
@@ -154,7 +154,7 @@ mod tests {
 
     #[test]
     fn a_chain_bound_to_an_absent_class_rebinds() {
-        // The card it ran on is gone: the run continues on what is here.
+        // The card it ran on is gone: the search continues on what is here.
         assert_eq!(
             eligibility(Some(&nvidia()), &intel(), &[intel()]),
             Eligibility::Rebind

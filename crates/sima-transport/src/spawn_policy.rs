@@ -2,7 +2,7 @@
 //! receives.
 //!
 //! Two processes are spawned across the boundary a configured program owns:
-//! its domain service and its workers. Both run code sima does not build, so
+//! its domain service and its workers. Both search code sima does not build, so
 //! both start from an explicit surface rather than from whatever the
 //! orchestrator happens to hold: the baseline environment the platform needs
 //! plus the variables the program's config entry names, and an empty working
@@ -204,7 +204,7 @@ pub(crate) mod fixture {
     /// fork, and every exec of the file is refused with `ETXTBSY` until that
     /// child has exec'd. Probing until one exec succeeds is what makes the
     /// fixture deterministic. Only a test writes the program it spawns; the
-    /// run path spawns programs that were already on disk.
+    /// search path spawns programs that were already on disk.
     fn await_runnable(path: &Path) {
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {

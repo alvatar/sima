@@ -1,5 +1,5 @@
 //! [`GrayScottIgnition`]: the ignition configuration of the Gray-Scott model's
-//! initial grid, and the model's `[run.params]` ignition keys.
+//! initial grid, and the model's `[search.params]` ignition keys.
 
 use sima_core::{Codec, Dec, Enc, Error, Result};
 
@@ -108,7 +108,7 @@ impl Codec for GrayScottIgnition {
 }
 
 impl TomlConfig for GrayScottIgnition {
-    /// Reads the ignition keys from the `[run.params]` table (the shared keys are
+    /// Reads the ignition keys from the `[search.params]` table (the shared keys are
     /// already stripped), rejecting any key it does not define. All four keys are
     /// required, with no defaults — every value that determines candidate identity
     /// is visible in the config file.
@@ -214,7 +214,7 @@ mod tests {
         Ok(())
     }
 
-    /// The model's `[run.params]` keys (the shared width/height/steps/dt are
+    /// The model's `[search.params]` keys (the shared width/height/steps/dt are
     /// stripped before the model sees the table).
     const KEYS: &str = r#"
         base_u = 0.5
